@@ -646,6 +646,9 @@ export const hi = {
         "यह डेटासेट अभी इस डिवाइस पर नहीं है। ट्रेनिंग इसे अपने आप डाउनलोड करेगी।",
       noticeDatasetPartial:
         "ट्रेनिंग डेटासेट पढ़ने से पहले उसका अधूरा डाउनलोड पूरा करेगी।",
+      advancedSettings: "उन्नत सेटिंग्स",
+      defaultAdvancedSettings: "डिफ़ॉल्ट",
+      nonDefaultAdvancedSettings: "{count} गैर-डिफ़ॉल्ट",
     },
     datasetPicker: {
       noun: "डेटासेट",
@@ -1014,6 +1017,14 @@ export const hi = {
         "इस मॉडल की सेटिंग्स सत्यापित नहीं की जा सकीं। अपना कनेक्शन या Hugging Face टोकन जांचें, फिर पुनः प्रयास करें।",
       legacyDatasetScriptUnsupported:
         "यह Hub डेटासेट एक पुराने कस्टम स्क्रिप्ट पर निर्भर है और इस ट्रेनिंग फ़्लो में समर्थित नहीं है।",
+      hfModelAccessDenied:
+        "Hugging Face ने इस मॉडल का एक्सेस अस्वीकार कर दिया। रिपॉज़िटरी एक्सेस वाला मान्य Hugging Face टोकन जोड़ें, आवश्यक एक्सेस शर्तें स्वीकार करें और फिर से कोशिश करें।",
+      hfModelVerificationRateLimited:
+        "Hugging Face मॉडल सत्यापन की दर सीमित है। थोड़ी देर बाद फिर से कोशिश करें।",
+      hfModelVerificationFailed:
+        "Hugging Face मॉडल सत्यापित नहीं किया जा सका। रिपॉज़िटरी ID और अपना एक्सेस टोकन जाँचें।",
+      hfModelMetadataUnavailable:
+        "Hugging Face मॉडल मेटाडेटा अस्थायी रूप से उपलब्ध नहीं है। ट्रेनिंग शुरू करने से पहले फिर से कोशिश करें।",
       datasetUnverified:
         "यह सत्यापित नहीं किया जा सका कि डेटासेट इस मॉडल के साथ संगत है। अपना कनेक्शन या Hugging Face टोकन जांचें — ट्रेनिंग शुरू करने पर जांच फिर से की जाएगी।",
       setupChanged:

@@ -138,6 +138,53 @@ function buildTrainModelVramViews(
   return views;
 }
 
+interface FreeformTrainingModelPick {
+  deviceKey: string | null;
+  id: string;
+  options: {
+    knownCached: boolean;
+    localPath: string | null;
+    modelFormat: ModelInventoryFormat | null;
+  };
+  modelTypeFlags: ModelTypeCapabilityFlags;
+}
+
+function deviceItemFreeformPick(
+  item: TrainModelDeviceItem,
+): FreeformTrainingModelPick {
+  return {
+    deviceKey: item.key,
+    id: item.id,
+    options: {
+      knownCached: item.knownCached,
+      localPath: item.localPath,
+      modelFormat: item.modelFormat,
+    },
+    modelTypeFlags: item.modelTypeFlags,
+  };
+}
+
+function resolveFreeformTrainingModelPick(
+  localPath: string,
+  cached: CachedInventoryRow | undefined,
+  local: LocalInventoryRow | undefined,
+): FreeformTrainingModelPick {
+  if (cached) {
+    return deviceItemFreeformPick(toCachedTrainModelDeviceItem(cached, ""));
+  }
+  if (local) {
+    return deviceItemFreeformPick(toLocalTrainModelDeviceItem(local, ""));
+  }
+  return {
+    deviceKey: null,
+    id: localPath,
+    options: { knownCached: false, localPath, modelFormat: null },
+    modelTypeFlags: trainingModelTypeFlagsFromMetadata({
+      identifiers: [localPath],
+    }),
+  };
+}
+
 export function TrainModelSelector() {
   const t = useT();
   const gpu = useGpuInfo();
@@ -507,11 +554,13 @@ export function TrainModelSelector() {
       });
       return;
     }
-    pick(
+    const selection = resolveFreeformTrainingModelPick(
       localPath,
-      { knownCached: false, localPath, modelFormat: null },
-      trainingModelTypeFlagsFromMetadata({ identifiers: [localPath] }),
+      cached,
+      local,
     );
+    setSelectedDeviceKey(selection.deviceKey);
+    pick(selection.id, selection.options, selection.modelTypeFlags);
   }
 
   function pickDeviceModel(model: TrainModelDeviceItem) {

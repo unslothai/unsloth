@@ -24,7 +24,7 @@ export interface TrainingStartLease {
 
 export type TrainingStartRecoveryResult =
   | { kind: "recovered" }
-  | { kind: "rejected"; error: string }
+  | { kind: "rejected"; error: string; errorCode: string | null }
   | { kind: "unknown" };
 
 const START_RECONCILIATION_DELAYS_MS = [

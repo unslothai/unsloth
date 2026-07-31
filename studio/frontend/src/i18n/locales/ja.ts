@@ -697,6 +697,9 @@ export const ja = {
         "このデータセットはまだデバイス上にありません。トレーニング時に自動でダウンロードします。",
       noticeDatasetPartial:
         "トレーニングでは、データセットを読み込む前に未完了のダウンロードを完了します。",
+      advancedSettings: "詳細設定",
+      defaultAdvancedSettings: "デフォルト",
+      nonDefaultAdvancedSettings: "デフォルト以外の設定: {count} 件",
     },
     datasetPicker: {
       noun: "データセット",
@@ -1055,6 +1058,14 @@ export const ja = {
         "このモデルの設定を確認できませんでした。接続または Hugging Face トークンを確認してから、再試行してください。",
       legacyDatasetScriptUnsupported:
         "この Hub データセットは従来のカスタムスクリプトに依存しているため、このトレーニングフローではサポートされていません。",
+      hfModelAccessDenied:
+        "Hugging Face がこのモデルへのアクセスを拒否しました。リポジトリへのアクセス権を持つ有効な Hugging Face トークンを追加し、必要な利用条件に同意してから再試行してください。",
+      hfModelVerificationRateLimited:
+        "Hugging Face のモデル検証はレート制限されています。しばらくしてから再試行してください。",
+      hfModelVerificationFailed:
+        "Hugging Face モデルを検証できませんでした。リポジトリ ID とアクセストークンを確認してください。",
+      hfModelMetadataUnavailable:
+        "Hugging Face のモデルメタデータは一時的に利用できません。トレーニングを開始する前に再試行してください。",
       datasetUnverified:
         "データセットがこのモデルと互換性があるか確認できませんでした。接続または Hugging Face トークンを確認してください。トレーニング開始時にもう一度確認します。",
       setupChanged:

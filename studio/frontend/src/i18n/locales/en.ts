@@ -1100,6 +1100,9 @@ export const en = {
         "This dataset is not on this device yet. Training will download it automatically.",
       noticeDatasetPartial:
         "Training will complete the partial dataset download before reading it.",
+      advancedSettings: "Advanced settings",
+      defaultAdvancedSettings: "Defaults",
+      nonDefaultAdvancedSettings: "{count} non-default",
     },
     datasetPicker: {
       noun: "datasets",
@@ -1480,6 +1483,14 @@ export const en = {
         "Couldn't verify this model's settings. Check your connection or Hugging Face token, then retry.",
       legacyDatasetScriptUnsupported:
         "This Hub dataset relies on a legacy custom script and isn’t supported in this training flow.",
+      hfModelAccessDenied:
+        "Hugging Face denied access to this model. Add a valid Hugging Face token with repository access and accept any required access terms, then try again.",
+      hfModelVerificationRateLimited:
+        "Hugging Face model verification is rate-limited. Retry shortly.",
+      hfModelVerificationFailed:
+        "The Hugging Face model could not be verified. Check the repository ID and your access token.",
+      hfModelMetadataUnavailable:
+        "Hugging Face model metadata is temporarily unavailable. Retry before starting training.",
       datasetUnverified:
         "Couldn't verify the dataset is compatible with this model. Check your connection or Hugging Face token — starting training will retry the check.",
       setupChanged:

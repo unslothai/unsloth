@@ -660,9 +660,40 @@ def test_remote_format_probe_maps_hub_access_denial_to_validation_error(status_c
             route._remote_untrainable_model_format("test", "hf-token")
 
     assert exc_info.value.status_code == 422
-    assert "denied access" in exc_info.value.detail.lower()
-    assert "token" in exc_info.value.detail.lower()
+    assert exc_info.value.detail["code"] == "hf_model_access_denied"
+    assert "denied access" in exc_info.value.detail["message"].lower()
+    assert "token" in exc_info.value.detail["message"].lower()
     model_info.assert_called_once()
+
+
+def test_remote_format_probe_reports_stable_verification_error_code():
+    route = _load_route_module("training_route_remote_verification_failed")
+    not_found = RuntimeError("not found")
+    not_found.response = SimpleNamespace(status_code = 404)
+
+    with patch("huggingface_hub.model_info", side_effect = not_found):
+        with pytest.raises(HTTPException) as exc_info:
+            route._remote_untrainable_model_format("test", "hf-token")
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["code"] == "hf_model_verification_failed"
+    assert "could not be verified" in exc_info.value.detail["message"].lower()
+
+
+def test_structured_start_error_preserves_code_for_reconciliation():
+    route = _load_route_module("training_route_structured_start_error")
+    error = HTTPException(
+        status_code = 503,
+        detail = {
+            "code": "hf_model_metadata_unavailable",
+            "message": "Model metadata unavailable",
+        },
+    )
+
+    assert route._http_exception_error(error) == (
+        "Model metadata unavailable",
+        "hf_model_metadata_unavailable",
+    )
 
 
 @pytest.mark.parametrize("status_code", [408, 502])
@@ -676,7 +707,8 @@ def test_remote_format_probe_exhausted_transient_status_reports_unavailable(stat
             route._remote_untrainable_model_format("test", "hf-token")
 
     assert exc_info.value.status_code == 503
-    assert "temporarily unavailable" in exc_info.value.detail.lower()
+    assert exc_info.value.detail["code"] == "hf_model_metadata_unavailable"
+    assert "temporarily unavailable" in exc_info.value.detail["message"].lower()
     assert model_info.call_count == 2
 
 
@@ -716,8 +748,9 @@ def test_remote_format_probe_reports_rate_limit_without_token_guidance():
             route._remote_untrainable_model_format("test", "hf-token")
 
     assert exc_info.value.status_code == 429
-    assert "rate-limited" in exc_info.value.detail.lower()
-    assert "access token" not in exc_info.value.detail.lower()
+    assert exc_info.value.detail["code"] == "hf_model_verification_rate_limited"
+    assert "rate-limited" in exc_info.value.detail["message"].lower()
+    assert "access token" not in exc_info.value.detail["message"].lower()
 
 
 def test_optimizer_checkpoint_does_not_make_adapter_trainable(tmp_path):

@@ -60,7 +60,7 @@ function migrateThroughVersion8(
   ) {
     state.datasetSubset = state.datasetConfig;
   }
-  state.datasetConfig = undefined;
+  Reflect.deleteProperty(state, "datasetConfig");
   if (version < 3 && state.modelDefaultsAppliedFor == null) {
     state.modelDefaultsAppliedFor = null;
   }

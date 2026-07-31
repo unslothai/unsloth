@@ -7,7 +7,7 @@ import type { TrainingStatusResponse } from "../types/runtime";
 export type TrainingStartRequestOutcome =
   | { kind: "pending"; jobId: string; message: string }
   | { kind: "accepted"; jobId: string; message: string }
-  | { kind: "rejected"; error: string }
+  | { kind: "rejected"; error: string; errorCode: string | null }
   | { kind: "unmatched" };
 
 export function resolveTrainingStartRequestOutcome(
@@ -18,7 +18,11 @@ export function resolveTrainingStartRequestOutcome(
     return { kind: "unmatched" };
   }
   if (status.state === "rejected") {
-    return { kind: "rejected", error: status.error || status.message };
+    return {
+      kind: "rejected",
+      error: status.error || status.message,
+      errorCode: status.error_code ?? null,
+    };
   }
   if (!status.job_id.trim()) {
     return { kind: "unmatched" };

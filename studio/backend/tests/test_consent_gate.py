@@ -484,11 +484,15 @@ class TestWorkersWireTheGate:
     def test_embedding_training_path_gates_before_load(self):
         # The embedding pipeline must run the malware + consent gates before loading, like the other paths.
         src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
+        helper_start = src.index("def _model_load_security_error(")
+        helper_end = src.index("\ndef ", helper_start + 1)
+        helper = src[helper_start:helper_end]
         start = src.index("def _run_embedding_training(")
         end = src.index("FastSentenceTransformer.from_pretrained(", start)
         region = src[start:end]
-        assert "evaluate_file_security" in region
-        assert "evaluate_remote_code_consent" in region
+        assert "_model_load_security_error(" in region
+        assert "evaluate_file_security" in helper
+        assert "evaluate_remote_code_consent_for_targets" in helper
 
 
 class TestCanonicalScannerSource:

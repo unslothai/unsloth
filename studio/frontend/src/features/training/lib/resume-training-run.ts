@@ -9,6 +9,7 @@ import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
 import { getTrainingRun } from "../api/history-api";
 import {
+  TrainingStartError,
   isTrainingStartOutcomeUnknownError,
   startTraining,
 } from "../api/train-api";
@@ -160,7 +161,7 @@ class ResumeTrainingStartAttempt {
         return true;
       }
       if (recovery.kind === "rejected") {
-        failure = new Error(recovery.error);
+        failure = new TrainingStartError(recovery.error, recovery.errorCode);
       }
     }
     if (!isTrainingStartLeaseActive(this.lease)) {
@@ -169,11 +170,11 @@ class ResumeTrainingStartAttempt {
     if (this.phase === "preflight" && !this.isPreflightActive()) {
       return false;
     }
-    const rawMessage =
+    const safeMessage = normalizeTrainingStartError(
       failure instanceof Error
-        ? failure.message
-        : translate("studio.training.resumeFailed");
-    const safeMessage = normalizeTrainingStartError(rawMessage);
+        ? failure
+        : translate("studio.training.resumeFailed"),
+    );
     this.cancel(safeMessage);
     toast.error(translate("studio.training.resumeFailedTitle"), {
       description: safeMessage,
@@ -269,7 +270,10 @@ async function submitResumeTrainingRun(
   }
   const response = await startTraining(payload, attempt.startRequestId);
   if (response.status === "error") {
-    throw new Error(response.error || response.message);
+    throw new TrainingStartError(
+      response.error || response.message,
+      response.error_code ?? null,
+    );
   }
   return attempt.settleAccepted(response.job_id, response.message);
 }

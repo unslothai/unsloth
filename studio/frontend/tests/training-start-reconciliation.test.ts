@@ -44,10 +44,15 @@ test("start request reconciliation distinguishes pending and rejected outcomes",
         state: "rejected",
         message: "Rejected",
         error: "Model unavailable",
+        error_code: "hf_model_metadata_unavailable",
       },
       "request_123",
     ),
-    { kind: "rejected", error: "Model unavailable" },
+    {
+      kind: "rejected",
+      error: "Model unavailable",
+      errorCode: "hf_model_metadata_unavailable",
+    },
   );
 });
 

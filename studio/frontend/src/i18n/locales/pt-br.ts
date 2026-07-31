@@ -749,6 +749,9 @@ export const ptBR = {
         "Este dataset ainda não está no dispositivo. Ele será baixado automaticamente quando o treinamento começar.",
       noticeDatasetPartial:
         "O download incompleto do dataset será concluído antes da leitura.",
+      advancedSettings: "Configurações avançadas",
+      defaultAdvancedSettings: "Padrões",
+      nonDefaultAdvancedSettings: "{count} fora do padrão",
     },
     datasetPicker: {
       noun: "datasets",
@@ -1117,6 +1120,14 @@ export const ptBR = {
         "Não foi possível verificar os parâmetros deste modelo. Verifique sua conexão ou seu token do Hugging Face e tente novamente.",
       legacyDatasetScriptUnsupported:
         "Este dataset do Hub depende de um script personalizado legado e não é compatível com este fluxo de treinamento.",
+      hfModelAccessDenied:
+        "O Hugging Face negou o acesso a este modelo. Adicione um token válido do Hugging Face com acesso ao repositório, aceite os termos de acesso necessários e tente novamente.",
+      hfModelVerificationRateLimited:
+        "A verificação do modelo do Hugging Face está com limite de solicitações. Tente novamente em instantes.",
+      hfModelVerificationFailed:
+        "Não foi possível verificar o modelo do Hugging Face. Confira o ID do repositório e seu token de acesso.",
+      hfModelMetadataUnavailable:
+        "Os metadados do modelo do Hugging Face estão temporariamente indisponíveis. Tente novamente antes de iniciar o treinamento.",
       datasetUnverified:
         "Não foi possível verificar se o dataset é compatível com este modelo. Verifique sua conexão ou seu token do Hugging Face; o início do treinamento tentará verificar novamente.",
       setupChanged:

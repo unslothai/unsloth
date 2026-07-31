@@ -73,6 +73,7 @@ class TrainingStartRequestRecord:
     state: Literal["pending", "accepted", "rejected"]
     message: str
     error: Optional[str] = None
+    error_code: Optional[str] = None
 
 
 def _load_pyplot():
@@ -1113,6 +1114,7 @@ class TrainingBackend:
         state: Literal["accepted", "rejected"],
         message: str,
         error: Optional[str] = None,
+        error_code: Optional[str] = None,
     ) -> Optional[TrainingStartRequestRecord]:
         if state not in {"accepted", "rejected"}:
             raise ValueError(f"Invalid training start request state: {state}")
@@ -1127,6 +1129,7 @@ class TrainingBackend:
                 state = state,
                 message = message,
                 error = error,
+                error_code = error_code,
             )
             self._start_requests[start_request_id] = record
             if self._pending_start_request_id == start_request_id:

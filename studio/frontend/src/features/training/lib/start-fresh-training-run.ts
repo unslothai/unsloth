@@ -10,6 +10,7 @@ import { toast } from "@/lib/toast";
 import { checkDatasetFormat } from "../api/datasets-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import {
+  TrainingStartError,
   isTrainingStartOutcomeUnknownError,
   startTraining,
 } from "../api/train-api";
@@ -275,17 +276,21 @@ export async function startFreshTrainingRun(): Promise<boolean> {
         return true;
       }
       if (recovery.kind === "rejected") {
-        return attempt.cancel(normalizeTrainingStartError(recovery.error));
+        return attempt.cancel(
+          normalizeTrainingStartError(recovery.error, recovery.errorCode),
+        );
       }
     }
     if (attempt.abortIfInputsChanged()) {
       return false;
     }
-    const rawMessage =
-      error instanceof Error
-        ? error.message
-        : translate("studio.training.startFailed");
-    return attempt.cancel(normalizeTrainingStartError(rawMessage));
+    return attempt.cancel(
+      normalizeTrainingStartError(
+        error instanceof Error
+          ? error
+          : translate("studio.training.startFailed"),
+      ),
+    );
   }
 }
 
@@ -453,7 +458,10 @@ async function submitFreshTrainingRun(
     );
   const response = await startTraining(payload, attempt.startRequestId);
   if (response.status === "error") {
-    throw new Error(response.error || response.message);
+    throw new TrainingStartError(
+      response.error || response.message,
+      response.error_code ?? null,
+    );
   }
 
   return attempt.settleAccepted(response.job_id, response.message);

@@ -22,6 +22,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, type ReactNode, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useTrainingResourceDisplayNames } from "../hooks/use-training-resource-display-names";
+import { countNonDefaultAdvancedSettings } from "./advanced-settings-summary";
+import type { ParamMode } from "./training-param-mode";
 
 const LEARNING_RATE_ZERO_RE = /\.?0+e/;
 const PREVIEW_COUNT_KEYS = {
@@ -280,8 +282,10 @@ function datasetPreview({
 }
 
 export function RunPreviewCard({
+  paramMode,
   startCta,
 }: {
+  paramMode: ParamMode;
   startCta: ReactElement;
 }): ReactElement {
   const t = useT();
@@ -334,6 +338,9 @@ export function RunPreviewCard({
   const hasToken = !!hfToken && hfToken.trim().length > 0;
   const { isReady, hasModel, hasDataset } = useTrainingReadiness();
   const resourceNotices = useTrainingResourceNotices();
+  const nonDefaultAdvancedSettings = useTrainingConfigStore(
+    countNonDefaultAdvancedSettings,
+  );
   const resourceDisplayNames = useTrainingResourceDisplayNames({
     selectedModel,
     modelKnownCached,
@@ -448,6 +455,18 @@ export function RunPreviewCard({
           value={formatLearningRate(learningRate)}
           mono={true}
         />
+        {paramMode === "simple" && (
+          <MetaRow
+            label={t("studio.preview.advancedSettings")}
+            value={
+              nonDefaultAdvancedSettings > 0
+                ? t("studio.preview.nonDefaultAdvancedSettings", {
+                    count: numberFormatter.format(nonDefaultAdvancedSettings),
+                  })
+                : t("studio.preview.defaultAdvancedSettings")
+            }
+          />
+        )}
       </section>
 
       <section className="flex flex-col gap-3">

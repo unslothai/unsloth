@@ -37,10 +37,12 @@ import {
 } from "./use-studio-navigation";
 import { RunPreviewCard } from "./wizard/run-preview-card";
 import { StartTrainingCta } from "./wizard/start-training-cta";
+import { useParamMode } from "./wizard/training-param-mode";
 import { TrainingWizard } from "./wizard/training-wizard";
 
 export function StudioPage(): ReactElement {
   const t = useT();
+  const [paramMode, setParamMode] = useParamMode();
   useTrainingRuntimeLifecycle();
   useTrainingCacheReconciliation();
   const runtimeMessage = useTrainingRuntimeStore((state) => state.message);
@@ -188,10 +190,16 @@ export function StudioPage(): ReactElement {
                   <div className="@container/train-configure">
                     <div className="grid grid-cols-1 gap-8 @5xl/train-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/train-configure:gap-10">
                       <div className="min-w-0">
-                        <TrainingWizard />
+                        <TrainingWizard
+                          paramMode={paramMode}
+                          onParamModeChange={setParamMode}
+                        />
                       </div>
                       <div className="@5xl/train-configure:sticky @5xl/train-configure:top-6 @5xl/train-configure:self-start">
-                        <RunPreviewCard startCta={<StartTrainingCta />} />
+                        <RunPreviewCard
+                          paramMode={paramMode}
+                          startCta={<StartTrainingCta />}
+                        />
                       </div>
                     </div>
                   </div>

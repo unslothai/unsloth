@@ -644,6 +644,9 @@ export const ko = {
         "이 데이터셋은 아직 기기에 없습니다. 학습 시 자동으로 다운로드합니다.",
       noticeDatasetPartial:
         "데이터셋을 읽기 전에 완료되지 않은 다운로드를 마칩니다.",
+      advancedSettings: "고급 설정",
+      defaultAdvancedSettings: "기본값",
+      nonDefaultAdvancedSettings: "기본값이 아닌 설정 {count}개",
     },
     datasetPicker: {
       noun: "데이터셋",
@@ -1021,6 +1024,14 @@ export const ko = {
         "이 모델의 설정을 확인하지 못했습니다. 연결 또는 Hugging Face 토큰을 확인한 후 다시 시도하세요.",
       legacyDatasetScriptUnsupported:
         "이 Hub 데이터셋은 레거시 사용자 지정 스크립트를 사용하므로 이 학습 흐름에서는 지원되지 않습니다.",
+      hfModelAccessDenied:
+        "Hugging Face에서 이 모델에 대한 접근을 거부했습니다. 저장소 접근 권한이 있는 유효한 Hugging Face 토큰을 추가하고 필요한 접근 약관에 동의한 후 다시 시도하세요.",
+      hfModelVerificationRateLimited:
+        "Hugging Face 모델 검증 요청이 속도 제한에 도달했습니다. 잠시 후 다시 시도하세요.",
+      hfModelVerificationFailed:
+        "Hugging Face 모델을 검증할 수 없습니다. 저장소 ID와 접근 토큰을 확인하세요.",
+      hfModelMetadataUnavailable:
+        "Hugging Face 모델 메타데이터를 일시적으로 사용할 수 없습니다. 학습을 시작하기 전에 다시 시도하세요.",
       datasetUnverified:
         "데이터셋이 이 모델과 호환되는지 확인하지 못했습니다. 연결 또는 Hugging Face 토큰을 확인하세요. 학습을 시작하면 다시 확인합니다.",
       setupChanged:

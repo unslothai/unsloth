@@ -680,6 +680,9 @@ export const de = {
         "Dieser Datensatz befindet sich noch nicht auf dem Gerät. Beim Start des Trainings wird er automatisch heruntergeladen.",
       noticeDatasetPartial:
         "Vor dem Einlesen wird der unvollständige Datensatz-Download abgeschlossen.",
+      advancedSettings: "Erweiterte Einstellungen",
+      defaultAdvancedSettings: "Standardwerte",
+      nonDefaultAdvancedSettings: "{count} abweichend",
     },
     datasetPicker: {
       noun: "Datensätze",
@@ -1060,6 +1063,14 @@ export const de = {
         "Die Modelleinstellungen konnten nicht überprüft werden. Prüfen Sie Ihre Verbindung oder Ihr Hugging Face-Token und versuchen Sie es erneut.",
       legacyDatasetScriptUnsupported:
         "Dieser Hub-Datensatz basiert auf einem veralteten benutzerdefinierten Skript und wird in diesem Trainingsablauf nicht unterstützt.",
+      hfModelAccessDenied:
+        "Hugging Face hat den Zugriff auf dieses Modell verweigert. Fügen Sie ein gültiges Hugging Face-Token mit Repository-Zugriff hinzu, akzeptieren Sie erforderliche Zugriffsbedingungen und versuchen Sie es erneut.",
+      hfModelVerificationRateLimited:
+        "Die Hugging Face-Modellprüfung ist ratenbegrenzt. Versuchen Sie es in Kürze erneut.",
+      hfModelVerificationFailed:
+        "Das Hugging Face-Modell konnte nicht überprüft werden. Prüfen Sie die Repository-ID und Ihr Zugriffstoken.",
+      hfModelMetadataUnavailable:
+        "Die Hugging Face-Modellmetadaten sind vorübergehend nicht verfügbar. Versuchen Sie es erneut, bevor Sie das Training starten.",
       datasetUnverified:
         "Die Kompatibilität des Datensatzes mit diesem Modell konnte nicht überprüft werden. Prüfen Sie Ihre Verbindung oder Ihr Hugging Face-Token. Beim Start des Trainings wird die Prüfung erneut versucht.",
       setupChanged:

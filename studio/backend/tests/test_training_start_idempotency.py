@@ -46,9 +46,11 @@ def test_start_request_reservation_is_idempotent_and_serialized():
         state = "rejected",
         message = "Model unavailable",
         error = "Model unavailable",
+        error_code = "hf_model_metadata_unavailable",
     )
     assert rejected is not None
     assert rejected.state == "rejected"
+    assert rejected.error_code == "hf_model_metadata_unavailable"
     assert backend.status_start_request() == rejected
     assert backend.acknowledge_start_request("request-1") is True
     assert backend.status_start_request() is None

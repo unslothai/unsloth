@@ -85,6 +85,7 @@ export interface TrainingStartResponse {
   status: "queued" | "error";
   message: string;
   error: string | null;
+  error_code?: string | null;
 }
 
 export interface TrainingStartRequestStatusResponse {
@@ -93,6 +94,7 @@ export interface TrainingStartRequestStatusResponse {
   state: "pending" | "accepted" | "rejected";
   message: string;
   error: string | null;
+  error_code?: string | null;
 }
 
 export interface TrainingStopResponse {

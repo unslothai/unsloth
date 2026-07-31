@@ -33,6 +33,16 @@ class TrainingStartOutcomeUnknownError extends Error {
   }
 }
 
+export class TrainingStartError extends Error {
+  readonly errorCode: string | null;
+
+  constructor(message: string, errorCode: string | null = null) {
+    super(message);
+    this.name = "TrainingStartError";
+    this.errorCode = errorCode;
+  }
+}
+
 export function isTrainingStartOutcomeUnknownError(error: unknown): boolean {
   return error instanceof TrainingStartOutcomeUnknownError;
 }
@@ -42,6 +52,32 @@ async function parseJson<T>(response: Response): Promise<T> {
     throw new Error(await readError(response));
   }
   return (await response.json()) as T;
+}
+
+async function readTrainingStartError(
+  response: Response,
+): Promise<TrainingStartError> {
+  const fallbackResponse = response.clone();
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    const detail = payload.detail;
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+      const structured = detail as { code?: unknown; message?: unknown };
+      const message =
+        typeof structured.message === "string" && structured.message
+          ? structured.message
+          : null;
+      if (message) {
+        return new TrainingStartError(
+          message,
+          typeof structured.code === "string" ? structured.code : null,
+        );
+      }
+    }
+  } catch {
+    return new TrainingStartError(await readFastApiError(fallbackResponse));
+  }
+  return new TrainingStartError(await readFastApiError(fallbackResponse));
 }
 
 export async function startTraining(
@@ -63,11 +99,11 @@ export async function startTraining(
     throw new TrainingStartOutcomeUnknownError(error);
   }
   if (!response.ok) {
-    const message = await readError(response);
+    const error = await readTrainingStartError(response);
     await acknowledgeTrainingStartRequest(startRequestId).catch(
       () => undefined,
     );
-    throw new Error(message);
+    throw error;
   }
   try {
     const result = (await response.json()) as TrainingStartResponse;

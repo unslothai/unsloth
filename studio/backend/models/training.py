@@ -635,6 +635,7 @@ class TrainingJobResponse(BaseModel):
     status: Literal["queued", "error"] = Field(..., description = "Initial job status")
     message: str = Field(..., description = "Human-readable status message")
     error: Optional[str] = Field(None, description = "Error details if status is 'error'")
+    error_code: Optional[str] = Field(None, description = "Stable error code if status is 'error'")
 
 
 class TrainingStartRequestStatus(BaseModel):
@@ -643,6 +644,7 @@ class TrainingStartRequestStatus(BaseModel):
     state: Literal["pending", "accepted", "rejected"]
     message: str
     error: Optional[str] = None
+    error_code: Optional[str] = None
 
 
 class TrainingStatus(BaseModel):

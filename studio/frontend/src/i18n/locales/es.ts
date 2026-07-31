@@ -664,6 +664,9 @@ export const es = {
         "Este conjunto de datos aún no está en el dispositivo. Se descargará automáticamente al iniciar el entrenamiento.",
       noticeDatasetPartial:
         "El entrenamiento completará la descarga parcial del conjunto de datos antes de leerlo.",
+      advancedSettings: "Ajustes avanzados",
+      defaultAdvancedSettings: "Valores predeterminados",
+      nonDefaultAdvancedSettings: "{count} no predeterminados",
     },
     datasetPicker: {
       noun: "conjuntos de datos",
@@ -1045,6 +1048,14 @@ export const es = {
         "No se pudo verificar la configuración de este modelo. Comprueba la conexión o el token de Hugging Face y vuelve a intentarlo.",
       legacyDatasetScriptUnsupported:
         "Este conjunto de datos de Hub depende de un script personalizado antiguo y no es compatible con este flujo de entrenamiento.",
+      hfModelAccessDenied:
+        "Hugging Face denegó el acceso a este modelo. Añade un token de Hugging Face válido con acceso al repositorio, acepta las condiciones de acceso necesarias y vuelve a intentarlo.",
+      hfModelVerificationRateLimited:
+        "La verificación del modelo de Hugging Face está limitada temporalmente. Vuelve a intentarlo en breve.",
+      hfModelVerificationFailed:
+        "No se pudo verificar el modelo de Hugging Face. Comprueba el ID del repositorio y tu token de acceso.",
+      hfModelMetadataUnavailable:
+        "Los metadatos del modelo de Hugging Face no están disponibles temporalmente. Vuelve a intentarlo antes de iniciar el entrenamiento.",
       datasetUnverified:
         "No se pudo verificar si el conjunto de datos es compatible con este modelo. Comprueba la conexión o el token de Hugging Face; al iniciar el entrenamiento se volverá a intentar la comprobación.",
       setupChanged:

@@ -728,6 +728,9 @@ export const zhCN = {
         "此数据集尚未存储在本设备上。训练时会自动下载。",
       noticeDatasetPartial:
         "训练会先继续并完成数据集下载，然后再读取数据集。",
+      advancedSettings: "高级设置",
+      defaultAdvancedSettings: "默认值",
+      nonDefaultAdvancedSettings: "{count} 项非默认设置",
     },
     datasetPicker: {
       noun: "数据集",
@@ -1080,6 +1083,14 @@ export const zhCN = {
         "无法验证此模型的设置。请检查网络连接或 Hugging Face token，然后重试。",
       legacyDatasetScriptUnsupported:
         "此 Hub 数据集依赖旧版自定义脚本，此训练流程不支持该脚本。",
+      hfModelAccessDenied:
+        "Hugging Face 拒绝访问此模型。请添加具有仓库访问权限的有效 Hugging Face 令牌，接受任何必需的访问条款，然后重试。",
+      hfModelVerificationRateLimited:
+        "Hugging Face 模型验证请求受到速率限制。请稍后重试。",
+      hfModelVerificationFailed:
+        "无法验证 Hugging Face 模型。请检查仓库 ID 和访问令牌。",
+      hfModelMetadataUnavailable:
+        "Hugging Face 模型元数据暂时不可用。请在开始训练前重试。",
       datasetUnverified:
         "无法验证数据集与此模型是否兼容。请检查网络连接或 Hugging Face token；开始训练时会重试检查。",
       setupChanged: "检查期间，训练设置发生了变化。请确认设置后重新开始训练。",

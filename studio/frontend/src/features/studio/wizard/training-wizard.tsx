@@ -33,15 +33,11 @@ import {
   Settings05Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import {
-  type CSSProperties,
-  type ReactNode,
-  useCallback,
-  useState,
-} from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { DatasetPanel } from "../sections/dataset-section";
 import { ParamsSection } from "../sections/params-section";
 import { ConfigActions } from "./config-actions";
+import type { ParamMode } from "./training-param-mode";
 
 function SectionBox({
   title,
@@ -105,36 +101,6 @@ function SectionBox({
       <div className="@container/train-section min-w-0">{children}</div>
     </section>
   );
-}
-
-type ParamMode = "simple" | "advanced";
-
-const PARAM_MODE_KEY = "unsloth_train_param_mode";
-
-function readParamMode(): ParamMode {
-  if (typeof window === "undefined") {
-    return "simple";
-  }
-  try {
-    return window.localStorage.getItem(PARAM_MODE_KEY) === "advanced"
-      ? "advanced"
-      : "simple";
-  } catch {
-    return "simple";
-  }
-}
-
-function useParamMode(): [ParamMode, (next: ParamMode) => void] {
-  const [mode, setMode] = useState<ParamMode>(readParamMode);
-  const update = useCallback((next: ParamMode) => {
-    setMode(next);
-    try {
-      window.localStorage.setItem(PARAM_MODE_KEY, next);
-    } catch {
-      return;
-    }
-  }, []);
-  return [mode, update];
 }
 
 function ParamModeToggle({
@@ -279,9 +245,14 @@ function ModelPanel() {
   );
 }
 
-export function TrainingWizard() {
+export function TrainingWizard({
+  paramMode,
+  onParamModeChange,
+}: {
+  paramMode: ParamMode;
+  onParamModeChange: (next: ParamMode) => void;
+}) {
   const t = useT();
-  const [paramMode, setParamMode] = useParamMode();
   return (
     <div className="flex flex-col gap-5">
       <SectionBox
@@ -311,7 +282,7 @@ export function TrainingWizard() {
         chipTint="var(--chart-5)"
         dataTour="studio-params"
         titleAction={
-          <ParamModeToggle mode={paramMode} onChange={setParamMode} />
+          <ParamModeToggle mode={paramMode} onChange={onParamModeChange} />
         }
       >
         <ParamsSection mode={paramMode} />

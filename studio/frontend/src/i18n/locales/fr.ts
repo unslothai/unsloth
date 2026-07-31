@@ -663,6 +663,9 @@ export const fr = {
         "Ce jeu de données n'est pas encore sur cet appareil. Il sera téléchargé automatiquement au démarrage de l'entraînement.",
       noticeDatasetPartial:
         "L'entraînement terminera le téléchargement partiel du jeu de données avant de le lire.",
+      advancedSettings: "Paramètres avancés",
+      defaultAdvancedSettings: "Valeurs par défaut",
+      nonDefaultAdvancedSettings: "{count} non standard",
     },
     datasetPicker: {
       noun: "jeux de données",
@@ -1050,6 +1053,14 @@ export const fr = {
         "Impossible de vérifier les paramètres de ce modèle. Vérifiez votre connexion ou votre token Hugging Face, puis réessayez.",
       legacyDatasetScriptUnsupported:
         "Ce jeu de données du Hub repose sur un ancien script personnalisé et n’est pas pris en charge dans ce flux d’entraînement.",
+      hfModelAccessDenied:
+        "Hugging Face a refusé l’accès à ce modèle. Ajoutez un jeton Hugging Face valide ayant accès au dépôt, acceptez les éventuelles conditions d’accès, puis réessayez.",
+      hfModelVerificationRateLimited:
+        "La vérification du modèle Hugging Face est limitée. Réessayez dans quelques instants.",
+      hfModelVerificationFailed:
+        "Le modèle Hugging Face n’a pas pu être vérifié. Vérifiez l’identifiant du dépôt et votre jeton d’accès.",
+      hfModelMetadataUnavailable:
+        "Les métadonnées du modèle Hugging Face sont temporairement indisponibles. Réessayez avant de démarrer l’entraînement.",
       datasetUnverified:
         "Impossible de vérifier si le jeu de données est compatible avec ce modèle. Vérifiez votre connexion ou votre token Hugging Face ; le démarrage de l'entraînement relancera la vérification.",
       setupChanged:

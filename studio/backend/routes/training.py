@@ -89,6 +89,23 @@ class _LocalModelProbeIncomplete(RuntimeError):
     pass
 
 
+def _model_preflight_error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code = status_code,
+        detail = {"code": code, "message": message},
+    )
+
+
+def _http_exception_error(exc: HTTPException) -> tuple[str, Optional[str]]:
+    detail = exc.detail
+    if isinstance(detail, dict):
+        message = detail.get("message")
+        code = detail.get("code")
+        if isinstance(message, str) and message:
+            return message, code if isinstance(code, str) and code else None
+    return str(detail), None
+
+
 @dataclass(frozen = True)
 class _ModelPreflightResult:
     model_name: str
@@ -144,10 +161,16 @@ def _start_request_response(record) -> TrainingJobResponse:
         status = "error" if record.state == "rejected" else "queued",
         message = record.message,
         error = record.error,
+        error_code = record.error_code,
     )
 
 
-def _reject_start_request(backend, start_request_id: Optional[str], message: str) -> None:
+def _reject_start_request(
+    backend,
+    start_request_id: Optional[str],
+    message: str,
+    error_code: Optional[str] = None,
+) -> None:
     if backend is None or start_request_id is None:
         return
     backend.resolve_start_request(
@@ -155,6 +178,7 @@ def _reject_start_request(backend, start_request_id: Optional[str], message: str
         state = "rejected",
         message = message,
         error = message,
+        error_code = error_code,
     )
 
 
@@ -289,9 +313,10 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
                 isinstance(status_code, int) and 500 <= status_code < 600
             )
             if status_code in (401, 403):
-                raise HTTPException(
-                    status_code = 422,
-                    detail = (
+                raise _model_preflight_error(
+                    422,
+                    "hf_model_access_denied",
+                    (
                         "Hugging Face denied access to this model. Add a valid Hugging Face "
                         "token with repository access and accept any required access terms, "
                         "then try again."
@@ -302,14 +327,16 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
                 if retry_available:
                     continue
                 if status_code == 429:
-                    raise HTTPException(
-                        status_code = 429,
-                        detail = ("Hugging Face model verification is rate-limited. Retry shortly."),
+                    raise _model_preflight_error(
+                        429,
+                        "hf_model_verification_rate_limited",
+                        "Hugging Face model verification is rate-limited. Retry shortly.",
                     ) from error
             elif status_code is not None:
-                raise HTTPException(
-                    status_code = status_code,
-                    detail = (
+                raise _model_preflight_error(
+                    status_code,
+                    "hf_model_verification_failed",
+                    (
                         "The Hugging Face model could not be verified. "
                         "Check the repository ID and your access token."
                     ),
@@ -321,9 +348,10 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
                 model_name,
                 type(error).__name__,
             )
-            raise HTTPException(
-                status_code = 503,
-                detail = (
+            raise _model_preflight_error(
+                503,
+                "hf_model_metadata_unavailable",
+                (
                     "Hugging Face model metadata is temporarily unavailable. "
                     "Retry before starting training."
                 ),
@@ -681,6 +709,7 @@ async def get_training_start_request(
         state = record.state,
         message = record.message,
         error = record.error,
+        error_code = record.error_code,
     )
 
 
@@ -1195,8 +1224,13 @@ async def start_training(
     except HTTPException as exc:
         # Deliberate rejections (S3 not implemented, resume validation) must
         # reach the client with their original status, not a generic 500.
-        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-        _reject_start_request(backend, reserved_start_request_id, detail)
+        detail, error_code = _http_exception_error(exc)
+        _reject_start_request(
+            backend,
+            reserved_start_request_id,
+            detail,
+            error_code,
+        )
         raise
     except ValueError as e:
         logger.warning("Rejected training GPU selection: %s", e)

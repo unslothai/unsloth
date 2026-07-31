@@ -646,6 +646,9 @@ export const ar = {
         "مجموعة البيانات هذه غير موجودة على الجهاز بعد. سيُنزّلها التدريب تلقائيًا.",
       noticeDatasetPartial:
         "سيُكمل التدريب التنزيل غير المكتمل لمجموعة البيانات قبل قراءتها.",
+      advancedSettings: "الإعدادات المتقدمة",
+      defaultAdvancedSettings: "الإعدادات الافتراضية",
+      nonDefaultAdvancedSettings: "{count} غير افتراضي",
     },
     datasetPicker: {
       noun: "مجموعات البيانات",
@@ -1012,6 +1015,14 @@ export const ar = {
         "تعذّر التحقق من إعدادات هذا النموذج. تحقق من اتصالك أو توكن Hugging Face، ثم أعد المحاولة.",
       legacyDatasetScriptUnsupported:
         "تعتمد مجموعة بيانات Hub هذه على برنامج نصي مخصص قديم، وهي غير مدعومة في مسار التدريب هذا.",
+      hfModelAccessDenied:
+        "رفض Hugging Face الوصول إلى هذا النموذج. أضف رمز Hugging Face صالحًا يملك صلاحية الوصول إلى المستودع، ووافق على أي شروط وصول مطلوبة، ثم أعد المحاولة.",
+      hfModelVerificationRateLimited:
+        "وصل التحقق من نموذج Hugging Face إلى حد معدل الطلبات. أعد المحاولة بعد قليل.",
+      hfModelVerificationFailed:
+        "تعذر التحقق من نموذج Hugging Face. تحقق من معرّف المستودع ورمز الوصول.",
+      hfModelMetadataUnavailable:
+        "بيانات تعريف نموذج Hugging Face غير متاحة مؤقتًا. أعد المحاولة قبل بدء التدريب.",
       datasetUnverified:
         "تعذّر التحقق من توافق مجموعة البيانات مع هذا النموذج. تحقق من اتصالك أو توكن Hugging Face — ستُعاد محاولة التحقق عند بدء التدريب.",
       setupChanged:
