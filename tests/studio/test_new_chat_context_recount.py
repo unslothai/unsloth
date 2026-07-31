@@ -1166,9 +1166,7 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
     ],
     ids = ["mounted_with_a_new_turn", "mounted_unchanged", "still_unmounted"],
 )
-def test_a_stored_history_count_is_dropped_once_the_runtime_contradicts_it(
-    mount, expected_total
-):
+def test_a_stored_history_count_is_dropped_once_the_runtime_contradicts_it(mount, expected_total):
     """A recount that falls back to storage runs before the thread is mounted, so it has no
     live branch to sign. Ids survive both shapes, so the last one is the witness: if the
     runtime has mounted a different tail by publish time, the stored total is already stale."""
