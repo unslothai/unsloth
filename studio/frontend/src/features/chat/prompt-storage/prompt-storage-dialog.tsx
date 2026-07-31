@@ -59,6 +59,7 @@ import { notifyChatHistoryUpdated } from "../api/chat-api";
 import { isMcpImageToolResult } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
+import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
 
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -401,6 +402,14 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
     "text/csv",
   );
 }
+
+export const exportConversationMarkdown = createConversationMarkdownExporter({
+  loadMessages: loadConversationMessages,
+  messageToText,
+  download: downloadBlob,
+  exportTimestamp: exportTs,
+  notifyNoContent: () => toast.info("No exportable content."),
+});
 
 export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
 
