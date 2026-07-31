@@ -2895,7 +2895,7 @@ def create_boolean_mask(n = 4096, sliding_window = 2048):
 
 
 def test_mask_creation():
-    from transformers.modeling_attn_mask_utils import AttentionMaskConverter
+    from unsloth.models._attn_mask_compat import AttentionMaskConverter
     for n in range(2, 23):
         for s in range(1, 23):
             correct_mask = (
