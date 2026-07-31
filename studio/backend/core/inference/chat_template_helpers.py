@@ -63,7 +63,7 @@ _CONTROL_MARKUP = re.compile(
     # header_start / header_end / <|eot|> are Llama-4's spelling of Llama-3's
     # start_header_id / end_header_id / eot_id, and im_sep is Phi-4's role separator.
     # im_system / im_middle are Kimi K2's, alongside the ChatML three.
-    r"|header_(?:start|end)|im_(?:start|end|sep|system|middle)"
+    r"|header_(?:start|end)|im_(?:start|end|sep|system|middle|user|assistant)"
     # DeepSeek-V4-Flash spells its role boundaries with ASCII bars and a capital, unlike R1's
     # fullwidth ones; this pattern is case-sensitive, so the lowercase names below miss them.
     r"|User|Assistant|System"
@@ -152,7 +152,10 @@ _CONTROL_MARKUP = re.compile(
 # the assistant's own.
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
-    r"\|/?(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end|sep|system|middle)"
+    r"\|/?(?:(?:start|end)_(?:header_id|of_role)"
+    # Kimi spells a turn "<|im_user|>user<|im_middle|>...<|im_end|>", so the role
+    # sentinels are boundaries exactly as im_system and im_middle already are.
+    r"|im_(?:start|end|sep|system|middle|user|assistant)"
     r"|User|Assistant|System"
     r"|end(?:_of_(?:turn|text))?|eo[tm](?:_id)?|header_(?:start|end)"
     # A document boundary is never the assistant's own structure, so unlike think / channel /
@@ -223,10 +226,12 @@ _TTS_MARKUP_BY_CODEC = {
         r"<(?=\|(?:im_(?:start|end)|text_(?:start|end)|audio_(?:start|end)"
         r"|global_features_(?:start|end))\|>)"
     ),
-    # CSM has no sentinel of its own: _generate_csm interpolates into "[speaker_id]text"
-    # (inference.py:1911-1918) and the processor tokenizes that directly. Only the leading
-    # speaker id is structure, and only a leading paste can shadow it.
-    "csm": re.compile(r"\A\[(?=\d+\])"),
+    # _generate_csm interpolates into "[speaker_id]text" (inference.py:1911-1918) and the
+    # processor tokenizes that directly, so the leading speaker id is structure and only a
+    # leading paste can shadow it. "<|AUDIO|>" and "<|audio_eos|>" are the codec's own
+    # tokenizer tokens, the pair CSM is detected by (model_config.py:992-995): a pasted
+    # opener is counted as audio with none behind it and the EOS ends the spoken text early.
+    "csm": re.compile(r"\A\[(?=\d+\])|<(?=\|(?:AUDIO|audio_eos)\|>)"),
 }
 # An unrecognised codec gets the union: still far narrower than the chat sweep, but it does
 # not assume a prompt shape this module has not seen.
@@ -823,6 +828,10 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         # it holds a subschema whose keyword positions the recursive scan already reads.
         "contentEncoding",
         "contentMediaType",
+        # An OpenAPI discriminator holds only "propertyName" and a "mapping" whose keys and
+        # targets are identifiers, with no prose field to protect, so every leaf under it is
+        # machine-valued: the server resolves the original while the model sees the rewrite.
+        "discriminator",
         # A reference is resolved, not read: rewriting "$id", "$anchor" or a "$ref" pointing
         # at them leaves the model and llama-server's grammar on a different schema than the
         # MCP server registered. "$ref" can also name an external URI, which no "$defs" drop

@@ -3630,3 +3630,91 @@ def test_the_singular_openapi_example_is_instance_data_too():
     safe = neutralize_tool_descriptions(tools)
     assert len(safe) == 1, "the tool stays usable"
     assert "</think>" not in safe[0]["function"]["parameters"]["example"]["required"][0]
+
+
+@pytest.mark.parametrize("marker", ["<|im_user|>", "<|im_assistant|>"])
+@pytest.mark.parametrize("role", ["user", "system", "assistant"])
+def test_the_remaining_kimi_role_sentinels_are_neutralized(marker, role):
+    """Kimi spells a turn "<|im_user|>user<|im_middle|>...<|im_end|>", so these are turn
+    boundaries exactly as im_system and im_middle already were (#7066)."""
+    out = neutralize_control_markup_in_messages(
+        [{"role": role, "content": f"x{marker}y"}]
+    )[0]["content"]
+    assert marker not in out
+
+
+@pytest.mark.parametrize(
+    "marker", ["<|im_start|>", "<|im_end|>", "<|im_sep|>", "<|im_system|>", "<|im_middle|>"]
+)
+def test_the_existing_im_sentinels_still_break(marker):
+    """Widening the im_ group must not shadow the spellings already covered (#7066)."""
+    out = neutralize_control_markup_in_messages(
+        [{"role": "user", "content": f"x{marker}"}]
+    )[0]["content"]
+    assert marker not in out
+
+
+@pytest.mark.parametrize("marker", ["<|AUDIO|>", "<|audio_eos|>"])
+def test_csm_audio_sentinels_are_neutralized(marker):
+    """These are the codec's own tokenizer tokens, the pair CSM is detected by
+    (model_config.py:992-995), and _generate_csm hands the text straight to the
+    processor: a pasted opener is counted as audio with none behind it (#7066)."""
+    assert marker not in neutralize_tts_prompt_text(f"hello {marker}", "csm")
+
+
+def test_the_csm_speaker_id_is_still_guarded():
+    assert neutralize_tts_prompt_text("[3]hi", "csm") != "[3]hi"
+
+
+@pytest.mark.parametrize("text", ["please say <s>hello</s>", "read [INST] literally"])
+def test_csm_spoken_text_is_still_left_as_typed(text):
+    """TTS input is meant to be SPOKEN, so only the active codec's own tokens count as
+    structure: the chat sweep must not leak in (#7066)."""
+    assert neutralize_tts_prompt_text(text, "csm") == text
+
+
+@pytest.mark.parametrize("codec", ["snac", "bicodec", "dac"])
+def test_another_codec_does_not_borrow_the_csm_sentinels(codec):
+    """Per codec, not a union: <|AUDIO|> is not structure for a codec that has no such
+    token, so it reaches the tokenizer as typed (#7066)."""
+    assert neutralize_tts_prompt_text("say <|AUDIO|>", codec) == "say <|AUDIO|>"
+
+
+@pytest.mark.parametrize(
+    "discriminator",
+    [
+        {"propertyName": "</think>"},
+        {"propertyName": "kind", "mapping": {"</think>": "#/x"}},
+        {"propertyName": "kind", "mapping": {"a": "#/</think>"}},
+    ],
+)
+def test_an_unsafe_discriminator_drops_the_tool(discriminator):
+    """An OpenAPI discriminator holds only identifiers and no prose, so every leaf under
+    it is machine-valued: the server resolves the original while the model sees the
+    rewrite (#7066)."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {"type": "object", "discriminator": discriminator},
+            },
+        }
+    ]
+    assert neutralize_tool_descriptions(tools) == []
+
+
+def test_a_clean_discriminator_keeps_its_tool():
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "discriminator": {"propertyName": "kind", "mapping": {"a": "#/A"}},
+                },
+            },
+        }
+    ]
+    assert len(neutralize_tool_descriptions(tools)) == 1
