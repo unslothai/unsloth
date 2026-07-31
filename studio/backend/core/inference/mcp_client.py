@@ -777,10 +777,12 @@ async def list_tools_async(
     oauth_client_secret: Optional[str] = None,
 ) -> list[dict]:
     async def _fetch() -> list[dict]:
-        kwargs = oauth_client_kwargs({
-            "oauth_client_id": oauth_client_id,
-            "oauth_client_secret": oauth_client_secret,
-        })
+        kwargs = oauth_client_kwargs(
+            {
+                "oauth_client_id": oauth_client_id,
+                "oauth_client_secret": oauth_client_secret,
+            }
+        )
         async with _client(url, headers, use_oauth, **kwargs) as client:
             tools = await client.list_tools()
         return [t.model_dump(exclude_none = True) for t in tools]
@@ -803,14 +805,16 @@ _probe_cooloff_until: dict[str, float] = {}
 # endpoint/auth used to probe it (url, headers, oauth) or whether it's used at
 # all (is_enabled). A rename does not. The update route's eviction and
 # get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
-TOOL_CACHE_INVALIDATING_FIELDS = frozenset({
-    "url",
-    "headers_json",
-    "use_oauth",
-    "oauth_client_id",
-    "oauth_client_secret",
-    "is_enabled",
-})
+TOOL_CACHE_INVALIDATING_FIELDS = frozenset(
+    {
+        "url",
+        "headers_json",
+        "use_oauth",
+        "oauth_client_id",
+        "oauth_client_secret",
+        "is_enabled",
+    }
+)
 
 
 def get_cached_tools(server_id: str) -> Optional[list[dict]]:
@@ -1071,10 +1075,12 @@ def call_tool_sync(
     before a fresh stdio session is cached; False fails the call."""
 
     async def _one_shot() -> Any:
-        kwargs = oauth_client_kwargs({
-            "oauth_client_id": oauth_client_id,
-            "oauth_client_secret": oauth_client_secret,
-        })
+        kwargs = oauth_client_kwargs(
+            {
+                "oauth_client_id": oauth_client_id,
+                "oauth_client_secret": oauth_client_secret,
+            }
+        )
         async with _client(url, headers, use_oauth, **kwargs) as client:
             # raise_on_error=False lets an is_error result (which may still carry
             # image content) reach _flatten_result instead of FastMCP raising ToolError

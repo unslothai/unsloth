@@ -29,19 +29,15 @@ def test_http_client_passes_preregistered_oauth_credentials(monkeypatch):
 
     monkeypatch.setattr("fastmcp.Client", FakeClient)
     monkeypatch.setattr("fastmcp.client.auth.OAuth", FakeOAuth)
-    monkeypatch.setattr(
-        "fastmcp.client.transports.StreamableHttpTransport", FakeTransport
-    )
-    monkeypatch.setattr(
-        "fastmcp.mcp_config.infer_transport_type_from_url", lambda _url: "http"
-    )
+    monkeypatch.setattr("fastmcp.client.transports.StreamableHttpTransport", FakeTransport)
+    monkeypatch.setattr("fastmcp.mcp_config.infer_transport_type_from_url", lambda _url: "http")
 
     mcp_client._client(
         "https://calendarmcp.googleapis.com/mcp/v1",
         None,
-        use_oauth=True,
-        oauth_client_id="configured-client-id",
-        oauth_client_secret="configured-client-secret",
+        use_oauth = True,
+        oauth_client_id = "configured-client-id",
+        oauth_client_secret = "configured-client-secret",
     )
 
     assert captured["client_id"] == "configured-client-id"
@@ -54,9 +50,9 @@ def test_real_fastmcp_oauth_accepts_preregistered_credentials(tmp_path, monkeypa
     client = mcp_client._client(
         "https://calendarmcp.googleapis.com/mcp/v1",
         None,
-        use_oauth=True,
-        oauth_client_id="configured-client-id",
-        oauth_client_secret="configured-client-secret",
+        use_oauth = True,
+        oauth_client_id = "configured-client-id",
+        oauth_client_secret = "configured-client-secret",
     )
     auth = client.transport.auth
     assert auth._client_id == "configured-client-id"
@@ -85,7 +81,12 @@ def test_list_and_call_paths_forward_credentials_to_client(monkeypatch):
             assert raise_on_error is False
             return "calendar-result"
 
-    def fake_client(url, headers, use_oauth=False, **kwargs):
+    def fake_client(
+        url,
+        headers,
+        use_oauth = False,
+        **kwargs,
+    ):
         captured.append((url, headers, use_oauth, kwargs))
         return FakeClient()
 
@@ -97,7 +98,7 @@ def test_list_and_call_paths_forward_credentials_to_client(monkeypatch):
     tools = asyncio.run(
         mcp_client.list_tools_async(
             "https://calendarmcp.googleapis.com/mcp/v1",
-            use_oauth=True,
+            use_oauth = True,
             **credentials,
         )
     )
@@ -106,7 +107,7 @@ def test_list_and_call_paths_forward_credentials_to_client(monkeypatch):
         None,
         "list_events",
         {},
-        use_oauth=True,
+        use_oauth = True,
         **credentials,
     )
 
@@ -116,17 +117,17 @@ def test_list_and_call_paths_forward_credentials_to_client(monkeypatch):
 
 def test_oauth_models_accept_credentials_without_exposing_the_secret():
     create = McpServerCreate(
-        display_name="Calendar",
-        url="https://calendarmcp.googleapis.com/mcp/v1",
-        use_oauth=True,
-        oauth_client_id="configured-client-id",
-        oauth_client_secret="configured-client-secret",
+        display_name = "Calendar",
+        url = "https://calendarmcp.googleapis.com/mcp/v1",
+        use_oauth = True,
+        oauth_client_id = "configured-client-id",
+        oauth_client_secret = "configured-client-secret",
     )
     probe = McpServerTestRequest(
-        url=create.url,
-        use_oauth=True,
-        oauth_client_id=create.oauth_client_id,
-        oauth_client_secret=create.oauth_client_secret,
+        url = create.url,
+        use_oauth = True,
+        oauth_client_id = create.oauth_client_id,
+        oauth_client_secret = create.oauth_client_secret,
     )
     response_fields = McpServerResponse.model_fields
 
@@ -139,12 +140,12 @@ def test_oauth_credentials_round_trip_in_storage(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
     mcp_servers_db.create_server(
-        id="calendar",
-        display_name="Calendar",
-        url="https://calendarmcp.googleapis.com/mcp/v1",
-        use_oauth=True,
-        oauth_client_id="configured-client-id",
-        oauth_client_secret="configured-client-secret",
+        id = "calendar",
+        display_name = "Calendar",
+        url = "https://calendarmcp.googleapis.com/mcp/v1",
+        use_oauth = True,
+        oauth_client_id = "configured-client-id",
+        oauth_client_secret = "configured-client-secret",
     )
 
     row = mcp_servers_db.get_server("calendar")
@@ -159,12 +160,8 @@ def test_oauth_credentials_round_trip_in_storage(tmp_path, monkeypatch):
     finally:
         raw_connection.close()
     assert encrypted != "configured-client-secret"
-    assert "configured-client-secret" not in (tmp_path / "studio.db").read_text(
-        encoding="latin-1"
-    )
-    assert stat.S_IMODE(
-        (tmp_path / ".mcp-oauth-client-secret.key").stat().st_mode
-    ) == 0o600
+    assert "configured-client-secret" not in (tmp_path / "studio.db").read_text(encoding = "latin-1")
+    assert stat.S_IMODE((tmp_path / ".mcp-oauth-client-secret.key").stat().st_mode) == 0o600
 
 
 def test_create_response_masks_oauth_secret(tmp_path, monkeypatch):
@@ -175,13 +172,13 @@ def test_create_response_masks_oauth_secret(tmp_path, monkeypatch):
     response = asyncio.run(
         create_mcp_server(
             McpServerCreate(
-                display_name="Calendar",
-                url="https://calendarmcp.googleapis.com/mcp/v1",
-                use_oauth=True,
-                oauth_client_id="configured-client-id",
-                oauth_client_secret="configured-client-secret",
+                display_name = "Calendar",
+                url = "https://calendarmcp.googleapis.com/mcp/v1",
+                use_oauth = True,
+                oauth_client_id = "configured-client-id",
+                oauth_client_secret = "configured-client-secret",
             ),
-            current_subject="test-user",
+            current_subject = "test-user",
         )
     )
 
@@ -203,22 +200,22 @@ def test_connection_probe_reuses_stored_secret(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
     mcp_servers_db.create_server(
-        id="calendar",
-        display_name="Calendar",
-        url="https://calendarmcp.googleapis.com/mcp/v1",
-        use_oauth=True,
-        oauth_client_id="configured-client-id",
-        oauth_client_secret="configured-client-secret",
+        id = "calendar",
+        display_name = "Calendar",
+        url = "https://calendarmcp.googleapis.com/mcp/v1",
+        use_oauth = True,
+        oauth_client_id = "configured-client-id",
+        oauth_client_secret = "configured-client-secret",
     )
     result = asyncio.run(
         routes.test_mcp_server(
             McpServerTestRequest(
-                server_id="calendar",
-                url="https://calendarmcp.googleapis.com/mcp/v1",
-                use_oauth=True,
-                oauth_client_id="configured-client-id",
+                server_id = "calendar",
+                url = "https://calendarmcp.googleapis.com/mcp/v1",
+                use_oauth = True,
+                oauth_client_id = "configured-client-id",
             ),
-            current_subject="test-user",
+            current_subject = "test-user",
         )
     )
 
@@ -241,12 +238,12 @@ def test_connection_probe_never_reuses_secret_for_changed_url(tmp_path, monkeypa
     result = asyncio.run(
         routes.test_mcp_server(
             McpServerTestRequest(
-                server_id="calendar",
-                url="https://attacker.example/mcp",
-                use_oauth=True,
-                oauth_client_id="configured-client-id",
+                server_id = "calendar",
+                url = "https://attacker.example/mcp",
+                use_oauth = True,
+                oauth_client_id = "configured-client-id",
             ),
-            current_subject="test-user",
+            current_subject = "test-user",
         )
     )
     assert result.ok is True
@@ -259,8 +256,8 @@ def test_disable_oauth_clears_credentials_even_when_payload_resends_id():
 
     changes = _changes_from_payload(
         McpServerUpdate(
-            use_oauth=False,
-            oauth_client_id="configured-client-id",
+            use_oauth = False,
+            oauth_client_id = "configured-client-id",
         )
     )
     assert changes["oauth_client_id"] is None
@@ -269,8 +266,7 @@ def test_disable_oauth_clears_credentials_even_when_payload_resends_id():
 
 def test_secret_without_client_id_is_rejected():
     from routes.mcp_servers import _oauth_credentials
-
-    with pytest.raises(HTTPException, match="requires oauth_client_id"):
+    with pytest.raises(HTTPException, match = "requires oauth_client_id"):
         _oauth_credentials(None, "orphan-secret")
 
 
@@ -278,11 +274,11 @@ def test_update_credentials_supports_clear_and_rotation():
     from models.mcp_servers import McpServerUpdate
     from routes.mcp_servers import _changes_from_payload
 
-    cleared = _changes_from_payload(McpServerUpdate(oauth_client_id=None))
+    cleared = _changes_from_payload(McpServerUpdate(oauth_client_id = None))
     rotated = _changes_from_payload(
         McpServerUpdate(
-            oauth_client_id="configured-client-id",
-            oauth_client_secret="rotated-secret",
+            oauth_client_id = "configured-client-id",
+            oauth_client_secret = "rotated-secret",
         )
     )
     assert cleared["oauth_client_id"] is None
@@ -304,8 +300,8 @@ def test_changing_client_id_clears_stored_secret(tmp_path, monkeypatch):
     asyncio.run(
         routes.update_mcp_server(
             "calendar",
-            McpServerUpdate(oauth_client_id="replacement-client-id"),
-            current_subject="test-user",
+            McpServerUpdate(oauth_client_id = "replacement-client-id"),
+            current_subject = "test-user",
         )
     )
     row = mcp_servers_db.get_server("calendar")
@@ -326,8 +322,8 @@ def test_changing_url_clears_stored_secret(tmp_path, monkeypatch):
     asyncio.run(
         routes.update_mcp_server(
             "calendar",
-            McpServerUpdate(url="https://replacement.example/mcp"),
-            current_subject="test-user",
+            McpServerUpdate(url = "https://replacement.example/mcp"),
+            current_subject = "test-user",
         )
     )
     row = mcp_servers_db.get_server("calendar")
@@ -362,8 +358,7 @@ def test_legacy_database_migrates_oauth_credential_columns(tmp_path, monkeypatch
     migrated = mcp_servers_db.get_connection()
     try:
         columns = {
-            row["name"]
-            for row in migrated.execute("PRAGMA table_info(mcp_servers)").fetchall()
+            row["name"] for row in migrated.execute("PRAGMA table_info(mcp_servers)").fetchall()
         }
     finally:
         migrated.close()
@@ -380,14 +375,14 @@ def test_secret_key_permission_failure_cleans_up_and_raises(tmp_path, monkeypatc
         raise PermissionError("cannot protect secret key")
 
     monkeypatch.setattr(mcp_oauth_secret_crypto.os, "chmod", fail_file_chmod)
-    with pytest.raises(PermissionError, match="cannot protect secret key"):
+    with pytest.raises(PermissionError, match = "cannot protect secret key"):
         mcp_servers_db.create_server(
-            id="calendar",
-            display_name="Calendar",
-            url="https://calendarmcp.googleapis.com/mcp/v1",
-            use_oauth=True,
-            oauth_client_id="configured-client-id",
-            oauth_client_secret="configured-client-secret",
+            id = "calendar",
+            display_name = "Calendar",
+            url = "https://calendarmcp.googleapis.com/mcp/v1",
+            use_oauth = True,
+            oauth_client_id = "configured-client-id",
+            oauth_client_secret = "configured-client-secret",
         )
     assert not (tmp_path / ".mcp-oauth-client-secret.key").exists()
 
@@ -424,7 +419,7 @@ def test_secret_key_write_failure_closes_descriptor(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mcp_oauth_secret_crypto.os, "fdopen", fail_fdopen)
     monkeypatch.setattr(mcp_oauth_secret_crypto.os, "close", record_close)
-    with pytest.raises(RuntimeError, match="cannot open key descriptor"):
+    with pytest.raises(RuntimeError, match = "cannot open key descriptor"):
         mcp_oauth_secret_crypto._load_or_create_key()
     assert closed
 
@@ -439,7 +434,7 @@ def test_secret_key_missing_temp_cleanup_is_safe(tmp_path, monkeypatch):
         raise RuntimeError("link failed")
 
     monkeypatch.setattr(mcp_oauth_secret_crypto.os, "link", remove_then_fail)
-    with pytest.raises(RuntimeError, match="link failed"):
+    with pytest.raises(RuntimeError, match = "link failed"):
         mcp_oauth_secret_crypto._load_or_create_key()
 
 
@@ -449,7 +444,7 @@ def test_tampered_oauth_secret_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     encrypted = mcp_oauth_secret_crypto.encrypt_client_secret("secret")
     tampered = f"{encrypted[:-1]}{'A' if encrypted[-1] != 'A' else 'B'}"
-    with pytest.raises(ValueError, match="cannot be decrypted"):
+    with pytest.raises(ValueError, match = "cannot be decrypted"):
         mcp_oauth_secret_crypto.decrypt_client_secret(tampered)
 
 
@@ -461,7 +456,7 @@ def test_missing_secret_key_is_not_recreated_during_decrypt(tmp_path, monkeypatc
     key_path = tmp_path / ".mcp-oauth-client-secret.key"
     key_path.unlink()
 
-    with pytest.raises(FileNotFoundError, match="key is missing"):
+    with pytest.raises(FileNotFoundError, match = "key is missing"):
         mcp_oauth_secret_crypto.decrypt_client_secret(encrypted)
     assert not key_path.exists()
 
@@ -490,7 +485,12 @@ def test_existing_secret_key_is_reused_for_encryption(tmp_path, monkeypatch):
     assert mcp_oauth_secret_crypto.decrypt_client_secret(second) == "second"
 
 
-def _install_fake_dpapi(monkeypatch, crypto, *, fail=False):
+def _install_fake_dpapi(
+    monkeypatch,
+    crypto,
+    *,
+    fail = False,
+):
     buffers = []
     calls = []
 
@@ -532,8 +532,8 @@ def _install_fake_dpapi(monkeypatch, crypto, *, fail=False):
             calls.append(("free", None))
             return None
 
-    protect = Transform(decrypt=False)
-    unprotect = Transform(decrypt=True)
+    protect = Transform(decrypt = False)
+    unprotect = Transform(decrypt = True)
     local_free = LocalFree()
 
     def load_dll(name, use_last_error):
@@ -550,14 +550,14 @@ def _install_fake_dpapi(monkeypatch, crypto, *, fail=False):
         assert name == "kernel32"
         return type("Kernel32", (), {"LocalFree": local_free})()
 
-    monkeypatch.setattr(crypto.ctypes, "WinDLL", load_dll, raising=False)
-    monkeypatch.setattr(crypto.ctypes, "set_last_error", lambda _value: None, raising=False)
-    monkeypatch.setattr(crypto.ctypes, "get_last_error", lambda: 5, raising=False)
+    monkeypatch.setattr(crypto.ctypes, "WinDLL", load_dll, raising = False)
+    monkeypatch.setattr(crypto.ctypes, "set_last_error", lambda _value: None, raising = False)
+    monkeypatch.setattr(crypto.ctypes, "get_last_error", lambda: 5, raising = False)
     monkeypatch.setattr(
         crypto.ctypes,
         "WinError",
         lambda code: OSError(code, "DPAPI failed"),
-        raising=False,
+        raising = False,
     )
     return calls
 
@@ -585,16 +585,15 @@ def test_windows_dpapi_failure_surfaces_immediately(monkeypatch):
     from storage import mcp_oauth_secret_crypto
 
     monkeypatch.setattr(mcp_oauth_secret_crypto, "_IS_WINDOWS", True)
-    _install_fake_dpapi(monkeypatch, mcp_oauth_secret_crypto, fail=True)
-    with pytest.raises(OSError, match="DPAPI failed"):
+    _install_fake_dpapi(monkeypatch, mcp_oauth_secret_crypto, fail = True)
+    with pytest.raises(OSError, match = "DPAPI failed"):
         mcp_oauth_secret_crypto.encrypt_client_secret("secret")
 
 
 def test_windows_ciphertext_is_rejected_off_windows(monkeypatch):
     from storage import mcp_oauth_secret_crypto
-
     monkeypatch.setattr(mcp_oauth_secret_crypto, "_IS_WINDOWS", False)
-    with pytest.raises(ValueError, match="Windows-protected"):
+    with pytest.raises(ValueError, match = "Windows-protected"):
         mcp_oauth_secret_crypto.decrypt_client_secret("dpapi:c2VjcmV0")
 
 
@@ -605,14 +604,13 @@ def test_posix_ciphertext_is_rejected_on_windows(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_oauth_secret_crypto, "_IS_WINDOWS", False)
     encrypted = mcp_oauth_secret_crypto.encrypt_client_secret("secret")
     monkeypatch.setattr(mcp_oauth_secret_crypto, "_IS_WINDOWS", True)
-    with pytest.raises(ValueError, match="cannot be decrypted on Windows"):
+    with pytest.raises(ValueError, match = "cannot be decrypted on Windows"):
         mcp_oauth_secret_crypto.decrypt_client_secret(encrypted)
 
 
 def test_unknown_secret_encryption_format_is_rejected():
     from storage import mcp_oauth_secret_crypto
-
-    with pytest.raises(ValueError, match="unknown encryption format"):
+    with pytest.raises(ValueError, match = "unknown encryption format"):
         mcp_oauth_secret_crypto.decrypt_client_secret("plaintext-secret")
 
 
@@ -620,13 +618,13 @@ def _store_calendar_server(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
     mcp_servers_db.create_server(
-        id="calendar",
-        display_name="Calendar",
-        url="https://calendarmcp.googleapis.com/mcp/v1",
-        is_enabled=True,
-        use_oauth=True,
-        oauth_client_id="configured-client-id",
-        oauth_client_secret="configured-client-secret",
+        id = "calendar",
+        display_name = "Calendar",
+        url = "https://calendarmcp.googleapis.com/mcp/v1",
+        is_enabled = True,
+        use_oauth = True,
+        oauth_client_id = "configured-client-id",
+        oauth_client_secret = "configured-client-secret",
     )
 
 
@@ -641,9 +639,7 @@ def test_refresh_propagates_stored_oauth_credentials(tmp_path, monkeypatch):
         return []
 
     monkeypatch.setattr(routes, "list_tools_async", fake_list_tools)
-    result = asyncio.run(
-        routes.refresh_mcp_server_tools("calendar", current_subject="test-user")
-    )
+    result = asyncio.run(routes.refresh_mcp_server_tools("calendar", current_subject = "test-user"))
     assert result.ok is True
     assert captured["oauth_client_id"] == "configured-client-id"
     assert captured["oauth_client_secret"] == "configured-client-secret"

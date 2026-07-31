@@ -110,8 +110,7 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
 
 
 def _oauth_credentials(
-    client_id: str | None,
-    client_secret: str | None,
+    client_id: str | None, client_secret: str | None
 ) -> tuple[str | None, str | None]:
     normalized_id = (client_id or "").strip() or None
     normalized_secret = client_secret or None
@@ -240,11 +239,7 @@ async def update_mcp_server(
         # A secret belongs to one registered client ID. Never silently pair an
         # existing secret with a newly entered ID.
         changes["oauth_client_secret"] = None
-    if (
-        "url" in changes
-        and changes["url"] != old["url"]
-        and "oauth_client_secret" not in changes
-    ):
+    if "url" in changes and changes["url"] != old["url"] and "oauth_client_secret" not in changes:
         # OAuth metadata at the new endpoint controls where credentials are
         # submitted. Never carry a confidential client secret across origins.
         changes["oauth_client_secret"] = None
@@ -414,10 +409,12 @@ async def test_mcp_server(
             headers = headers,
             timeout = probe_timeout(url, payload.use_oauth),
             use_oauth = payload.use_oauth,
-            **oauth_client_kwargs({
-                "oauth_client_id": oauth_client_id,
-                "oauth_client_secret": oauth_client_secret,
-            }),
+            **oauth_client_kwargs(
+                {
+                    "oauth_client_id": oauth_client_id,
+                    "oauth_client_secret": oauth_client_secret,
+                }
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
