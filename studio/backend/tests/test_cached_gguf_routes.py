@@ -1814,13 +1814,7 @@ def test_pipeline_class_guard_fires_before_any_download():
     # the older diffusers packaging still allows on Python 3.9. Validation refuses first, naming the version and the fix.
     import pytest
 
-    from core.inference.diffusion_families import _FAMILIES, assert_pipeline_class_available
-
-    # Present -> no raise (every shipped family resolves on a current diffusers).
-    import diffusers
-
-    for fam in _FAMILIES:
-        assert_pipeline_class_available(fam.pipeline_class, fam.name)
+    from core.inference.diffusion_families import assert_pipeline_class_available
 
     stub = types.SimpleNamespace(__version__ = "0.37.0")
     real = sys.modules.get("diffusers")
@@ -1832,13 +1826,50 @@ def test_pipeline_class_guard_fires_before_any_download():
     finally:
         if real is not None:
             sys.modules["diffusers"] = real
-        else:  # pragma: no cover
+        else:
             del sys.modules["diffusers"]
     msg = str(excinfo.value)
     assert "z-image" in msg and "ZImagePipeline" in msg
     assert "0.39" in msg and "0.37.0" in msg
     assert "3.10" in msg  # names the Python floor that carries a new enough diffusers
-    assert diffusers is not None
+
+
+def test_pipeline_class_guard_passes_every_shipped_family():
+    # Split out of the guard test above so it can skip on its own rather than take the guard assertion down with
+    # it: the backend CI image installs the CPU-only dep set with no diffusers at all, and the native sd.cpp
+    # engine legitimately serves GGUF picks on exactly such a host. The stub-driven refusal above needs no real
+    # diffusers and so still runs there; only this sweep does.
+    import pytest
+
+    pytest.importorskip("diffusers")
+
+    from core.inference.diffusion_families import _FAMILIES, assert_pipeline_class_available
+
+    for fam in _FAMILIES:
+        assert_pipeline_class_available(fam.pipeline_class, fam.name)
+
+
+def test_pipeline_class_guard_is_silent_when_diffusers_is_absent(monkeypatch):
+    # No diffusers at all is not this check's business: it answers "is the installed diffusers new enough for
+    # this family", and with nothing installed there is no version to judge. What must NOT happen is the raise --
+    # ModuleNotFoundError is not the ValueError the routes translate to 400, so it escaped /images/download-plan
+    # (which catches only ValueError and FileNotFoundError) as a bare 500 with the message lost, which is the
+    # precise failure this guard exists to prevent. A pick that really does need diffusers fails later, in the
+    # loader, with its own message.
+    import builtins
+
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    real_import = builtins.__import__
+
+    def _blocked(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ImportError("No module named 'diffusers'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked)
+    assert assert_pipeline_class_available("ZImagePipeline", "z-image") is None
 
 
 def test_cached_pipeline_needs_a_detectable_image_family(monkeypatch):

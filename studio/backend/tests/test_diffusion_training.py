@@ -1871,7 +1871,7 @@ def test_gpu_load_admission_and_reserve_exclude_each_other():
     svc.unreserve()
 
 
-def test_route_start_carries_and_contains_the_conditioning_cache_dir(client):
+def test_route_start_carries_and_contains_the_conditioning_cache_dir(client, dit_train_host):
     # The persistent conditioning cache (cond_cache_dir) skips the VAE and text encoders on a rerun, but the start schema
     # omitted the field, so Pydantic dropped it. It must also be contained like output_dir, and is sent against a DiT family.
     from pathlib import Path
@@ -1908,7 +1908,7 @@ def test_route_refuses_an_output_dir_that_is_the_outputs_root(client):
     assert Path(client._fake.started_with["output_dir"]).name == "run-1"
 
 
-def test_route_treats_a_root_cond_cache_dir_as_the_in_memory_cache(client):
+def test_route_treats_a_root_cond_cache_dir_as_the_in_memory_cache(client, dit_train_host):
     # Same collapse on the cache side, but with an honest "off" to fall back to: the root would take one flat safetensors per cached latent.
     for name in (".", "./.", "outputs", " . "):
         r = client.post(
@@ -1919,7 +1919,7 @@ def test_route_treats_a_root_cond_cache_dir_as_the_in_memory_cache(client):
         assert client._fake.started_with["cond_cache_dir"] is None, name
 
 
-def test_route_rejects_cond_cache_dir_for_sdxl(client):
+def test_route_rejects_cond_cache_dir_for_sdxl(client, dit_train_host):
     # Only the DiT trainer reads cond_cache_dir; the SDXL trainer never touches the persistent store, so refuse the option rather than ignore it.
     r = client.post(
         "/api/train/diffusion/start",
