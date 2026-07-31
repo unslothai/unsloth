@@ -808,9 +808,8 @@ function GgufVariantExpander({
       setError(null);
     });
 
-    // A downloaded row names its own directory, so the request counts what is on disk against
-    // that cache rather than the active one. Deliberately without preferLocalCache: that would
-    // answer from disk alone and drop the quants this repo offers but has not downloaded.
+    // The row's own directory, so what is on disk is counted against that cache rather than the
+    // active one. No preferLocalCache: that answers from disk alone and drops the undownloaded.
     listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)
       .then((res) => {
         if (canceled) return;

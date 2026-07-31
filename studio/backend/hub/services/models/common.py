@@ -229,9 +229,8 @@ def _is_adapter_weight_name(name: str) -> bool:
     return lower.startswith("adapter_model") and lower.endswith((".safetensors", ".bin"))
 
 
-# A trainer writes these beside the weights. They are safetensors files and they are not the
-# model, so they must not stand in for one. The .bin side needs no list: its checkpoint names are
-# an allow list that already leaves optimizer.bin out.
+# Trainer state, saved beside the weights and not the model. The .bin side needs no list: its
+# checkpoint names are an allow list that already leaves optimizer.bin out.
 _TRAINING_ARTEFACT_PREFIXES = (
     "optimizer",
     "scheduler",

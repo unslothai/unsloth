@@ -918,9 +918,8 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             if empty_match is None:
                 empty_whole[empty_kind].add(path.suffix.lower())
                 continue
-            # A numbered shard is absent from its family rather than unreadable, but the family
-            # still has to be named: a snapshot whose every shard is empty would otherwise name
-            # none at all and read as one with nothing missing.
+            # A numbered shard is absent from its family, not unreadable, but the family still
+            # has to be named: one whose every shard is empty would otherwise name none at all.
             empty_family = _weight_shard_family(snapshot_dir, path, empty_match)
             groups[empty_kind].setdefault(empty_family, set())
             shard_names.setdefault(empty_family, set()).add(path.name)
@@ -1051,9 +1050,8 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 return kind != wanted and wanted not in payload.ungrouped
             if suffix in payload.empty_whole[kind]:
                 # The name exists, so the loader stops here and opens nothing. Same exemption as
-                # above though: an empty file belonging to the other family is not what this row
-                # loads, so it vetoes nothing once the row's own payload is here but names no
-                # family of its own.
+                # above: the other family's empty file vetoes nothing once the row's own payload
+                # is here but names no family.
                 return kind == wanted or wanted not in payload.ungrouped
             families = {
                 family: indices
