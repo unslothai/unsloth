@@ -177,7 +177,7 @@ export function DatasetSelector() {
         path: d.path,
       }));
     return [...cachedItems, ...localItems].sort((a, b) =>
-      a.title.localeCompare(b.title),
+      a.title.localeCompare(b.title, undefined, { sensitivity: "base" }),
     );
   }, [cachedRows, localRows, t]);
 

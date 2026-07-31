@@ -2,10 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { type TranslationKey, translate } from "@/i18n";
-import { resetTraining, stopTraining } from "../api/train-api";
+import {
+  getTrainingStatus,
+  resetTraining,
+  stopTraining,
+} from "../api/train-api";
 import { emitTrainingRunsChanged } from "../events";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import { syncTrainingRuntimeFromBackend } from "./sync-runtime";
+import { statusConfirmsActiveTrainingStart } from "./training-start-reconciliation";
 
 export const TRAINING_SETUP_CHANGED_ERROR =
   "studio.training.setupChanged" satisfies TranslationKey;
@@ -76,6 +81,31 @@ export async function settleAcceptedTrainingStart(
   await Promise.allSettled([
     Promise.resolve().then(emitTrainingRunsChanged),
     syncTrainingRuntimeFromBackend(),
+  ]);
+  return true;
+}
+
+export async function reconcileTrainingStartTransportFailure(
+  lease: TrainingStartLease,
+): Promise<boolean> {
+  if (!isTrainingStartLeaseActive(lease)) {
+    return false;
+  }
+  const status = await getTrainingStatus().catch(() => null);
+  if (!status || !statusConfirmsActiveTrainingStart(status)) {
+    return false;
+  }
+  if (!isTrainingStartLeaseActive(lease)) {
+    return false;
+  }
+
+  const runtime = useTrainingRuntimeStore.getState();
+  runtime.setStartQueued(status.job_id, status.message);
+  await Promise.allSettled([
+    Promise.resolve().then(emitTrainingRunsChanged),
+    syncTrainingRuntimeFromBackend().catch(() => {
+      useTrainingRuntimeStore.getState().applyStatus(status);
+    }),
   ]);
   return true;
 }

@@ -17,6 +17,7 @@ import {
   TRAINING_SETUP_CHANGED_ERROR,
   type TrainingStartLease,
   isTrainingStartLeaseActive,
+  reconcileTrainingStartTransportFailure,
   releaseTrainingStart,
   settleAcceptedTrainingStart,
   tryAcquireTrainingStart,
@@ -137,8 +138,18 @@ class ResumeTrainingStartAttempt {
     return settleAcceptedTrainingStart(this.lease, jobId, message);
   }
 
-  fail(error: unknown): false {
-    if (this.phase === "finished" || !isTrainingStartLeaseActive(this.lease)) {
+  async fail(error: unknown): Promise<boolean> {
+    if (this.phase === "finished") {
+      return false;
+    }
+    if (
+      this.phase === "transport" &&
+      (await reconcileTrainingStartTransportFailure(this.lease))
+    ) {
+      this.phase = "finished";
+      return true;
+    }
+    if (!isTrainingStartLeaseActive(this.lease)) {
       return false;
     }
     if (this.phase === "preflight" && !this.isPreflightActive()) {

@@ -24,6 +24,7 @@ import {
   TRAINING_SETUP_CHANGED_ERROR,
   type TrainingStartLease,
   isTrainingStartLeaseActive,
+  reconcileTrainingStartTransportFailure,
   releaseTrainingStart,
   settleAcceptedTrainingStart,
   tryAcquireTrainingStart,
@@ -204,6 +205,17 @@ class FreshTrainingStartAttempt {
     return settleAcceptedTrainingStart(this.lease, jobId, message);
   }
 
+  async recoverTransportFailure(): Promise<boolean> {
+    if (this.phase !== "transport") {
+      return false;
+    }
+    const recovered = await reconcileTrainingStartTransportFailure(this.lease);
+    if (recovered) {
+      this.phase = "finished";
+    }
+    return recovered;
+  }
+
   private abortForChangedInputs(): false {
     return this.cancel(TRAINING_SETUP_CHANGED_ERROR);
   }
@@ -250,6 +262,9 @@ export async function startFreshTrainingRun(): Promise<boolean> {
     }
     return await submitFreshTrainingRun(attempt, tokenResult.token);
   } catch (error) {
+    if (await attempt.recoverTransportFailure()) {
+      return true;
+    }
     if (attempt.abortIfInputsChanged()) {
       return false;
     }
@@ -425,9 +440,7 @@ async function submitFreshTrainingRun(
     );
   const response = await startTraining(payload);
   if (response.status === "error") {
-    return attempt.cancel(
-      normalizeTrainingStartError(response.error || response.message),
-    );
+    throw new Error(response.error || response.message);
   }
 
   return attempt.settleAccepted(response.job_id, response.message);

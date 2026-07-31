@@ -69,8 +69,6 @@ export interface TrainingConfigState {
   datasetStreaming: boolean;
   datasetManualMapping: DatasetManualMapping;
   datasetSystemPrompt: string;
-  datasetUserTemplate: string;
-  datasetAssistantTemplate: string;
   datasetLabelMapping: Record<string, Record<string, string>>;
   datasetAdvisorNotification: string | null;
   datasetSliceStart: string | null;
@@ -181,7 +179,6 @@ export interface TrainingConfigActions {
     labelMapping?: Record<string, Record<string, string>>;
     notification?: string | null;
   }) => void;
-  clearDatasetAdvisorFields: () => void;
   setDatasetSliceStart: (value: string | null) => void;
   setDatasetSliceEnd: (value: string | null) => void;
   setUploadedFile: (file: string | null) => void;

@@ -115,8 +115,6 @@ const initialState: TrainingConfigState = {
   datasetStreaming: false,
   datasetManualMapping: emptyManualMapping(),
   datasetSystemPrompt: "",
-  datasetUserTemplate: "",
-  datasetAssistantTemplate: "",
   datasetLabelMapping: {},
   datasetAdvisorNotification: null,
   datasetSliceStart: null,
@@ -732,8 +730,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         datasetEvalSplit: null,
         datasetManualMapping: emptyManualMapping(),
         datasetSystemPrompt: "",
-        datasetUserTemplate: "",
-        datasetAssistantTemplate: "",
         datasetLabelMapping: {},
         datasetAdvisorNotification: null,
         datasetSliceStart: null,
@@ -1251,22 +1247,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({
             datasetSystemPrompt:
               fields.systemPrompt ?? get().datasetSystemPrompt,
-            datasetUserTemplate: "", // templates no longer used
-            datasetAssistantTemplate: "", // templates no longer used
             datasetLabelMapping:
               fields.labelMapping ?? get().datasetLabelMapping,
             datasetAdvisorNotification:
               fields.notification !== undefined
                 ? fields.notification
                 : get().datasetAdvisorNotification,
-          }),
-        clearDatasetAdvisorFields: () =>
-          set({
-            datasetSystemPrompt: "",
-            datasetUserTemplate: "",
-            datasetAssistantTemplate: "",
-            datasetLabelMapping: {},
-            datasetAdvisorNotification: null,
           }),
         setDatasetSliceStart: (datasetSliceStart) => set({ datasetSliceStart }),
         setDatasetSliceEnd: (datasetSliceEnd) => set({ datasetSliceEnd }),
@@ -1404,7 +1390,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 15,
+      version: 16,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -1429,8 +1415,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }
         if (version < 8) {
           s.datasetSystemPrompt ??= "";
-          s.datasetUserTemplate ??= "";
-          s.datasetAssistantTemplate ??= "";
           s.datasetLabelMapping ??= {};
           s.datasetAdvisorNotification ??= null;
         }
@@ -1489,6 +1473,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }
         if (version < 15) {
           s.isEmbeddingModel = s.modelType === "embeddings";
+        }
+        if (version < 16) {
+          delete s.datasetUserTemplate;
+          delete s.datasetAssistantTemplate;
         }
         return s as unknown as TrainingConfigStore;
       },

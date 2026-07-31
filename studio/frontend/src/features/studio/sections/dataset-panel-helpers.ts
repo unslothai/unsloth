@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { looksLikeLocalPath } from "@/features/hub";
 import { hasSeparateStreamingEvalSplit } from "@/features/training";
 import type { DatasetSource } from "@/types/training";
 
-const LOCAL_DATASET_FILE_PATTERN = /\.(jsonl|json|csv|parquet|arrow)$/i;
 const POSITIVE_INTEGER_PATTERN = /^\d+$/;
 
 export type DatasetStreamingBlocker =
@@ -25,13 +23,6 @@ export function getFileExtension(fileName: string): string {
   return extensionStart >= 0
     ? fileName.slice(extensionStart).toLowerCase()
     : "";
-}
-
-export function isLikelyLocalDatasetRef(value: string): boolean {
-  const trimmed = value.trim();
-  return (
-    looksLikeLocalPath(trimmed) || LOCAL_DATASET_FILE_PATTERN.test(trimmed)
-  );
 }
 
 export function formatUpdatedDate(timestamp: number | null): string {

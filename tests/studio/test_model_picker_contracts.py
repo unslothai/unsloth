@@ -1665,12 +1665,14 @@ def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
     assert "knownCached: selection.knownCached" in restore
     assert "localPath: selection.localPath" in restore
 
-    assert "version: 15," in store
+    assert "version: 16," in store
     migration = store.split("if (version < 14)", 1)[1]
     migration = migration.split("return s as unknown as TrainingConfigStore", 1)[0]
     assert "createUploadBrowseDatasetSelection(uploadedFile)" in migration
     assert "createHfBrowseDatasetSelection(dataset" in migration
     assert 's.isEmbeddingModel = s.modelType === "embeddings";' in store
+    assert "delete s.datasetUserTemplate;" in store
+    assert "delete s.datasetAssistantTemplate;" in store
 
     toggle = _read("features/studio/sections/dataset-panel-controls.tsx")
     assert "restoreBrowseDatasetSource();" in toggle
@@ -2120,12 +2122,28 @@ def test_partial_local_datasets_are_not_selectable():
     assert device_items.count(".filter((d) => !d.partial)") == 2
 
 
-def test_dataset_panel_uses_the_shared_cross_platform_path_detector():
+def test_dataset_panel_treats_the_explicit_hub_source_as_authoritative():
+    selection = _read("features/training/lib/dataset-selection.ts")
+    panel = _read("features/studio/sections/dataset-section.tsx")
     helpers = _read("features/studio/sections/dataset-panel-helpers.ts")
 
-    assert 'import { looksLikeLocalPath } from "@/features/hub";' in helpers
-    assert "looksLikeLocalPath(trimmed)" in helpers
-    assert "jsonl|json|csv|parquet|arrow" in helpers
+    assert 'source === "huggingface"' in selection
+    assert "dataset?.trim()" in selection
+    assert "isHuggingFaceDatasetSelected(" in panel
+    assert "isLikelyLocalDatasetRef" not in panel
+    assert "isLikelyLocalDatasetRef" not in helpers
+
+
+def test_training_transport_failures_reconcile_with_the_backend_before_failing():
+    runtime = _read("features/training/lib/training-start-runtime.ts")
+    fresh = _read("features/training/lib/start-fresh-training-run.ts")
+    resume = _read("features/training/lib/resume-training-run.ts")
+
+    assert "await getTrainingStatus().catch(() => null)" in runtime
+    assert "statusConfirmsActiveTrainingStart(status)" in runtime
+    assert "runtime.setStartQueued(status.job_id, status.message)" in runtime
+    assert "await attempt.recoverTransportFailure()" in fresh
+    assert "await reconcileTrainingStartTransportFailure(this.lease)" in resume
 
 
 def test_multitask_model_search_fans_out_concurrently_and_closes_iterators():

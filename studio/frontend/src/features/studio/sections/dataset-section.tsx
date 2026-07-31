@@ -22,6 +22,7 @@ import {
 import {
   HfDatasetSubsetSplitSelectors,
   cacheLocalPathMatchesSelection,
+  isHuggingFaceDatasetSelected,
   uploadTrainingDataset,
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
@@ -56,7 +57,6 @@ import {
   formatUpdatedDate,
   getDatasetStreamingBlockers,
   getFileExtension,
-  isLikelyLocalDatasetRef,
 } from "./dataset-panel-helpers";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 import { S3ConfigForm } from "./s3-config-form";
@@ -260,10 +260,10 @@ export function DatasetPanel() {
   }, [datasetSource, isMultimodalModel, restoreBrowseDatasetSource]);
 
   const activeSourceTab = datasetSource === "upload" ? "local" : "huggingface";
-  const isHfDatasetSelected =
-    datasetSource === "huggingface" &&
-    !!dataset &&
-    !isLikelyLocalDatasetRef(dataset);
+  const isHfDatasetSelected = isHuggingFaceDatasetSelected(
+    datasetSource,
+    dataset,
+  );
 
   const selectedDatasetName =
     datasetSource === "upload" ? uploadedFile : dataset;
