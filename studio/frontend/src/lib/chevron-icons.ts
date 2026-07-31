@@ -19,6 +19,20 @@ export const ChevronDownStandardIcon: IconSvgElement = [
   ],
 ];
 
+export const ChevronUpStandardIcon: IconSvgElement = [
+  [
+    "path",
+    {
+      d: "M5.99977 15L11.9998 9.00005L17.9998 15",
+      stroke: "currentColor",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      strokeWidth: "1.5",
+      key: "0",
+    },
+  ],
+];
+
 export const ChevronRightStandardIcon: IconSvgElement = [
   [
     "path",

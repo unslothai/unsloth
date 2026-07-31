@@ -43,6 +43,7 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
         pass
 
 logger = get_logger(__name__)
+from utils.child_stdio import utf8_child_env
 from utils.hardware import apply_gpu_ids
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
@@ -89,6 +90,79 @@ _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
 # Module-level handle so the torch.library.Library registration survives past
 # run_training_process() and isn't GC'd mid-run.
 _WINDOWS_ROCM_GROUPED_MM_LIB = None
+
+
+def _install_grouped_mm_cpu_fallback(torch_mod, logger, label):
+    """Register a Python mm/bmm fallback for torch._grouped_mm and return the Library.
+
+    RDNA4 (gfx1200/gfx1201) ships a null HIP _grouped_mm kernel on ROCm <= 7.12
+    (fixed in 7.13; ROCm/TheRock #5284). JitDecomp dispatches _grouped_mm to the
+    null kernel and crashes; overriding the CUDA dispatch key bypasses it. Shared
+    by the Windows and Linux ROCm guards. Keep the returned Library referenced so
+    the registration outlives the caller.
+    """
+    import warnings as _warnings
+
+    _gm_lib = torch_mod.library.Library("aten", "IMPL")
+
+    def _grouped_mm_safe_impl(
+        self,
+        mat2,
+        offs = None,
+        bias = None,
+        out_dtype = None,
+    ):
+        """Python mm/bmm fallback for _grouped_mm on gfx120X (null HIP kernel, ROCm <= 7.12)."""
+        _t = torch_mod
+        if offs is None:
+            # No offsets: 2-D -> mm, 3-D batched -> bmm (unconditional mm broke 3-D MoE).
+            if self.dim() == 3 and mat2.dim() == 3:
+                result = _t.bmm(self.contiguous(), mat2.contiguous())
+            elif self.dim() == 3 and mat2.dim() == 2:
+                result = _t.matmul(self.contiguous(), mat2.contiguous())
+            elif self.dim() == 2 and mat2.dim() == 3:
+                result = _t.matmul(self.contiguous(), mat2.contiguous())
+            else:
+                result = _t.mm(self.contiguous(), mat2.contiguous())
+        else:
+            # Grouped: offs[i] is the exclusive end-row of group i.
+            offs_list = offs.tolist()
+            pieces = []
+            prev = 0
+            for idx, end in enumerate(offs_list):
+                end = int(end)
+                a_part = self[prev:end].contiguous()
+                b_part = mat2[idx].contiguous() if mat2.dim() == 3 else mat2.contiguous()
+                pieces.append(_t.mm(a_part, b_part))
+                prev = end
+            # Include trailing rows not covered by offs.
+            if prev < self.shape[0]:
+                a_tail = self[prev:].contiguous()
+                b_tail = mat2[-1].contiguous() if mat2.dim() == 3 else mat2.contiguous()
+                pieces.append(_t.mm(a_tail, b_tail))
+            result = (
+                _t.cat(pieces, dim = 0)
+                if pieces
+                else _t.zeros(0, mat2.shape[-1], device = self.device, dtype = self.dtype)
+            )
+        if bias is not None:
+            result = result + bias
+        if out_dtype is not None:
+            result = result.to(out_dtype)
+        elif result.dtype != self.dtype:
+            result = result.to(self.dtype)
+        return result
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
+    logger.info(
+        "%s: patched _grouped_mm CUDA dispatch (null HIP kernel on gfx120X, "
+        "ROCm <= 7.12 -- bypassed with Python mm fallback)",
+        label,
+    )
+    return _gm_lib
+
 
 # Subprocesses don't inherit os.add_dll_directory registrations. Replicate
 # main.py's Windows ROCm DLL setup so the first `import torch` finds
@@ -312,6 +386,10 @@ def _install_package_wheel_first(
         "stdout": _sp.PIPE,
         "stderr": _sp.STDOUT,
         "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        # Make the Python child emit the UTF-8 we decode above.
+        "env": utf8_child_env(),
     }
     if is_hip:
         _run_kwargs["timeout"] = 1800
@@ -533,6 +611,9 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
             stdout = _sp.PIPE,
             stderr = _sp.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = utf8_child_env(),
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:
@@ -691,8 +772,8 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     - ``gcn_arch``: canonical arch string (e.g. ``"gfx1151"``) when a known
       attribute is present, else ``""``.
     - ``is_unified``: ``True`` for AMD APUs with a shared GPU/system-RAM pool
-      (gfx1150 Strix Point, gfx1151 Strix Halo) — these need a lower
-      ``set_per_process_memory_fraction`` cap to leave OS headroom.
+      (gfx1150 Strix Point, gfx1151 Strix Halo, gfx1152 Krackan Point) — these
+      need a lower ``set_per_process_memory_fraction`` cap to leave OS headroom.
 
     Classification priority:
     1. ``props.is_integrated`` truthy (hipDeviceProp_t.integrated -- the
@@ -702,8 +783,10 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     3. Device-name substring match (last resort when all arch attrs absent;
        AMD SDK / Radeon wheels may not populate them):
          - gfx1150 Strix Point: ``Radeon 890M``, ``Radeon 880M``
-         - gfx1151 Strix Halo:  ``Radeon 8060S`` (Ryzen AI MAX+ 395),
-                                ``Radeon 8050S`` (cut-down SKU)
+         - gfx1151 Strix Halo / Gorgon Halo:  ``Radeon 8065S`` (Ryzen AI
+                                Max+ 495), ``Radeon 8060S`` (Ryzen AI MAX+
+                                395), ``Radeon 8050S`` (cut-down SKU)
+         - gfx1152 Krackan Point: ``Radeon 860M``, ``Radeon 840M``
     """
     gcn_arch = ""
     for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
@@ -723,12 +806,22 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         return gcn_arch, True
 
     if gcn_arch:
-        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151"}
+        # gfx1152 is Krackan Point, the third RDNA 3.5 APU: same shared
+        # GPU/system-RAM pool as Strix Point (gfx1150) and Strix Halo (gfx1151).
+        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151", "gfx1152"}
 
-    # Arch attrs absent — fall back to device-name matching.
+    # Arch attrs absent — fall back to device-name matching. Only reached under
+    # _hw.IS_ROCM, so the NVIDIA GeForce 840M cannot collide with the Krackan
+    # markers here.
     dev_lower = (getattr(props, "name", "") or "").lower()
     is_unified = (
-        "890m" in dev_lower or "880m" in dev_lower or "8060s" in dev_lower or "8050s" in dev_lower
+        "890m" in dev_lower
+        or "880m" in dev_lower
+        or "8065s" in dev_lower
+        or "8060s" in dev_lower
+        or "8050s" in dev_lower
+        or "860m" in dev_lower
+        or "840m" in dev_lower
     )
     return gcn_arch, is_unified
 
@@ -764,6 +857,9 @@ def _run_pip(cmd: list[str], event_queue: Any, label: str) -> bool:
             stdout = _sp.PIPE,
             stderr = _sp.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = utf8_child_env(),
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:
@@ -1100,7 +1196,7 @@ _MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE = {}
 
 
 def _mlx_vlm_resized_image_layout(processor = None) -> str | None:
-    """Return the numpy image layout expected after Studio-side VLM resizing."""
+    """Return the numpy image layout expected after Unsloth-side VLM resizing."""
     image_processor = getattr(processor, "image_processor", None)
     if image_processor is None:
         return None
@@ -1253,32 +1349,48 @@ def _adapt_for_mlx_vlm(
     return adapted
 
 
-_MLX_STUDIO_OPTIM_MAP = {
-    "adamw_8bit": "adamw",
-    "paged_adamw_8bit": "adamw",
-    "adamw_bnb_8bit": "adamw",
-    "paged_adamw_32bit": "adamw",
-    "adamw_torch": "adamw",
-    "adamw_torch_fused": "adamw",
-    "adamw": "adamw",
-    "adafactor": "adafactor",
-    "sgd": "sgd",
-    "adam": "adam",
-    "muon": "muon",
-    "lion": "lion",
-}
 _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
 
 
+# Fallback alias map mirroring unsloth_zoo._normalize_mlx_optimizer_name, used
+# only when mlx (Apple Silicon) is not importable so Unsloth config validation
+# still works on non-MLX hosts. The zoo function stays the source of truth.
+_MLX_STUDIO_ADAMW_ALIASES = frozenset(
+    (
+        "adamw_8bit",
+        "paged_adamw_8bit",
+        "adamw_bnb_8bit",
+        "paged_adamw_32bit",
+        "adamw_torch",
+        "adamw_torch_fused",
+        "paged_adamw",
+        "adamw_32bit",
+        "adamw_hf",
+        "adamw_anyprecision",
+        "adamw_apex_fused",
+    )
+)
+_MLX_STUDIO_NATIVE_OPTIMIZERS = ("adafactor", "adamw", "adam", "sgd", "muon", "lion")
+
+
 def _normalize_mlx_studio_optimizer(value):
-    raw = str(value or "adamw_8bit").strip().lower()
     try:
-        return _MLX_STUDIO_OPTIM_MAP[raw]
-    except KeyError:
-        supported = ", ".join(sorted(_MLX_STUDIO_OPTIM_MAP))
-        raise ValueError(
-            f"Unsupported optimizer for MLX training: {value!r}. " f"Supported values: {supported}."
-        )
+        from unsloth_zoo.mlx.trainer import _normalize_mlx_optimizer_name
+        return _normalize_mlx_optimizer_name(value or "adamw_8bit")
+    except (ImportError, ValueError):
+        # Missing mlx, or an older unsloth-zoo whose normalizer lacks CUDA/TRL
+        # aliases: map common adamw_* names locally so notebook defaults work.
+        opt = str(getattr(value, "value", value) or "adamw_8bit").strip().lower()
+        opt = opt.rsplit(".", 1)[-1].replace("-", "_")
+        if opt in _MLX_STUDIO_ADAMW_ALIASES:
+            opt = "adamw"
+        if opt not in _MLX_STUDIO_NATIVE_OPTIMIZERS:
+            supported = ", ".join(_MLX_STUDIO_NATIVE_OPTIMIZERS)
+            raise ValueError(
+                f"Unsupported optimizer for MLX training: {value!r}. "
+                f"Supported optimizers: {supported}."
+            )
+        return opt
 
 
 def _normalize_mlx_studio_scheduler(value):
@@ -1293,14 +1405,18 @@ def _normalize_mlx_studio_scheduler(value):
 
 
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
-    """Resolve Studio local dataset uploads without importing the GPU trainer."""
+    """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
     from utils.paths import resolve_dataset_path
 
     all_files: list[str] = []
     for dataset_file in file_paths or []:
-        file_path = (
-            dataset_file if os.path.isabs(dataset_file) else str(resolve_dataset_path(dataset_file))
-        )
+        dataset_path = Path(os.path.expanduser(str(dataset_file)))
+        if dataset_path.is_absolute():
+            file_path = str(dataset_path)
+        elif dataset_path.exists():
+            file_path = str(dataset_path.resolve())
+        else:
+            file_path = str(resolve_dataset_path(str(dataset_file)))
         file_path_obj = Path(file_path)
 
         if file_path_obj.is_dir():
@@ -1339,6 +1455,58 @@ def _mlx_local_dataset_loader_for_files(files: list[str]) -> str:
     raise ValueError(f"Unsupported dataset format: {files[0]}")
 
 
+_MLX_WORKER_COMPLETE = "_mlx_worker_complete"
+
+
+def _start_mlx_stop_poller(stop_queue):
+    import queue as _queue
+    import threading
+
+    stop_save = [True]
+    stop_requested = [False]
+    trainer_ref = [None]
+
+    def is_stop_requested():
+        return stop_requested[0]
+
+    def poll_stop():
+        while True:
+            try:
+                msg = stop_queue.get(timeout = 0.25)
+                if msg and msg.get("type") == _MLX_WORKER_COMPLETE:
+                    return
+                if msg and msg.get("type") == "stop":
+                    stop_save[0] = msg.get("save", True)
+                    stop_requested[0] = True
+                    trainer = trainer_ref[0]
+                    if trainer is not None:
+                        trainer.stop_requested = True
+                    return
+            except _queue.Empty:
+                continue
+            except (EOFError, OSError):
+                return
+
+    stop_thread = threading.Thread(target = poll_stop, daemon = True)
+    stop_thread.start()
+    return stop_save, stop_requested, trainer_ref, is_stop_requested, stop_thread
+
+
+def _resolve_mlx_output_dir(config, model_name):
+    from utils.paths import resolve_output_dir, default_run_dir_name
+
+    output_dir = config.get("output_dir", "")
+    if not output_dir:
+        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
+        return str(resolve_output_dir(output_dir))
+    if config.get("allow_external_output_dir"):
+        output_path = Path(output_dir).expanduser()
+        if not output_path.is_absolute():
+            output_path = Path.cwd() / output_path
+        return str(output_path.resolve())
+    return str(resolve_output_dir(output_dir))
+
+
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -1347,8 +1515,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     """
     import time
     import math
-    import threading
-    import queue as _queue
     from pathlib import Path
 
     def _send(event_type, **kwargs):
@@ -1358,31 +1524,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 kwargs["message"] = sm
         event_queue.put({"type": event_type, "ts": time.time(), **kwargs})
 
-    _stop_save = [True]
-    _stop_requested = [False]
-    _trainer_ref = [None]
-
-    def _is_stop_requested():
-        return _stop_requested[0]
-
-    def _poll_stop():
-        while True:
-            try:
-                msg = stop_queue.get(timeout = 1.0)
-                if msg and msg.get("type") == "stop":
-                    _stop_save[0] = msg.get("save", True)
-                    _stop_requested[0] = True
-                    trainer = _trainer_ref[0]
-                    if trainer is not None:
-                        trainer.stop_requested = True
-                    return
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                return
-
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
-    stop_thread.start()
+    _stop_save, _stop_requested, _trainer_ref, _is_stop_requested, _stop_thread = (
+        _start_mlx_stop_poller(stop_queue)
+    )
 
     _send("status", status_message = "Loading MLX libraries...")
 
@@ -1419,6 +1563,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     if config.get("use_loftq"):
         message = "LoftQ is not supported for MLX training yet."
+        _send("error", error = message)
+        raise NotImplementedError(message)
+    if config.get("use_dora"):
+        message = "DoRA is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
     if config.get("is_embedding"):
@@ -1683,6 +1831,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # sharegpt+images) and text (alpaca/sharegpt/chatml → "text" column).
     format_type = config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
+    dataset_final_format = ""
     try:
         from utils.datasets import format_and_template_dataset
         def _fmt_progress(status_message = "", **_kw):
@@ -1748,6 +1897,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
+            dataset_final_format = str(info.get("final_format", "") or "").lower()
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
                     eval_dataset,
@@ -1788,21 +1938,21 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # ── 5. Build output dir ──
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
-    from utils.paths import resolve_output_dir, ensure_dir
+    from utils.paths import ensure_dir
 
-    output_dir = config.get("output_dir", "")
-    if not output_dir:
-        output_dir = build_default_output_dir_name(
-            model_name,
-            config.get("project_name"),
-        )
-    output_dir = str(resolve_output_dir(output_dir))
+    # Resume must land in the original run dir even when config lacks output_dir.
+    resume_dir = config.get("output_dir", "") or _output_dir_from_resume_checkpoint(
+        resume_from_checkpoint
+    )
+    output_dir = _resolve_mlx_output_dir(
+        {**config, "output_dir": resume_dir} if resume_dir else config, model_name
+    )
     ensure_dir(Path(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     # ── 6. Create trainer ──
     eval_steps_val = config.get("eval_steps", 0) or 0
     if isinstance(eval_steps_val, float) and 0 < eval_steps_val < 1:
-        # Studio sometimes sends fraction-of-total-steps
         eval_steps_val = max(1, int(eval_steps_val * max_steps))
     else:
         eval_steps_val = int(eval_steps_val)
@@ -1853,6 +2003,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_steps = eval_steps_val,
     )
 
+    # Also gates the masking skip below, so defined outside the feature-detect block.
+    raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
+
     # Feature-detect optional fields so this PR works without the paired zoo bump.
     _supported_fields = getattr(MLXTrainingConfig, "__dataclass_fields__", {})
     if "cast_norm_output_to_input_dtype" in _supported_fields:
@@ -1866,8 +2019,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
     if "append_eos" in _supported_fields:
-        raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
-        # Studio SFT formatting owns rendered examples; raw/CPT text still
+        # Unsloth SFT formatting owns rendered examples; raw/CPT text still
         # needs MLX to append EOS like the CUDA raw-text path.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
 
@@ -1887,29 +2039,27 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("eval_configured")
 
     # ── 7. Apply train_on_responses_only if requested ──
-    if config.get("train_on_completions", False):
+    # Auto-detect markers from the chat template first, manual table as
+    # fallback. Mirror the CUDA skips: raw/CPT text has no chat turns and
+    # Alpaca-rendered text lacks the chat markers. Also check the resolved
+    # format, since format_type="auto" can land on alpaca or raw text.
+    if (
+        config.get("train_on_completions", False)
+        and not raw_text_mode
+        and format_type != "alpaca"
+        and dataset_final_format not in ("alpaca", "raw_text")
+    ):
         _send("status", status_message = "Configuring response-only training...")
-        try:
-            from utils.datasets import (
-                MODEL_TO_TEMPLATE_MAPPER,
-                TEMPLATE_TO_RESPONSES_MAPPER,
-            )
-
-            template_name = MODEL_TO_TEMPLATE_MAPPER.get(model_name.lower())
-            markers = TEMPLATE_TO_RESPONSES_MAPPER.get(template_name) if template_name else None
-            if markers:
-                trainer = train_on_responses_only(
-                    trainer,
-                    instruction_part = markers["instruction"],
-                    response_part = markers["response"],
-                )
-            else:
-                _send(
-                    "status",
-                    status_message = f"train_on_completions skipped (no template for {model_name})",
-                )
-        except Exception as e:
-            _send("status", status_message = f"train_on_completions failed: {e}")
+        # No catch: the helper handles detection failures and double misses, so
+        # an exception here is a real masking failure that must fail the run,
+        # not silently train on full sequences.
+        from utils.datasets.completion_masking import apply_completion_masking
+        trainer, _masking_applied = apply_completion_masking(
+            trainer,
+            model_name,
+            train_on_responses_only,
+            notify = lambda level, message: _send("status", status_message = message),
+        )
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None
@@ -2024,31 +2174,157 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     trainer.add_eval_callback(_on_eval)
 
+    _opt_ref = [None]
+    _orig_build_optimizer = getattr(trainer, "_build_optimizer", None)
+
+    if callable(_orig_build_optimizer):
+
+        def _capture_optimizer(total_steps):
+            _opt_ref[0] = _orig_build_optimizer(total_steps)
+            return _opt_ref[0]
+
+        trainer._build_optimizer = _capture_optimizer
+
     # ── 11. Run training ──
     gc.collect()
     mx.synchronize()
-    trainer.train(resume_from_checkpoint = resume_from_checkpoint)
+    _save_model = trainer.save_model
+
+    def _skip_internal_final_save(*args, **kwargs):
+        raise ValueError("worker owns final save")
+
+    trainer.save_model = _skip_internal_final_save
+    try:
+        trainer.train(resume_from_checkpoint = resume_from_checkpoint)
+    finally:
+        trainer.save_model = _save_model
 
     # ── 12. Save and finalize ──
-    if trainer.stop_requested and not _stop_save[0]:
-        # User clicked "Cancel" (save=False) — skip saving
-        _send("complete", output_dir = None, status_message = "Training cancelled")
-    else:
-        _send("status", status_message = "Saving model...")
-        mx.synchronize()
-        trainer.save_model(output_dir)
-        _send("complete", output_dir = output_dir, status_message = "Training completed")
+    def _finish_tracking() -> None:
+        # Runs on every save/finalize exit so TB/W&B never leak on early return.
+        if tb_writer is not None:
+            try:
+                tb_writer.close()
+            except Exception:
+                pass
+        if wandb_run is not None:
+            try:
+                wandb_run.finish()
+            except Exception:
+                pass
 
-    if tb_writer is not None:
+    def _stop_checkpoint_ok() -> bool:
+        if _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
+            return True
+        _send(
+            "error",
+            error = (
+                "Failed to save a resumable checkpoint after stop. "
+                "Model files were saved, but this run cannot be resumed."
+            ),
+            # A user stop finalizes as 'stopped'; keep this failure's error status so history explains it.
+            keep_error_status = True,
+            # Older checkpoints are stale; resuming would roll back past this stop.
+            resume_blocked = True,
+        )
+        return False
+
+    try:
+        if trainer.stop_requested:
+            if not _stop_save[0]:
+                # Cancel (save=False): skip saving.
+                _send("complete", output_dir = None, status_message = "Training cancelled")
+            else:
+                _send("status", status_message = "Saving stopped model...")
+                mx.synchronize()
+                trainer.save_model(output_dir)
+                # Stop-and-save promises a resumable checkpoint, not just model files.
+                if not _stop_checkpoint_ok():
+                    return
+                _send("complete", output_dir = output_dir, status_message = "Training stopped")
+        else:
+            _send("status", status_message = "Saving model...")
+            mx.synchronize()
+            trainer.save_model(output_dir)
+            # A save-stop can race the natural final save; it made the same promise.
+            if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
+                return
+            _send("complete", output_dir = output_dir, status_message = "Training completed")
+    finally:
+        _finish_tracking()
+
+
+def _is_current_process_apple_silicon() -> bool:
+    import platform
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def run_mlx_training_process(
+    *,
+    event_queue: Any,
+    stop_queue: Any,
+    config: dict,
+    transformers_activated: bool = False,
+) -> None:
+    """MLX worker entrypoint shared by Unsloth subprocesses and the CLI adapter."""
+    model_name = config["model_name"]
+
+    backend_path = str(Path(__file__).resolve().parent.parent.parent)
+    if backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+
+    from utils.hf_xet_fallback import child_should_disable_xet
+
+    if child_should_disable_xet(config):
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+
+    if not transformers_activated:
+        # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
+        _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
+
+    from utils.hardware import hardware as _hw
+
+    _hw.detect_hardware()
+    if _hw.DEVICE != _hw.DeviceType.MLX:
+        event_queue.put(
+            {
+                "type": "error",
+                "error": "MLX training requires Apple Silicon with the MLX backend available.",
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return
+
+    if config.get("is_dataset_audio"):
+        event_queue.put(
+            {
+                "type": "error",
+                "error": "Audio dataset training is not yet supported on Apple Silicon.",
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return
+
+    try:
         try:
-            tb_writer.close()
-        except Exception:
-            pass
-    if wandb_run is not None:
-        try:
-            wandb_run.finish()
-        except Exception:
-            pass
+            _run_mlx_training(event_queue, stop_queue, config)
+        finally:
+            try:
+                stop_queue.put({"type": _MLX_WORKER_COMPLETE})
+            except (EOFError, OSError, ValueError):
+                pass
+    except Exception as exc:
+        event_queue.put(
+            {
+                "type": "error",
+                "error": str(exc),
+                "stack": traceback.format_exc(limit = 20),
+                "ts": time.time(),
+            }
+        )
 
 
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
@@ -2059,7 +2335,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         stop_queue: mp.Queue for stop commands from the parent.
         config: Training config dict with all parameters.
     """
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    # Off on Linux (forked datasets map() workers deadlock otherwise); on spawn
+    # platforms map() is in-process, so keep tokenizer threads on for faster prep.
+    os.environ["TOKENIZERS_PARALLELISM"] = (
+        "true" if sys.platform in ("win32", "darwin") else "false"
+    )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
     # HTTP-fallback respawn: disable Xet before any huggingface_hub import (the
@@ -2115,7 +2395,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"))
+    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
     model_name = config["model_name"]
 
@@ -2125,36 +2405,26 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
+    from .training import is_apple_silicon_training_platform, should_use_mlx_training_backend
+
+    mlx_backend_requested = is_apple_silicon_training_platform()
+
+    mlx_transformers_activated = False
+    if mlx_backend_requested and _is_current_process_apple_silicon():
+        # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
+        _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
+        mlx_transformers_activated = True
+
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
-    if _hw.DEVICE == _hw.DeviceType.MLX:
-        if config.get("is_dataset_audio"):
-            event_queue.put(
-                {
-                    "type": "error",
-                    "error": "Audio dataset training is not yet supported on Apple Silicon.",
-                    "stack": "",
-                    "ts": time.time(),
-                }
-            )
-            return
-        # Activate correct transformers version (Gemma-4 needs a 5.x sidecar, etc.)
-        # Must happen before any transformers/mlx-lm imports in _run_mlx_training.
-        # Non-fatal: fall through with whatever version is installed, but log
-        # the failure instead of swallowing it (issue #6103).
-        _activate_transformers_version_or_warn(model_name, config.get("hf_token") or None)
-        try:
-            _run_mlx_training(event_queue, stop_queue, config)
-        except Exception as exc:
-            event_queue.put(
-                {
-                    "type": "error",
-                    "error": str(exc),
-                    "stack": traceback.format_exc(limit = 20),
-                    "ts": time.time(),
-                }
-            )
+    if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
+        run_mlx_training_process(
+            event_queue = event_queue,
+            stop_queue = stop_queue,
+            config = config,
+            transformers_activated = mlx_transformers_activated,
+        )
         return
 
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
@@ -2458,6 +2728,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         _bnb_rocm_ver,
                     )
 
+            # Setting BNB_ROCM_VERSION makes bitsandbytes log a benign override
+            # notice on import; drop only that record so real errors and mismatch
+            # warnings still show.
+            if os.environ.get("BNB_ROCM_VERSION"):
+                import logging as _logging
+                _logging.getLogger("bitsandbytes.cextension").addFilter(
+                    lambda _r: "environment variable detected" not in _r.getMessage()
+                )
+
             # Parse HIP version for the kernel-fix gate below, falling back to
             # the rocm version embedded in torch.__version__ when version.hip is
             # unset (AMD SDK / Radeon wheels).
@@ -2510,80 +2789,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # so 7.13+ uses the real GPU kernel.
             if not _hip_ver_at_least(7, 13):
                 try:
-                    import warnings as _warnings
-
-                    _gm_lib = _torch_for_rocm.library.Library("aten", "IMPL")
-
-                    def _grouped_mm_safe_impl(
-                        self,
-                        mat2,
-                        offs = None,
-                        bias = None,
-                        out_dtype = None,
-                    ):
-                        """Python mm/bmm fallback for _grouped_mm on gfx1200 (null HIP kernel, ROCm ≤ 7.12)."""
-                        _t = _torch_for_rocm
-                        if offs is None:
-                            # No offsets: 2-D -> mm, 3-D batched -> bmm
-                            # (unconditional mm broke 3-D MoE).
-                            if self.dim() == 3 and mat2.dim() == 3:
-                                result = _t.bmm(self.contiguous(), mat2.contiguous())
-                            elif self.dim() == 3 and mat2.dim() == 2:
-                                # Broadcast 2-D mat2 across the batch dim.
-                                result = _t.matmul(self.contiguous(), mat2.contiguous())
-                            elif self.dim() == 2 and mat2.dim() == 3:
-                                # Broadcast 2-D self across batch via matmul.
-                                result = _t.matmul(self.contiguous(), mat2.contiguous())
-                            else:
-                                result = _t.mm(self.contiguous(), mat2.contiguous())
-                        else:
-                            # Grouped: offs[i] is the exclusive end-row of group i.
-                            offs_list = offs.tolist()
-                            pieces = []
-                            prev = 0
-                            for idx, end in enumerate(offs_list):
-                                end = int(end)
-                                a_part = self[prev:end].contiguous()
-                                if mat2.dim() == 3:
-                                    b_part = mat2[idx].contiguous()
-                                else:
-                                    b_part = mat2.contiguous()
-                                pieces.append(_t.mm(a_part, b_part))
-                                prev = end
-                            # Include trailing rows not covered by offs.
-                            if prev < self.shape[0]:
-                                a_tail = self[prev:].contiguous()
-                                b_tail = (
-                                    mat2[-1].contiguous() if mat2.dim() == 3 else mat2.contiguous()
-                                )
-                                pieces.append(_t.mm(a_tail, b_tail))
-                            result = (
-                                _t.cat(pieces, dim = 0)
-                                if pieces
-                                else _t.zeros(
-                                    0,
-                                    mat2.shape[-1],
-                                    device = self.device,
-                                    dtype = self.dtype,
-                                )
-                            )
-                        if bias is not None:
-                            result = result + bias
-                        if out_dtype is not None:
-                            result = result.to(out_dtype)
-                        elif result.dtype != self.dtype:
-                            result = result.to(self.dtype)
-                        return result
-
-                    with _warnings.catch_warnings():
-                        _warnings.simplefilter("ignore")
-                        _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
-
-                    _WINDOWS_ROCM_GROUPED_MM_LIB = _gm_lib  # prevent GC
-                    logger.info(
-                        "Windows ROCm: patched _grouped_mm CUDA dispatch "
-                        "(null HIP kernel on gfx1200, ROCm ≤ 7.12 — "
-                        "bypassed with Python mm fallback)"
+                    _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
+                        _torch_for_rocm, logger, "Windows ROCm"
                     )
                 except Exception as _patch_exc:
                     logger.warning(
@@ -2597,11 +2804,49 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "skipping Python fallback (AMD fixed gfx1200 null kernel in ROCm 7.13)"
                 )
 
+    # ── 1f-linux. Linux ROCm RDNA4 _grouped_mm null kernel ──
+    # The win32 guard above misses Linux: RDNA4 (gfx1200/gfx1201) hits the same null
+    # HIP _grouped_mm kernel at ROCm <= 7.12 (fixed 7.13, ROCm/TheRock #5284). Gate on
+    # arch + HIP < 7.13 so NVIDIA/CUDA and non-RDNA4 AMD are untouched; no-op if fixed.
+    if sys.platform.startswith("linux") and _hw.IS_ROCM:
+        try:
+            _torch_lin = sys.modules.get("torch")
+            if _torch_lin is not None and _torch_lin.cuda.is_available():
+                # Prefer torch.version.hip, else rocmX.Y from torch.__version__ (AMD
+                # SDK / Radeon wheels leave version.hip unset). Unknown version on a
+                # gfx120X build -> assume affected unless it is a post-fix rocmsdk wheel.
+                _hip_str = str(getattr(getattr(_torch_lin, "version", None), "hip", "") or "")
+                _ver = getattr(_torch_lin, "__version__", "").lower()
+                _m = re.match(r"(\d+)\.(\d+)", _hip_str) or re.search(r"rocm(\d+)\.(\d+)", _ver)
+                if _m:
+                    _hip_lt_713 = (int(_m.group(1)), int(_m.group(2))) < (7, 13)
+                else:
+                    _hip_lt_713 = "rocmsdk" not in _ver
+                # Scan every visible GPU (device_map="balanced" can place layers on a
+                # later RDNA4 card, so device 0 is not enough). Match gfx120X by arch,
+                # or by RX 9000 / R9700 name when the wheel omits gcnArchName.
+                _rdna4 = False
+                for _i in range(_torch_lin.cuda.device_count()):
+                    _props = _torch_lin.cuda.get_device_properties(_i)
+                    _lin_arch, _ = _rocm_classify_unified_memory(_props)
+                    _lin_name = (getattr(_props, "name", "") or "").lower()
+                    if _lin_arch.lower() in ("gfx1200", "gfx1201") or (
+                        not _lin_arch and re.search(r"rx\s*90[0-9]0|r9700", _lin_name)
+                    ):
+                        _rdna4 = True
+                        break
+                if _rdna4 and _hip_lt_713:
+                    _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
+                        _torch_lin, logger, "Linux ROCm gfx120X"
+                    )
+        except Exception as _gm_lin_exc:
+            logger.warning("Linux ROCm gfx120X: could not patch _grouped_mm: %s", _gm_lin_exc)
+
     # ── 1g. ROCm OOM guard ──
     # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
     # set_per_process_memory_fraction caps the allocator so PyTorch raises
     # OutOfMemoryError first (NVIDIA already has a graceful OOM path).
-    # Unified-memory APUs (gfx1150/gfx1151) share GPU+system RAM, so use 0.80
+    # Unified-memory APUs (gfx1150/gfx1151/gfx1152) share GPU+system RAM, so use 0.80
     # vs 0.90 for discrete. Classify via gcnArchName, else device-name markers.
     # Non-fatal: skipped if torch is not importable.
     if _hw.IS_ROCM:
@@ -2646,7 +2891,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
                 # Unified Windows APUs: the WDDM budget is user-raisable, but
                 # nothing on the box says so -- users see "48 GB VRAM" on a
-                # 96 GB machine and assume a Studio bug. Say where the limit
+                # 96 GB machine and assume an Unsloth bug. Say where the limit
                 # comes from and how to raise it.
                 if _is_unified and sys.platform == "win32":
                     try:
@@ -2677,7 +2922,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
 
-        from core.training.trainer import UnslothTrainer, TrainingProgress
+        from core.training.training import TrainingProgress
+        from core.training.trainer import UnslothTrainer
         from utils.paths import (
             ensure_dir,
             resolve_output_dir,
@@ -2888,11 +3134,24 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             ),
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
+        # Latest-sidecar models load 16-bit here too: bnb 4-bit feeds quantized
+        # expert weights into unvalidated paths (same flip as the chat worker).
+        _train_load_in_4bit = config["load_in_4bit"]
+        if _train_load_in_4bit:
+            from utils.transformers_version import latest_tier_active_for
+            if latest_tier_active_for(model_name, hf_token):
+                _train_load_in_4bit = False
+                logger.info(
+                    "Latest-transformers sidecar active for %s - forcing a 16-bit "
+                    "training load (4-bit is disabled for brand-new architectures)",
+                    model_name,
+                )
+
         try:
             success = trainer.load_model(
                 model_name = model_name,
                 max_seq_length = config["max_seq_length"],
-                load_in_4bit = config["load_in_4bit"],
+                load_in_4bit = _train_load_in_4bit,
                 full_finetuning = not use_lora,
                 hf_token = hf_token,
                 is_dataset_image = config.get("is_dataset_image", False),
@@ -2949,6 +3208,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = config.get("use_loftq", False),
+                use_dora = config.get("use_dora", False),
             )
         elif use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
@@ -2965,6 +3225,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = config.get("use_loftq", False),
+                use_dora = config.get("use_dora", False),
             )
         else:
             _send_status(event_queue, "Preparing model for full finetuning...")
@@ -3029,6 +3290,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
+        _emit_output_dir(event_queue, output_dir)
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
@@ -3146,6 +3408,61 @@ def _send_status(event_queue: Any, message: str) -> None:
             "ts": time.time(),
         }
     )
+
+
+def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
+    try:
+        event_queue.put({"type": "output_dir", "output_dir": output_dir, "ts": time.time()})
+    except Exception:
+        pass
+
+
+def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
+    if step <= 0:
+        return False
+    from core.training.resume import is_resume_checkpoint_valid
+    return is_resume_checkpoint_valid(
+        Path(output_dir) / f"checkpoint-{step}", expected_step = step, backend = "mlx"
+    )
+
+
+def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
+    """Write a full resume checkpoint for a stopped MLX run.
+
+    Returns True when a checkpoint for the current training step exists.
+    """
+    step = int(getattr(trainer, "_global_step", 0) or 0)
+    # A periodic save or a resumed run may already cover the current step.
+    if _mlx_has_checkpoint_at_step(output_dir, step):
+        return True
+    if step <= 0 or optimizer is None:
+        return False
+    ckpt_dir = Path(output_dir) / f"checkpoint-{step}"
+    if ckpt_dir.is_symlink():
+        # Refuse a symlinked dir: it could redirect writes outside output_dir.
+        logger.error("Refusing to write MLX stop checkpoint through symlink: %s", ckpt_dir)
+        return False
+    try:
+        ckpt_dir.mkdir(parents = True, exist_ok = True)
+        from unsloth_zoo.mlx.utils import (
+            save_optimizer_state,
+            save_trainable_adapters,
+            save_trainer_state,
+        )
+
+        save_trainable_adapters(trainer.model, str(ckpt_dir))
+        save_optimizer_state(optimizer, str(ckpt_dir))
+        save_trainer_state(
+            {
+                "global_step": step,
+                "train_loss_history": list(getattr(trainer, "_train_loss_history", [])),
+            },
+            str(ckpt_dir),
+        )
+        logger.info("Saved stop checkpoint to %s", ckpt_dir)
+    except Exception:
+        logger.exception("Failed to write stop checkpoint under %s", output_dir)
+    return _mlx_has_checkpoint_at_step(output_dir, step)
 
 
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
@@ -3337,6 +3654,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_gradient_checkpointing = gradient_checkpointing,
                 random_state = config.get("random_seed", 3407),
                 use_rslora = config.get("use_rslora", False),
+                use_dora = config.get("use_dora", False),
                 loftq_config = {"loftq_bits": 4, "loftq_iter": 1}
                 if config.get("use_loftq")
                 else None,
@@ -3512,6 +3830,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             config.get("project_name"),
         )
     output_dir = str(resolve_output_dir(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     num_epochs = config.get("num_epochs", 2)
     batch_size = config.get("batch_size", 256)

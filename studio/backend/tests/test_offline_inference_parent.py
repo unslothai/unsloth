@@ -139,7 +139,7 @@ class TestLoraDetectOffline:
 
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
-        # Studio catches Exception broadly; pin that the call still happens
+        # Unsloth catches Exception broadly; pin that the call still happens
         # (so cached LoRAs aren't missed) and returns fast via the mock.
         class _OfflineModeIsEnabled(Exception):
             pass
@@ -205,7 +205,7 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
         import re
         from pathlib import Path
 
-        src = Path(_BACKEND_DIR, "core", "training", "worker.py").read_text()
+        src = Path(_BACKEND_DIR, "core", "training", "worker.py").read_text(encoding = "utf-8")
         m = re.search(
             r'if\s+"HF_HUB_OFFLINE"\s+not\s+in\s+os\.environ\s*:.*?'
             r"print\([^)]*HF_HUB_OFFLINE=1[^)]*\)",

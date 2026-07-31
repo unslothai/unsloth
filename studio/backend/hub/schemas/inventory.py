@@ -27,6 +27,9 @@ class GgufVariantDetail(BaseModel):
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
+    update_available: bool = Field(
+        False, description = "Whether a newer main GGUF blob is available on Hugging Face"
+    )
     partial: bool = Field(
         False,
         description = "Whether this variant has an in-progress (.incomplete) blob in cache",
@@ -96,6 +99,10 @@ class LocalModelInfo(BaseModel):
         None,
         description = "HF repo id for cached models, e.g. org/model",
     )
+    active_cache: Optional[bool] = Field(
+        None,
+        description = "Whether this HF entry belongs to the current download cache.",
+    )
     base_model: Optional[str] = Field(
         None,
         description = "Base model from adapter_config.json when this is an adapter",
@@ -157,6 +164,7 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
     inventory_id: Optional[str] = None
@@ -184,6 +192,12 @@ class CachedModelRepo(CachedRepoBase):
 
 class CachedModelsResponse(BaseModel):
     cached: List[CachedModelRepo] = Field(default_factory = list)
+
+
+class HiddenModelsResponse(BaseModel):
+    needles: List[str] = Field(default_factory = list)
+    exact_ids: List[str] = Field(default_factory = list)
+    exact_paths: List[str] = Field(default_factory = list)
 
 
 class AddScanFolderRequest(BaseModel):

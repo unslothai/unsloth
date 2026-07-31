@@ -27,6 +27,7 @@ import functools
 import inspect
 import os
 from unsloth_zoo.utils import Version
+from .bnb_availability import native_kernels_ready
 
 
 def is_mlx_available():
@@ -117,6 +118,37 @@ DEVICE_COUNT: int = get_device_count()
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
+# Unusable bitsandbytes on any backend, not just hip: clear the flags the loader reads
+# before it picks a 4bit checkpoint. A guarded import, not find_spec, since importable
+# is not usable - from 0.46 a dead native library still resolves every ctypes handle to
+# a closure that raises only when called, so 4bit would die mid-run, not fall back here.
+try:
+    import bitsandbytes as _bnb_probe
+except Exception:
+    ALLOW_PREQUANTIZED_MODELS = False
+    ALLOW_BITSANDBYTES = False
+else:
+    if not native_kernels_ready(_bnb_probe, DEVICE_TYPE):
+        ALLOW_PREQUANTIZED_MODELS = False
+        ALLOW_BITSANDBYTES = False
+    del _bnb_probe
+# gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this
+# legacy GCN arch (ROCm dropped it after 6.3) - compiled graphs crash or miscompile
+# while the eager path trains fine. Default compile off; setdefault so a user
+# override wins.
+if DEVICE_TYPE == "hip":
+    try:
+        _gcn_arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0].strip().lower()
+    except Exception:
+        _gcn_arch = ""
+    if _gcn_arch == "gfx906":
+        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+        os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+        os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
+        print(
+            "Unsloth: gfx906 (MI50 / Radeon VII) detected - torch.compile disabled "
+            "(community-maintained legacy GCN path)."
+        )
 if DEVICE_TYPE == "hip":
     try:
         import bitsandbytes

@@ -1,17 +1,48 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# Unsloth Studio uninstaller for Windows PowerShell.
-# Stops running servers and removes install dir, launcher data, CLI shim,
-# desktop and Start Menu shortcuts, the user PATH entry, and the PathBackup
-# registry key. Honors custom roots set via UNSLOTH_STUDIO_HOME / STUDIO_HOME
-# at install time (read back from share\studio.conf).
+# Unsloth Studio uninstaller for Windows PowerShell. Run -Help for details.
+# Custom roots (UNSLOTH_STUDIO_HOME / STUDIO_HOME) come from share\studio.conf.
 #
 # Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
 # Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\scripts\uninstall.ps1
 
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
+
+    function _Usage {
+        Write-Host @'
+Unsloth Studio uninstaller (Windows PowerShell).
+
+Usage:
+  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
+  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\scripts\uninstall.ps1
+
+Stops running Unsloth Studio servers, then removes the install dir, launcher
+data, CLI shim, desktop and Start Menu shortcuts, the user PATH entry and the
+PathBackup registry key. The Hugging Face cache is left in place.
+
+Options:
+  -Help, -h, --help, -?, /?  Print this message and exit without removing anything.
+
+Run with no arguments to uninstall. Unrecognized arguments never trigger
+removal.
+
+Environment:
+  UNSLOTH_STUDIO_HOME  Also remove this custom install root. Set it to the value
+                       used at install time.
+  STUDIO_HOME          Alias for the above, ignored when both are set.
+'@
+    }
+
+    # Reject unknown arguments before destructive work. Use throw so embedded
+    # invocations report failure without exiting the caller's PowerShell session.
+    foreach ($arg in $args) {
+        if ($arg -in @('-h', '-help', '--help', '-?', '/?')) { _Usage; return }
+        Write-Host "uninstall.ps1: unrecognized argument: $arg" -ForegroundColor Red
+        Write-Host "Nothing was removed. Re-run with no arguments to uninstall, or -Help."
+        throw "uninstall.ps1: unrecognized argument: $arg"
+    }
 
     function _Step { param([string]$Msg) Write-Host $Msg }
     function _Substep { param([string]$Msg, [string]$Color = "Gray") Write-Host "  $Msg" -ForegroundColor $Color }
@@ -83,7 +114,7 @@ function Uninstall-UnslothStudio {
         }
     }
 
-    # A path is a Studio-owned root iff one of install.ps1's sentinels exists:
+    # A path is an Unsloth-owned root iff one of install.ps1's sentinels exists:
     #   <root>\share\studio.conf, <root>\unsloth_studio\.unsloth-studio-owned,
     #   or <root>\bin\unsloth.exe.
     function _IsStudioRoot {
@@ -164,7 +195,7 @@ function Uninstall-UnslothStudio {
         return $p
     }
 
-    # Discover non-default Studio roots from env vars + studio.conf files.
+    # Discover non-default Unsloth roots from env vars + studio.conf files.
     # Mirrors install.ps1's precedence: UNSLOTH_STUDIO_HOME wins, STUDIO_HOME
     # is ignored when both are set, so uninstalling install A doesn't also
     # delete install B if the user has a stale STUDIO_HOME pointing at B.
@@ -207,7 +238,7 @@ function Uninstall-UnslothStudio {
 
     # Return $true iff the PID's image path lives under one of $KnownRoots.
     # Prevents killing an unrelated process that happens to listen on a stale
-    # Studio port.
+    # Unsloth port.
     function _PidUnderKnownRoot {
         param([int]$Pid_, [string[]]$KnownRoots)
         if (-not $KnownRoots -or $KnownRoots.Count -eq 0) { return $false }
@@ -223,8 +254,8 @@ function Uninstall-UnslothStudio {
         return $false
     }
 
-    # Stop a Studio backend whose port is recorded in <DataDir>\studio.port.
-    # Only kills if the listening PID's exe path is under a known Studio root.
+    # Stop an Unsloth backend whose port is recorded in <DataDir>\studio.port.
+    # Only kills if the listening PID's exe path is under a known Unsloth root.
     function _StopByPortFile {
         param([string]$PortFile, [string[]]$KnownRoots)
         if (-not (Test-Path -LiteralPath $PortFile -PathType Leaf)) { return }
@@ -372,7 +403,7 @@ function Uninstall-UnslothStudio {
             continue
         }
         if (-not (_IsStudioRoot $r)) {
-            _Substep "refusing to remove non-Studio path: $r" "Yellow"
+            _Substep "refusing to remove non-Unsloth path: $r" "Yellow"
             continue
         }
         _RemovePath $r
@@ -436,7 +467,7 @@ function Uninstall-UnslothStudio {
                     $entries = $rawPath -split ';'
                     $kept = New-Object System.Collections.ArrayList
                     $removedAny = $false
-                    # Only remove PATH entries that live inside a Studio root we
+                    # Only remove PATH entries that live inside an Unsloth root we
                     # actually own (default or env-mode). A literal substring
                     # match on `unsloth_studio` would clobber unrelated user
                     # virtualenvs that happen to share the name.

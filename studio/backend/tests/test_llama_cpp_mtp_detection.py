@@ -9,6 +9,7 @@ the _already_in_target_state mirror that prevents needless reloads.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import os
 import struct
@@ -62,7 +63,9 @@ from core.inference.llama_cpp import (
     _extra_args_set_any_flag,
     _extra_args_set_spec_type,
     _is_mtp_model_name,
+    _kv_unified_from_args,
     _mla_mtp_auto_enabled,
+    _swa_full_from_args_or_env,
 )
 
 
@@ -144,6 +147,41 @@ def test_is_mtp_model_name_handles_none():
     assert _is_mtp_model_name(None) is False
     assert _is_mtp_model_name(None, None) is False
     assert _is_mtp_model_name("", "") is False
+
+
+@pytest.mark.parametrize("flag", ["--swa-full", "--swa_full"])
+def test_swa_full_detects_llama_cpp_long_flag_spellings(flag):
+    assert _swa_full_from_args_or_env([flag], {}) is True
+
+
+@pytest.mark.parametrize("value", ["on", "enabled", "true", "1"])
+def test_swa_full_detects_llama_cpp_env_truth_values(value):
+    assert _swa_full_from_args_or_env([], {"LLAMA_ARG_SWA_FULL": value}) is True
+
+
+@pytest.mark.parametrize("value", ["", "off", "yes", "TRUE", " true ", "0"])
+def test_swa_full_rejects_values_llama_cpp_treats_as_false(value):
+    assert _swa_full_from_args_or_env([], {"LLAMA_ARG_SWA_FULL": value}) is False
+
+
+def test_swa_full_cli_wins_when_env_is_false():
+    assert _swa_full_from_args_or_env(["--swa-full"], {"LLAMA_ARG_SWA_FULL": "0"}) is True
+
+
+@pytest.mark.parametrize("flag", ["--kv-unified", "--kv_unified", "-kvu"])
+def test_kv_unified_detects_enable_aliases(flag):
+    assert _kv_unified_from_args([flag]) is True
+
+
+@pytest.mark.parametrize("flag", ["--no-kv-unified", "--no_kv_unified", "-no-kvu"])
+def test_kv_unified_detects_disable_aliases(flag):
+    assert _kv_unified_from_args(["--kv-unified", flag]) is False
+
+
+def test_kv_unified_uses_environment_before_cli():
+    assert _kv_unified_from_args([], env = {"LLAMA_ARG_KV_UNIFIED": "true"}) is True
+    assert _kv_unified_from_args([], default = True, env = {"LLAMA_ARG_KV_UNIFIED": "false"}) is True
+    assert _kv_unified_from_args(["--kv-unified"], env = {"LLAMA_ARG_KV_UNIFIED": "false"}) is True
 
 
 def test_is_mtp_model_name_detects_marker_in_filename(tmp_path):
@@ -345,8 +383,60 @@ def test_windows_full_offload_flags_use_current_llama_server_args():
     stale_checkpoint_flag = "--checkpoint-" + "every-n-tokens"
     assert '"--cache-ram"' in src
     assert '"--ctx-checkpoints"' in src
-    assert '"--no-cache-prompt"' in src
+    # Prompt caching stays on (in-VRAM prefix reuse); #5692 only needed the host-RAM
+    # checkpoints (--cache-ram / --ctx-checkpoints) disabled, not prompt reuse.
+    assert '"--no-cache-prompt"' not in src
     assert stale_checkpoint_flag not in src
+
+
+# Backend-wide guard: Unsloth must never inject --no-cache-prompt into a llama-server
+# command. It disables in-VRAM prompt-prefix reuse, re-prefilling every repeated prompt
+# (#5692 only needed --cache-ram / --ctx-checkpoints off; #7260 dropped the stray flag).
+# Detecting it (_is_real) or honouring a user-supplied one (_prompt_cache_off) is fine.
+_NO_CACHE_PROMPT_FLAG = "--no-cache-prompt"
+_LIST_MUTATORS = frozenset({"append", "extend", "insert"})
+
+
+def _has_flag_literal(node: ast.AST) -> bool:
+    return any(
+        isinstance(n, ast.Constant) and n.value == _NO_CACHE_PROMPT_FLAG for n in ast.walk(node)
+    )
+
+
+def _no_cache_prompt_injections(source: str, filename: str) -> list[tuple[str, int]]:
+    """(file, lineno) for each spot adding --no-cache-prompt to a list."""
+    hits: list[tuple[str, int]] = []
+    for node in ast.walk(ast.parse(source, filename = filename)):
+        # cmd.append/extend/insert(... flag ...) or cmd += [... flag ...]
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _LIST_MUTATORS
+            and any(_has_flag_literal(a) for a in node.args)
+        ) or (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.op, ast.Add)
+            and _has_flag_literal(node.value)
+        ):
+            hits.append((filename, node.lineno))
+    return hits
+
+
+def test_unsloth_never_injects_no_cache_prompt_into_any_command():
+    root = Path(_BACKEND_DIR)
+    files = [p for p in root.rglob("*.py") if "tests" not in p.relative_to(root).parts]
+    violations: list[tuple[str, int]] = []
+    for path in files:
+        try:
+            violations += _no_cache_prompt_injections(path.read_text(encoding = "utf-8"), str(path))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+    assert files, "no backend source files were scanned"
+    assert violations == [], (
+        "Unsloth must never add --no-cache-prompt to a llama-server command "
+        "(it disables prompt-prefix reuse); detecting or honouring a user-supplied "
+        f"one is fine. Offending sites: {violations}"
+    )
 
 
 def test_load_model_sets_threads_once():
@@ -584,7 +674,9 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env")
-        return _types.SimpleNamespace(stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "")
+        return _types.SimpleNamespace(
+            stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "", returncode = 0
+        )
 
     monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", fake_run)
 
@@ -625,6 +717,95 @@ def test_probe_server_capabilities_reports_outdated_binary(tmp_path):
     assert caps["found"] is True
     assert caps["mtp_token"] is None
     assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_reads_mtp_from_multiline_help(tmp_path):
+    # Enum on the indented line: first-line-only probing falsely reported
+    # "lacks MTP" (#7302).
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type TYPE\n"
+        "                                        speculative decoding type\n"
+        "                                        (none,draft-simple,draft-mtp,ngram-mod)\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["mtp_token"] == "draft-mtp"
+    assert caps["supports_mtp"] is True
+    assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_empty_help_fails_open(tmp_path):
+    # --help prints nothing: must not claim the prebuilt lacks MTP (#7302).
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_no_spec_type_is_definitive(tmp_path):
+    # Nonempty --help without --spec-type: pre-spec binary, not inconclusive.
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--gpu-layers N\n  GPU layers to offload\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_failed_help_with_output_is_inconclusive(tmp_path):
+    fake = tmp_path / "llama-server"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "--help" ]; then\n'
+        "  echo 'illegal instruction'\n"
+        "  exit 1\n"
+        "fi\n"
+    )
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_crash_on_help_fails_open(tmp_path):
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/usr/bin/env bash\nkill -SEGV $$\n")
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+def test_mtp_token_from_spec_help_prefers_draft_mtp():
+    assert (
+        LlamaCppBackend._mtp_token_from_spec_help("--spec-type none,draft-mtp,mtp,ngram-mod")
+        == "draft-mtp"
+    )
+    assert LlamaCppBackend._mtp_token_from_spec_help("--spec-type [none|mtp|ngram-cache]") == "mtp"
+    assert LlamaCppBackend._mtp_token_from_spec_help("--spec-type none,ngram-mod") is None
+    # No incidental substring matches.
+    assert LlamaCppBackend._mtp_token_from_spec_help("prompt cache") is None
 
 
 def test_probe_server_capabilities_handles_missing_binary():
@@ -632,6 +813,7 @@ def test_probe_server_capabilities_handles_missing_binary():
     caps = LlamaCppBackend.probe_server_capabilities("/no/such/llama-server")
     assert caps["found"] is False
     assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
     assert caps["supports_cache_ram"] is False
     assert caps["supports_ctx_checkpoints"] is False
     assert caps["supports_no_cache_prompt"] is False
@@ -739,6 +921,25 @@ def test_probe_reports_windows_cache_flags_absent_for_older_binary(tmp_path):
     assert caps["supports_cache_ram"] is False
     assert caps["supports_ctx_checkpoints"] is False
     assert caps["supports_no_cache_prompt"] is False
+
+
+@_NEEDS_BASH
+def test_probe_detects_slot_save_path(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--slot-save-path PATH  path to save slot kv cache\n--threads N\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_slot_save"] is True
+
+
+@_NEEDS_BASH
+def test_probe_reports_slot_save_absent_for_older_binary(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", "--threads N\n")
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_slot_save"] is False
 
 
 def test_build_ngram_mod_flags_new():
@@ -1014,7 +1215,7 @@ def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypa
     )
 
 
-# usage backfill from timings (Studio UI t/s widget fix).
+# usage backfill from timings (Unsloth UI t/s widget fix).
 
 
 def test_backfill_usage_from_timings_fills_when_completion_tokens_zero():
@@ -1104,12 +1305,14 @@ def _resolver_backend(
     *,
     ngram_supported = True,
     mtp_token = "draft-mtp",
+    mtp_probe_inconclusive = False,
 ):
     """Backend with a deterministic probe so the resolver is hermetic."""
     fake = {
         "found": True,
         "mtp_token": mtp_token,
         "supports_mtp": bool(mtp_token),
+        "mtp_probe_inconclusive": mtp_probe_inconclusive,
         "ngram_mod_flavor": "new" if ngram_supported else None,
         "supports_ngram_mod": bool(ngram_supported),
         "spec_draft_n_max_flag": "--spec-draft-n-max",
@@ -1606,7 +1809,7 @@ def test_reload_forced_mtp_bounces_auto_mla():
     )
 
 
-# ── Full named-repo resolver matrix (the shipping Studio families) ─────
+# ── Full named-repo resolver matrix (the shipping Unsloth families) ─────
 #
 # Locks auto / off / forced-mtp routing for every Qwen3.5 (MTP + plain) and
 # gemma-4 (regular + QAT) GGUF repo, including the giant MoEs that stay
@@ -1805,6 +2008,24 @@ def test_spec_fallback_reason_set_when_binary_lacks_mtp(monkeypatch):
         binary = "/fake/llama-server",
     )
     assert backend.spec_fallback_reason == "binary_no_mtp"
+
+
+def test_spec_fallback_reason_none_when_mtp_probe_inconclusive(monkeypatch):
+    backend = _resolver_backend(
+        monkeypatch,
+        mtp_token = None,
+        mtp_probe_inconclusive = True,
+    )
+    backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.spec_fallback_reason is None
 
 
 def test_spec_fallback_reason_none_when_mtp_engages(monkeypatch):

@@ -15,6 +15,7 @@ column type).
 """
 
 import logging
+import re
 import sqlite3
 import threading
 
@@ -64,7 +65,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             error TEXT,
             num_chunks INTEGER NOT NULL DEFAULT 0,
             stored_path TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            embedding_model TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_documents_scope ON documents(scope);
         CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(scope, sha256);
@@ -107,6 +109,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()}
     if "project_id" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN project_id TEXT")
+    # Lazy upgrade: which embedder produced a document's vectors (NULL = legacy,
+    # assumed current). Dedupe re-ingests when it no longer matches.
+    if "embedding_model" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN embedding_model TEXT")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -143,9 +149,32 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def vec_table_dim(conn: sqlite3.Connection) -> int | None:
+    """Embedding width baked into ``chunks_vec``, or None when absent."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunks_vec'"
+    ).fetchone()
+    if row is None or not row["sql"]:
+        return None
+    m = re.search(r"float\[(\d+)\]", row["sql"])
+    return int(m.group(1)) if m else None
+
+
 def ensure_vec(conn: sqlite3.Connection, dim: int) -> None:
     """Create the dense ``chunks_vec`` table once the embedding dim is known
-    (vec0 bakes it into the column type). Idempotent; dim fixed per db."""
+    (vec0 bakes it into the column type). A width change (embedding model
+    switched in Settings) drops the table: the old vectors live in a foreign
+    space and would only block inserts, while lexical search keeps serving old
+    chunks until they are re-uploaded."""
+    existing = vec_table_dim(conn)
+    if existing is not None and existing != int(dim):
+        logger.warning(
+            "chunks_vec dim changed %d -> %d (embedding model switched); dropping "
+            "stale dense index. Re-upload documents to restore dense search.",
+            existing,
+            int(dim),
+        )
+        conn.execute("DROP TABLE chunks_vec")
     conn.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0("
         f"scope TEXT partition key, "

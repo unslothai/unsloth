@@ -136,8 +136,18 @@ class GgufVariantDetail(BaseModel):
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label (e.g., 'Q4_K_M')")
     size_bytes: int = Field(0, description = "File size in bytes")
+    download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
+    )
+    update_available: bool = Field(
+        False, description = "Whether a newer version of this variant is available on HF"
+    )
+    partial: bool = Field(
+        False,
+        description = "Whether this variant is an interrupted download. The hub service "
+        "already computes it; carry it through so callers can hide a quant whose shards "
+        "are incomplete instead of offering one that cannot load.",
     )
 
 
@@ -173,6 +183,14 @@ class LocalModelInfo(BaseModel):
     model_id: Optional[str] = Field(
         None,
         description = "HF repo id for cached models, e.g. org/model",
+    )
+    active_cache: Optional[bool] = Field(
+        None,
+        description = "Whether an HF model belongs to the current download cache.",
+    )
+    partial: bool = Field(
+        False,
+        description = "Whether the cached model has an incomplete download.",
     )
     model_format: Optional[str] = Field(
         None,

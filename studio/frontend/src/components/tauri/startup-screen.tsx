@@ -72,7 +72,7 @@ function DiagnosticsCopyActions({
           readOnly
           value={manualReport}
           onFocus={(event) => event.currentTarget.select()}
-          className="h-32 w-full max-w-md resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground"
+          className="h-32 w-full max-w-md resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
         />
       )}
     </div>
@@ -189,7 +189,8 @@ function InstallingContent({
         <Spinner className="size-6 text-primary" />
         <p className="text-sm font-bold text-foreground">Installing...</p>
         <p className="text-sm font-bold text-muted-foreground">
-          Please wait a few mins, then you can start training.
+          Your AI workspace is taking shape. Chat with AI, build projects, and
+          train models, all on your computer.
         </p>
         {currentStepIndex >= 0 && (
           <p className="mt-1 text-xs font-bold text-muted-foreground">

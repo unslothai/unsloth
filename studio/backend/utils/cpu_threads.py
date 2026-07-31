@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Early CPU thread-pool configuration for Studio processes."""
+"""Early CPU thread-pool configuration for Unsloth processes."""
 
 import os
 from typing import MutableMapping, Optional

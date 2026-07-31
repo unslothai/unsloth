@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio extra-UI Playwright test: Compare tab, Recipes editor, /export, /studio, Settings tabs."""
+"""Unsloth extra-UI Playwright test: Compare tab, Recipes editor, /export, /studio, Settings tabs."""
 
 import json
 import os
@@ -36,6 +36,9 @@ ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_extra")
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
+# The Voice-picker media-access crash is specific to headless Chromium on macos-14; only there do we
+# downgrade a renderer crash to a warning. Linux/Windows strict smoke jobs keep hard crash coverage.
+MACOS_RUNNER = os.environ.get("RUNNER_OS", "").lower() == "macos" or sys.platform == "darwin"
 # Longer turn timeout: gemma-3-270m CPU inference is 3-5x slower on macos-14 runners.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
@@ -71,6 +74,18 @@ def runtime_warn(m: str) -> None:
     info(f"WARN (runtime): {m}")
 
 
+def page_crashed(pg, exc: Exception) -> bool:
+    """True when the browser/page/context died (a macos-14 renderer crash) rather than a live-page
+    assertion failing -- so the caller can downgrade CI-environment flakiness to a runtime warning."""
+    try:
+        if pg.is_closed():
+            return True
+    except Exception:
+        return True
+    msg = str(exc).lower()
+    return "has been closed" in msg or "target closed" in msg or "crash" in msg
+
+
 with sync_playwright() as p:
     _watchdog = install_wall_clock_watchdog(
         WALL_TIMEOUT_S,
@@ -90,11 +105,11 @@ with sync_playwright() as p:
     )
     install_view_transition_killer(ctx)
     page = ctx.new_page()
-    # 60s default for slow macos-14 --single-process Chromium (second Studio boot of the job).
+    # 60s default for slow macos-14 --single-process Chromium (second Unsloth boot of the job).
     page.set_default_timeout(60_000)
     page_errors = []
 
-    # Filter out known-benign React errors (timing artefacts on slow CI runners, not Studio bugs);
+    # Filter out known-benign React errors (timing artefacts on slow CI runners, not Unsloth bugs);
     # shared base list lives in _playwright_robust.BENIGN_PAGE_ERROR_PATTERNS.
     def _on_pageerror(e):
         msg = str(e)
@@ -256,7 +271,7 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
 
-    # Detect chat-only mode (/api/health.chat_only): in chat-only mode /studio + /export redirect to /chat.
+    # Detect chat-only mode (/api/health.chat_only): /studio redirects to /chat while /export stays reachable and self-gated.
     health_resp = evaluate_fetch(
         page,
         f"{BASE}/api/health",
@@ -404,15 +419,19 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     # 3. Export route.
     # ─────────────────────────────────────────────────────
-    step(f"Export route ({'chat-only redirect' if chat_only else 'form fields'})")
+    step(f"Export route ({'chat-only self-gated' if chat_only else 'form fields'})")
     page.goto(f"{BASE}/export")
     page.wait_for_timeout(1500)
     shoot("07-export")
     if chat_only:
-        if "/export" in page.url:
-            soft_fail(f"chat-only mode should redirect /export -> /chat; url={page.url}")
+        if "/export" not in page.url:
+            soft_fail(f"chat-only mode should keep /export reachable; url={page.url}")
         else:
-            info(f"OK chat-only redirected /export -> {page.url}")
+            unavailable = page.get_by_text(re.compile(r"Export unavailable", re.I)).first
+            if unavailable.count() == 0:
+                soft_fail("chat-only /export did not show the export unavailable gate")
+            else:
+                info("OK chat-only /export rendered the unavailable gate")
     else:
         # Non-chat-only: verify the export-cta button + HF token field.
         cta = page.locator('[data-tour="export-cta"]').first
@@ -447,9 +466,9 @@ with sync_playwright() as p:
             )
 
     # ─────────────────────────────────────────────────────
-    # 4. Studio training route.
+    # 4. Unsloth training route.
     # ─────────────────────────────────────────────────────
-    step(f"Studio route ({'chat-only redirect' if chat_only else 'tabs + sections'})")
+    step(f"Unsloth route ({'chat-only redirect' if chat_only else 'tabs + sections'})")
     page.goto(f"{BASE}/studio")
     page.wait_for_timeout(1500)
     shoot("08-studio")
@@ -478,6 +497,14 @@ with sync_playwright() as p:
     step("Settings dialog: cycle through tabs")
     page.goto(f"{BASE}/chat")
     composer.wait_for(state = "visible", timeout = 60_000)
+    dictate = page.get_by_role("button", name = "Dictate").first
+    if dictate.count() == 0:
+        fail("Chat Dictate button not found")
+    elif dictate.get_attribute("type") != "button":
+        fail("Chat Dictate control must use type=button, not submit the composer")
+    else:
+        info("OK Chat Dictate control is type=button")
+
     page.keyboard.press("Control+,")
     page.wait_for_timeout(800)
     settings = page.get_by_role("dialog").first
@@ -497,6 +524,7 @@ with sync_playwright() as p:
             "Appearance",
             "Chat",
             "Developer",
+            "Voice",
             "About",
         )
         seen_tabs = []
@@ -524,9 +552,59 @@ with sync_playwright() as p:
                     soft_fail(f"Settings tab '{tab_name}' body suspiciously short: {body_text}")
             except Exception as exc:
                 soft_fail(f"Settings tab '{tab_name}' click failed: {exc!r}")
-        shoot("10-settings-tabs-visited")
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
+        step("Voice model picker: real mouse-wheel scrolling")
+        voice_tab = page.get_by_role(
+            "button", name = re.compile(r"^\s*Voice(?:\s+New)?\s*$", re.I)
+        ).first
+        if voice_tab.count() == 0:
+            fail("Voice settings tab not found")
+        else:
+            # The dictation-engine dropdown touches a media-access path that can crash headless
+            # Chromium on macos-14 (CheckMediaAccessPermission). A resulting TargetClosedError is CI
+            # flakiness there, not a product bug, so on macOS a crash is a runtime warning + page
+            # recovery; on Linux/Windows a crash and any live-page failure stay a hard fail.
+            try:
+                voice_tab.click()
+                page.get_by_label("Dictation engine").click()
+                page.get_by_role("option", name = "Local transcription").click()
+                page.get_by_label("Speech recognition model").click()
+                page.get_by_placeholder("Search model").fill("whisper")
+                results = page.get_by_test_id("stt-model-results")
+                page.wait_for_function(
+                    """() => {
+                        const node = document.querySelector('[data-testid="stt-model-results"]');
+                        return !!node && node.scrollHeight > node.clientHeight;
+                    }""",
+                    timeout = 30_000,
+                )
+                results.hover()
+                page.mouse.wheel(0, 700)
+                page.wait_for_function(
+                    """() => {
+                        const node = document.querySelector('[data-testid="stt-model-results"]');
+                        return !!node && node.scrollTop > 0;
+                    }""",
+                    timeout = 5_000,
+                )
+                info("OK Voice model picker mouse wheel changed scrollTop")
+            except Exception as exc:
+                if page_crashed(page, exc) and MACOS_RUNNER:
+                    runtime_warn(f"Voice model picker aborted (browser/page unstable): {exc!r}")
+                    page = recover_or_replace_page(
+                        page,
+                        ctx,
+                        default_timeout_ms = 60_000,
+                        info = lambda m: info(f"recovery: {m}"),
+                    )
+                else:
+                    fail(f"Voice model picker did not wheel-scroll: {exc!r}")
+        # When the crash closed the context/browser (not just the page), recover_or_replace_page
+        # cannot mint a replacement and hands back the closed page; skip the cosmetic teardown rather
+        # than re-raise TargetClosedError on it. is_closed() is a local check and never raises.
+        if not page.is_closed():
+            shoot("10-settings-tabs-visited")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
         info(f"visited Settings tabs: {seen_tabs}")
         if not seen_tabs:
             soft_fail("no Settings tabs were visitable")
@@ -545,4 +623,7 @@ with sync_playwright() as p:
         sys.exit(1)
     info("PASS extra UI flow")
     _watchdog.cancel()
-    browser.close()
+    try:
+        browser.close()
+    except Exception:
+        pass  # a crashed browser may already be gone; never fail teardown after PASS

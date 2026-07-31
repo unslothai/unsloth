@@ -312,7 +312,7 @@ if [ "$SKIP_TORCH" = true ]; then
 else
     echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
     uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
-        --index-url "$TORCH_INDEX_URL"
+        --default-index "$TORCH_INDEX_URL"
 fi
 TORCH_EOF
 

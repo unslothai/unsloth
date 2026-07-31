@@ -6,6 +6,7 @@
 import { Popover as PopoverPrimitive } from "radix-ui";
 import type * as React from "react";
 
+import { useDialogPortalContainer } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 function Popover({
@@ -24,10 +25,18 @@ function PopoverContent({
   className,
   align = "center",
   sideOffset = 0,
+  container,
   ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Content>) {
+}: React.ComponentProps<typeof PopoverPrimitive.Content> & {
+  container?: HTMLElement | null;
+}) {
+  // Inside a modal dialog the body scroll lock swallows wheel events on
+  // body-portaled content; portal into the dialog instead (like Select).
+  const dialogContainer = useDialogPortalContainer();
   return (
-    <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Portal
+      container={container ?? dialogContainer ?? undefined}
+    >
       <PopoverPrimitive.Content
         data-slot="popover-content"
         align={align}

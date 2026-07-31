@@ -17,6 +17,9 @@ from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast
 import re
 import os
+import shutil
+import tempfile
+import weakref
 from transformers.models.llama.modeling_llama import logger
 from peft import PeftModelForCausalLM
 import torch
@@ -370,12 +373,18 @@ def fix_sentencepiece_tokenizer(
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
 
-    # Check if tokenizer.model exists
-    if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
-        return new_tokenizer
+    # Fresh per-call subdir so concurrent/repeated calls can't clobber each other's
+    # tokenizer.model or leak stale files, without deleting anything the caller owns.
+    temporary_location = tempfile.mkdtemp(prefix = "tokenizer_", dir = temporary_location)
 
     # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
+
+    # Only sentencepiece tokenizers write tokenizer.model, so check after the save.
+    if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
+        # new_tokenizer was built in memory and never references this dir, so drop it.
+        shutil.rmtree(temporary_location, ignore_errors = True)
+        return new_tokenizer
 
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
     tokenizer_file.ParseFromString(open(f"{temporary_location}/tokenizer.model", "rb").read())
@@ -414,6 +423,9 @@ def fix_sentencepiece_tokenizer(
         eos_token = new_tokenizer.eos_token,
         pad_token = new_tokenizer.pad_token,
     )
+    # vocab_file points here, so the dir must outlive the tokenizer (a later
+    # save_pretrained copies the patched tokenizer.model from it); reclaim it on GC.
+    weakref.finalize(tokenizer, shutil.rmtree, temporary_location, ignore_errors = True)
     return tokenizer
 
 
@@ -563,8 +575,11 @@ def _load_correct_tokenizer(
         # /tmp of Kaggle seems has a 80GB limit!
         # Let's utilize them
         cache_dir = os.path.join(KAGGLE_TMP, cache_dir)
-    else:
+    elif cache_dir == "huggingface_tokenizers_cache":
+        # This default name is Colab/Kaggle-only; elsewhere use the HF default cache.
         cache_dir = None
+    # else: keep a caller-supplied cache_dir so the tokenizer loads from the prefetch-warmed dir instead
+    # of risking an in-process Hub/Xet transfer.
 
     # Try loading the slow tokenizer. If it fails, then try Fast only
     # Mainly to solve Deepseek models with no tokenizer.model file
@@ -1323,6 +1338,7 @@ def check_tokenizer(
     padding_side = "right",
     token = None,
     _reload = True,
+    cache_dir = None,
 ):
     # Checks tokenizer for out of bounds ids.
     # Mainly a fix for https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha
@@ -1413,10 +1429,11 @@ def check_tokenizer(
                     f"Fix your tokenizer since it'll perform out of bounds memory accesses."
                 )
 
-            if IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT:
-                cache_dir = "huggingface_tokenizers_cache"
-            else:
-                cache_dir = None
+            # Reuse a caller-supplied cache_dir (warmed cache) for the repair reload; else the
+            # Colab/Kaggle sentinel (HF default elsewhere), as load_correct_tokenizer does.
+            reload_cache_dir = cache_dir
+            if reload_cache_dir is None and (IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT):
+                reload_cache_dir = "huggingface_tokenizers_cache"
 
             # Sometimes slow tokenizer does not work like Deepseek
             try:
@@ -1430,7 +1447,7 @@ def check_tokenizer(
                     use_fast = False,
                     legacy = False,
                     from_slow = True,
-                    cache_dir = cache_dir,
+                    cache_dir = reload_cache_dir,
                 )
                 return check_tokenizer(
                     model = model,
@@ -1440,6 +1457,7 @@ def check_tokenizer(
                     padding_side = padding_side,
                     token = token,
                     _reload = False,
+                    cache_dir = cache_dir,
                 )
                 break
             except:
@@ -1458,7 +1476,7 @@ def get_tokenizer_info(tokenizer) -> dict:
     """Return a concise diagnostic summary of a tokenizer instance.
 
     Collects key properties into a JSON-safe dict for logging, debugging, or the
-    Studio UI. Missing attributes fall back to ``None`` rather than raising.
+    Unsloth UI. Missing attributes fall back to ``None`` rather than raising.
 
     Example output::
 

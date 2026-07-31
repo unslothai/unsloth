@@ -15,6 +15,7 @@ import urllib.request
 from typing import Callable
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.child_stdio import utf8_child_env
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 _logger = logging.getLogger(__name__)
@@ -26,11 +27,14 @@ FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/rele
 def has_blackwell_gpu() -> bool:
     """Return True if any visible NVIDIA GPU has compute capability >= 10.0 (Blackwell).
 
-    Dao-AILab ships no flash-attention wheels for these archs and older-arch wheels
-    fail to load, so callers use this to skip the flash-attn install path. Cached
-    for the process lifetime; tests mocking nvidia-smi must call
+    Cached for the process lifetime; tests mocking nvidia-smi must call
     ``has_blackwell_gpu.cache_clear()`` first.
     """
+    # Detection disabled for now: Dao-AILab ships Blackwell (sm_100+) flash-attn
+    # wheels and url_exists() already gates resolution, so we no longer skip
+    # flash-attn on Blackwell. The nvidia-smi probe below is kept for possible
+    # future arch-based gating; drop this early return to re-enable it.
+    return False
     exe = shutil.which("nvidia-smi")
     if not exe:
         return False
@@ -40,6 +44,8 @@ def has_blackwell_gpu() -> bool:
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 10,
             env = child_env_without_native_path_secret(),
         )
@@ -99,8 +105,10 @@ def probe_torch_wheel_env(*, timeout: int | None = None) -> dict[str, str] | Non
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = timeout,
-            env = child_env_without_native_path_secret(),
+            env = utf8_child_env(child_env_without_native_path_secret()),
             **windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
@@ -117,6 +125,19 @@ def probe_torch_wheel_env(*, timeout: int | None = None) -> dict[str, str] | Non
     return env
 
 
+# torch 2.11 has no native prebuilt wheels for flash-attn / causal-conv1d / mamba
+# yet, but their torch 2.10 CUDA wheels load and pass the projects' own test suites
+# on torch 2.11 (verified on B200: FA2 fwd/bwd, causal-conv1d, and mamba selective
+# scan all match reference). Reuse the torch 2.10 wheels on torch 2.11 so a 2.11
+# install still gets these prebuilt accelerators instead of building from source.
+_PREBUILT_WHEEL_TORCH_MM = {"2.11": "2.10"}
+
+
+def prebuilt_wheel_torch_mm(torch_mm: str) -> str:
+    """Map a torch major.minor to the one whose prebuilt accelerator wheels to use."""
+    return _PREBUILT_WHEEL_TORCH_MM.get(torch_mm, torch_mm)
+
+
 def direct_wheel_url(
     *,
     filename_prefix: str,
@@ -130,7 +151,7 @@ def direct_wheel_url(
 
     filename = (
         f"{filename_prefix}-{package_version}"
-        f"+cu{env['cuda_major']}torch{env['torch_mm']}"
+        f"+cu{env['cuda_major']}torch{prebuilt_wheel_torch_mm(env['torch_mm'])}"
         f"cxx11abi{env['cxx11abi']}-{env['python_tag']}-{env['python_tag']}"
         f"-{env['platform_tag']}.whl"
     )
@@ -152,7 +173,7 @@ def flash_attn_package_version(torch_mm: str) -> str | None:
 def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     if env is None:
         return None
-    package_version = flash_attn_package_version(env["torch_mm"])
+    package_version = flash_attn_package_version(prebuilt_wheel_torch_mm(env["torch_mm"]))
     if package_version is None:
         return None
     return direct_wheel_url(
@@ -185,6 +206,8 @@ def install_wheel(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             env = child_env_without_native_path_secret(),
         )
         attempts.append(("uv", result))
@@ -197,7 +220,10 @@ def install_wheel(
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
-        env = child_env_without_native_path_secret(),
+        encoding = "utf-8",
+        errors = "replace",
+        # Make the Python child emit the UTF-8 we decode above.
+        env = utf8_child_env(child_env_without_native_path_secret()),
     )
     attempts.append(("pip", result))
     return attempts

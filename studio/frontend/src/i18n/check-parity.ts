@@ -3,13 +3,22 @@
 
 // Parity check between en.ts and every non-English locale.
 // - Locale files may be partial; missing keys must fall back to English.
-// - All zh-CN keys must exist in en (no extras).
+// - All non-English keys must exist in en (no extras).
 // - Placeholder set must match per leaf between en and the overlay.
 //
 // Run: npx tsx src/i18n/check-parity.ts
 
 import { en } from "./locales/en.ts";
 import { zhCN } from "./locales/zh-CN.ts";
+import { ptBR } from "./locales/pt-br.ts";
+import { ja } from "./locales/ja.ts";
+import { es } from "./locales/es.ts";
+import { hi } from "./locales/hi.ts";
+import { ar } from "./locales/ar.ts";
+import { fr } from "./locales/fr.ts";
+import { ru } from "./locales/ru.ts";
+import { de } from "./locales/de.ts";
+import { ko } from "./locales/ko.ts";
 
 type Tree = { readonly [k: string]: string | Tree };
 
@@ -87,7 +96,18 @@ function checkExtras(
   }
 }
 
-const overlays: Record<string, Tree> = { "zh-CN": zhCN as unknown as Tree };
+const overlays: Record<string, Tree> = {
+  "zh-CN": zhCN as unknown as Tree,
+  "pt-BR": ptBR as unknown as Tree,
+  "ja": ja as unknown as Tree,
+  es: es as unknown as Tree,
+  hi: hi as unknown as Tree,
+  ar: ar as unknown as Tree,
+  fr: fr as unknown as Tree,
+  ru: ru as unknown as Tree,
+  de: de as unknown as Tree,
+  ko: ko as unknown as Tree,
+};
 let anyError = false;
 
 for (const [locale, overlay] of Object.entries(overlays)) {

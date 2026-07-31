@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Lockfile supply-chain audit for the Studio frontend and Tauri shell.
+"""Lockfile supply-chain audit for the Unsloth frontend and Tauri shell.
 
 Runs BEFORE `npm ci` / `cargo fetch` in CI. Refuses to proceed when a
 lockfile contains patterns indicating supply-chain injection (npm
@@ -294,7 +294,7 @@ CARGO_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 
 # Cargo non-registry source allowlist: `(crate_name, exact_source_string)`.
 # Both must match verbatim; bumping the pinned SHA forces a re-review.
-# Studio's Tauri shell pulls `fix-path-env` from git because it is not
+# Unsloth's Tauri shell pulls `fix-path-env` from git because it is not
 # published to crates.io; commit c4c45d5 was reviewed when it landed.
 CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = (
     (

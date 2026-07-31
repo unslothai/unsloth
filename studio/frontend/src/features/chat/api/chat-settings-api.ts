@@ -13,6 +13,7 @@ export type PersistedInferenceParams = Partial<
 export interface PersistedChatPreset {
   name: string;
   params: PersistedInferenceParams;
+  loadConfig?: Record<string, unknown>;
 }
 
 export interface PersistedChatSettings {
@@ -26,6 +27,7 @@ export interface PersistedChatSettings {
   collapseHtmlArtifacts?: boolean;
   allowArtifactNetworkAccess?: boolean;
   autoHealToolCalls?: boolean;
+  nudgeToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
   toolCallTimeout?: number;
 }

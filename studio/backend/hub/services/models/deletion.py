@@ -19,8 +19,10 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import extract_quant_label, extract_quant_token
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
+    iter_repo_cache_dirs,
     purge_partial_repo,
     purge_repo_cache_dirs,
+    resolve_delete_target_root,
 )
 from hub.utils.paths import (
     is_valid_gguf_variant as _is_valid_gguf_variant,
@@ -153,6 +155,30 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     return removed, failures
 
 
+def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
+    removed = 0
+    failures: list[str] = []
+    for target_repo in target_repos:
+        repo_path = getattr(target_repo, "repo_path", None)
+        if not repo_path:
+            continue
+        snapshots = Path(repo_path) / "snapshots"
+        if not snapshots.is_dir():
+            continue
+        try:
+            snap_dirs = [s for s in snapshots.iterdir() if s.is_dir() and not s.is_symlink()]
+        except OSError:
+            continue
+        for snap in snap_dirs:
+            try:
+                snap.rmdir()
+                removed += 1
+            except OSError as e:
+                if e.errno != errno.ENOTEMPTY:
+                    failures.append(f"{snap.name}: {e}")
+    return removed, failures
+
+
 def _delete_gguf_variant_from_repos(
     repo_id: str,
     variant: str,
@@ -160,6 +186,7 @@ def _delete_gguf_variant_from_repos(
     hf_token: Optional[str],
     *,
     sibling_active: bool = False,
+    root: Optional[Path] = None,
 ) -> dict:
     failures: list[str] = []
     removed_snapshots = 0
@@ -241,6 +268,7 @@ def _delete_gguf_variant_from_repos(
         hf_token,
         extra_hashes = frozenset(completed_hashes),
         companions = not sibling_active,
+        root = root,
     )
     if incomplete_result.unresolved:
         raise HTTPException(
@@ -252,9 +280,12 @@ def _delete_gguf_variant_from_repos(
             ),
         )
 
-    state_purged = download_manifest.purge_state("model", repo_id, variant)
+    state_purged = download_manifest.purge_state("model", repo_id, variant, hub_cache = root)
     # Reclaim the empty quant folder so it stops 404ing on delete.
     removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
+    removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+    removed_dirs += removed_snap_dirs
+    dir_failures.extend(snap_dir_failures)
     if dir_failures:
         raise HTTPException(
             status_code = 409,
@@ -284,11 +315,218 @@ def _delete_gguf_variant_from_repos(
     return {"status": "deleted", "repo_id": repo_id, "variant": variant}
 
 
+def reclaim_replaced_gguf_variant(
+    repo_id: str,
+    variant: str,
+    keep_main_hashes: frozenset[str],
+    hf_token: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
+) -> dict:
+    """Prune stale main-GGUF files for a variant after a replacement verified.
+
+    This is intentionally narrower than user-driven delete: it removes only
+    same-variant main files whose local blob hash is not in *keep_main_hashes*,
+    then unlinks their blobs only if no remaining snapshot references them.
+    Shared companions and sibling variants are left intact.
+    """
+    if not keep_main_hashes:
+        logger.info(
+            "Skipping stale GGUF reclaim for %s [%s]: current main hashes unresolved",
+            repo_id,
+            variant,
+        )
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "unresolved_hashes",
+        }
+    if not _is_valid_repo_id(repo_id) or not _is_valid_gguf_variant(variant):
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "invalid_target",
+        }
+
+    failures: list[str] = []
+    removed_snapshots = 0
+    deleted_blobs = 0
+    deleted_bytes = 0
+    variant_key = variant.lower()
+
+    try:
+        cache_scans = cache_inventory.all_hf_cache_scans()
+    except Exception as e:
+        logger.warning(
+            "Skipping stale GGUF reclaim for %s [%s]: cache scan failed: %s",
+            repo_id,
+            variant,
+            download_registry.scrub_secrets(str(e), hf_token = hf_token),
+        )
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "scan_failed",
+        }
+
+    if hub_cache is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        hub_cache = get_hf_cache_paths().hub_cache
+    try:
+        target_hub_cache = Path(hub_cache).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        target_hub_cache = Path(hub_cache).expanduser()
+
+    candidate_repos = [
+        repo_info
+        for hf_cache in cache_scans
+        for repo_info in hf_cache.repos
+        if str(getattr(repo_info, "repo_type", "")) == "model"
+        and str(getattr(repo_info, "repo_id", "")).lower() == repo_id.lower()
+        and getattr(repo_info, "repo_path", None)
+        and Path(repo_info.repo_path).parent.resolve(strict = False) == target_hub_cache
+    ]
+    try:
+        matched_repo_ids = resolve_destructive_repo_ids(
+            repo_id,
+            [str(getattr(repo_info, "repo_id", "")) for repo_info in candidate_repos],
+            noun = "models",
+        )
+    except HTTPException as e:
+        detail = getattr(e, "detail", str(e))
+        logger.warning(
+            "Skipping stale GGUF reclaim for %s [%s]: %s",
+            repo_id,
+            variant,
+            download_registry.scrub_secrets(str(detail), hf_token = hf_token),
+        )
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "ambiguous_repo",
+        }
+    target_repos = [
+        repo_info
+        for repo_info in candidate_repos
+        if str(getattr(repo_info, "repo_id", "")) in matched_repo_ids
+    ]
+
+    for target_repo in target_repos:
+        repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
+        stale_matches: list[tuple[Path, Optional[Path], str]] = []
+        matches = _repo_file_matches(
+            target_repo,
+            lambda name: _is_main_gguf_filename(name)
+            and extract_quant_label(name).lower() == variant_key,
+        )
+        for snap, blob, name in matches:
+            # Prune only a file we can identify as a real, stale cache blob. A
+            # no-symlink snapshot file has no identifiable blob hash, so keep it.
+            blob_hash = (
+                _blob_hash_from_path(blob)
+                if cache_inventory._is_real_cache_blob(blob, repo_dir)
+                else None
+            )
+            if blob_hash is None or blob_hash in keep_main_hashes:
+                continue
+            stale_matches.append((snap, blob, name))
+
+        if not stale_matches:
+            continue
+
+        for snap, _blob, name in stale_matches:
+            try:
+                if _path_exists_or_symlink(snap):
+                    snap.unlink()
+                    removed_snapshots += 1
+            except OSError as e:
+                failures.append(f"{name}: {e}")
+
+        ref_counts = _snapshot_blob_reference_counts(repo_dir)
+        seen_blobs: set[Path] = set()
+        for _snap, blob, name in stale_matches:
+            if blob is None:
+                continue
+            try:
+                blob_key = blob.resolve()
+            except OSError:
+                blob_key = blob
+            if blob_key in seen_blobs:
+                continue
+            seen_blobs.add(blob_key)
+            if ref_counts.get(blob_key, 0) > 0:
+                continue
+            try:
+                if blob.exists():
+                    deleted_bytes += blob.stat().st_size
+                    blob.unlink()
+                    deleted_blobs += 1
+            except OSError as e:
+                failures.append(f"{name}: {e}")
+
+    removed_dirs = 0
+    dir_failures: list[str] = []
+    if target_repos:
+        removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
+        removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+        removed_dirs += removed_snap_dirs
+        dir_failures.extend(snap_dir_failures)
+        failures.extend(dir_failures)
+
+    if failures:
+        logger.warning(
+            "Stale GGUF reclaim for %s [%s] left %d failure(s): %s",
+            repo_id,
+            variant,
+            len(failures),
+            "; ".join(failures[:3]),
+        )
+
+    if removed_snapshots or deleted_blobs or removed_dirs:
+        cache_inventory.invalidate_hf_cache_scans()
+        logger.info(
+            "Reclaimed stale GGUF %s [%s]: snapshots=%d blobs=%d dirs=%d freed=%.1f MB",
+            repo_id,
+            variant,
+            removed_snapshots,
+            deleted_blobs,
+            removed_dirs,
+            deleted_bytes / (1024 * 1024),
+        )
+
+    return {
+        "status": "reclaimed",
+        "repo_id": repo_id,
+        "variant": variant,
+        "removed_snapshots": removed_snapshots,
+        "deleted_blobs": deleted_blobs,
+        "removed_dirs": removed_dirs,
+    }
+
+
 def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
-    """True when *loaded_id* is *repo_id* or a file within it; ``/``-boundary aware so ``org/model`` doesn't match sibling ``org/model-v2``."""
+    """Match a loaded repo ID or an on-disk path inside any copy of the repo."""
     rid = repo_id.lower()
     lid = loaded_id.lower()
-    return lid == rid or lid.startswith(f"{rid}/")
+    if lid == rid or lid.startswith(f"{rid}/"):
+        return True
+
+    try:
+        loaded_path = Path(loaded_id).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for repo_dir in iter_repo_cache_dirs("model", repo_id):
+        try:
+            resolved_repo = repo_dir.resolve(strict = False)
+            if loaded_path == resolved_repo or loaded_path.is_relative_to(resolved_repo):
+                return True
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return False
 
 
 def _loaded_repo_variant_blocks_delete(
@@ -352,6 +590,7 @@ async def delete_cached_model_response(
     repo_id: str,
     variant: Optional[str] = None,
     hf_token: Optional[str] = None,
+    cache_path: Optional[str] = None,
 ):
     """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
 
@@ -395,14 +634,19 @@ async def delete_cached_model_response(
         )
         raise HTTPException(status_code = 400, detail = detail)
     try:
-        return await asyncio.to_thread(_delete_cached_model_blocking, repo_id, variant, hf_token)
+        return await asyncio.to_thread(
+            _delete_cached_model_blocking, repo_id, variant, hf_token, cache_path
+        )
     finally:
         downloads.registry.end_delete(repo_key, variant)
         cache_inventory.invalidate_hf_cache_scans()
 
 
 def _delete_cached_model_blocking(
-    repo_id: str, variant: Optional[str], hf_token: Optional[str]
+    repo_id: str,
+    variant: Optional[str],
+    hf_token: Optional[str],
+    cache_path: Optional[str] = None,
 ) -> dict:
     try:
         # If a sibling quant is downloading concurrently, restrict this delete to
@@ -413,13 +657,26 @@ def _delete_cached_model_blocking(
 
         cache_scans = cache_inventory.all_hf_cache_scans()
 
-        candidate_entries = []
+        # A repo can live in several remembered caches. Group its copies by the
+        # cache root that owns each, then target exactly one cache so a delete
+        # never removes copies in other, previously selected caches.
+        owners: dict = {}
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
                 if str(repo_info.repo_type) != "model":
                     continue
-                if repo_info.repo_id.lower() == repo_id.lower():
-                    candidate_entries.append((hf_cache, repo_info))
+                if repo_info.repo_id.lower() != repo_id.lower():
+                    continue
+                try:
+                    owner = Path(repo_info.repo_path).parent.resolve(strict = False)
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                owners.setdefault(owner, []).append((hf_cache, repo_info))
+
+        target_root = resolve_delete_target_root("model", repo_id, cache_path, owners.keys())
+        if target_root is None:
+            raise HTTPException(status_code = 400, detail = "Invalid cache_path")
+        candidate_entries = owners.get(target_root, [])
 
         matched_repo_ids = resolve_destructive_repo_ids(
             repo_id,
@@ -434,10 +691,15 @@ def _delete_cached_model_blocking(
 
         if not target_entries:
             if variant is None:
-                cache_purged = purge_repo_cache_dirs("model", repo_id) or purge_partial_repo(
-                    "model", repo_id
+                cache_purged = purge_repo_cache_dirs(
+                    "model", repo_id, root = target_root
+                ) or purge_partial_repo("model", repo_id, root = target_root)
+                state_purged = (
+                    download_manifest.purge_all_state_for_repo(
+                        "model", repo_id, hub_cache = target_root
+                    )
+                    > 0
                 )
-                state_purged = download_manifest.purge_all_state_for_repo("model", repo_id) > 0
                 if cache_purged or state_purged:
                     return {"status": "deleted", "repo_id": repo_id}
             if variant:
@@ -446,6 +708,7 @@ def _delete_cached_model_blocking(
                     variant,
                     hf_token,
                     companions = not sibling_active,
+                    root = target_root,
                 )
                 if incomplete_result.unresolved:
                     raise HTTPException(
@@ -460,6 +723,7 @@ def _delete_cached_model_blocking(
                     "model",
                     repo_id,
                     variant,
+                    hub_cache = target_root,
                 )
                 if incomplete_result.deleted > 0 or state_purged:
                     return {
@@ -476,6 +740,7 @@ def _delete_cached_model_blocking(
                 [repo for _cache, repo in target_entries],
                 hf_token,
                 sibling_active = sibling_active,
+                root = target_root,
             )
 
         deleted_revisions = False
@@ -494,9 +759,11 @@ def _delete_cached_model_blocking(
             delete_strategy.execute()
             deleted_revisions = True
 
-        cache_purged = purge_repo_cache_dirs("model", repo_id)
-        partial_purged = purge_partial_repo("model", repo_id)
-        state_purged = download_manifest.purge_all_state_for_repo("model", repo_id) > 0
+        cache_purged = purge_repo_cache_dirs("model", repo_id, root = target_root)
+        partial_purged = purge_partial_repo("model", repo_id, root = target_root)
+        state_purged = (
+            download_manifest.purge_all_state_for_repo("model", repo_id, hub_cache = target_root) > 0
+        )
 
         if not (deleted_revisions or cache_purged or partial_purged or state_purged):
             raise HTTPException(status_code = 404, detail = "No revisions found for model")

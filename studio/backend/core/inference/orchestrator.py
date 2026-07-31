@@ -27,7 +27,7 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
-from utils.hardware import prepare_gpu_selection
+from utils.hardware import get_device, prepare_gpu_selection
 
 # Re-exported from the shared helper so GGUF, training, and inference share one
 # type; kept importable here for backwards compatibility.
@@ -45,6 +45,46 @@ _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _DISPATCH_DRAIN_TIMEOUT = 5.0
 
+# Max wait for a cancelled generation to release _gen_lock before unload_model
+# tears the subprocess down. Only bounds a wedged worker.
+_UNLOAD_GEN_LOCK_TIMEOUT = 15.0
+
+
+class GenStreamError(str):
+    """A stream chunk carrying a real backend/generation error, not model text.
+
+    Subclasses str so existing display/logging consumers are unaffected, while
+    callers can distinguish a real error from model output whose visible text
+    starts with "Error:" by checking isinstance(chunk, GenStreamError).
+    """
+
+    __slots__ = ("public",)
+
+    def __new__(
+        cls,
+        value,
+        *,
+        public: bool = False,
+    ):
+        obj = str.__new__(cls, value)
+        obj.public = bool(public)
+        return obj
+
+
+class GenStreamErrorRaised(RuntimeError):
+    """Internal exception form of ``GenStreamError`` for generator boundaries."""
+
+    __slots__ = ("public",)
+
+    def __init__(
+        self,
+        value,
+        *,
+        public: bool = False,
+    ):
+        super().__init__(value)
+        self.public = bool(public)
+
 
 class InferenceOrchestrator:
     """
@@ -60,15 +100,42 @@ class InferenceOrchestrator:
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
         self._cancel_event: Any = None  # mp.Event — set to cancel generation
+        # Set for the whole unload; the worker never clears it (unlike _cancel_event),
+        # so a generate queued behind the cancelled one is skipped, not run.
+        self._drain_event: Any = None
         self._gen_lock = threading.Lock()  # Serializes generation
+        # Cancel event of the request holding _gen_lock: lets a Stop tell whether it owns the
+        # running generation or is queued behind it (the worker's event is shared).
+        self._active_cancel_events: list = []
+        self._executing_cancel_events: list = []
+        self._active_cancel_lock = threading.Lock()
+        # Held across claim + _send_cmd so claim order matches the subprocess dequeue order,
+        # which _owns_worker relies on.
+        self._send_order_lock = threading.Lock()
+        # Set during a switch so a generation winning the _gen_lock handoff bails
+        # instead of starting on the outgoing model.
+        self._unload_pending = False
 
         # Dispatcher state for compare mode (adapter-controlled requests):
         # bypass _gen_lock, send commands directly, read from per-request
         # mailboxes routed by a dispatcher thread on request_id.
         self._mailboxes: dict[str, queue.Queue] = {}
+        # request_id -> cancel event, so the dispatcher can move worker ownership as it routes.
+        # Consumers read their mailbox whenever they get to it, so only the dispatcher sees
+        # responses in the order the worker produced them.
+        self._request_cancel_events: dict[str, object] = {}
+        # Mailboxes for the _gen_lock generations. Kept apart from _mailboxes because that map
+        # means "compare requests are in flight" to the unload and distributed paths.
+        self._direct_mailboxes: dict[str, queue.Queue] = {}
         self._mailbox_lock = threading.Lock()
         self._dispatcher_thread: Optional[threading.Thread] = None
         self._dispatcher_stop = threading.Event()
+        # Serializes dispatcher start/stop. _generate_dispatched (compare mode) bypasses
+        # _gen_lock, so two concurrent compare requests can both reach _start_dispatcher;
+        # without this lock both could observe no live dispatcher and each spawn one,
+        # orphaning the extra thread (self._dispatcher_thread tracks only the last). The
+        # orphan later steals the "unloaded" reply off resp_queue and hangs unload_model.
+        self._dispatcher_lifecycle_lock = threading.Lock()
 
         # Local state mirrors (updated from subprocess responses)
         self.active_model_name: Optional[str] = None
@@ -92,13 +159,11 @@ class InferenceOrchestrator:
 
     @property
     def default_models(self) -> list[str]:
-        # Wait up to 5s for background HF fetch
-        self._top_models_ready.wait(timeout = 5)
         top_gguf = self._top_gguf_cache or []
         top_hub = self._top_hub_cache or []
-        # Curated static defaults first, then HF download-ranked to backfill.
-        # Send extras so the frontend keeps 4 per category after removing
-        # downloaded ones.
+        # Never wait for the remote Hugging Face ranking during startup. Chat's
+        # first /api/models/list needs curated defaults immediately; the
+        # background fetch backfills extra choices on later calls.
         result: list[str] = []
         seen: set[str] = set()
         for m in self._static_models + top_gguf + top_hub:
@@ -148,25 +213,46 @@ class InferenceOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new inference subprocess."""
+        # Same recheck as the training/export spawns, REPAIR reservations only: a
+        # repair swaps without holding the lifecycle gate this load's caller owns,
+        # while an install cannot swap until this gate is released (and then its
+        # queued-load snapshot aborts it), so tolerating installs here lets the
+        # load win instead of failing both sides. Also covers the OpenAI
+        # auto-switch path, which enters _load_model_impl without route guards.
+        from utils.transformers_version import (
+            SidecarSwapInProgress,
+            sidecar_swap_kind,
+        )
+
+        if sidecar_swap_kind() == "repair":
+            raise SidecarSwapInProgress(
+                "A transformers repair is replacing the latest sidecar; retry when it completes."
+            )
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
+        from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
-        from .worker import run_inference_process
+        cache_env = get_hf_cache_paths().child_env({})
 
-        with native_path_secret_removed_for_child_start():
+        with (
+            child_environment_for_spawn(cache_env),
+            native_path_secret_removed_for_child_start(),
+        ):
             self._cmd_queue = _CTX.Queue()
             self._resp_queue = _CTX.Queue()
             self._cancel_event = _CTX.Event()
+            self._drain_event = _CTX.Event()
 
             self._proc = _CTX.Process(
                 target = run_without_native_path_secret,
-                args = (run_inference_process,),
+                args = ("core.inference.worker", "run_inference_process", cache_env),
                 kwargs = {
                     "cmd_queue": self._cmd_queue,
                     "resp_queue": self._resp_queue,
                     "cancel_event": self._cancel_event,
+                    "drain_event": self._drain_event,
                     "config": config,
                 },
                 daemon = True,
@@ -182,12 +268,24 @@ class InferenceOrchestrator:
         if self._cancel_event is not None:
             self._cancel_event.set()
 
-    def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
-        """Gracefully shut down the inference subprocess."""
+    def is_worker_alive(self) -> bool:
+        """True while the inference subprocess is running, even with no model
+        active (a failed load can leave a live worker holding sidecar modules)."""
+        proc = self._proc
+        return proc is not None and proc.is_alive()
+
+    def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
+        """Gracefully shut down the inference subprocess.
+
+        Returns True only once the worker is confirmed dead. If it survives
+        terminate/kill (e.g. wedged in an uninterruptible CUDA syscall that outlives
+        SIGKILL) the live handle is KEPT, not nulled, so is_worker_alive() and the
+        pre-swap liveness guard can still observe the survivor instead of a cleared
+        handle and refuse the destructive sidecar swap."""
         self._stop_dispatcher()  # before killing subprocess
         if self._proc is None or not self._proc.is_alive():
             self._proc = None
-            return
+            return True
 
         # 1. Cancel any ongoing generation first (instant via mp.Event)
         self._cancel_generation()
@@ -224,11 +322,40 @@ class InferenceOrchestrator:
                 except Exception:
                     pass
 
+        if self._proc is not None and self._proc.is_alive():
+            # Survived SIGKILL (uninterruptible syscall): keep the handle so callers
+            # and the pre-swap guard see a live worker rather than a nulled one.
+            logger.error(
+                "Inference subprocess still alive after terminate/kill; "
+                "preserving its handle for the pre-swap liveness check"
+            )
+            return False
+
         self._proc = None
         self._cmd_queue = None
         self._resp_queue = None
         self._cancel_event = None
+        self._drain_event = None
+        self._reset_worker_scoped_state()
         logger.info("Inference subprocess shut down")
+        return True
+
+    def _reset_worker_scoped_state(self) -> None:
+        """Drop bookkeeping that only means anything for the worker that just died.
+
+        Ownership is scoped by cancel-event identity alone, so a consumer still blocked
+        on its mailbox when the process was replaced stayed recorded as the executor. A
+        generation on the fresh worker then failed _owns_worker and could not be stopped.
+        Mailboxes go too: nothing will ever route to them, and a stale one reads as
+        compare activity to the unload path.
+        """
+        with self._active_cancel_lock:
+            self._active_cancel_events.clear()
+            self._executing_cancel_events.clear()
+        with self._mailbox_lock:
+            self._mailboxes.clear()
+            self._direct_mailboxes.clear()
+            self._request_cancel_events.clear()
 
     def _cleanup(self):
         """atexit handler."""
@@ -369,6 +496,74 @@ class InferenceOrchestrator:
             except (EOFError, OSError, ValueError):
                 return events
 
+    def _direct_reader(self, request_id: str):
+        """Response reader for a _gen_lock generation, safe once compare exists.
+
+        The dispatcher and this reader would otherwise both consume _resp_queue. A
+        dispatcher started mid-stream took our responses and dropped them as
+        unaddressed (truncating or hanging the chat), and this reader, already blocked
+        on the queue, could take a compare request's response before that dispatcher
+        saw it. Registering a mailbox fixes the first; handing foreign responses to
+        their own mailbox fixes the second.
+
+        Returns (read_one, drain, release).
+        """
+        mailbox: queue.Queue = queue.Queue()
+        with self._mailbox_lock:
+            self._direct_mailboxes[request_id] = mailbox
+
+        def read_one(timeout: float = 1.0):
+            try:
+                return mailbox.get_nowait()
+            except queue.Empty:
+                pass
+            thread = self._dispatcher_thread
+            if thread is not None and thread.is_alive():
+                # It owns the queue now, and it routes to us.
+                try:
+                    return mailbox.get(timeout = timeout)
+                except queue.Empty:
+                    return None
+            resp = self._read_resp(timeout = timeout)
+            if resp is None:
+                return None
+            rid = resp.get("request_id")
+            if rid and rid != request_id:
+                with self._mailbox_lock:
+                    other = self._mailboxes.get(rid) or self._direct_mailboxes.get(rid)
+                    owner = self._request_cancel_events.get(rid)
+                if other is not None:
+                    # We beat the dispatcher to this response, so make its ownership move here
+                    # too. The compare consumer opts out of marking, so nothing else promotes
+                    # or retires that request: skipping it left this one recorded as the
+                    # executor, ignoring its Stop and letting a late reset cancel it.
+                    if owner is not None:
+                        if resp.get("type", "") in ("gen_done", "gen_error"):
+                            self._release_worker(owner)
+                        else:
+                            self._mark_worker_started(owner)
+                    other.put(resp)
+                    return None
+            return resp
+
+        def drain(timeout: float = 5.0) -> None:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                resp = read_one(timeout = min(0.5, deadline - time.monotonic()))
+                if resp is None:
+                    if not self._ensure_subprocess_alive():
+                        return
+                    continue
+                if resp.get("type", "") in ("gen_done", "gen_error"):
+                    return
+            logger.warning("Timed out waiting for gen_done after cancel")
+
+        def release() -> None:
+            with self._mailbox_lock:
+                self._direct_mailboxes.pop(request_id, None)
+
+        return read_one, drain, release
+
     def _drain_until_gen_done(self, timeout: float = 5.0) -> None:
         """Consume resp_queue events until gen_done/gen_error, discarding them.
 
@@ -409,6 +604,7 @@ class InferenceOrchestrator:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        presence_penalty: float = 0.0,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -423,6 +619,7 @@ class InferenceOrchestrator:
             "min_p": min_p,
             "max_new_tokens": max_new_tokens,
             "repetition_penalty": repetition_penalty,
+            "presence_penalty": presence_penalty,
         }
         # Only forward template kwargs the caller set, for older worker compat.
         if use_adapter is not None:
@@ -446,6 +643,7 @@ class InferenceOrchestrator:
         cancel_event = None,
         stats_holder: Optional[dict] = None,
         read_timeout: float = 30.0,
+        mark_started: bool = True,
     ) -> Generator[str, None, None]:
         """Yield tokens from a response stream until gen_done/gen_error.
 
@@ -456,28 +654,53 @@ class InferenceOrchestrator:
         cancel ack from that same source so stale events don't leak into the
         next request.
         """
+        # Latch this stream's subprocess/queue: if a wedged worker is torn down and a
+        # later load spawns a fresh one, bail rather than re-block on the new queue
+        # under _gen_lock (deadlock).
+        initial_proc = self._proc
+        initial_resp_queue = self._resp_queue
         while True:
+            if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
+                yield GenStreamError(
+                    f"Error: {self._subprocess_crash_message(crash_context)}",
+                    public = True,
+                )
+                return
             resp = read_one(read_timeout)
             if resp is None:
                 # Check subprocess health
                 if not self._ensure_subprocess_alive():
-                    yield f"Error: {self._subprocess_crash_message(crash_context)}"
+                    yield GenStreamError(
+                        f"Error: {self._subprocess_crash_message(crash_context)}",
+                        public = True,
+                    )
                     return
                 continue
 
             rtype = resp.get("type", "")
             if rtype == "status":
                 continue
+            # The worker is answering THIS request, so it is the one executing: only now may its
+            # cancel event speak for the shared worker one. The dispatched path opts out: its
+            # dispatcher already did this in worker order, which a mailbox read can lag behind.
+            if mark_started:
+                self._mark_worker_started(cancel_event)
             # Subprocess-level error (no request_id); request-scoped failures
             # arrive as gen_error below.
             if rtype == "error" and not resp.get("request_id"):
-                yield f"Error: {resp.get('error', 'Unknown error')}"
+                yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
 
             if rtype == "token":
                 # Cancel from route (e.g. SSE connection closed).
                 if cancel_event is not None and cancel_event.is_set():
-                    self._cancel_generation()
+                    # Same rule as reset_generation_state: the shared worker event may only be set by
+                    # the generation the worker is running. A dispatched request can still be draining
+                    # stale mailbox tokens after the dispatcher retired it, and signalling from here
+                    # would end the next one instead. Tearing this stream down is always safe, so the
+                    # local drain happens either way.
+                    if self._owns_worker(cancel_event):
+                        self._cancel_generation()
                     drain_on_cancel()
                     return
                 yield resp.get("text", "")
@@ -486,40 +709,63 @@ class InferenceOrchestrator:
                     stats_holder["stats"] = resp.get("stats")
                 return
             elif rtype == "gen_error":
-                yield f"Error: {resp.get('error', 'Unknown error')}"
+                yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
 
     # ------------------------------------------------------------------
     # Dispatcher — per-request mailbox routing for compare mode
     # ------------------------------------------------------------------
 
-    def _start_dispatcher(self) -> None:
+    def _start_dispatcher(self) -> bool:
         """Start the dispatcher thread if not already running.
 
         The dispatcher reads the shared resp_queue and routes responses to
         per-request mailbox queues, letting multiple adapter-controlled
         (compare) requests be in-flight without holding _gen_lock.
-        """
-        if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
-            return
 
-        self._dispatcher_stop.clear()
-        self._dispatcher_thread = threading.Thread(
-            target = self._dispatcher_loop,
-            daemon = True,
-            name = "inference-dispatcher",
-        )
-        self._dispatcher_thread.start()
-        logger.debug("Dispatcher thread started")
+        The whole check-then-spawn runs under _dispatcher_lifecycle_lock so
+        concurrent compare requests (which bypass _gen_lock) can't both observe
+        no live dispatcher and each spawn one. Returns True only for the caller
+        that actually started a new thread; False if one was already alive.
+        """
+        with self._dispatcher_lifecycle_lock:
+            # Refuse to start while an unload is in progress. unload_model sets
+            # _unload_pending under this same lock before it stops the idle
+            # dispatcher, so a start queued behind that stop observes the unload
+            # here and bails. Without this a fresh dispatcher would be spawned
+            # after the stop, become the resp_queue reader, and consume the
+            # worker's "unloaded" reply (unroutable, so dropped) before
+            # unload_model's _wait_response sees it -- hanging the unload 300s.
+            if self._unload_pending:
+                return False
+            if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
+                return False
+
+            self._dispatcher_stop.clear()
+            self._dispatcher_thread = threading.Thread(
+                target = self._dispatcher_loop,
+                daemon = True,
+                name = "inference-dispatcher",
+            )
+            self._dispatcher_thread.start()
+            logger.debug("Dispatcher thread started")
+            return True
 
     def _stop_dispatcher(self) -> None:
-        """Signal the dispatcher to stop and wait for it."""
-        if self._dispatcher_thread is None:
-            return
-        self._dispatcher_stop.set()
-        self._dispatcher_thread.join(timeout = _DISPATCH_STOP_TIMEOUT)
-        self._dispatcher_thread = None
-        logger.debug("Dispatcher thread stopped")
+        """Signal the dispatcher to stop and wait for it.
+
+        Runs under _dispatcher_lifecycle_lock (paired with _start_dispatcher) so
+        a stop can't interleave with a concurrent start. Callers must NOT hold
+        _mailbox_lock here: this joins the dispatcher, and the dispatcher loop
+        takes _mailbox_lock, so holding it would deadlock the join.
+        """
+        with self._dispatcher_lifecycle_lock:
+            if self._dispatcher_thread is None:
+                return
+            self._dispatcher_stop.set()
+            self._dispatcher_thread.join(timeout = _DISPATCH_STOP_TIMEOUT)
+            self._dispatcher_thread = None
+            logger.debug("Dispatcher thread stopped")
 
     def _dispatcher_loop(self) -> None:
         """Background loop: read resp_queue → route to mailboxes by request_id."""
@@ -548,8 +794,17 @@ class InferenceOrchestrator:
                 # Route to mailbox if a matching request_id exists
                 if rid:
                     with self._mailbox_lock:
-                        mbox = self._mailboxes.get(rid)
+                        mbox = self._mailboxes.get(rid) or self._direct_mailboxes.get(rid)
+                        owner = self._request_cancel_events.get(rid)
                     if mbox is not None:
+                        # Worker order, not consumer order: retire a request the moment its last response
+                        # is routed. Waiting for the consumer's finally left it owning the worker after
+                        # the worker moved on, so a late Stop for it cancelled whichever request started next.
+                        if owner is not None:
+                            if rtype in ("gen_done", "gen_error"):
+                                self._release_worker(owner)
+                            else:
+                                self._mark_worker_started(owner)
                         mbox.put(resp)
                         continue
 
@@ -581,6 +836,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         stats_holder: Optional[dict] = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -589,15 +845,32 @@ class InferenceOrchestrator:
         GPU work stays serialized; this only avoids orchestrator lock contention.
         """
         if not self._ensure_subprocess_alive():
-            yield "Error: Inference subprocess is not running"
+            yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
 
         if not self.active_model_name:
-            yield "Error: No active model"
+            yield GenStreamError("Error: No active model", public = True)
+            return
+        # Latch the target model so the recheck below can detect a switch that completed
+        # between _start_dispatcher and mailbox registration (mirrors the locked path's
+        # expected_model check).
+        expected_model = self.active_model_name
+
+        # Switch in flight (unload waiting on _gen_lock). This path bypasses the lock,
+        # so without this early-out a compare request would enqueue a generate on the
+        # outgoing model and delay the switch.
+        if self._unload_pending:
+            yield GenStreamError("Error: model is being unloaded", public = True)
             return
 
-        # Ensure dispatcher is running
-        self._start_dispatcher()
+        # Ensure the dispatcher runs. _start_dispatcher serializes concurrent starters under
+        # _dispatcher_lifecycle_lock and returns True only for the caller that actually spawned
+        # the thread, so at most one dispatcher ever exists even when two compare requests race
+        # here. Derive dispatcher_preexisting from that atomic result (not a separate unlocked
+        # is_alive() read): if THIS call started the dispatcher and then bails on a racing
+        # unload, it must stop it again (see the unloading bail below).
+        started = self._start_dispatcher()
+        dispatcher_preexisting = not started
 
         request_id = str(uuid.uuid4())
 
@@ -617,6 +890,7 @@ class InferenceOrchestrator:
             min_p = min_p,
             max_new_tokens = max_new_tokens,
             repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
             use_adapter = use_adapter,
             tools = tools,
             enable_thinking = enable_thinking,
@@ -624,17 +898,59 @@ class InferenceOrchestrator:
             preserve_thinking = preserve_thinking,
         )
 
-        # Create mailbox BEFORE sending command
+        # Create the mailbox BEFORE sending, rechecking _unload_pending under
+        # _mailbox_lock: an unload sets _unload_pending before _wait_dispatcher_idle
+        # reads _mailboxes under the same lock, so either the idle check sees this
+        # mailbox (and tears the dispatcher down) or we see the unload and bail.
+        # Registering after would orphan the mailbox and hang the compare stream forever.
         mailbox: queue.Queue = queue.Queue()
         with self._mailbox_lock:
-            self._mailboxes[request_id] = mailbox
+            # _unload_pending alone is not enough: an unload that ran fully since
+            # _start_dispatcher clears it in its finally and stops the dispatcher, so it
+            # reads False here though the dispatcher is gone and the model swapped. Also
+            # bail when the active model changed or the dispatcher died: a mailbox with no
+            # dispatcher to route gen_done/gen_error hangs the compare stream.
+            dispatcher_alive = (
+                self._dispatcher_thread is not None and self._dispatcher_thread.is_alive()
+            )
+            unloading = (
+                self._unload_pending
+                or self.active_model_name != expected_model
+                or not dispatcher_alive
+            )
+            if not unloading:
+                self._mailboxes[request_id] = mailbox
+                if cancel_event is not None:
+                    self._request_cancel_events[request_id] = cancel_event
+            # When bailing without a mailbox, note whether any OTHER compare request still
+            # routes through the dispatcher; if none and this call started it, stop it below.
+            orphaned_dispatcher = unloading and not dispatcher_preexisting and not self._mailboxes
+        if unloading:
+            # A racing unload can pass its _wait_dispatcher_idle() while the dispatcher was
+            # stopped, then set _unload_pending. The one we just started would otherwise
+            # linger with no mailboxes, race unload_model's _wait_response for the "unloaded"
+            # reply off resp_queue, and drop it as unroutable -- hanging the unload 300s. Stop
+            # it here so the unload stays the sole resp_queue reader. Outside _mailbox_lock:
+            # _stop_dispatcher joins the dispatcher, which itself takes that lock.
+            if orphaned_dispatcher:
+                self._stop_dispatcher()
+            yield GenStreamError("Error: model is being unloaded", public = True)
+            return
 
+        # Claim before sending, like the locked path: dispatched runs are concurrent by design,
+        # so without this a Stop on one saw no owner and reset the worker, ending its siblings.
+        # Claim and enqueue under one lock, or two dispatcher threads interleave and claim order
+        # stops matching the subprocess's command order, which _owns_worker reads.
         try:
-            self._send_cmd(cmd)
+            with self._send_order_lock:
+                self._claim_worker(cancel_event)
+                self._send_cmd(cmd)
         except RuntimeError as exc:
+            self._release_worker(cancel_event)
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)
-            yield f"Error: {exc}"
+                self._request_cancel_events.pop(request_id, None)
+            yield GenStreamError(f"Error: {exc}")
             return
 
         def read_mailbox(timeout):
@@ -652,10 +968,15 @@ class InferenceOrchestrator:
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 read_timeout = _DISPATCH_READ_TIMEOUT,
+                mark_started = False,
             )
         finally:
+            # Normally already retired by the dispatcher at gen_done; this covers streams that
+            # end without one (cancel, disconnect, a dead subprocess).
+            self._release_worker(cancel_event)
             with self._mailbox_lock:
                 self._mailboxes.pop(request_id, None)
+                self._request_cancel_events.pop(request_id, None)
 
     def _drain_mailbox(
         self,
@@ -676,14 +997,18 @@ class InferenceOrchestrator:
                 return
         logger.warning("Timed out draining mailbox after cancel")
 
-    def _wait_dispatcher_idle(self) -> None:
+    def _wait_dispatcher_idle(self) -> bool:
         """Wait for all dispatched requests to complete, then stop dispatcher.
 
-        Called by _generate_inner before the _gen_lock path so the dispatcher
-        thread isn't competing for resp_queue reads.
+        Returns True if the dispatcher was stopped (all mailboxes drained, or no
+        dispatcher was running), and False if it was left running because compare
+        requests were still active after _DISPATCH_IDLE_TIMEOUT.
+
+        Called before the _gen_lock path so the dispatcher thread isn't competing
+        for resp_queue reads.
         """
         if self._dispatcher_thread is None or not self._dispatcher_thread.is_alive():
-            return
+            return True
 
         # Wait for all mailboxes to be emptied (dispatched requests complete)
         deadline = time.monotonic() + _DISPATCH_IDLE_TIMEOUT
@@ -704,12 +1029,73 @@ class InferenceOrchestrator:
                 "leaving dispatcher running for compare requests",
                 len(self._mailboxes),
             )
-        else:
-            self._stop_dispatcher()
+            return False
+        self._stop_dispatcher()
+        return True
+
+    def share_distributed_object(
+        self,
+        obj,
+        timeout: Optional[float] = 300.0,
+    ):
+        """Share a small object through the worker's MLX distributed group."""
+        if not self._ensure_subprocess_alive():
+            raise RuntimeError("Inference subprocess is not running")
+
+        self._wait_dispatcher_idle()
+        with self._mailbox_lock:
+            if self._mailboxes:
+                raise RuntimeError(
+                    "Cannot share distributed objects while compare requests are active"
+                )
+        request_id = str(uuid.uuid4())
+        cmd = {
+            "type": "share_object",
+            "request_id": request_id,
+            "object": obj,
+        }
+
+        with self._gen_lock:
+            self._send_cmd(cmd)
+            deadline = None if timeout is None else time.monotonic() + timeout
+            while deadline is None or time.monotonic() < deadline:
+                remaining = 1.0 if deadline is None else max(0.1, deadline - time.monotonic())
+                resp = self._read_resp(timeout = min(remaining, 1.0))
+                if resp is None:
+                    if not self._ensure_subprocess_alive():
+                        raise RuntimeError(self._subprocess_crash_message("sharing chat turn"))
+                    continue
+
+                rtype = resp.get("type", "")
+                rid = resp.get("request_id")
+                if rid and rid != request_id:
+                    logger.debug(
+                        "Skipping response for request_id=%s while sharing request_id=%s",
+                        rid,
+                        request_id,
+                    )
+                    continue
+                if rtype == "shared":
+                    return resp.get("object")
+                if rtype == "share_error":
+                    raise RuntimeError(resp.get("error", "Failed to share object"))
+                if rtype == "error":
+                    raise RuntimeError(resp.get("error", "Subprocess error"))
+                if rtype == "status":
+                    continue
+
+            raise RuntimeError("Timeout waiting for distributed object share")
 
     # ------------------------------------------------------------------
     # Public API — same interface as InferenceBackend
     # ------------------------------------------------------------------
+
+    # Monotonic count of PUBLISHED loads; lets the install route detect a load
+    # (including a same-model reload) that completed while it waited on the gate.
+    # Bumped when the load result is published, not at load start: a start-time
+    # bump is already visible when the installer snapshots mid-load, so the
+    # completed reload would look unchanged and get unloaded by the swap.
+    load_generation: int = 0
 
     def load_model(
         self,
@@ -722,6 +1108,8 @@ class InferenceOrchestrator:
         approved_remote_code_fingerprint: Optional[str] = None,
         gpu_ids: Optional[list[int]] = None,
         subject: Optional[str] = None,
+        tensor_parallel: bool = False,
+        mlx_distributed: bool = False,
     ) -> bool:
         """Load a model for inference.
 
@@ -747,6 +1135,11 @@ class InferenceOrchestrator:
                 "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
                 "subject": subject,
                 "gpu_ids": gpu_ids,
+                "tensor_parallel": bool(tensor_parallel),
+                "mlx_distributed": bool(mlx_distributed),
+                "mlx_parallel_mode": ("tensor" if tensor_parallel else "pipeline")
+                if mlx_distributed
+                else None,
             }
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
                 gpu_ids,
@@ -756,14 +1149,39 @@ class InferenceOrchestrator:
             )
             sub_config["resolved_gpu_ids"] = resolved_gpu_ids
             sub_config["gpu_selection"] = gpu_selection
+            # Parent-detected backend for the worker's apply_gpu_ids().
+            sub_config["device_backend"] = get_device().value
+
+            # Recheck the sidecar reservation BEFORE tearing the old worker down,
+            # for REPAIRS only: an install holds this same lifecycle gate, so it
+            # cannot swap while this load runs, and its queued-load snapshot
+            # aborts it after this load publishes -- the load wins cleanly.
+            # Raising here (repair) keeps the current model loaded.
+            from utils.transformers_version import (
+                SidecarSwapInProgress,
+                sidecar_swap_kind,
+            )
+
+            if sidecar_swap_kind() == "repair":
+                raise SidecarSwapInProgress(
+                    "A transformers repair is replacing the latest sidecar; "
+                    "retry when it completes."
+                )
 
             # Always kill the existing subprocess and spawn fresh: reusing one
             # after unsloth patches torch internals breaks getsource on reload.
             if self._ensure_subprocess_alive():
                 self._cancel_generation()
                 time.sleep(0.3)
-                self._shutdown_subprocess()
-
+                if self._shutdown_subprocess() is False:
+                    # The worker survived terminate/kill (e.g. a wedged CUDA syscall that
+                    # outlives SIGKILL). Its handle is kept, so is_worker_alive() and the
+                    # pre-swap guard still see it; do not spawn a second worker over one
+                    # still holding GPU memory. Fail so the load can retry once it exits.
+                    raise RuntimeError(
+                        "The current inference worker did not exit and still holds GPU "
+                        "memory; not starting a new model over it. Retry shortly."
+                    )
             elif self._proc is not None:
                 self._shutdown_subprocess(timeout = 2)
 
@@ -772,6 +1190,19 @@ class InferenceOrchestrator:
             )
 
             for attempt in range(2):
+                # Stop-loading (/unload -> cancel_load) aborts a load by discarding this
+                # model's loading marker. cancel_load only kills a live child; if the cancel
+                # lands before any child exists (GPU placement, or between retries) there is
+                # nothing to kill, and without this check the loop would spawn a worker and
+                # load the model after /unload reported it unloaded. Observe removal and stop.
+                if model_name not in self.loading_models:
+                    logger.info(
+                        "Load for '%s' was cancelled before spawn; not starting a worker",
+                        model_name,
+                    )
+                    self.active_model_name = None
+                    self.models.clear()
+                    return False
                 logger.info(
                     "Spawning fresh inference subprocess for '%s' "
                     "(transformers %s.x, attempt %d/2%s)",
@@ -782,6 +1213,22 @@ class InferenceOrchestrator:
                 )
                 sub_config["disable_xet"] = disable_xet
                 self._spawn_subprocess(sub_config)
+
+                # A cancel can land after the pre-spawn recheck but while _spawn_subprocess
+                # is still creating the queues/process. cancel_load runs off the lifecycle
+                # gate, so its _shutdown_subprocess can see _proc still None and no-op,
+                # orphaning this fresh worker; the load would then wait for "loaded" and
+                # publish a model /unload reported unloaded, over a live subprocess nothing
+                # reaps. Recheck now the child exists and tear it down before publishing.
+                if model_name not in self.loading_models:
+                    logger.info(
+                        "Load for '%s' was cancelled during spawn; tearing the worker down",
+                        model_name,
+                    )
+                    self._shutdown_subprocess(timeout = 5)
+                    self.active_model_name = None
+                    self.models.clear()
+                    return False
 
                 try:
                     resp = self._wait_response("loaded")
@@ -803,8 +1250,32 @@ class InferenceOrchestrator:
                     )
 
                 if resp.get("success"):
+                    # A cancel can land while we were parked in _wait_response above.
+                    # cancel_load (off the lifecycle gate) discards this model's loading
+                    # marker BEFORE its teardown, so a Stop-loading that fired after the
+                    # worker queued "loaded" (which we can still consume during cancel_load's
+                    # shutdown window) shows up here only as the marker's removal. Without
+                    # this recheck we would publish active_model_name/models for a model
+                    # /unload reported cancelled, over a subprocess cancel_load just killed;
+                    # its post-teardown re-clear cannot undo a publish that lands after it
+                    # returns. Observe the removal and abort; cancel_load owns teardown.
+                    if model_name not in self.loading_models:
+                        logger.info(
+                            "Load for '%s' was cancelled while waiting for 'loaded'; "
+                            "not publishing the cancelled model",
+                            model_name,
+                        )
+                        self.active_model_name = None
+                        self.models.clear()
+                        return False
                     model_info = resp.get("model_info", {})
                     self.active_model_name = model_info.get("identifier", model_name)
+                    self.load_generation += 1
+                    # A load always spawns a fresh subprocess holding only this model, so
+                    # mirror that. A lingering stale name would pass unload_model's "not in
+                    # self.models" guard, and the worker's absent-name fallback would unload
+                    # its *active* model, not the already-gone one.
+                    self.models = {}
                     self.models[self.active_model_name] = {
                         "is_vision": model_info.get("is_vision", False),
                         "is_lora": model_info.get("is_lora", False),
@@ -831,23 +1302,78 @@ class InferenceOrchestrator:
                     self.models.clear()
                     raise Exception(error)
 
-        except Exception:
+        except Exception as exc:
             self.loading_models.discard(model_name)
+            from utils.transformers_version import SidecarSwapInProgress
+
+            if isinstance(exc, SidecarSwapInProgress) and self._ensure_subprocess_alive():
+                # Raised before the old worker was torn down: the previous model
+                # is still live, so keep the mirrors (clearing them would let the
+                # installer treat the worker as inactive and kill it unreported).
+                raise
             self.active_model_name = None
             self.models.clear()
             raise
 
-    def unload_model(self, model_name: str) -> bool:
-        """Unload a model from the subprocess."""
-        if model_name in self.loading_models:
-            logger.info(
-                "Cancelling in-flight load for model '%s' by terminating subprocess",
+    def cancel_load(self, model_name: str) -> bool:
+        """Abort an in-flight load by terminating its subprocess.
+
+        Returns True if a load for ``model_name`` (matched case-insensitively) was
+        cancelled, False if nothing was loading under that name. This only tears the
+        loading subprocess down -- it sends no command to a worker -- so, unlike the
+        rest of ``unload_model``, it is safe to run WITHOUT the inference lifecycle
+        gate. ``/unload`` calls it off-gate so the "stop loading" button can interrupt
+        a safetensors load that holds the gate for its whole (multi-minute) duration;
+        a gated cancel could never preempt that load.
+        """
+        target = model_name
+        if target not in self.loading_models:
+            target = next(
+                (m for m in self.loading_models if m.lower() == model_name.lower()),
                 model_name,
             )
-            self._shutdown_subprocess(timeout = 0.5)
-            self.loading_models.discard(model_name)
-            self.active_model_name = None
-            self.models.clear()
+        if target not in self.loading_models:
+            return False
+        logger.info(
+            "Cancelling in-flight load for model '%s' by terminating subprocess",
+            target,
+        )
+        # Discard the loading marker (and clear local state) BEFORE the teardown, not
+        # after. cancel_load runs off the lifecycle gate, alongside a load_model that
+        # rechecks this marker before each spawn. But _shutdown_subprocess can block (~1s
+        # tearing a live child down and joining the dispatcher), so clearing only after
+        # leaves a window where load_model reads the marker still set, passes its pre-spawn
+        # recheck, and loads the model after /unload reported it cancelled. Clear first.
+        self.loading_models.discard(target)
+        self.active_model_name = None
+        self.models.clear()
+        self._shutdown_subprocess(timeout = 0.5)
+        # Clear the local mirrors again AFTER the teardown. A racing off-gate load_model
+        # may still be parked in _wait_response("loaded"): its worker already queued a
+        # "loaded" reply, so during the shutdown window above (the 0.5s settle before the
+        # response queue is drained and nulled) that thread can consume it and repopulate
+        # active_model_name/models, undoing the pre-teardown clear. _shutdown_subprocess
+        # nulls the queue but not the mirrors, so without this second clear /unload reports
+        # success while the backend still advertises a killed model. The nulled queue lets
+        # no further "loaded" through, so re-clearing here wipes any repopulation.
+        self.active_model_name = None
+        self.models.clear()
+        return True
+
+    def unload_model(self, model_name: str) -> bool:
+        """Unload a model from the subprocess."""
+        # active_model_name can differ in case from the client's raw /unload name (the
+        # load path canonicalizes casing). Match case-insensitively and use the canonical
+        # spelling so the guard, unload command, and cleanup below hit the loaded model.
+        if (
+            self.active_model_name is not None
+            and model_name != self.active_model_name
+            and model_name.lower() == self.active_model_name.lower()
+        ):
+            model_name = self.active_model_name
+        # In-flight load: tear its subprocess down (shared loading-cancel logic; no
+        # worker command sent).
+        if self.cancel_load(model_name):
             return True
 
         if not self._ensure_subprocess_alive():
@@ -857,30 +1383,93 @@ class InferenceOrchestrator:
                 self.active_model_name = None
             return True
 
-        try:
-            self._send_cmd(
-                {
-                    "type": "unload",
-                    "model_name": model_name,
-                }
-            )
-            resp = self._wait_response("unloaded")
-
-            # Update local state
+        # Nothing loaded under this name: don't unload a stale model. The worker falls
+        # back to unloading its *active* model when the name is absent, so a stale unload
+        # (lost a race to a concurrent load) would hit the wrong one.
+        if model_name != self.active_model_name and model_name not in self.models:
             self.models.pop(model_name, None)
-            if self.active_model_name == model_name:
-                self.active_model_name = None
-
-            logger.info("Model '%s' unloaded from subprocess", model_name)
             return True
 
-        except Exception as exc:
-            logger.error("Error unloading model '%s': %s", model_name, exc)
-            # Clear local state anyway
-            self.models.pop(model_name, None)
-            if self.active_model_name == model_name:
-                self.active_model_name = None
-            return False
+        # The subprocess runs commands sequentially, so a bare unload queues behind a
+        # running generate (a 2-3 min hang). Cancel first (via the mp.Event the worker
+        # polls each token), then take _gen_lock as sole resp_queue reader (like GGUF).
+        #
+        # Set _unload_pending under _dispatcher_lifecycle_lock so it is ordered ahead of
+        # the dispatcher stop that _wait_dispatcher_idle runs under the same lock: a
+        # compare request's _start_dispatcher queued behind that stop then observes the
+        # unload and refuses to spawn a fresh dispatcher that would eat the "unloaded"
+        # reply off resp_queue. This is a standalone acquisition (no _gen_lock held yet),
+        # so it keeps the _gen_lock -> _dispatcher_lifecycle_lock order and can't deadlock.
+        with self._dispatcher_lifecycle_lock:
+            self._unload_pending = True
+        # Cancelling only the running generation isn't enough: the worker clears
+        # cancel_event at each generate start, so a queued one would clear it and run the
+        # outgoing model to completion. drain_event, never cleared, makes any generate
+        # dequeued during the unload skip.
+        if self._drain_event is not None:
+            self._drain_event.set()
+        try:
+            self._cancel_generation()
+            acquired = self._gen_lock.acquire(timeout = _UNLOAD_GEN_LOCK_TIMEOUT)
+            if not acquired:
+                # Wedged worker: tear the subprocess down to free the GPU (next load respawns).
+                logger.warning(
+                    "Unload: generation did not yield %.1fs after cancel; "
+                    "shutting the inference subprocess down to free the model",
+                    _UNLOAD_GEN_LOCK_TIMEOUT,
+                )
+                self._shutdown_subprocess(timeout = 5)
+                self.models.pop(model_name, None)
+                if self.active_model_name == model_name:
+                    self.active_model_name = None
+                return True
+
+            try:
+                # Stop the compare-mode dispatcher so it can't consume the "unloaded" reply
+                # off resp_queue before we do. A dispatched generation bypasses _gen_lock, so
+                # a wedged one slips past the acquire above; if the dispatcher is still active
+                # it owns resp_queue and the queued unload hangs _wait_response behind the
+                # stuck generate. Mirror the wedged locked path: tear the subprocess down.
+                if not self._wait_dispatcher_idle():
+                    logger.warning(
+                        "Unload: compare-mode dispatcher still active after idle "
+                        "wait; shutting the inference subprocess down to free the model"
+                    )
+                    self._shutdown_subprocess(timeout = 5)
+                    self.models.pop(model_name, None)
+                    if self.active_model_name == model_name:
+                        self.active_model_name = None
+                    return True
+                # Drop stale tokens so they can't be read as the unload reply.
+                self._drain_queue()
+                self._send_cmd(
+                    {
+                        "type": "unload",
+                        "model_name": model_name,
+                    }
+                )
+                self._wait_response("unloaded")
+
+                self.models.pop(model_name, None)
+                if self.active_model_name == model_name:
+                    self.active_model_name = None
+
+                logger.info("Model '%s' unloaded from subprocess", model_name)
+                return True
+
+            except Exception as exc:
+                logger.error("Error unloading model '%s': %s", model_name, exc)
+                # Clear local state anyway
+                self.models.pop(model_name, None)
+                if self.active_model_name == model_name:
+                    self.active_model_name = None
+                return False
+            finally:
+                self._gen_lock.release()
+        finally:
+            self._unload_pending = False
+            if self._drain_event is not None:
+                self._drain_event.clear()
 
     def generate_chat_response(
         self,
@@ -899,6 +1488,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         stats_holder: Optional[dict] = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess.
 
@@ -908,6 +1498,8 @@ class InferenceOrchestrator:
 
         ``stats_holder``: caller-owned dict; on gen_done its "stats" key gets
         the worker's usage/timings. Request-scoped to avoid cross-stream reads.
+
+        ``presence_penalty`` matches the GGUF sampling path (0 disables it).
         """
         yield from self._generate_inner(
             messages = messages,
@@ -926,6 +1518,7 @@ class InferenceOrchestrator:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             stats_holder = stats_holder,
+            presence_penalty = presence_penalty,
         )
 
     def generate_chat_completion_with_tools(
@@ -945,13 +1538,18 @@ class InferenceOrchestrator:
         preserve_thinking: Optional[bool] = None,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
+        nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
         confirm_tool_calls: bool = False,
         bypass_permissions: bool = False,
+        permission_mode: Optional[str] = None,
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
+        presence_penalty: float = 0.0,
+        reasoning_prefilled: bool = False,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process,
@@ -987,14 +1585,30 @@ class InferenceOrchestrator:
                 preserve_thinking = preserve_thinking,
                 # last turn wins, like the GGUF tool loop
                 stats_holder = stats_holder,
+                presence_penalty = presence_penalty,
             )
             if use_adapter is not None:
-                yield from self.generate_with_adapter_control(
+                stream = self.generate_with_adapter_control(
                     use_adapter = use_adapter,
                     **common_kwargs,
                 )
             else:
-                yield from self.generate_chat_response(**common_kwargs)
+                stream = self.generate_chat_response(**common_kwargs)
+            close_stream = False
+            try:
+                for chunk in stream:
+                    if isinstance(chunk, GenStreamError):
+                        close_stream = True
+                        raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                    yield chunk
+            finally:
+                if close_stream:
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            logger.debug("failed to close errored generation stream", exc_info = True)
 
         initial = list(messages)
         if system_prompt:
@@ -1007,12 +1621,16 @@ class InferenceOrchestrator:
             execute_tool = execute_tool,
             cancel_event = cancel_event,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            nudge_tool_calls = nudge_tool_calls,
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
             session_id = session_id,
+            thread_id = thread_id,
             rag_scope = rag_scope,
             confirm_tool_calls = confirm_tool_calls,
             bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
+            reasoning_prefilled = reasoning_prefilled,
         )
 
     def generate_with_adapter_control(
@@ -1026,14 +1644,27 @@ class InferenceOrchestrator:
 
         Uses the dispatcher path (no _gen_lock) so compare-mode requests
         don't block each other; the subprocess serializes them via its
-        sequential command loop.
+        sequential command loop. Backend failures raise instead of becoming
+        assistant text.
         """
-        yield from self._generate_dispatched(
+        stream = self._generate_dispatched(
             use_adapter = use_adapter,
             cancel_event = cancel_event,
             stats_holder = stats_holder,
             **gen_kwargs,
         )
+        try:
+            for chunk in stream:
+                if isinstance(chunk, GenStreamError):
+                    # Preserve the public/operational flag so the route can surface
+                    # the real message (e.g. "model is being unloaded") instead of a
+                    # generic error. Mirrors the safetensors tool loop's _single_turn.
+                    raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                yield chunk
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
 
     def _generate_inner(
         self,
@@ -1053,6 +1684,7 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         stats_holder: Optional[dict] = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -1060,12 +1692,13 @@ class InferenceOrchestrator:
         readers don't consume each other's tokens off the shared resp_queue.
         """
         if not self._ensure_subprocess_alive():
-            yield "Error: Inference subprocess is not running"
+            yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
 
         if not self.active_model_name:
-            yield "Error: No active model"
+            yield GenStreamError("Error: No active model", public = True)
             return
+        expected_model = self.active_model_name
 
         # Drain any prior compare-mode dispatcher so we can read resp_queue.
         self._wait_dispatcher_idle()
@@ -1074,6 +1707,19 @@ class InferenceOrchestrator:
         # consume and drop each other's token events. Hold _gen_lock across the
         # cmd build + send + whole stream so we stay the sole resp_queue reader.
         with self._gen_lock:
+            # Recheck under the lock: an unload we raced may have cleared/swapped the model.
+            # _unload_pending resets after the lock releases, so it can read False by now;
+            # the active-model check catches that handoff and a reload that swapped models,
+            # so we never generate on the wrong one.
+            if self._unload_pending or self.active_model_name != expected_model:
+                # Won the lock handoff during a switch; don't start on the outgoing model.
+                yield GenStreamError("Error: model is being unloaded", public = True)
+                return
+            if cancel_event is not None and cancel_event.is_set():
+                # Stopped while queued on the lock. Sending anyway occupied the worker with a
+                # run the user ended: the cancel is only seen on a token, so a long prefill
+                # (or a generation that reaches gen_done without one) held up its siblings.
+                return
             request_id = str(uuid.uuid4())
             image_b64 = self._pil_to_base64(image) if image is not None else None
             cmd = self._build_generate_cmd(
@@ -1087,6 +1733,7 @@ class InferenceOrchestrator:
                 min_p = min_p,
                 max_new_tokens = max_new_tokens,
                 repetition_penalty = repetition_penalty,
+                presence_penalty = presence_penalty,
                 use_adapter = use_adapter,
                 tools = tools,
                 enable_thinking = enable_thinking,
@@ -1094,22 +1741,95 @@ class InferenceOrchestrator:
                 preserve_thinking = preserve_thinking,
             )
 
+            # Claim the worker BEFORE sending, so a Stop on some OTHER chat -- still queued on the
+            # lock above, having generated nothing -- cannot reset the generation this is starting.
+            # Claiming after the send left the command running unclaimed. Released in the finally.
+            # Own mailbox: a compare request can start the dispatcher while this is streaming,
+            # and it would otherwise consume our responses and drop them.
+            read_one, drain, release_mailbox = self._direct_reader(request_id)
             try:
-                self._send_cmd(cmd)
-            except RuntimeError as exc:
-                yield f"Error: {exc}"
-                return
+                try:
+                    with self._send_order_lock:
+                        self._claim_worker(cancel_event)
+                        self._send_cmd(cmd)
+                except RuntimeError as exc:
+                    yield GenStreamError(f"Error: {exc}")
+                    return
 
-            yield from self._consume_token_stream(
-                self._read_resp,
-                lambda: self._drain_until_gen_done(timeout = 5.0),
-                crash_context = "generation",
-                cancel_event = cancel_event,
-                stats_holder = stats_holder,
-            )
+                yield from self._consume_token_stream(
+                    read_one,
+                    lambda: drain(timeout = 5.0),
+                    crash_context = "generation",
+                    cancel_event = cancel_event,
+                    stats_holder = stats_holder,
+                )
+            finally:
+                self._release_worker(cancel_event)
+                release_mailbox()
 
-    def reset_generation_state(self):
-        """Cancel any ongoing generation and reset state."""
+    def _claim_worker(self, cancel_event) -> None:
+        """Record this request as one the worker will run.
+
+        Admission only. The subprocess executes generations one at a time, so a
+        dispatched request sitting behind another in the command queue is claimed
+        but not executing, and must not be able to signal the shared cancel event
+        (that would end whichever request IS executing). _mark_worker_started
+        promotes it once the worker answers it.
+        """
+        with self._active_cancel_lock:
+            self._active_cancel_events.append(cancel_event)
+
+    def _mark_worker_started(self, cancel_event) -> None:
+        """Promote a claimed request to executing, on its first worker response.
+
+        Sole executor: the subprocess runs one generation at a time, so answering
+        this one means it has left the previous one behind.
+        """
+        if cancel_event is None:
+            return
+        with self._active_cancel_lock:
+            if self._executing_cancel_events[:1] != [cancel_event]:
+                self._executing_cancel_events[:] = [cancel_event]
+
+    def _release_worker(self, cancel_event) -> None:
+        with self._active_cancel_lock:
+            for bucket in (self._active_cancel_events, self._executing_cancel_events):
+                try:
+                    bucket.remove(cancel_event)
+                except ValueError:
+                    pass
+
+    def _owns_worker(self, cancel_event) -> bool:
+        """Whether a reset from this request may signal the shared cancel event.
+
+        True when it is one of the EXECUTING generations, and when nothing is in
+        flight at all: an error path that resets before anything started has no
+        one else to interrupt, so it must not become a silent no-op. Claimed but
+        queued does not count, or a Stop on a queued request would end the
+        running one, including during the prefill before any response arrives.
+        """
+        with self._active_cancel_lock:
+            if not self._active_cancel_events:
+                # Nothing in flight at all, so there is no one to protect.
+                return True
+            if self._executing_cancel_events:
+                return any(ev is cancel_event for ev in self._executing_cancel_events)
+            # Claimed but nothing has answered yet (A is in prefill). The worker takes commands
+            # in order, so the oldest claim is the executor; anyone else here is queued behind it.
+            return self._active_cancel_events[0] is cancel_event
+
+    def reset_generation_state(self, caller_cancel_event = None):
+        """Cancel any ongoing generation and reset state.
+
+        ``caller_cancel_event`` scopes the reset to one request. The worker has a
+        single cancel event and generation is serialized on _gen_lock, so a chat
+        that is still queued has no generation of its own to reset: calling this
+        from its Stop handler would kill whichever chat currently holds the lock.
+        Pass the request's own event and the reset is dropped unless that request
+        is the one running. Omit it for genuinely global resets (unload, switch).
+        """
+        if caller_cancel_event is not None and not self._owns_worker(caller_cancel_event):
+            return
         self._cancel_generation()
         if not self._ensure_subprocess_alive():
             return
@@ -1141,53 +1861,67 @@ class InferenceOrchestrator:
             raise RuntimeError("Inference subprocess is not running")
         if not self.active_model_name:
             raise RuntimeError("No active model")
+        expected_model = self.active_model_name
 
-        request_id = str(uuid.uuid4())
+        # Serialize under _gen_lock (sole resp_queue reader) and refuse to start on the
+        # outgoing model once an unload is pending, like the text and audio-input paths.
+        # Without this a concurrent /audio/generate could run TTS on a model being switched.
+        with self._gen_lock:
+            # Recheck under the lock (see _generate_inner): a raced unload/switch may have
+            # cleared or swapped the model while we waited.
+            if self._unload_pending or self.active_model_name != expected_model:
+                raise RuntimeError("model is being unloaded")
 
-        cmd = {
-            "type": "generate_audio",
-            "request_id": request_id,
-            "text": text,
-            "temperature": temperature,
-            "top_p": top_p,
-            "top_k": top_k,
-            "min_p": min_p,
-            "max_new_tokens": max_new_tokens,
-            "repetition_penalty": repetition_penalty,
-        }
-        if use_adapter is not None:
-            cmd["use_adapter"] = use_adapter
+            request_id = str(uuid.uuid4())
 
-        self._send_cmd(cmd)
+            cmd = {
+                "type": "generate_audio",
+                "request_id": request_id,
+                "text": text,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "min_p": min_p,
+                "max_new_tokens": max_new_tokens,
+                "repetition_penalty": repetition_penalty,
+            }
+            if use_adapter is not None:
+                cmd["use_adapter"] = use_adapter
 
-        # Wait for audio_done or audio_error
-        deadline = time.monotonic() + 120.0
-        while time.monotonic() < deadline:
-            remaining = max(0.1, deadline - time.monotonic())
-            resp = self._read_resp(timeout = min(remaining, 1.0))
+            # Same shared-queue hazard as _generate_inner: see _direct_reader.
+            read_one, _drain, release_mailbox = self._direct_reader(request_id)
+            try:
+                self._send_cmd(cmd)
 
-            if resp is None:
-                if not self._ensure_subprocess_alive():
-                    raise RuntimeError(self._subprocess_crash_message("audio generation"))
-                continue
+                deadline = time.monotonic() + 120.0
+                while time.monotonic() < deadline:
+                    remaining = max(0.1, deadline - time.monotonic())
+                    resp = read_one(timeout = min(remaining, 1.0))
 
-            rtype = resp.get("type", "")
+                    if resp is None:
+                        if not self._ensure_subprocess_alive():
+                            raise RuntimeError(self._subprocess_crash_message("audio generation"))
+                        continue
 
-            if rtype == "audio_done":
-                wav_bytes = base64.b64decode(resp["wav_base64"])
-                sample_rate = resp["sample_rate"]
-                return wav_bytes, sample_rate
+                    rtype = resp.get("type", "")
 
-            if rtype == "audio_error":
-                raise RuntimeError(resp.get("error", "Audio generation failed"))
+                    if rtype == "audio_done":
+                        wav_bytes = base64.b64decode(resp["wav_base64"])
+                        sample_rate = resp["sample_rate"]
+                        return wav_bytes, sample_rate
 
-            if rtype == "error":
-                raise RuntimeError(resp.get("error", "Unknown error"))
+                    if rtype == "audio_error":
+                        raise RuntimeError(resp.get("error", "Audio generation failed"))
 
-            if rtype == "status":
-                continue
+                    if rtype == "error":
+                        raise RuntimeError(resp.get("error", "Unknown error"))
 
-        raise RuntimeError("Timeout waiting for audio generation (120s)")
+                    if rtype == "status":
+                        continue
+
+                raise RuntimeError("Timeout waiting for audio generation (120s)")
+            finally:
+                release_mailbox()
 
     def generate_whisper_response(
         self,
@@ -1247,13 +1981,23 @@ class InferenceOrchestrator:
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR)."""
         if not self._ensure_subprocess_alive():
-            yield "Error: Inference subprocess is not running"
+            yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
         if not self.active_model_name:
-            yield "Error: No active model"
+            yield GenStreamError("Error: No active model", public = True)
             return
+        expected_model = self.active_model_name
 
         with self._gen_lock:
+            # Recheck under the lock (see _generate_inner): a raced unload/switch may have
+            # cleared or swapped the model while we waited.
+            if self._unload_pending or self.active_model_name != expected_model:
+                # Won the lock handoff during a switch; don't start on the outgoing model.
+                yield GenStreamError("Error: model is being unloaded", public = True)
+                return
+            if cancel_event is not None and cancel_event.is_set():
+                # Stopped while queued on the lock, same as _generate_inner.
+                return
             request_id = str(uuid.uuid4())
 
             # numpy array -> list for mp.Queue serialization
@@ -1276,18 +2020,28 @@ class InferenceOrchestrator:
                 "repetition_penalty": repetition_penalty,
             }
 
+            # Same shared-queue hazard as _generate_inner: see _direct_reader.
+            read_one, drain, release_mailbox = self._direct_reader(request_id)
             try:
-                self._send_cmd(cmd)
-            except RuntimeError as exc:
-                yield f"Error: {exc}"
-                return
+                try:
+                    # Claim under the send lock, like _generate_inner: unclaimed, a compare request queued
+                    # behind this looked like the oldest owner, so stopping it killed this one.
+                    with self._send_order_lock:
+                        self._claim_worker(cancel_event)
+                        self._send_cmd(cmd)
+                except RuntimeError as exc:
+                    yield GenStreamError(f"Error: {exc}")
+                    return
 
-            yield from self._consume_token_stream(
-                self._read_resp,
-                lambda: self._drain_until_gen_done(timeout = 5.0),
-                crash_context = "audio input generation",
-                cancel_event = cancel_event,
-            )
+                yield from self._consume_token_stream(
+                    read_one,
+                    lambda: drain(timeout = 5.0),
+                    crash_context = "audio input generation",
+                    cancel_event = cancel_event,
+                )
+            finally:
+                self._release_worker(cancel_event)
+                release_mailbox()
 
     # ------------------------------------------------------------------
     # Local helpers (no subprocess needed)

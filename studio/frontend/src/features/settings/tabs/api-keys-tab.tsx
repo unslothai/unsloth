@@ -17,6 +17,7 @@ import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
 import { ApiMonitorConsole } from "../components/api-monitor-console";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
+import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { UsageExamples } from "../components/usage-examples";
 
@@ -159,13 +160,15 @@ export function ApiKeysTab() {
             {t("settings.apiKeys.noAccess")}
           </p>
         ) : (
-          <div className="flex min-w-0 flex-col">
+          <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
             {keys.map((k) => (
               <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
             ))}
           </div>
         )}
       </section>
+
+      <ModelAutoSwitchSection />
 
       <ApiMonitorConsole />
 

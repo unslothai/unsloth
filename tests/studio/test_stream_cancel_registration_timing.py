@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib.util
 import json
 import threading
 import time
@@ -17,7 +18,7 @@ from pathlib import Path
 
 
 SOURCE_PATH = Path(__file__).resolve().parents[2] / "studio" / "backend" / "routes" / "inference.py"
-SRC = SOURCE_PATH.read_text()
+SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(SRC)
 
 
@@ -166,16 +167,20 @@ def test_chat_completions_streams_avoid_starlette_task_group():
 
 
 def test_openai_passthrough_stream_avoids_starlette_task_group():
-    top = _async_function("_openai_passthrough_stream")
+    functions = [
+        _async_function("_openai_passthrough_stream"),
+        _async_function("_openai_passthrough_stream_admitted"),
+    ]
     legacy_calls = []
     same_task_calls = 0
-    for sub in ast.walk(top):
-        if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
-            continue
-        if sub.func.id == "StreamingResponse":
-            legacy_calls.append(sub.lineno)
-        if sub.func.id == "_SameTaskStreamingResponse":
-            same_task_calls += 1
+    for fn in functions:
+        for sub in ast.walk(fn):
+            if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
+                continue
+            if sub.func.id == "StreamingResponse":
+                legacy_calls.append(sub.lineno)
+            if sub.func.id == "_SameTaskStreamingResponse":
+                same_task_calls += 1
     assert not legacy_calls, (
         "OpenAI passthrough streams must use _SameTaskStreamingResponse, "
         "not Starlette's legacy task-group StreamingResponse. Lines: "
@@ -197,7 +202,7 @@ def test_direct_llama_server_streams_install_disconnect_watcher():
         "openai_completions",
         "_responses_stream",
         "_anthropic_passthrough_stream",
-        "_openai_passthrough_stream",
+        "_openai_passthrough_stream_admitted",
     }
     missing = [
         name
@@ -252,6 +257,20 @@ _WANTED = {
 }
 
 
+def _load_active_generations():
+    """The real registry `_TrackedCancel` records runs in.
+
+    Loaded straight off disk rather than imported, so the extracted class runs
+    against the genuine module without pulling in the whole route package (and
+    without putting studio/backend on sys.path for the rest of the session).
+    """
+    path = SOURCE_PATH.parents[1] / "state" / "active_generations.py"
+    spec = importlib.util.spec_from_file_location("studio_active_generations", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_registry_module():
     chunks = []
     for n in _TREE.body:
@@ -270,7 +289,7 @@ def _load_registry_module():
             and n.target.id in _WANTED
         ):
             chunks.append(seg)
-    mod = {}
+    mod = {"active_generations": _load_active_generations()}
     exec("import threading, time\n" + "\n\n".join(chunks), mod)
     return mod
 
@@ -670,16 +689,18 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
             body_src = "\n".join(ast.unparse(stmt) for stmt in sub.body)
             found_cancel_handler = (
                 "cancel_event.set()" in body_src
-                and "backend.reset_generation_state()" in body_src
+                and "backend.reset_generation_state(cancel_event)" in body_src
                 and any(isinstance(stmt, ast.Raise) and stmt.exc is None for stmt in sub.body)
             )
         if isinstance(sub, ast.Try) and sub.finalbody:
             final_src = "\n".join(ast.unparse(stmt) for stmt in sub.finalbody)
-            found_finally_cleanup = (
+            # Accumulate: an existence claim, and the cleanup sits in a nested try whose
+            # own finally only unregisters the swap-gate entry.
+            found_finally_cleanup = found_finally_cleanup or (
                 "not completed" in final_src
                 and "not cancel_event.is_set()" in final_src
                 and "cancel_event.set()" in final_src
-                and "backend.reset_generation_state()" in final_src
+                and "backend.reset_generation_state(cancel_event)" in final_src
                 and _awaits_to_thread_gen_close(sub)
             )
 
@@ -727,11 +748,11 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
         ):
             continue
         body_src = "\n".join(ast.unparse(s) for s in sub.body)
-        if "backend.reset_generation_state()" in body_src:
+        if "backend.reset_generation_state(cancel_event)" in body_src:
             return
     raise AssertionError(
         "stream_chunks `if cancel_event.is_set():` branch must call "
-        "backend.reset_generation_state() -- matches the existing "
+        "backend.reset_generation_state(cancel_event) -- matches the existing "
         "request.is_disconnected() / CancelledError cleanup paths and "
         "prevents KV-cache drift after cancel-via-POST"
     )

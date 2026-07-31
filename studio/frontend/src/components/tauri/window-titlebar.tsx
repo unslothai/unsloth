@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
@@ -40,7 +41,7 @@ type NavigatorWithUserAgentData = Navigator & {
   };
 };
 
-function getClientPlatform(): string {
+export function getClientPlatform(): string {
   if (typeof navigator === "undefined") {
     return "";
   }
@@ -93,7 +94,7 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        "relative z-[80] inline-flex size-8 items-center justify-center rounded-[10px] text-muted-foreground/90 transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "relative z-[80] inline-flex size-8 items-center justify-center rounded-[10px] text-muted-foreground/90 transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         className,
       )}
     >
@@ -110,12 +111,16 @@ export function WindowTitlebar({
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const { pinned, togglePinned } = useSidebarPin();
+  // The titlebar sits outside the sidebar wrapper, so it cannot inherit
+  // --sidebar-width. Read the resized width from the same store instead.
+  const { width } = useSidebarWidth();
   const sidebarWidth = showSidebarSurface
     ? pinned
-      ? "var(--studio-sidebar-expanded-width,17.5rem)"
+      ? // The live value only exists mid-drag; otherwise the committed width.
+        `var(--studio-sidebar-live-width, ${width}px)`
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
-  const contentBorderLeft = `calc(${sidebarWidth} + 12px)`;
+  const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
@@ -232,10 +237,10 @@ export function WindowTitlebar({
         )}
         aria-label="Window titlebar"
       >
-        {showSidebarSurface && (
+        {showSidebarSurface && pinned && (
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute top-full h-3 w-px -translate-x-px bg-sidebar"
+            className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"
             style={{ left: sidebarWidth }}
           />
         )}
@@ -246,7 +251,7 @@ export function WindowTitlebar({
             style={{ left: contentBorderLeft, right: 0 }}
           />
         )}
-        {showSidebarSurface && (
+        {showSidebarSurface && pinned && (
           <div
             aria-hidden="true"
             className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
@@ -257,7 +262,7 @@ export function WindowTitlebar({
           <div
             className={cn(
               "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
-              pinned ? "gap-2 px-3" : "justify-center",
+              pinned ? "gap-2 pl-3" : "justify-center",
             )}
             style={{ width: sidebarWidth }}
             onMouseDown={handleDragMouseDown}
@@ -273,7 +278,7 @@ export function WindowTitlebar({
                     draggable={false}
                     className="size-5 shrink-0 rounded-[6px] object-cover"
                   />
-                  <span className="min-w-0 truncate text-[13px] font-semibold leading-none tracking-[0.01em] text-nav-fg">
+                  <span className="min-w-0 truncate text-ui-13 font-semibold leading-none tracking-[0.01em] text-nav-fg">
                     Unsloth Studio
                   </span>
                 </div>
@@ -287,7 +292,7 @@ export function WindowTitlebar({
                     event.stopPropagation();
                     togglePinned();
                   }}
-                  className="inline-flex size-8 shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex size-8 shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   <HugeiconsIcon
                     icon={LayoutAlignLeftIcon}
@@ -307,7 +312,7 @@ export function WindowTitlebar({
                   event.stopPropagation();
                   togglePinned();
                 }}
-                className="inline-flex size-8 items-center justify-center rounded-[10px] transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex size-8 items-center justify-center rounded-[10px] transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <img
                   src="/rounded-512.png"

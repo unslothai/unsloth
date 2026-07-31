@@ -140,6 +140,16 @@ class TestOllamaAndFallback:
         msg = _classify("", None, None)
         assert "llama-server failed to start" in msg
 
+    def test_health_timeout_names_probe_not_generic(self):
+        # A live server that never returns 200 on /health must name the probe and
+        # proxy/context causes, not blame a bad GGUF (#5740).
+        msg = _classify(
+            "llama-server health check timed out after 600.0s", "/models/x.gguf", "local/x"
+        )
+        assert "/health" in msg
+        assert "NO_PROXY" in msg
+        assert "GGUF file is valid" not in msg
+
 
 class TestOsKillReturncode:
     """SIGKILL (-9) with no diagnostic output is the OOM killer and gets a named,
