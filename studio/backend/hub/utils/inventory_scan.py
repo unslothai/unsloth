@@ -732,8 +732,7 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         if is_big_endian_gguf_path(rel, quant):
             continue
         if empty:
-            # Skipping it would hand the label to the next file while the resolver still opens this
-            # one. Recorded instead, so a zero-byte first file makes the quant unjudgeable.
+            # The resolver still opens this file, so a zero-byte first pick is unjudgeable.
             selected.setdefault(quant, _UNJUDGEABLE_FAMILY)
             continue
         split = _GGUF_SPLIT_RE.search(path.name)
@@ -960,8 +959,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             base_evidence = not is_adapter
         kind = _weight_family_kind(path.name)
         if kind is None:
-            # Counted by the classifier but ungroupable here (.ckpt, diffusion prefix); still a
-            # payload, though only the root copy is one the loader can discover.
+            # Ungroupable (.ckpt, diffusion prefix) but still a payload; only a root copy is found.
             if base_evidence:
                 if at_root:
                     ungrouped.add("base")
@@ -1079,9 +1077,8 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             if suffix in payload.empty_whole[kind]:
                 # The name exists, so the loader stops here and opens nothing. Same exemption as above.
                 return kind == wanted or wanted not in payload.ungrouped
-            # from_pretrained reads the snapshot root and never a nested set, so only the families
-            # it selects there are judged. A layout that keeps its weights in subdirectories names
-            # no family this walk groups, so it is carried by ungrouped instead.
+            # from_pretrained reads the snapshot root, so only families named there are judged; a
+            # subdirectory layout names no family here and is carried by ungrouped instead.
             families = {
                 family: indices
                 for family, indices in payload.groups[kind].items()
@@ -1098,8 +1095,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 not _shard_family_is_whole(family, indices) or family in payload.unloadable_families
                 for family, indices in families.items()
             )
-        # Nested weights are only decisive when the root offered nothing of this kind: a root
-        # payload this walk cannot group is still the one the loader opens.
+        # Nested weights decide only when the root offered nothing of this kind, groupable or not.
         if unreachable or (
             kind == wanted and kind in payload.nested and kind not in payload.ungrouped
         ):
