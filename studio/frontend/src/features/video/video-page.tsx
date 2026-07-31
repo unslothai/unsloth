@@ -635,9 +635,15 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 
   // Seed steps/guidance from the loaded model backend defaults. On mount with a model already loaded (browser refresh, or a load from another client) only refreshStatus runs -- handleModelSelect never fires -- so the controls otherwise stick at the pre-load DEFAULT_GEN (8/1) and a base checkpoint wanting 40/4 generates a degraded clip.
   // Key on the repo id so it fires once per newly-loaded model (distilled vs base of the same family differ); a later user edit is not clobbered (the key changes only on model change), and a gallery restore (same repo) is left untouched.
-  const loadedModelKey = status?.loaded ? status.repo_id : null;
+  // Keyed on the resolved schedule, not the repo alone: a GGUF repo holds several variants, so
+  // another client swapping a distilled build for the base one from the SAME repo changes the
+  // defaults the backend reports while repo_id stays put. Keyed on repo_id only, the page kept the
+  // previous schedule and ran an 8-step distilled setting on a model that wants ~40 steps and CFG 4.
   const defaultSteps = status?.defaults?.steps;
   const defaultGuidance = status?.defaults?.guidance;
+  const loadedModelKey = status?.loaded
+    ? `${status.repo_id ?? ""}|${defaultSteps ?? ""}|${defaultGuidance ?? ""}`
+    : null;
   const prevLoadedModelRef = useRef<string | null>(null);
   useEffect(() => {
     const modelChanged = loadedModelKey !== prevLoadedModelRef.current;
