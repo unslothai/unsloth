@@ -314,6 +314,14 @@ async function syncInferenceStatusToStore(options?: {
       if (checkpointId) {
         const previousGgufVariant =
           useChatRuntimeStore.getState().activeGgufVariant;
+        // A model loaded outside this tab replaces the resident one, and the pin describes the
+        // model it was taken for. Keeping it would reload that one from another's settings.
+        if (
+          checkpointId !== selectedCheckpoint ||
+          (statusRes.gguf_variant ?? null) !== (previousGgufVariant ?? null)
+        ) {
+          useChatRuntimeStore.setState({ activeLoadId: null });
+        }
         setCheckpoint(checkpointId, statusRes.gguf_variant);
         applyActiveModelStatusToStore(statusRes, {
           previousCheckpoint: selectedCheckpoint,

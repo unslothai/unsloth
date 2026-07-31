@@ -3269,8 +3269,15 @@ async def list_cached_models(
 
     try:
         cache_scans = _all_hf_cache_scans()
+        try:
+            active_root = _resolve_hf_cache_dir().resolve(strict = False)
+        except Exception:
+            active_root = None
 
         seen_lower: dict[str, dict] = {}
+        # Repos whose active-cache copy cannot be loaded by id. This schema carries no path, so a
+        # client reads another cache's copy under the same id and follows the broken one instead.
+        unusable_active: set[str] = set()
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
                 try:
@@ -3284,6 +3291,15 @@ async def list_cached_models(
                     # No partial or load id here, so a recovered repo that only loads by snapshot
                     # path, or is short a shard, would read as ready. The Hub inventory lists it.
                     if _recovered_repo_is_unusable_by_repo_id(repo_info):
+                        try:
+                            if (
+                                active_root is not None
+                                and Path(repo_info.repo_path).parent.resolve(strict = False)
+                                == active_root
+                            ):
+                                unusable_active.add(repo_id.lower())
+                        except (OSError, RuntimeError, ValueError):
+                            pass
                         continue
                     if _repo_has_gguf_files(repo_info):
                         continue
@@ -3324,7 +3340,7 @@ async def list_cached_models(
                     logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                     continue
 
-        rows = list(seen_lower.values())
+        rows = [row for key, row in seen_lower.items() if key not in unusable_active]
         # Local-only list path: update checks are GGUF-only and happen lazily
         # when a repo's variants are viewed.
         cached = sorted(

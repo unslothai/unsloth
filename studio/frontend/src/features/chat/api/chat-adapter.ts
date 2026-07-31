@@ -1774,6 +1774,11 @@ async function autoLoadSmallestModel(): Promise<{
     // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
     persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
     const loadedModelId = loadResp.model || modelPath;
+    // The identity stays the backend's, per the inactive-cache contract this path already keeps.
+    // The pin is recorded alongside it so a later reload of this model finds the same directory.
+    useChatRuntimeStore.setState({
+      activeLoadId: modelPath === candidate.id ? null : modelPath,
+    });
     useChatRuntimeStore
       .getState()
       .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined);

@@ -807,6 +807,8 @@ class _SnapshotPayload(NamedTuple):
     invisible_families: frozenset
     # Kinds whose payload is here but names no family this walk groups.
     ungrouped: frozenset
+    # Kinds whose only ungroupable payload (.ckpt, diffusion prefix) is empty.
+    empty_ungrouped: frozenset
     # Suffixes per kind whose unsharded name is present but empty.
     empty_whole: dict
 
@@ -883,6 +885,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     shard_names: dict[tuple[str, str, int, str], set[str]] = {}
     ungrouped: set[str] = set()
     empty_whole: dict[str, set[str]] = {"base": set(), "adapter": set()}
+    empty_ungrouped: set[str] = set()
     unreadable: set[str] = set()
     try:
         paths = list(snapshot_dir.rglob("*"))
@@ -914,6 +917,10 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             empty_kind = _weight_family_kind(path.name)
             empty_match = _WEIGHT_SHARD_RE.search(path.name)
             if empty_kind is None:
+                # A payload this walk cannot group is judged on nothing else, so an empty one has
+                # to be remembered or the snapshot reads as holding a whole one.
+                if _is_checkpoint_weight_name(name) and not _is_training_artefact_name(name):
+                    empty_ungrouped.add("base")
                 continue
             if empty_match is None:
                 empty_whole[empty_kind].add(path.suffix.lower())
@@ -933,7 +940,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             base_evidence = True
             if _is_transformers_safetensors_weight_name(name):
                 flags["has_transformers_safetensors"] = True
-        if _is_checkpoint_weight_name(name):
+        if _is_checkpoint_weight_name(name) and not _is_training_artefact_name(name):
             flags["has_checkpoint_weights"] = True
             base_evidence = not is_adapter
         kind = _weight_family_kind(path.name)
@@ -977,6 +984,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         frozenset(unloadable),
         frozenset(invisible),
         frozenset(ungrouped),
+        frozenset(empty_ungrouped),
         empty_whole,
     )
 
@@ -1060,6 +1068,13 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             }
             if not families:
                 continue
+            # from_pretrained reads the snapshot root, so a set under a subdirectory is no fallback
+            # for the one it selects there. Judge the root's own families whenever it has any, and
+            # the nested ones only for a layout that keeps its weights there (diffusion).
+            rooted = {
+                family: indices for family, indices in families.items() if family[0] in ("", ".")
+            }
+            families = rooted or families
             if all(family in payload.invisible_families for family in families):
                 # Nothing names these shards, so the loader looks past them to the next name rather
                 # than failing on them: they neither serve the row nor veto it.
@@ -1077,7 +1092,8 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             return True
     # No family either way. Absence is not evidence here: a diffusion or .ckpt payload classifies
     # from its suffix while naming no family this walk recognises, so it must not read as broken.
-    return False
+    # An empty one of those is evidence though, as long as nothing whole stands beside it.
+    return wanted in payload.empty_ungrouped and wanted not in payload.ungrouped
 
 
 def _snapshot_cannot_serve_its_payload(snapshot_dir: Optional[Path]) -> bool:

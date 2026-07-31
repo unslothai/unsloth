@@ -407,6 +407,13 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # same place and put the pin back, or it retries the ref that needed pinning.
     assert "model_path: previousActiveLoadId || previousCheckpoint," in runtime
     assert "activeLoadId: previousActiveLoadId ?? null," in runtime
+    # A model loaded outside this tab replaces the resident one, and the pin belonged to the old.
+    assert "useChatRuntimeStore.setState({ activeLoadId: null });" in runtime
+
+    # The auto-load keys identity off the backend (see the inactive-cache contract above), so the
+    # pin is recorded beside it rather than replacing it, and a reload finds the same directory.
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    assert "activeLoadId: modelPath === candidate.id ? null : modelPath," in adapter
     assert (
         '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
     ), "loadPath must fall back to the id, so an unpinned pick is unchanged"

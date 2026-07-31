@@ -1874,6 +1874,137 @@ def test_numbering_no_set_of_shards_can_satisfy_is_a_family_short(tmp_path, monk
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
+@pytest.mark.parametrize("artefact", ["optimizer.pt", "scheduler.pth", "rng_state.npz"])
+def test_trainer_state_in_checkpoint_format_is_not_a_payload_either(
+    tmp_path, monkeypatch, artefact
+):
+    """The checkpoint extensions are a suffix test, so trainer state saved as .pt read as weights
+    the same way optimizer.safetensors did before it was excluded."""
+    _repo_with(
+        tmp_path,
+        snapshots = {OLDER: {"config.json": b'{"model_type":"llama"}', artefact: b"\0" * 256}},
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    assert _autoload_rows(tmp_path, monkeypatch) == []
+
+
+def test_an_empty_checkpoint_is_not_a_payload_this_walk_can_excuse(tmp_path, monkeypatch):
+    """A .ckpt names no family, so absence of one cannot be held against it. An empty one is
+    different: the file is there, the loader opens it, and there is nothing inside."""
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {"config.json": b'{"model_type":"llama"}', "model.ckpt": b"\0" * 256},
+            NEWER: {"config.json": b'{"model_type":"llama"}', "model.ckpt": b""},
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    _age(repo_dir / "snapshots" / OLDER, 600)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["load_id"] == str(repo_dir / "snapshots" / OLDER)
+
+
+def test_a_family_in_a_subdirectory_does_not_stand_in_for_the_root_one(tmp_path, monkeypatch):
+    """from_pretrained reads the snapshot root and fails on the index it finds there. It does not
+    go looking for an unrelated set under backup/, so that set cannot vouch for the row."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 64,
+                "model.safetensors.index.json": _SHARD_INDEX,
+                "backup/model-00001-of-00002.safetensors": b"\0" * 64,
+                "backup/model-00002-of-00002.safetensors": b"\0" * 64,
+                "backup/model.safetensors.index.json": _SHARD_INDEX,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_layout_that_keeps_its_weights_in_subdirectories_still_loads(tmp_path, monkeypatch):
+    """Negative control for the test above: with no family at the root, the nested one is what
+    there is, so it must still count."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "backup/model-00001-of-00002.safetensors": b"\0" * 64,
+                "backup/model-00002-of-00002.safetensors": b"\0" * 64,
+                "backup/model.safetensors.index.json": _SHARD_INDEX,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypatch):
+    """The compatibility model list carries no path, so a client loads by id out of the active
+    cache. With a broken copy there, publishing another cache's copy under the same id offers a
+    load that follows the broken one. The Hub inventory still lists it, with a path."""
+    import asyncio
+
+    import routes.models as models_route
+
+    active, legacy = tmp_path / "active", tmp_path / "legacy"
+    whole = {
+        "config.json": b'{"model_type":"llama"}',
+        "model-00001-of-00002.safetensors": b"\0" * 64,
+        "model-00002-of-00002.safetensors": b"\0" * 64,
+        "model.safetensors.index.json": _SHARD_INDEX,
+    }
+    torn = dict(whole)
+    del torn["model-00002-of-00002.safetensors"]
+    # Active: half a set behind a dangling ref. Legacy: the same repo, whole.
+    _repo_with(active, snapshots = {OLDER: torn}, refs = {"main": UPSTREAM_HEAD})
+    _repo_with(legacy, snapshots = {NEWER: whole}, refs = {"main": NEWER})
+
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = active),
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    inventory_scan.invalidate_hf_cache_scans()
+
+    response = asyncio.run(
+        models_route.list_cached_models(current_subject = "test-user", hf_token = None)
+    )
+    cached = response["cached"] if isinstance(response, dict) else response.cached
+    assert cached == []
+
+    # Control: the broken copy in the other cache leaves the active one publishable.
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [legacy, active])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = legacy),
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: legacy)
+    inventory_scan.invalidate_hf_cache_scans()
+
+    response = asyncio.run(
+        models_route.list_cached_models(current_subject = "test-user", hf_token = None)
+    )
+    cached = response["cached"] if isinstance(response, dict) else response.cached
+    assert len(cached) == 1
+
+
 def test_a_config_that_parses_still_proves_a_payload(tmp_path, monkeypatch):
     """Negative control for the test above: the same shape with a readable config."""
     _repo_with(

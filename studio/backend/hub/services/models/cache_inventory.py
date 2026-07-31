@@ -615,7 +615,9 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
                 # Trainer state is not the model, so it cannot classify a revision as one.
                 and not _is_training_artefact_name(name)
             )
-            is_checkpoint = _is_checkpoint_weight_name(name)
+            is_checkpoint = _is_checkpoint_weight_name(name) and not _is_training_artefact_name(
+                name
+            )
             if is_adapter:
                 flags["has_adapter_weights"] = True
                 _record_blob(adapter_blobs, f, rev_id, file_name)
