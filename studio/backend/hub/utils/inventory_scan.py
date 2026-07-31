@@ -1119,10 +1119,13 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         unreachable = False
         for suffix in (".safetensors", ".bin"):
             selected = _LOADER_WEIGHT_NAMES[kind][suffix]
-            if selected in payload.empty_whole[kind]:
+            # Probed, not matched: the loader opens this exact path, so the filesystem answers the
+            # case question. The walk folds case, which would accept MODEL.SAFETENSORS here.
+            canonical_empty = _root_file_is_empty(snapshot_dir, selected)
+            if canonical_empty is True:
                 # The loader opens this name first and finds it empty. Same exemption as below.
                 return kind == wanted or wanted not in payload.ungrouped
-            if selected in payload.whole[kind]:
+            if canonical_empty is False:
                 # Only the row's own kind proves it loads, and it vetoes nothing once that kind's
                 # payload is here but names no family.
                 return kind != wanted and wanted not in payload.ungrouped

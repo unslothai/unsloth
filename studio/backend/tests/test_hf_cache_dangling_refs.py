@@ -1998,6 +1998,59 @@ def test_a_config_the_loader_cannot_open_by_name_does_not_classify(tmp_path, mon
         assert rows[0]["partial"] is False
 
 
+def test_a_weight_the_loader_cannot_open_by_name_does_not_serve(tmp_path, monkeypatch):
+    """Same rule as the config above, for the weight itself: the loader opens model.safetensors and
+    pytorch_model.bin by exact path, so on a case-sensitive volume MODEL.SAFETENSORS is not the file
+    it finds. The walk folds case, so this has to be probed rather than matched."""
+    probe = tmp_path / "case-probe"
+    probe.mkdir()
+    (probe / "A").write_bytes(b"")
+    case_sensitive = not (probe / "a").is_file()
+
+    for config, weight in (
+        ('{"model_type":"llama"}', "MODEL.SAFETENSORS"),
+        ('{"model_type":"llama"}', "PyTorch_Model.bin"),
+        ('{"peft_type":"LORA"}', "ADAPTER_MODEL.SAFETENSORS"),
+    ):
+        root = tmp_path / weight.replace(".", "_")
+        config_name = "adapter_config.json" if "peft_type" in config else "config.json"
+        _repo_with(
+            root,
+            snapshots = {OLDER: {config_name: config.encode(), weight: b"\0" * 256}},
+            refs = {"main": UPSTREAM_HEAD},
+        )
+
+        rows = _autoload_rows(root, monkeypatch)
+
+        assert rows[0]["partial"] is case_sensitive
+        assert rows[0]["capabilities"]["can_chat"] is not case_sensitive
+
+
+def test_a_weight_under_the_wrong_case_does_not_hide_one_under_the_right_case(
+    tmp_path, monkeypatch
+):
+    """Control for the test above: the name the loader opens still decides, whether it sits beside a
+    differently cased copy or is reached further down the chain."""
+    for extra in ({"model.safetensors": b"\0" * 256}, {"pytorch_model.bin": b"\0" * 256}):
+        root = tmp_path / next(iter(extra)).replace(".", "_")
+        _repo_with(
+            root,
+            snapshots = {
+                OLDER: {
+                    "config.json": b'{"model_type":"llama"}',
+                    "MODEL.SAFETENSORS": b"\0" * 256,
+                    **extra,
+                }
+            },
+            refs = {"main": UPSTREAM_HEAD},
+        )
+
+        rows = _autoload_rows(root, monkeypatch)
+
+        assert rows[0]["partial"] is False
+        assert rows[0]["capabilities"]["can_chat"] is True
+
+
 def test_a_root_index_naming_shards_in_a_subdirectory_still_serves(tmp_path, monkeypatch):
     """The loader resolves every weight_map entry against the index it selected, so a canonical root
     index pointing into weights/ is one it can load. Only the index's own paths are judged."""
