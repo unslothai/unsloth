@@ -170,10 +170,14 @@ export const ChatDictationBar: FC<{
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || transcribingRef.current) {
+      // defaultPrevented: an open dialog or menu already claimed this Escape.
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        transcribingRef.current
+      ) {
         return;
       }
-      event.preventDefault();
       cancelActiveStudioDictation();
     };
     window.addEventListener("keydown", onKeyDown);
