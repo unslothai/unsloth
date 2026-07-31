@@ -187,7 +187,11 @@ HF_MODELS = [hf_model(index) for index in range(12)]
 HF_DATASETS = [hf_dataset(index) for index in range(73)]
 
 
-def fulfill_json(route, payload, status: int = 200) -> None:
+def fulfill_json(
+    route,
+    payload,
+    status: int = 200,
+) -> None:
     route.fulfill(
         status = status,
         body = json.dumps(payload),
@@ -324,11 +328,7 @@ def install_route_mocks(page, counters: dict[str, int], offline: dict[str, bool]
                 normalized_query = query.casefold()
                 fulfill_json(
                     route,
-                    [
-                        item
-                        for item in HF_MODELS
-                        if normalized_query in item["id"].casefold()
-                    ],
+                    [item for item in HF_MODELS if normalized_query in item["id"].casefold()],
                 )
             else:
                 fulfill_json(route, HF_MODELS[:3])
@@ -682,9 +682,7 @@ def run_browser(playwright, browser_name: str, token: str) -> None:
     )
     install_view_transition_killer(context)
     context.add_init_script(
-        "try { localStorage.setItem('unsloth_auth_token', "
-        + json.dumps(token)
-        + "); } catch {}",
+        "try { localStorage.setItem('unsloth_auth_token', " + json.dumps(token) + "); } catch {}",
     )
     page = context.new_page()
     page.set_default_timeout(TIMEOUT_MS)
@@ -692,9 +690,7 @@ def run_browser(playwright, browser_name: str, token: str) -> None:
     page.on(
         "pageerror",
         lambda error: (
-            None
-            if is_benign_page_error(str(error))
-            else page_errors.append(str(error))
+            None if is_benign_page_error(str(error)) else page_errors.append(str(error))
         ),
     )
     counters = {

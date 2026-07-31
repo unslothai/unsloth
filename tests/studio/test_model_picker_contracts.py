@@ -1599,7 +1599,7 @@ def test_dataset_display_name_handles_cross_platform_trailing_separators():
     assert "datasetSelectionDisplayName({" in source
     assert "cacheLocalPathMatchesSelection(candidate.path, uploadedFile)" in source
     assert 'value.replaceAll("\\\\", "/")' in display_name
-    assert ".split(\"/\")" in display_name
+    assert '.split("/")' in display_name
     assert ".filter(Boolean)" in display_name
     assert "UPLOADED_DATASET_HASH_PREFIX_RE" in display_name
     assert 'parts.lastIndexOf("parquet-files")' in display_name
@@ -1684,15 +1684,9 @@ def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
 def test_training_picker_localizes_semantic_inventory_sources():
     inventory_types = _read("features/hub/inventory/types.ts")
     inventory = _read("features/hub/inventory/use-hub-inventory.ts")
-    dataset_selector = _read(
-        "features/dataset-picker/components/dataset-selector.tsx"
-    )
-    model_selector = _read(
-        "features/model-picker/components/train-model-selector.tsx"
-    )
-    model_view = _read(
-        "features/model-picker/components/train-model-picker-view-model.ts"
-    )
+    dataset_selector = _read("features/dataset-picker/components/dataset-selector.tsx")
+    model_selector = _read("features/model-picker/components/train-model-selector.tsx")
+    model_view = _read("features/model-picker/components/train-model-picker-view-model.ts")
 
     assert 'datasetSource?: "recipe" | "upload";' in inventory_types
     assert "datasetSource:" in inventory
@@ -1723,9 +1717,7 @@ def test_training_validation_returns_translation_keys_and_rechecks_hub_ids():
 
 def test_legacy_dataset_setter_still_schedules_modality_check():
     store = _read("features/training/stores/training-config-store.ts")
-    legacy_setter = store.split("setDataset: (dataset) =>", 1)[1].split(
-        "setDatasetSubset:", 1
-    )[0]
+    legacy_setter = store.split("setDataset: (dataset) =>", 1)[1].split("setDatasetSubset:", 1)[0]
 
     assert "const datasetId = dataset?.trim() || null;" in legacy_setter
     assert 'runDatasetCheck(datasetId, "train")' in legacy_setter
@@ -2026,9 +2018,9 @@ def test_streaming_dataset_preflight_does_not_read_local_cache():
     assert "disabledForDetectedModality" in modality
     assert "return attempt.cancel();" in modality
     assert "TRAINING_SETUP_CHANGED_ERROR" not in modality
-    cache_setter = store.split(
-        "setSelectedDatasetCacheReference: (dataset, localPath) =>", 1
-    )[1].split("ensureModelDefaultsLoaded:", 1)[0]
+    cache_setter = store.split("setSelectedDatasetCacheReference: (dataset, localPath) =>", 1)[
+        1
+    ].split("ensureModelDefaultsLoaded:", 1)[0]
     assert "const cacheReferenceChanged =" in cache_setter
     assert "cacheReferenceChanged && !state.datasetStreaming" in cache_setter
     assert "recheckSelectedDatasetForStreamingMode(false)" in cache_setter
