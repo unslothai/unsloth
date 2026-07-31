@@ -326,7 +326,11 @@ _OPAQUE_PART_KEYS = frozenset(
 )
 
 
-def _neutralize_content_parts(content: list, rewrite, media_opaque: bool = True):
+def _neutralize_content_parts(
+    content: list,
+    rewrite,
+    media_opaque: bool = True,
+):
     """Neutralize an OpenAI-style content parts list (#7066).
 
     Two things the naive per-part rewrite missed. A part that is a mapping without a
