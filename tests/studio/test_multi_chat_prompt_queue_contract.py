@@ -259,9 +259,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "async function resolveQueuedEmptyLocalModel(",
         "export function createOpenAIStreamAdapter",
     )
-    assert lifecycle.index("beginModelLoading()") < lifecycle.index(
-        "await getInferenceStatus()"
-    )
+    assert lifecycle.index("beginModelLoading()") < lifecycle.index("await getInferenceStatus()")
     assert lifecycle.index("await getInferenceStatus()") < lifecycle.index(
         "await autoLoadSmallestModel("
     )
@@ -283,9 +281,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "getLocalPromptQueueThreadIds" in CONFIRM_MODEL_SWAP
     assert "promptQueueThreadIds" in MODEL_RUNTIME
     assert MODEL_RUNTIME.count("requestLocalPromptQueueStop(") >= 4
-    assert MODEL_RUNTIME.index(
-        "requestLocalPromptQueueStop();"
-    ) < MODEL_RUNTIME.index("const loadResponse = await loadModel(")
+    assert MODEL_RUNTIME.index("requestLocalPromptQueueStop();") < MODEL_RUNTIME.index(
+        "const loadResponse = await loadModel("
+    )
     eject = _between(
         MODEL_RUNTIME,
         "const ejectModel = useCallback(",
@@ -316,9 +314,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         'setText("");'
     )
     assert "requestLocalPromptQueueStop(" in SHARED_COMPOSER
-    assert SHARED_COMPOSER.index(
-        "requestLocalPromptQueueStop("
-    ) < SHARED_COMPOSER.index("const resp = await loadModel(")
+    assert SHARED_COMPOSER.index("requestLocalPromptQueueStop(") < SHARED_COMPOSER.index(
+        "const resp = await loadModel("
+    )
     assert "force_cancel_active:" in SHARED_COMPOSER
     assert (
         "resolvedThreadId ===\n              useChatRuntimeStore.getState().activeThreadId"
