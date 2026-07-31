@@ -3675,7 +3675,7 @@ const ComposerRightControls: FC<{
           className="size-8 rounded-full text-foreground"
           onClick={startDictation}
         >
-          <MicIcon className="size-[22px]" />
+          <MicIcon className="size-[24px]" />
         </TooltipIconButton>
       </ComposerPrimitive.If>
       <AuiIf
