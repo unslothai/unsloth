@@ -713,6 +713,100 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_research_document_sources_run "
         "ON research_document_sources(run_id, id)"
     )
+    # Account assets share studio.db.
+    # Migration stays additive so tombstones and import ledger survive restarts.
+    # Owner identity never comes from JSON.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipes (
+            owner_subject TEXT NOT NULL CHECK(length(owner_subject) > 0),
+            id TEXT NOT NULL CHECK(length(id) BETWEEN 1 AND 128),
+            name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200),
+            payload_json TEXT NOT NULL
+                CHECK(length(CAST(payload_json AS BLOB)) <= 1048576),
+            learning_recipe_id TEXT,
+            learning_recipe_title TEXT,
+            revision INTEGER NOT NULL CHECK(revision >= 1),
+            created_at INTEGER NOT NULL CHECK(created_at >= 0),
+            updated_at INTEGER NOT NULL CHECK(updated_at >= created_at),
+            deleted_at INTEGER CHECK(deleted_at IS NULL OR deleted_at >= created_at),
+            PRIMARY KEY (owner_subject, id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_data_recipes_owner_active_updated
+        ON data_recipes(owner_subject, deleted_at, updated_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipe_executions (
+            owner_subject TEXT NOT NULL CHECK(length(owner_subject) > 0),
+            id TEXT NOT NULL CHECK(length(id) BETWEEN 1 AND 128),
+            recipe_id TEXT NOT NULL CHECK(length(recipe_id) BETWEEN 1 AND 128),
+            metadata_json TEXT NOT NULL
+                CHECK(length(CAST(metadata_json AS BLOB)) <= 262144),
+            revision INTEGER NOT NULL CHECK(revision >= 1),
+            created_at INTEGER NOT NULL CHECK(created_at >= 0),
+            updated_at INTEGER NOT NULL CHECK(updated_at >= created_at),
+            finished_at INTEGER CHECK(finished_at IS NULL OR finished_at >= created_at),
+            PRIMARY KEY (owner_subject, id),
+            FOREIGN KEY (owner_subject, recipe_id)
+                REFERENCES data_recipes(owner_subject, id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_recipe_executions_owner_recipe_created
+        ON data_recipe_executions(owner_subject, recipe_id, created_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipe_completed_artifacts (
+            owner_subject TEXT NOT NULL CHECK(length(owner_subject) > 0),
+            job_id TEXT NOT NULL CHECK(length(job_id) BETWEEN 1 AND 128),
+            artifact_path TEXT NOT NULL CHECK(length(artifact_path) > 0),
+            execution_type TEXT NOT NULL CHECK(execution_type IN ('preview', 'full')),
+            analysis_json TEXT
+                CHECK(length(CAST(analysis_json AS BLOB)) <= 262144),
+            completed_at INTEGER NOT NULL CHECK(completed_at >= 0),
+            PRIMARY KEY (owner_subject, job_id)
+        ) WITHOUT ROWID
+        """
+    )
+    completed_artifact_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(data_recipe_completed_artifacts)")
+    }
+    if "analysis_json" not in completed_artifact_columns:
+        conn.execute(
+            "ALTER TABLE data_recipe_completed_artifacts "
+            "ADD COLUMN analysis_json TEXT "
+            "CHECK(length(CAST(analysis_json AS BLOB)) <= 262144)"
+        )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_asset_legacy_imports (
+            owner_subject TEXT NOT NULL CHECK(length(owner_subject) > 0),
+            source TEXT NOT NULL CHECK(length(source) > 0),
+            entity_kind TEXT NOT NULL
+                CHECK(entity_kind IN ('recipe', 'execution')),
+            legacy_id TEXT NOT NULL CHECK(length(legacy_id) BETWEEN 1 AND 128),
+            outcome TEXT NOT NULL CHECK(
+                outcome IN (
+                    'imported', 'already_imported', 'redacted', 'id_retired',
+                    'rejected', 'missing_parent'
+                )
+            ),
+            reason TEXT,
+            imported_at INTEGER NOT NULL CHECK(imported_at >= 0),
+            PRIMARY KEY (owner_subject, source, entity_kind, legacy_id)
+        ) WITHOUT ROWID
+        """
+    )
     inventory_state = conn.execute(
         """
         SELECT inventory_version, dirty

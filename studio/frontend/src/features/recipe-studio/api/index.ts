@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSubjectKey } from "@/features/auth";
 import {
   formatFastApiDetail,
   readFastApiError,
 } from "@/lib/format-fastapi-error";
 
 const DEFAULT_BASE = "/api/data-recipe";
+
+export class RecipeApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "RecipeApiError";
+    this.status = status;
+  }
+}
 
 export const DATA_DESIGNER_API_BASE =
   import.meta.env.VITE_DATA_DESIGNER_API ?? DEFAULT_BASE;
@@ -22,7 +32,6 @@ export type PublishRecipeJobRequest = {
   description: string;
   hf_token?: string | null;
   private?: boolean;
-  artifact_path?: string | null;
 };
 
 export type PublishRecipeJobResponse = {
@@ -100,6 +109,8 @@ export type JobStatusResponse = {
   dataset_rows?: number | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   artifact_path?: string | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  execution_type?: "preview" | "full" | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   started_at?: number | null;
   // biome-ignore lint/style/useNamingConvention: api schema
@@ -225,14 +236,24 @@ async function parseErrorResponse(response: Response): Promise<string> {
   }
 }
 
-async function postJson<T>(path: string, payload: unknown): Promise<T> {
-  const response = await authFetch(`${DATA_DESIGNER_API_BASE}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+async function postJson<T>(
+  path: string,
+  payload: unknown,
+  options: { expectedSubjectKey?: string } = {},
+): Promise<T> {
+  const response = await authFetch(
+    `${DATA_DESIGNER_API_BASE}${path}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
     },
-    body: JSON.stringify(payload),
-  });
+    options.expectedSubjectKey
+      ? { expectedSubjectKey: options.expectedSubjectKey }
+      : undefined,
+  );
 
   if (!response.ok) {
     throw new Error(await parseErrorResponse(response));
@@ -241,10 +262,21 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
   return response.json();
 }
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await authFetch(`${DATA_DESIGNER_API_BASE}${path}`);
+async function getJson<T>(
+  path: string,
+  options: { expectedSubjectKey?: string } = {},
+): Promise<T> {
+  const expectedSubjectKey = options.expectedSubjectKey ?? getAuthSubjectKey();
+  const response = await authFetch(
+    `${DATA_DESIGNER_API_BASE}${path}`,
+    undefined,
+    { expectedSubjectKey },
+  );
   if (!response.ok) {
-    throw new Error(await parseErrorResponse(response));
+    throw new RecipeApiError(
+      response.status,
+      await parseErrorResponse(response),
+    );
   }
   return response.json();
 }
@@ -297,20 +329,23 @@ export async function validateRecipe(
 
 export async function createRecipeJob(
   payload: unknown,
+  options: { expectedSubjectKey?: string } = {},
 ): Promise<JobCreateResponse> {
-  return postJson<JobCreateResponse>("/jobs", payload);
+  return postJson<JobCreateResponse>("/jobs", payload, options);
 }
 
 export async function getRecipeJobStatus(
   jobId: string,
+  options: { expectedSubjectKey?: string } = {},
 ): Promise<JobStatusResponse> {
-  return getJson<JobStatusResponse>(`/jobs/${jobId}/status`);
+  return getJson<JobStatusResponse>(`/jobs/${jobId}/status`, options);
 }
 
 export async function getRecipeJobAnalysis(
   jobId: string,
+  options: { expectedSubjectKey?: string } = {},
 ): Promise<Record<string, unknown>> {
-  return getJson<Record<string, unknown>>(`/jobs/${jobId}/analysis`);
+  return getJson<Record<string, unknown>>(`/jobs/${jobId}/analysis`, options);
 }
 
 export async function getRecipeJobDataset(
@@ -318,12 +353,14 @@ export async function getRecipeJobDataset(
   options?: {
     limit?: number;
     offset?: number;
+    expectedSubjectKey?: string;
   },
 ): Promise<JobDatasetResponse> {
   const limit = options?.limit ?? 20;
   const offset = options?.offset ?? 0;
   return getJson<JobDatasetResponse>(
     `/jobs/${jobId}/dataset?limit=${limit}&offset=${offset}`,
+    options,
   );
 }
 
@@ -368,6 +405,7 @@ export async function listMcpTools(
 export async function streamRecipeJobEvents(options: {
   jobId: string;
   signal: AbortSignal;
+  expectedSubjectKey?: string;
   lastEventId?: number | null;
   onOpen?: () => void;
   onEvent: (event: JobEvent) => void;
@@ -385,6 +423,9 @@ export async function streamRecipeJobEvents(options: {
       method: "GET",
       headers,
       signal: options.signal,
+    },
+    {
+      expectedSubjectKey: options.expectedSubjectKey ?? getAuthSubjectKey(),
     },
   );
   if (!response.ok) {

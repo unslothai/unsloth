@@ -274,17 +274,39 @@ def test_list_training_runs_clamps_pagination(monkeypatch):
 def test_get_recipe_job_dataset_clamps_pagination(monkeypatch):
     captured = {}
 
-    def fake_job_dataset(job_id, limit, offset):
-        captured["limit"] = limit
-        captured["offset"] = offset
-        return {"ok": True}
+    class FakeManager:
+        def get_dataset_for_control_plane(self, job_id, *, limit, offset):
+            captured.update(job_id = job_id, limit = limit, offset = offset)
+            return {"dataset": [], "total": 0}
 
-    _stub_module(monkeypatch, "routes")
-    _stub_module(monkeypatch, "routes.data_recipe")
-    _stub_module(monkeypatch, "routes.data_recipe.jobs", job_dataset = fake_job_dataset)
+    _stub_module(monkeypatch, "core")
+    _stub_module(monkeypatch, "core.data_recipe")
+    _stub_module(
+        monkeypatch,
+        "core.data_recipe.jobs",
+        get_job_manager = lambda: FakeManager(),
+    )
 
-    tool = _get_tool("get_recipe_job_dataset")  # this tool is synchronous
-    tool.fn(job_id = "job-1", limit = -1, offset = -9)
+    tool = _get_tool("get_recipe_job_dataset")
+    result = tool.fn(job_id = "job-1", limit = -1, offset = -9)
 
-    assert captured["limit"] == 1
-    assert captured["offset"] == 0
+    assert captured == {"job_id": "job-1", "limit": 1, "offset": 0}
+    assert result == {"dataset": [], "total": 0, "limit": 1, "offset": 0}
+
+
+def test_get_recipe_job_status_uses_authenticated_control_plane(monkeypatch):
+    class FakeManager:
+        def get_status_for_control_plane(self, job_id):
+            return {"job_id": job_id, "owner": "ui-account"}
+
+    _stub_module(monkeypatch, "core")
+    _stub_module(monkeypatch, "core.data_recipe")
+    _stub_module(
+        monkeypatch,
+        "core.data_recipe.jobs",
+        get_job_manager = lambda: FakeManager(),
+    )
+
+    tool = _get_tool("get_recipe_job_status")
+
+    assert tool.fn(job_id = "job-1") == {"job_id": "job-1", "owner": "ui-account"}

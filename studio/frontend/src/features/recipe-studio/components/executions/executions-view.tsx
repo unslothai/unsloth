@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   CheckmarkCircle02Icon,
@@ -9,7 +16,11 @@ import {
   Share08Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { publishRecipeJob } from "../../api";
+import {
+  RecipeApiError,
+  getRecipeJobStatus,
+  publishRecipeJob,
+} from "../../api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -33,6 +44,7 @@ import {
   formatDuration,
   formatPercent,
   isExpandableCellValue,
+  isJobStatusPublishable,
   parseAnalysisColumns,
   parseModelUsageRows,
 } from "./executions-view-helpers";
@@ -41,24 +53,40 @@ type ExecutionsViewProps = {
   executions: RecipeExecutionRecord[];
   selectedExecutionId: string | null;
   currentSignature: string;
+  hasOlderExecutions: boolean;
+  olderExecutionsLoading: boolean;
   onSelectExecution: (id: string) => void;
   onCancelExecution: (id: string) => void;
+  onLoadOlderExecutions: () => void;
   onLoadDatasetPage: (id: string, page: number) => void;
+};
+
+type PublishCapability = {
+  candidateJobId: string;
+  requestVersion: number;
+  status: "allowed" | "denied" | "unknown";
+  message: string | null;
 };
 
 export function ExecutionsView({
   executions,
   selectedExecutionId,
   currentSignature,
+  hasOlderExecutions,
+  olderExecutionsLoading,
   onSelectExecution,
   onCancelExecution,
+  onLoadOlderExecutions,
   onLoadDatasetPage,
 }: ExecutionsViewProps): ReactElement {
   const formatEta = (value: number | null | undefined): string =>
     typeof value === "number" && Number.isFinite(value)
       ? `${value.toLocaleString()} s`
       : "--";
-  const [detailTab, setDetailTab] = useState("data");
+  const [detailTabState, setDetailTabState] = useState<{
+    executionId: string | null;
+    value: string;
+  }>({ executionId: null, value: "data" });
   const [hiddenDatasetColumnsByExecution, setHiddenDatasetColumnsByExecution] = useState<
     Record<string, string[]>
   >({});
@@ -66,6 +94,10 @@ export function ExecutionsView({
     Record<string, number>
   >({});
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
+  const [publishRequestVersion, setPublishRequestVersion] = useState(0);
+  const [publishCapability, setPublishCapability] =
+    useState<PublishCapability | null>(null);
+  const publishRequestGenerationRef = useRef(0);
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const shouldStickTerminalToBottomRef = useRef(true);
   const selectedExecution = useMemo(
@@ -74,13 +106,23 @@ export function ExecutionsView({
       null,
     [executions, selectedExecutionId],
   );
+  const selectedExecutionIdSafe = selectedExecution?.id ?? null;
+  const detailTab =
+    detailTabState.executionId === selectedExecutionIdSafe
+      ? detailTabState.value
+      : "data";
+  const setDetailTab = useCallback(
+    (value: string): void => {
+      setDetailTabState({ executionId: selectedExecutionIdSafe, value });
+    },
+    [selectedExecutionIdSafe],
+  );
   const isStale = Boolean(
     selectedExecution &&
       selectedExecution.recipeSignature.length > 0 &&
       selectedExecution.recipeSignature !== currentSignature,
   );
 
-  const selectedExecutionIdSafe = selectedExecution?.id ?? null;
   const hiddenDatasetColumns = useMemo(() => {
     if (!selectedExecutionIdSafe) {
       return [];
@@ -194,13 +236,66 @@ export function ExecutionsView({
   const canCancel = Boolean(
     selectedExecution?.jobId && isExecutionInProgress(selectedExecution.status),
   );
-  const canPublish = Boolean(
+  const publishCandidateJobId =
     selectedExecution &&
-      selectedExecution.kind === "full" &&
-      selectedExecution.status === "completed" &&
-      selectedExecution.jobId &&
-      selectedExecution.artifact_path,
+    selectedExecution.kind === "full" &&
+    selectedExecution.status === "completed"
+      ? selectedExecution.jobId
+      : null;
+  const effectivePublishCapability =
+    publishCandidateJobId &&
+    publishCapability?.candidateJobId === publishCandidateJobId &&
+    publishCapability.requestVersion === publishRequestVersion
+      ? publishCapability
+      : null;
+  const publishCapabilityStatus = publishCandidateJobId
+    ? (effectivePublishCapability?.status ?? "checking")
+    : "denied";
+  const canPublish = Boolean(
+    publishCandidateJobId && publishCapabilityStatus === "allowed",
   );
+
+  useEffect(() => {
+    const requestGeneration = publishRequestGenerationRef.current + 1;
+    publishRequestGenerationRef.current = requestGeneration;
+    if (!publishCandidateJobId) {
+      return () => {
+        if (publishRequestGenerationRef.current === requestGeneration) {
+          publishRequestGenerationRef.current += 1;
+        }
+      };
+    }
+    void getRecipeJobStatus(publishCandidateJobId)
+      .then((status) => {
+        if (publishRequestGenerationRef.current !== requestGeneration) return;
+        const allowed = isJobStatusPublishable(status);
+        setPublishCapability({
+          candidateJobId: publishCandidateJobId,
+          requestVersion: publishRequestVersion,
+          status: allowed ? "allowed" : "denied",
+          message: null,
+        });
+      })
+      .catch((error: unknown) => {
+        if (publishRequestGenerationRef.current !== requestGeneration) return;
+        const authoritativeDenial =
+          error instanceof RecipeApiError &&
+          (error.status === 404 || error.status === 409);
+        setPublishCapability({
+          candidateJobId: publishCandidateJobId,
+          requestVersion: publishRequestVersion,
+          status: authoritativeDenial ? "denied" : "unknown",
+          message: authoritativeDenial
+            ? null
+            : "Publish access could not be verified. Check the connection and try again.",
+        });
+      });
+    return () => {
+      if (publishRequestGenerationRef.current === requestGeneration) {
+        publishRequestGenerationRef.current += 1;
+      }
+    };
+  }, [publishCandidateJobId, publishRequestVersion]);
   const datasetPage = selectedExecution?.datasetPage ?? 1;
   const datasetPageSize = selectedExecution?.datasetPageSize ?? 20;
   const datasetTotal = selectedExecution?.datasetTotal ?? 0;
@@ -348,10 +443,6 @@ export function ExecutionsView({
   }, [selectedExecution]);
 
   useEffect(() => {
-    setDetailTab("data");
-  }, [selectedExecution?.id]);
-
-  useEffect(() => {
     if (detailTab !== "overview" || !terminalRef.current) {
       return;
     }
@@ -375,6 +466,9 @@ export function ExecutionsView({
         executions={executions}
         selectedExecutionId={selectedExecutionId}
         onSelectExecution={onSelectExecution}
+        hasOlderExecutions={hasOlderExecutions}
+        loadingOlderExecutions={olderExecutionsLoading}
+        onLoadOlderExecutions={onLoadOlderExecutions}
       />
       <section className="min-w-0 flex-1 overflow-auto p-4">
         {!selectedExecution ? (
@@ -457,6 +551,33 @@ export function ExecutionsView({
                   <TabsTrigger value="raw">Raw</TabsTrigger>
                 </TabsList>
                 <div className="flex items-center gap-2">
+                  {publishCandidateJobId &&
+                    publishCapabilityStatus === "checking" && (
+                      <span className="text-xs text-muted-foreground">
+                        Checking publish access...
+                      </span>
+                    )}
+                  {publishCandidateJobId &&
+                    publishCapabilityStatus === "unknown" && (
+                      <div
+                        className="flex items-center gap-2"
+                        role="status"
+                      >
+                        <span className="text-xs text-amber-700 dark:text-amber-300">
+                          {effectivePublishCapability?.message}
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setPublishRequestVersion((version) => version + 1)
+                          }
+                        >
+                          Recheck
+                        </Button>
+                      </div>
+                    )}
                   {canPublish && (
                     <Button
                       type="button"
@@ -566,10 +687,14 @@ export function ExecutionsView({
         onOpenChange={setPublishDialogOpen}
         execution={canPublish ? selectedExecution : null}
         onPublish={async (payload) => {
-          if (!selectedExecution?.jobId) {
-            throw new Error("This run is missing a job id.");
+          if (
+            !canPublish ||
+            !publishCandidateJobId ||
+            selectedExecution?.jobId !== publishCandidateJobId
+          ) {
+            throw new Error("Publish access must be verified again.");
           }
-          const response = await publishRecipeJob(selectedExecution.jobId, payload);
+          const response = await publishRecipeJob(publishCandidateJobId, payload);
           return { url: response.url };
         }}
       />

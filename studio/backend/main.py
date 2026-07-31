@@ -312,6 +312,7 @@ from routes import (
     research_runs_router,
     training_history_router,
     training_router,
+    user_assets_router,
 )
 from routes.llama import router as llama_router
 from routes.whisper import router as whisper_router
@@ -800,8 +801,22 @@ from utils.upload_limits import (  # noqa: E402
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
+from core.user_assets_validation import (  # noqa: E402
+    MAX_EXECUTION_JSON_BYTES,
+    MAX_LEGACY_BATCH_JSON_BYTES,
+    MAX_RECIPE_JSON_BYTES,
+)
+
+_USER_ASSET_TRANSPORT_HEADROOM_BYTES = 64 * 1024
+
+
+def _user_asset_transport_limit_bytes(canonical_limit: int) -> int:
+    """Leave bounded room for IDs, names, and revision outside canonical JSON."""
+    return canonical_limit + _USER_ASSET_TRANSPORT_HEADROOM_BYTES
+
 
 _BODY_PROTECTED_PREFIXES = (
+    "/api/user-assets",
     "/v1/chat/completions",
     "/v1/completions",
     "/p/",
@@ -835,6 +850,12 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
 
 
 def _get_request_body_max_bytes(path: str) -> int:
+    if path.startswith("/api/user-assets/legacy-import"):
+        return _user_asset_transport_limit_bytes(MAX_LEGACY_BATCH_JSON_BYTES)
+    if "/executions/" in path and path.startswith("/api/user-assets/recipes/"):
+        return _user_asset_transport_limit_bytes(MAX_EXECUTION_JSON_BYTES)
+    if path.startswith("/api/user-assets/recipes"):
+        return _user_asset_transport_limit_bytes(MAX_RECIPE_JSON_BYTES)
     if path.startswith("/api/inference/audio/transcribe/raw"):
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):
@@ -1053,6 +1074,7 @@ app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
+app.include_router(user_assets_router, prefix = "/api/user-assets", tags = ["user-assets"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])

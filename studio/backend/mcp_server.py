@@ -168,8 +168,12 @@ def create_studio_mcp() -> FastMCP:
     @mcp.tool
     def get_recipe_job_status(job_id: str) -> dict[str, Any]:
         """Read the status of a Data Recipe job."""
-        from routes.data_recipe.jobs import job_status
-        return _dump(job_status(job_id))
+        from core.data_recipe.jobs import get_job_manager
+
+        status = get_job_manager().get_status_for_control_plane(job_id)
+        if status is None:
+            raise ValueError("job not found")
+        return status
 
     @mcp.tool
     def get_recipe_job_dataset(
@@ -178,12 +182,21 @@ def create_studio_mcp() -> FastMCP:
         offset: int = 0,
     ) -> dict[str, Any]:
         """Read a bounded page of generated Data Recipe rows."""
-        from routes.data_recipe.jobs import job_dataset
+        from core.data_recipe.jobs import get_job_manager
 
-        # Clamp here (direct call skips FastAPI's Query bounds).
         limit = _clamp(limit, 1, 500)
         offset = max(0, offset)
-        return _dump(job_dataset(job_id, limit = limit, offset = offset))
+        result = get_job_manager().get_dataset_for_control_plane(job_id, limit = limit, offset = offset)
+        if result is None:
+            raise ValueError("dataset not ready")
+        if "error" in result:
+            raise ValueError(result["error"])
+        return {
+            "dataset": result["dataset"],
+            "total": result["total"],
+            "limit": limit,
+            "offset": offset,
+        }
 
     @mcp.tool
     async def load_checkpoint(

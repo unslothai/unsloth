@@ -5,6 +5,7 @@ import type {
   RecipeExecutionAnalysis,
   RecipeExecutionStatus,
 } from "../../execution-types";
+import type { JobStatusResponse } from "../../api";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
 import { resolveImagePreview } from "../../utils/image-preview";
 
@@ -26,6 +27,15 @@ export type ModelUsageRow = {
 
 export const PREVIEW_DATASET_PAGE_SIZE = 20;
 export const TERMINAL_STICKY_BOTTOM_THRESHOLD_PX = 24;
+
+export function isJobStatusPublishable(status: JobStatusResponse): boolean {
+  return (
+    status.status === "completed" &&
+    status.execution_type === "full" &&
+    typeof status.artifact_path === "string" &&
+    status.artifact_path.length > 0
+  );
+}
 
 export function formatTimestamp(value: number): string {
   return new Date(value).toLocaleString();

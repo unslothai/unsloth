@@ -1,0 +1,37 @@
+{
+  "deniedSecretKeys": [
+    "api_key",
+    "hf_token",
+    "github_token",
+    "wandb_token",
+    "access_token",
+    "refresh_token",
+    "authorization",
+    "proxy_authorization",
+    "cookie",
+    "set_cookie",
+    "password",
+    "secret",
+    "secret_key",
+    "private_key",
+    "access_key",
+    "access_key_id",
+    "aws_secret_access_key",
+    "s3_secret_access_key"
+  ],
+  "safeSecretLookingKeys": ["api_key_env"],
+  "mcpEnvDeniedKeyParts": [
+    "api_key",
+    "access_key",
+    "private_key",
+    "token",
+    "secret",
+    "password",
+    "credential"
+  ],
+  "mcpEnvDeniedKeySuffixes": ["_key", "_key_id"],
+  "mcpEnvDeniedExactKeys": ["key"],
+  "maxRecipeJsonBytes": 1048576,
+  "maxExecutionJsonBytes": 262144,
+  "maxLegacyBatchJsonBytes": 8388608
+}
