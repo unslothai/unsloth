@@ -87,6 +87,7 @@ import {
   useState,
 } from "react";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
+import { pickerLocalModelMatchesQuery } from "../../inventory/chat-picker-inventory-sources";
 import { FolderBrowser } from "./folder-browser";
 import {
   type ModelCapabilities,
@@ -1972,10 +1973,7 @@ export function HubModelPicker({
   // Each local section's search is scoped to its own models (matched by name).
   const localQuery = normalizeForSearch(debouncedQuery.trim());
   const matchesLocalQuery = (m: LocalModelInfo) =>
-    !localQuery ||
-    normalizeForSearch(
-      `${m.model_id ?? ""} ${m.display_name} ${m.id}`,
-    ).includes(localQuery);
+    pickerLocalModelMatchesQuery(m, localQuery);
   const sortedLmStudio = useMemo(
     () =>
       sortLocalModels(
