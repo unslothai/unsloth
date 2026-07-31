@@ -27,15 +27,15 @@ def test_linux_tauri_icon_is_1024_square():
 
 def test_tauri_icons_are_declared_as_package_data():
     tomllib = pytest.importorskip("tomllib" if sys.version_info >= (3, 11) else "tomli")
-    data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    data = tomllib.loads(PYPROJECT.read_text(encoding = "utf-8"))
     package_data = data["tool"]["setuptools"]["package-data"]["studio"]
     assert "src-tauri/icons/icon.icns" in package_data
     assert "src-tauri/icons/icon.png" in package_data
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is unavailable")
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "bash is unavailable")
 def test_linux_tauri_icon_is_copied_into_installed_data(tmp_path):
-    source = INSTALL_SH.read_text(encoding="utf-8")
+    source = INSTALL_SH.read_text(encoding = "utf-8")
     marker = source.index("# Prefer the higher-resolution Tauri icon.png")
     start = source.index('        _css_desktop_icon="$_css_icon_png"', marker)
     end = source.index('        cat > "$_css_desktop"', start)
@@ -57,18 +57,18 @@ def test_linux_tauri_icon_is_copied_into_installed_data(tmp_path):
     )
     result = subprocess.run(
         ["bash", "-c", script],
-        env={"PATH": "/usr/bin:/bin"},
-        check=True,
-        capture_output=True,
-        text=True,
+        env = {"PATH": "/usr/bin:/bin"},
+        check = True,
+        capture_output = True,
+        text = True,
     )
     assert result.stdout == str(installed_icon)
     assert installed_icon.read_text() == "high-resolution"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is unavailable")
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "bash is unavailable")
 def test_macos_prebuilt_copy_failure_runs_generated_icns_fallback(tmp_path):
-    source = INSTALL_SH.read_text(encoding="utf-8")
+    source = INSTALL_SH.read_text(encoding = "utf-8")
     marker = source.index("# ── AppIcon ──")
     start = source.index('        if [ -f "$_css_tauri_icns"', marker)
     end = source.index("        # Touch so Finder indexes it", start)
@@ -120,9 +120,9 @@ def test_macos_prebuilt_copy_failure_runs_generated_icns_fallback(tmp_path):
     )
     result = subprocess.run(
         ["bash", "-c", script],
-        env={"PATH": f"{fake_bin}:/usr/bin:/bin", **{"TMPDIR": str(tmp_path)}},
-        capture_output=True,
-        text=True,
+        env = {"PATH": f"{fake_bin}:/usr/bin:/bin", **{"TMPDIR": str(tmp_path)}},
+        capture_output = True,
+        text = True,
     )
     assert result.returncode == 0, result.stderr
     assert (resources / "AppIcon.icns").read_text() == "generated"
