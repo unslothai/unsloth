@@ -2765,13 +2765,16 @@ def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
         seen.add(attachment_id)
         kind, value = payload
         content_type = None
-        if kind == "image" and isinstance(value, str):
+        part_name = part.get("name")
+        if isinstance(value, str) and value[:5].lower() == "data:":
             content_type = value[5:].split(";", 1)[0].split(",", 1)[0] or None
         out.append(
             {
                 "id": attachment_id,
                 "type": kind,
-                "name": "Chat image" if kind == "image" else "Chat audio",
+                "name": part_name if isinstance(part_name, str) and part_name else (
+                    "Chat image" if kind == "image" else "Chat audio"
+                ),
                 "contentType": content_type,
                 "content": [part],
             }
