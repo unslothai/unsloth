@@ -1932,9 +1932,13 @@ def test_a_family_in_a_subdirectory_does_not_stand_in_for_the_root_one(tmp_path,
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
-def test_a_layout_that_keeps_its_weights_in_subdirectories_still_loads(tmp_path, monkeypatch):
-    """Negative control for the test above: with no family at the root, the nested one is what
-    there is, so it must still count."""
+def test_a_layout_that_keeps_every_weight_in_a_subdirectory_cannot_serve_the_root(
+    tmp_path, monkeypatch
+):
+    """Companion to the test above: from_pretrained opens the names it finds at the snapshot root,
+    so a set that lives only under backup/ is not one the pinned load can reach either. A layout
+    that genuinely keeps its weights in subdirectories names no family this walk groups, so it is
+    carried by the ungrouped payload rather than by this one."""
     _repo_with(
         tmp_path,
         snapshots = {
@@ -1943,6 +1947,47 @@ def test_a_layout_that_keeps_its_weights_in_subdirectories_still_loads(tmp_path,
                 "backup/model-00001-of-00002.safetensors": b"\0" * 64,
                 "backup/model-00002-of-00002.safetensors": b"\0" * 64,
                 "backup/model.safetensors.index.json": _SHARD_INDEX,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_an_unsharded_weight_under_a_subdirectory_does_not_serve_the_root(tmp_path, monkeypatch):
+    """The unsharded twin of the test above. A lone backup/adapter_model.safetensors is not the
+    name peft opens at the snapshot root, so it cannot make the pinned snapshot loadable."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "adapter_config.json": b'{"peft_type":"LORA"}',
+                "backup/adapter_model.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_an_unsharded_weight_at_the_root_beside_a_nested_copy_still_serves(tmp_path, monkeypatch):
+    """Control for the test above: the root holds the name the loader opens, so a second copy
+    underneath it changes nothing."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+                "backup/model.safetensors": b"\0" * 256,
             }
         },
         refs = {"main": UPSTREAM_HEAD},

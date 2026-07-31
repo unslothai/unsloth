@@ -455,11 +455,13 @@ def delete_variant_incomplete_blobs_result(
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
-def _snapshot_scope_for_request(local_path: Optional[str]) -> Optional[Path]:
-    """The one snapshot *local_path* names, when it names one.
+def _snapshot_scope_for_request(repo_id: str, local_path: Optional[str]) -> Optional[Path]:
+    """The one snapshot *local_path* names, when it names one of *repo_id*'s.
 
     A row pinned to a snapshot loads out of that directory and nothing else, so readiness has to be
-    counted there: a quant sitting in a sibling revision is not one this row can resolve.
+    counted there: a quant sitting in a sibling revision is not one this row can resolve. The
+    answer carries the requested repo's identity, so the directory has to be that repo's cache;
+    any cache root will do, since the same repo is cached under the same name in each.
     """
     if not local_path:
         return None
@@ -467,7 +469,10 @@ def _snapshot_scope_for_request(local_path: Optional[str]) -> Optional[Path]:
         local = Path(local_path).expanduser().resolve(strict = False)
     except (OSError, RuntimeError, ValueError):
         return None
-    return local if local.parent.name == "snapshots" and local.is_dir() else None
+    if local.parent.name != "snapshots" or not local.is_dir():
+        return None
+    expected = repo_cache_dir_name("model", repo_id).lower()
+    return local if local.parent.parent.name.lower() == expected else None
 
 
 def _repo_cache_dir_for_request(repo_id: str, local_path: Optional[str]) -> Path:
@@ -551,7 +556,7 @@ async def get_gguf_variants_response(
             None if is_local_path(repo_id) else _repo_cache_dir_for_request(repo_id, local_path)
         )
         hub_cache = repo_cache_dir.parent if repo_cache_dir is not None else None
-        snapshot_scope = _snapshot_scope_for_request(local_path)
+        snapshot_scope = _snapshot_scope_for_request(repo_id, local_path)
 
         def _local_response(
             response_repo_id: str,

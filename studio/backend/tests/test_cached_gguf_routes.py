@@ -402,6 +402,41 @@ def test_list_cached_gguf_load_id_takes_the_snapshot_holding_a_whole_quant(monke
     assert advertised - {v.quant for v in list_local_gguf_variants(str(older))[0] if v.quant}
 
 
+def test_a_zero_byte_first_gguf_leaves_the_quant_incomplete(tmp_path):
+    """The resolver takes the lexicographically first file under a label. Skipping a zero-byte one
+    handed the label to the next file, so the quant read complete while the load opened the empty
+    file it names."""
+    from hub.utils.inventory_scan import complete_snapshot_variants
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    snapshot = tmp_path / "models--Org--Quant" / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "A-Q4_K_M.gguf").write_bytes(b"")
+    (snapshot / "B-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+
+    assert Path(_find_local_gguf_by_variant(str(snapshot), "Q4_K_M")).name == "A-Q4_K_M.gguf"
+    assert complete_snapshot_variants(str(snapshot)) == set()
+
+    # Control: the same pair with the empty file sorting second, which the resolver never opens.
+    (snapshot / "A-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    (snapshot / "B-Q4_K_M.gguf").write_bytes(b"")
+    assert complete_snapshot_variants(str(snapshot)) == {"Q4_K_M"}
+
+
+def test_a_snapshot_scope_from_another_repo_is_not_used(tmp_path):
+    """The response carries the requested repo's identity, so a local_path pointing into a
+    different repo's cache must not become the scope its files are counted in."""
+    other = tmp_path / "models--Org--Other" / "snapshots" / ("a" * 40)
+    mine = tmp_path / "models--Org--Quant" / "snapshots" / ("b" * 40)
+    for path in (other, mine):
+        path.mkdir(parents = True)
+
+    assert GV._snapshot_scope_for_request("Org/Quant", str(other)) is None
+    assert GV._snapshot_scope_for_request("Org/Quant", str(mine)) == mine
+    # Casing follows the cache directory, which need not match the requested id.
+    assert GV._snapshot_scope_for_request("org/quant", str(mine)) == mine
+
+
 @pytest.mark.parametrize(
     ("files", "expected_default", "expected_ready"),
     [

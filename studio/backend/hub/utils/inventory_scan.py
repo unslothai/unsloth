@@ -719,8 +719,9 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         return set()
     for path in paths:
         try:
-            if not path.is_file() or path.stat().st_size <= 0:
+            if not path.is_file():
                 continue
+            empty = path.stat().st_size <= 0
         except OSError:
             continue
         rel = path.relative_to(snapshot_dir).as_posix()
@@ -729,6 +730,11 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         quant = extract_quant_label(rel)
         # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the quant.
         if is_big_endian_gguf_path(rel, quant):
+            continue
+        if empty:
+            # Skipping it would hand the label to the next file while the resolver still opens this
+            # one. Recorded instead, so a zero-byte first file makes the quant unjudgeable.
+            selected.setdefault(quant, _UNJUDGEABLE_FAMILY)
             continue
         split = _GGUF_SPLIT_RE.search(path.name)
         if split is None:
@@ -804,6 +810,8 @@ class _SnapshotPayload(NamedTuple):
     empty_ungrouped: frozenset
     # Suffixes per kind whose unsharded name is present but empty.
     empty_whole: dict
+    # Kinds whose weights are here but only under a subdirectory the loader never opens.
+    nested: frozenset
 
 
 def _required_config_is_unreadable(path: Path, empty: bool) -> bool:
@@ -879,6 +887,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
     ungrouped: set[str] = set()
     empty_whole: dict[str, set[str]] = {"base": set(), "adapter": set()}
     empty_ungrouped: set[str] = set()
+    nested: set[str] = set()
     unreadable: set[str] = set()
     try:
         paths = list(snapshot_dir.rglob("*"))
@@ -923,7 +932,11 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
                     empty_ungrouped.add("base")
                 continue
             if empty_match is None:
-                empty_whole[empty_kind].add(path.suffix.lower())
+                # Same rule as the whole file below: only the root name is one the loader opens.
+                if at_root:
+                    empty_whole[empty_kind].add(path.suffix.lower())
+                else:
+                    nested.add(empty_kind)
                 continue
             # A numbered shard is absent from its family, not unreadable, but the family still needs naming.
             empty_family = _weight_shard_family(snapshot_dir, path, empty_match)
@@ -950,9 +963,15 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             continue
         match = _WEIGHT_SHARD_RE.search(path.name)
         if match is None:
-            whole[kind].add(path.suffix.lower())
+            # Only the root copy is the name the loader opens, so a nested one proves nothing.
+            if at_root:
+                whole[kind].add(path.suffix.lower())
+            else:
+                nested.add(kind)
             continue
         family = _weight_shard_family(snapshot_dir, path, match)
+        if not at_root:
+            nested.add(kind)
         groups[kind].setdefault(family, set()).add(int(match.group(1)))
         shard_names.setdefault(family, set()).add(path.name)
     model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
@@ -982,6 +1001,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         frozenset(ungrouped),
         frozenset(empty_ungrouped),
         empty_whole,
+        frozenset(nested),
     )
 
 
@@ -1052,19 +1072,16 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             if suffix in payload.empty_whole[kind]:
                 # The name exists, so the loader stops here and opens nothing. Same exemption as above.
                 return kind == wanted or wanted not in payload.ungrouped
+            # from_pretrained reads the snapshot root and never a nested set, so only the families
+            # it selects there are judged. A layout that keeps its weights in subdirectories names
+            # no family this walk groups, so it is carried by ungrouped instead.
             families = {
                 family: indices
                 for family, indices in payload.groups[kind].items()
-                if family[3] == suffix
+                if family[3] == suffix and family[0] in ("", ".")
             }
             if not families:
                 continue
-            # from_pretrained reads the snapshot root, so a nested set is no fallback for the one it
-            # selects there. Judge nested families only for layouts that keep weights there (diffusion).
-            rooted = {
-                family: indices for family, indices in families.items() if family[0] in ("", ".")
-            }
-            families = rooted or families
             if all(family in payload.invisible_families for family in families):
                 # Nothing names these shards, so the loader looks past them: they neither serve nor veto.
                 unreachable = True
@@ -1074,7 +1091,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 not _shard_family_is_whole(family, indices) or family in payload.unloadable_families
                 for family, indices in families.items()
             )
-        if unreachable:
+        if unreachable or (kind == wanted and kind in payload.nested):
             # This kind's weights are here but no name the loader tries reaches them.
             return True
     # No family either way. A diffusion or .ckpt payload classifies from its suffix while naming no
