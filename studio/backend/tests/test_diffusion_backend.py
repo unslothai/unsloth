@@ -2483,6 +2483,69 @@ def test_transformer_quant_prequant_load_fails_falls_back_to_dense(
     assert _FakeTransformer.last == {}  # GGUF not used
 
 
+def test_prequant_failure_never_pulls_unprefetched_dense_shards(fake_runtime, tmp_path, monkeypatch):
+    # The prefetch skips the base repo's transformer/ shards whenever a prequant checkpoint is
+    # expected, so a prequant fetch that fails (unpublished / gated / renamed artifact, a hub 5xx,
+    # a flaky link) would send from_pretrained after those shards INSIDE the load lock during
+    # "finalizing": after the previous pipeline was evicted, unpreemptable by unload/cancel, past a
+    # progress report already sitting at bytes_downloaded == bytes_total, and past a cache-disk gate
+    # that only reserved the small checkpoint. With the shards unstaged the dense fallback must be
+    # refused and the GGUF build must take over.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    calls = _stub_dense_quant(monkeypatch, scheme = "fp8")
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
+    monkeypatch.setattr(dmod, "load_prequantized_transformer", lambda *a, **k: None)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+        _transformer_prefetched = False,
+    )
+    assert calls["from_pretrained"] == 0  # no dense shard pull under the lock
+    assert calls["quantize"] == 0
+    assert status["transformer_quant"] is None  # dropped to the GGUF build
+    assert _FakeTransformer.last["path"]  # ...which loaded
+
+
+def test_run_load_flags_the_transformer_prefetched_from_the_staged_file_list(monkeypatch):
+    # The gate above is only as good as its input: load_pipeline must be told what the prefetch
+    # ACTUALLY staged, so read it off the returned file list rather than off the request. A failed
+    # size estimate returns no base files at all and must close the fallback the same way.
+    seen: list[bool] = []
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+    monkeypatch.setattr(DiffusionBackend, "_te_prequant_plan_files", staticmethod(lambda *a, **k: {}))
+    monkeypatch.setattr(DiffusionBackend, "_prefetch_files", lambda self, *a, **k: None)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "load_pipeline",
+        lambda self, **kw: seen.append(kw["_transformer_prefetched"]),
+    )
+    cases = (
+        (["model_index.json", "vae/config.json"], False),
+        (["model_index.json", "transformer/diffusion_pytorch_model-00001-of-00003.safetensors"], True),
+        ([], False),  # size estimate failed: nothing staged, so nothing may be materialised
+    )
+    for base_files, _expected in cases:
+        monkeypatch.setattr(
+            DiffusionBackend,
+            "_estimate_download_bytes",
+            staticmethod(lambda *a, _files = base_files, **k: (0, _files)),
+        )
+        DiffusionBackend()._run_load(
+            repo_id = "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z-image-turbo-Q8_0.gguf",
+            model_kind = "gguf",
+        )
+    assert seen == [expected for _files, expected in cases]
+
+
 def test_transformer_quant_falls_back_to_gguf_on_failure(fake_runtime, tmp_path, monkeypatch):
     # A dense/quant failure (here quantize returns None) must fall back to the GGUF build, not error; status reports no transformer_quant engaged.
     from core.inference import diffusion as dmod

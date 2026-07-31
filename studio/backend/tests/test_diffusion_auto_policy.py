@@ -229,6 +229,33 @@ def test_candidate_uses_prequant_transient_when_available(monkeypatch):
     assert est.transient_transformer_mib == est.steady_transformer_mib
 
 
+def test_disk_gate_reserves_the_checkpoint_not_the_dense_shards_for_a_hosted_prequant(monkeypatch):
+    # The gate branch the dense-sizing tests above never reach: with a prequant source the loader
+    # downloads the small quantised checkpoint, so the reservation is the STEADY size, not the base
+    # repo's fp32 transformer/. Free space between the two must pass with the shortcut and be
+    # refused without it, since that build fetches the dense shards instead.
+    _patch_selector(
+        monkeypatch,
+        scheme = "int8",
+        prequant = SimpleNamespace(kind = "repo", location = "org/int8"),
+    )
+    est = ap.estimate_dense_quant(_fam("z-image"), "int8", prequant_available = True)
+    assert est.steady_transformer_mib == 6_451  # the quantised checkpoint
+    assert est.download_transformer_mib == 23_460  # the fp32 shards it replaces
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 6_451 + 10 * 1024 + 512)
+    gated = resolve_dense_quant_candidate(
+        fam = _fam("z-image"), target = object(), requested = "int8"
+    )
+    assert isinstance(gated, DenseQuantEstimate) and gated.prequant is True
+    # force_dense (a LoRA bake) skips the shortcut, so the SAME disk must refuse the candidate.
+    assert (
+        resolve_dense_quant_candidate(
+            fam = _fam("z-image"), target = object(), requested = "int8", force_dense = True
+        )
+        is None
+    )
+
+
 # ── the ordering-fix regression, at the planner level ─────────────────────────
 def _cuda_target():
     return SimpleNamespace(device = "cuda", supports_model_cpu_offload = True)

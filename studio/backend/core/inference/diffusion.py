@@ -942,6 +942,12 @@ class DiffusionBackend:
                 and self._dense_quant_prefetch_needed(fam, kwargs),
                 skip_te_components = tuple(te_prequant_files),
             )
+            # Only shards this prefetch actually stages may be materialised by the in-loader dense
+            # fallback; read it off the staged list rather than the request, so a failed size estimate
+            # (which drops every base file) closes the fallback too.
+            kwargs["_transformer_prefetched"] = any(
+                f.startswith("transformer/") for f in base_files
+            )
             with self._lock:
                 # Stamp progress only if this load is still current (a superseder has its own token).
                 if self._load_token == token and self._loading is not None:
@@ -1347,6 +1353,11 @@ class DiffusionBackend:
         loras: Optional[list[tuple[str, float]]] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
+        # True when the prefetch staged the base repo's ``transformer/`` shards, which is the
+        # only condition under which the dense-quant fallback may materialise them (see
+        # ``dense_fallback_allowed`` below). Defaults True for a direct call, which has no
+        # prefetch phase to skip them.
+        _transformer_prefetched: bool = True,
     ) -> dict[str, Any]:
         # A blank token must degrade to anonymous, not be passed as a credential. Normalize once.
         hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
@@ -1451,7 +1462,15 @@ class DiffusionBackend:
                 # The GGUF-size plan can mis-budget the fast path, so preflight the real footprint pre-eviction.
                 dense_declined = False
                 # False when the plan only holds a PREQUANT-sized build: a failed prequant load must raise, not materialise the unbudgeted dense bf16 transformer.
-                dense_fallback_allowed = True
+                # Also false when the prefetch did not stage the base repo's transformer/ shards: it skips them
+                # whenever a prequant checkpoint is expected (``_dense_quant_prefetch_needed``), so a dense fallback
+                # would pull them HERE -- inside the load lock during "finalizing", after the previous pipeline was
+                # already evicted, where unload/cancellation cannot preempt the download, load_progress has already
+                # reported bytes_downloaded == bytes_total, and the cache-disk gate only reserved the small prequant
+                # checkpoint. A prequant fetch fails for reasons the planner cannot see (unpublished / gated / renamed
+                # artifact, a hub 5xx, a flaky link), so gate the fallback on the shards being on disk already and let
+                # the GGUF build take over otherwise -- exactly what the prequant-sized replan below does.
+                dense_fallback_allowed = bool(_transformer_prefetched)
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
