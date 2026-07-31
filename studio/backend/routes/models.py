@@ -3223,8 +3223,7 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                     rank = (
                         _gguf_copy_is_usable(repo_info, load_id),
                         active_root is not None
-                        and Path(repo_info.repo_path).parent.resolve(strict = False)
-                        == active_root,
+                        and Path(repo_info.repo_path).parent.resolve(strict = False) == active_root,
                     )
                     if _preferred_gguf_copy(seen_lower, seen_rank, key, rank, total_size):
                         row = {

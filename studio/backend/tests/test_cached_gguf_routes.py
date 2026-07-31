@@ -561,10 +561,7 @@ def test_a_copy_that_loads_beats_a_bigger_one_that_does_not(monkeypatch, tmp_pat
             repo_dir,
             revisions = [
                 SimpleNamespace(
-                    files = [
-                        _file(f.name, size)
-                        for f in sorted(snapshot.iterdir())
-                    ],
+                    files = [_file(f.name, size) for f in sorted(snapshot.iterdir())],
                     snapshot_path = snapshot,
                 )
             ],

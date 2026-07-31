@@ -1070,8 +1070,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
             # An unloadable family counts as incomplete rather than vetoing the snapshot: a whole
             # unsharded one beside it still serves.
             return all(
-                not _shard_family_is_whole(family, indices)
-                or family in payload.unloadable_families
+                not _shard_family_is_whole(family, indices) or family in payload.unloadable_families
                 for family, indices in families.items()
             )
         if unreachable:
