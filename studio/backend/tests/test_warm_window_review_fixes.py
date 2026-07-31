@@ -897,7 +897,8 @@ def test_the_standalone_vision_probe_runs_off_the_event_loop():
     # Nested helpers are the offload, so only the handler's own body counts as
     # inline. The helper the worker runs may call is_vision_model freely.
     nested = {
-        sub for helper in ast.walk(fn)
+        sub
+        for helper in ast.walk(fn)
         if isinstance(helper, ast.FunctionDef)
         for sub in ast.walk(helper)
     }
