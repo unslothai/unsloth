@@ -151,7 +151,8 @@ def _row_to_response(row: dict) -> McpServerResponse:
 async def list_mcp_servers(
     current_subject: str = Depends(get_current_subject), via_api_key: ViaApiKey = False
 ):
-    rows = mcp_servers_db.list_servers()
+    # Metadata-only endpoint: never decrypt stored OAuth secrets here.
+    rows = mcp_servers_db.list_servers(decrypt_secrets = False)
     if via_api_key:
         # Drop the row, not just its fields: `url` is the argv (carries
         # credentials), `headers` is the subprocess env, and a blanked url would
@@ -195,7 +196,9 @@ async def create_mcp_server(
     return _row_to_response(mcp_servers_db.get_server(server_id))
 
 
-def _changes_from_payload(payload: McpServerUpdate) -> dict:
+def _changes_from_payload(
+    payload: McpServerUpdate, stored_oauth_client_id: str | None = None
+) -> dict:
     sent = payload.model_fields_set
     changes: dict = {}
 
@@ -225,7 +228,10 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
         if changes["oauth_client_id"] is None:
             changes["oauth_client_secret"] = None
     if "oauth_client_secret" in sent:
-        effective_id = changes.get("oauth_client_id", payload.oauth_client_id)
+        effective_id = changes.get(
+            "oauth_client_id",
+            payload.oauth_client_id or stored_oauth_client_id,
+        )
         _, changes["oauth_client_secret"] = _oauth_credentials(
             effective_id,
             payload.oauth_client_secret,
@@ -253,7 +259,10 @@ async def update_mcp_server(
     old = mcp_servers_db.get_server(server_id)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
-    changes = _changes_from_payload(payload)
+    changes = _changes_from_payload(
+        payload,
+        stored_oauth_client_id = old.get("oauth_client_id"),
+    )
     if (
         "oauth_client_id" in changes
         and changes["oauth_client_id"] != old.get("oauth_client_id")
@@ -295,7 +304,10 @@ async def update_mcp_server(
         or changes.get("use_oauth") is False
         or oauth_config_changed
     ):
-        await clear_oauth_tokens_async(old["url"])
+        await clear_oauth_tokens_async(
+            old["url"],
+            old.get("oauth_client_id"),
+        )
         # That await hands the loop to other requests, so re-read and re-gate
         # before writing: a UI conversion to stdio landing in the window would
         # otherwise let an API key's headers become the command's env.
@@ -323,7 +335,10 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     if old.get("use_oauth"):
-        await clear_oauth_tokens_async(old["url"])
+        await clear_oauth_tokens_async(
+            old["url"],
+            old.get("oauth_client_id"),
+        )
     mcp_servers_db.delete_server(server_id)
     invalidate_tool_cache(server_id)
     await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))

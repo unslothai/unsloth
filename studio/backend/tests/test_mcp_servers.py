@@ -253,7 +253,7 @@ def test_delete_server_calls_oauth_cleanup_when_oauth_was_on(tmp_path, monkeypat
 
     calls: list[str] = []
 
-    async def fake_clear(url):
+    async def fake_clear(url, _client_id = None):
         calls.append(url)
 
     monkeypatch.setattr(mcp_client, "clear_oauth_tokens_async", fake_clear)
@@ -284,7 +284,7 @@ def test_delete_server_skips_oauth_cleanup_when_oauth_off(tmp_path, monkeypatch)
     )
     calls: list[str] = []
 
-    async def fake_clear(url):
+    async def fake_clear(url, _client_id = None):
         calls.append(url)
 
     monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", fake_clear)
@@ -312,7 +312,7 @@ def test_update_server_clears_oauth_on_url_change(tmp_path, monkeypatch):
     )
     calls: list[str] = []
 
-    async def fake_clear(url):
+    async def fake_clear(url, _client_id = None):
         calls.append(url)
 
     monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", fake_clear)
@@ -347,7 +347,7 @@ def test_update_server_clears_oauth_when_oauth_disabled(tmp_path, monkeypatch):
     )
     calls: list[str] = []
 
-    async def fake_clear(url):
+    async def fake_clear(url, _client_id = None):
         calls.append(url)
 
     monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", fake_clear)

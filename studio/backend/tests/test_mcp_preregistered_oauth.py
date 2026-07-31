@@ -59,6 +59,17 @@ def test_real_fastmcp_oauth_accepts_preregistered_credentials(tmp_path, monkeypa
     assert auth._client_secret == "configured-client-secret"
 
 
+def test_preregistered_clients_use_isolated_token_stores(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_client, "_oauth_client_token_stores", {})
+
+    first = mcp_client._oauth_store("client-a")
+    second = mcp_client._oauth_store("client-b")
+
+    assert first is not second
+    assert first._data_directory != second._data_directory
+
+
 def test_list_and_call_paths_forward_credentials_to_client(monkeypatch):
     captured = []
 
@@ -287,13 +298,53 @@ def test_update_credentials_supports_clear_and_rotation():
     assert rotated["oauth_client_secret"] == "rotated-secret"
 
 
+def test_secret_only_update_reuses_stored_client_id(tmp_path, monkeypatch):
+    from models.mcp_servers import McpServerUpdate
+    from routes import mcp_servers as routes
+
+    _store_calendar_server(tmp_path, monkeypatch)
+
+    async def clear_tokens(*_args):
+        return None
+
+    monkeypatch.setattr(routes, "clear_oauth_tokens_async", clear_tokens)
+
+    asyncio.run(
+        routes.update_mcp_server(
+            "calendar",
+            McpServerUpdate(oauth_client_secret = "rotated-secret"),
+            current_subject = "test-user",
+        )
+    )
+
+    row = mcp_servers_db.get_server("calendar")
+    assert row["oauth_client_id"] == "configured-client-id"
+    assert row["oauth_client_secret"] == "rotated-secret"
+
+
+def test_server_listing_does_not_decrypt_stored_secrets(tmp_path, monkeypatch):
+    from routes import mcp_servers as routes
+
+    _store_calendar_server(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        mcp_servers_db,
+        "decrypt_client_secret",
+        lambda _value: (_ for _ in ()).throw(ValueError("corrupt secret")),
+    )
+
+    response = asyncio.run(routes.list_mcp_servers(current_subject = "test-user"))
+
+    assert len(response) == 1
+    assert response[0].has_oauth_client_secret is True
+
+
 def test_changing_client_id_clears_stored_secret(tmp_path, monkeypatch):
     from models.mcp_servers import McpServerUpdate
     from routes import mcp_servers as routes
 
     _store_calendar_server(tmp_path, monkeypatch)
 
-    async def clear_tokens(_url):
+    async def clear_tokens(_url, _client_id):
         return None
 
     monkeypatch.setattr(routes, "clear_oauth_tokens_async", clear_tokens)
@@ -315,7 +366,7 @@ def test_changing_url_clears_stored_secret(tmp_path, monkeypatch):
 
     _store_calendar_server(tmp_path, monkeypatch)
 
-    async def clear_tokens(_url):
+    async def clear_tokens(_url, _client_id):
         return None
 
     monkeypatch.setattr(routes, "clear_oauth_tokens_async", clear_tokens)

@@ -31,6 +31,7 @@ FAILED_PROBE_COOLOFF_SECONDS = 60.0
 OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
+_oauth_client_token_stores: dict[str, Any] = {}
 
 
 def is_stdio(address: str) -> bool:
@@ -182,8 +183,24 @@ def parse_server_headers(server: dict) -> Optional[dict]:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _oauth_store():
+def _oauth_store(oauth_client_id: Optional[str] = None):
     global _oauth_token_store
+    if oauth_client_id:
+        namespace = hashlib.sha256(oauth_client_id.encode()).hexdigest()
+        existing = _oauth_client_token_stores.get(namespace)
+        if existing is not None:
+            return existing
+        from key_value.aio._utils.sanitization import AlwaysHashStrategy
+        from key_value.aio.stores.filetree import FileTreeStore
+        from utils.paths.storage_roots import ensure_dir, studio_root
+
+        store = FileTreeStore(
+            data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens" / namespace),
+            key_sanitization_strategy = AlwaysHashStrategy(),
+            collection_sanitization_strategy = AlwaysHashStrategy(),
+        )
+        _oauth_client_token_stores[namespace] = store
+        return store
     if _oauth_token_store is None:
         from key_value.aio._utils.sanitization import AlwaysHashStrategy
         from key_value.aio.stores.filetree import FileTreeStore
@@ -199,14 +216,18 @@ def _oauth_store():
     return _oauth_token_store
 
 
-async def clear_oauth_tokens_async(url: str) -> None:
+async def clear_oauth_tokens_async(url: str, oauth_client_id: Optional[str] = None) -> None:
     """Drop any persisted OAuth tokens for ``url``. fastmcp keys tokens by MCP
     URL, so on server delete / URL change / OAuth disable we must clear them, else
     re-registering the same URL reuses the old account's token. Best-effort: store
     / OAuth failures must not 500 the delete / update route."""
     try:
         from fastmcp.client.auth import OAuth
-        auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+        auth = OAuth(
+            mcp_url = url,
+            token_storage = _oauth_store(oauth_client_id),
+            client_id = oauth_client_id,
+        )
         await auth.token_storage_adapter.clear()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
@@ -249,7 +270,7 @@ def _client(
         from fastmcp.client.auth import OAuth
         auth = OAuth(
             mcp_url = url,
-            token_storage = _oauth_store(),
+            token_storage = _oauth_store(oauth_client_id),
             client_id = oauth_client_id,
             client_secret = oauth_client_secret,
         )
