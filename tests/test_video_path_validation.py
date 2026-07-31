@@ -4,11 +4,14 @@ Fixtures AST-extract the function from vision.py so logic tests run without
 the full unsloth import chain (triton/CUDA kernels).
 """
 
+import threading
+import time
 import ast
 import os
 import tempfile
 import warnings
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -496,6 +499,7 @@ def _make_real_collator(real_collator_classes, formatting_func = None):
     collator = subclass.__new__(subclass)
     collator.formatting_func = formatting_func
     collator._checked_video_paths = set()
+    collator._formatting_lock = threading.Lock()
     return collator
 
 
@@ -566,3 +570,51 @@ def test_real_collator_restores_formatting_func_when_super_raises(
     with pytest.raises(RuntimeError):
         collator([{"anything": 1}])
     assert collator.formatting_func is fmt
+
+def test_vision_collator_thread_safety(monkeypatch):
+    """
+    Ensure concurrent access to the same collator instance does not lose
+    formatter applications while temporarily disabling formatting_func
+    before delegating to the parent collator.
+    """
+    from unsloth.trainer import UnslothVisionDataCollator
+
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def formatter(example):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        return example
+
+    collator = object.__new__(UnslothVisionDataCollator)
+    collator.formatting_func = formatter
+    collator._checked_video_paths = set()
+    collator._formatting_lock = threading.Lock() 
+
+    parent = UnslothVisionDataCollator
+
+    def fake_parent_call(self, examples):
+        if self.formatting_func is not None:
+            examples = [self.formatting_func(x) for x in examples]
+
+        time.sleep(0.001)
+        return examples
+
+    monkeypatch.setattr(parent, "__call__", fake_parent_call)
+
+    examples = [{"x": 1}, {"x": 2}, {"x": 3}]
+
+    num_threads = 32
+    expected_calls = num_threads * len(examples)
+
+    def worker():
+        collator(examples)
+
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(worker) for _ in range(num_threads)]
+        for future in futures:
+            future.result()
+
+    assert calls == expected_calls

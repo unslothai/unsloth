@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
 import logging
 import os
 import psutil
@@ -66,32 +67,35 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
     of silently training on empty video tensors (issue #5085).
     """
 
-    __slots__ = ("_checked_video_paths",)
+    __slots__ = ("_checked_video_paths", "_formatting_lock")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._checked_video_paths = set()
+        self._formatting_lock = threading.Lock()
 
     def __call__(self, examples):
-        formatting_func = self.formatting_func
-        if formatting_func is not None:
-            examples = [formatting_func(example) for example in examples]
+        with self._formatting_lock:
+            formatting_func = self.formatting_func
 
-        check_dataset_for_missing_videos(
-            examples,
-            raise_error = True,
-            checked = self._checked_video_paths,
-        )
+            if formatting_func is not None:
+                examples = [formatting_func(example) for example in examples]
 
-        if formatting_func is None:
-            return super().__call__(examples)
+            check_dataset_for_missing_videos(
+                examples,
+                raise_error=True,
+                checked=self._checked_video_paths,
+            )
 
-        # why: base __call__ would reapply formatting_func; applied above.
-        self.formatting_func = None
-        try:
-            return super().__call__(examples)
-        finally:
-            self.formatting_func = formatting_func
+            if formatting_func is None:
+                return super().__call__(examples)
+
+            # why: base __call__ would reapply formatting_func; applied above.
+            self.formatting_func = None
+            try:
+                return super().__call__(examples)
+            finally:
+                self.formatting_func = formatting_func
 
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
