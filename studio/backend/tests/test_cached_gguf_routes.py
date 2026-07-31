@@ -970,6 +970,87 @@ def test_a_projector_at_the_snapshot_root_serves_a_quant_in_a_subdirectory(monke
     assert row["has_vision"] is True
 
 
+def test_vision_is_read_from_the_cache_root_holding_the_row(monkeypatch, tmp_path):
+    """The same repo can sit in several cache roots, and the row describes one copy. A newer
+    duplicate elsewhere is a different download the load never reaches, so it cannot answer for
+    the projector this one ships."""
+    import os
+
+    active = tmp_path / "active"
+    legacy = tmp_path / "legacy"
+    repo_dir = active / "models--Org--Split"
+    here = repo_dir / "snapshots" / ("a" * 40)
+    there = legacy / "models--Org--Split" / "snapshots" / ("b" * 40)
+    here.mkdir(parents = True)
+    there.mkdir(parents = True)
+    for name in ("Model-Q4_K_M.gguf", "mmproj-F16.gguf"):
+        (here / name).write_bytes(b"\0" * 256)
+    (there / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    os.utime(here, (1_000, 1_000))
+    os.utime(there, (2_000, 2_000))
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("a" * 40, encoding = "utf-8")
+
+    repo = _repo(
+        "Org/Split",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("Model-Q4_K_M.gguf", 256), _file("mmproj-F16.gguf", 256)],
+                snapshot_path = here,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [active, legacy])
+
+    row = {
+        c["repo_id"]: c
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    }["Org/Split"]
+    assert row["has_vision"] is True
+
+
+def test_vision_is_not_invented_for_a_copy_that_ships_no_projector(monkeypatch, tmp_path):
+    """Control for the test above: scoping the lookup must not turn every row vision capable."""
+    active = tmp_path / "active"
+    legacy = tmp_path / "legacy"
+    repo_dir = active / "models--Org--Plain"
+    here = repo_dir / "snapshots" / ("a" * 40)
+    there = legacy / "models--Org--Plain" / "snapshots" / ("b" * 40)
+    here.mkdir(parents = True)
+    there.mkdir(parents = True)
+    (here / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    for name in ("Model-Q4_K_M.gguf", "mmproj-F16.gguf"):
+        (there / name).write_bytes(b"\0" * 256)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("a" * 40, encoding = "utf-8")
+
+    repo = _repo(
+        "Org/Plain",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(files = [_file("Model-Q4_K_M.gguf", 256)], snapshot_path = here)
+        ],
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [active, legacy])
+
+    row = {
+        c["repo_id"]: c
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    }["Org/Plain"]
+    assert row["has_vision"] is False
+
+
 def test_metadata_resolves_from_the_snapshot_holding_the_whole_quant(monkeypatch, tmp_path):
     """The lister and the load take the whole copy, so mtime order alone would read metadata out of
     a newer half download nothing loads."""
