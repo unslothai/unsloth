@@ -68,8 +68,10 @@ async function fetchStudioVersions(): Promise<StudioVersions> {
 // the version rows; General omits it, so the row only shows on About.
 export function StudioVersionSection({
   llamaCppVersion,
+  desktopAppVersion,
 }: {
   llamaCppVersion?: string | null;
+  desktopAppVersion?: string | null;
 } = {}) {
   const t = useT();
   const [packageVersion, setPackageVersion] = useState("dev");
@@ -99,6 +101,14 @@ export function StudioVersionSection({
           {packageVersion}
         </code>
       </SettingsRow>
+      {desktopAppVersion !== undefined ? (
+        <SettingsRow label={t("settings.about.desktopAppVersion")}>
+          <code className="font-mono text-xs text-muted-foreground">
+            {desktopAppVersion ??
+              t("settings.about.desktopAppVersionUnavailable")}
+          </code>
+        </SettingsRow>
+      ) : null}
       {llamaCppVersion ? (
         <SettingsRow label={t("settings.about.llamaCppVersion")}>
           <code className="font-mono text-xs text-muted-foreground">

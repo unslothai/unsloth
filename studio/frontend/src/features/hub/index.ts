@@ -93,8 +93,11 @@ export { looksLikeLocalPath, localPathCacheKey } from "./lib/local-path";
 export { hubTokenHeader } from "./lib/hub-token-header";
 export {
   ggufVariantsMatch,
+  isOllamaLinkPath,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
+  publicModelId,
+  residentModelIdMatches,
 } from "./lib/model-identity";
 export {
   formatBytes,

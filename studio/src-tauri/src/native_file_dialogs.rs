@@ -51,11 +51,25 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<&'static str>) {
         Some("py") => ("Python", vec!["py"]),
         Some("sh") => ("Shell script", vec!["sh"]),
         Some("zip") => ("ZIP archive", vec!["zip"]),
+        // Saved chat attachments, not just exports: a name outside the active
+        // filter can be rejected or silently re-extensioned by the OS dialog.
+        Some("txt") | Some("log") => ("Text", vec!["txt", "log"]),
+        Some("png") => ("PNG image", vec!["png"]),
+        Some("jpg") | Some("jpeg") => ("JPEG image", vec!["jpg", "jpeg"]),
+        Some("webp") => ("WebP image", vec!["webp"]),
+        Some("gif") => ("GIF image", vec!["gif"]),
+        Some("wav") => ("WAV audio", vec!["wav"]),
+        Some("mp3") => ("MP3 audio", vec!["mp3"]),
+        Some("m4a") | Some("mp4") => ("MPEG-4 audio", vec!["m4a", "mp4"]),
+        Some("ogg") | Some("oga") => ("Ogg audio", vec!["ogg", "oga"]),
+        Some("flac") => ("FLAC audio", vec!["flac"]),
+        Some("webm") => ("WebM audio", vec!["webm"]),
         _ => (
             "Export files",
             vec![
                 "json", "jsonl", "ndjson", "csv", "md", "markdown", "html", "htm", "py", "sh",
-                "zip",
+                "zip", "txt", "log", "png", "jpg", "jpeg", "webp", "gif", "wav", "mp3", "m4a",
+                "mp4", "ogg", "oga", "flac", "webm",
             ],
         ),
     }
@@ -285,10 +299,23 @@ mod tests {
     }
 
     #[test]
+    fn saved_chat_attachments_keep_their_own_extension() {
+        // Settings > Data saves attachments here; a name outside the filter can
+        // be rejected or re-extensioned by the OS dialog.
+        assert_eq!(save_filter("report.txt"), ("Text", vec!["txt", "log"]));
+        assert_eq!(save_filter("photo.PNG"), ("PNG image", vec!["png"]));
+        assert_eq!(save_filter("shot.jpeg"), ("JPEG image", vec!["jpg", "jpeg"]));
+        assert_eq!(save_filter("clip.wav"), ("WAV audio", vec!["wav"]));
+        assert_eq!(save_filter("voice.webm"), ("WebM audio", vec!["webm"]));
+    }
+
+    #[test]
     fn generic_fallback_covers_every_tool_download_name() {
         let (name, extensions) = save_filter("no-extension");
         assert_eq!(name, "Export files");
-        for wanted in ["py", "sh", "json", "jsonl", "csv", "md", "html", "zip"] {
+        for wanted in [
+            "py", "sh", "json", "jsonl", "csv", "md", "html", "zip", "txt", "png", "jpg", "wav",
+        ] {
             assert!(extensions.contains(&wanted), "fallback lost {wanted}");
         }
     }

@@ -17,6 +17,7 @@ import {
 import type {
   CachedInventoryRow,
   DiscoverRow,
+  InventoryRow,
   LocalInventoryRow,
   ModelsTab,
 } from "../types";
@@ -53,6 +54,7 @@ export interface ModelsCatalogState {
   scannedCount: number;
   loadingIntentCount: number;
   hasMore: boolean;
+  manualFetchAvailable: boolean;
   hasActiveFilters: boolean;
   typeFilterActive: boolean;
 }
@@ -70,6 +72,7 @@ export interface ModelsCatalogHandlers {
   onRetry: () => void;
   onInventoryChange?: () => void;
   onSwitchDevice?: () => void;
+  onOpenModelSettings?: (row: InventoryRow) => void;
 }
 
 function assignRef<T>(ref: RefObject<T | null>, value: T | null) {
@@ -128,6 +131,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     onRetry,
     onInventoryChange,
     onSwitchDevice,
+    onOpenModelSettings,
   } = handlers;
   const [scrolled, setScrolled] = useState(false);
   const [streamingActive, setStreamingActive] = useState(false);
@@ -483,6 +487,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 columns={discoverView === "two" ? 2 : 1}
                 sort={inventorySort}
                 onInventoryChange={onInventoryChange}
+                onOpenModelSettings={onOpenModelSettings}
               />
             </div>
           ) : (

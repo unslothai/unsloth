@@ -14,6 +14,9 @@ static TEST_METADATA: std::sync::Mutex<Option<DesktopBackendMetadata>> =
 
 pub(crate) const OWNER_TOKEN_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_TOKEN";
 pub(crate) const OWNER_KIND_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_KIND";
+// The app's own pid, so the backend can watch the exact owner process instead
+// of sampling getppid (racy under a subreaper when the app dies mid-startup).
+pub(crate) const OWNER_PID_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_PID";
 pub(crate) const OWNER_KIND_TAURI: &str = "tauri";
 
 const METADATA_SCHEMA_VERSION: u8 = 1;

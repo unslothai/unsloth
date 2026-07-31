@@ -967,6 +967,8 @@ export const en = {
       description: "Docs, release notes, feedback, and build info.",
       studioVersion: "Unsloth Version",
       packageVersion: "Package Version",
+      desktopAppVersion: "Desktop App Version",
+      desktopAppVersionUnavailable: "Unavailable",
       llamaCppVersion: "llama.cpp Version",
       hardware: "Hardware",
       gpu: "GPU",

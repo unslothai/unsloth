@@ -101,9 +101,22 @@ export function useHubInfiniteScroll(
   const resetKeyRef = useRef(resetKey);
   const wasEnabledRef = useRef(false);
   const manualFetchAvailableRef = useRef(false);
+  const manualStateTimerRef = useRef<ReturnType<
+    typeof globalThis.setTimeout
+  > | null>(null);
+  const [manualFetchAvailable, setManualFetchAvailableState] = useState(false);
 
   const setManualFetchAvailable = useCallback((next: boolean) => {
     manualFetchAvailableRef.current = next;
+    if (manualStateTimerRef.current !== null) {
+      globalThis.clearTimeout(manualStateTimerRef.current);
+    }
+    manualStateTimerRef.current = globalThis.setTimeout(() => {
+      manualStateTimerRef.current = null;
+      setManualFetchAvailableState((current) =>
+        current === next ? current : next,
+      );
+    }, 0);
   }, []);
 
   const requestFetchMore = useCallback(() => {
@@ -156,6 +169,15 @@ export function useHubInfiniteScroll(
       setManualFetchAvailable(false);
     }
   }, [requestFetchMore, setManualFetchAvailable]);
+
+  useEffect(
+    () => () => {
+      if (manualStateTimerRef.current !== null) {
+        globalThis.clearTimeout(manualStateTimerRef.current);
+      }
+    },
+    [],
+  );
 
   // Fires when the stable sentinel scrolls into view. Omits `signal` on purpose:
   // rebuilding per batch could drop an intersection. Refills fall to the auto-fire effect.
@@ -280,6 +302,7 @@ export function useHubInfiniteScroll(
   return {
     scrollRef,
     sentinelRef,
+    manualFetchAvailable,
     fetchMoreManually,
   };
 }

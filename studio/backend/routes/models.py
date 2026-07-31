@@ -1928,95 +1928,106 @@ async def get_model_config(
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
     hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
-    try:
-        if not is_local_path(model_name):
-            resolved = resolve_cached_repo_id_case(model_name)
-            if resolved != model_name:
-                logger.info(
-                    "Using cached repo_id casing '%s' for requested '%s'",
-                    resolved,
-                    model_name,
-                )
-            model_name = resolved
+    from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
-        logger.info(f"Getting model config for: {model_name}")
-        from utils.models.model_config import detect_audio_type
+    def _resolve(model_name: str) -> ModelDetails:
+        # Each probe below can reach the hub, so the guard wraps the whole handler:
+        # offline they must all resolve from the HF cache instead of retrying. Local
+        # paths stay on disk, so they skip the probe entirely.
+        with _hf_offline_if_unreachable_for(model_name):
+            if not is_local_path(model_name):
+                resolved = resolve_cached_repo_id_case(model_name)
+                if resolved != model_name:
+                    logger.info(
+                        "Using cached repo_id casing '%s' for requested '%s'",
+                        resolved,
+                        model_name,
+                    )
+                model_name = resolved
 
-        inspection_target = _model_config_inspection_target(
-            model_name,
-            prefer_local_cache,
-            local_path,
-        )
-        config_dict = load_model_defaults(model_name)
+            logger.info(f"Getting model config for: {model_name}")
+            from utils.models.model_config import detect_audio_type
 
-        # Detect capabilities (HF token for gated models).
-        is_vision = is_vision_model(
-            inspection_target,
-            hf_token = hf_token,
-            local_files_only = prefer_local_cache,
-        )
-        is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
-        audio_type = detect_audio_type(
-            inspection_target,
-            hf_token = hf_token,
-            local_files_only = prefer_local_cache,
-        )
+            inspection_target = _model_config_inspection_target(
+                model_name,
+                prefer_local_cache,
+                local_path,
+            )
+            config_dict = load_model_defaults(model_name)
 
-        is_lora = False
-        base_model = None
-        max_position_embeddings = None
-        try:
-            model_config = ModelConfig.from_identifier(
+            # Detect capabilities (HF token for gated models).
+            is_vision = is_vision_model(
                 inspection_target,
                 hf_token = hf_token,
+                local_files_only = prefer_local_cache,
             )
-            is_lora = model_config.is_lora
-            base_model = model_config.base_model if is_lora else None
-            max_position_embeddings = _get_max_position_embeddings(model_config)
-        except Exception:
-            pass
+            is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
+            audio_type = detect_audio_type(
+                inspection_target,
+                hf_token = hf_token,
+                local_files_only = prefer_local_cache,
+            )
 
-        # Fallback: read raw config.json (declarative fields only) -- a selection-time
-        # metadata probe that must never execute a repo's auto_map Python.
-        if max_position_embeddings is None:
+            is_lora = False
+            base_model = None
+            max_position_embeddings = None
             try:
-                from utils.transformers_version import _load_config_json
-                from types import SimpleNamespace
-
-                _cfg = _load_config_json(inspection_target, hf_token = hf_token)
-                if _cfg is not None:
-
-                    def _to_ns(d):
-                        if isinstance(d, dict):
-                            return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
-                        return d
-
-                    max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
+                model_config = ModelConfig.from_identifier(
+                    inspection_target,
+                    hf_token = hf_token,
+                )
+                is_lora = model_config.is_lora
+                base_model = model_config.base_model if is_lora else None
+                max_position_embeddings = _get_max_position_embeddings(model_config)
             except Exception:
                 pass
 
-        logger.info(
-            f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
-        )
-        return ModelDetails(
-            id = model_name,
-            model_name = model_name,
-            config = config_dict,
-            is_vision = is_vision,
-            is_embedding = is_embedding,
-            is_lora = is_lora,
-            is_audio = audio_type is not None,
-            audio_type = audio_type,
-            has_audio_input = is_audio_input_type(audio_type),
-            model_type = derive_model_type(is_vision, audio_type, is_embedding),
-            base_model = base_model,
-            max_position_embeddings = max_position_embeddings,
-            model_size_bytes = (
-                _get_snapshot_model_size_bytes(inspection_target)
-                if prefer_local_cache
-                else _get_model_size_bytes(model_name, hf_token)
-            ),
-        )
+            # Fallback: read raw config.json (declarative fields only) -- a selection-time
+            # metadata probe that must never execute a repo's auto_map Python.
+            if max_position_embeddings is None:
+                try:
+                    from utils.transformers_version import _load_config_json
+                    from types import SimpleNamespace
+
+                    _cfg = _load_config_json(inspection_target, hf_token = hf_token)
+                    if _cfg is not None:
+
+                        def _to_ns(d):
+                            if isinstance(d, dict):
+                                return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
+                            return d
+
+                        max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
+                except Exception:
+                    pass
+
+            logger.info(
+                f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
+            )
+            return ModelDetails(
+                id = model_name,
+                model_name = model_name,
+                config = config_dict,
+                is_vision = is_vision,
+                is_embedding = is_embedding,
+                is_lora = is_lora,
+                is_audio = audio_type is not None,
+                audio_type = audio_type,
+                has_audio_input = is_audio_input_type(audio_type),
+                model_type = derive_model_type(is_vision, audio_type, is_embedding),
+                base_model = base_model,
+                max_position_embeddings = max_position_embeddings,
+                model_size_bytes = (
+                    _get_snapshot_model_size_bytes(inspection_target)
+                    if prefer_local_cache
+                    else _get_model_size_bytes(model_name, hf_token)
+                ),
+            )
+
+    try:
+        # Off the loop: the guard blocks on DNS + HEAD + TCP, which stalled every
+        # other request for the whole handler.
+        return await asyncio.to_thread(_resolve, model_name)
 
     except HTTPException:
         raise
@@ -2731,7 +2742,16 @@ async def check_vision_model(
     try:
         logger.info(f"Checking if vision model: {model_name}")
         # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision).
-        is_vision = is_vision_model(model_name, hf_token = hf_token)
+        # Offline the guard keeps this on the HF cache instead of retrying the hub.
+        # A local path resolves from disk, so it skips the probe.
+        from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+
+        # Off the loop: the guard's probes are blocking and stall unrelated requests.
+        def _check():
+            with _hf_offline_if_unreachable_for(model_name):
+                return is_vision_model(model_name, hf_token = hf_token)
+
+        is_vision = await asyncio.to_thread(_check)
 
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(
@@ -2764,7 +2784,15 @@ async def check_embedding_model(
     hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
     try:
         logger.info(f"Checking if embedding model: {model_name}")
-        is_embedding = is_embedding_model(model_name, hf_token = hf_token)
+        # Same guard as /check-vision: is_embedding_model hits the hub with a 15s
+        # timeout, then answers False. Off the loop for the same reason.
+        from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+
+        def _check():
+            with _hf_offline_if_unreachable_for(model_name):
+                return is_embedding_model(model_name, hf_token = hf_token)
+
+        is_embedding = await asyncio.to_thread(_check)
 
         logger.info(f"Embedding check result for {model_name}: is_embedding={is_embedding}")
         return EmbeddingCheckResponse(

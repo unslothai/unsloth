@@ -24,7 +24,10 @@ import re
 import types
 import subprocess as _sp
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.training.training import TrainingProgress
 
 # ── WSL AMD Strix Halo (gfx1151): enable ROCDXG before any torch import ──────
 # Mirrors main.py. In WSL the AMD GPU is reached via the ROCDXG bridge
@@ -2792,6 +2795,46 @@ def run_mlx_training_process(
         )
 
 
+def _training_job_is_local(config) -> bool:
+    """True when neither the model nor the dataset needs the Hub, so the probe is wasted.
+
+    Fail closed: anything unresolvable counts as remote, since skipping a needed probe
+    costs the retry backoff the probe exists to avoid.
+    """
+    try:
+        from utils.paths import is_local_path
+    except Exception:
+        return False
+    if config.get("hf_dataset"):
+        return False
+    model = config.get("model_name")
+    try:
+        if not (model and is_local_path(model)):
+            return False
+        # A local checkpoint can name a remote base, which activation resolves and later
+        # training and security code fetches. Readable from disk, so no network needed
+        # to decide. Matches the inference worker's gate.
+        base, needs_hub = _recorded_local_base(model)
+        if needs_hub:
+            return False
+        return not base or is_local_path(base)
+    except Exception:
+        return False
+
+
+def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
+    """``(base, needs_hub)`` for the base this checkpoint records on disk.
+
+    Delegates to the resolver's own disk reads so the gate cannot drift from what
+    activation later resolves. Fail closed on an unavailable reader.
+    """
+    try:
+        from utils.transformers_version import recorded_local_base
+        return recorded_local_base(model_name)
+    except Exception:
+        return None, True
+
+
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python — no stale module state.
 
@@ -2820,31 +2863,44 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             flush = True,
         )
 
-    # Offline auto-detect: skip ~25s of HF retries per call when DNS is dead.
-    if "HF_HUB_OFFLINE" not in os.environ:
-        import socket as _socket
-        import threading as _threading
+    # Offline auto-detect: skip ~25s of HF retries per call when the hub is unreachable.
+    # Skipped for a filesystem-only job: a local checkpoint with a local dataset never
+    # reaches the Hub, and main's check here was DNS-only and returned at once, so probing
+    # unconditionally would add seconds to every such startup.
+    if "HF_HUB_OFFLINE" not in os.environ and not _training_job_is_local(config):
+        _offline = False
+        _network_offline = False
+        try:
+            from utils.utils import hf_dns_dead, hf_env_offline, hf_probe_disabled
 
-        # Daemon thread so we don't mutate process-wide setdefaulttimeout.
-        _result: list = [None]
-
-        def _probe() -> None:
-            try:
-                _socket.gethostbyname("huggingface.co")
-                _result[0] = False
-            except Exception:
-                _result[0] = True
-
-        _t = _threading.Thread(target = _probe, daemon = True)
-        _t.start()
-        _t.join(2.0)
-        if _result[0] is None or _result[0] is True:
+            # Hub ignores TRANSFORMERS_OFFLINE, so translate it before probing.
+            _offline = hf_env_offline()
+            # hf_dns_dead follows HF_ENDPOINT and stands down when a proxy is configured,
+            # so a reachable mirror (or proxy-only egress) is never called offline.
+            if not _offline:
+                _offline = _network_offline = hf_dns_dead()
+            if not _offline and not hf_probe_disabled():
+                # DNS answers even without egress (WAN down, captive portal). These flags
+                # last the whole job, so only a connection failure counts: a momentary
+                # 502/503 must not block every download for the rest of the run.
+                from utils.transformers_version import hf_endpoint_unreachable
+                _offline = _network_offline = hf_endpoint_unreachable(
+                    gateway_errors_offline = False,
+                    proxy_timeouts_offline = False,
+                )
+        except Exception:
+            _offline = _network_offline = False
+        if _offline:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-            os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+            # Only when the network itself is the reason. TRANSFORMERS_OFFLINE alone asks
+            # for cached model files, not for a cache-only dataset: egress may be fine,
+            # and an uncached hf_dataset would then fail for the whole job.
+            if _network_offline:
+                os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
             # logger isn't configured yet; print to stderr instead.
             print(
-                "huggingface.co unreachable; HF_HUB_OFFLINE=1 set for this worker.",
+                "Hugging Face endpoint unreachable; HF_HUB_OFFLINE=1 set for this worker.",
                 file = sys.stderr,
                 flush = True,
             )
@@ -3342,7 +3398,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
 
-        from core.training.training import TrainingProgress
         from core.training.trainer import UnslothTrainer
         from utils.paths import (
             ensure_dir,
@@ -3388,31 +3443,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     trainer = UnslothTrainer()
 
     # Wire up progress callback → event_queue
-    def _on_progress(progress: TrainingProgress):
-        has_train_loss = progress.step > 0 and progress.loss is not None
-        has_eval_loss = progress.eval_loss is not None
-        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
-            event_queue.put(
-                {
-                    "type": "progress",
-                    "step": progress.step,
-                    "epoch": progress.epoch,
-                    "loss": progress.loss,
-                    "learning_rate": progress.learning_rate,
-                    "total_steps": progress.total_steps,
-                    "elapsed_seconds": progress.elapsed_seconds,
-                    "eta_seconds": progress.eta_seconds,
-                    "grad_norm": progress.grad_norm,
-                    "num_tokens": progress.num_tokens,
-                    "eval_loss": progress.eval_loss,
-                    "status_message": progress.status_message,
-                    "ts": time.time(),
-                }
-            )
-        if progress.status_message:
-            _send_status(event_queue, progress.status_message)
-
-    trainer.add_progress_callback(_on_progress)
+    trainer.add_progress_callback(_create_trainer_progress_callback(event_queue))
 
     def _apply_stop(save: bool) -> None:
         trainer.should_stop = True
@@ -3998,6 +4029,109 @@ def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
     return _mlx_has_checkpoint_at_step(output_dir, step)
 
 
+def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingProgress], None]:
+    """UnslothTrainer callback that reports training progress to the parent.
+
+    Status events go out only while the status is non-empty, so the empty status the
+    trainer reports on every log leaves the parent's last real status standing.
+    """
+
+    def _on_progress(progress: TrainingProgress) -> None:
+        has_train_loss = progress.step > 0 and progress.loss is not None
+        has_eval_loss = progress.eval_loss is not None
+        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
+            event_queue.put(
+                {
+                    "type": "progress",
+                    "step": progress.step,
+                    "epoch": progress.epoch,
+                    "loss": progress.loss,
+                    "learning_rate": progress.learning_rate,
+                    "total_steps": progress.total_steps,
+                    "elapsed_seconds": progress.elapsed_seconds,
+                    "eta_seconds": progress.eta_seconds,
+                    "grad_norm": progress.grad_norm,
+                    "num_tokens": progress.num_tokens,
+                    "eval_loss": progress.eval_loss,
+                    "status_message": progress.status_message,
+                    "ts": time.time(),
+                }
+            )
+        if progress.status_message:
+            _send_status(event_queue, progress.status_message)
+
+    return _on_progress
+
+
+def _create_embedding_progress_callback(
+    event_queue: Any,
+    *,
+    total_steps: int,
+    training_start_time: float,
+    should_stop: Callable[[], bool],
+):
+    """TrainerCallback that reports embedding training progress to the parent.
+
+    ``should_stop`` is polled in on_train_begin and on_step_end, so a stop signal
+    arriving mid-run is seen.
+    """
+    from transformers import TrainerCallback
+
+    class _EmbeddingProgressCallback(TrainerCallback):
+        def on_train_begin(self, args, state, control, **kwargs):
+            # Progress events carry an empty status, so without this the parent keeps
+            # showing "Starting embedding training..." for the whole run.
+            if should_stop():
+                return
+            _send_status(event_queue, "Training in progress...")
+
+        def on_log(
+            self,
+            args,
+            state,
+            control,
+            logs = None,
+            **kwargs,
+        ):
+            if not logs:
+                return
+            loss_value = logs.get("loss", logs.get("train_loss", None))
+            current_step = state.global_step
+
+            elapsed = time.time() - training_start_time
+            eta = None
+            if current_step > 0 and total_steps > 0:
+                remaining = total_steps - current_step
+                if remaining > 0:
+                    eta = (elapsed / current_step) * remaining
+
+            event_queue.put(
+                {
+                    "type": "progress",
+                    "step": current_step,
+                    "epoch": round(state.epoch, 2) if state.epoch else 0,
+                    "loss": loss_value,
+                    "learning_rate": logs.get("learning_rate", None),
+                    "total_steps": total_steps,
+                    "elapsed_seconds": elapsed,
+                    "eta_seconds": eta,
+                    "grad_norm": logs.get("grad_norm"),
+                    "num_tokens": getattr(state, "num_input_tokens_seen", None),
+                    "eval_loss": logs.get("eval_loss"),
+                    "status_message": "",
+                    "ts": time.time(),
+                }
+            )
+
+        def on_step_end(self, args, state, control, **kwargs):
+            if should_stop():
+                logger.info("Embedding training: stop at step %d", state.global_step)
+                control.should_training_stop = True
+                return control
+
+    return _EmbeddingProgressCallback()
+
+
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Self-contained embedding model training pipeline.
 
@@ -4030,7 +4164,6 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         from sentence_transformers.training_args import BatchSamplers
         from datasets import Dataset
         from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
-        from transformers import TrainerCallback
         from utils.paths import datasets_root, resolve_output_dir, default_run_dir_name
     except ImportError as e:
         event_queue.put(
@@ -4373,52 +4506,12 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         total_steps = steps_per_epoch * effective_epochs
 
     # ── 8. Create progress callback ──
-    class _EmbeddingProgressCallback(TrainerCallback):
-        """Send training progress events to the parent via event_queue."""
-
-        def on_log(
-            self,
-            args,
-            state,
-            control,
-            logs = None,
-            **kwargs,
-        ):
-            if not logs:
-                return
-            loss_value = logs.get("loss", logs.get("train_loss", None))
-            current_step = state.global_step
-
-            elapsed = time.time() - training_start_time
-            eta = None
-            if current_step > 0 and total_steps > 0:
-                remaining = total_steps - current_step
-                if remaining > 0:
-                    eta = (elapsed / current_step) * remaining
-
-            event_queue.put(
-                {
-                    "type": "progress",
-                    "step": current_step,
-                    "epoch": round(state.epoch, 2) if state.epoch else 0,
-                    "loss": loss_value,
-                    "learning_rate": logs.get("learning_rate", None),
-                    "total_steps": total_steps,
-                    "elapsed_seconds": elapsed,
-                    "eta_seconds": eta,
-                    "grad_norm": logs.get("grad_norm"),
-                    "num_tokens": getattr(state, "num_input_tokens_seen", None),
-                    "eval_loss": logs.get("eval_loss"),
-                    "status_message": "",
-                    "ts": time.time(),
-                }
-            )
-
-        def on_step_end(self, args, state, control, **kwargs):
-            if _should_stop:
-                logger.info("Embedding training: stop at step %d", state.global_step)
-                control.should_training_stop = True
-                return control
+    progress_callback = _create_embedding_progress_callback(
+        event_queue,
+        total_steps = total_steps,
+        training_start_time = training_start_time,
+        should_stop = lambda: _should_stop,
+    )
 
     # ── 9. Create trainer and train ──
     _send_status(event_queue, "Starting embedding training...")
@@ -4428,7 +4521,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             train_dataset = dataset,
             loss = loss,
             args = args,
-            callbacks = [_EmbeddingProgressCallback()],
+            callbacks = [progress_callback],
         )
 
         trainer.train(resume_from_checkpoint = resume_from_checkpoint)
