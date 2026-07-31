@@ -34,25 +34,6 @@ rename the heading at release time.
 
 ## Unreleased
 
-## 2026.7.7
-
-### What's Changed
-
-- Documents drag and drop into a chat on desktop, instead of being rejected
-  as non-GGUF.
-- Kimi K3 loads with thinking on, with corrected sampling defaults.
-- Reasoning is preserved across turns for Qwen3.x, and MoE models are sized
-  by total parameters so thinking is no longer switched off for them.
-- Coding agents run in the project you started them from, so a turn edits
-  your own files.
-- Gemma 4 MTP drafters inside a model's `MTP/` folder are detected, and a
-  large model load survives a proxy timeout under `--secure`.
-- Desktop no longer leaves a backend running after a crash, a force quit or a
-  `SIGTERM`, and macOS ships a notarized disk image.
-- Training reports its running status instead of "Starting training...", and
-  packing warns when it cannot be applied.
-- The uninstaller rejects unrecognized arguments instead of uninstalling.
-
 ## 2026.7.6
 
 ### What's Changed
