@@ -14,8 +14,6 @@ import datetime
 import json
 from pathlib import Path
 
-import jinja2
-import jinja2.sandbox
 import pytest
 
 from core.inference.chat_template_helpers import (
@@ -266,6 +264,14 @@ class _JinjaTokenizer:
         add_generation_prompt = True,
         **kw,
     ):
+        # Imported here, not at module scope: jinja2 is absent from
+        # studio/backend/requirements/studio.txt and only arrives transitively with
+        # transformers, so a bare CI runner has no engine. At module scope that is a
+        # collection error which takes the whole file down, including the ~250 tests that
+        # are pure string handling; here it skips just the renders and the rest still gates.
+        jinja2 = pytest.importorskip("jinja2")
+        pytest.importorskip("jinja2.sandbox")
+
         def _raise(message):
             raise jinja2.exceptions.TemplateError(message)
 
