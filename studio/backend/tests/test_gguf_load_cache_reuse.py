@@ -272,6 +272,56 @@ class TestLoadReusesCachedCopy:
         assert listed_revisions == [None, new_revision]
         assert downloaded == [(MAIN, None), ("mmproj-F16.gguf", new_revision)]
 
+
+    def test_post_download_audio_header_upgrades_projector_requirement(self, monkeypatch):
+        """Unknown remote metadata must yield to the downloaded GGUF header."""
+        import core.inference.llama_cpp as llama_cpp_module
+
+        backend = LlamaCppBackend()
+        downloads: list[bool] = []
+        projector_near_paths: list[str] = []
+
+        def download(**kwargs):
+            require_mmproj = bool(kwargs.get("require_mmproj"))
+            downloads.append(require_mmproj)
+            snapshot = "paired" if require_mmproj else "initial"
+            return f"/cache/{snapshot}/{MAIN}"
+
+        def download_mmproj(**kwargs):
+            projector_near_paths.append(kwargs["near_path"])
+            return "/cache/paired/mmproj-F16.gguf"
+
+        monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: None)
+        monkeypatch.setattr(backend, "_kill_process", lambda: None)
+        monkeypatch.setattr(backend, "_download_gguf", download)
+        monkeypatch.setattr(backend, "_download_mmproj", download_mmproj)
+        monkeypatch.setattr(backend, "_read_gguf_metadata", lambda _path: None)
+        monkeypatch.setattr(llama_cpp_module, "_resolve_repo_id_casing", lambda repo: repo)
+        monkeypatch.setattr(
+            llama_cpp_module,
+            "_hf_offline_if_dns_dead",
+            lambda: nullcontext(),
+        )
+        monkeypatch.setattr(
+            llama_cpp_module,
+            "_gguf_header_has_audio_input",
+            lambda path: "/initial/" in path,
+            raising = False,
+        )
+
+        with pytest.raises(llama_cpp_module.LlamaServerNotFoundError):
+            backend.load_model(
+                hf_repo = REPO,
+                hf_variant = VARIANT,
+                model_identifier = REPO,
+                speculative_type = "none",
+            )
+
+        assert downloads == [False, True]
+        assert projector_near_paths == [f"/cache/paired/{MAIN}"]
+
+        assert backend._expects_audio_input is True
+
     def test_reuse_size_check_uses_cached_snapshot_revision(self, hf_cache):
         """Current-revision size changes do not invalidate an older complete copy."""
         backend = LlamaCppBackend()

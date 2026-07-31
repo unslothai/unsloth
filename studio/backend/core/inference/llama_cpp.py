@@ -7255,6 +7255,34 @@ class LlamaCppBackend:
                         hf_token = hf_token,
                         require_mmproj = require_download_mmproj,
                     )
+
+                    # Remote config/tokenizer metadata can be incomplete before the
+                    # weights exist locally. Let the bounded GGUF-header probe upgrade
+                    # that optimistic text-only classification before choosing the
+                    # projector. Re-resolve the main with ``require_mmproj`` so an old
+                    # cached weight snapshot cannot be paired with a newer projector.
+                    if (
+                        not needs_mmproj
+                        and not extra_args_disable_mmproj(extra_args)
+                        and _gguf_header_has_audio_input(model_path)
+                    ):
+                        needs_mmproj = True
+                        has_audio_input = True
+                        require_download_mmproj = not mmproj_path
+                        if require_download_mmproj:
+                            model_path = self._download_gguf(
+                                hf_repo = hf_repo,
+                                hf_variant = hf_variant,
+                                hf_token = hf_token,
+                                require_mmproj = True,
+                            )
+                        else:
+                            cached_main_for_supplied_mmproj = cached_gguf_for_load(
+                                hf_repo,
+                                hf_variant,
+                                verify_sizes = True,
+                                hf_token = hf_token,
+                            )
                     # Vision and audio-input GGUFs both need their projector.
                     if needs_mmproj:
                         mmproj_path = _supplied_mmproj_for_loaded_model(

@@ -648,6 +648,20 @@ def test_detect_mtp_file_returns_first_shard_of_split_subdir_drafter(tmp_path):
     assert detect_mtp_file(str(weight)) == str(first.resolve())
 
 
+@pytest.mark.parametrize("width", [3, 4])
+def test_detect_mtp_file_pairs_short_counter_split_root_drafter(tmp_path, width):
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    first_index = f"{1:0{width}d}"
+    second_index = f"{2:0{width}d}"
+    total = f"{2:0{width}d}"
+    first = tmp_path / f"mtp-model-Q8_0-{first_index}-of-{total}.gguf"
+    first.write_bytes(b"x")
+    (tmp_path / f"mtp-model-Q8_0-{second_index}-of-{total}.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(first.resolve())
+
+
 def test_detect_mtp_file_skip_root_ignores_root_drafter(tmp_path):
     """skip_root is how a native load recovers when the root drafter is out
     of bounds for its grant."""
@@ -729,6 +743,22 @@ def test_detect_mtp_file_pairs_sharded_old_scheme_subdir_drafter(tmp_path):
     first = sub / "model-Q8_0-MTP-00001-of-00002.gguf"
     first.write_bytes(b"x" * 4096)
     (sub / "model-Q8_0-MTP-00002-of-00002.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(first)
+
+
+@pytest.mark.parametrize("width", [3, 4])
+def test_detect_mtp_file_pairs_short_counter_old_scheme_subdir_drafter(tmp_path, width):
+    weight = tmp_path / "model-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    first_index = f"{1:0{width}d}"
+    second_index = f"{2:0{width}d}"
+    total = f"{2:0{width}d}"
+    first = sub / f"model-Q8_0-MTP-{first_index}-of-{total}.gguf"
+    first.write_bytes(b"x")
+    (sub / f"model-Q8_0-MTP-{second_index}-of-{total}.gguf").write_bytes(b"x")
 
     assert detect_mtp_file(str(weight)) == str(first)
 

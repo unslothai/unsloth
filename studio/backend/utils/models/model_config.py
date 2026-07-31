@@ -1638,7 +1638,7 @@ def detect_mtp_file(
             stem = stem[len("mtp-") :]
         # Shard suffix sits outside the quant token, so strip it first or the
         # anchored strip below cannot match.
-        stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", stem)
+        stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", stem)
         if stem.endswith("-mtp"):
             stem = stem[: -len("-mtp")]
         # Full quant vocabulary, not a subset: K/IQ/UD/MXFP drafters pair too.
@@ -1759,7 +1759,7 @@ def detect_mtp_file(
                 # Drop the shard suffix first: an old-scheme split copy is
                 # named <model>-Q8_0-MTP-00001-of-00002.gguf, whose stem does
                 # not end in -mtp.
-                stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
+                stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", Path(lower).stem)
                 if not (lower.startswith("mtp-") or stem.endswith("-mtp")):
                     continue
                 if not _matches_weight(f):
