@@ -1049,6 +1049,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
             "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
+            "elif use_bf16 or use_fp16:\n"
+            "    # transformers <5 exported this itself from fp16/bf16; 5.x dropped the write, so an\n"
+            "    # explicit flag left it unset and GRPO readers defaulted to 'fp16', wrapping a\n"
+            "    # bfloat16 model in a float16 autocast. See unslothai/unsloth#4891.\n"
+            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'bf16' if use_bf16 else 'fp16'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'bf16' if use_bf16 else 'fp16'\n"
             "\n"
         )
         extra_args += mixed_precision

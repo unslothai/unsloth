@@ -126,7 +126,7 @@ def _xdg_user_dir(key: str) -> Path | None:
     config = Path.home() / ".config" / "user-dirs.dirs"
     try:
         lines = config.read_text(encoding = "utf-8").splitlines()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     prefix = f"{key}="
     for line in lines:
@@ -212,7 +212,7 @@ def lmstudio_model_dirs() -> list[Path]:
     settings_path = Path.home() / ".lmstudio" / "settings.json"
     if settings_path.is_file():
         try:
-            with open(settings_path) as f:
+            with open(settings_path, encoding = "utf-8-sig") as f:
                 settings = json.load(f)
             downloads = settings.get("downloadsFolder", "")
             if downloads:

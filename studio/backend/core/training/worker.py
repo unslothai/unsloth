@@ -43,6 +43,7 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
         pass
 
 logger = get_logger(__name__)
+from utils.child_stdio import utf8_child_env
 from utils.hardware import apply_gpu_ids
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
@@ -385,6 +386,10 @@ def _install_package_wheel_first(
         "stdout": _sp.PIPE,
         "stderr": _sp.STDOUT,
         "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        # Make the Python child emit the UTF-8 we decode above.
+        "env": utf8_child_env(),
     }
     if is_hip:
         _run_kwargs["timeout"] = 1800
@@ -606,6 +611,9 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
             stdout = _sp.PIPE,
             stderr = _sp.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = utf8_child_env(),
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:
@@ -764,8 +772,8 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     - ``gcn_arch``: canonical arch string (e.g. ``"gfx1151"``) when a known
       attribute is present, else ``""``.
     - ``is_unified``: ``True`` for AMD APUs with a shared GPU/system-RAM pool
-      (gfx1150 Strix Point, gfx1151 Strix Halo) — these need a lower
-      ``set_per_process_memory_fraction`` cap to leave OS headroom.
+      (gfx1150 Strix Point, gfx1151 Strix Halo, gfx1152 Krackan Point) — these
+      need a lower ``set_per_process_memory_fraction`` cap to leave OS headroom.
 
     Classification priority:
     1. ``props.is_integrated`` truthy (hipDeviceProp_t.integrated -- the
@@ -778,6 +786,7 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
          - gfx1151 Strix Halo / Gorgon Halo:  ``Radeon 8065S`` (Ryzen AI
                                 Max+ 495), ``Radeon 8060S`` (Ryzen AI MAX+
                                 395), ``Radeon 8050S`` (cut-down SKU)
+         - gfx1152 Krackan Point: ``Radeon 860M``, ``Radeon 840M``
     """
     gcn_arch = ""
     for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
@@ -797,9 +806,13 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         return gcn_arch, True
 
     if gcn_arch:
-        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151"}
+        # gfx1152 is Krackan Point, the third RDNA 3.5 APU: same shared
+        # GPU/system-RAM pool as Strix Point (gfx1150) and Strix Halo (gfx1151).
+        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151", "gfx1152"}
 
-    # Arch attrs absent — fall back to device-name matching.
+    # Arch attrs absent — fall back to device-name matching. Only reached under
+    # _hw.IS_ROCM, so the NVIDIA GeForce 840M cannot collide with the Krackan
+    # markers here.
     dev_lower = (getattr(props, "name", "") or "").lower()
     is_unified = (
         "890m" in dev_lower
@@ -807,6 +820,8 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         or "8065s" in dev_lower
         or "8060s" in dev_lower
         or "8050s" in dev_lower
+        or "860m" in dev_lower
+        or "840m" in dev_lower
     )
     return gcn_arch, is_unified
 
@@ -842,6 +857,9 @@ def _run_pip(cmd: list[str], event_queue: Any, label: str) -> bool:
             stdout = _sp.PIPE,
             stderr = _sp.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = utf8_child_env(),
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:
@@ -1545,6 +1563,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     if config.get("use_loftq"):
         message = "LoftQ is not supported for MLX training yet."
+        _send("error", error = message)
+        raise NotImplementedError(message)
+    if config.get("use_dora"):
+        message = "DoRA is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
     if config.get("is_embedding"):
@@ -2373,7 +2395,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"))
+    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
     model_name = config["model_name"]
 
@@ -2824,7 +2846,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
     # set_per_process_memory_fraction caps the allocator so PyTorch raises
     # OutOfMemoryError first (NVIDIA already has a graceful OOM path).
-    # Unified-memory APUs (gfx1150/gfx1151) share GPU+system RAM, so use 0.80
+    # Unified-memory APUs (gfx1150/gfx1151/gfx1152) share GPU+system RAM, so use 0.80
     # vs 0.90 for discrete. Classify via gcnArchName, else device-name markers.
     # Non-fatal: skipped if torch is not importable.
     if _hw.IS_ROCM:
@@ -3186,6 +3208,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = config.get("use_loftq", False),
+                use_dora = config.get("use_dora", False),
             )
         elif use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
@@ -3202,6 +3225,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = config.get("use_loftq", False),
+                use_dora = config.get("use_dora", False),
             )
         else:
             _send_status(event_queue, "Preparing model for full finetuning...")
@@ -3630,6 +3654,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_gradient_checkpointing = gradient_checkpointing,
                 random_state = config.get("random_seed", 3407),
                 use_rslora = config.get("use_rslora", False),
+                use_dora = config.get("use_dora", False),
                 loftq_config = {"loftq_bits": 4, "loftq_iter": 1}
                 if config.get("use_loftq")
                 else None,

@@ -27,19 +27,29 @@ export const es = {
     product: "Unsloth Studio",
     accountMenu: "Menú de cuenta de {name}",
     updateAvailable: "Actualización disponible",
+    resize: {
+      collapse: "Haz clic para contraer",
+      expand: "Haz clic para expandir",
+      drag: "Arrastra para redimensionar",
+    },
     aria: {
       home: "Inicio de Unsloth",
       closeSidebar: "Cerrar barra lateral",
       openSidebar: "Abrir barra lateral",
+      resizeSidebar: "Redimensionar o contraer la barra lateral",
+      resizeRunSettings: "Redimensionar o cerrar los ajustes de ejecución",
+      openRunSettings: "Abrir los ajustes de ejecución",
       chatOptions: "Opciones de chat",
       runOptions: "Opciones de ejecución",
     },
     navigation: {
       newChat: "Nuevo chat",
       returnToChat: "Volver al chat",
+      returnToChats: "Volver a {count} chats",
+      chatGenerating: "Generando",
       compare: "Comparar",
       search: "Buscar",
-      hub: "Modelos",
+      hub: "Centro de modelos",
       train: "Entrenar",
       recipes: "Recetas",
       export: "Exportar",
@@ -326,6 +336,8 @@ export const es = {
         diskUsage: "{used} en uso / {total}",
         diskFree: "{free} libre",
         modelsFolder: "Carpeta de modelos",
+        modelsFolderKeywords:
+          "modelos carpeta directorio ruta ubicacion ubicación descargas descarga cache caché almacenamiento disco unidad mover cambiar models folder path hugging face",
         modelsFolderDescription:
           "Dónde se almacenan los modelos descargados.",
         openAction: "Abrir",
@@ -464,7 +476,7 @@ export const es = {
       codingAgentsHint:
         "Inicia un agente de programación contra este servidor. Usa el modelo cargado; un servidor local genera una clave de API automáticamente y uno remoto la incluye en el comando.",
       codingAgentsSwap:
-        "Reemplaza claude por codex, openclaw, opencode, hermes o pi.",
+        "Reemplaza claude por codex, openclaw, opencode o hermes.",
       codingAgentDetected: "Instalado en esta máquina",
       codingAgentsDetectedHint: "Detectados en esta máquina: {agents}.",
       relativeNever: "nunca",
@@ -780,6 +792,7 @@ export const es = {
       trainWithLora: "Entrenar con LoRA",
       stableRank: "Rango estable",
       memoryEfficient: "Eficiente en memoria",
+      weightDecomposed: "Pesos descompuestos",
       optimization: "Optimización",
       schedule: "Programación",
       memory: "Memoria",

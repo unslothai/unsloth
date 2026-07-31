@@ -1,4 +1,5 @@
 use crate::diagnostics::{self, AttemptLog, DiagnosticsState};
+use crate::process::trim_line_endings;
 use log::{error, info, warn};
 use process_wrap::std::*;
 use std::io::BufRead;
@@ -97,6 +98,21 @@ fn spawn_update(
 
 // ── Stream ──
 
+fn read_lossy_lines<R: std::io::Read>(
+    stream: R,
+    mut on_line: impl FnMut(String),
+) -> std::io::Result<()> {
+    let mut reader = std::io::BufReader::new(stream);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            return Ok(());
+        }
+        on_line(String::from_utf8_lossy(trim_line_endings(&buf)).into_owned());
+    }
+}
+
 fn stream_output(
     app: &AppHandle,
     progress_event: &'static str,
@@ -112,34 +128,19 @@ fn stream_output(
         let diagnostics_clone = diagnostics.clone();
         let attempt_clone = attempt.clone();
         threads.push(std::thread::spawn(move || {
-            let reader = std::io::BufReader::new(out);
-            for line in reader.lines() {
-                match line {
-                    Ok(text) => {
-                        diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
-                        if let Some(step) = text.strip_prefix("[TAURI:STEP] ") {
-                            diagnostics::record_step(&diagnostics_clone, &attempt_clone, step);
-                        } else if let Some(progress) = text.strip_prefix("[TAURI:PROGRESS] ") {
-                            diagnostics::record_progress(
-                                &diagnostics_clone,
-                                &attempt_clone,
-                                progress,
-                            );
-                        } else if let Some(marker) = text.strip_prefix("[TAURI:DIAG] ") {
-                            diagnostics::record_diag_marker(
-                                &diagnostics_clone,
-                                &attempt_clone,
-                                marker,
-                            );
-                        }
-                        info!("[update][stdout] {}", text);
-                        let _ = app_clone.emit(progress_event, &text);
-                    }
-                    Err(e) => {
-                        warn!("[update] Error reading stdout: {}", e);
-                        break;
-                    }
+            if let Err(e) = read_lossy_lines(out, |text| {
+                diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
+                if let Some(step) = text.strip_prefix("[TAURI:STEP] ") {
+                    diagnostics::record_step(&diagnostics_clone, &attempt_clone, step);
+                } else if let Some(progress) = text.strip_prefix("[TAURI:PROGRESS] ") {
+                    diagnostics::record_progress(&diagnostics_clone, &attempt_clone, progress);
+                } else if let Some(marker) = text.strip_prefix("[TAURI:DIAG] ") {
+                    diagnostics::record_diag_marker(&diagnostics_clone, &attempt_clone, marker);
                 }
+                info!("[update][stdout] {}", text);
+                let _ = app_clone.emit(progress_event, &text);
+            }) {
+                warn!("[update] Error reading stdout: {}", e);
             }
         }));
     }
@@ -148,19 +149,12 @@ fn stream_output(
         let app_clone = app.clone();
         let attempt_clone = attempt.clone();
         threads.push(std::thread::spawn(move || {
-            let reader = std::io::BufReader::new(err);
-            for line in reader.lines() {
-                match line {
-                    Ok(text) => {
-                        diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
-                        warn!("[update][stderr] {}", text);
-                        let _ = app_clone.emit(progress_event, &text);
-                    }
-                    Err(e) => {
-                        warn!("[update] Error reading stderr: {}", e);
-                        break;
-                    }
-                }
+            if let Err(e) = read_lossy_lines(err, |text| {
+                diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
+                warn!("[update][stderr] {}", text);
+                let _ = app_clone.emit(progress_event, &text);
+            }) {
+                warn!("[update] Error reading stderr: {}", e);
             }
         }));
     }
@@ -419,5 +413,22 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
         let _ = child.wait();
         info!("Update process group force stopped");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn lossy_reader_keeps_invalid_utf8_and_later_lines() {
+        let mut lines = Vec::new();
+        read_lossy_lines(Cursor::new(b"bad\xff\r\n[TAURI:STEP] next\n"), |line| {
+            lines.push(line)
+        })
+        .unwrap();
+
+        assert_eq!(lines, ["bad\u{fffd}", "[TAURI:STEP] next"]);
     }
 }

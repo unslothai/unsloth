@@ -100,7 +100,7 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
             path = Path(normalize_path(name)).expanduser() / "modules.json"
             if not path.is_file():
                 return ()
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding = "utf-8-sig"))
         else:
             from huggingface_hub import hf_hub_download
             from huggingface_hub.utils import EntryNotFoundError
@@ -115,7 +115,7 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
                 )
             except EntryNotFoundError:
                 return ()
-            data = json.loads(open(local).read())
+            data = json.loads(open(local, encoding = "utf-8-sig").read())
         subdirs = []
         for module in data or ():
             sub = str((module or {}).get("path", "")).strip().strip("/")

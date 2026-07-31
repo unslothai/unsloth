@@ -1,31 +1,33 @@
 import { isTauri } from "@/lib/api-base";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
-import { registerNativeModelPath } from "./api";
+import { registerNativeAttachmentPath, registerNativeModelPath } from "./api";
+import { classifyDropPaths, SUPPORTED_DROP_HINT } from "./drop-paths";
 import { useNativeIntentStore } from "./store";
 import type { NativeIntent } from "./types";
 
 export type NativeModelDropState =
   | { status: "idle" }
   | { status: "valid"; action: "load" | "replace" | "chip" }
+  | { status: "attach"; count: number }
   | { status: "invalid" };
 
 interface NativeModelDropOptions {
   enabled?: boolean;
+  attachmentScope?: string;
   nativePathLeasesSupported: boolean;
   hasActiveModel: boolean;
   isModelLoading: boolean;
   onAutoLoad?: (intent: NativeIntent) => Promise<void> | void;
+  onAttach?: (intents: NativeIntent[]) => Promise<void> | void;
 }
 
-function ggufPaths(paths: string[]): string[] {
-  return paths.filter((path) => path.toLowerCase().endsWith(".gguf"));
+function canAttachDocs(options: NativeModelDropOptions): boolean {
+  return options.nativePathLeasesSupported && Boolean(options.onAttach);
 }
 
-function canAutoLoadPaths(paths: string[], options: NativeModelDropOptions): boolean {
+function canAutoLoadModel(options: NativeModelDropOptions): boolean {
   return (
-    paths.length === 1 &&
-    ggufPaths(paths).length === 1 &&
     options.nativePathLeasesSupported &&
     !options.isModelLoading &&
     Boolean(options.onAutoLoad)
@@ -36,14 +38,17 @@ function dropStateForPaths(
   paths: string[],
   options: NativeModelDropOptions,
 ): NativeModelDropState {
-  if (paths.length === 0) {
-    return { status: "idle" };
+  const dropped = classifyDropPaths(paths);
+  if (dropped.kind === "none") return { status: "idle" };
+  if (dropped.kind === "docs") {
+    // Unlike a browser upload, a document drop only reaches the ingest through a signed
+    // lease, so don't offer it as a target before the backend can verify one.
+    return canAttachDocs(options)
+      ? { status: "attach", count: dropped.paths.length }
+      : { status: "invalid" };
   }
-  const ggufs = ggufPaths(paths);
-  if (paths.length !== 1 || ggufs.length !== 1) {
-    return { status: "invalid" };
-  }
-  if (!canAutoLoadPaths(paths, options)) {
+  if (dropped.kind === "unsupported") return { status: "invalid" };
+  if (!canAutoLoadModel(options)) {
     return { status: "valid", action: "chip" };
   }
   return {
@@ -80,22 +85,41 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
         }
         if (event.payload.type !== "drop") return;
         setDropState({ status: "idle" });
-        const ggufs = ggufPaths(event.payload.paths);
-        if (event.payload.paths.length !== 1 || ggufs.length !== 1) {
-          if (event.payload.paths.length > 0) {
-            toast.error(
-              ggufs.length === 0
-                ? "Only .gguf model files can be dropped here."
-                : "Drop a single .gguf model file.",
+        const dropped = classifyDropPaths(event.payload.paths);
+        if (dropped.kind === "none") return;
+        if (dropped.kind === "unsupported") {
+          toast.error(SUPPORTED_DROP_HINT);
+          return;
+        }
+        if (dropped.kind === "docs") {
+          if (!canAttachDocs(currentOptions)) {
+            toast.error("Attaching files needs the desktop backend", {
+              description: "Retry once Studio has finished starting up.",
+            });
+            return;
+          }
+          try {
+            const intents = await Promise.all(
+              dropped.paths.map(registerNativeAttachmentPath),
             );
+            if (disposed) return;
+            const latestOptions = optionsRef.current;
+            const attachOptions =
+              latestOptions.attachmentScope === currentOptions.attachmentScope
+                ? latestOptions
+                : currentOptions;
+            await attachOptions.onAttach?.(intents);
+          } catch (error) {
+            toast.error("Could not attach dropped files", {
+              description: error instanceof Error ? error.message : String(error),
+            });
           }
           return;
         }
-        const ggufPath = ggufs[0];
         try {
-          const intent = await registerNativeModelPath(ggufPath);
+          const intent = await registerNativeModelPath(dropped.path);
           if (disposed) return;
-          if (!canAutoLoadPaths(event.payload.paths, currentOptions)) {
+          if (!canAutoLoadModel(currentOptions)) {
             addIntent(intent);
             return;
           }
