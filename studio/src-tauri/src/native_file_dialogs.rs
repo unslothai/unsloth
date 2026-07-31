@@ -60,6 +60,19 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<&'static str>) {
     }
 }
 
+// Raw is not guaranteed: a Uint8Array arrives as a number array when the IPC
+// carries the payload as JSON.
+fn invoke_body_bytes(body: &tauri::ipc::InvokeBody) -> Option<Vec<u8>> {
+    match body {
+        tauri::ipc::InvokeBody::Raw(content) => Some(content.clone()),
+        tauri::ipc::InvokeBody::Json(value) => value
+            .as_array()?
+            .iter()
+            .map(|item| u8::try_from(item.as_u64()?).ok())
+            .collect(),
+    }
+}
+
 fn local_dialog_path(path: tauri_plugin_dialog::FilePath) -> Result<PathBuf, String> {
     path.into_path()
         .map_err(|_| "Only local filesystem paths are supported.".to_string())
@@ -169,10 +182,8 @@ pub async fn save_native_file(
         .to_str()
         .map_err(|_| "Invalid native export filename.".to_string())?;
     let file_name = decode_default_file_name(encoded_name)?;
-    let content = match request.body() {
-        tauri::ipc::InvokeBody::Raw(content) => content,
-        _ => return Err("Native export content must be binary.".to_string()),
-    };
+    let content = invoke_body_bytes(request.body())
+        .ok_or_else(|| "Native export content must be binary.".to_string())?;
     let (filter_name, extensions) = save_filter(&file_name);
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
@@ -188,7 +199,7 @@ pub async fn save_native_file(
         .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
         .map(local_dialog_path)
         .transpose()?;
-    save_selected_file(selected_path, content)
+    save_selected_file(selected_path, &content)
 }
 
 #[tauri::command]
@@ -227,6 +238,34 @@ mod tests {
             "unsloth-native-files-{name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn accepts_a_json_number_array_body_as_bytes() {
+        let raw = tauri::ipc::InvokeBody::Raw(vec![1, 2, 250]);
+        assert_eq!(invoke_body_bytes(&raw), Some(vec![1, 2, 250]));
+
+        let json = tauri::ipc::InvokeBody::Json(serde_json::json!([1, 2, 250]));
+        assert_eq!(invoke_body_bytes(&json), Some(vec![1, 2, 250]));
+
+        let empty = tauri::ipc::InvokeBody::Json(serde_json::json!([]));
+        assert_eq!(invoke_body_bytes(&empty), Some(vec![]));
+    }
+
+    #[test]
+    fn rejects_bodies_that_are_not_byte_sequences() {
+        for value in [
+            serde_json::json!({"content": "hi"}),
+            serde_json::json!("hi"),
+            serde_json::json!([1, 2, 256]),
+            serde_json::json!([1, -2]),
+        ] {
+            assert_eq!(
+                invoke_body_bytes(&tauri::ipc::InvokeBody::Json(value.clone())),
+                None,
+                "accepted a non-byte body: {value}"
+            );
+        }
     }
 
     #[test]
