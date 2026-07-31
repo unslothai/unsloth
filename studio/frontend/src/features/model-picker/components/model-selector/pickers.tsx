@@ -718,6 +718,7 @@ function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
 function GgufVariantExpander({
   repoId,
   loadId,
+  cachePath,
   onSelect,
   gpuGb,
   systemRamGb,
@@ -736,6 +737,8 @@ function GgufVariantExpander({
   repoId: string;
   /** Snapshot the cached listing pinned this repo to, when it pinned one. */
   loadId?: string | null;
+  /** Cache directory this downloaded row represents, when it is one. */
+  cachePath?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
@@ -795,6 +798,7 @@ function GgufVariantExpander({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const localSource = loadId || cachePath || null;
 
   useEffect(() => {
     let canceled = false;
@@ -804,7 +808,13 @@ function GgufVariantExpander({
       setError(null);
     });
 
-    listGgufVariants(repoId, hfToken)
+    // A downloaded row names its own directory. Without it the request asks the active cache
+    // and then the Hub, so a quant sitting in another cache reads as one to download.
+    listGgufVariants(
+      repoId,
+      hfToken,
+      localSource ? { preferLocalCache: true, localPath: localSource } : undefined,
+    )
       .then((res) => {
         if (canceled) return;
         const normalized = normalizeGgufVariantsResponse(res);
@@ -827,7 +837,7 @@ function GgufVariantExpander({
     return () => {
       canceled = true;
     };
-  }, [repoId, refreshKey, hfToken]);
+  }, [repoId, localSource, refreshKey, hfToken]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
@@ -1068,6 +1078,7 @@ function GgufVariantExpander({
                   onConfigure(repoId, {
                     source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
                     isLora: false,
+                    loadId,
                     ggufVariant: v.quant,
                     isDownloaded: true,
                     expectedBytes,
@@ -2915,6 +2926,7 @@ export function HubModelPicker({
           <GgufVariantExpander
             repoId={c.repo_id}
             loadId={c.load_id}
+            cachePath={c.cache_path}
             onDevice={true}
             allowPin={true}
             onHasVision={(v) => reportVision(c.repo_id, v)}
@@ -2988,6 +3000,7 @@ export function HubModelPicker({
               onConfigure(c.repo_id, {
                 source: "hub",
                 isLora: false,
+                loadId: c.load_id,
                 isDownloaded: true,
                 isGguf: false,
               })

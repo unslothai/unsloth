@@ -376,7 +376,16 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
 
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert "loadId={c.load_id}" in picker, "the quant list cannot pass on a pin it never gets"
-    assert "loadId: c.load_id" in picker, "the safetensors row drops the pin"
+    # Both rows, and the settings gear beside each: Run reloads through the same meta, so a pin
+    # missing there sends the load back down the ref the row stepped around.
+    assert picker.count("loadId: c.load_id") == 2, "the safetensors row and its gear need the pin"
+    for call in ("onSelect(repoId, {", "onConfigure(repoId, {"):
+        block = re.search(re.escape(call) + r".*?\n\s*\}", picker, re.S)
+        assert block and "loadId," in block.group(0), f"{call} drops the pin"
+    assert (
+        'localSource ? { preferLocalCache: true, localPath: localSource } : undefined' in picker
+    ), "a downloaded row has to name its own directory or the quant reads as one to download"
+    assert "cachePath={c.cache_path}" in picker
 
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert (

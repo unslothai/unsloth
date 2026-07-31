@@ -5308,6 +5308,19 @@ def _names_the_resident_model(resident: Optional[str], model_path: str) -> bool:
     return bool(resident) and model_id_matches(model_path, resident)
 
 
+def _names_the_loading_model(loading: str, model_path: str) -> bool:
+    """Whether a client's ``model_path`` names the load already in flight.
+
+    Cancel sends the id the picker shows, which for a pinned row is not the path the load is
+    running as, so a raw compare left Stop loading reporting success on a load still running.
+    """
+    return (
+        model_path == loading
+        or model_path.lower() == loading.lower()
+        or _names_the_resident_model(loading, model_path)
+    )
+
+
 def _resident_standard_model_name(backend, model_path: str) -> str:
     """The registry name to unload for ``model_path``, or ``model_path`` when nothing matches.
 
@@ -5373,7 +5386,7 @@ def _unload_may_evict(model_path: str) -> bool:
     if (
         loading is not None
         and hasattr(backend, "cancel_load")
-        and (model_path == loading or model_path.lower() == loading.lower())
+        and _names_the_loading_model(loading, model_path)
     ):
         return True
     llama_backend = get_llama_cpp_backend()
@@ -6920,9 +6933,10 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         if (
             loading is not None
             and hasattr(backend, "cancel_load")
-            and (request.model_path == loading or request.model_path.lower() == loading.lower())
+            and _names_the_loading_model(loading, request.model_path)
         ):
-            if await asyncio.to_thread(backend.cancel_load, request.model_path):
+            # Cancel under the name the load is running as, which a pinned row states as a path.
+            if await asyncio.to_thread(backend.cancel_load, loading):
                 note_model_unloaded()
                 logger.info(f"Cancelled in-flight load: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)

@@ -1747,6 +1747,56 @@ def test_a_snapshot_whose_every_shard_is_empty_names_no_family_to_miss(tmp_path,
     assert rows[0]["load_id"] == str(repo_dir / "snapshots" / OLDER)
 
 
+@pytest.mark.parametrize(
+    "config_body",
+    [b'{"model_type": "llam', b"[1,2,3]", b""],
+    ids = ["truncated", "not-an-object", "empty"],
+)
+def test_a_required_config_has_to_parse_before_it_proves_a_payload(
+    tmp_path, monkeypatch, config_body
+):
+    """from_pretrained parses config.json before it looks at a single weight, so one that does not
+    parse fails the load as surely as a zero-byte one and cannot mark the snapshot ready."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": config_body,
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+                "model-00002-of-00002.safetensors": b"\0" * 256,
+                "model.safetensors.index.json": _SHARD_INDEX,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_config_that_parses_still_proves_a_payload(tmp_path, monkeypatch):
+    """Negative control for the test above: the same shape with a readable config."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+                "model-00002-of-00002.safetensors": b"\0" * 256,
+                "model.safetensors.index.json": _SHARD_INDEX,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
 def test_a_whole_payload_under_a_resolving_ref_is_still_chattable(tmp_path, monkeypatch):
     """Negative control for the test above: same shape, but the pinned payload is whole."""
     repo_dir = _two_snapshot_repo(

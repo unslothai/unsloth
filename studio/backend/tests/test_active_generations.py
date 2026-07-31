@@ -597,6 +597,42 @@ def test_unload_finds_a_gguf_loaded_from_a_pinned_snapshot(monkeypatch):
     assert other == ["unsloth"]
 
 
+def test_stop_loading_cancels_an_in_flight_pinned_load(monkeypatch):
+    """Cancel sends the id the picker shows. A pinned row loads under a snapshot path, so a raw
+    compare let Stop loading report success while the multi minute load kept running."""
+    _route_gate()
+    import asyncio
+    from types import SimpleNamespace
+
+    from models.inference import UnloadRequest
+
+    def _cancel(loading, requested):
+        cancelled: list[str] = []
+        inf_mod, _kw = _stub_unload_backends(
+            monkeypatch,
+            llama = SimpleNamespace(is_active = False, is_loaded = False, model_identifier = None),
+            backend = SimpleNamespace(
+                get_loading_model = lambda: loading,
+                cancel_load = lambda path: (cancelled.append(path), True)[1],
+                active_model_name = None,
+                models = {},
+                unload_model = lambda path: None,
+            ),
+        )
+        asyncio.run(
+            inf_mod.unload_model(
+                UnloadRequest(model_path = requested, force_cancel_active = False), "tester"
+            )
+        )
+        return cancelled
+
+    # Cancelled under the name the load runs as, not the one the client sent.
+    assert _cancel(_PINNED_SNAPSHOT, "Org/Quant") == [_PINNED_SNAPSHOT]
+    assert _cancel("Org/Quant", "Org/Quant") == ["Org/Quant"]
+    # Control: naming another repo cancels nothing.
+    assert _cancel(_PINNED_SNAPSHOT, "Org/Other") == []
+
+
 def test_unload_evicts_a_pinned_standard_model_under_its_registered_name(monkeypatch):
     """The standard backend refuses a name it never loaded, so a pinned load has to be evicted
     under the path it was registered with rather than the id the picker shows."""

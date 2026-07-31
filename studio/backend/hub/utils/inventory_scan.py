@@ -804,6 +804,21 @@ class _SnapshotPayload(NamedTuple):
     empty_whole: dict
 
 
+def _required_config_is_unreadable(path: Path, empty: bool) -> bool:
+    """Whether a config the loader requires is one it cannot use.
+
+    Empty is the obvious case, but from_pretrained parses this file before it looks at a single
+    weight, so a truncated or non-object one fails the load just as surely.
+    """
+    if empty:
+        return True
+    try:
+        with path.open("rb") as handle:
+            return not isinstance(json.load(handle), dict)
+    except (OSError, ValueError):
+        return True
+
+
 def _weight_shard_family(snapshot_dir: Path, path: Path, match) -> Optional[tuple]:
     """The key grouping ``path`` with its siblings, or None when the numbering is nonsense.
 
@@ -868,12 +883,12 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             continue
         if name == "config.json":
             flags["has_config"] = True
-            if empty:
+            if _required_config_is_unreadable(path, empty):
                 unreadable.update(("safetensors", "checkpoint"))
             continue
         if name == "adapter_config.json":
             flags["has_adapter_config"] = True
-            if empty:
+            if _required_config_is_unreadable(path, empty):
                 unreadable.add("adapter")
             continue
         if empty:
