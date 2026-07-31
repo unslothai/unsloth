@@ -4408,16 +4408,23 @@ def is_retryable_server_bind_error(
     return False
 
 
-def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
+def dedupe_existing_dirs(
+    paths: Iterable[str | Path], *, skip_unusable: bool = False
+) -> list[str]:
     unique: list[str] = []
     seen: set[str] = set()
     for raw in paths:
         if not raw:
             continue
-        path = Path(raw).expanduser()
-        if not path.is_dir():
+        try:
+            path = Path(raw).expanduser()
+            if not path.is_dir():
+                continue
+            resolved = str(path.resolve())
+        except (OSError, ValueError):
+            if not skip_unusable:
+                raise
             continue
-        resolved = str(path.resolve())
         if resolved in seen:
             continue
         seen.add(resolved)
@@ -4735,7 +4742,7 @@ def windows_runtime_dirs() -> list[str]:
         candidates.extend(toolkit_base.glob("v*/lib/x64"))
 
     candidates.extend(Path(path) for path in python_runtime_dirs())
-    return dedupe_existing_dirs(candidates)
+    return dedupe_existing_dirs(candidates, skip_unusable = True)
 
 
 def windows_runtime_dirs_for_patterns(

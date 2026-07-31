@@ -3470,3 +3470,72 @@ def test_diffusion_visual_server_refuses_unapproved_release_asset(monkeypatch, t
     assert not target.exists()
     assert raw_calls == []
     assert verified_calls == []
+
+
+def test_dedupe_existing_dirs_skips_inaccessible_path_entry(monkeypatch):
+    denied = (
+        r"C:\WINDOWS\system32\config\systemprofile"
+        r"\AppData\Local\Microsoft\WindowsApps"
+    )
+
+    class FakePath:
+        def __init__(self, raw):
+            self.raw = str(raw)
+
+        def expanduser(self):
+            return self
+
+        def is_dir(self):
+            if self.raw == denied:
+                raise PermissionError(13, "Access is denied", denied, 5)
+            return True
+
+        def resolve(self):
+            return Path(self.raw).resolve()
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "Path", FakePath)
+
+    with pytest.raises(PermissionError, match = "Access is denied"):
+        INSTALL_LLAMA_PREBUILT.dedupe_existing_dirs([denied])
+
+    assert INSTALL_LLAMA_PREBUILT.dedupe_existing_dirs([denied, PACKAGE_ROOT], skip_unusable = True) == [
+        str(PACKAGE_ROOT.resolve())
+    ]
+
+
+def test_windows_runtime_dirs_marks_path_candidates_as_optional(monkeypatch, tmp_path):
+    denied = (
+        r"C:\WINDOWS\system32\config\systemprofile"
+        r"\AppData\Local\Microsoft\WindowsApps"
+    )
+    observed = {}
+
+    def fake_dedupe(paths, *, skip_unusable = False):
+        observed["paths"] = [str(path) for path in paths]
+        observed["skip_unusable"] = skip_unusable
+        return []
+
+    monkeypatch.setenv("PATH", denied)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    for name in ("CUDA_RUNTIME_DLL_DIR", "CUDA_PATH", "CUDA_HOME", "CUDA_ROOT"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "python_runtime_dirs", lambda: [])
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "dedupe_existing_dirs", fake_dedupe)
+
+    assert INSTALL_LLAMA_PREBUILT.windows_runtime_dirs() == []
+    assert observed == {"paths": [denied], "skip_unusable": True}
+
+
+def test_setup_source_build_fallback_requires_expected_prebuilt_exit():
+    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+
+    ps_fallback = setup_ps1.index("} elseif ($prebuiltExit -eq 2) {")
+    ps_source = setup_ps1.index("$NeedLlamaSourceBuild = $true", ps_fallback)
+    ps_error = setup_ps1.index("prebuilt helper failed unexpectedly (exit code $prebuiltExit)", ps_source)
+    assert ps_fallback < ps_source < ps_error
+
+    sh_fallback = setup_sh.index('elif [ "$_PREBUILT_STATUS" -eq 2 ]; then')
+    sh_source = setup_sh.index("_NEED_LLAMA_SOURCE_BUILD=true", sh_fallback)
+    sh_error = setup_sh.index("prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS)", sh_source)
+    assert sh_fallback < sh_source < sh_error
