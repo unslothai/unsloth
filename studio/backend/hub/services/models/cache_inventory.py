@@ -322,8 +322,12 @@ def _resolve_load_identity(
             # refs/main can land on a torn revision, so keep the id only if it lands on a complete one.
             or (
                 default_snapshot != snapshot_path
-                and not hf_cache_scan.snapshot_holds_a_complete_payload(default_snapshot)
-                and hf_cache_scan.snapshot_holds_a_complete_payload(snapshot_path)
+                and not hf_cache_scan.snapshot_holds_a_complete_payload(
+                    default_snapshot, quants = False
+                )
+                and hf_cache_scan.snapshot_holds_a_complete_payload(
+                    snapshot_path, quants = False
+                )
             )
         ):
             load_id = str(snapshot_path)
@@ -657,7 +661,11 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False) == model_format
     ]
     # Filename classification also matches torn revisions, so prefer the newest whole one.
-    complete = [s for s in payload_snapshots if hf_cache_scan.snapshot_holds_a_complete_payload(s)]
+    complete = [
+        s
+        for s in payload_snapshots
+        if hf_cache_scan.snapshot_holds_a_complete_payload(s, quants = False)
+    ]
     return _CachedNonGgufPayload(
         size_bytes = sum(size for size, _mtime in selected_blobs.values()),
         has_runnable_weights = model_format != "unknown",

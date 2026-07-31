@@ -607,7 +607,7 @@ def repo_signal_applies_to_snapshot(
 
 
 def _repo_signal_applies_to_snapshot(
-    repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path]
+    repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path], *, quants: Optional[bool] = None
 ) -> bool:
     """Whether a repo-wide partial signal describes *snapshot_dir*.
 
@@ -623,10 +623,10 @@ def _repo_signal_applies_to_snapshot(
     if repo_cache_dir is None or snapshot_dir is None:
         return True
     if _default_ref_names_an_absent_snapshot(repo_cache_dir):
-        return _snapshot_cannot_serve_its_payload(snapshot_dir)
+        return _snapshot_cannot_serve_its_payload(snapshot_dir, quants = quants)
     # Only excuse a non-newest snapshot while it can still serve the row.
     return _is_latest_snapshot(repo_cache_dir, snapshot_dir) or (
-        _snapshot_cannot_serve_its_payload(snapshot_dir)
+        _snapshot_cannot_serve_its_payload(snapshot_dir, quants = quants)
     )
 
 
@@ -1164,24 +1164,34 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
     return wanted in payload.empty_ungrouped and wanted not in payload.ungrouped
 
 
-def _snapshot_cannot_serve_its_payload(snapshot_dir: Optional[Path]) -> bool:
+def _snapshot_cannot_serve_its_payload(
+    snapshot_dir: Optional[Path], *, quants: Optional[bool] = None
+) -> bool:
     """Whether *snapshot_dir*'s own contents prove it cannot serve a row.
 
     Judged on the pinned snapshot alone, since the dangling ref is exactly what stopped being
     evidence. Quants are judged on quants, otherwise on safetensors/checkpoint families, under
     ``is_gguf_repo_partial``'s rule: one complete quant or family is enough, and only a file naming
     its own total counts as proof.
+
+    *quants* is the row's own format, since a hybrid repo holds both: True judges quants only, False
+    families only, None takes whichever the snapshot offers. Without it a torn quant vetoes a whole
+    safetensors row, and a whole quant vouches for a torn one.
     """
     if snapshot_dir is None:
         return False
-    offered = _offered_gguf_quants(snapshot_dir)
-    if offered:
-        return not (offered & _completed_gguf_variants(snapshot_dir))
+    if quants is not False:
+        offered = _offered_gguf_quants(snapshot_dir)
+        if offered:
+            return not (offered & _completed_gguf_variants(snapshot_dir))
+        if quants:
+            # A quant row with no quant here: its evidence is pooled across revisions.
+            return False
     return _snapshot_lacks_a_complete_weight_family(snapshot_dir)
 
 
 def _recovered_snapshot_cannot_serve(
-    repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path]
+    repo_cache_dir: Optional[Path], snapshot_dir: Optional[Path], *, quants: Optional[bool] = None
 ) -> bool:
     """Partial signal for a snapshot the dangling-ref recovery put back on a row.
 
@@ -1194,10 +1204,12 @@ def _recovered_snapshot_cannot_serve(
         return False
     if not _repo_has_a_dangling_ref(repo_cache_dir):
         return False
-    return _snapshot_cannot_serve_its_payload(snapshot_dir)
+    return _snapshot_cannot_serve_its_payload(snapshot_dir, quants = quants)
 
 
-def snapshot_holds_a_complete_payload(snapshot_dir: Optional[Path]) -> bool:
+def snapshot_holds_a_complete_payload(
+    snapshot_dir: Optional[Path], *, quants: Optional[bool] = None
+) -> bool:
     """Whether *snapshot_dir* can serve a load from its own contents alone.
 
     The selection-side counterpart to the partial check: a row picks the newest snapshot that
@@ -1206,7 +1218,7 @@ def snapshot_holds_a_complete_payload(snapshot_dir: Optional[Path]) -> bool:
     """
     if snapshot_dir is None:
         return False
-    return not _snapshot_cannot_serve_its_payload(snapshot_dir)
+    return not _snapshot_cannot_serve_its_payload(snapshot_dir, quants = quants)
 
 
 def recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
@@ -1388,7 +1400,10 @@ def is_snapshot_partial(
     signals are attributed by ``_repo_signal_applies_to_snapshot``."""
     from hub.utils import download_manifest
 
-    repo_signal_applies = _repo_signal_applies_to_snapshot(repo_cache_dir, snapshot_dir)
+    # A snapshot-style row loads weights, so a quant beside them is another row's payload.
+    repo_signal_applies = _repo_signal_applies_to_snapshot(
+        repo_cache_dir, snapshot_dir, quants = False
+    )
     return _compose_partial(
         lambda: repo_signal_applies
         and download_manifest.has_cancel_marker(
@@ -1406,7 +1421,7 @@ def is_snapshot_partial(
             snapshot_dir,
             repo_cache_dir,
         ),
-        lambda: _recovered_snapshot_cannot_serve(repo_cache_dir, snapshot_dir),
+        lambda: _recovered_snapshot_cannot_serve(repo_cache_dir, snapshot_dir, quants = False),
     )
 
 
@@ -1484,8 +1499,10 @@ def is_gguf_repo_partial(
             repo_id,
             repo_cache_dir,
         )
-    # Same attribution as is_snapshot_partial.
-    repo_signal_applies = _repo_signal_applies_to_snapshot(repo_cache_dir, snapshot_dir)
+    # Same attribution as is_snapshot_partial, judged on this row's quants rather than its weights.
+    repo_signal_applies = _repo_signal_applies_to_snapshot(
+        repo_cache_dir, snapshot_dir, quants = True
+    )
     has_legacy_partial = repo_signal_applies and _legacy_partial("model", repo_id, repo_cache_dir)
     complete_here = _completed_gguf_variants(snapshot_dir)
     variants: set[str] = set(complete_here)
@@ -1519,7 +1536,9 @@ def is_gguf_repo_partial(
             variants.add(variant)
     if not variants:
         # Nothing named a quant: an interrupted attempt leaves only torn shards.
-        return has_legacy_partial or _recovered_snapshot_cannot_serve(repo_cache_dir, snapshot_dir)
+        return has_legacy_partial or _recovered_snapshot_cannot_serve(
+            repo_cache_dir, snapshot_dir, quants = True
+        )
     has_clean = False
     has_broken = has_legacy_partial
     for variant in variants:

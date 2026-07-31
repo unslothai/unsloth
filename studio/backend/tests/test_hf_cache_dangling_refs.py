@@ -2159,6 +2159,51 @@ def test_a_whole_canonical_weight_beside_another_root_file_still_serves(tmp_path
     assert rows[0]["capabilities"]["can_chat"] is True
 
 
+def test_a_torn_quant_does_not_veto_the_weights_row_beside_it(tmp_path, monkeypatch):
+    """A hybrid repo carries a quant row and a weights row, each with its own payload. The weights
+    row loads model.safetensors and never opens a .gguf, so an interrupted quant download says
+    nothing about it."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+                "Model-Q4_K_M-00001-of-00002.gguf": b"GGUF" + b"\0" * 252,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_a_whole_quant_does_not_vouch_for_the_weights_row_beside_it(tmp_path, monkeypatch):
+    """The converse: a complete quant is not evidence that a shard-short safetensors set loads."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors.index.json": _shard_index(
+                    "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"
+                ),
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+                "Model-Q8_0.gguf": b"GGUF" + b"\0" * 252,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
 def test_a_root_weight_under_a_name_the_loader_never_opens_does_not_serve(tmp_path, monkeypatch):
     """The local-directory chain probes model.safetensors, its index, pytorch_model.bin and its
     index, and peft resolves only the singular adapter_model.*; every other root name is one
