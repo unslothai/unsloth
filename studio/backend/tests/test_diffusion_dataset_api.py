@@ -444,6 +444,68 @@ def test_import_example_without_an_image_column_maps_to_502(client, ds_root, mon
     assert r.status_code == 502
 
 
+def _seed_non_image_dataset_files(folder):
+    """A folder that holds no images but is not empty: captions, metadata and a thumb cache."""
+    folder.mkdir(parents = True, exist_ok = True)
+    (folder / "metadata.jsonl").write_text('{"file_name": "a.png"}\n', encoding = "utf-8")
+    (folder / "notes.txt").write_text("caption one", encoding = "utf-8")
+    (folder / ".thumbs").mkdir()
+    (folder / ".thumbs" / "cached").write_text("x", encoding = "utf-8")
+    return {"metadata.jsonl", "notes.txt", ".thumbs"}
+
+
+def test_import_example_keeps_the_dataset_when_rmdir_fails(client, ds_root, monkeypatch):
+    # Promotion folds the folder's existing entries into the staging dir so the rename is atomic. If the rmdir then fails the request reports "Nothing was written", so those entries must still be there -- they used to be deleted with the staging dir.
+    import os
+
+    _install_fake_load_dataset(monkeypatch, n_rows = 2)
+    folder = ds_root / "keepme"
+    before = _seed_non_image_dataset_files(folder)
+
+    real_rmdir = os.rmdir
+
+    def failing_rmdir(path, *args, **kwargs):
+        if os.path.abspath(path) == os.path.abspath(str(folder)):
+            raise OSError(39, "Directory not empty")
+        return real_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rmdir", failing_rmdir)
+
+    r = client.post(
+        "/api/train/diffusion/dataset/import-example",
+        json = {"id": "tuxemon", "name": "keepme"},
+    )
+    assert r.status_code == 409, r.text
+    assert "Nothing was written" in r.json()["detail"]
+    assert folder.is_dir()
+    assert before <= {p.name for p in folder.iterdir()}
+    assert (folder / "notes.txt").read_text(encoding = "utf-8") == "caption one"
+    assert (folder / ".thumbs" / "cached").read_text(encoding = "utf-8") == "x"
+
+
+def test_import_example_keeps_the_dataset_when_the_rename_fails(client, ds_root, monkeypatch):
+    # Same guarantee one step later: rmdir succeeded, so the folder's entries live only in the staging dir when os.replace raises.
+    import os
+
+    _install_fake_load_dataset(monkeypatch, n_rows = 2)
+    folder = ds_root / "keepme2"
+    before = _seed_non_image_dataset_files(folder)
+
+    def failing_replace(src, dst, *args, **kwargs):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    r = client.post(
+        "/api/train/diffusion/dataset/import-example",
+        json = {"id": "tuxemon", "name": "keepme2"},
+    )
+    assert r.status_code == 409, r.text
+    assert folder.is_dir()
+    assert before <= {p.name for p in folder.iterdir()}
+    assert (folder / "notes.txt").read_text(encoding = "utf-8") == "caption one"
+
+
 def test_import_example_unknown_id_404(client, ds_root):
     r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "does-not-exist"})
     assert r.status_code == 404
@@ -566,10 +628,12 @@ def test_import_promotion_leaves_no_partial_dataset_on_failure(ds_root, monkeypa
         "/api/train/diffusion/dataset/import-example",
         json = {"id": "tuxemon", "name": "my-tux"},
     )
-    assert r.status_code == 500
-    # No half-filled dataset: the folder holds zero images and no stray staging dir.
+    # A failed rename is transient and retryable, so it maps to the same 409 as the sibling rmdir conflict rather than escaping as a 500.
+    assert r.status_code == 409
+    # No half-filled dataset: the folder holds zero images and no stray staging or rescue dir.
     assert list(ds_root.glob("my-tux/*.png")) == []
     assert not any(p.name.startswith(".my-tux.import-") for p in ds_root.iterdir())
+    assert not any(p.name.startswith(".my-tux.rescue-") for p in ds_root.iterdir())
 
     # Retry with the promotion working: a clean, complete import (idempotency did not short-circuit).
     monkeypatch.setattr(os, "replace", real_replace)

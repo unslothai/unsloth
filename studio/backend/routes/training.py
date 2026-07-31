@@ -2545,6 +2545,22 @@ async def import_diffusion_dataset_example(
             # Materialize into a private staging dir and promote into the dataset folder only after the whole import succeeds. A partial materialize then leaves only the staging dir, never a half-filled dataset -- otherwise the image_count>0 idempotency check above would treat that partial as complete on retry and strand a truncated dataset (there is no dataset-delete flow).
             # Staged as a hidden same-filesystem sibling so promotion is an atomic rename.
             staging = Path(tempfile.mkdtemp(dir = folder.parent, prefix = f".{folder.name}.import-"))
+            # Superseded same-name entries are parked here rather than deleted, so a failed promotion can put them back too.
+            rescue = Path(tempfile.mkdtemp(dir = folder.parent, prefix = f".{folder.name}.rescue-"))
+            # (entry's new home, where it came from) for every pre-existing entry moved out of the folder.
+            folded: list[tuple[Path, Path]] = []
+
+            def restore_folded() -> None:
+                """Undo the fold-in so a failed promotion leaves the dataset as it was."""
+                folder.mkdir(parents = True, exist_ok = True)
+                for moved, original in folded:
+                    try:
+                        if moved.exists() and not original.exists():
+                            shutil.move(str(moved), str(original))
+                    except OSError:
+                        # Best effort: one unrestorable entry must not mask the original failure.
+                        pass
+
             try:
                 try:
                     if entry["loader"] == "imagefolder_jsonl":
@@ -2566,30 +2582,27 @@ async def import_diffusion_dataset_example(
                 # Promote the fully-materialized staging dir as a UNIT: a same-filesystem rename is atomic, so a hard process death leaves either the old folder or the finished import, never a half-filled one that the image_count>0 check above would accept as complete on retry.
                 # rmdir needs an empty target, and an image-empty folder can still hold files (a .thumbs cache, or a metadata.jsonl / captions from an earlier upload), so fold those INTO the staging dir first and keep one atomic promotion.
                 # Moving them one by one into a live folder instead -- the old fallback -- gave up exactly the atomicity this whole staging dance exists for.
-                for p in sorted(folder.iterdir()):
-                    dest = staging / p.name
-                    if dest.exists():
-                        # Same name in both: the import own file wins, exactly as the previous per-file move did by overwriting it. Drop the old one so the folder can still be emptied for the rename.
-                        if p.is_dir():
-                            shutil.rmtree(p, ignore_errors = True)
-                        else:
-                            p.unlink(missing_ok = True)
-                        continue
-                    shutil.move(str(p), str(dest))
                 try:
+                    for p in sorted(folder.iterdir()):
+                        # Same name in both: the imported file wins, exactly as the previous per-file move did by overwriting it. Park the old one in the rescue dir so the folder can still be emptied for the rename without destroying it outright.
+                        dest = (rescue if (staging / p.name).exists() else staging) / p.name
+                        shutil.move(str(p), str(dest))
+                        folded.append((dest, p))
                     os.rmdir(folder)
-                except OSError as e:
-                    # Something landed in the folder in the meantime. Fail with the dataset untouched rather than promoting it piecemeal.
+                    os.replace(str(staging), str(folder))
+                except (OSError, shutil.Error) as e:
+                    # Every step here can fail: an entry that cannot be moved, a folder that gained a file so rmdir refuses, a rename held by antivirus or a permission flip. By then the folder's entries live only in the staging/rescue dirs the finally below deletes, so put them back -- the response says nothing was written, and it has to be true.
+                    restore_folded()
                     raise HTTPException(
                         status_code = 409,
                         detail = (
-                            f"'{folder.name}' changed while the example was being imported "
-                            f"({e.strerror or e}). Nothing was written; try again."
+                            f"Could not update '{folder.name}' with the imported example "
+                            f"({getattr(e, 'strerror', None) or e}). Nothing was written; try again."
                         ),
                     )
-                os.replace(str(staging), str(folder))
             finally:
                 shutil.rmtree(staging, ignore_errors = True)
+                shutil.rmtree(rescue, ignore_errors = True)
         return _import_response(entry, folder, imported = imported)
 
     return await asyncio.to_thread(do_import)
