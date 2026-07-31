@@ -2772,9 +2772,9 @@ def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
             {
                 "id": attachment_id,
                 "type": kind,
-                "name": part_name if isinstance(part_name, str) and part_name else (
-                    "Chat image" if kind == "image" else "Chat audio"
-                ),
+                "name": part_name
+                if isinstance(part_name, str) and part_name
+                else ("Chat image" if kind == "image" else "Chat audio"),
                 "contentType": content_type,
                 "content": [part],
             }
