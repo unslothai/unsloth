@@ -307,7 +307,7 @@ def test_the_request_path_clamps_the_effort_the_same_way():
 
 RAG_ON = (
     "{ supportsTools: true, toolsEnabled: false, codeToolsEnabled: false, "
-    'artifactsEnabled: false, mcpEnabledForChat: false, ragEnabled: true, '
+    "artifactsEnabled: false, mcpEnabledForChat: false, ragEnabled: true, "
     'ragSource: { type: "thread" }, ragMode: "hybrid", ragTopK: 5, '
     "autoHealToolCalls: true }"
 )
@@ -337,10 +337,10 @@ def test_the_rag_scope_a_count_sends_is_never_empty(thread_id, expected_thread_i
             """
         )
     )
-    assert "search_knowledge_base" in (out.get("enabledTools") or []), (
-        "the Docs pill must still ask for the tool"
-    )
-    assert out.get("keys"), (
-        "an empty rag_scope is falsy server-side and drops the tool and the nudge"
-    )
+    assert "search_knowledge_base" in (
+        out.get("enabledTools") or []
+    ), "the Docs pill must still ask for the tool"
+    assert out.get(
+        "keys"
+    ), "an empty rag_scope is falsy server-side and drops the tool and the nudge"
     assert (out.get("scope") or {}).get("thread_id") == expected_thread_id
