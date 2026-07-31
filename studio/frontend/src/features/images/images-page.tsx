@@ -175,7 +175,6 @@ const WORKFLOW_TABS: Array<{
   },
 ];
 
-// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first.
 // The images each conditioned workflow consumed, named for the restore toast: a recipe keeps the scalar settings but not the uploads.
 // Keys are the backend's own workflow strings; txt2img is absent because it restores completely.
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
@@ -374,7 +373,7 @@ const SETTLE_POLL_MS = 1000;
 const SETTLE_MAX_MS = 6 * 60 * 60 * 1000; // hard cap; a native-CPU batch can run for hours
 const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the backend gone
 
-/** Wait for a generation that outlived its POST and confirm one existed: idle progress alone is ambiguous, so the wait needs evidence (progress seen active, or a gallery record that was not there when the POST went out) and reports a failed submission otherwise. Throws if the backend stays unreachable, or past SETTLE_MAX_MS, so a wedged generation surfaces. */
+/** Wait out a generation that outlived its POST. Idle progress alone is ambiguous, so success needs evidence (progress seen active, or a gallery record that was not there when the POST went out); otherwise report a failed submission. Throws past SETTLE_MAX_MS, or if the backend stays unreachable, so a wedged generation surfaces. */
 async function settleLostGeneration(
   isCurrent: () => boolean,
   knownIds: ReadonlySet<string>,
@@ -1158,9 +1157,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     galleryCache.quant = quant;
   }, [images, hasMore, selectedId, quant]);
 
-  // Refresh the LoRA picker when the loaded family changes: a LoRA is trained for one base family, so a real SWAP invalidates
-  // the selection. NOT on the first load or an unload (a restore can precede the load), so track the previous family in a ref.
-  // The selection is deliberately not filtered against the catalog: a valid pick can be a free-text HF repo id.
+  // Refresh the LoRA picker when the loaded family changes: a LoRA is family-specific, so a real SWAP invalidates the selection. Not on
+  // first load or unload (a restore can precede the load), so track the family in a ref. Picks are not filtered against the catalog (free-text ids).
   const loraCapable = Boolean(status?.loaded && status?.supports_lora);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   // Whether the load in flight baked the LoRA selection into the build (see handleLoad).
@@ -1430,8 +1428,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
-    // None of the conditioning images are persisted, so a restore must not leave the form pointing at whatever is loaded in the
-    // Transform / Inpaint / Edit tabs. Clear them all and return to Create.
+    // None of the conditioning images are persisted, so a restore must clear the Transform / Inpaint / Edit uploads and return to Create.
     setWorkflow("create");
     setInitImage(null);
     setMaskImage(null);
@@ -1654,9 +1651,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     };
   }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll]);
 
-  // Seed the generation sliders to a resident model's recipe when the page discovers one it did not load itself.
-  // Without this the sliders keep the unrecognised-model fallback, so a resident flux.1-dev generates garbage at 9 steps.
-  // Guarded by lastLoad.current === null and a per-repo ref, so a manual edit after the seed is never clobbered.
+  // Seed the generation sliders from a resident model's recipe when the page finds one it did not load itself, else they keep the
+  // unrecognised-model fallback and a resident flux.1-dev generates garbage at 9 steps. Guarded by lastLoad.current === null and a per-repo ref.
   useEffect(() => {
     const repoId = status?.loaded ? status.repo_id : null;
     if (!repoId) return;
@@ -1675,9 +1671,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
-  // The adapter list a load of *repoId* would BAKE into the build, shared by the load and by the download plan.
-  // A torchao int8/fp8 transformer takes adapters only before quantize_ + compile, so a baked selection forces the dense build.
-  // Only a reload of the SAME target bakes. Reads lastLoad.current, so call it before the load overwrites it.
+  // The adapter list a load of *repoId* would BAKE into the build, shared by the load and the download plan: a torchao int8/fp8 transformer
+  // takes adapters only before quantize_ + compile. Only a reload of the SAME target bakes, and it reads lastLoad.current, so call it first.
   const bakedLorasFor = useCallback(
     (repoId: string): LoraSpecInput[] => {
       const sameTarget = repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null);
@@ -1736,9 +1731,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // Remember what was loaded so "Reapply" can reload it with new advanced options. Snapshot the prior target first: a load
       // that fails to START leaves the previous model resident, so Reapply must keep pointing at it.
       const prevLastLoad = lastLoad.current;
-      // A torchao int8/fp8 transformer (what the default GGUF fast path resolves to on a capable GPU) takes adapters only at LOAD
-      // time. /images/generate then rejects a new adapter set, so a reload that drops the selection leaves the picker unusable.
-      // Ignored by every other load kind (bf16 / bnb-4bit apply adapters at generation time).
+      // A torchao int8/fp8 transformer (what the default GGUF fast path picks on a capable GPU) takes adapters only at LOAD time, and
+      // /images/generate then rejects a new set, so a reload must keep the selection. Ignored by bf16 / bnb-4bit, which apply at generation time.
       const advanced = pinned ?? currentLoadAdvanced(repoId);
       const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
@@ -2043,8 +2037,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     pollTimer.current = null;
     dismissLoadToast();
     lastLoadSig.current = null;
-    // Drop the Reapply target with the model: the ejected pick is no longer resident, and leaving it set makes the
-    // resident-status seeding effect skip repair while Reapply would reload the ejected model.
+    // Drop the Reapply target with the model: the ejected pick is no longer resident, so leaving it set would let Reapply reload the ejected model.
     lastLoad.current = null;
     setCanReapply(false);
     setBusy("unloading");

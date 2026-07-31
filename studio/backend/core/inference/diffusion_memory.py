@@ -566,7 +566,7 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
                 gkwargs["non_blocking"] = True
             if "record_stream" in _params:
                 gkwargs["record_stream"] = True
-        # Place the smaller components resident BEFORE attaching the transformer group-offload hooks: if a companion .to() OOMs we return False with NO hooks installed, since diffusers REJECTS enable_model_cpu_offload once group hooks exist.
+        # Place the smaller components resident BEFORE attaching the transformer group-offload hooks: a companion .to() OOM then returns False with no hooks installed, and diffusers rejects enable_model_cpu_offload once group hooks exist.
         for name, comp in getattr(pipe, "components", {}).items():
             if name in streamed:
                 continue

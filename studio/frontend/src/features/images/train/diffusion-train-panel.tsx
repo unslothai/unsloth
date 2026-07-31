@@ -285,9 +285,8 @@ export function DiffusionTrainPanel({
   const settingsDirty = useRef(false);
   // Track whether the user hand-picked a base precision; if not, a family change re-seeds it from recommended_precision.
   const precisionDirty = useRef(false);
-  // Same for the base repo: once the user picks one, only a real family change may re-seed it. `family` is a fresh object after
-  // every refreshInfo(), so the seeding effect re-runs on an unrelated dataset refresh too and would silently replace the pick.
-  // The family the base was last seeded for is tracked by name, since the object identity is not stable.
+  // Same for the base repo: once the user picks one, only a real family change may re-seed it. `family` is a fresh object after every
+  // refreshInfo(), so the seeding effect re-runs on an unrelated refresh and would replace the pick; track the seeded family by name.
   const baseDirty = useRef(false);
   const seededBaseFamily = useRef<string | null>(null);
 

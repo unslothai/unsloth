@@ -266,8 +266,7 @@ def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
 
 
 def test_offload_active_drops_fullgraph(monkeypatch):
-    # Offload installs a torch.compiler.disable'd onload hook, so fullgraph=True crashes at the first denoise step
-    # (same reason as an active step cache): fullgraph must drop to False when offload is planned.
+    # Offload installs a torch.compiler.disable'd onload hook, so fullgraph=True crashes at the first denoise step (as an active step cache does): it must drop to False.
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
     applied = apply_speed_optims(

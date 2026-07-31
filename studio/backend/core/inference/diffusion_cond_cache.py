@@ -140,9 +140,8 @@ def install(
             logger.warning("diffusion.cond_cache: install failed: %s", exc)
         return False
 
-    # Everything beyond the call arguments that changes the embedding numerics. A GGUF/single-file checkpoint takes its TEXT
-    # ENCODERS from the companion base repo, so the base identity keys the cache too. Both identifiers are paired with a
-    # revision marker, so a Hub repo advancing a commit or a local dir updated in place misses instead of reusing the old encoder.
+    # Everything beyond the call arguments that changes the embedding numerics. A GGUF/single-file checkpoint takes its TEXT ENCODERS from the
+    # companion base repo, so the base identity keys the cache too; both carry a revision marker, so an advanced commit or an edited dir misses.
     base_ref = base_repo if base_repo else repo_id
     load_fp = {
         "repo": str(repo_id),

@@ -54,8 +54,7 @@ def _modules(
 
 
 def test_retry_skipped_without_a_supported_accelerator(monkeypatch):
-    # A CPU-only or MPS host cannot import unsloth, so paying ~940 MB of RSS to find out is pure cost. Ungated this took
-    # down a Linux CI runner mid-generation and a 7 GB macOS one during load.
+    # A CPU-only or MPS host cannot import unsloth, so paying ~940 MB of RSS to find out is pure cost. Ungated this took down a Linux CI runner and a 7 GB macOS one.
     _modules(monkeypatch, torch = _torch())
     assert pb._retry_could_help(_SENTINEL_ERROR) is False
 

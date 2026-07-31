@@ -6117,8 +6117,7 @@ async def _load_model_impl(
                 lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
             )
         else:
-            # The marker still goes up (the download manager handshake reads it, and it keeps this load cancellable). A stale CHAT
-            # claim is dropped AFTER the load: this one may still be replacing a GPU-backed model.
+            # The marker still goes up (the download-manager handshake reads it, and it keeps this load cancellable). A stale CHAT claim is dropped AFTER the load.
             gguf_load_stack.enter_context(chat_load_in_flight())
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -18476,9 +18475,8 @@ async def _openai_passthrough_non_streaming_upstream(
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Diffusion (local text-to-image)
-# Studio-only routes (studio_router is not mounted under /v1). The backend is in-process and synchronous, so blocking calls are offloaded with asyncio.to_thread.
-# Single error boundary: the backend raises, we map to HTTP.
+# Diffusion (local text-to-image). Studio-only routes (studio_router is not mounted under /v1); the backend is in-process and
+# synchronous, so blocking calls are offloaded with asyncio.to_thread. Single error boundary: the backend raises, we map to HTTP.
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -18992,9 +18990,8 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# OpenAI-compatible images API (POST /v1/images/generations)
-# The inference router is mounted at both /api/inference and /v1, so this also answers /v1/images/generations for OpenAI clients.
-# The Studio Image tab uses the richer /images/generate above; this is the spec-shaped surface and the error boundary.
+# OpenAI-compatible images API (POST /v1/images/generations). The inference router is mounted at both /api/inference and /v1, so this
+# also answers /v1/images/generations for OpenAI clients. The Studio Image tab uses the richer /images/generate above; this is the spec shape.
 # ──────────────────────────────────────────────────────────────────────────
 
 

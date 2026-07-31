@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A byte-budgeted LRU of object URLs for auth-protected gallery media. The endpoints need an auth header, so each item is
-// fetched into a blob wrapped in an object URL, which pins that blob until revoked. The galleries stay mounted after the
-// first visit, so an unbounded map grows for the whole session: a clip is tens to hundreds of MB and scrolling a few pages
-// could pin gigabytes in the webview. Budgeting by BYTES matters because clip sizes vary by two orders of magnitude, so
-// any entry cap is useless for long clips or wasteful for short ones. Recency is driven by the caller (``touch`` on the
-// existing visibility signal), and ``prune`` never evicts an id the caller marks protected, so on-screen media stays resident.
+// A byte-budgeted LRU of object URLs for auth-protected gallery media. The endpoints need an auth header, so each item is fetched into a blob
+// wrapped in an object URL, which pins it until revoked. The galleries stay mounted after the first visit, so an unbounded map grows for the
+// whole session and scrolling a few pages could pin gigabytes. Budgeting by BYTES matters because clip sizes vary by two orders of magnitude.
+// Recency is driven by the caller (``touch``), and ``prune`` never evicts a protected id, so on-screen media stays resident.
 
 export interface CachedBlobUrl {
   url: string;
@@ -84,7 +82,7 @@ export class BlobUrlCache {
     this.totalBytes = 0;
   }
 
-  /** Evict least-recently-used entries until the total is within budget, skipping ``protectedIds``. Returns the evicted ids so the caller can drop them from its render state; those cards re-fetch if they come back into view. */
+  /** Evict least-recently-used entries until the total is within budget, skipping ``protectedIds``. Returns the evicted ids so the caller can drop them from render state; those cards re-fetch if they come back into view. */
   prune(protectedIds: Iterable<string> = []): string[] {
     const keep = protectedIds instanceof Set ? protectedIds : new Set(protectedIds);
     const evicted: string[] = [];

@@ -3717,9 +3717,8 @@ def _cached_repo_task(repo_info) -> Optional[str]:
         pass
     if not _repo_is_diffusers(repo_info):
         return None
-    # BOTH gates, mirroring the video branch: the trust rule AND a detected image family. A model_index.json only proves the
-    # repo is a diffusers pipeline, so an unsloth-hosted pipeline of an unsupported class cleared the trust gate and then
-    # failed validate_load_request. Third gate is the installed diffusers: the newer families need 0.39, absent on Python 3.9.
+    # BOTH gates, mirroring the video branch: the trust rule AND a detected image family. A model_index.json only proves the repo is a diffusers
+    # pipeline, so an unsupported class cleared the trust gate then failed validate_load_request. Third gate: the newer families need diffusers 0.39.
     try:
         from core.inference.diffusion import _is_trusted_diffusion_repo
         from core.inference.diffusion_families import detect_family, family_pipeline_available

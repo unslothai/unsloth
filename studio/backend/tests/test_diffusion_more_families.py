@@ -75,8 +75,7 @@ def test_flux1_krea_dev_is_trusted_non_gguf():
 
 
 def test_flux1_krea_dev_generation_defaults():
-    # Model-card recipe: 28 steps at guidance 4.5. The generic "krea" key (Turbo's 8-step no-CFG shape)
-    # must NOT swallow it, and the krea-2 defaults must stay intact.
+    # Model-card recipe: 28 steps at guidance 4.5. The generic "krea" key (Turbo's 8-step no-CFG shape) must NOT swallow it, and the krea-2 defaults must stay intact.
     assert default_generation_params("black-forest-labs/FLUX.1-Krea-dev") == (28, 4.5)
     assert default_generation_params("QuantStack/FLUX.1-Krea-dev-GGUF") == (28, 4.5)
     assert default_generation_params("krea/Krea-2-Turbo") == (8, 0.0)
@@ -238,8 +237,7 @@ def test_hidream_override_and_trust():
 
 
 def test_hidream_generation_defaults():
-    # Upstream inference.py: Full 50 steps / guidance 5; Dev and Fast are distilled and guidance-free at 28 /
-    # 16 steps. The specific keys must beat the generic "hidream".
+    # Upstream inference.py: Full 50 steps / guidance 5; Dev and Fast are distilled and guidance-free at 28 / 16 steps. The specific keys must beat the generic "hidream".
     assert default_generation_params("HiDream-ai/HiDream-I1-Full") == (50, 5.0)
     assert default_generation_params("HiDream-ai/HiDream-I1-Dev") == (28, 0.0)
     assert default_generation_params("HiDream-ai/HiDream-I1-Fast") == (16, 0.0)
@@ -427,8 +425,7 @@ def test_ideogram4_repo_is_fp8_detects_local_layout(tmp_path):
 
 
 def test_create_causal_mask_patch_is_self_disabling_and_idempotent():
-    # The patch adapts the pipeline's inputs_embeds kwarg to the installed transformers create_causal_mask
-    # signature; a matching signature forwards unchanged, and a second apply must not double-wrap.
+    # The patch adapts the pipeline's inputs_embeds kwarg to the installed transformers create_causal_mask signature; a match forwards unchanged and a second apply must not double-wrap.
     pytest.importorskip("torch")
     pytest.importorskip("diffusers")
 

@@ -556,15 +556,11 @@ def assert_pipeline_class_available(pipeline_class: str, family_name: str) -> No
     try:
         import diffusers
     except ImportError:
-        # No diffusers at all is NOT this check's business. It answers "is the installed
-        # diffusers new enough for this family", and with nothing installed there is no version
-        # to judge. Refusing here would also break the native sd.cpp engine, which runs GGUF
-        # picks on a CPU or Apple host without diffusers ever being imported. A pick that really
-        # does need diffusers fails later, in the loader, with its own message.
-        # Raising is the one thing that must not happen: ModuleNotFoundError is not the ValueError
-        # the routes translate to 400, so it escapes /images/download-plan (which catches only
-        # ValueError and FileNotFoundError) as a bare 500 with the message lost, which is exactly
-        # the failure this function's contract exists to prevent.
+        # Not this check's business: it answers "is the installed diffusers new enough for this family", and with
+        # nothing installed there is no version to judge. Refusing would also break the native sd.cpp engine, which
+        # serves GGUF picks on a CPU or Apple host without diffusers. A pick that really needs it fails later, in
+        # the loader. The one thing that must not happen is a raise: ModuleNotFoundError is not the ValueError the
+        # routes map to 400, so it escapes /images/download-plan as a bare 500 with the message lost.
         return
 
     if hasattr(diffusers, pipeline_class):

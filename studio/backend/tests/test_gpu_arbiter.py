@@ -325,8 +325,7 @@ def test_evict_chat_cancels_every_pending_load_over_a_live_snapshot(monkeypatch)
 
 
 def test_the_safetensors_load_yields_a_gpu_it_lost_while_loading():
-    # Mirror of the GGUF branch's guard: an Images/Video acquire can land in the gap between the eviction and the load's
-    # publish, so the load has to undo itself instead of leaving two models resident.
+    # Mirror of the GGUF branch's guard: an Images/Video acquire can land between the eviction and the load's publish, so the load must undo itself, not leave two models resident.
     from pathlib import Path
 
     route_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(

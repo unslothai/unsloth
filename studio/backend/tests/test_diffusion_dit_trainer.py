@@ -124,8 +124,7 @@ def test_zimage_rejects_fp16_before_loading():
 
 
 def test_flux2_rejects_fp16_before_loading():
-    # Both FLUX.2 variants resolve from their repo names and are bf16-only, so an explicit fp16 fails in normalized() itself.
-    # Klein's base is ungated, so this exercises the precision guard directly.
+    # Both FLUX.2 variants resolve from their repo names and are bf16-only, so an explicit fp16 fails in normalized(). Klein's base is ungated, exercising the guard directly.
     ok = DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.2-klein-4B", data_dir = "d", output_dir = "o"
     ).normalized()
@@ -304,8 +303,7 @@ def test_apply_mxfp8_training_failure_falls_back_with_warning(monkeypatch):
 
 
 def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
-    # torchao 0.17 replaced prototype.mx_formats.MXLinearConfig with the MXFP8TrainingOpConfig recipe API, so the config helper
-    # must fall back to it or the advertised mxfp8 mode silently trains dense bf16.
+    # torchao 0.17 replaced prototype.mx_formats.MXLinearConfig with the MXFP8TrainingOpConfig recipe API, so the config helper must fall back or mxfp8 silently trains dense bf16.
     from types import SimpleNamespace
 
     from core.training.diffusion_dit_trainer import _mxfp8_training_config

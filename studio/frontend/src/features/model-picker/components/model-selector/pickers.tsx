@@ -835,7 +835,7 @@ function GgufVariantExpander({
   );
 
   const handleVariantClick = useCallback(
-    // ``filename`` is required, not decorative: the diffusion pages load a quant with {kind: "gguf", filename} and gate that branch on meta.ggufFilename, so the quant label alone made every Images/Video GGUF quant pick a dead click.
+    // ``filename`` is required, not decorative: the diffusion pages load a quant with {kind: "gguf", filename} and gate that branch on meta.ggufFilename, so a quant label alone made every Images/Video GGUF pick a dead click.
     (quant: string, filename: string, downloaded?: boolean, sizeBytes?: number) => {
       const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
@@ -1200,12 +1200,11 @@ export const IMAGE_GEN_TASKS = [
   "image-text-to-image",
 ] as const;
 
-// Video-generation pipeline tasks: owned by the Video page, never chat-loadable. The backend reports "text-to-video" for
-// video-diffusion GGUFs. image-to-video is included because that is the pipeline_tag HF gives the LTX-2 family, so a
-// text-to-video-only filter dropped it out of Video Hub search. Locally cached video GGUFs are tagged text-to-video anyway.
+// Video-generation pipeline tasks: owned by the Video page, never chat-loadable. The backend reports "text-to-video" for video-diffusion GGUFs.
+// image-to-video is included because HF gives the LTX-2 family that pipeline_tag, so a text-to-video-only filter dropped it out of Video Hub search.
 export const VIDEO_GEN_TASKS = ["text-to-video", "image-to-video"] as const;
 
-// Diffusion GGUF archs the Images backend cannot assemble yet (SD/SDXL/PixArt/Wan/...). The backend tags them with this task so the chat picker hides them ("unknown model architecture" in llama.cpp) and the Images picker leaves them out (they would 400 on load).
+// Diffusion GGUF archs the Images backend cannot assemble yet (SD/SDXL/PixArt/Wan/...). The backend tags them with this task so the chat picker hides them and the Images picker leaves them out (they would 400 on load).
 const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
 
 // Generation tasks the Images / Video pages own. Not chat-loadable, so an on-device pick routes to its page instead.
@@ -1960,9 +1959,8 @@ export function HubModelPicker({
         (r) => r.isGguf || Boolean(catalog && artifactForRepoId(r.id, catalog)),
       );
     }
-    // Members would render under their canonical group row, but that row does not exist yet (see recommendedIds): filtering here removed curated models from Hub search too.
-    // The "recommended" sort always applies the device-fit filter; the shared
-    // "Fits on device" tick extends it to the other sorts too.
+    // Members would render under their canonical group row, which does not exist yet (see recommendedIds): filtering here removed curated models from Hub
+    // search too. The "recommended" sort always applies the device-fit filter; the shared "Fits on device" tick extends it to the other sorts.
     if (recommendedSort !== "recommended" && !fitOnDeviceOnly) return rows;
     return rows.filter((r) => {
       // Downloaded models always show, regardless of device fit.
@@ -2067,8 +2065,7 @@ export function HubModelPicker({
     return map;
   }, [results, recommendedSearch.results]);
 
-  // Ordered by the On Device dropdown (recent/download date/size/name).
-  // The gate keeps diffusion GGUFs in the Images/Video picker and out of chat.
+  // Ordered by the On Device dropdown (recent/download date/size/name). The gate keeps diffusion GGUFs in the Images/Video picker and out of chat.
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
@@ -2078,7 +2075,7 @@ export function HubModelPicker({
       ),
     [cachedGguf, downloadedSort, loadTimes, task],
   );
-  // Cached non-GGUF repos. In chat, passesTaskGate drops diffusers image repos; in the Images picker it keeps them, but only unsloth-hosted ones this backend can load. Base repos are cached as dependencies and fail the trust gate.
+  // Cached non-GGUF repos. In chat, passesTaskGate drops diffusers image repos; the Images picker keeps them, but only unsloth-hosted ones this backend can load. Base repos are cached as dependencies and fail the trust gate.
   const sortedCachedModels = useMemo(
     () =>
       sortCachedRepos(
@@ -2131,9 +2128,8 @@ export function HubModelPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery, task],
   );
-  // Local ./models entries. Chat-only Unsloth runs GGUF (any host) and MLX (Mac
-  // only), so raw checkpoints there are hidden (mirrors the cached non-GGUF
-  // rule). An MLX build a Mac user dropped in ./models stays selectable. A task-scoped picker (Images) is exempt: the image backend loads local diffusers/safetensors pipelines even on chat-only (no-GPU, native) hosts.
+  // Local ./models entries. Chat-only Unsloth runs GGUF (any host) and MLX (Mac only), so raw checkpoints there are hidden (mirrors the cached
+  // non-GGUF rule); an MLX build a Mac user dropped in stays selectable. A task-scoped picker (Images) is exempt: the image backend loads local pipelines even there.
   const sortedLocalDir = useMemo(
     () =>
       sortLocalModels(
@@ -2204,7 +2200,7 @@ export function HubModelPicker({
         if (page) {
           void navigateToPage({
             to: `/${page}`,
-            // The target page uses this verbatim as the gguf filename, so it must be ggufFilename (an exact repo filename), never ggufVariant (a label like "Q4_K_M", which routed a file that does not exist). No filename means a curated non-GGUF pick, loaded as a pipeline.
+            // The target page uses this verbatim as the gguf filename, so it must be ggufFilename (an exact repo filename), never ggufVariant (a label like "Q4_K_M", which routed a file that does not exist). No filename means a curated non-GGUF pick.
             search: { model: id, quant: meta.ggufFilename ?? undefined },
           });
           return;
@@ -2265,9 +2261,8 @@ export function HubModelPicker({
     );
   }, [sortedCachedModels, showHfSection, debouncedQuery, formatFilter]);
 
-  // Non-GGUF cached rows are not shown in chat-only mode, so the empty-state
-  // logic must use this (not visibleCachedModels) or the picker can go blank.
-  // A task-scoped picker (Images) is exempt: the image backend loads local diffusers/safetensors pipelines even on chat-only hosts.
+  // Non-GGUF cached rows are not shown in chat-only mode, so the empty-state logic must use this (not visibleCachedModels) or the picker can go
+  // blank. A task-scoped picker (Images) is exempt: the image backend loads local diffusers/safetensors pipelines even on chat-only hosts.
   const visibleCachedModelRows = chatOnly && !task ? [] : visibleCachedModels;
 
   // Pinned entries surface in their own section above the Unsloth heading.

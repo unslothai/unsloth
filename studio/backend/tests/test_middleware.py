@@ -217,9 +217,8 @@ class TestMaxBodyMiddleware:
         assert r.json()["total"] == 512
 
     def test_diffusion_dataset_upload_in_body_passthrough(self, main_module):
-        # The diffusion dataset upload route lives under the protected /api/train prefix, so it must be in the REAL passthrough
-        # allowlist with the DB-aware + multipart-overhead cap, else MaxBodyMiddleware 413s near-limit batches before the
-        # handler's own check. It is matched by EXACT path so its JSON sub-routes keep the normal small cap.
+        # The diffusion dataset upload route lives under the protected /api/train prefix, so it must be in the REAL passthrough allowlist with the
+        # DB-aware + multipart-overhead cap, else MaxBodyMiddleware 413s near-limit batches. EXACT path, so its JSON sub-routes keep the small cap.
         from utils.upload_limits import (
             default_request_body_limit_bytes,
             upload_request_limit_bytes,

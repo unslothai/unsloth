@@ -258,7 +258,7 @@ export class GenerateResponseLostError extends Error {
 // Gateway statuses meaning the origin never got to answer: 524 is Cloudflare's ~100s cap, which a slow run routinely exceeds.
 const RESPONSE_LOST_STATUSES = new Set([408, 502, 503, 504, 522, 524]);
 
-/** Generate synchronously: the response carries the finished images. A run longer than the proxy window throws GenerateResponseLostError with the generation still in flight, so the caller settles it via getGenerateProgress + the gallery rather than retrying. */
+/** Generate synchronously: the response carries the finished images. A run past the proxy window throws GenerateResponseLostError with the generation still in flight, so the caller settles it via getGenerateProgress + the gallery instead of retrying. */
 export async function generateDiffusionImage(
   body: DiffusionGenerateRequest,
 ): Promise<DiffusionGenerateResponse> {

@@ -259,9 +259,8 @@ def _vae_channels_last(pipe: Any, logger: Any) -> bool:
         return False
 
 
-# U-Net denoisers ship no ``_repeated_blocks``, so the regional compile cannot reach them; these classes get a WHOLE-module
-# STATIC ``torch.compile``. On SDXL (B200, 30 steps / 1024px): 26.9 vs 45.9 ms/step, 1.61x end-to-end at LPIPS 0.034.
-# Static shapes mean a recompile per new (height, width, batch); the Mega-cache bundle carries each across restarts.
+# U-Net denoisers ship no ``_repeated_blocks``, so the regional compile cannot reach them; these classes get a WHOLE-module STATIC compile.
+# SDXL (B200, 30 steps / 1024px): 26.9 vs 45.9 ms/step, 1.61x end-to-end at LPIPS 0.034. Static means a recompile per (height, width, batch).
 _UNET_WHOLE_COMPILE: frozenset[str] = frozenset({"UNet2DConditionModel"})
 
 
@@ -312,9 +311,8 @@ def _compile_repeated_blocks(
     unet = _denoiser_unet(pipe) if not dits else None
     if not dits and unet is None:
         return False
-    # default: dynamic=True -- fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs + dynamic=False
-    # -- a few % more for a longer compile and a recompile per resolution. CUDA-graph modes crash on the regional block.
-    # fullgraph drops to False under a step cache OR offloading: both insert a graph break fullgraph=True rejects.
+    # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs + dynamic=False, a few % more for a
+    # longer compile and a recompile per resolution (CUDA-graph modes crash on the regional block). fullgraph drops to False under a step cache or offload.
     kwargs: dict[str, Any] = {
         "fullgraph": not (cache_active or offload_active),
         "dynamic": not max_autotune,

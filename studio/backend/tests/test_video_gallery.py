@@ -143,9 +143,8 @@ def test_delete_removes_both_files():
 
 
 def test_delete_keeps_sidecar_listable_when_mp4_unlink_fails(monkeypatch):
-    # delete() must remove the MP4 FIRST: list_videos globs *.mp4 but needs a readable sidecar, so dropping the sidecar
-    # first and then failing the mp4 unlink (a Windows lock from a concurrent stream) would hide a still-present mp4
-    # with no way to retry. Fail the mp4 unlink and assert the video stays listable.
+    # delete() must remove the MP4 FIRST: list_videos globs *.mp4 but needs a readable sidecar, so dropping the sidecar first and then failing
+    # the mp4 unlink (a Windows lock) would hide a still-present mp4 with no way to retry. Fail the mp4 unlink and assert the video stays listable.
     record = gallery.save(_mp4(), _meta(prompt = "keep"))
     directory = gallery.gallery_dir()
     mp4 = directory / f"{record['id']}.mp4"
@@ -158,9 +157,8 @@ def test_delete_keeps_sidecar_listable_when_mp4_unlink_fails(monkeypatch):
             raise PermissionError("mp4 locked")
         return real_unlink(self, *a, **k)
 
-    # Patch Path.unlink (what delete() calls) not os.unlink: on 3.10 Path.unlink goes through a cached _accessor bound at
-    # import, so the mp4 delete would wrongly succeed. Scope it to its own context so undoing it does not revert the autouse
-    # fixture's studio_root redirect (shared monkeypatch), which would make list_videos read the real home.
+    # Patch Path.unlink (what delete() calls) not os.unlink: on 3.10 Path.unlink goes through a cached _accessor bound at import. Scoped to its own
+    # context so undoing it does not revert the autouse fixture's studio_root redirect (shared monkeypatch), which would make list_videos read the real home.
     with pytest.MonkeyPatch.context() as m:
         m.setattr(Path, "unlink", _fail_on_mp4)
         assert gallery.delete(record["id"]) is False  # mp4 unlink failed

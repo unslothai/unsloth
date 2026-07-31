@@ -745,9 +745,8 @@ def _download_scoped_snapshot(
         max_workers = 1,
     )
     if info is None:
-        # With no metadata there is no manifest, so _verify_completed_download below is a no-op, and snapshot_download RETURNS AN
-        # EXISTING SNAPSHOT FOLDER, fetching nothing, when its own repo_info call also fails. A repo already on disk from a full
-        # snapshot job (which ignores *.gguf) would flip this job to complete with no weights, so check the list against disk.
+        # With no metadata there is no manifest, so _verify_completed_download below is a no-op, and snapshot_download RETURNS AN EXISTING SNAPSHOT
+        # FOLDER, fetching nothing, when its repo_info also fails. A repo already on disk would flip this job to complete with no weights.
         root = Path(snapshot_path)
         absent = tuple(f for f in files if not (root / f).exists())
         if absent:

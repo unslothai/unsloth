@@ -263,7 +263,7 @@ def load_ideogram4_text_encoder(
         else:
             state_dict[key] = value.to(dtype)
 
-    # Construct normally (so __init__ computes the non-persistent rotary inv_freq the checkpoint omits), then copy the dequantized weights in. Build at the target dtype: this ~8B Qwen3-VL scaffold is ~2x at the fp32 default and loads FIRST, so fp32 can OOM a 64 GB host. inv_freq is computed in explicit fp32.
+    # Construct normally (so __init__ computes the non-persistent rotary inv_freq the checkpoint omits), then copy the dequantized weights in. Build at the target dtype: this ~8B Qwen3-VL scaffold is ~2x at the fp32 default and loads FIRST, so fp32 can OOM a 64 GB host.
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:
@@ -342,7 +342,7 @@ def load_ideogram4_transformer(
 
     config.pop("quantization_config", None)
     hidden_size = int(config["attention_head_dim"]) * int(config["num_attention_heads"])
-    # from_config materializes the full ~9B module before the weights copy in, and at fp32 that is ~2x the bf16 model while the second DiT builds with the first + encoder resident, so build at the target dtype. Only rotary_emb.inv_freq is absent from the checkpoint (computed in explicit fp32).
+    # from_config materializes the full ~9B module before the weights copy in, and at fp32 that is ~2x the bf16 model while the second DiT builds with the first + encoder resident, so build at the target dtype. Only rotary_emb.inv_freq is absent from the checkpoint.
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:

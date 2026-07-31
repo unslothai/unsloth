@@ -183,8 +183,7 @@ def test_wan_generation_defaults():
 
 
 def test_generation_defaults_fallback_honors_family():
-    # When no identifier names a known variant (a Wan model at an opaque local path under an explicit family_override), the
-    # resolved family's own default is used, not the hardcoded LTX 40/4.0.
+    # When no identifier names a known variant (an opaque local path under an explicit family_override), the resolved family's own default is used, not the hardcoded LTX 40/4.0.
     assert default_video_generation_params("/models/my-clip", "/models/my-clip") == (40, 4.0)
     assert default_video_generation_params(
         "/models/my-clip", "/models/my-clip", fallback = (50, 5.0)
@@ -194,8 +193,7 @@ def test_generation_defaults_fallback_honors_family():
 
 
 def test_generation_defaults_wan_is_segment_not_substring():
-    # "wan" must match as a name segment, not a raw substring, so an opaque non-Wan repo/path ("swan", "taiwan") does not
-    # pick up Wan's 50-step/CFG-5 schedule ahead of its canonical base repo.
+    # "wan" must match as a name segment, not a raw substring, so an opaque repo/path ("swan", "taiwan") does not pick up Wan's 50-step/CFG-5 schedule.
     assert default_video_generation_params(
         "user/swan-video", "Lightricks/LTX-2", fallback = (40, 4.0)
     ) == (40, 4.0)
@@ -225,8 +223,7 @@ def test_wan_size_tables_present():
 
 
 def test_wan_ti2v_5b_snaps_to_32_not_16():
-    # TI2V-5B's VAE is 16x spatial with a patch of 2, so WanPipeline floors H/W to 32. The backend must snap to /32 too, or a
-    # /16-but-not-/32 request is recorded at one size and rendered at another.
+    # TI2V-5B's VAE is 16x spatial with a patch of 2, so WanPipeline floors H/W to 32. The backend must snap to /32 too, or a /16-only request renders at another size.
     fam = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     assert fam.resolution_multiple == 32
     assert snap_video_size(fam, 1280, 720) == (1280, 704)  # 720 is /16 but not /32 -> floors to 704

@@ -319,8 +319,7 @@ def test_config_from_dict_threads_num_epochs():
 
 
 def test_normalized_rejects_piecewise_constant():
-    # piecewise_constant needs a step_rules string the trainers never supply, so get_scheduler() would crash in the subprocess
-    # AFTER the resident GPU workloads are freed. It must be rejected up front.
+    # piecewise_constant needs a step_rules string the trainers never supply, so get_scheduler() would crash in the subprocess AFTER the GPU is freed. Reject it up front.
     with pytest.raises(ValueError, match = "lr_scheduler"):
         DiffusionLoraConfig(
             base_model = "b", data_dir = "d", output_dir = "o", lr_scheduler = "piecewise_constant"

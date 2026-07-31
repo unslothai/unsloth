@@ -822,9 +822,8 @@ _DATASET_UPLOAD_PASSTHROUGH_PREFIX = "/api/datasets/upload"
 _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
     "/api/data-recipe/seed/upload-unstructured-file"
 )
-# The diffusion dataset upload route (POST /api/train/diffusion/dataset) is a multipart image upload under the protected
-# /api/train prefix. Like /api/datasets/upload it enforces its own get_upload_limit_bytes() cap, so it must bypass the
-# default body cap here. Matched as an EXACT path: its JSON sub-routes share the prefix but keep the small-JSON cap.
+# The diffusion dataset upload route (POST /api/train/diffusion/dataset) is a multipart image upload under the protected /api/train prefix. Like
+# /api/datasets/upload it enforces its own get_upload_limit_bytes() cap, so it bypasses the default here. EXACT path, so JSON sub-routes keep it.
 _DIFFUSION_DATASET_UPLOAD_PATH = "/api/train/diffusion/dataset"
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     _DATASET_UPLOAD_PASSTHROUGH_PREFIX,

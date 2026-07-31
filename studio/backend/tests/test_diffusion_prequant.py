@@ -393,9 +393,8 @@ def test_load_exclude_tokens_match_ok(monkeypatch, tmp_path):
 
 
 def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
-    # int8 carries PER-FAMILY exclusions (Qwen's unpadded text stream runs at M = prompt tokens, under _int_mm's floor of 16), so
-    # an artifact recording the family but building its set with family=None is rejected. Pins the offline builder to
-    # exclude_tokens_for_scheme(scheme, fam.name).
+    # int8 carries PER-FAMILY exclusions (Qwen's unpadded text stream runs at M = prompt tokens, under _int_mm's floor of 16), so an artifact
+    # recording the family but building its set with family=None is rejected. Pins the offline builder to exclude_tokens_for_scheme(scheme, fam.name).
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
     for family in ("qwen-image", "qwen-image-edit"):
         family_less = _good_ckpt(scheme = "int8")
@@ -677,9 +676,9 @@ class _FakeFp8Weight:
 
 
 def test_pin_kernel_preference_rewrites_auto(monkeypatch):
-    # The published checkpoints serialize KernelPreference.AUTO on every fp8 weight, which
-    # re-arms the MSLK kernel that _fp8_config pins away from; mslk.f8f8bf16_rowwise has no
-    # fake impl, so a COMPILED generate then fails to trace. Loading must normalise it.
+    # The published checkpoints serialize KernelPreference.AUTO on every fp8 weight, re-arming the MSLK
+    # kernel _fp8_config pins away from; mslk.f8f8bf16_rowwise has no fake impl, so a COMPILED generate
+    # then fails to trace. Loading must normalise it.
     _stub_kernel_preference(monkeypatch)
     sd = {
         "a.weight": _FakeFp8Weight(_FakeKernelPreference.AUTO),
@@ -696,8 +695,7 @@ def test_pin_kernel_preference_rewrites_auto(monkeypatch):
 
 
 def test_pin_kernel_preference_survives_a_frozen_weight(monkeypatch):
-    # A subclass that refuses the assignment must not sink the load: the checkpoint is still
-    # usable eagerly, and raising here would lose it entirely.
+    # A subclass that refuses the assignment must not sink the load: the checkpoint is still usable eagerly, and raising here would lose it entirely.
     _stub_kernel_preference(monkeypatch)
 
     class _Frozen:

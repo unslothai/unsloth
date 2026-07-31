@@ -109,10 +109,9 @@ def _activate(name: str, reason: Optional[str]) -> Any:
             try:
                 engine_to_unload.unload()
             except Exception as exc:
-                # Do NOT publish the new engine after a failed teardown. The old model (or the resident sd-server) still holds its
-                # memory, and flipping the name would hide it from get_active_diffusion_engine(), which the evictor, /images/unload
-                # and the next load all resolve through, so the leak would be permanent. Leaving the old engine active keeps it
-                # reclaimable and lets the caller retry.
+                # Do NOT publish the new engine after a failed teardown. The old model (or the resident sd-server) still holds its memory, and flipping the
+                # name would hide it from get_active_diffusion_engine(), which the evictor, /images/unload and the next load all resolve through, so the leak
+                # would be permanent. Leaving the old engine active keeps it reclaimable and lets the caller retry.
                 logger.error("failed to unload previous engine %s: %s", old_name, exc)
                 raise RuntimeError(
                     f"Could not switch the diffusion engine to {name}: unloading the current "

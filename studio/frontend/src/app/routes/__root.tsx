@@ -97,8 +97,7 @@ function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
     return true;
-  // Images runs on CPU/MPS via the native sd.cpp engine, the very no-GPU setup it was added for. The chat-only flag is about
-  // training/export needing a GPU, so it must not redirect /images away here.
+  // Images runs on CPU/MPS via the native sd.cpp engine, the very no-GPU setup it was added for. The chat-only flag is about training/export, so it must not redirect /images.
   if (pathname === "/images" || pathname.startsWith("/images/")) return true;
   return false;
 }
@@ -178,17 +177,15 @@ function RootLayout() {
   }
   const shouldMountImages = isImagesRoute || imagesMounted;
 
-  // Same persistent mount for /video so a long generation keeps running off-tab (VideoPage reads no URL search either).
-  // Mounts lazily on first visit, then stays mounted, hidden+inert while off-route.
+  // Same persistent mount for /video so a long generation keeps running off-tab. Mounts lazily on first visit, then stays mounted, hidden+inert while off-route.
   const isVideoRoute = pathname === "/video";
   const [videoMounted, setVideoMounted] = useState(isVideoRoute);
   if (isVideoRoute && !videoMounted) {
     setVideoMounted(true);
   }
   const shouldMountVideo = isVideoRoute || videoMounted;
-  // Chat, Images and Video each render their own full-height shell, so all three want the chat-style layout: no outer pt-14
-  // inset, no outer scroll. Keying off isChatRoute alone gave /images and /video the pt-14 + outer overflow, pushing the
-  // picker down and clipping the gallery. This covers container padding/overflow only; the keep-alive mounts stay per route.
+  // Chat, Images and Video each render their own full-height shell, so all three want the chat-style layout: no outer pt-14 inset, no outer
+  // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;
 
   useTrainingUnloadGuard();

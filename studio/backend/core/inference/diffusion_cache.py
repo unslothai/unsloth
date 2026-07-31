@@ -197,7 +197,7 @@ def apply_step_cache(
         if threshold is not None
         else (QUANT_FBCACHE_THRESHOLD if quant_active else DEFAULT_FBCACHE_THRESHOLD)
     )
-    # Engage only via the native enable_cache (CacheMixin path): the lower-level apply_first_block_cache hook would also install on a non-CacheMixin transformer whose pipeline opens no cache_context and crash generation.
+    # Engage only via the native enable_cache (CacheMixin path): the lower-level apply_first_block_cache hook would also install on a non-CacheMixin transformer whose pipeline opens no cache_context, and crash generation.
     enable_cache = getattr(transformer, "enable_cache", None)
     if not callable(enable_cache):
         _warn(logger, mode, RuntimeError("transformer has no cache_context (not a CacheMixin)"))

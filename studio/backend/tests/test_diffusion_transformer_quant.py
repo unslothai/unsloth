@@ -336,7 +336,7 @@ def test_require_bf16_schemes_excludes_nvfp4():
 
 
 def test_make_filter_fn_require_bf16_skips_non_bf16(monkeypatch):
-    # fp8 / mxfp8 assert a bf16 weight, so require_bf16 must skip an fp32 Linear (Wan / Hunyuan video DiTs keep some) or one such layer raises inside quantize_ and no-ops the whole pass. int8 and nvfp4 leave it off.
+    # fp8 / mxfp8 assert a bf16 weight, so require_bf16 must skip an fp32 Linear (Wan / Hunyuan video DiTs keep some) or one such layer raises inside quantize_ and no-ops the whole pass.
     torch = types.ModuleType("torch")
     torch.bfloat16, torch.float32 = "bf16", "fp32"
 
@@ -357,7 +357,7 @@ def test_make_filter_fn_require_bf16_skips_non_bf16(monkeypatch):
 
 
 def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
-    # The int8 path skips the M=1 AdaLN modulation / conditioning-embedder projections (they crash torch._int_mm's M floor of 16) while keeping the attention / FFN and sequence embedders. fp8 keeps everything.
+    # The int8 path skips the M=1 AdaLN modulation / conditioning-embedder projections (below torch._int_mm's M floor of 16) while keeping the attention / FFN and sequence embedders. fp8 keeps everything.
     from core.inference.diffusion_transformer_quant import _INT8_EXCLUDE_NAME_TOKENS
 
     class _Lin:
@@ -426,7 +426,7 @@ def test_exclude_tokens_for_scheme():
 
 
 def test_exclude_tokens_for_scheme_family():
-    # Qwen-Image never pads its text stream (unlike FLUX's 512-token T5), so short prompts run those linears at M < 16 and torch._int_mm raises: they stay bf16 while the M ~ 4k image stream keeps int8. Unknown families are unaffected.
+    # Qwen-Image never pads its text stream (unlike FLUX's 512-token T5), so short prompts run those linears at M < 16 and torch._int_mm raises: they stay bf16 while the M ~ 4k image stream keeps int8.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
         _QWENIMAGE_INT8_EXCLUDES,
@@ -448,7 +448,7 @@ def test_exclude_tokens_for_scheme_family():
 
 
 def test_resolve_fast_accum(monkeypatch):
-    # None is fast accumulate on every GPU class; an explicit bool forces it. Deriving it from the GPU class made fp8 2.05x slower than int8 on RTX 6000 Ada (the precise-accumulate cuBLAS path costs there despite equal published FP8 rates), and on B200 the flag is a measured no-op, so defaulting it on trades nothing away.
+    # None means fast accumulate on every GPU class; an explicit bool forces it. Deriving it from the GPU class made fp8 2.05x slower than int8 on RTX 6000 Ada, and on B200 the flag is a measured no-op.
     for consumer in (True, False):
         monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *a, _c = consumer: _c)
         assert tq._resolve_fast_accum(None) is True

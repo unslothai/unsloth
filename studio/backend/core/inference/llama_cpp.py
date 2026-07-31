@@ -1533,9 +1533,8 @@ def zero_vram_chat_load(
     """
     if gpu_memory_mode != "manual" or gpu_layers != 0:
         return False
-    # Any speculative mode may launch a GPU drafter and only the request's own knobs are known here, so treat every selection
-    # as GPU-bearing except "off", which the resolver never emits a drafter for. Canonicalize first: the UI sends the literal
-    # "off", which a bare truthiness test read as "speculation requested" and evicted a pipeline for a CPU-only load.
+    # Any speculative mode may launch a GPU drafter and only the request's own knobs are known here, so treat every selection as GPU-bearing except
+    # "off". Canonicalize first: the UI sends the literal "off", which a bare truthiness test read as "speculation requested".
     spec_mode = _canonicalize_spec_mode(speculative_type)
     if needs_mmproj or spec_mode not in (None, "off"):
         return False

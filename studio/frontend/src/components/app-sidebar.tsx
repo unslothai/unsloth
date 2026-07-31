@@ -1706,8 +1706,7 @@ export function AppSidebar() {
                             isActive={overflowNavIds.some(
                               (id) => navRows[id].active,
                             )}
-                            // Keeps the row highlighted while the panel is open, after the pointer has left it. Not data-state: the tooltip and
-                            // menu triggers both write that one.
+                            // Keeps the row highlighted while the panel is open, after the pointer has left it. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
                             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
                           >

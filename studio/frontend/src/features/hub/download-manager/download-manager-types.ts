@@ -25,7 +25,7 @@ export interface ManagedDownload {
   error: string | null;
   startedAt: number;
   serverGeneration?: number;
-  /** Files a scoped job is fetching, when known. Every file set of one repo rides the same scope slot (see `scopedVariant`), so this separates "my transfer is already running" from "a different quant of this repo is running": adopting the latter would report ready for files nobody fetched. Unknown stays adoptable for an UNSCOPED job; a scoped one cannot be, since the slot alone says nothing about which files are in flight. */
+  /** Files a scoped job is fetching, when known. Every file set of one repo rides the same scope slot (see `scopedVariant`), so this separates "my transfer is already running" from "a different quant of this repo is running": adopting the latter would report ready for files nobody fetched. Unknown stays adoptable only for an UNSCOPED job. */
   scopedFiles?: string[];
 }
 
@@ -34,7 +34,7 @@ export interface DownloadRequest {
   repoId: string;
   variant: string | null;
   expectedBytes: number;
-  /** Marks a partial-by-design download of `files` only, for a consumer that reads a deliberate subset of a repo (the diffusion loader skips the packaged root single, transformer/ shards and fp16 twins). Set `variant` to `scopedVariant(scopeId)` so this surface keys the job the same way the backend does. */
+  /** Marks a partial-by-design download of `files` only, for a consumer that reads a deliberate subset of a repo (the diffusion loader skips the packaged root single, transformer/ shards and fp16 twins). Set `variant` to `scopedVariant(scopeId)` so this surface keys the job the way the backend does. */
   scopeId?: string | null;
   files?: string[];
 }

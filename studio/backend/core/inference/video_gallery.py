@@ -216,9 +216,8 @@ def _transcode_gif(path: Path) -> bytes:
             rate = float(in_v.average_rate or 24)
             # Full-rate GIFs are huge and stutter; ~12 fps (skipping source frames) is the sweet spot.
             step = max(1, round(rate / 12))
-            # Every kept frame is held as a paletted image until the encoder runs, so an unbounded walk is a memory bomb: a 2048x2048
-            # clip of 1024 frames is >4 GB, enough to take the backend down from one export click. Bound both axes instead: downscale
-            # past _GIF_MAX_EDGE and widen the step so at most _GIF_MAX_FRAMES are retained. MP4 keeps the full clip.
+            # Every kept frame is held as a paletted image until the encoder runs, so an unbounded walk is a memory bomb (a 2048x2048 clip of 1024
+            # frames is >4 GB). Bound both axes: downscale past _GIF_MAX_EDGE and widen the step to at most _GIF_MAX_FRAMES. MP4 keeps the full clip.
             total = in_v.frames or 0
             kept = (total + step - 1) // step if total else 0
             if kept > _GIF_MAX_FRAMES:

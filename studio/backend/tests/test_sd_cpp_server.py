@@ -448,9 +448,8 @@ def test_diagnostic_tail_is_bounded():
 
 
 def test_readiness_refuses_a_port_held_by_another_process(patched):
-    # _find_free_port picks an ephemeral port, closes the socket, and sd-server binds it only after loading the model, which takes
-    # minutes for a big checkpoint. Another local process can take it in that window, and /v1/models is a stock OpenAI route that
-    # llama.cpp's server also answers 200 on, so readiness would pass and every generation would go to an unrelated listener.
+    # _find_free_port picks an ephemeral port, closes the socket, and sd-server binds it only after loading the model, which takes minutes.
+    # Another process can take it in that window, and llama.cpp's server also answers /v1/models 200, so readiness would pass on a stranger.
     import types
 
     popen = _FakePopen(lines = ["loading model"])

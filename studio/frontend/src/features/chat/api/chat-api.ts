@@ -1009,9 +1009,8 @@ export async function browseFolders(
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
   const qs = params.toString();
-  // Forward the AbortSignal through authFetch -> fetch so a cancelled FolderBrowser navigation
-  // cancels the in-flight request server-side, instead of dropping the response while the backend
-  // keeps walking large directory trees.
+  // Forward the AbortSignal through authFetch -> fetch so a cancelled FolderBrowser navigation cancels the request server-side, instead of
+  // dropping the response while the backend keeps walking large directory trees.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
     signal ? { signal } : undefined,

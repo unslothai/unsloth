@@ -19,7 +19,7 @@ export interface StagedDownloadEntry {
   ggufFilename?: string | null;
 }
 
-/** Runs a multi-repo download plan through the shared download manager, then calls `onReady` once every entry is on disk. Chat stages a single repo inline; the diffusion pages need two (a GGUF checkpoint plus its companion base) and read only part of each, so the entries go out as scoped jobs. Staging here rather than inside the load is what puts image and video downloads in the same panel, with the same progress, cancel, resume, disk preflight and manifest verification as everything else. */
+/** Runs a multi-repo download plan through the shared download manager, then calls `onReady` once every entry is on disk. Chat stages a single repo inline; the diffusion pages need two (a GGUF checkpoint plus its companion base) and read only part of each, so the entries go out as scoped jobs. Staging here rather than inside the load is what puts image and video downloads in the same panel, with the same progress, cancel, resume, disk preflight and manifest verification. */
 export function useStagedDownload({
   scopeId,
   onReady,
@@ -43,9 +43,8 @@ export function useStagedDownload({
     });
   }, []);
 
-  // The job this hook waits on, keyed by the entry it started (repo + exact file set) AND the staging generation. Every
-  // scoped pick in a repo shares the "@diffusion" variant, so the variant alone cannot tell two file sets apart: restaging
-  // while the first job finishes would let its completion pass for the new pick. A completion is ours only when both match.
+  // The job this hook waits on, keyed by the entry it started (repo + exact file set) AND the staging generation: every scoped pick in a repo
+  // shares the "@diffusion" variant, so restaging while the first job finishes would let its completion pass for the new pick.
   const inFlight = useRef<{ key: string; generation: number } | null>(null);
   const generation = useRef(0);
   const entryKey = (entry: StagedDownloadEntry) =>
@@ -61,9 +60,8 @@ export function useStagedDownload({
     kind: DOWNLOAD_KIND.MODEL,
     repoId: current?.repoId ?? "__staged_download_idle__",
     activeVariant,
-    // The listener subscription is per REPO, not per job, and one repo can have several jobs in flight (the Models tab
-    // downloading a chat quant of it, say). Each callback carries the variant it fired for, so drop the ones that are not this
-    // staged entry: a sibling's completion would advance the queue and its failure would wipe one still running.
+    // The listener subscription is per REPO, not per job, and one repo can have several jobs in flight. Each callback carries the variant it fired
+    // for, so drop the ones that are not this staged entry: a sibling's completion would advance the queue and its failure would wipe a live job.
     onComplete: (variant) => {
       if (!isOurs(variant)) return;
       inFlight.current = null;

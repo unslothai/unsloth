@@ -258,9 +258,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
-    // 17B MoE DiT + four text encoders. The MIT repos ship no Llama text_encoder_4, so the backend assembles it from the open
-    // unsloth mirror at load time (+16 GB): ~63 GB bf16-resident, a datacenter-GPU pick. Full is the undistilled base; Dev and
-    // Fast are its guidance-free distillations. city96 GGUF is not wired: it would need the same TE4 assembly for tiny demand.
+    // 17B MoE DiT + four text encoders. The MIT repos ship no Llama text_encoder_4, so the backend assembles it from the open unsloth mirror
+    // at load time (+16 GB): ~63 GB bf16-resident, a datacenter pick. Full is the undistilled base, Dev and Fast its guidance-free distillations.
     canonicalId: "HiDream-ai/HiDream-I1-Full",
     displayName: "HiDream I1",
     description: "Text-to-image",
@@ -323,7 +322,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         "ltx-2.3-22b-distilled.safetensors",
         90,
       ),
-      // No FP8 artifact: the LTX-2.3 loader refuses the official scaled-FP8 single file (it carries .weight_scale/.input_scale), so advertising it would route a click to a ~76 GB download that always fails.
+      // No FP8 artifact: the LTX-2.3 loader refuses the official scaled-FP8 single file (it carries .weight_scale/.input_scale), so a click would start a ~76 GB download that always fails.
       gguf("unsloth/LTX-2.3-GGUF"),
     ],
   },
@@ -407,7 +406,7 @@ export function canonicalKeyFor(repoId: string): string {
   return owner + name;
 }
 
-/** Case-preserving display name: artifact suffixes stripped off the name part, so uncurated rows read as their base model ("ERNIE-Image-Turbo-GGUF" -> "ERNIE-Image-Turbo"). The format badge carries the artifact kind; the id used for loading is untouched. */
+/** Case-preserving display name with artifact suffixes stripped, so uncurated rows read as their base model ("ERNIE-Image-Turbo-GGUF" -> "ERNIE-Image-Turbo"). The format badge carries the artifact kind; the load id is untouched. */
 export function stripArtifactSuffixesForDisplay(repoId: string): string {
   const trimmed = repoId.trim();
   const slash = trimmed.indexOf("/");
@@ -632,7 +631,7 @@ function fitsResident(artifact: ModelArtifact, gpuGb: number): boolean {
   return artifact.approxSizeGb <= gpuGb * 0.7;
 }
 
-/** The artifact a bare group click loads. Ladder: (1) highest-quality DOWNLOADED artifact within the 0.7 * GPU budget, else a downloaded GGUF, else the smallest downloaded; (2) no budget known -> the group GGUF, else the first artifact; (3) best sized artifact that fits, descending quality (BF16, FP8, bnb-4bit), unsized never auto-picked; (4) fallback GGUF, else the smallest artifact. */
+/** The artifact a bare group click loads. Ladder: (1) highest-quality DOWNLOADED artifact within the 0.7 * GPU budget, else a downloaded GGUF, else the smallest downloaded; (2) no budget known -> the group GGUF, else the first artifact; (3) best sized artifact that fits, descending quality (BF16, FP8, bnb-4bit), unsized never auto-picked; (4) fallback GGUF, else the smallest. */
 export function pickDefaultArtifact(
   group: CatalogGroup,
   input: RoutingInput,
@@ -668,7 +667,7 @@ export function pickDefaultArtifact(
   )[0];
 }
 
-/** Whether the "fit on device" toggle keeps a group: it stays when at least one artifact can run here (already on disk, a GGUF, or a sized artifact within the 0.7*GPU + 0.7*RAM budget). Otherwise a bare click on a filtered list could start an OOM load. An unknown budget keeps everything. */
+/** Whether the "fit on device" toggle keeps a group: it stays when one artifact can run here (on disk, a GGUF, or sized within the 0.7*GPU + 0.7*RAM budget), so a bare click on a filtered list cannot start an OOM load. An unknown budget keeps everything. */
 export function catalogGroupFitsDevice(
   group: CatalogGroup,
   budget: DeviceBudget,

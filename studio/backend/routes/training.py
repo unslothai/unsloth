@@ -530,9 +530,9 @@ async def start_training(
         from utils.transformers_version import SidecarSwapInProgress
 
         try:
-            # Offloaded to a worker thread: diffusion/video unload() waits on the engines' generation locks (and the export
-            # subprocess teardown can take seconds), which would otherwise freeze every concurrent request. The diffusion admission
-            # is held ACROSS the spawn so the decision is atomic: entering it re-tests the state under the service's own lock, and while held reserve() refuses, so exactly one of the two wins.
+            # Offloaded to a worker thread: diffusion/video unload() waits on the engines' generation locks (and the export subprocess
+            # teardown can take seconds), which would otherwise freeze every concurrent request. The diffusion admission is held ACROSS
+            # the spawn so the decision is atomic: entering it re-tests the state under the service's own lock, and while held reserve() refuses.
             with _diffusion_gpu_admission():
                 success = await asyncio.to_thread(
                     backend.start_training,
@@ -1857,7 +1857,7 @@ async def upload_diffusion_dataset(
                         ),
                     )
             names.append(filename)
-        # Stage each file to a temp name and move it into place only once the whole batch is written, so a mid-batch failure leaves the dataset untouched, including any same-name file a direct write would truncate.
+        # Stage each file to a temp name and move it in only once the whole batch is written, so a mid-batch failure leaves the dataset untouched, including any same-name file a direct write would truncate.
         staged: list[tuple[Path, Path]] = []  # (temp, final)
         committed = False
         try:
@@ -2603,7 +2603,7 @@ async def import_diffusion_dataset_example(
                     os.rmdir(folder)
                     os.replace(str(staging), str(folder))
                 except (OSError, shutil.Error) as e:
-                    # Every step here can fail (an unmovable entry, a folder that gained a file, a rename held by antivirus), and by then the folder's entries live only in the staging/rescue dirs the finally deletes, so put them back.
+                    # Every step here can fail (an unmovable entry, a folder that gained a file, a rename held by antivirus), and by then the folder's entries live only in the staging/rescue dirs the finally deletes.
                     restore_folded()
                     raise HTTPException(
                         status_code = 409,

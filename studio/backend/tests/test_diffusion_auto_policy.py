@@ -181,8 +181,7 @@ def test_disk_gate_sizes_fp32_families_by_their_real_download(monkeypatch):
 
 
 def test_disk_gate_does_not_overcharge_a_family_published_below_bf16(monkeypatch):
-    # The correction runs both ways: Ideogram 4 ships fp8 (17,718 MiB measured) and doubles on the way to bf16, so charging the
-    # resident 35,477 MiB of disk would refuse a candidate the disk easily holds.
+    # The correction runs both ways: Ideogram 4 ships fp8 (17,718 MiB measured) and doubles on the way to bf16, so charging the resident 35,477 MiB would refuse a fine candidate.
     import core.inference.diffusion_auto_policy as ap
 
     _patch_selector(monkeypatch, scheme = "int8")

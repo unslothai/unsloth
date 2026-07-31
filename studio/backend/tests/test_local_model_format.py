@@ -196,8 +196,7 @@ def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
 
 
 def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
-    # A scan folder can point DIRECTLY at a diffusers pipeline, which _is_model_directory rejects; without admitting it the
-    # scan surfaces the component subdirs as bogus models and hides the real pipeline.
+    # A scan folder can point DIRECTLY at a diffusers pipeline, which _is_model_directory rejects; without admitting it the scan surfaces component subdirs and hides the pipeline.
     root = tmp_path / "my-local-pipeline"
     _touch(root / "model_index.json")
     _touch(root / "transformer" / "config.json")
@@ -266,8 +265,7 @@ def test_local_task_tags_family_named_pipeline_dir(tmp_path):
 
 
 def test_local_task_none_for_familyless_pipeline_dir(tmp_path):
-    # A generically named on-device pipeline (model_index.json, no family token) is UNLOADABLE: the Images load path resolves
-    # no family and 400s after evicting the GPU owner, so it must stay untagged.
+    # A generically named on-device pipeline (model_index.json, no family token) is UNLOADABLE: the Images load resolves no family and 400s after eviction, so it stays untagged.
     d = tmp_path / "my-local-pipeline"
     _touch(d / "model_index.json")
     _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
@@ -332,9 +330,8 @@ def test_local_task_tags_video_single_file_by_checkpoint_filename(tmp_path):
 
 
 def test_local_task_ignores_family_token_in_parent_path(tmp_path):
-    # model.id is the full on-disk path for a scanned On-Device model and the family-token matcher treats any path segment as
-    # a hint, so a token in a PARENT dir must NOT tag an unrelated single-file as text-to-image: that surfaces it in the Images
-    # picker and evicts the GPU owner before from_single_file fails. Detection is scoped to the leaf name, not the raw path.
+    # model.id is the full on-disk path for a scanned On-Device model and the family-token matcher treats any path segment as a hint, so a token in
+    # a PARENT dir must NOT tag an unrelated single-file as text-to-image and evict the GPU owner. Detection is scoped to the leaf name.
     d = tmp_path / "misc"
     _touch(d / "unrelated.safetensors")  # one non-family single file, no model_index.json
     m = _local(d, id = "/models/qwen-image/misc", display_name = "misc")

@@ -299,7 +299,7 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
             transformer = transformer.to(device)
         return transformer
 
-    # Dense load for bf16 / fp8 / mxfp8 / int8. int8 quantizes AFTER the LoRA attaches: quantizing first makes peft dispatch TorchaoLoraLinear, whose peft-0.18 constructor is incompatible with the torchao-0.16 config API.
+    # Dense load for bf16 / fp8 / mxfp8 / int8. int8 quantizes AFTER the LoRA attaches: quantizing first makes peft dispatch TorchaoLoraLinear, whose peft-0.18 constructor rejects the torchao-0.16 config API.
     return transformer_cls.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
@@ -907,15 +907,15 @@ def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
 
 
 # ── FLUX.2 (dev + Klein) ──────────────────────────────────────────────────────
-# Both variants share Flux2Transformer2DModel and the upstream DreamBooth packing/forward conventions; they differ only
-# in the conditioning stack (dev: Mistral-3-Small; Klein: Qwen3) and size. Latents train in the patchified, batch-norm-normalised space, from the posterior MODE (deterministic, so the cache skips the per-step draw).
+# Both variants share Flux2Transformer2DModel and the upstream DreamBooth packing/forward conventions, differing only in the conditioning
+# stack (dev: Mistral-3-Small; Klein: Qwen3) and size. Latents train patchified and batch-norm-normalised, from the posterior MODE (deterministic).
 _FLUX2_TARGETS = (
     # Double-stream blocks: separate q/k/v plus the ModuleList out proj.
     "to_k",
     "to_q",
     "to_v",
     "to_out.0",
-    # Single-stream blocks: the fused qkv+mlp input projection carries the bulk of the capacity. Their out proj is a plain Linear named to_out whose suffix would also match the double-stream ModuleList container, so it stays dense.
+    # Single-stream blocks: the fused qkv+mlp input projection carries most of the capacity. Their out proj is a plain Linear named to_out, whose suffix also matches the double-stream container, so it stays dense.
     "to_qkv_mlp_proj",
 )
 # The references train dev with its guidance-distillation vector at 3.5 (Klein applies it only when the variant config carries guidance_embeds).
@@ -1479,7 +1479,7 @@ def run_dit_lora_training(
     if spec is None:
         raise ValueError(f"No DiT trainer for family {cfg.resolved_family!r}")
 
-    # DiT families train in bf16, so an explicit fp16 request on a bf16-only family is refused, not silently upgraded. Validated before the heavy imports so a host without diffusers still sees the real error.
+    # DiT families train in bf16, so an explicit fp16 request is refused, not silently upgraded. Validated before the heavy imports so a host without diffusers still sees the real error.
     if cfg.mixed_precision == "fp16" and spec.force_bf16:
         raise ValueError(
             f"{spec.family} LoRA training requires bf16: fp16 overflows its fp32 RoPE / "
@@ -1603,7 +1603,7 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
                 total = len(image_paths),
             )
     if caption_embeds is None:
-        # Phase 1 (cold): conditioning only. The pipeline loads WITHOUT its transformer, so the encoders + VAE never share VRAM with it. Caption embeddings are precomputed once and the encoders freed: captions are constant, so this is exact.
+        # Phase 1 (cold): conditioning only. The pipeline loads WITHOUT its transformer, so the encoders + VAE never share VRAM with it. Captions are constant, so their embeddings are precomputed once and the encoders freed.
         latent_cache = None
         pipe, vae = spec.load_conditioners(cfg, device, weight_dtype)
         encoded = _encode_prompts_cached(spec, pipe, to_encode, device, pcache)

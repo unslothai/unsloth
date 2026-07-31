@@ -757,15 +757,13 @@ class DiffusionTrainingStartRequest(BaseModel):
     # Strictly below 1: PEFT turns lora_dropout into nn.Dropout(p=...), so 1.0 zeroes the LoRA branch and the run saves an
     # untrained adapter while reporting normal progress. Matches TrainingStartRequest's validator.
     lora_dropout: float = Field(0.0, ge = 0.0, lt = 1.0)
-    # Mirror the remaining training-affecting knobs of DiffusionLoraConfig so a client that sets them is not silently
-    # trained with defaults. Defaults to the SDXL attention projections, so it is never None.
+    # Mirror the remaining training-affecting knobs of DiffusionLoraConfig so a client that sets them is not silently trained with defaults. Defaults to the SDXL projections.
     lora_target_modules: List[str] = Field(
         default_factory = lambda: ["to_k", "to_q", "to_v", "to_out.0"],
         description = "U-Net modules to attach LoRA to",
     )
-    # Finite as well as non-negative: JSON accepts 1e309 (and FastAPI's parser the Infinity literal), which floats to inf
-    # and satisfies a ge-only constraint. clip_grad_norm_ then clamps its coefficient to 1.0 and scales nothing, so the run
-    # trains completely unclipped while the config still reports clipping. allow_inf_nan makes the rejection explicit.
+    # Finite as well as non-negative: JSON accepts 1e309 (and FastAPI's parser the Infinity literal), which floats to inf and satisfies a ge-only
+    # constraint. clip_grad_norm_ then clamps its coefficient to 1.0, so the run trains completely unclipped while the config reports clipping.
     max_grad_norm: float = Field(
         1.0,
         ge = 0,

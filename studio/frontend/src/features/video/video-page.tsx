@@ -633,10 +633,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     });
   }, [durationOptions, loadedFamily, familyDefaultFrames]);
 
-  // Seed steps/guidance from the loaded model's backend defaults: on mount with a model already loaded only refreshStatus runs,
-  // so the controls would stick at the pre-load DEFAULT_GEN and a base checkpoint wanting 40/4 generates a degraded clip.
-  // Keyed on the resolved schedule, not the repo alone: a GGUF repo holds several variants, so another client swapping a
-  // distilled build for the base one from the SAME repo changes the defaults while repo_id stays put.
+  // Seed steps/guidance from the loaded model's backend defaults: on mount with a model already loaded only refreshStatus runs, so the
+  // controls would stick at the pre-load DEFAULT_GEN and a base checkpoint wanting 40/4 generates a degraded clip. Keyed on the resolved
+  // schedule, not the repo alone: a GGUF repo holds several variants, so another client swapping builds changes the defaults in place.
   const defaultSteps = status?.defaults?.steps;
   const defaultGuidance = status?.defaults?.guidance;
   const loadedModelKey = status?.loaded
@@ -685,9 +684,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     [ensureSrc],
   );
 
-  // A card's poster frame appears once its src lands and each src costs a request, so minting a full page up front would queue
-  // PAGE_SIZE requests ahead of the clip the user is waiting on. Mint as a card nears the viewport instead. Observed from
-  // here rather than a ref per tile (the tile is a Tooltip trigger), and re-run per page so appended cards are picked up.
+  // A card's poster frame appears once its src lands and each src costs a request, so minting a full page up front would queue PAGE_SIZE
+  // requests ahead of the clip being waited on. Mint as a card nears the viewport, observed from here (the tile is a Tooltip trigger), per page.
   const stripRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const root = stripRef.current;

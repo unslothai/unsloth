@@ -105,7 +105,7 @@ function MovableRow({ item }: { item: SidebarNavItemPref }) {
   );
 }
 
-/** Pin and reorder the sidebar nav rows. Unpinned rows collect in the "More" flyout; a single unpinned row is hidden instead of getting a menu of one. New chat is static: it is an action, not a destination. */
+/** Pin and reorder the sidebar nav rows. Unpinned rows collect in the "More" flyout; a single unpinned row is hidden instead of getting a menu of one. New chat is static: an action, not a destination. */
 export function SidebarNavCustomizer() {
   const t = useT();
   const sidebarNav = useAppearanceCustomStore((s) => s.customization.sidebarNav);

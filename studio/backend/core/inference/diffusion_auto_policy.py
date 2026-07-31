@@ -216,9 +216,8 @@ def resolve_dense_quant_candidate(
             prequant_available,
         )
     if estimate is not None:
-        # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly full disk. A cached re-download
-        # is a no-op, so this only trips on an already-critical disk where the GGUF fallback is right anyway. Size it by what lands on
-        # DISK: a prequant load fetches the quantised checkpoint, else the base repo's published transformer.
+        # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly full disk; a cached re-download is a no-op, so
+        # this only trips on an already-critical disk. Size it by what lands on DISK: a prequant fetches the quantised checkpoint, else the base repo's.
         needed_mib = (
             estimate.steady_transformer_mib
             if estimate.prequant

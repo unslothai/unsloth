@@ -786,7 +786,7 @@ def test_delete_guard_protects_the_loaded_video_companion_base(monkeypatch):
 
 
 def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
-    # The plan drives the staged download, so it must use the encoder policy the load will run with: an fp8 request takes a hosted pre-cast encoder, and staging the dense one pulls ~49 GB of Gemma3 the pipeline never opens.
+    # The plan drives the staged download, so it must use the encoder policy the load will run with: an fp8 request takes a hosted pre-cast encoder, and staging the dense one pulls ~49 GB of Gemma3.
     backend = video_module.get_video_backend()
     seen: dict = {}
 
@@ -843,7 +843,7 @@ def test_video_load_guard_still_checks_diffusion_when_the_llm_probe_raises(clien
 
 
 def test_signed_video_link_streams_without_a_bearer(client):
-    # A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob like a PNG: that buffers the whole MP4 before playback, kills seeking and pins the bytes. The signed link makes the range-capable /file route usable as a plain <video src>.
+    # A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob like a PNG: that buffers the whole MP4, kills seeking and pins the bytes. The signed link makes the range-capable /file route usable as a plain <video src>.
     client.post(
         "/api/inference/video/load",
         json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},

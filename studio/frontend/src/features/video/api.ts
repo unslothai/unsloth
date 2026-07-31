@@ -237,7 +237,7 @@ export async function clearVideoGallery(): Promise<void> {
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 
-/** A directly playable, range-capable URL for one gallery clip. NOT the images-gallery blob treatment: an MP4 is tens to hundreds of MB, so res.blob() would download the whole clip before playback, defeat seeking and pin those bytes in the webview. The backend's file route already streams ranges but is bearer-gated, so mint a short-lived signed link. */
+/** A directly playable, range-capable URL for one gallery clip. Not the images-gallery blob treatment: an MP4 is tens to hundreds of MB, so res.blob() would download the whole clip before playback, defeat seeking and pin those bytes. The backend's file route streams ranges but is bearer-gated, so mint a short-lived signed link. */
 export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
   const res = await authFetch(
     `/api/inference/video/gallery/${encodeURIComponent(id)}/signed-url`,

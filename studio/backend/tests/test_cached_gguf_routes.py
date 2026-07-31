@@ -1584,8 +1584,7 @@ def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
 
 
 def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
-    # The partial probe must be scoped to the snapshot row being listed: unscoped, a stale .incomplete copy in one cache
-    # root would flag a complete copy in another as partial and hide the usable model.
+    # The partial probe must be scoped to the snapshot row being listed: unscoped, a stale .incomplete copy in one cache root would flag a complete copy in another.
     import hub.utils.inventory_scan as scan
 
     calls = []
@@ -1615,8 +1614,7 @@ def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
 
 
 def test_repo_has_pipeline_index_requires_root_model_index(tmp_path):
-    # Only a ROOT model_index.json makes a repo pipeline-loadable, so a nested subdir one must NOT clear the single_file
-    # flag. CachedFileInfo.file_name is the basename, so the helper scopes by snapshot path.
+    # Only a ROOT model_index.json makes a repo pipeline-loadable, so a nested subdir one must NOT clear the single_file flag; the helper scopes by snapshot path.
     snap = tmp_path / "snapshots" / "abc"
     nested = SimpleNamespace(
         file_name = "model_index.json",
@@ -1640,9 +1638,8 @@ def test_repo_has_pipeline_index_requires_root_model_index(tmp_path):
 
 
 def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
-    # A repo cached twice -- an older complete snapshot plus a newer companion-only one, the shape a GGUF load leaves when
-    # it prefetches the base repo and skips the transformer -- must be judged on the snapshot from_pretrained resolves, the
-    # newest by mtime. Scanning every revision let the OLD transformer satisfy completeness, so the row read as on-device.
+    # A repo cached twice (an older complete snapshot plus a newer companion-only one, the shape a GGUF load leaves) must be judged on the
+    # snapshot from_pretrained resolves, the newest by mtime. Scanning every revision let the OLD transformer satisfy completeness.
     import os
 
     import hub.utils.inventory_scan as scan
@@ -1835,10 +1832,9 @@ def test_pipeline_class_guard_fires_before_any_download():
 
 
 def test_pipeline_class_guard_passes_every_shipped_family():
-    # Split out of the guard test above so it can skip on its own rather than take the guard assertion down with
-    # it: the backend CI image installs the CPU-only dep set with no diffusers at all, and the native sd.cpp
-    # engine legitimately serves GGUF picks on exactly such a host. The stub-driven refusal above needs no real
-    # diffusers and so still runs there; only this sweep does.
+    # Split out of the guard test above so it can skip on its own rather than take the guard assertion down with it: the backend
+    # CI image installs the CPU-only dep set with no diffusers, and the native sd.cpp engine legitimately serves GGUF picks there.
+    # The stub-driven refusal above needs no real diffusers and still runs; only this sweep does not.
     import pytest
 
     pytest.importorskip("diffusers")
@@ -1850,12 +1846,10 @@ def test_pipeline_class_guard_passes_every_shipped_family():
 
 
 def test_pipeline_class_guard_is_silent_when_diffusers_is_absent(monkeypatch):
-    # No diffusers at all is not this check's business: it answers "is the installed diffusers new enough for
-    # this family", and with nothing installed there is no version to judge. What must NOT happen is the raise --
-    # ModuleNotFoundError is not the ValueError the routes translate to 400, so it escaped /images/download-plan
-    # (which catches only ValueError and FileNotFoundError) as a bare 500 with the message lost, which is the
-    # precise failure this guard exists to prevent. A pick that really does need diffusers fails later, in the
-    # loader, with its own message.
+    # Not this check's business: it answers "is the installed diffusers new enough for this family", and with nothing installed
+    # there is no version to judge. What must NOT happen is the raise: ModuleNotFoundError is not the ValueError the routes map
+    # to 400, so it escaped /images/download-plan as a bare 500 with the message lost, the precise failure this guard prevents.
+    # A pick that really does need diffusers fails later, in the loader, with its own message.
     import builtins
 
     from core.inference.diffusion_families import assert_pipeline_class_available
@@ -1873,9 +1867,8 @@ def test_pipeline_class_guard_is_silent_when_diffusers_is_absent(monkeypatch):
 
 
 def test_cached_pipeline_needs_a_detectable_image_family(monkeypatch):
-    # A top-level model_index.json only proves the repo is a diffusers pipeline. An unsloth-hosted pipeline of a class this
-    # backend cannot assemble cleared the trust gate, was advertised to the picker, then failed validate_load_request.
-    # Both gates now, mirroring the video branch above.
+    # A top-level model_index.json only proves the repo is a diffusers pipeline: an unsloth-hosted pipeline of a class this backend
+    # cannot assemble cleared the trust gate, was advertised, then failed validate_load_request. Both gates now, like the video branch.
     monkeypatch.setattr(models_route, "_repo_has_pipeline_index", lambda info: True)
 
     def _task(repo_id):
@@ -1990,8 +1983,7 @@ def test_gguf_picker_hides_a_family_no_engine_here_can_build(monkeypatch):
 
 
 def test_gguf_picker_keeps_a_family_the_native_engine_serves(monkeypatch):
-    # The opposite mistake: on a CPU/MPS or force-native host sd.cpp loads the GGUF and never instantiates a diffusers
-    # class, so hiding the row over a missing class would withhold a model that loads fine.
+    # The opposite mistake: on a CPU/MPS or force-native host sd.cpp loads the GGUF and never instantiates a diffusers class, so hiding the row would withhold a working model.
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
 
     _pretend_old_diffusers(monkeypatch, engine = ENGINE_SD_CPP)
@@ -2024,8 +2016,7 @@ def test_the_loader_demands_the_diffusers_class_only_when_diffusers_loads_it(mon
             gguf_filename = "flux2-klein-4b-Q4_0.gguf",
             model_kind = "gguf",
         )
-    # ValueError, not RuntimeError: /images/load maps RuntimeError to 409 and /images/download-plan catches only
-    # (ValueError, FileNotFoundError), so the message escaped as a bare 500.
+    # ValueError, not RuntimeError: /images/load maps RuntimeError to 409 and /images/download-plan catches only (ValueError, FileNotFoundError), so the message escaped as a 500.
     assert "Flux2KleinPipeline" in str(excinfo.value)
 
 
@@ -2045,8 +2036,7 @@ def test_the_video_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch
 
 
 def test_every_shipped_video_family_resolves_on_this_diffusers():
-    # Drift guard: the video picker now hides a family whose pipeline class the installed diffusers lacks, so a stale class
-    # name in the table would hide a working model rather than just fail late.
+    # Drift guard: the video picker hides a family whose pipeline class the installed diffusers lacks, so a stale class name here would hide a working model.
     from core.inference.diffusion_families import family_pipeline_available
     from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
     for fam in _VIDEO_FAMILIES:

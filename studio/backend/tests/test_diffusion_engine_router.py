@@ -37,9 +37,8 @@ def _clean_env_and_state(monkeypatch):
     # Default: no resident sd-server (tests exercise the sd-cli path) and a stubbed runnability probe, so neither reaches a real install/exec.
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     monkeypatch.setattr(r, "_server_binary_runnable", lambda *_a, **_k: True)
-    # The selection is module state and several tests below set it by plain assignment, so monkeypatch cannot undo it.
-    # Restore it here: a leaked ENGINE_SD_CPP left get_active_diffusion_engine() returning the sd.cpp backend for the rest
-    # of the process, and eight tests in test_openai_images_generations_route.py 503'd in a full-suite run.
+    # The selection is module state and several tests below set it by plain assignment, so monkeypatch cannot undo it. A leaked ENGINE_SD_CPP left
+    # get_active_diffusion_engine() returning the sd.cpp backend for the rest of the process, 503ing eight tests in a full-suite run.
     saved_engine = r._active_engine_name
     saved_reason = r._fallback_reason
     try:
@@ -329,9 +328,8 @@ def test_begin_load_on_holds_the_transition_lock_while_registering(monkeypatch):
 
 
 def test_switch_aborts_when_the_old_engine_fails_to_unload(monkeypatch):
-    # A swallowed teardown failure published the new engine anyway and stranded the old model: the evictor, /images/unload and
-    # the next load all resolve through get_active_diffusion_engine(), so nothing could reclaim the resident pipeline (or a live
-    # sd-server) and the next load allocated on top of it. Keep the old engine published and fail the switch.
+    # A swallowed teardown failure published the new engine anyway and stranded the old model: the evictor, /images/unload and the next load all
+    # resolve through get_active_diffusion_engine(), so nothing could reclaim the resident pipeline. Keep the old engine published and fail the switch.
     def _fake_engine():
         def _boom():
             raise RuntimeError("sd-server would not die")
@@ -350,8 +348,7 @@ def test_switch_aborts_when_the_old_engine_fails_to_unload(monkeypatch):
 
 
 def test_predict_engine_matches_the_selection_without_activating(monkeypatch):
-    # The download plan is built from this prediction, so it must agree with the selection the load will make, but staging a
-    # download must not unload a resident model, so it activates nothing.
+    # The download plan is built from this prediction, so it must agree with the selection the load will make, but staging must not unload a resident model: it activates nothing.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)

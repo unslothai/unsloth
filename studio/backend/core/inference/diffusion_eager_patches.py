@@ -106,9 +106,8 @@ _orig_rmsnorm_forward: Optional[Callable] = None
 
 
 def _rmsnorm_forward(self, hidden_states):
-    # Fall back to the exact original where F.rms_norm is NOT equivalent to diffusers: NPU / bias / fp32-weight (special
-    # handling or an fp32 quirk), a tuple `dim` (diffusers reduces only the LAST dim), or a dtype mismatch (diffusers computes
-    # variance in fp32 from the ORIGINAL tensor).
+    # Fall back to the exact original where F.rms_norm is NOT equivalent to diffusers: NPU / bias / fp32-weight, a tuple `dim` (diffusers reduces
+    # only the LAST dim), or a dtype mismatch (diffusers computes variance in fp32 from the ORIGINAL tensor).
     if _NPU or self.bias is not None or _orig_rmsnorm_forward is None or len(tuple(self.dim)) != 1:
         return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
     weight = self.weight

@@ -491,9 +491,8 @@ class SdCppServer:
                         self.cancel(job_id)
                         cancel_sent_at = time.monotonic()
                     elif time.monotonic() - cancel_sent_at > _CANCEL_GRACE_S:
-                        # Cancel not reflected within the grace window, so the job is still running and sd-server will not interrupt it. Stop the
-                        # process before reporting the cancellation: abandoning the poll alone frees the generate lock while the native job keeps
-                        # the GPU busy and holds the server slot. Safe, since the backend reloads on the next generate.
+                        # Cancel not reflected within the grace window, so the job is still running and sd-server will not interrupt it. Stop the process before reporting
+                        # the cancellation: abandoning the poll frees the generate lock while the native job keeps the GPU. Safe, since the backend reloads on the next generate.
                         self.stop()
                         raise SdCppCancelled("sd-server generation was cancelled.")
                 if not self.is_alive():

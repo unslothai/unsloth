@@ -35,17 +35,15 @@ def _evict_chat() -> None:
     from core.inference.llama_cpp import chat_load_active
 
     llama = get_llama_cpp_backend()
-    # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is not
-    # healthy, so is_loaded would skip it. chat_load_active too: an HF load has no process until its GGUF downloaded, so
-    # is_active alone found nothing to cancel. unload_model sets the cancel event the download loop polls, so it aborts.
+    # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is not healthy. chat_load_active
+    # too, since an HF load has no process until its GGUF downloaded. unload_model sets the cancel event the download loop polls, so it aborts.
     if llama.is_active or chat_load_active():
         llama.unload_model()
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
         orchestrator.unload_model(orchestrator.active_model_name)
-    # An in-flight safetensors load has no active_model_name yet (published only once the worker reports success), so the
-    # unload above misses it and it would finish onto the GPU we just granted away. cancel_load discards the loading marker
-    # BEFORE tearing the worker down, so a load parked between retries aborts. It runs off the lifecycle gate, so no deadlock.
+    # An in-flight safetensors load has no active_model_name yet (published only on success), so the unload above misses it and it would finish onto
+    # the GPU we just granted away. cancel_load discards the loading marker BEFORE tearing the worker down, and runs off the lifecycle gate.
     for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
         orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.

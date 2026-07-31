@@ -2256,8 +2256,7 @@ def test_generation_refuses_while_a_teardown_is_waiting(fake_runtime, tmp_path):
 
 
 def test_a_raising_teardown_still_drains_the_fence(fake_runtime, tmp_path, monkeypatch):
-    # _teardown_state_locked ends in clear_gpu_cache(), which raises on a sticky CUDA fault. Without the finally the fence
-    # stayed up forever, refusing every later generation for the life of the process.
+    # _teardown_state_locked ends in clear_gpu_cache(), which raises on a sticky CUDA fault. Without the finally the fence stayed up forever.
     from core.inference import video as video_mod
 
     backend = VideoBackend()

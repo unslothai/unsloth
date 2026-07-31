@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Assertions over the model catalog: keys, aliases, integrity, quant routing ladders, search matching.
-// Plain node:assert like i18n:check. Run: npm run catalog:check
+// Assertions over the model catalog: keys, aliases, integrity, quant routing ladders, search matching. Plain node:assert like i18n:check. Run: npm run catalog:check
 
 import assert from "node:assert/strict";
 
@@ -325,8 +324,7 @@ assert.equal(
     .repoId,
   "ideogram-ai/ideogram-4-nf4-diffusers",
 );
-// A gated BF16 artifact (FLUX.1-dev) is NOT auto-routed when undownloaded even on a big GPU: the
-// download would fail without license/token access, so route to the open GGUF.
+// A gated BF16 artifact (FLUX.1-dev) is NOT auto-routed when undownloaded even on a big GPU: the download would fail without license/token access.
 const fluxDevRoute = groupForRepoId("unsloth/FLUX.1-dev", IMAGE_CATALOG);
 assert.ok(fluxDevRoute);
 assert.equal(
@@ -364,8 +362,7 @@ assert.equal(
   "Alpha-VLLM/Lumina-Image-2.0",
 );
 assert.equal(loadSpecFor("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG)?.kind, "pipeline");
-// HunyuanImage 2.1: the 50 GB bf16 pipeline misses a 24 GB card so a bare click routes to the
-// QuantStack GGUF; on a large GPU bf16 wins. The mirror id and the GGUF id share one group.
+// HunyuanImage 2.1: the 50 GB bf16 pipeline misses a 24 GB card so a bare click routes to the QuantStack GGUF; on a large GPU bf16 wins. Both ids share one group.
 const hyimage = groupForRepoId(
   "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
   IMAGE_CATALOG,
@@ -382,8 +379,7 @@ assert.equal(
   "bf16",
 );
 assert.equal(groupForRepoId("QuantStack/HunyuanImage-2.1-GGUF", IMAGE_CATALOG), hyimage);
-// HiDream I1: all three variants group together, a datacenter GPU auto-routes to the Full bf16 (catalog
-// order wins among equal sizes), and the fit filter hides the group on 24 GB (63 GB everywhere).
+// HiDream I1: all three variants group together, a datacenter GPU auto-routes to the Full bf16 (catalog order wins among equal sizes), and 24 GB hides the group.
 const hidream = groupForRepoId("HiDream-ai/HiDream-I1-Full", IMAGE_CATALOG);
 assert.ok(hidream);
 assert.equal(groupForRepoId("HiDream-ai/HiDream-I1-Dev", IMAGE_CATALOG), hidream);
@@ -416,8 +412,7 @@ assert.equal(
     .label,
   "BF16 - 720p",
 );
-// Same-format artifacts keep declaration order, so 720p is listed first and the fit loop returns it when
-// it fits; a budget of 42 skips 720p (52 > 42) and falls back to 480p (40).
+// Same-format artifacts keep declaration order, so 720p is listed first and the fit loop returns it; a budget of 42 skips it (52 > 42) and falls back to 480p (40).
 assert.equal(
   pickDefaultArtifact(hunyuan, { gpuGb: 60, systemRamGb: 128, isDownloaded: notDownloaded })
     .label,
@@ -425,8 +420,7 @@ assert.equal(
 );
 
 // ── official BF16 artifacts (added so groups are not unsloth-quant-only) ────────
-// Qwen-Image-2512 BF16 (54 GB) misses a 24/48 GB budget (bnb-4bit/fp8 win there, asserted above) but on
-// an 80 GB GPU (budget 56) it is the highest-quality artifact that fits and wins.
+// Qwen-Image-2512 BF16 (54 GB) misses a 24/48 GB budget (bnb-4bit/fp8 win there, asserted above) but on an 80 GB GPU (budget 56) it fits and wins.
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
     .format,
@@ -450,8 +444,7 @@ assert.equal(
     .format,
   "bf16",
 );
-// FLUX.1-dev BF16 (32 GB) fits a 48 GB GPU but is GATED, so a bare click routes to the open GGUF unless
-// it is already downloaded (see the gated-routing checks above). Small GPU -> GGUF.
+// FLUX.1-dev BF16 (32 GB) fits a 48 GB GPU but is GATED, so a bare click routes to the open GGUF unless it is already downloaded. Small GPU -> GGUF.
 const fluxDev = groupForRepoId("black-forest-labs/FLUX.1-dev", IMAGE_CATALOG);
 assert.ok(fluxDev);
 assert.equal(fluxDev.canonicalId, "unsloth/FLUX.1-dev");
@@ -473,8 +466,7 @@ assert.equal(
     .format,
   "gguf",
 );
-// LTX-2.3 video carries the official BF16 single-file checkpoint (no FP8: the loader refuses its scaled-fp8
-// file), which keeps the ~50 GB Gemma3 encoder resident, so only a B200-class budget picks it.
+// LTX-2.3 video carries the official BF16 single file (no FP8: the loader refuses its scaled-fp8 one), which keeps the ~50 GB Gemma3 encoder resident, so B200-class only.
 const ltxGroup = groupForRepoId("unsloth/LTX-2.3", VIDEO_CATALOG);
 assert.ok(ltxGroup);
 assert.equal(

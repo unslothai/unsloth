@@ -82,9 +82,8 @@ function ExamplePreviews({ repo }: { repo: string }) {
   );
 }
 
-// One-click example-dataset importers. Each card shows the license (terms before import) plus a few preview thumbnails. On
-// success the parent refreshes its dataset list and selects the imported folder. Layout is one card per row: the config
-// column is narrow, so a two-column grid wrapped titles one word per line and overran the license text into the next card.
+// One-click example-dataset importers. Each card shows the license (terms before import) plus preview thumbnails; on success the parent refreshes
+// its dataset list and selects the folder. One card per row: the config column is narrow, so a two-column grid wrapped titles one word per line.
 export function ExampleDatasetCards({
   examples,
   busyId,

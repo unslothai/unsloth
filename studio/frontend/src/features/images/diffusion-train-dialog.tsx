@@ -72,8 +72,7 @@ export function DiffusionTrainDialog({
   const [starting, setStarting] = useState(false);
   const [status, setStatus] = useState<DiffusionTrainingStatus | null>(null);
 
-  // The dialog stays mounted (ImagesPage is keep-alive), so seed per-open state here: the base model from the currently
-  // loaded SDXL pipeline, and the dataset list from the backend.
+  // The dialog stays mounted (ImagesPage is keep-alive), so seed per-open state here: the base model from the loaded SDXL pipeline, and the dataset list from the backend.
   const refreshInfo = useCallback(async (): Promise<DiffusionTrainingInfo | null> => {
     try {
       const i = await getDiffusionTrainingInfo();

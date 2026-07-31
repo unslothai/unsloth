@@ -1737,9 +1737,8 @@ def test_request_model_rejects_non_finite_learning_rate():
 
 
 def test_request_model_rejects_non_finite_clipping_and_snr():
-    # Same 1e309 -> inf vector as learning_rate, on the two knobs whose bound is one-sided. max_grad_norm = inf passed
-    # ge = 0 and made clip_grad_norm_'s coefficient clamp to 1.0, so the run trained completely unclipped; snr_gamma = inf
-    # passed gt = 0 and made every min-SNR weight 1.0, silently degrading the loss to unweighted MSE.
+    # Same 1e309 -> inf vector as learning_rate, on the two one-sided bounds. max_grad_norm = inf passed ge = 0 and clamped
+    # clip_grad_norm_'s coefficient to 1.0 (unclipped training); snr_gamma = inf passed gt = 0 and made every min-SNR weight 1.0.
     from pydantic import ValidationError
 
     from models.training import DiffusionTrainingStartRequest as R
@@ -1758,9 +1757,8 @@ def test_request_model_rejects_non_finite_clipping_and_snr():
 
 
 def test_start_route_never_starts_a_run_with_a_non_finite_knob(client):
-    # End to end: FastAPI parses the body with the stdlib json module, which accepts the non-standard Infinity literal,
-    # and plain 1e309 floats to inf under any parser, so the schema is the only guard. Asserted on the outcome: the
-    # default validation handler cannot serialise inf back into a 422 body, so what matters is that no run is spawned.
+    # End to end: FastAPI parses the body with the stdlib json module, which accepts the Infinity literal, and 1e309 floats to inf
+    # under any parser, so the schema is the only guard. Asserted on the outcome, since the 422 handler cannot serialise inf back.
     from fastapi.testclient import TestClient
 
     strict = TestClient(client._app, raise_server_exceptions = False)

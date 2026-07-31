@@ -388,7 +388,7 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     fam = (resolved_family or "").strip().lower()
     mode = (base_precision or "").strip().lower()
     if fam in _DIT_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8", "mxfp8"):
-        # The DiT trainer's dense precisions all require CUDA. bf16_unsupported_reason exempts a CPU-only host, so without this a dense request would pass the preflight, evict residents, then raise in the child.
+        # The DiT trainer's dense precisions all require CUDA, and bf16_unsupported_reason exempts a CPU-only host, so without this a dense request would evict residents then raise in the child.
         try:
             import torch
             has_cuda = torch.cuda.is_available()

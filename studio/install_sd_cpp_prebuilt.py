@@ -38,8 +38,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-# Default source: the Unsloth mirror's CPU/Apple prebuilts. Override with UNSLOTH_SD_CPP_REPO.
-# GPU hosts never reach here (they run diffusers), so only CPU/Apple assets are needed.
+# Default source: the Unsloth mirror's CPU/Apple prebuilts (override with UNSLOTH_SD_CPP_REPO). GPU hosts run diffusers, so only CPU/Apple assets are needed.
 DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 # Fallback when the mirror cannot serve this host (release missing, or a host we do not build).
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"

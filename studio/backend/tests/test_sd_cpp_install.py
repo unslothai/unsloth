@@ -698,9 +698,8 @@ def test_an_unrunnable_user_supplied_binary_is_never_deleted(monkeypatch, tmp_pa
 def test_unrunnable_binary_in_an_unmarked_root_is_kept_because_install_would_refuse(
     monkeypatch, tmp_path
 ):
-    # The repair and the installer have to agree on what "ours" means. install() refuses a pre-existing, non-empty target with
-    # no marker, which is exactly what a user's own checkout looks like, so discarding a binary there deleted it and then
-    # permanently refused the reinstall. The unrunnable binary is left in place instead: the router's probe still refuses it.
+    # The repair and the installer must agree on what "ours" means: install() refuses a pre-existing, non-empty target with no marker,
+    # which is what a user's own checkout looks like, so discarding a binary there deleted it and then refused the reinstall. Left in place.
     import types
 
     import core.inference.sd_cpp_backend as bk

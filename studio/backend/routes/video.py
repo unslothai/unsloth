@@ -325,9 +325,8 @@ async def get_gallery_video_file(
     )
 
 
-# A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob the way it does a PNG: that buffers the
-# whole MP4 before playback, defeats seeking and pins the bytes in the webview. The /file route already streams ranges
-# but is bearer-gated, so mint a short-lived HMAC link. 12 hours, since a <video> re-requests bytes on every seek.
+# A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob like a PNG: that buffers the whole MP4, defeats seeking and
+# pins the bytes in the webview. The /file route streams ranges but is bearer-gated, so mint a 12-hour HMAC link (<video> re-requests on seek).
 _VIDEO_LINK_TTL = 12 * 3600
 _VIDEO_LINK_SECRET = _secrets.token_bytes(32)
 

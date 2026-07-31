@@ -97,8 +97,7 @@ class _FakeVae:
 
 
 def test_align_vae_dtype_uses_unet_denoiser():
-    # For SDXL the denoiser lives at pipe.unet, so _align_vae_dtype must read it and cast the VAE to the U-Net's dtype. The
-    # dtype comes from a parameter, hence the _FakeVae denoiser.
+    # For SDXL the denoiser lives at pipe.unet, so _align_vae_dtype must read it and cast the VAE to the U-Net's dtype, which comes from a parameter (hence the _FakeVae).
     import torch
 
     vae = _FakeVae(dtype = torch.float32)

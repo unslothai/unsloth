@@ -173,9 +173,8 @@ def list_images(
     except OSError:
         return []
     paths.sort(key = _mtime, reverse = True)
-    # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced window would drop valid
-    # images and make has_more wrong. Read only as far as needed. Known limit: this re-reads headers from newest down to
-    # `offset+limit` per page, so a deep scroll is O(offset) header-opens; PIL opens are lazy and off the event loop.
+    # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced window would drop valid images and make has_more
+    # wrong. Known limit: this re-reads headers from newest down to `offset+limit` per page, so a deep scroll is O(offset) header-opens.
     want = None if limit is None else offset + limit
     records = []
     for path in paths:

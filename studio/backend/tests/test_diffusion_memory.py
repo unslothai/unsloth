@@ -497,8 +497,7 @@ def test_apply_group_single_transformer_failure_falls_back(monkeypatch):
 
 
 def test_apply_group_fallback_enables_vae_tiling():
-    # A balanced/group plan keeps the VAE resident (tiling off), so when group offload cannot engage and we drop to
-    # whole-module offload the applier must turn VAE tiling ON to cap the decode spike.
+    # A balanced/group plan keeps the VAE resident (tiling off), so when group offload cannot engage and we drop to whole-module offload the applier must turn tiling ON.
     plan = _plan(OFFLOAD_GROUP, tiling = True)
     assert plan.vae_tiling is False  # group plan leaves tiling off by design
     pipe = _RecordingPipe()  # no .transformer -> group offload falls back to model

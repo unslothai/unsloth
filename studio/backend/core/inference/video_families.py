@@ -95,7 +95,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # Pre-cast Gemma3-12B TE (fp32 ~49 GB on the hub, pre-cast ~13.2 GB): the biggest download win.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
     ),
-    # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio, single-DiT. Its VAE's temporal compression 4 gives valid frame counts 4k+1. Defaults 50 steps / CFG 5.
+    # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's temporal compression 4 gives valid frame counts 4k+1. Defaults 50 steps / CFG 5.
     VideoFamily(
         name = "wan2.2-ti2v-5b",
         pipeline_class = "WanPipeline",
@@ -120,7 +120,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         vae_force_fp32 = True,
         gguf_repo = "QuantStack/Wan2.2-TI2V-5B-GGUF",
     ),
-    # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE. Both transformers are WanTransformer3DModel with boundary_ratio 0.875; high-noise steps route through transformer, low-noise through transformer_2, so cfg2_kwarg is threaded ONLY here.
+    # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE. Both transformers are WanTransformer3DModel with boundary_ratio 0.875; high-noise steps route through transformer, low-noise through transformer_2, so cfg2_kwarg is threaded only here.
     VideoFamily(
         name = "wan2.2-t2v-a14b",
         pipeline_class = "WanPipeline",
@@ -146,7 +146,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         vae_force_fp32 = True,
         # No gguf_repo: community GGUFs split the experts, and a single-file load covers only one.
     ),
-    # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL + ByT5 encoders. Three quirks: no guidance kwarg (CFG on the ``guider``), no callback_on_step_end (generate() wraps scheduler.step), and no model_index.json upstream, so only the community repacks load.
+    # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL + ByT5 encoders. Three quirks: no guidance kwarg (CFG on the ``guider``), no callback_on_step_end (generate() wraps scheduler.step), and no upstream model_index.json, so only the community repacks load.
     VideoFamily(
         name = "hunyuanvideo-1.5",
         pipeline_class = "HunyuanVideo15Pipeline",
@@ -169,7 +169,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE (4.7 to 2.4); Qwen2.5-VL TE bf16 14.0 + ByT5 0.8.
         bf16_components_gb = (16.6, 14.8, 2.4),
     ),
-    # The 720p t2v repack: same architecture and footprint as the 480p entry, only the trained resolution differs. Its own family so a 720p load defaults to 720p sizes, and its full-path alias outranks the generic token.
+    # The 720p t2v repack: same architecture and footprint as the 480p entry, only the trained resolution differs. Its own family so a 720p load defaults to 720p sizes; the full-path alias outranks the generic token.
     VideoFamily(
         name = "hunyuanvideo-1.5-720p",
         pipeline_class = "HunyuanVideo15Pipeline",

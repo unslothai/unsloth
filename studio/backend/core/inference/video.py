@@ -349,10 +349,9 @@ class VideoBackend:
         self._load_token = 0
         self._cancel_event = threading.Event()
         self._active_generate_cancel: Optional[threading.Event] = None
-        # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline. A generation queued
-        # behind the active one holds no cancel event yet, so without this fence it could win the lock once the active
-        # one released it and denoise a whole new clip against a pipeline being freed. A count, not a flag, so concurrent
-        # teardowns each own their own release. Mirrors DiffusionBackend._teardown_waiters.
+        # How many unloads / superseding loads are waiting on _generate_lock to free this pipeline. A generation queued behind
+        # the active one holds no cancel event yet, so without this fence it could win the lock after an eject and denoise a
+        # whole new clip against a pipeline being freed. A count, so concurrent teardowns each own their own release.
         self._teardown_waiters = 0
         # Generation progress, written by the step callback / phase transitions.
         self._gen: dict[str, Any] = {"active": False}
@@ -818,7 +817,7 @@ class VideoBackend:
         fam = _detect_load_family(repo_id, gguf_filename, family_override)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
-        # The load narrows the base pull for an LTX-2.3 checkpoint, but only its header tells 2.3 from 2.0 and that is not on disk yet. Name-based here: a wrong guess costs an inline pull, the wide base list costs gigabytes.
+        # Only the header tells an LTX-2.3 checkpoint from 2.0 and it is not on disk yet, so narrow the base pull by NAME: a wrong guess costs an inline pull, the wide base list costs gigabytes.
         ltx23 = self._pick_looks_like_ltx23(fam, repo_id, gguf_filename, kind)
         # Keyed by repo so a 2.3 pick's checkpoint and extras stay ONE scoped job; two entries would collide on the job key.
         entries: dict[str, dict[str, Any]] = {}
@@ -1130,8 +1129,7 @@ class VideoBackend:
                         raise RuntimeError("Video load was cancelled or superseded.")
                     self._teardown_state_locked()
                 finally:
-                    # Released here, not at the end of the load: the old pipe is gone (or this load bailed), and a raising teardown
-                    # must not leave the fence up for the life of the process.
+                    # Released here, not at the end of the load: the old pipe is gone (or this load bailed), and a raising teardown must not leave the fence up for the life of the process.
                     self._teardown_waiters -= 1
 
         target = resolve_diffusion_device_target()
@@ -1254,9 +1252,8 @@ class VideoBackend:
                 logger = logger,
             )
         )
-        # Injection is best-effort (a missing checkpoint falls back to the dense encoder), but the scoped pre-download already
-        # dropped those shards and from_pretrained cannot re-fetch from a local snapshot dir, so top them up here.
-        # ltx23 is False by construction: that path gets the hub id, where from_pretrained resolves the dense encoder itself.
+        # Injection is best-effort (a missing checkpoint falls back to the dense encoder), but the scoped pre-download already dropped those
+        # shards and from_pretrained cannot re-fetch from a local snapshot dir, so top them up here. ltx23 never reaches this: it gets the hub id.
         missing_dense = [c for c in (_te_prequant_skipped or ()) if c not in pipe_kwargs]
         if missing_dense and _base_local_dir:
             logger.warning(
@@ -1366,8 +1363,7 @@ class VideoBackend:
         if quant_replanned and transformer_quant_engaged is None:
             plan = bf16_plan
 
-        # dense text-encoder quant (opt-in): the companion encoder is often the largest resident, so quantise it in place
-        # before placement, for every kind. Best-effort; family drives the int8 keep-bf16 schedule.
+        # dense text-encoder quant (opt-in): the companion encoder is often the largest resident, so quantise it in place before placement, for every kind. Best-effort.
         text_encoder_quant_engaged = quantize_text_encoders(
             pipe,
             target,
@@ -1777,8 +1773,7 @@ class VideoBackend:
         cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
             with self._lock:
-                # A teardown is waiting for this lock and Python locks are not FIFO, so refuse rather than denoise against a
-                # pipeline that is already being torn down.
+                # A teardown is waiting for this lock and Python locks are not FIFO, so refuse rather than denoise against a pipeline that is already being torn down.
                 if self._teardown_waiters:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 state = self._state
@@ -2060,8 +2055,7 @@ class VideoBackend:
                 try:
                     self._teardown_state_locked()
                 finally:
-                    # Released in a finally: _teardown_state_locked ends in clear_gpu_cache(), which raises on a sticky CUDA fault, and
-                    # an un-drained fence would refuse every later generation for the life of the process.
+                    # Released in a finally: _teardown_state_locked ends in clear_gpu_cache(), which raises on a sticky CUDA fault, and an un-drained fence refuses every later generation.
                     self._teardown_waiters -= 1
         logger.info("video.unloaded")
         return self.status()

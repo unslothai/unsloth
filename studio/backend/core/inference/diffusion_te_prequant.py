@@ -44,7 +44,7 @@ TE_PREQUANT_SCHEMES = ("fp8",)
 # Components the pipeline-assembly injection covers (text_encoder_4 is family-assembled separately, see diffusion_hidream.py).
 TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
-# Bases whose text-encoder weights are VERIFIED byte-identical, so one hosted artifact serves them all (every shard LFS sha256 compared on 2026-07-18). The checkpoint validator accepts a base_model_id from the same group; anything else keeps the strict refusal. Ids are lowercased.
+# Bases whose text-encoder weights are VERIFIED byte-identical (every shard LFS sha256 compared on 2026-07-18), so one hosted artifact serves them all. The validator accepts a base_model_id from the same group; anything else keeps the strict refusal.
 _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
     # Qwen2.5-VL-7B text encoder: 4 shards, 16,584,414,544 bytes, identical sha256 set.
     frozenset(
@@ -272,7 +272,7 @@ def load_prequant_text_encoder(
             # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so they hold real values, then re-assign the cast weights.
             encoder = encoder_cls(config)
             encoder.load_state_dict(state_dict, strict = True, assign = True)
-        # assign=True swaps in SEPARATE tensors for tied weights (the saved dict carries a copy per key), untying e.g. Qwen3's lm_head from embed_tokens. That defeats _cast_fp8's tied-projection skip below, so re-tie to the builder-identical structure; a no-op for untied configs.
+        # assign=True swaps in SEPARATE tensors for tied weights (the saved dict carries a copy per key), untying e.g. Qwen3's lm_head from embed_tokens and defeating _cast_fp8's tied-projection skip. Re-tie to the builder-identical structure; a no-op when untied.
         tie = getattr(encoder, "tie_weights", None)
         if callable(tie):
             tie()

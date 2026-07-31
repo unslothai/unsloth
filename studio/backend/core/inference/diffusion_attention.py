@@ -142,7 +142,7 @@ def _cudnn_attention_supported() -> bool:
     return have is None or have >= (8, 0)
 
 
-# Optional kernels installable on demand: dispatcher name -> (probe module, pip package). Wheels only (--only-binary=:all:), since a source build needs a CUDA toolchain the host may lack. cuDNN/native ship with torch.
+# Optional kernels installable on demand: dispatcher name -> (probe module, pip package). Wheels only (--only-binary=:all:), since a source build needs a CUDA toolchain the host may lack.
 _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
     "sage": ("sageattention", "sageattention>=2.1.1"),
     "flash": ("flash_attn", "flash-attn"),

@@ -1024,10 +1024,9 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     from core.inference import diffusion_engine_router as router
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
 
-    # This test is about WHICH kwargs reach the planner, not which planner is picked, so pin the engine rather
-    # than let the host decide it: the pick above is a GGUF one, and on a GPU-less runner that routes to native
-    # sd.cpp, whose planner is a different object than the one stubbed below. Left to the host, the assertions
-    # passed on a GPU box and died with a bare KeyError on CI. Engine SELECTION has its own tests, next.
+    # This test is about WHICH kwargs reach the planner, not which planner is picked, so pin the engine: the pick above is a
+    # GGUF one, and on a GPU-less runner that routes to native sd.cpp, whose planner is a different object than the stub below.
+    # Left to the host, the assertions passed on a GPU box and died with a bare KeyError on CI. Engine SELECTION is tested next.
     monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
     backend = diffusion_module.get_diffusion_backend()
     seen: dict = {}

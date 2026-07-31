@@ -108,11 +108,9 @@ export function useChatPickerInventory(
         .filter(
           (row) =>
             PICKER_LOCAL_SOURCES.has(row.source) &&
-            // Skip non-chat rows (e.g. a folder with only config.json is
-            // classified "unknown" -> canChat false); selecting one would try to
-            // load a weightless path. toLocalModelInfo drops capabilities, so
-            // this is the only place the guard can live. A row the backend classified as a generation task is exempt: canChat is
-            // about the chat loader, and dropping it here hid every on-device diffusion model from the pickers that CAN load it.
+            // Skip non-chat rows (a folder with only config.json classifies "unknown" -> canChat false); selecting one would load a weightless path.
+            // toLocalModelInfo drops capabilities, so this is the only place the guard can live. A row the backend classified as a generation task is
+            // exempt: canChat is about the chat loader, and dropping it here hid every on-device diffusion model from the pickers that CAN load it.
             (row.capabilities.canChat || studioPageForTask(row.task) !== undefined) &&
             !isHiddenModelId(row.modelId, row.repoId, row.path),
         )

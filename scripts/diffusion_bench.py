@@ -41,8 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-# Backend root on sys.path so `core.inference.diffusion` imports as the server does (deferred into main()
-# so --help never triggers torch).
+# Backend root on sys.path so `core.inference.diffusion` imports as the server does (deferred into main() so --help never triggers torch).
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent / "studio" / "backend"
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
