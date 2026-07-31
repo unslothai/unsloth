@@ -550,12 +550,38 @@ def test_reasoning_budget_overrides_are_last_wins():
 @pytest.mark.parametrize(
     "args",
     [
+        ["--reasoning-budget-message", "  PAD  "],
+        ["--reasoning-budget-message=  PAD  "],
+    ],
+)
+def test_reasoning_budget_message_preserves_verbatim_whitespace(args):
+    assert parse_reasoning_budget_message_override(args) == "  PAD  "
+    assert resolve_reasoning_budget_message(args, "fallback") == "  PAD  "
+
+
+@pytest.mark.parametrize("unsafe", ["😀" * 2_049, "bad\0message"])
+def test_reasoning_budget_message_validates_every_occurrence(unsafe):
+    with pytest.raises(ValueError, match = "reasoning-budget-message"):
+        validate_extra_args(
+            [
+                "--reasoning-budget-message",
+                unsafe,
+                "--reasoning-budget-message",
+                "safe final value",
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
         ["--reasoning-budget"],
         ["--reasoning-budget", "nope"],
         ["--reasoning-budget=-2"],
         ["--reasoning-budget=2147483648"],
         ["--reasoning-budget-message"],
-        ["--reasoning-budget-message", "x" * 65_537],
+        ["--reasoning-budget-message", "😀" * 2_049],
+        ["--reasoning-budget-message", "bad\0message"],
     ],
 )
 def test_validate_extra_args_rejects_malformed_reasoning_overrides(args):

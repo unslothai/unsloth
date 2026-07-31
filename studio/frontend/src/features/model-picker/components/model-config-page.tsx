@@ -62,6 +62,7 @@ import {
   deletePerModelConfig,
   floorMaxSeqLength,
   isDefaultConfig,
+  isReasoningBudgetMessageValid,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
   resolveInitialConfig,
@@ -732,11 +733,11 @@ function GgufAdvancedSettings({
             type="text"
             value={config.reasoningBudgetMessage}
             placeholder="None"
-            onChange={(event) =>
-              update({
-                reasoningBudgetMessage: event.target.value.slice(0, 65_536),
-              })
-            }
+            onChange={(event) => {
+              if (isReasoningBudgetMessageValid(event.target.value)) {
+                update({ reasoningBudgetMessage: event.target.value });
+              }
+            }}
             aria-label="Reasoning Budget Message"
             className={`h-8 w-[180px] min-w-0 ${CONTROL_SURFACE} px-3 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`}
           />

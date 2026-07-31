@@ -20,6 +20,7 @@ from pydantic import (
 
 from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+from utils.reasoning_budget import validate_reasoning_budget_message
 
 
 class LoadRequest(BaseModel):
@@ -213,9 +214,13 @@ class LoadRequest(BaseModel):
     )
     reasoning_budget_message: str = Field(
         "",
-        max_length = 65_536,
         description = "Message emitted by llama-server when the reasoning budget is exhausted.",
     )
+
+    @field_validator("reasoning_budget_message")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: str) -> str:
+        return validate_reasoning_budget_message(value)
     force_cancel_active: bool = Field(
         False,
         description = (

@@ -15,6 +15,7 @@ const { store } = installLocalStorageFake();
 const {
   DEFAULT_PER_MODEL_CONFIG,
   isDefaultConfig,
+  isReasoningBudgetMessageValid,
   normalizePerModelConfig,
   resolveInitialConfig,
   savePerModelConfig,
@@ -36,6 +37,23 @@ test("reasoning budget fields normalize to the backend defaults", () => {
   assert.equal(
     isDefaultConfig({ ...DEFAULT_PER_MODEL_CONFIG, reasoningBudget: 0 }),
     false,
+  );
+});
+
+test("reasoning budget messages use the subprocess byte boundary", () => {
+  assert.equal(isReasoningBudgetMessageValid("😀".repeat(2_048)), true);
+  assert.equal(isReasoningBudgetMessageValid("😀".repeat(2_049)), false);
+  assert.equal(isReasoningBudgetMessageValid("bad\0message"), false);
+  assert.equal(isReasoningBudgetMessageValid("  PAD  "), true);
+  assert.equal(
+    normalizePerModelConfig({ reasoningBudgetMessage: "😀".repeat(2_049) })
+      .reasoningBudgetMessage,
+    "",
+  );
+  assert.equal(
+    normalizePerModelConfig({ reasoningBudgetMessage: "  PAD  " })
+      .reasoningBudgetMessage,
+    "  PAD  ",
   );
 });
 

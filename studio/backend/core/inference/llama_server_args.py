@@ -14,7 +14,9 @@ Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 from __future__ import annotations
 
 import os
-from typing import Iterable, Mapping, Optional
+from typing import Callable, Iterable, Mapping, Optional
+
+from utils.reasoning_budget import validate_reasoning_budget_message
 
 # Valid llama-server --parallel range, shared with LoadRequest.n_parallel.
 # Mirrored by callers that cannot import this: run.py and unsloth_cli/commands/
@@ -153,7 +155,6 @@ _REASONING_BUDGET_MESSAGE_FLAGS: frozenset[str] = frozenset(
     {"--reasoning-budget-message"}
 )
 _REASONING_BUDGET_MAX = 2_147_483_647
-_REASONING_BUDGET_MESSAGE_MAX_CHARS = 65_536
 _SPEC_FLAGS: frozenset[str] = frozenset(
     {
         "--spec-default",
@@ -286,7 +287,13 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
     return override if override is not None else fallback_n_ctx
 
 
-def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Optional[str]:
+def _last_flag_value(
+    args: Optional[Iterable[str]],
+    flags: frozenset[str],
+    *,
+    preserve_raw: bool = False,
+    validate_value: Optional[Callable[[str], object]] = None,
+) -> Optional[str]:
     """Return the last-wins string value among ``flags`` in extras, or None.
 
     Handles both ``--flag=value`` and ``--flag value`` forms and raises if a
@@ -315,10 +322,12 @@ def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Op
             raw_value = tokens[i + 1]
             i += 2
 
-        value = str(raw_value).strip()
-        if not value:
+        raw_value = str(raw_value)
+        if not raw_value.strip():
             raise ValueError(f"llama-server flag '{flag}' requires a non-empty value")
-        override = value
+        if validate_value is not None:
+            validate_value(raw_value)
+        override = raw_value if preserve_raw else raw_value.strip()
 
     return override
 
@@ -334,11 +343,7 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     return _last_flag_value(args, _CACHE_FLAGS)
 
 
-def parse_reasoning_budget_override(args: Optional[Iterable[str]]) -> Optional[int]:
-    """Return the last user-supplied ``--reasoning-budget`` value."""
-    raw_value = _last_flag_value(args, _REASONING_BUDGET_FLAGS)
-    if raw_value is None:
-        return None
+def _validate_reasoning_budget_value(raw_value: str) -> int:
     try:
         value = int(raw_value)
     except ValueError as exc:
@@ -352,15 +357,24 @@ def parse_reasoning_budget_override(args: Optional[Iterable[str]]) -> Optional[i
     return value
 
 
+def parse_reasoning_budget_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``--reasoning-budget`` value."""
+    raw_value = _last_flag_value(
+        args, _REASONING_BUDGET_FLAGS, validate_value = _validate_reasoning_budget_value
+    )
+    return None if raw_value is None else int(raw_value)
+
+
 def parse_reasoning_budget_message_override(
     args: Optional[Iterable[str]],
 ) -> Optional[str]:
     """Return the last user-supplied ``--reasoning-budget-message`` value."""
-    value = _last_flag_value(args, _REASONING_BUDGET_MESSAGE_FLAGS)
-    if value is not None and len(value) > _REASONING_BUDGET_MESSAGE_MAX_CHARS:
-        raise ValueError(
-            "llama-server --reasoning-budget-message exceeds the 65536-character limit"
-        )
+    value = _last_flag_value(
+        args,
+        _REASONING_BUDGET_MESSAGE_FLAGS,
+        preserve_raw = True,
+        validate_value = validate_reasoning_budget_message,
+    )
     return value
 
 

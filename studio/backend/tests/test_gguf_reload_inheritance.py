@@ -249,6 +249,12 @@ def test_reasoning_budget_schema_contract():
     assert LoadRequest(model_path = "owner/repo", reasoning_budget = 0).reasoning_budget == 0
     with pytest.raises(ValueError):
         LoadRequest(model_path = "owner/repo", reasoning_budget = -2)
+    with pytest.raises(ValueError, match = "8192-byte"):
+        LoadRequest(model_path = "owner/repo", reasoning_budget_message = "😀" * 2_049)
+    with pytest.raises(ValueError, match = "NUL"):
+        LoadRequest(model_path = "owner/repo", reasoning_budget_message = "bad\0message")
+    padded = LoadRequest(model_path = "owner/repo", reasoning_budget_message = "  PAD  ")
+    assert padded.reasoning_budget_message == "  PAD  "
 
     load = LoadResponse(status = "loaded", model = "m", display_name = "m", inference = {})
     status = InferenceStatusResponse()

@@ -92,6 +92,25 @@ const STORAGE_SCHEMA_VERSION = 2;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
+export const MAX_REASONING_BUDGET_MESSAGE_BYTES = 8_192;
+
+export function isReasoningBudgetMessageValid(value: string): boolean {
+  if (value.includes("\0")) return false;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      i += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return (
+    new TextEncoder().encode(value).byteLength <=
+    MAX_REASONING_BUDGET_MESSAGE_BYTES
+  );
+}
 
 type StoredPerModelConfig = PerModelConfig & {
   version: typeof STORAGE_SCHEMA_VERSION;
@@ -514,8 +533,9 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
           )
         : DEFAULT_PER_MODEL_CONFIG.reasoningBudget,
     reasoningBudgetMessage:
-      typeof partial.reasoningBudgetMessage === "string"
-        ? partial.reasoningBudgetMessage.slice(0, 65_536)
+      typeof partial.reasoningBudgetMessage === "string" &&
+      isReasoningBudgetMessageValid(partial.reasoningBudgetMessage)
+        ? partial.reasoningBudgetMessage
         : DEFAULT_PER_MODEL_CONFIG.reasoningBudgetMessage,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"

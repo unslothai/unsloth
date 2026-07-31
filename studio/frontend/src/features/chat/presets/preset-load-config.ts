@@ -15,6 +15,7 @@ import {
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
   SPECULATIVE_TYPES,
+  isReasoningBudgetMessageValid,
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker/model-config/per-model-config";
@@ -134,8 +135,9 @@ export function normalizePresetLoadConfig(
           )
         : -1,
     reasoningBudgetMessage:
-      typeof partial.reasoningBudgetMessage === "string"
-        ? partial.reasoningBudgetMessage.slice(0, 65_536)
+      typeof partial.reasoningBudgetMessage === "string" &&
+      isReasoningBudgetMessageValid(partial.reasoningBudgetMessage)
+        ? partial.reasoningBudgetMessage
         : "",
     tensorParallel:
       typeof partial.tensorParallel === "boolean"

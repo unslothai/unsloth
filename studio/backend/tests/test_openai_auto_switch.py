@@ -807,6 +807,47 @@ def test_reasoning_budget_override_route_roundtrip(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("message", ["😀" * 2_049, "bad\0message"])
+def test_reasoning_budget_override_rejects_unsafe_argv(message):
+    import pydantic
+    import routes.settings as settings_route
+
+    with pytest.raises(pydantic.ValidationError):
+        settings_route.ModelOverridePayload(
+            model_id = "unsloth/B-GGUF", reasoning_budget_message = message
+        )
+    assert settings.normalize_model_override({"reasoning_budget_message": message}) == {}
+
+    from routes.chat_history import ChatPresetLoadConfig
+
+    with pytest.raises(pydantic.ValidationError):
+        ChatPresetLoadConfig(reasoningBudgetMessage = message)
+
+
+@pytest.mark.parametrize("message", ["😀" * 2_049, "bad\0message"])
+def test_unsafe_passthrough_is_rejected_before_backend_lookup(monkeypatch, message):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        inference_route.api_monitor, "record_lifecycle", lambda **kwargs: "load-event"
+    )
+    monkeypatch.setattr(inference_route.api_monitor, "fail_open", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: pytest.fail("backend lookup happened before argument rejection"),
+    )
+    request = LoadRequest(
+        model_path = "unsloth/B-GGUF",
+        llama_extra_args = ["--reasoning-budget-message", message],
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._load_model_impl(request, object(), "tester"))
+
+    assert excinfo.value.status_code == 400
+
+
 def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
     import routes.settings as settings_route
     from fastapi import HTTPException

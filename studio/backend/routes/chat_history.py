@@ -8,11 +8,12 @@ Chat history API routes backed by studio.db.
 from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from auth.authentication import get_current_subject
 from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
 from loggers import get_logger
+from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
@@ -172,11 +173,16 @@ class ChatPresetLoadConfig(BaseModel):
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
     nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
     reasoningBudget: Optional[int] = Field(default = None, ge = -1, le = 2_147_483_647)
-    reasoningBudgetMessage: Optional[str] = Field(default = None, max_length = 65_536)
+    reasoningBudgetMessage: Optional[str] = None
     tensorParallel: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
+
+    @field_validator("reasoningBudgetMessage")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else validate_reasoning_budget_message(value)
 
 
 class ChatPreset(BaseModel):

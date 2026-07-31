@@ -32,6 +32,8 @@ import threading
 import time
 from typing import Any, Optional
 
+from utils.reasoning_budget import validate_reasoning_budget_message
+
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 OPENAI_AUTO_DOWNLOAD_SETTING_KEY = "openai_api_auto_download_model"
 AUTO_UNLOAD_IDLE_SETTING_KEY = "openai_api_auto_unload_idle_seconds"
@@ -361,7 +363,12 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
         entry["reasoning_budget"] = reasoning_budget
     reasoning_budget_message = payload.get("reasoning_budget_message")
     if isinstance(reasoning_budget_message, str) and reasoning_budget_message:
-        entry["reasoning_budget_message"] = reasoning_budget_message
+        try:
+            entry["reasoning_budget_message"] = validate_reasoning_budget_message(
+                reasoning_budget_message
+            )
+        except ValueError:
+            pass
 
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
