@@ -68,7 +68,12 @@ _CONTROL_MARKUP = re.compile(
     r"|begin_of_text|endoftext"
     # header_start / header_end / <|eot|> are Llama-4's spelling of Llama-3's
     # start_header_id / end_header_id / eot_id, and im_sep is Phi-4's role separator.
-    r"|header_(?:start|end)|im_(?:start|end|sep)"
+    # im_system / im_middle are Kimi K2's, alongside the ChatML three.
+    r"|header_(?:start|end)|im_(?:start|end|sep|system|middle)"
+    # DeepSeek-V4-Flash spells its role boundaries with ASCII bars and a capital, unlike
+    # R1's fullwidth ones, and this pattern is case-sensitive, so the lowercase names
+    # below do not cover them.
+    r"|User|Assistant|System"
     r"|assistant|constrain|channel|message|eo[tm](?:_id)?|final"
     # TML Inkling's native call envelope, "<|message_model|>NAME
     # <|content_invoke_tool_json|>{...}<|end_message|>". Longer than the "message" and
@@ -148,7 +153,8 @@ _CONTROL_MARKUP = re.compile(
 # markers stay out for the same reason <|tool_call> does: they are the assistant's own.
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
-    r"\|/?(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end|sep)"
+    r"\|/?(?:(?:start|end)_(?:header_id|of_role)|im_(?:start|end|sep|system|middle)"
+    r"|User|Assistant|System"
     r"|end(?:_of_(?:turn|text))?|eo[tm](?:_id)?|header_(?:start|end)"
     # A document boundary is never the assistant's own structure, so unlike think /
     # channel / tool markup these belong in the replay subset too.
@@ -324,6 +330,10 @@ _TOOL_RESULT_ROLES = frozenset({"tool", "ipython"})
 # The roles a template actually compares against. A message whose role differs from one of
 # these only by case or padding is canonicalized, so the sweep and the template agree on
 # which turn it is.
+# Gemma-4 maps "assistant" onto "model" and leaves an incoming "model" alone
+# (gemma-4.jinja:234), so both name the same replayed turn: they take the boundary subset
+# rather than the full sweep, and they keep the assistant-only structured fields.
+_ASSISTANT_ROLES = frozenset({"assistant", "model"})
 _SCHEMA_ROLES = frozenset({"system", "user", "assistant", "tool", "ipython", "developer", "model"})
 _MEDIA_PART_TYPES = frozenset(
     {"image", "image_url", "input_image", "input_audio", "audio", "audio_url", "video", "video_url"}
@@ -405,7 +415,6 @@ def _neutralize_content_parts(
         if len(run) > 1:
             yield run
 
-    dropped: set = set()
     merged: dict = {}
     for carriers in list(_joinable_runs()):
         raw = "".join(texts[index] for index in carriers)
@@ -414,13 +423,19 @@ def _neutralize_content_parts(
             continue
         # Only a run a paste split mid-marker collapses; the joined text lands on the
         # first carrier so it stays broken whichever way the renderer joins them.
+        # The joined text lands on the first carrier and the rest are emptied rather than
+        # removed. Llama-3.1 renders these roles with "message.content | tojson"
+        # (chat_templates.py:517-523), where the JSON syntax between elements already keeps
+        # the fragments apart, so the list it serializes has to keep its shape; a
+        # concatenating renderer sees the same safe text either way (#7066).
         swept = rewrite(trimmed)
-        first = parts[carriers[0]]
-        merged[carriers[0]] = swept if isinstance(first, str) else {**first, "text": swept}
-        dropped.update(carriers[1:])
+        for position, index in enumerate(carriers):
+            text = swept if position == 0 else ""
+            part = parts[index]
+            merged[index] = text if isinstance(part, str) else {**part, "text": text}
     if not merged:
         return parts
-    return [merged.get(index, part) for index, part in enumerate(parts) if index not in dropped]
+    return [merged.get(index, part) for index, part in enumerate(parts)]
 
 
 def _differs(new, old) -> bool:
@@ -556,7 +571,9 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         raw_role_value = msg.get("role")
         role = raw_role_value.strip().lower() if isinstance(raw_role_value, str) else ""
         rewrite = (
-            neutralize_turn_boundary_markup if role == "assistant" else neutralize_control_markup
+            neutralize_turn_boundary_markup
+            if role in _ASSISTANT_ROLES
+            else neutralize_control_markup
         )
         updates: dict = {}
         dropped_keys: set = set()
@@ -606,7 +623,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         # and supplies the real "<|tool_response>" wrapper itself, so a user or system
         # message carrying one fabricates a trusted observation with no marker in it for
         # the sweep to catch. Assistant-only, exactly like tool_calls (#7066).
-        if tool_responses is not None and role != "assistant":
+        if tool_responses is not None and role not in _ASSISTANT_ROLES:
             logger.warning(
                 "Dropping tool_responses from a %r message: templates wrap it as a tool "
                 "observation regardless of the role.",
@@ -646,7 +663,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         # on a user or tool message fabricates assistant history no matter how clean its
         # own text is. It is assistant-only structure in the OpenAI schema too, so it is
         # dropped rather than swept when the role is anything else (#7066).
-        if tool_calls is not None and role != "assistant":
+        if tool_calls is not None and role not in _ASSISTANT_ROLES:
             logger.warning(
                 "Dropping tool_calls from a %r message: templates render it as an "
                 "assistant tool-call turn regardless of the role.",
