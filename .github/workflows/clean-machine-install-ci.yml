@@ -1546,16 +1546,14 @@ jobs:
       - name: Install into the virgin container
         id: install
         shell: pwsh
-        # RELEASE-LAG PIN, overlay=false only. A Server Core container has no Microsoft Store
-        # and so no winget, ever, and studio/setup.ps1 used to hard-stop on a winget-only git
-        # gate and reach for winget again for the VC++ runtime. #7549 relaxed both and this
-        # branch has it, the released wheel does not: unpacking unsloth 2026.7.5 (uploaded
-        # 2026-07-23, #7549 landed on the 28th) shows its setup.ps1 still carrying the old
-        # gate, so the row that installs from PyPI on purpose cannot get past it. Release
-        # lag, not a product gap: only the next RELEASE clears it, not a merge. The overlay
-        # row runs the same install against this ref's setup.ps1 and gates unconditionally,
-        # and the step below accepts only that signature, erroring the moment it catches up.
-        continue-on-error: ${{ !matrix.overlay }}
+        # Both rows gate. This used to carry a RELEASE-LAG PIN for overlay=false: a Server
+        # Core container has no Microsoft Store and so no winget, and the RELEASED
+        # studio/setup.ps1 hard-stopped on a winget-only git gate and reached for winget
+        # again for the VC++ runtime. #7549 relaxed both, but it landed 2026-07-28 and the
+        # newest wheel at the time was 2026.7.5 (2026-07-23), so the PyPI row could not get
+        # past it and was tolerated. unsloth 2026.7.6 shipped 2026-07-29 and carries the
+        # relaxed gates, so the row installs end to end and the pin's own tripwire fired to
+        # say so. Nothing is tolerated here now.
         run: |
           $overlayArg = if ('${{ matrix.overlay }}' -eq 'true') { 'C:\ci' } else { '' }
           docker exec virgin powershell.exe -NoLogo -NoProfile -NonInteractive `
@@ -1615,59 +1613,6 @@ jobs:
       # purpose and the released setup.ps1 predates #7549. continue-on-error would otherwise
       # tolerate a bootstrap outage or an unrelated early exit like the intended diagnostic,
       # so every branch but the pinned failure exits 1 and fails the (required) job.
-      - name: Assert the released-wheel row failed only on release lag
-        if: always() && !matrix.overlay && steps.install.outcome != 'skipped'
-        shell: pwsh
-        run: |
-          if ('${{ steps.install.outcome }}' -eq 'success') {
-            Write-Host '::error::the released wheel now installs in a virgin container, so it carries the relaxed #7549 gates. Delete this pin and drop continue-on-error from the Install step so this row gates.'
-            exit 1
-          }
-          if (-not (Test-Path logs/install-outer.log)) {
-            Write-Host '::error::the container install produced no log'
-            exit 1
-          }
-          $log = Get-Content logs/install-outer.log -Raw
-          # The pinned signature is the OLD gate wording #7549 deleted; its disappearance
-          # from a released wheel is the flip condition, and anything else stays red.
-          $gitGate = $log -match 'Git is required but could not be installed automatically'
-          $vcGate  = $log -match 'torch failed to import'
-          if (-not ($gitGate -or $vcGate)) {
-            Write-Host '::error::the container install failed at neither the released winget-only git gate nor the missing VC++ runtime; this is a new failure'
-            exit 1
-          }
-          # `-or` alone is too generous: virgin-windows-install.ps1:97 runs the torch
-          # assertion whenever the venv interpreter exists, and this image has no VC++
-          # runtime, so ANY post-venv failure -- a Node download, a setup step, a bad
-          # prebuilt -- arrives carrying the $vcGate text and was accepted as the pin.
-          # Enumerate what the harness recorded instead: one `::error::<reason>` per entry of
-          # its $failures list (that script:151), each of which must be a pinned gate.
-          # Anchored, because it also dumps the log tail indented two spaces.
-          $recorded = @(Get-Content logs/install-outer.log |
-            ForEach-Object { if ($_ -match '^::error::(.+)$') { $Matches[1].Trim() } })
-          Write-Host "recorded failures: $($recorded.Count)"
-          $recorded | ForEach-Object { Write-Host "  $_" }
-          if ($recorded.Count -eq 0) {
-            Write-Host '::error::the container install failed but recorded no ::error:: line, so nothing identifies which gate stopped it'
-            exit 1
-          }
-          # The git gate makes install.ps1 exit non-zero, the missing runtime makes the
-          # torch assert fail. Nothing else is pinned.
-          $pinned = @('^installer exited \d+$', '^torch failed to import from the managed Python')
-          $unexpected = @($recorded | Where-Object { $r = $_; -not ($pinned | Where-Object { $r -match $_ }) })
-          if ($unexpected.Count -gt 0) {
-            Write-Host "::error::the container install recorded a failure outside the pinned gates: $($unexpected -join '; '); this is a new failure"
-            exit 1
-          }
-          # And a non-zero exit has to BE the git gate, or a post-venv failure that also
-          # exits 1 is indistinguishable from the pinned one.
-          if (($recorded | Where-Object { $_ -like 'installer exited*' }) -and
-              -not ($gitGate -and ($log -match 'unsloth studio setup failed \(exit code 1\)'))) {
-            Write-Host '::error::the installer exited non-zero somewhere other than the winget-only git gate in the released studio/setup.ps1; this is a new failure'
-            exit 1
-          }
-          Write-Host '::notice::known outcome: the released wheel still carries the winget-only git gate and the winget-only Ensure-VCRedist that #7549 replaced. Retire this pin with the next release.'
-
       - name: Recover the install log from the container
         if: always()
         shell: pwsh
