@@ -213,13 +213,14 @@ export const ChatDictationBar: FC<{
   return (
     <fieldset
       // order-2 places the bar in the input's slot after the left "+" tools.
-      className="unsloth-dictation-bar order-2 m-0 flex min-w-0 flex-1 items-center gap-2 border-0 p-0"
+      // No row gap: the wave padding and the timer margin set the spacing.
+      className="unsloth-dictation-bar order-2 m-0 flex min-w-0 flex-1 items-center gap-0 border-0 p-0"
       aria-label="Voice recording"
     >
       <div
         ref={rowRef}
         aria-hidden="true"
-        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden px-4"
+        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden pl-4 pr-2"
         style={{
           gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(1px, 3px))`,
           justifyContent: "space-between",
@@ -232,7 +233,7 @@ export const ChatDictationBar: FC<{
           />
         ))}
       </div>
-      <span className="shrink-0 tabular-nums text-sm text-muted-foreground">
+      <span className="mr-4 shrink-0 tabular-nums text-sm text-muted-foreground">
         {formatElapsed(elapsed)}
       </span>
       <div className="flex shrink-0 items-center gap-3">
