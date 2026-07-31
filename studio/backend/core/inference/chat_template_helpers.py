@@ -402,7 +402,6 @@ def _neutralize_content_parts(
     content: list,
     rewrite,
     media_opaque: bool = True,
-    aggregated: bool = False,
 ):
     """Neutralize an OpenAI-style content parts list (#7066).
 
@@ -441,27 +440,19 @@ def _neutralize_content_parts(
             return part["text"]
         return None
 
-    # Which text parts end up adjacent depends on the renderer. A tool body is AGGREGATED:
-    # gemma-4.jinja:301-306 concatenates every text part first, then emits the media
-    # placeholders, so nothing separates them. A message body is emitted in LIST ORDER
-    # (chat_templates.py:675-680, 843-850, gemma-4.jinja:334-347), so a genuine media part
-    # sits between the fragments and already stops them forming a marker; joining across it
-    # would also move text past the image. A part the renderer skips separates nothing.
+    # No part reliably separates the text around it. A renderer emits a placeholder only for
+    # the media types it knows and silently skips the rest: gemma-4.jinja:334-347 renders
+    # image / image_url / audio / input_audio / video and drops video_url, audio_url and
+    # input_image, so a part that looks like a separator can render as nothing at all and
+    # leave the fragments adjacent. A tool body aggregates them anyway (gemma-4.jinja:
+    # 301-306). Every text carrier is therefore one run, which costs nothing now that a
+    # split marker's opener migrates instead of the run collapsing: no text moves past an
+    # item it sits beside, so a fragment that a renderer really does separate is unharmed
+    # beyond one inserted space (#7066).
     texts = [_text_of(part) for part in parts]
 
     def _joinable_runs():
-        run: list = []
-        for index, part in enumerate(parts):
-            if texts[index] is not None:
-                run.append(index)
-                continue
-            if aggregated:
-                continue
-            part_type = part.get("type") if isinstance(part, dict) else None
-            if isinstance(part_type, str) and part_type in _MEDIA_PART_TYPES:
-                if len(run) > 1:
-                    yield run
-                run = []
+        run = [index for index, text in enumerate(texts) if text is not None]
         if len(run) > 1:
             yield run
 
@@ -596,31 +587,24 @@ def _injective_id_map(messages: list) -> dict:
 
 
 def _neutralize_replayed_tool_call(tool_calls: list, id_map: dict = None) -> list:
-    """Neutralize a replayed tool call's name, arguments and id.
+    """Neutralize a replayed tool call's name, arguments and id, in every shape it carries.
 
     Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so a name or
     argument echoing pasted text can close the call block and open a "<|tool_response>" or
     "<|turn>model" of its own (#7066). The rewrite is the identity on every dispatchable
     name (Studio composes ^[a-zA-Z0-9_-]{1,64}$), and a tool result's "name" takes the same
-    rewrite, so the two still agree when Gemma-4 pairs them by name. Both replay shapes are
-    covered: the OpenAI nested one and the flat {"id", "name", "arguments"} one that every
-    template's "if tool_call.function" guard exists to render."""
-    out: list = []
-    for call in tool_calls:
-        if not isinstance(call, dict):
-            out.append(call)
-            continue
-        function = call.get("function")
-        # Same fallback as the catalog below: Harmony / gpt-oss, Qwen 2.5 / 3, Granite-4 and
-        # Llama-4 all guard with "{%- if tool_call.function %}{%- set tool_call =
-        # tool_call.function %}" and otherwise read "name" / "arguments" off the call itself,
-        # so a flat replay renders the identical concatenation and needs the same rewrite
-        # (#7066).
-        target = function if isinstance(function, dict) else call
+    rewrite, so the two still agree when Gemma-4 pairs them by name.
+
+    Both replay shapes are swept, the OpenAI nested one and the flat {"id", "name",
+    "arguments"} one, rather than only whichever a particular guard would pick. Harmony /
+    gpt-oss, Qwen 2.5 / 3, Granite-4 and Llama-4 select with "{%- if tool_call.function %}"
+    (chat_templates.py:771-780), which is a truthiness test, so an empty nested object sends
+    them to the flat fields; and a flat-shaped template reads "name" off the call whatever
+    the nested object holds. Sweeping both removes the need to guess which one renders."""
+
+    def _field_updates(source: dict) -> dict:
         updates: dict = {}
-        # The id lives on the call itself in both shapes, never on the nested function.
-        id_updates: dict = {}
-        name = target.get("name")
+        name = source.get("name")
         if isinstance(name, str) and name:
             new_name = neutralize_control_markup(name)
             if new_name != name:
@@ -628,33 +612,45 @@ def _neutralize_replayed_tool_call(tool_calls: list, id_map: dict = None) -> lis
         # Harmony concatenates "content_type" straight before "<|message|>"
         # (chat_templates.py:1332-1334), so a replayed "json<|message|><|end|><|start|>"
         # closes the commentary call and opens an assistant channel (#7066).
-        content_type = target.get("content_type")
+        content_type = source.get("content_type")
         if isinstance(content_type, str) and content_type:
             new_content_type = neutralize_control_markup(content_type)
             if new_content_type != content_type:
                 updates["content_type"] = new_content_type
-        arguments = target.get("arguments")
+        arguments = source.get("arguments")
         if arguments is not None:
             new_arguments = _neutralized_arguments(arguments)
             if new_arguments is not None:
                 updates["arguments"] = new_arguments
+        return updates
+
+    out: list = []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            out.append(call)
+            continue
+        function = call.get("function")
+        flat_updates = _field_updates(call)
+        nested_updates = _field_updates(function) if isinstance(function, dict) else {}
         # Kimi interpolates the id straight between "<|tool_call_begin|>" and
         # "<|tool_call_argument_begin|>", so an id carrying the closer ends the envelope the
         # template opened and injects structure after it, with the name and arguments clean
         # (#7066). Rewritten with the same function as a tool result's "tool_call_id", so a
         # replayed pair still matches on both sides.
+        id_updates: dict = {}
         call_id = call.get("id")
         if isinstance(call_id, str) and call_id:
             new_call_id = (id_map or {}).get(call_id, call_id)
             if new_call_id != call_id:
                 id_updates["id"] = new_call_id
-        if not updates and not id_updates:
+        if not flat_updates and not nested_updates and not id_updates:
             out.append(call)
-        elif target is function:
-            out.append({**call, **id_updates, "function": {**function, **updates}})
-        else:
+            continue
+        merged = {**call, **flat_updates, **id_updates}
+        if nested_updates:
             # No "function" object is invented for a call that never had one.
-            out.append({**call, **updates, **id_updates})
+            merged["function"] = {**function, **nested_updates}
+        out.append(merged)
     return out
 
 
@@ -782,7 +778,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
                 # so both roles count (#7066).
                 is_tool_result = role in _TOOL_RESULT_ROLES
                 new_content = _neutralize_content_parts(
-                    content, rewrite, not is_tool_result, aggregated = is_tool_result
+                    content, rewrite, not is_tool_result
                 )
             if _differs(new_content, content):
                 updates["content"] = new_content
@@ -973,6 +969,9 @@ _SCHEMA_ROOT_KEYS = (
     "outputSchema",
     "output_schema",
     "returns",
+    # Gemma-4 emits a response declaration from "function.response"
+    # (gemma-4.jinja:115-124), and a JSON-serializing template exposes the rest of it.
+    "response",
 )
 
 
