@@ -1978,6 +1978,47 @@ def test_an_unsharded_weight_under_a_subdirectory_does_not_serve_the_root(tmp_pa
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
+def test_an_ungroupable_payload_under_a_subdirectory_does_not_serve_the_root(
+    tmp_path, monkeypatch
+):
+    """A .ckpt or diffusion weight names no family this walk groups, which exempts it from the
+    family checks. That exemption only holds at the snapshot root: the loader cannot discover one
+    under backup/ any more than it can a nested shard set."""
+    for weights in ("backup/model.ckpt", "backup/diffusion_pytorch_model.safetensors"):
+        root = tmp_path / weights.replace("/", "_")
+        _repo_with(
+            root,
+            snapshots = {OLDER: {"config.json": b'{"model_type":"llama"}', weights: b"\0" * 256}},
+            refs = {"main": UPSTREAM_HEAD},
+        )
+
+        rows = _autoload_rows(root, monkeypatch)
+
+        assert rows[0]["partial"] is True
+        assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_root_ungroupable_payload_is_not_vetoed_by_a_nested_copy(tmp_path, monkeypatch):
+    """Control for the test above: the root holds one the loader opens, so a second copy
+    underneath it is beside the point."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.ckpt": b"\0" * 256,
+                "backup/model.ckpt": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
 def test_an_unsharded_weight_at_the_root_beside_a_nested_copy_still_serves(tmp_path, monkeypatch):
     """Control for the test above: the root holds the name the loader opens, so a second copy
     underneath it changes nothing."""

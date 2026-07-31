@@ -929,7 +929,10 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
                     and not _is_training_artefact_name(name)
                     and (name.endswith(".safetensors") or _is_checkpoint_weight_name(name))
                 ):
-                    empty_ungrouped.add("base")
+                    if at_root:
+                        empty_ungrouped.add("base")
+                    else:
+                        nested.add("base")
                 continue
             if empty_match is None:
                 # Same rule as the whole file below: only the root name is one the loader opens.
@@ -957,9 +960,13 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
             base_evidence = not is_adapter
         kind = _weight_family_kind(path.name)
         if kind is None:
-            # Counted by the classifier but ungroupable here (.ckpt, diffusion prefix); still a payload.
+            # Counted by the classifier but ungroupable here (.ckpt, diffusion prefix); still a
+            # payload, though only the root copy is one the loader can discover.
             if base_evidence:
-                ungrouped.add("base")
+                if at_root:
+                    ungrouped.add("base")
+                else:
+                    nested.add("base")
             continue
         match = _WEIGHT_SHARD_RE.search(path.name)
         if match is None:
@@ -1091,7 +1098,11 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 not _shard_family_is_whole(family, indices) or family in payload.unloadable_families
                 for family, indices in families.items()
             )
-        if unreachable or (kind == wanted and kind in payload.nested):
+        # Nested weights are only decisive when the root offered nothing of this kind: a root
+        # payload this walk cannot group is still the one the loader opens.
+        if unreachable or (
+            kind == wanted and kind in payload.nested and kind not in payload.ungrouped
+        ):
             # This kind's weights are here but no name the loader tries reaches them.
             return True
     # No family either way. A diffusion or .ckpt payload classifies from its suffix while naming no
