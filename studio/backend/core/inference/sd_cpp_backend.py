@@ -130,14 +130,20 @@ def _usable_or_discard_managed(binary: str) -> bool:
     retried: every load probed it, rejected it, and fell back to diffusers, so native inference
     stayed off until the user deleted the directory by hand. Probing here closes that loop.
 
-    Only a copy under the installer-owned root is removed. SD_CLI_PATH, UNSLOTH_SD_CPP_PATH, an
-    in-tree build and anything on PATH are the user's, so an unrunnable one of those is reported
-    as-is (the router still rejects it) rather than deleted or reinstalled over."""
+    Only a copy the installer may replace is removed, i.e. one under the installer-owned root that
+    carries its ownership marker (``is_managed_binary``). SD_CLI_PATH, UNSLOTH_SD_CPP_PATH, an
+    in-tree build, anything on PATH and an unmarked directory at the default path (a user's own
+    stable-diffusion.cpp checkout looks exactly like that) are the user's, so an unrunnable one of
+    those is reported as-is (the router still rejects it) rather than deleted or reinstalled over.
+    Deleting one would also be unrepairable: install() refuses an unmarked non-empty target, so the
+    binary would be gone AND the reinstall refused."""
     if _server_binary_runnable(binary):
         return True
     if not is_managed_binary(binary):
         logger.warning(
-            "sd.cpp binary %s is not runnable; leaving the user-supplied copy alone", binary
+            "sd.cpp binary %s is not runnable; leaving it alone (not a Studio-owned install we may "
+            "replace). Delete its directory to have Studio reinstall the prebuilt.",
+            binary,
         )
         return True  # not ours to replace; the router's own probe still refuses it
     logger.warning("managed sd.cpp binary %s is not runnable; removing it so it reinstalls", binary)

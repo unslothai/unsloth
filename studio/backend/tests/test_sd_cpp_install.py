@@ -664,6 +664,9 @@ def test_unrunnable_managed_binary_is_removed_so_it_reinstalls(monkeypatch, tmp_
 
     root = tmp_path / "sd-home" / "stable-diffusion.cpp"
     root.mkdir(parents = True)
+    # install() writes the ownership marker BEFORE it extracts, so a real interrupted extraction
+    # always leaves one; it is what says the tree is ours to replace rather than a user checkout.
+    (root / ".unsloth-studio-owned").touch()
     managed = root / "sd-cli"
     managed.write_bytes(b"truncated")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
@@ -706,3 +709,91 @@ def test_an_unrunnable_user_supplied_binary_is_never_deleted(monkeypatch, tmp_pa
 
     assert bk.ensure_sd_cpp_binary(accelerator = "cpu") == str(outside)
     assert outside.exists(), "a user-supplied binary must survive"
+
+
+def test_unrunnable_binary_in_an_unmarked_root_is_kept_because_install_would_refuse(
+    monkeypatch, tmp_path
+):
+    # The repair and the installer have to agree on what "ours" means. install() refuses a
+    # pre-existing, non-empty target with no ownership marker (a user's own stable-diffusion.cpp
+    # checkout looks exactly like that at the default path, and so does any install predating the
+    # marker). Discarding a binary there deleted it and was then refused the reinstall -- and
+    # permanently, since the sibling sd-cli keeps the directory non-empty so the marker can never be
+    # claimed. The unrunnable binary is left in place instead: the router's probe still refuses it,
+    # and nothing of the user's is deleted.
+    import types
+
+    import core.inference.sd_cpp_backend as bk
+    import core.inference.sd_cpp_engine as eng
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp" / "sd-bin"
+    root.mkdir(parents = True)
+    server = root / "sd-server"
+    server.write_bytes(b"truncated")
+    (root / "sd-cli").write_bytes(b"truncated")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    assert eng.is_managed_binary(str(server)) is False  # under our root, but unmarked
+
+    monkeypatch.setattr(
+        bk, "find_sd_server_binary", lambda: str(server) if server.exists() else None
+    )
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: False)
+
+    def _refuse(**_kwargs):
+        raise RuntimeError("sd.cpp install target already exists and is not a Studio-managed dir")
+
+    stub = types.ModuleType("install_sd_cpp_prebuilt")
+    stub.install = _refuse
+    monkeypatch.setitem(sys.modules, "install_sd_cpp_prebuilt", stub)
+
+    assert bk.ensure_sd_server_binary(accelerator = "cpu") == str(server)
+    assert server.is_file(), "an unmarked binary the installer cannot replace must survive"
+
+
+def test_the_repair_only_deletes_what_the_installer_may_reinstall(monkeypatch, tmp_path):
+    # The same tree WITH the marker is ours: install() reclaims it, so discarding the unrunnable
+    # copy is safe and the reinstall goes through. This is the loop a2342f80d set out to close.
+    import types
+
+    import core.inference.sd_cpp_backend as bk
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"truncated")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+
+    monkeypatch.setattr(
+        bk, "find_sd_server_binary", lambda: str(server) if server.exists() else None
+    )
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: False)
+    installs: list = []
+
+    def _install(**kwargs):
+        installs.append(kwargs)
+        server.write_bytes(b"good")
+        return server
+
+    stub = types.ModuleType("install_sd_cpp_prebuilt")
+    stub.install = _install
+    monkeypatch.setitem(sys.modules, "install_sd_cpp_prebuilt", stub)
+
+    assert bk.ensure_sd_server_binary(accelerator = "cpu") == str(server)
+    assert installs, "a marked (reclaimable) tree must still be repaired"
+
+
+def test_a_reinstall_over_an_owned_root_keeps_the_repair_loop_closed(tmp_path, monkeypatch):
+    # End to end across the two modules: after a real install() the marker exists, so the binary it
+    # wrote reads as managed and a later repair may discard it. Without this the two definitions of
+    # "ours" drift apart again.
+    import core.inference.sd_cpp_engine as eng
+
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    target = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+
+    sd_cli = install(install_dir = target)
+    assert (target / ".unsloth-studio-owned").is_file()
+    assert eng.is_managed_binary(str(sd_cli)) is True

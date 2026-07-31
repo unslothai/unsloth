@@ -44,6 +44,10 @@ _LEGACY_STEM = "sd"
 # The persistent HTTP server target, shipped next to sd-cli in both prebuilt and cmake builds.
 _SERVER_STEM = "sd-server"
 
+# Ownership marker written by install_sd_cpp_prebuilt.install (and required by setup.sh /
+# uninstall.sh / uninstall.ps1 before they delete a tree). One definition of "ours", shared.
+OWNER_MARKER = ".unsloth-studio-owned"
+
 # Ceiling for one native run. The native engine exists FOR slow CPU hosts: measured on GPU-less CI runners, a 512x512 4-step Q2_K generation took 900 s on Linux and 1465 s on Windows, so a larger image or step count clears half an hour easily and a 30-minute cap killed jobs that were still progressing.
 # This matches the Images page's own SETTLE_MAX_MS (6 h), past which the UI has given up anyway, so the ceiling only stops a WEDGED process from holding the lock forever. It is not the user-facing abort path: cancel_event interrupts a run at any point.
 NATIVE_GENERATION_TIMEOUT_S = 6 * 60 * 60.0
@@ -162,14 +166,25 @@ def in_tree_install_root() -> Optional[Path]:
 
 
 def is_managed_binary(binary: Optional[str]) -> bool:
-    """True when ``binary`` lives under the installer-owned root (see managed_install_root)."""
+    """True when ``binary`` is a copy the installer may replace: under the installer-owned root
+    (see managed_install_root) AND that root carries the installer's ownership marker.
+
+    The marker is the SAME definition of "ours" the installer and the uninstaller use --
+    ``install_sd_cpp_prebuilt.install`` writes it before any extraction and refuses a pre-existing
+    non-empty target without it, and uninstall.sh/.ps1 keep an unmarked directory. Path alone is not
+    enough, because "stable-diffusion.cpp" is exactly what a ``git clone`` of leejet's repo produces,
+    so a user may keep their own build (or point UNSLOTH_SD_CPP_PATH) at the default path.
+    Deleting out of an unmarked root would take a file we are then refused permission to reinstall:
+    the repair unlinks sd-server, install() rejects the now still-non-empty unmarked directory, and
+    the user is left with no binary at all and no way back."""
     if not binary:
         return False
+    root = managed_install_root()
     try:
-        Path(binary).resolve().relative_to(managed_install_root().resolve())
+        Path(binary).resolve().relative_to(root.resolve())
+        return (root / OWNER_MARKER).is_file()
     except (OSError, ValueError):
         return False
-    return True
 
 
 def _find_binary(

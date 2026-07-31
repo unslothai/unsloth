@@ -754,8 +754,16 @@ class DiffusionBackend:
                 f"pass family_override with that family name. (Video models and image models "
                 f"whose diffusers transformer has no single-file loader are not supported.)"
             )
-        # Refuse a too-old diffusers here, not deep in the load after the checkpoint downloaded.
-        assert_pipeline_class_available(fam.pipeline_class, fam.name)
+        # Refuse a too-old diffusers here, not deep in the load after the checkpoint downloaded --
+        # but only when this load is the one that builds the diffusers pipeline. A GGUF this host
+        # routes to native sd.cpp never instantiates the pipeline class, so demanding it would
+        # refuse a load that works, with an upgrade instruction that cannot help. The picker gate
+        # reads the same predicate, so what it offers is exactly what this accepts.
+        # Imported here (not at module import) because the router imports this module's siblings.
+        from .diffusion_engine_router import family_buildable_here
+
+        if not family_buildable_here(fam, model_kind = kind):
+            assert_pipeline_class_available(fam.pipeline_class, fam.name)
         # Families whose single file IS the whole pipeline have no GGUF path; reject before eviction.
         if kind == "gguf" and fam.single_file_is_pipeline:
             raise ValueError(

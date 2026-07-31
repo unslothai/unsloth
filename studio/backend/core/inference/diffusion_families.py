@@ -537,7 +537,8 @@ def family_prequant_repo(
 
 
 def assert_pipeline_class_available(pipeline_class: str, family_name: str) -> None:
-    """Raise before any download when the installed diffusers has no ``pipeline_class``.
+    """Raise ``ValueError`` before any download when the installed diffusers has no
+    ``pipeline_class``.
 
     The newer families (Flux2Klein, Z-Image, Krea 2, LTX-2, HunyuanImage) only exist from diffusers
     0.39, and the packaging leaves an older diffusers installable on Python 3.9 -- diffusers dropped
@@ -545,12 +546,18 @@ def assert_pipeline_class_available(pipeline_class: str, family_name: str) -> No
     whole extra becomes unresolvable. Without this check the getattr chain died with a bare
     AttributeError deep in the load, after the checkpoint had already been fetched, which is an
     expensive way to learn the environment is too old. Krea 2 already guarded itself this way; this
-    is the same check for every family, run from validation."""
+    is the same check for every family, run from validation.
+
+    ``ValueError``, like every other unloadable-pick refusal ``validate_load_request`` raises, so
+    the routes map it to 400 with the message intact. A ``RuntimeError`` instead reached
+    ``/images/load``'s 409 (the code that otherwise means "a load is already in progress") and
+    escaped ``/images/download-plan``, which catches only (ValueError, FileNotFoundError), as a bare
+    500 with the message lost."""
     import diffusers
 
     if hasattr(diffusers, pipeline_class):
         return
-    raise RuntimeError(
+    raise ValueError(
         f"'{family_name}' needs diffusers >= 0.39.0 ({pipeline_class}); this environment has "
         f"diffusers {getattr(diffusers, '__version__', 'unknown')}. Upgrade with: "
         f"pip install -U diffusers (which needs Python >= 3.10; diffusers dropped 3.9 in 0.38)."
@@ -566,14 +573,18 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     conditional or the extra becomes unresolvable). Advertising Z-Image or Krea 2 in the picker
     on such an environment offers a pick that can only fail, and no `pip install -U diffusers`
     can fix it without also upgrading Python. Fails OPEN (True) when diffusers cannot be
-    imported at all, so a listing never hides a model over an unrelated import problem."""
+    imported at all, so a listing never hides a model over an unrelated import problem. The
+    attribute lookup is inside the guard for the same reason: diffusers resolves its pipelines
+    lazily, so the class name is only a hasattr for a name it does not know -- for one it does, the
+    lookup imports that pipeline module and can raise something other than AttributeError."""
     if fam is None:
         return False
     try:
         import diffusers
+
+        return hasattr(diffusers, fam.pipeline_class)
     except Exception:  # noqa: BLE001 -- no diffusers here: the load path reports it properly
         return True
-    return hasattr(diffusers, fam.pipeline_class)
 
 
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:

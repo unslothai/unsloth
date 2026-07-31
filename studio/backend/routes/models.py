@@ -3308,11 +3308,55 @@ def _gguf_architecture(path: str) -> Optional[str]:
     return arch.strip() if isinstance(arch, str) and arch.strip() else None
 
 
+def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:
+    """Whether an engine on THIS host can build the diffusion family a GGUF belongs to.
+
+    The listing twin of the loader's gate, and the same predicate: ``validate_load_request`` refuses
+    a family whose diffusers pipeline class this environment lacks (the newer families ship only in a
+    newer diffusers, and packaging still allows an older one on Python 3.9) UNLESS the native sd.cpp
+    engine would serve the GGUF, which needs no pipeline class at all. Advertising a row neither
+    engine can build is a pick that can only fail; hiding one the native engine loads is the opposite
+    mistake, on exactly the CPU/MPS hosts that engine exists for.
+
+    Fails OPEN when no family resolves from the hints or the probe raises: the load path reports a
+    real problem properly, and a listing must not hide a usable model over a detection miss."""
+    try:
+        from core.inference.diffusion_engine_router import family_buildable_here
+        from core.inference.diffusion_families import detect_family_for_pick
+
+        for hint in name_hints:
+            if not hint:
+                continue
+            fam = detect_family_for_pick(hint)
+            if fam is not None:
+                return family_buildable_here(fam, model_kind = "gguf")
+    except Exception:  # noqa: BLE001 -- never hide a model over a probe failure
+        return True
+    return True
+
+
+def _video_family_buildable(fam) -> bool:
+    """Whether the installed diffusers can build this video family's pipeline class.
+
+    The video backend has no native engine, so it is the plain class check its own
+    ``validate_load_request`` runs (``video.py`` -> ``assert_pipeline_class_available``): LTX-2 and
+    the other newer pipelines exist only in a newer diffusers. Fails OPEN on any probe error."""
+    try:
+        from core.inference.diffusion_families import family_pipeline_available
+
+        return family_pipeline_available(fam)
+    except Exception:  # noqa: BLE001 -- never hide a model over a probe failure
+        return True
+
+
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     if arch is None:
         return None
     a = arch.lower()
     if a in _DIFFUSION_GGUF_ARCHS:
+        # Third gate, mirroring the cached-repo picker: a family no engine on this host can build is a pick that can only fail, so tag it unsupported (hidden from Images AND from chat, where it would die in llama.cpp) rather than text-to-image.
+        if not _gguf_family_buildable(name_hints):
+            return _UNSUPPORTED_DIFFUSION_TASK
         return "text-to-image"
     if a in _VIDEO_GGUF_ARCHS:
         # Advertise as loadable video only when a VideoFamily resolves. Some archs map straight from the arch (ltxv); bare "wan" is ambiguous -- it covers both the GGUF-loadable single-DiT TI2V-5B and the dual-expert A14B MoE the loader refuses --
@@ -3326,18 +3370,23 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
                     fam = detect_video_family(hint)
                     if fam is not None:
                         break
-        if fam is not None and not getattr(fam, "is_moe", False):
+        if fam is not None and not getattr(fam, "is_moe", False) and _video_family_buildable(fam):
             return _VIDEO_GEN_TASK
         return _UNSUPPORTED_DIFFUSION_TASK
     if a in _AMBIGUOUS_DIFFUSION_GGUF_ARCHS:
         # Same shape as the video branch: the arch is shared, so let the family detection the loader itself uses decide, trying each hint separately (a repo id, then a filename).
+        from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family_for_pick, family_gguf_loadable
         for hint in name_hints:
             if not hint:
                 continue
             fam = detect_family_for_pick(hint)
             if fam is not None:
-                return "text-to-image" if family_gguf_loadable(fam) else _UNSUPPORTED_DIFFUSION_TASK
+                # Both gates: a GGUF-assemblable family AND an engine here that can build it.
+                loadable = family_gguf_loadable(fam) and family_buildable_here(
+                    fam, model_kind = "gguf"
+                )
+                return "text-to-image" if loadable else _UNSUPPORTED_DIFFUSION_TASK
         return _UNSUPPORTED_DIFFUSION_TASK
     # A diffusion arch the backend cannot assemble: hide from chat (dies in llama.cpp) without surfacing in Images (would 400 in validate_load).
     if a in _UNSUPPORTED_DIFFUSION_GGUF_ARCHS:
@@ -3410,16 +3459,25 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
             from core.inference.video import _is_trusted_video_repo
             from core.inference.video_families import detect_video_family
             for needle in _local_family_needles(model):
-                if detect_video_family(needle) is not None and _is_trusted_video_repo(path):
-                    return _VIDEO_GEN_TASK
+                vfam = detect_video_family(needle)
+                # Third gate, as on the cached-repo branches: the video load asserts the family's diffusers pipeline class, and the newer ones (LTX-2) ship only in a newer diffusers.
+                if vfam is not None and _is_trusted_video_repo(path):
+                    return _VIDEO_GEN_TASK if _video_family_buildable(vfam) else None
         except Exception:
             pass
         # The Images load path rejects a pick with no supported image-family token, 400ing AFTER evicting the GPU owner. Tag text-to-image only when that same detection succeeds, so the picker never advertises a pipeline the load will always reject.
         try:
+            from core.inference.diffusion_engine_router import family_buildable_here
             from core.inference.diffusion_families import detect_family
             for needle in _local_family_needles(model):
-                if detect_family(needle) is not None:
-                    return "text-to-image"
+                fam = detect_family(needle)
+                if fam is not None:
+                    # A local non-GGUF checkpoint always loads through diffusers (the native engine consumes GGUF only), so the pipeline class has to exist here; the loader refuses the same way.
+                    return (
+                        "text-to-image"
+                        if family_buildable_here(fam, model_kind = "pipeline")
+                        else None
+                    )
             return None
         except Exception:
             # Detection unavailable: fall back to the prior permissive tag rather than hiding a possibly-loadable pipeline.
@@ -3650,8 +3708,12 @@ def _cached_repo_task(repo_info) -> Optional[str]:
 
         # Both gates: a detected video family (so image repos do not match) AND the load path trust rule (so an untrusted video repo is not advertised as loadable).
         # An untrusted one is hidden outright rather than falling through to the image tag below: it is a video pipeline, so advertising it under Images would only move the same refusal to a different picker.
-        if detect_video_family(repo_id) is not None:
-            return _VIDEO_GEN_TASK if _is_trusted_video_repo(repo_id) else None
+        # Third gate, as on the image branch below: the video load asserts the family's pipeline class too, and the newer ones (LTX-2) exist only in a newer diffusers.
+        video_fam = detect_video_family(repo_id)
+        if video_fam is not None:
+            if not _is_trusted_video_repo(repo_id) or not _video_family_buildable(video_fam):
+                return None
+            return _VIDEO_GEN_TASK
     except Exception:
         pass
     if not _repo_is_diffusers(repo_info):

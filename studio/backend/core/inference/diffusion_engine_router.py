@@ -25,7 +25,11 @@ import threading
 from typing import Any, Callable, Optional
 
 from core.inference.diffusion_device import resolve_diffusion_device_target
-from core.inference.diffusion_families import DiffusionFamily, family_sd_cpp_supported
+from core.inference.diffusion_families import (
+    DiffusionFamily,
+    family_pipeline_available,
+    family_sd_cpp_supported,
+)
 from core.inference.sd_cpp_backend import (
     _install_allowed,
     _server_binary_runnable,
@@ -267,6 +271,36 @@ def predict_engine(fam: DiffusionFamily, *, model_kind: Optional[str] = None) ->
     return select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
+
+
+def family_buildable_here(fam: Optional[DiffusionFamily], *, model_kind: Optional[str]) -> bool:
+    """True when THIS host can actually build ``fam`` for a ``model_kind`` load, by either engine.
+
+    The two engines need different things. diffusers instantiates ``fam.pipeline_class``, which the
+    newer families ship only in a newer diffusers -- and packaging still allows an older one on
+    Python 3.9, whose ceiling predates them. The native sd.cpp engine assembles the same GGUF from
+    single-file assets and imports no pipeline class at all, so a supported family loads there on a
+    diffusers that has never heard of it.
+
+    A family is therefore unbuildable only when NEITHER engine can do it, and both one-sided answers
+    are wrong: gating on the diffusers class alone refuses (and hides) a GGUF the native engine
+    serves fine, on the very hosts the native engine exists for; not gating at all advertises a pick
+    that can only fail. The listing routes and ``validate_load_request`` share this one predicate so
+    the picker and the loader cannot disagree.
+
+    Cheap on an ordinary host: the engine prediction is reached only when the class is missing.
+    ``predict_engine`` activates nothing and installs nothing."""
+    if fam is None:
+        return False
+    if family_pipeline_available(fam):
+        return True
+    # Only a GGUF can go native, and only for a family with the single-file assets sd.cpp needs.
+    if model_kind != "gguf" or not family_sd_cpp_supported(fam):
+        return False
+    try:
+        return predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
+    except Exception:  # noqa: BLE001 -- a probe failure must not hide/refuse a usable model
+        return False
 
 
 def annotate_status(status: dict[str, Any]) -> dict[str, Any]:

@@ -1847,7 +1847,9 @@ def test_pipeline_class_guard_fires_before_any_download():
     real = sys.modules.get("diffusers")
     sys.modules["diffusers"] = stub
     try:
-        with pytest.raises(RuntimeError) as excinfo:
+        # ValueError, like every other unloadable-pick refusal: RuntimeError reached /images/load's
+        # 409 ("a load is already in progress") and escaped /images/download-plan as a bare 500.
+        with pytest.raises(ValueError) as excinfo:
             assert_pipeline_class_available("ZImagePipeline", "z-image")
     finally:
         if real is not None:
@@ -1941,3 +1943,146 @@ def test_family_pipeline_available_fails_open_without_diffusers(monkeypatch):
     monkeypatch.setitem(sys.modules, "diffusers", None)
     assert family_pipeline_available(detect_family("unsloth/Z-Image-Turbo")) is True
     assert family_pipeline_available(None) is False
+
+
+# ── the unbuildable-family gate on the GGUF paths (both engines) ─────────────
+
+
+def _pretend_old_diffusers(monkeypatch, *, engine):
+    """An environment whose diffusers has none of the newer pipeline classes, on a host whose GGUF
+    loads route to ``engine``.
+
+    0.36.0 is the real ceiling for a Python 3.9 host (0.37.0 already declares requires-python
+    >=3.10), and it ships no Flux2KleinPipeline. Only the diffusers module and the engine prediction
+    are substituted: the availability check, the picker and validate_load_request are the real code.
+    """
+    import core.inference.diffusion_engine_router as router
+
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **kwargs: engine)
+
+
+def test_gguf_picker_hides_a_family_no_engine_here_can_build(monkeypatch):
+    # The gate landed on the cached-repo picker only, so the GGUF repos -- the ones the Images
+    # picker actually offers for these families -- still showed as text-to-image on a diffusers too
+    # old to build them, and every pick died in validate_load_request.
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    _pretend_old_diffusers(monkeypatch, engine = ENGINE_DIFFUSERS)
+
+    # The flat diffusion-arch branch (FLUX.2) and the ambiguous one (Z-Image ships as "lumina2").
+    assert (
+        models_route._arch_to_task("flux2", ("unsloth/FLUX.2-klein-4B-GGUF",))
+        == models_route._UNSUPPORTED_DIFFUSION_TASK
+    )
+    assert (
+        models_route._arch_to_task("lumina2", ("unsloth/Z-Image-Turbo-GGUF",))
+        == models_route._UNSUPPORTED_DIFFUSION_TASK
+    )
+    # Neither chat nor Images: the row is hidden, not moved to the picker that would also fail.
+    assert models_route._arch_to_task("flux2", ("unsloth/FLUX.2-klein-4B-GGUF",)) not in (
+        "text-generation",
+        "text-to-image",
+    )
+
+
+def test_gguf_picker_keeps_a_family_the_native_engine_serves(monkeypatch):
+    # The opposite mistake: on a CPU/MPS or force-native host the GGUF is loaded by sd.cpp, which
+    # never instantiates a diffusers pipeline class, so hiding the row over a missing class would
+    # withhold a model that loads fine -- on exactly the hosts the native engine exists for.
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    _pretend_old_diffusers(monkeypatch, engine = ENGINE_SD_CPP)
+
+    assert models_route._arch_to_task("flux2", ("unsloth/FLUX.2-klein-4B-GGUF",)) == "text-to-image"
+    assert (
+        models_route._arch_to_task("lumina2", ("unsloth/Z-Image-Turbo-GGUF",)) == "text-to-image"
+    )
+
+
+def test_the_loader_demands_the_diffusers_class_only_when_diffusers_loads_it(monkeypatch):
+    # Same predicate on the load path: refuse a too-old diffusers before the download when this load
+    # builds the diffusers pipeline, and never when sd.cpp will serve the GGUF instead.
+    import pytest
+
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+
+    _pretend_old_diffusers(monkeypatch, engine = ENGINE_SD_CPP)
+    fam = backend.validate_load_request(
+        "unsloth/FLUX.2-klein-4B-GGUF",
+        gguf_filename = "flux2-klein-4b-Q4_0.gguf",
+        model_kind = "gguf",
+    )
+    assert fam.name == "flux.2-klein"
+
+    _pretend_old_diffusers(monkeypatch, engine = ENGINE_DIFFUSERS)
+    with pytest.raises(ValueError) as excinfo:
+        backend.validate_load_request(
+            "unsloth/FLUX.2-klein-4B-GGUF",
+            gguf_filename = "flux2-klein-4b-Q4_0.gguf",
+            model_kind = "gguf",
+        )
+    # ValueError, not RuntimeError: /images/load maps RuntimeError to 409 ("a load is already in
+    # progress") and /images/download-plan catches only (ValueError, FileNotFoundError), so the
+    # message escaped as a bare 500.
+    assert "Flux2KleinPipeline" in str(excinfo.value)
+
+
+def test_the_video_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
+    # Same gap on the video branches, which the image gate never reached: LTX-2's pipeline class is
+    # 0.39-only too, and video has no native engine to fall back to, so the load asserts it
+    # unconditionally (video.py -> assert_pipeline_class_available).
+    monkeypatch.setattr(models_route, "_repo_is_diffusers", lambda info: True)
+    info = SimpleNamespace(repo_id = "Lightricks/LTX-2", repo_path = "/x")
+    # Offered on this environment's diffusers ...
+    assert models_route._arch_to_task("ltxv") == models_route._VIDEO_GEN_TASK
+    assert models_route._cached_repo_task(info) == models_route._VIDEO_GEN_TASK
+
+    # ... and hidden on one that has no LTX2Pipeline.
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
+    assert models_route._arch_to_task("ltxv") == models_route._UNSUPPORTED_DIFFUSION_TASK
+    assert models_route._cached_repo_task(info) is None
+
+
+def test_every_shipped_video_family_resolves_on_this_diffusers():
+    # Drift guard for the gate above: the video picker now hides a family whose pipeline class the
+    # installed diffusers does not have, so a stale class name in the table would hide a working
+    # model rather than just fail late. Mirrors the image-family loop in the guard test above.
+    from core.inference.diffusion_families import family_pipeline_available
+    from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
+
+    for fam in _VIDEO_FAMILIES:
+        assert family_pipeline_available(fam), (
+            f"{fam.name}: {fam.pipeline_class} is not in diffusers"
+        )
+
+
+def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypatch):
+    # The invariant test_cached_repo_task_agrees_with_the_image_loader states for cached repos,
+    # applied to the GGUF path on both kinds of host: whatever the picker advertises as loadable,
+    # validate_load_request must accept, and whatever it hides must be refused.
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    picks = (
+        ("flux2", "unsloth/FLUX.2-klein-4B-GGUF", "flux2-klein-4b-Q4_0.gguf"),
+        ("lumina2", "unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q8_0.gguf"),
+    )
+    for engine in (ENGINE_DIFFUSERS, ENGINE_SD_CPP):
+        _pretend_old_diffusers(monkeypatch, engine = engine)
+        for arch, repo_id, filename in picks:
+            task = models_route._arch_to_task(arch, (repo_id, filename))
+            try:
+                backend.validate_load_request(
+                    repo_id, gguf_filename = filename, model_kind = "gguf"
+                )
+                loader_accepts = True
+            except (ValueError, FileNotFoundError, RuntimeError):
+                loader_accepts = False
+            assert (task == "text-to-image") == loader_accepts, (
+                f"{repo_id} on {engine}: picker task={task} but loader accepts={loader_accepts}"
+            )

@@ -474,6 +474,39 @@ def test_non_gguf_load_restricted_to_unsloth(client):
     assert "unsloth" in resp.json()["detail"].lower()
 
 
+def test_a_too_old_diffusers_is_a_400_on_both_load_and_download_plan(client, monkeypatch):
+    # An unbuildable family is an unloadable pick, so it is a 400 with the message intact on both
+    # routes. As a RuntimeError it reached /images/load's 409 -- the code that otherwise means "a
+    # diffusion load is already in progress" -- and escaped /images/download-plan, which catches only
+    # (ValueError, FileNotFoundError), as a bare 500 with the message lost.
+    import sys
+    import types
+
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    backend = diffusion_module.get_diffusion_backend()
+
+    def _refuse(model_path, **kwargs):
+        # The real gate, run against a diffusers that predates the class.
+        assert_pipeline_class_available("Flux2KleinPipeline", "flux.2-klein")
+
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
+    monkeypatch.setattr(backend, "validate_load_request", _refuse)
+    body = {
+        "model_path": "unsloth/FLUX.2-klein-4B-GGUF",
+        "gguf_filename": "flux2-klein-4b-Q4_0.gguf",
+        "model_kind": "gguf",
+    }
+
+    load = client.post("/api/inference/images/load", json = body)
+    assert load.status_code == 400
+    assert "Flux2KleinPipeline" in load.json()["detail"]
+
+    plan = client.post("/api/inference/images/download-plan", json = body)
+    assert plan.status_code == 400
+    assert "Flux2KleinPipeline" in plan.json()["detail"]
+
+
 def test_pipeline_load_allowed_for_unsloth_repo(client):
     # An unsloth/* repo with no filename loads as a full diffusers pipeline, so the route forwards model_kind="pipeline" to begin_load.
     resp = client.post(
