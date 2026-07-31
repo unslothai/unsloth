@@ -1322,3 +1322,18 @@ def test_auth_retries_tag_transport_failures_like_the_first_attempt():
     assert "throw asTransportFailure(err);" in retry
     first = src.split("export async function authFetch", 1)[1]
     assert "throw asTransportFailure(err);" in first
+
+
+def test_external_readoption_drops_a_pin_taken_for_another_model():
+    """Status polling skips its own pin clearing while an external provider is selected, so the
+    re-adoption branch can adopt a resident the pin was never taken for. Applying settings then
+    sends that path and reloads the old model, so the branch has to clear it itself."""
+    src = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    branch = src.split("if (!forceReload && isExternalModelId(selectedCheckpoint))", 1)[1]
+    branch = branch.split("const stopDecision = await confirmStopRunningChatsIfNeeded", 1)[0]
+    assert "activeLoadId !== modelId" in branch
+    assert "setState({ activeLoadId: null })" in branch
+    # Clearing must land before the checkpoint moves, so nothing reads the pair half updated.
+    assert branch.index("activeLoadId: null") < branch.index(
+        ".setCheckpoint(modelId, residentStatus.gguf_variant)"
+    ), "the pin must be cleared before the checkpoint is adopted"

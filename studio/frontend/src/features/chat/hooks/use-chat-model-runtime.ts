@@ -588,6 +588,12 @@ export function useChatModelRuntime() {
           }
           const previousGgufVariant =
             useChatRuntimeStore.getState().activeGgufVariant;
+          // The poll skips its own clearing while an external pick is active, so a pin taken for
+          // an earlier resident can still be here. It only describes the identity it was taken
+          // for; on any other, Apply would send that path and reload the wrong model.
+          if (useChatRuntimeStore.getState().activeLoadId !== modelId) {
+            useChatRuntimeStore.setState({ activeLoadId: null });
+          }
           useChatRuntimeStore
             .getState()
             .setCheckpoint(modelId, residentStatus.gguf_variant);
