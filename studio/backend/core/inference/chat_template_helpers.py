@@ -128,7 +128,7 @@ _CONTROL_MARKUP = re.compile(
     # it is the standard CLI-synopsis metavariable ("usage: tool [OPTIONS] [ARGS]"), it
     # appears as a live string in this repo, and inside a schema "enum" / "pattern" the
     # rewrite would turn it into a grammar literal the model is then forced to emit.
-    r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS)\]|TOOL_CALLS\])"
+    r"|\[(?=/?(?:INST|SYSTEM_PROMPT|AVAILABLE_TOOLS|TOOL_RESULTS|TOOL_CALLS)\])"
     # Llama-2 opens its system block with "<<SYS>>" INSIDE the first [INST], so the
     # doubled angle is the opener, not a single "<". Both meta-llama/Llama-2-*-chat-hf's
     # own template and the "llama" entry this repo's MODEL_TO_TEMPLATE_MAPPER installs
@@ -321,6 +321,12 @@ def _neutralize_leaves(
 # Llama-3.1 renders both through one tool-result branch (chat_templates.py:517), and
 # neither resolves media: the content is serialized whole with tojson.
 _TOOL_RESULT_ROLES = frozenset({"tool", "ipython"})
+# The roles a template actually compares against. A message whose role differs from one of
+# these only by case or padding is canonicalized, so the sweep and the template agree on
+# which turn it is.
+_SCHEMA_ROLES = frozenset(
+    {"system", "user", "assistant", "tool", "ipython", "developer", "model"}
+)
 _MEDIA_PART_TYPES = frozenset(
     {"image", "image_url", "input_image", "input_audio", "audio", "audio_url", "video", "video_url"}
 )
@@ -333,6 +339,7 @@ def _neutralize_content_parts(
     content: list,
     rewrite,
     media_opaque: bool = True,
+    aggregated: bool = False,
 ):
     """Neutralize an OpenAI-style content parts list (#7066).
 
@@ -375,30 +382,49 @@ def _neutralize_content_parts(
             return part["text"]
         return None
 
-    # Every text part in the list can end up adjacent, not just the contiguous ones.
-    # Gemma-4 concatenates them all into one string before emitting any media placeholder
-    # (gemma-4.jinja:301-306), and its message loop simply skips a type it does not know
-    # (:334-344), so a part in between is no separator at all. The check therefore spans
-    # the whole list, in both the raw and the per-part-trimmed spelling the renderer
-    # produces.
+    # Which text parts can end up adjacent depends on the renderer. A tool body is
+    # AGGREGATED: gemma-4.jinja:301-306 concatenates every text part into one string and
+    # only then emits the media placeholders, so nothing separates them. A message body is
+    # emitted in LIST ORDER (chat_templates.py:675-680, 843-850, gemma-4.jinja:334-347),
+    # so a genuine media part does sit between the fragments and already stops them
+    # forming a marker; joining across it would also move text to the far side of the
+    # image. A part the renderer simply skips separates nothing either way.
     texts = [_text_of(part) for part in parts]
-    carriers = [index for index, text in enumerate(texts) if text is not None]
-    if len(carriers) > 1:
+
+    def _joinable_runs():
+        run: list = []
+        for index, part in enumerate(parts):
+            if texts[index] is not None:
+                run.append(index)
+                continue
+            if aggregated:
+                continue
+            part_type = part.get("type") if isinstance(part, dict) else None
+            if isinstance(part_type, str) and part_type in _MEDIA_PART_TYPES:
+                if len(run) > 1:
+                    yield run
+                run = []
+        if len(run) > 1:
+            yield run
+
+    dropped: set = set()
+    merged: dict = {}
+    for carriers in list(_joinable_runs()):
         raw = "".join(texts[index] for index in carriers)
         trimmed = "".join(texts[index].strip() for index in carriers)
-        if rewrite(raw) != raw or rewrite(trimmed) != trimmed:
-            # Only a list a paste split mid-marker collapses; the joined text lands on the
-            # first carrier so it stays broken whichever way the renderer joins them.
-            swept = rewrite(trimmed)
-            first = parts[carriers[0]]
-            merged = swept if isinstance(first, str) else {**first, "text": swept}
-            dropped = set(carriers[1:])
-            return [
-                merged if index == carriers[0] else part
-                for index, part in enumerate(parts)
-                if index not in dropped
-            ]
-    return parts
+        if rewrite(raw) == raw and rewrite(trimmed) == trimmed:
+            continue
+        # Only a run a paste split mid-marker collapses; the joined text lands on the
+        # first carrier so it stays broken whichever way the renderer joins them.
+        swept = rewrite(trimmed)
+        first = parts[carriers[0]]
+        merged[carriers[0]] = swept if isinstance(first, str) else {**first, "text": swept}
+        dropped.update(carriers[1:])
+    if not merged:
+        return parts
+    return [
+        merged.get(index, part) for index, part in enumerate(parts) if index not in dropped
+    ]
 
 
 def _differs(new, old) -> bool:
@@ -546,6 +572,12 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         raw_role = msg.get("role")
         if isinstance(raw_role, str) and raw_role:
             new_role = neutralize_control_markup(raw_role)
+            # "Assistant" and " assistant " mean assistant here but not to a template,
+            # which compares case-sensitively. That gap let a padded spelling take the
+            # lenient assistant treatment while still rendering as an assistant turn, so
+            # a known role is canonicalized and the two agree again (#7066).
+            if role in _SCHEMA_ROLES and new_role != role:
+                new_role = role
             if new_role != raw_role:
                 updates["role"] = new_role
         # Gemma-4 falls back to a tool result's "name" when "tool_call_id" matches no
@@ -574,7 +606,18 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         # renders the name and every leaf of the payload, so markup there closes
         # "<|tool_response>" and opens a model turn. Tool output, so the full rewrite.
         tool_responses = msg.get("tool_responses")
-        if isinstance(tool_responses, list) and tool_responses:
+        # Gemma-4 reads tool_responses independently of the role (gemma-4.jinja:232-279)
+        # and supplies the real "<|tool_response>" wrapper itself, so a user or system
+        # message carrying one fabricates a trusted observation with no marker in it for
+        # the sweep to catch. Assistant-only, exactly like tool_calls (#7066).
+        if tool_responses is not None and role != "assistant":
+            logger.warning(
+                "Dropping tool_responses from a %r message: templates wrap it as a tool "
+                "observation regardless of the role.",
+                role or "<missing>",
+            )
+            dropped_keys.add("tool_responses")
+        elif isinstance(tool_responses, list) and tool_responses:
             new_tool_responses = _neutralize_leaves(tool_responses, neutralize_control_markup)
             if _differs(new_tool_responses, tool_responses):
                 updates["tool_responses"] = new_tool_responses
@@ -595,8 +638,9 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
                 # whole content iterable with tojson, so an exempt URL there lands in
                 # the prompt as live structure. That branch is keyed on "tool" OR
                 # "ipython" (chat_templates.py:517), so both roles count (#7066).
+                is_tool_result = role in _TOOL_RESULT_ROLES
                 new_content = _neutralize_content_parts(
-                    content, rewrite, role not in _TOOL_RESULT_ROLES
+                    content, rewrite, not is_tool_result, aggregated = is_tool_result
                 )
             if _differs(new_content, content):
                 updates["content"] = new_content

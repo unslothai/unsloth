@@ -15950,11 +15950,17 @@ async def _anthropic_passthrough_stream(
         # Promote text-form tool calls (declared client tools only) into
         # tool_use blocks; verbatim behavior when healing is off or no tools.
         # tool_choice arrives here already converted to the OpenAI shape.
-        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
+        # Sanitized catalog, not the caller's: a tool dropped for unsafe markup never
+        # reached the prompt, so promoting text-form output for that name would hand the
+        # client a tool_use it never advertised (#7066).
+        from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
+        _healing_tools = neutralize_tool_descriptions(openai_tools)
+        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, tool_choice)
         if _allowed_tools:
             emitter.enable_healing(
                 _allowed_tools,
-                openai_tools,
+                _healing_tools,
                 disable_parallel_tool_use = disable_parallel_tool_use,
             )
         # These yields sit outside the teardown try below, so a disconnect while
@@ -16198,15 +16204,20 @@ async def _anthropic_passthrough_non_streaming(
             )
 
         data = resp.json()
-        # tool_choice arrives here already converted to the OpenAI shape.
-        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
+        # tool_choice arrives here already converted to the OpenAI shape. Sanitized for
+        # the same reason as the streaming path: with nudging on, the retry would
+        # otherwise name a tool that was dropped from the prompt (#7066).
+        from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
+        _healing_tools = neutralize_tool_descriptions(openai_tools)
+        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, tool_choice)
 
         # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
         # unusable; re-ask with the prompt prefix intact so the KV cache is reused.
         if (
             _allowed_tools
             and nudge_enabled(nudge_tool_calls)
-            and nudge_should_retry(data, _allowed_tools, openai_tools)
+            and nudge_should_retry(data, _allowed_tools, _healing_tools)
         ):
             retry_body = {
                 **body,
