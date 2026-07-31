@@ -1168,3 +1168,76 @@ def test_recipe_records_the_conditioned_workflow_settings(client, monkeypatch):
     plain_img = plain.json()["images"][0]
     assert plain_img["workflow"] == "txt2img"
     assert plain_img["strength"] is None and plain_img["upscale"] is None
+
+
+def test_recipe_records_the_load_time_build(client, monkeypatch):
+    # A recipe naming only the repo id cannot rebuild the pipeline that made the image: a GGUF repo holds many quants, a dense load may be torchao-quantised, and a torchao load bakes its LoRA adapters in BEFORE quantize + compile.
+    # A baked build is measurably not the adapter-less one even when every adapter is disabled at generate time (peft rewraps each targeted Linear, and the quantiser then converts base_layer while the lora_ side path stays high precision), so the build has to be recorded alongside the applied adapters.
+    backend = diffusion_module.get_diffusion_backend()
+
+    def _generate(**kwargs):
+        return {
+            "images": [object()],
+            "seed": 777,
+            "repo_id": "unsloth/Z-Image-Turbo-GGUF",
+            "model_kind": "gguf",
+            "gguf_filename": "z-image-turbo-Q8_0.gguf",
+            "transformer_quant": "int8",
+            # Baked at LOAD time; the generate request below carries no adapters, so the applied set is empty.
+            "baked_loras": ["bakedlora"],
+            "active_loras": [],
+            "workflow": "txt2img",
+        }
+
+    monkeypatch.setattr(backend, "generate", _generate, raising = False)
+
+    client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
+    )
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 777})
+    assert resp.status_code == 200
+    img = resp.json()["images"][0]
+    assert img["model"] == "unsloth/Z-Image-Turbo-GGUF"
+    assert img["model_kind"] == "gguf"
+    assert img["gguf_filename"] == "z-image-turbo-Q8_0.gguf"
+    assert img["transformer_quant"] == "int8"
+    # The bake is recorded even though nothing was applied to THIS generation.
+    assert img["baked_loras"] == ["bakedlora"]
+    assert img["loras"] == []
+
+
+def test_recipe_build_fields_absent_on_an_engine_that_omits_them(client):
+    # The native sd.cpp path and older records report no build keys at all; the record must degrade to nulls rather than 500 the persist or fail GalleryImage validation.
+    client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
+    assert resp.status_code == 200
+    img = resp.json()["images"][0]
+    assert img["model_kind"] is None
+    assert img["gguf_filename"] is None
+    assert img["transformer_quant"] is None
+    assert img["baked_loras"] == []
+
+
+def test_gallery_image_accepts_a_record_written_before_the_build_fields():
+    # Existing PNGs on disk carry none of the build keys. list_gallery_images validates every record with GalleryImage(**r) and DROPS the ones that fail, so a non-optional addition here would silently empty an existing gallery.
+    from models.inference import GalleryImage
+
+    old = {
+        "id": "img0",
+        "url": "/api/inference/images/gallery/img0/file",
+        "prompt": "a sloth",
+        "width": 512,
+        "height": 512,
+        "steps": 9,
+        "guidance": 3.5,
+        "seed": 777,
+        "created_at": 1.0,
+    }
+    record = GalleryImage(**old)
+    assert record.model_kind is None
+    assert record.gguf_filename is None
+    assert record.transformer_quant is None
+    assert record.baked_loras == []

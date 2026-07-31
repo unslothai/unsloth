@@ -2658,6 +2658,24 @@ class GalleryImage(BaseModel):
         1, description = "Batch size used; with batch_index it lets restore replay this image"
     )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
+    # The load-time BUILD. The repo id alone does not identify a pipeline -- a GGUF repo holds many quants, a dense load may be torchao-quantised, and a torchao load bakes its adapters in before quantize + compile -- so without these the recipe cannot be rebuilt once the model is unloaded or swapped. All absent on records written before they were recorded.
+    model_kind: Optional[str] = Field(
+        None, description = "How the model was loaded: gguf, single_file or pipeline"
+    )
+    gguf_filename: Optional[str] = Field(
+        None, description = "The single-file checkpoint the load committed, for a gguf/single_file load"
+    )
+    transformer_quant: Optional[str] = Field(
+        None,
+        description = "Transformer quantisation scheme actually engaged on the dense fast path "
+        "(int8/fp8/nvfp4/mxfp8), or null when the GGUF ran as-is",
+    )
+    baked_loras: list[str] = Field(
+        default_factory = list,
+        description = "Adapter ids baked into the transformer AT LOAD TIME (before quantize + "
+        "compile). Part of the build, not of this generation: reloading without them gives a "
+        "different pipeline even though disabling them here contributes nothing to the image.",
+    )
     loras: list[str] = Field(
         default_factory = list, description = "LoRA adapters applied, formatted as 'id:weight'"
     )

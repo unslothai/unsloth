@@ -962,6 +962,9 @@ class SdCppDiffusionBackend:
                     "seed": int(seed),
                     "seeds": seeds,
                     "repo_id": state.repo_id,
+                    # The BUILD, for the recipe: the repo id alone does not say WHICH GGUF quant ran, and two quants of one repo make different pixels.
+                    "model_kind": "gguf",
+                    "gguf_filename": state.gguf_filename,
                 }
             except SdCppCancelled as exc:
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc

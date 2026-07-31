@@ -188,6 +188,32 @@ def _active_lora_pairs(pipe: Any) -> list:
     return pairs
 
 
+def _baked_lora_names(pipe: Any) -> list:
+    """Names of the adapters BAKED INTO ``pipe`` at load time, whatever their current scale.
+
+    A torchao load attaches its adapters before ``quantize_`` + compile, so they are part of the
+    BUILD, not of any one generation: peft rewraps each targeted Linear as ``lora.Linear`` and the
+    quantiser then converts ``base_layer`` while the ``lora_`` side path stays high precision (see
+    ``diffusion_transformer_quant``). Disabling them at generate time sets their scale to 0, which
+    is not the same pipeline as one built without them -- so the recipe has to record the bake to
+    describe the build that made the image. ``_active_lora_pairs`` deliberately drops the
+    zero-weight entries, which is why the applied set cannot carry this.
+
+    Shape is tolerated rather than assumed, for the same reason as ``_active_lora_pairs``: this
+    runs inside the generate result and must never sink a finished generation."""
+    if not getattr(pipe, "_unsloth_loras_baked", False):
+        return []
+    names = []
+    for entry in getattr(pipe, "_unsloth_loras", ()) or ():
+        try:
+            name = entry[0]
+        except Exception:  # noqa: BLE001 — an unrecognised marker records no adapter
+            continue
+        if name:
+            names.append(str(name))
+    return names
+
+
 def resolve_local_single_file(model_path: str) -> Optional[str]:
     """The sole single-file checkpoint basename in a local ``model_path`` directory that is NOT a
     diffusers pipeline (no ``model_index.json``) and holds exactly one ``.safetensors`` file, else
@@ -445,6 +471,9 @@ class _LoadState:
     hf_token: Optional[str] = None
     # Per-control provenance {control: {value, source, reason}}, for status badges.
     resolved: Optional[dict] = None
+    # The single-file checkpoint basename this load committed (None for a pipeline load). Part of the
+    # build identity -- two GGUF quants of one repo make different pixels -- so a generation records it.
+    gguf_filename: Optional[str] = None
 
 
 @dataclass
@@ -1971,6 +2000,7 @@ class DiffusionBackend:
                         compile_cache_ctx = compile_ctx,
                         hf_token = hf_token,
                         resolved = resolved,
+                        gguf_filename = gguf_filename,
                     )
                     state_committed = True
                 finally:
@@ -3140,7 +3170,13 @@ class DiffusionBackend:
                     "seed": int(seed),
                     "seeds": [int(s) for s in per_image_seeds],
                     "repo_id": state.repo_id,
-                    # The adapters ACTUALLY attached for this generation, so the recipe records a load-time bake too: a quantized load bakes adapters before quantize + compile and the generate request then carries none.
+                    # The BUILD this ran on, not just the repo id: a GGUF quant choice and a torchao scheme each change the pixels, so a recipe naming only the repo cannot rebuild the pipeline that made the image once it is unloaded.
+                    "model_kind": state.kind,
+                    "gguf_filename": state.gguf_filename,
+                    "transformer_quant": state.transformer_quant,
+                    # Adapters baked in at LOAD time. Disabling them at generate time is scale 0, which is not the same build as one loaded without them, so this is part of the build record rather than of the applied set below.
+                    "baked_loras": _baked_lora_names(state.pipe),
+                    # The adapters ACTUALLY attached, at non-zero weight, for this generation.
                     "active_loras": _active_lora_pairs(state.pipe),
                     # The workflow this generation ACTUALLY ran, so a conditioned image is not presented as a plain Create recipe that would replay as something unrelated.
                     "workflow": workflow,

@@ -18861,16 +18861,14 @@ async def generate_diffusion_image(
                         # The batch shares one seed, so reproducing a batch_index>0 image needs the original batch_size: persist it so restore can replay. A list-driven image restores on its own seed instead.
                         "batch_size": 1 if list_driven else request.batch_size,
                         "model": result.get("repo_id"),
-                        # What was actually attached, not what this request asked for: a quantized load bakes its adapters before quantize + compile, so the generate request carries none.
-                        # A request-only recipe then claimed no LoRA for an image that used one, leaving the recipe unable to reproduce it.
-                        "loras": (
-                            [f"{l.id}:{l.weight:g}" for l in request.loras]
-                            if request.loras
-                            else [
-                                f"{name}:{weight:g}"
-                                for name, weight in result.get("active_loras") or []
-                            ]
-                        ),
+                        # The BUILD the image came off, not just the repo id. The repo alone cannot be rebuilt into the same pipeline: a GGUF repo holds many quants, a dense load may be torchao-quantised, and a torchao load bakes its LoRA adapters in before quantize + compile -- a build that is measurably NOT the same as the adapter-less one even when every adapter is disabled at generate time.
+                        # So once the model is unloaded or swapped, these are what the recipe needs to get back to the pipeline that made the image. Absent (None/[]) on records written before they were recorded, and on engines that do not report them.
+                        "model_kind": result.get("model_kind"),
+                        "gguf_filename": result.get("gguf_filename"),
+                        "transformer_quant": result.get("transformer_quant"),
+                        "baked_loras": list(result.get("baked_loras") or []),
+                        # The adapters APPLIED to this generation. A baked-but-disabled adapter is deliberately not listed here (its scale was 0, so it contributed nothing): it is recorded above as part of the build instead.
+                        "loras": [f"{l.id}:{l.weight:g}" for l in request.loras or []],
                         "controlnet": (
                             f"{request.controlnet.id}:{request.controlnet.control_type}:"
                             f"{request.controlnet.strength:g}"

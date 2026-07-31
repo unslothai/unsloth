@@ -156,6 +156,11 @@ export interface GalleryImage {
   batch_index: number;
   batch_size: number;
   model: string | null;
+  // The load-time build. The repo id alone does not identify a pipeline (a GGUF repo holds many quants, a dense load may be torchao-quantised, and a torchao load bakes its adapters in before quantize + compile), so these are what the recipe needs once the model is unloaded. Absent on records written before they were recorded.
+  model_kind?: string | null;
+  gguf_filename?: string | null;
+  transformer_quant?: string | null;
+  baked_loras?: string[];
   loras?: string[];
   controlnet?: string | null;
   // Conditioned-workflow settings. The source/mask/reference/control images are not persisted, so these say what ran and let restore name the inputs the user has to supply again. Absent on records written before they were recorded.

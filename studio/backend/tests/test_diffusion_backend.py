@@ -2978,6 +2978,34 @@ def test_apply_loras_quant_baked_matrix(monkeypatch):
         backend._apply_loras(_quant_lora_state(pipe), [("other", 1.0)], ev)
 
 
+def test_baked_lora_names_survive_being_disabled_at_generate_time(monkeypatch):
+    # A generate request with no `loras` zeroes every baked adapter, and _active_lora_pairs drops zero-weight entries -- so the APPLIED set of a baked load is always empty and cannot carry the bake.
+    # But baked-and-disabled is not the same build as never-baked (peft rewraps each targeted Linear, and quantize_ then converts base_layer while the lora_ side path stays high precision), so the recipe records the bake separately.
+    from core.inference.diffusion import _active_lora_pairs, _baked_lora_names
+
+    backend = DiffusionBackend()
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        staticmethod(
+            lambda specs, **k: tuple((i, f"/adapters/{i}.safetensors", w) for (i, w) in specs)
+        ),
+    )
+    pipe = _BakePipe()
+    pipe._unsloth_loras = (("sloth", "/adapters/sloth.safetensors", 0.8),)
+    pipe._unsloth_loras_baked = True
+
+    backend._apply_loras(_quant_lora_state(pipe), [], threading.Event())
+    assert _active_lora_pairs(pipe) == []
+    assert _baked_lora_names(pipe) == ["sloth"]
+
+    # A non-baked pipe reports no bake, whatever is attached at generate time.
+    plain = _BakePipe()
+    plain._unsloth_loras = (("sloth", "/adapters/sloth.safetensors", 0.8),)
+    assert _baked_lora_names(plain) == []
+    assert _active_lora_pairs(plain) == [("sloth", 0.8)]
+
+
 def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
     # krea repo ships transformers-5.x configs and no top-level tokenizer files, so from_pretrained dies in the tokenizer. The quant fast path must assemble per-component via load_krea2_pipeline.
     from core.inference import diffusion as dmod

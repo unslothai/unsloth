@@ -988,6 +988,14 @@ function RecipePopover({
             <RecipeRow label="Negative" value={image.negative_prompt} wrap />
           ) : null}
           {image.model ? <RecipeRow label="Model" value={image.model} /> : null}
+          {/* The load-time build, so the recipe still names the pipeline once the model is unloaded or swapped: the repo id alone does not say which GGUF quant ran, whether the dense transformer was torchao-quantised, or that an adapter was baked in before quantize + compile. */}
+          {image.gguf_filename ? <RecipeRow label="File" value={image.gguf_filename} mono /> : null}
+          {image.transformer_quant ? (
+            <RecipeRow label="Quant" value={image.transformer_quant} />
+          ) : null}
+          {image.baked_loras?.length ? (
+            <RecipeRow label="Baked" value={image.baked_loras.join(", ")} wrap />
+          ) : null}
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
           <RecipeRow label="Steps" value={String(image.steps)} />
           <RecipeRow label="Guidance" value={String(image.guidance)} />
