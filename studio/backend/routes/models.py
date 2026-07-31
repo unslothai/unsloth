@@ -2067,7 +2067,6 @@ async def scan_model_remote_code(
         scan_target = model_name
         if prefer_local_cache is True and not is_local_path(model_name):
             from core.training.training import _resolve_model_snapshot
-
             scan_target = _resolve_model_snapshot(model_name, model_local_path) or model_name
         # Scan the adapter AND the base together (a LoRA runs both repos' code; a pickle
         # can live in either), pinned by one combined fingerprint. Snapshot the primary's
