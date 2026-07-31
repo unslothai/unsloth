@@ -162,6 +162,40 @@ def usable_prequant_source(
     return src
 
 
+
+def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
+    """Force every loaded fp8 weight onto the plain-torch kernel, matching the local path.
+
+    `_fp8_config` pins `KernelPreference.TORCH` when it BUILDS a config, because AUTO silently
+    switches to the MSLK kernel wherever an mslk package is importable (sm90+). A hosted
+    checkpoint escapes that pin entirely: the preference is serialized on each Float8Tensor, and
+    every published one carries AUTO. Restoring it re-arms the exact kernel the pin exists to
+    avoid, and `mslk.f8f8bf16_rowwise` has no fake impl, so the first COMPILED generate dies with
+    "Operator does not support running with fake tensors" -- an HTTP 500 on the default speed
+    mode, reachable the moment the pre-quant repos are readable.
+
+    Safe to rewrite in place: the preference selects a matmul kernel, it is not weight data, so
+    the tensors stay bit-identical and the checkpoint's own sha256 still describes them. The
+    plain-torch path is also the faster one compiled (an opaque extern call blocks inductor
+    quantize fusion), so this costs nothing.
+    """
+    try:
+        from torchao.quantization.quantize_.common.kernel_preference import KernelPreference
+    except Exception:  # noqa: BLE001 -- enum moved or absent: leave the checkpoint as saved
+        return 0
+    pinned = 0
+    for t in state_dict.values():
+        if getattr(t, "kernel_preference", None) not in (None, KernelPreference.TORCH):
+            try:
+                t.kernel_preference = KernelPreference.TORCH
+                pinned += 1
+            except Exception:  # noqa: BLE001 -- frozen subclass: nothing else to try
+                pass
+    if pinned and logger is not None:
+        logger.info("diffusion.prequant: pinned %d weights to the plain-torch fp8 kernel", pinned)
+    return pinned
+
+
 def load_prequantized_transformer(
     transformer_cls: Any,
     base: str,
@@ -208,6 +242,7 @@ def load_prequantized_transformer(
         ):
             return None
         state_dict = ckpt["state_dict"]
+        _pin_kernel_preference(state_dict, logger)
 
         config = transformer_cls.load_config(base, subfolder = "transformer", token = hf_token)
         from accelerate import init_empty_weights
