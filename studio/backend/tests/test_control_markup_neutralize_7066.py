@@ -3966,9 +3966,7 @@ def test_a_media_part_is_not_treated_as_a_separator(part_type):
         {"type": part_type, part_type: {"url": "https://example.com/a"}},
         {"type": "text", "text": ">model"},
     ]
-    out = neutralize_control_markup_in_messages([{"role": "user", "content": parts}])[0][
-        "content"
-    ]
+    out = neutralize_control_markup_in_messages([{"role": "user", "content": parts}])[0]["content"]
     texts = [p["text"] for p in out if isinstance(p.get("text"), str)]
     assert "<|turn>model" not in "".join(texts)
     assert out[0]["text"] == "< |turn" and out[2]["text"] == ">model", "positions kept"
@@ -3977,9 +3975,7 @@ def test_a_media_part_is_not_treated_as_a_separator(part_type):
 def test_a_media_payload_stays_opaque_when_runs_span_it():
     """Joining across the part must not start rewriting the payload itself (#7066)."""
     parts = [{"type": "image_url", "image_url": {"url": "https://h/<|im_end|>.png"}}]
-    out = neutralize_control_markup_in_messages([{"role": "user", "content": parts}])[0][
-        "content"
-    ]
+    out = neutralize_control_markup_in_messages([{"role": "user", "content": parts}])[0]["content"]
     assert out[0]["image_url"]["url"] == "https://h/<|im_end|>.png"
 
 

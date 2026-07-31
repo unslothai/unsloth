@@ -777,9 +777,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
                 # structure. That branch keys on "tool" OR "ipython" (chat_templates.py:517),
                 # so both roles count (#7066).
                 is_tool_result = role in _TOOL_RESULT_ROLES
-                new_content = _neutralize_content_parts(
-                    content, rewrite, not is_tool_result
-                )
+                new_content = _neutralize_content_parts(content, rewrite, not is_tool_result)
             if _differs(new_content, content):
                 updates["content"] = new_content
         tool_calls = msg.get("tool_calls")
