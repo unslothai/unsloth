@@ -78,7 +78,11 @@ export function DatasetDeviceList({
       );
     }
     if (hasQuery) {
-      return null;
+      return (
+        <div className="px-4 py-8 text-center text-xs text-muted-foreground">
+          {t("studio.datasetPicker.noDatasetsFound")}
+        </div>
+      );
     }
     return (
       <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
@@ -202,6 +206,11 @@ export function DatasetHubList({
   }
   return (
     <>
+      {items.length === 0 && hasQuery && (
+        <div className="px-4 py-8 text-center text-xs text-muted-foreground">
+          {t("studio.datasetPicker.noDatasetsFound")}
+        </div>
+      )}
       <ul className="flex flex-col gap-0.5 p-0.5">
         {items.map((item) => {
           const active = hubResourceIdsEqual(value, item.id);

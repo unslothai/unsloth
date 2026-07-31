@@ -85,9 +85,9 @@ function SectionBox({
               </span>
             )}
             <div className="min-w-0">
-              <h3 className="select-none text-ui-13p5 font-semibold leading-ui-18 tracking-[-0.012em] text-foreground">
+              <h2 className="select-none text-ui-13p5 font-semibold leading-ui-18 tracking-[-0.012em] text-foreground">
                 {title}
-              </h3>
+              </h2>
               {description && (
                 <p className="text-ui-11p5 leading-ui-15 text-muted-foreground/85">
                   {description}

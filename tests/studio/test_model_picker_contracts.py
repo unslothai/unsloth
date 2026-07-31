@@ -1896,6 +1896,14 @@ def test_dataset_picker_restricts_local_selection_to_inventory():
     assert "isValidHubResourceId(activeQuery)" in selector
 
 
+def test_filtered_device_datasets_render_an_explicit_empty_state():
+    source = _read("features/dataset-picker/components/dataset-selector-lists.tsx")
+    device_list = source.split("export function DatasetDeviceList", 1)[1]
+    device_list = device_list.split("export function DatasetHubList", 1)[0]
+    assert 't("studio.datasetPicker.noDatasetsFound")' in device_list
+    assert not re.search(r"if \(hasQuery\)\s*\{\s*return null;", device_list)
+
+
 def test_dataset_hub_list_retains_the_active_hf_selection():
     selector = _read("features/dataset-picker/components/dataset-selector.tsx")
     hub_items = selector.split("const hubItems = useMemo", 1)[1]
@@ -1911,23 +1919,27 @@ def test_dataset_hub_list_retains_the_active_hf_selection():
     assert "items={hubItems}" in selector
 
 
-def test_filtered_hub_pages_keep_the_pagination_sentinel_mounted():
-    for rel, export_name, empty_collection in (
+def test_filtered_hub_pages_render_empty_state_and_keep_pagination_sentinel():
+    for rel, export_name, empty_collection, empty_message in (
         (
             "features/dataset-picker/components/dataset-selector-lists.tsx",
             "DatasetHubList",
             "items",
+            't("studio.datasetPicker.noDatasetsFound")',
         ),
         (
             "features/model-picker/components/train-model-picker-lists.tsx",
             "TrainModelHubList",
             "ids",
+            't("studio.modelPicker.noModelsFound")',
         ),
     ):
         source = _read(rel)
         hub_list = source.split(f"export function {export_name}", 1)[1]
         assert f"if ({empty_collection}.length === 0)" in hub_list
         assert "if (!hasQuery)" in hub_list
+        assert f"{empty_collection}.length === 0 && hasQuery" in hub_list
+        assert hub_list.count(empty_message) == 2
         assert "<PickerSearchError" in hub_list
         assert "compact={true}" in hub_list
         assert hub_list.count("<PickerHubPaginationFooter") == 2

@@ -158,6 +158,11 @@ def _reject_start_request(backend, start_request_id: Optional[str], message: str
     )
 
 
+def _observe_training_start_task(task: asyncio.Task[bool]) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
 def _is_indexed_model_weight_name(name: str, expected_suffix: str) -> bool:
     lower = name.lower()
     return lower.endswith(expected_suffix) and not lower.startswith(
@@ -707,6 +712,7 @@ async def start_training(
     """
     backend = None
     reserved_start_request_id = None
+    start_task: Optional[asyncio.Task[bool]] = None
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
         backend = get_training_backend()
@@ -1110,15 +1116,48 @@ async def start_training(
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
         from utils.transformers_version import SidecarSwapInProgress
 
+        def _run_backend_start() -> bool:
+            try:
+                success = backend.start_training(
+                    job_id = job_id,
+                    start_request_id = request.start_request_id,
+                    before_spawn = _free_vram_for_training,
+                    resume_source_run_id = resume_run["id"] if resume_run else None,
+                    **training_kwargs,
+                )
+            except (SidecarSwapInProgress, ExactResumeResourcesUnavailable) as exc:
+                _reject_start_request(backend, reserved_start_request_id, str(exc))
+                raise
+            except ValueError as exc:
+                _reject_start_request(backend, reserved_start_request_id, str(exc))
+                raise
+            except Exception:
+                _reject_start_request(
+                    backend,
+                    reserved_start_request_id,
+                    "Failed to start training",
+                )
+                raise
+
+            if success:
+                if reserved_start_request_id is not None:
+                    backend.resolve_start_request(
+                        reserved_start_request_id,
+                        state = "accepted",
+                        message = "Training job queued and starting in subprocess",
+                    )
+            else:
+                progress_error = backend.trainer.training_progress.error
+                _reject_start_request(
+                    backend,
+                    reserved_start_request_id,
+                    progress_error or "Failed to start training subprocess",
+                )
+            return success
+
         try:
-            success = await asyncio.to_thread(
-                backend.start_training,
-                job_id = job_id,
-                start_request_id = request.start_request_id,
-                before_spawn = _free_vram_for_training,
-                resume_source_run_id = resume_run["id"] if resume_run else None,
-                **training_kwargs,
-            )
+            start_task = asyncio.create_task(asyncio.to_thread(_run_backend_start))
+            success = await asyncio.shield(start_task)
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable
             # 409 matching the route-entry guard, not an internal error.
@@ -1141,12 +1180,6 @@ async def start_training(
                 error = progress_error or "subprocess_start_failed",
             )
 
-        if reserved_start_request_id is not None:
-            backend.resolve_start_request(
-                reserved_start_request_id,
-                state = "accepted",
-                message = "Training job queued and starting in subprocess",
-            )
         return TrainingJobResponse(
             job_id = job_id,
             status = "queued",
@@ -1155,11 +1188,14 @@ async def start_training(
         )
 
     except asyncio.CancelledError:
-        _reject_start_request(
-            backend,
-            reserved_start_request_id,
-            "Training start was cancelled",
-        )
+        if start_task is None:
+            _reject_start_request(
+                backend,
+                reserved_start_request_id,
+                "Training start was cancelled",
+            )
+        else:
+            start_task.add_done_callback(_observe_training_start_task)
         raise
     except HTTPException as exc:
         # Deliberate rejections (S3 not implemented, resume validation) must

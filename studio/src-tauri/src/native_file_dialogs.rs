@@ -359,7 +359,10 @@ mod tests {
         // be rejected or re-extensioned by the OS dialog.
         assert_eq!(save_filter("report.txt"), ("Text", vec!["txt", "log"]));
         assert_eq!(save_filter("photo.PNG"), ("PNG image", vec!["png"]));
-        assert_eq!(save_filter("shot.jpeg"), ("JPEG image", vec!["jpg", "jpeg"]));
+        assert_eq!(
+            save_filter("shot.jpeg"),
+            ("JPEG image", vec!["jpg", "jpeg"])
+        );
         assert_eq!(save_filter("clip.wav"), ("WAV audio", vec!["wav"]));
         assert_eq!(save_filter("voice.webm"), ("WebM audio", vec!["webm"]));
     }

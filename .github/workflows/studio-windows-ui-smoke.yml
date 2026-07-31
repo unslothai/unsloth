@@ -293,7 +293,7 @@ jobs:
         # Chromium needs (Edge / WebView2) already.
         run: |
           python -m pip install 'playwright>=1.45'
-          python -m playwright install chromium
+          python -m playwright install chromium firefox webkit
 
       - name: Reset auth + boot Unsloth
         run: |
@@ -392,6 +392,16 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
+      - name: Drive Train model and dataset pickers with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18897
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          STUDIO_PLAYWRIGHT_BROWSERS: chromium,firefox,webkit
+          PW_ART_DIR: logs/playwright_train_pickers
+        run: |
+          mkdir -p logs/playwright_train_pickers
+          python tests/studio/playwright_train_pickers.py
+
       - name: Stop second Unsloth
         if: always()
         run: |
@@ -410,5 +420,6 @@ jobs:
             logs/playwright
             logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_train_pickers
             logs/studio-permissions-*.log
           retention-days: 7

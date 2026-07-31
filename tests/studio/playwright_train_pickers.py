@@ -343,7 +343,17 @@ def install_route_mocks(page, counters: dict[str, int], offline: dict[str, bool]
             counters["hf_dataset_failures"] += 1
             route.abort("failed")
             return
-        fulfill_json(route, HF_DATASETS)
+        parsed_url = urllib.parse.urlparse(route.request.url)
+        query = urllib.parse.parse_qs(parsed_url.query).get("search", [""])[0]
+        normalized_query = query.casefold()
+        fulfill_json(
+            route,
+            [
+                item
+                for item in HF_DATASETS
+                if not query or normalized_query in item["id"].casefold()
+            ],
+        )
 
     page.route("https://huggingface.co/api/models**", hf_models)
     page.route("https://huggingface.co/api/datasets**", hf_datasets)
@@ -499,6 +509,9 @@ def test_model_picker(page) -> None:
     select_picker_tab(page, "Hugging Face")
     search = page.get_by_role("textbox", name = "Search models").first
     search.fill("bad model id!")
+    expect(page.get_by_text("No models found.", exact = True)).to_be_visible(
+        timeout = TIMEOUT_MS,
+    )
     search.press("Enter")
     expect(search).to_be_visible()
     assert training_state(page).get("selectedModel") == LOCAL_MODEL_BETA
@@ -562,6 +575,7 @@ def test_dataset_picker(page) -> None:
     search = page.get_by_role("textbox", name = "Search datasets").first
     before = training_state(page).get("uploadedFile")
     search.fill(UNMANAGED_DATASET_PATH)
+    expect(page.get_by_text("No datasets found.", exact = True)).to_be_visible()
     search.dispatch_event(
         "compositionstart",
         {
@@ -591,6 +605,9 @@ def test_dataset_picker(page) -> None:
     select_picker_tab(page, "Hugging Face")
     search = page.get_by_role("textbox", name = "Search datasets").first
     search.fill("bad dataset id!")
+    expect(page.get_by_text("No datasets found.", exact = True)).to_be_visible(
+        timeout = TIMEOUT_MS,
+    )
     search.press("Enter")
     expect(search).to_be_visible()
     assert training_state(page).get("uploadedFile") == before

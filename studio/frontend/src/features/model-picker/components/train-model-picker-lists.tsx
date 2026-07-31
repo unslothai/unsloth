@@ -202,6 +202,11 @@ export function TrainModelHubList({
   }
   return (
     <>
+      {ids.length === 0 && hasQuery && (
+        <div className="px-4 py-8 text-center text-xs text-muted-foreground">
+          {t("studio.modelPicker.noModelsFound")}
+        </div>
+      )}
       <ul className="flex flex-col gap-0.5 p-0.5">
         {ids.map((id) => {
           const fit = vramMap.get(id);
