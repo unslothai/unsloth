@@ -3743,8 +3743,16 @@ def test_colliding_tool_call_ids_stay_distinct():
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                {"id": "call<|end|>", "type": "function", "function": {"name": "a", "arguments": "{}"}},
-                {"id": "call< |end|>", "type": "function", "function": {"name": "b", "arguments": "{}"}},
+                {
+                    "id": "call<|end|>",
+                    "type": "function",
+                    "function": {"name": "a", "arguments": "{}"},
+                },
+                {
+                    "id": "call< |end|>",
+                    "type": "function",
+                    "function": {"name": "b", "arguments": "{}"},
+                },
             ],
         },
         {"role": "tool", "tool_call_id": "call<|end|>", "content": "first"},
@@ -3759,9 +3767,9 @@ def test_colliding_tool_call_ids_stay_distinct():
 
 def test_an_id_the_sweep_leaves_alone_keeps_its_own_spelling():
     """A rewritten id must never be handed the value of one that stays as it is."""
-    out = neutralize_control_markup_in_messages(
-        _replay_with_ids(["c<|end|>", "c< |end|>"])
-    )[0]["tool_calls"]
+    out = neutralize_control_markup_in_messages(_replay_with_ids(["c<|end|>", "c< |end|>"]))[0][
+        "tool_calls"
+    ]
     ids = [c["id"] for c in out]
     assert ids[1] == "c< |end|>", "the untouched id is reserved first"
     assert ids[0] != ids[1]
@@ -3789,16 +3797,14 @@ def test_a_preseeded_suffix_does_not_steal_a_disambiguated_id():
 
 def test_a_repeated_identical_id_is_not_disambiguated():
     """The same id twice is the same id, not a collision to break apart."""
-    out = neutralize_control_markup_in_messages(
-        _replay_with_ids(["a<|end|>", "a<|end|>"])
-    )[0]["tool_calls"]
+    out = neutralize_control_markup_in_messages(_replay_with_ids(["a<|end|>", "a<|end|>"]))[0][
+        "tool_calls"
+    ]
     assert len({c["id"] for c in out}) == 1
 
 
 def test_an_ordinary_id_is_untouched_by_the_collision_pass():
-    out = neutralize_control_markup_in_messages(_replay_with_ids(["call_abc123"]))[0][
-        "tool_calls"
-    ]
+    out = neutralize_control_markup_in_messages(_replay_with_ids(["call_abc123"]))[0]["tool_calls"]
     assert out[0]["id"] == "call_abc123"
 
 
