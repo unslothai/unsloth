@@ -1817,9 +1817,7 @@ def test_gguf_variants_route_reads_context_from_the_pinned_snapshot(monkeypatch,
     snapshot.mkdir(parents = True)
 
     async def scoped_variants(repo_id, **kwargs):
-        return SimpleNamespace(
-            repo_id = repo_id, variants = [], has_vision = False, default_variant = None
-        )
+        return SimpleNamespace(repo_id = repo_id, variants = [], has_vision = False, default_variant = None)
 
     context_calls = []
     monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
@@ -1849,9 +1847,7 @@ def test_gguf_variants_route_ignores_a_pin_naming_another_repo(monkeypatch, tmp_
     other.mkdir(parents = True)
 
     async def scoped_variants(repo_id, **kwargs):
-        return SimpleNamespace(
-            repo_id = repo_id, variants = [], has_vision = False, default_variant = None
-        )
+        return SimpleNamespace(repo_id = repo_id, variants = [], has_vision = False, default_variant = None)
 
     context_calls = []
     monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
