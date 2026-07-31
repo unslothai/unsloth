@@ -21,9 +21,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 
 
 def _write_info(tmp_path, payload):
-    (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps(payload), encoding = "utf-8"
-    )
+    (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(payload), encoding = "utf-8")
 
 
 class TestInstalledLlamaGfxArchs:
@@ -35,9 +33,7 @@ class TestInstalledLlamaGfxArchs:
 
     def test_missing_file_is_unknown(self, tmp_path, monkeypatch):
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path))
-        monkeypatch.setattr(
-            "core.inference.llama_cpp.Path.home", lambda: tmp_path / "nohome"
-        )
+        monkeypatch.setattr("core.inference.llama_cpp.Path.home", lambda: tmp_path / "nohome")
         assert LlamaCppBackend._installed_llama_gfx_archs() is None
 
     def test_pre_7624_install_is_unknown(self, tmp_path, monkeypatch):
@@ -94,9 +90,7 @@ def rocm_probe_env(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", _no_nvidia_smi)
     # No real llama.cpp install: skips the Vulkan probe branch.
-    monkeypatch.setattr(
-        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: None)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: None))
     for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
 
@@ -116,9 +110,7 @@ class TestGpuArchGate:
     def test_unknown_coverage_keeps_all_devices(self, tmp_path, monkeypatch, rocm_probe_env):
         # No prebuilt info (source build): behavior unchanged.
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path))
-        monkeypatch.setattr(
-            "core.inference.llama_cpp.Path.home", lambda: tmp_path / "nohome"
-        )
+        monkeypatch.setattr("core.inference.llama_cpp.Path.home", lambda: tmp_path / "nohome")
         monkeypatch.setitem(
             sys.modules, "torch", _fake_torch(["gfx1101", "gfx1036"], [12049, 12176])
         )
@@ -128,7 +120,5 @@ class TestGpuArchGate:
         # A device torch can't describe is kept, never silently dropped.
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path))
         _write_info(tmp_path, {"mapped_targets": ["gfx1101"]})
-        monkeypatch.setitem(
-            sys.modules, "torch", _fake_torch(["gfx1101", ""], [12049, 12176])
-        )
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch(["gfx1101", ""], [12049, 12176]))
         assert LlamaCppBackend._get_gpu_free_memory() == [(0, 12049), (1, 12176)]
