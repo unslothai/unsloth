@@ -667,3 +667,78 @@ def test_load_base_fork_tail_matches(monkeypatch, tmp_path):
         logger = None,
     )
     assert result is not None
+
+
+# ── kernel preference ────────────────────────────────────────────────────────
+
+
+class _FakeKernelPreference:
+    """Stand-in for torchao's enum: only identity and attribute access matter here."""
+
+    TORCH = "KernelPreference.TORCH"
+    AUTO = "KernelPreference.AUTO"
+
+
+def _stub_kernel_preference(monkeypatch):
+    mod = types.ModuleType("torchao.quantization.quantize_.common.kernel_preference")
+    mod.KernelPreference = _FakeKernelPreference
+    for name in (
+        "torchao",
+        "torchao.quantization",
+        "torchao.quantization.quantize_",
+        "torchao.quantization.quantize_.common",
+    ):
+        monkeypatch.setitem(sys.modules, name, sys.modules.get(name) or types.ModuleType(name))
+    monkeypatch.setitem(
+        sys.modules, "torchao.quantization.quantize_.common.kernel_preference", mod
+    )
+
+
+class _FakeFp8Weight:
+    def __init__(self, pref):
+        self.kernel_preference = pref
+
+
+def test_pin_kernel_preference_rewrites_auto(monkeypatch):
+    # The published checkpoints serialize KernelPreference.AUTO on every fp8 weight, which
+    # re-arms the MSLK kernel that _fp8_config pins away from; mslk.f8f8bf16_rowwise has no
+    # fake impl, so a COMPILED generate then fails to trace. Loading must normalise it.
+    _stub_kernel_preference(monkeypatch)
+    sd = {
+        "a.weight": _FakeFp8Weight(_FakeKernelPreference.AUTO),
+        "b.weight": _FakeFp8Weight(_FakeKernelPreference.AUTO),
+        "c.weight": _FakeFp8Weight(_FakeKernelPreference.TORCH),  # already pinned
+        "d.bias": object(),  # plain tensor: no preference, untouched
+    }
+    pinned = pq._pin_kernel_preference(sd, logger = None)
+    assert pinned == 2
+    assert all(
+        getattr(t, "kernel_preference", _FakeKernelPreference.TORCH)
+        == _FakeKernelPreference.TORCH
+        for t in sd.values()
+    )
+
+
+def test_pin_kernel_preference_survives_a_frozen_weight(monkeypatch):
+    # A subclass that refuses the assignment must not sink the load: the checkpoint is still
+    # usable eagerly, and raising here would lose it entirely.
+    _stub_kernel_preference(monkeypatch)
+
+    class _Frozen:
+        kernel_preference = _FakeKernelPreference.AUTO
+
+        def __setattr__(self, name, value):
+            raise AttributeError("frozen")
+
+    sd = {"a.weight": _Frozen(), "b.weight": _FakeFp8Weight(_FakeKernelPreference.AUTO)}
+    assert pq._pin_kernel_preference(sd, logger = None) == 1
+
+
+def test_pin_kernel_preference_no_torchao(monkeypatch):
+    # Without the enum there is nothing to pin to; leave the checkpoint exactly as saved.
+    monkeypatch.setitem(
+        sys.modules, "torchao.quantization.quantize_.common.kernel_preference", None
+    )
+    sd = {"a.weight": _FakeFp8Weight(_FakeKernelPreference.AUTO)}
+    assert pq._pin_kernel_preference(sd, logger = None) == 0
+    assert sd["a.weight"].kernel_preference == _FakeKernelPreference.AUTO
