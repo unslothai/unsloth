@@ -34,7 +34,14 @@ def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _sign(path, *, operation = "attach", path_kind = "attachment", nonce = None, secret = SECRET):
+def _sign(
+    path,
+    *,
+    operation = "attach",
+    path_kind = "attachment",
+    nonce = None,
+    secret = SECRET,
+):
     """Mint the grant Rust would sign for a dropped file."""
     st = os.stat(path)
     now_ms = int(time.time() * 1000)
@@ -58,7 +65,11 @@ def _sign(path, *, operation = "attach", path_kind = "attachment", nonce = None,
     return f"{payload_b64}.{_b64(signature)}"
 
 
-def _doc(tmp_path, name = "notes.txt", body = "alpha bravo charlie"):
+def _doc(
+    tmp_path,
+    name = "notes.txt",
+    body = "alpha bravo charlie",
+):
     path = tmp_path / name
     path.write_text(body, encoding = "utf-8")
     return path

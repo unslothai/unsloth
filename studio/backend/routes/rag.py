@@ -151,8 +151,7 @@ def _save_native_path_upload(lease: str) -> tuple[str, str]:
 
 
 def _resolve_document_upload(
-    file: UploadFile | None,
-    native_path_lease: str | None,
+    file: UploadFile | None, native_path_lease: str | None
 ) -> tuple[str, str]:
     if native_path_lease:
         return _save_native_path_upload(native_path_lease)
