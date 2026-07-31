@@ -97,6 +97,7 @@ except:
     from huggingface_hub.utils._token import get_token
 from ..device_type import (
     device_context,
+    clean_gpu_cache,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -930,10 +931,13 @@ class FastBaseModel:
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
         gpu_stats_name, gpu_stats_snippet, max_memory = device_context.get_stats()
-        try:
-            vllm_version = f" vLLM: {importlib_version('vllm')}."
-        except:
+        if DEVICE_TYPE == "xpu":
             vllm_version = ""
+        else:
+            try:
+                vllm_version = f" vLLM: {importlib_version('vllm')}."
+            except:
+                vllm_version = ""
 
         arch_name = model_type_arch.title()
         arch_name = arch_name.replace("_Vl_", "_VL_").replace("_Moe", "_MoE")
@@ -1324,7 +1328,7 @@ class FastBaseModel:
                         # Device-safe embedding offload.
                         _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
                         # Must free GPU memory otherwise will not free!
-                        torch.cuda.empty_cache()
+                        clean_gpu_cache()
                         gc.collect()
             else:
                 from unsloth_zoo.vllm_utils import (
@@ -1425,10 +1429,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
@@ -1732,10 +1733,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         return model, tokenizer
 
     @staticmethod
@@ -1885,10 +1883,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         max_seq_length = model.max_seq_length
         # If we pass loftq_config = None we will get an error
         loftq_config = validate_loftq_config(
@@ -2034,10 +2029,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
 
@@ -2152,10 +2144,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         # Add for_inference and for_training
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)

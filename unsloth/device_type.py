@@ -24,12 +24,14 @@ __all__ = [
     "device_context",
     "clean_gpu_cache",
     "get_current_device",
+    "resolve_hip_gpu_stats_name",
     "is_mlx_available",
 ]
 
 import functools
 import inspect
 import os
+import re
 from unsloth_zoo.utils import Version
 from .bnb_availability import native_kernels_ready
 
@@ -185,43 +187,121 @@ if DEVICE_TYPE == "hip":
                 ALLOW_PREQUANTIZED_MODELS = False
 
 
+def resolve_hip_gpu_stats_name(gpu_stats):
+    name = str(getattr(gpu_stats, "name", "") or "").strip()
+    name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
+    normalized_name = name.lower().strip(". ")
+    if normalized_name and normalized_name not in ("amd radeon graphics",):
+        return name + ". "
+
+    try:
+        torch_name = str(torch.cuda.get_device_name(0) or "").strip()
+        torch_name = re.sub(r"\s*\([^)]*\)\s*$", "", torch_name).strip()
+    except Exception:
+        torch_name = ""
+    normalized_torch_name = torch_name.lower().strip(". ")
+    if normalized_torch_name and normalized_torch_name not in ("amd radeon graphics",):
+        return torch_name + ". "
+
+    arch_name = ""
+    for key in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+        value = getattr(gpu_stats, key, None)
+        if value is not None and str(value).strip():
+            arch_name = str(value).strip()
+            break
+
+    if arch_name:
+        match = re.search(r"(gfx[0-9a-z]+)", arch_name, flags = re.I)
+        if match:
+            return f"AMD {match.group(1).lower()} GPU. "
+    return "AMD GPU. "
+
+
 class DeviceContext:
-    """Encapsulates device-specific operations for XPU/HIP/CUDA."""
+    """Encapsulates device-specific operations for CUDA, HIP, XPU, and MLX."""
+
+    _DEFAULT_NAMES = {
+        "cuda": "NVIDIA GPU",
+        "hip": "AMD GPU",
+        "xpu": "Intel XPU",
+        "mlx": "Apple GPU",
+    }
 
     def __init__(self, device_type: str = DEVICE_TYPE) -> None:
-        DEVICE_MODULE_MAP = {"xpu": torch.xpu, "cuda": torch.cuda, "hip": torch.cuda}
-        if device_type not in DEVICE_MODULE_MAP:
+        if device_type not in self._DEFAULT_NAMES:
             raise ValueError(f"Unsloth: Unsupported device type: {device_type}")
         self.device_type = device_type
-        # Cache the torch module for this device
-        self.torch_module = DEVICE_MODULE_MAP[device_type]
+        if device_type == "mlx":
+            self.torch_module = None
+            return
+
+        if _IS_MLX:
+            raise RuntimeError("Unsloth: PyTorch backends are unavailable on the MLX runtime.")
+        module_name = "xpu" if device_type == "xpu" else "cuda"
+        self.torch_module = getattr(torch, module_name, None)
+        if self.torch_module is None:
+            raise RuntimeError(f"Unsloth: PyTorch does not provide the {module_name} backend.")
 
     def get_stats(self) -> tuple[str, str, float]:
         """Return (name, stats_snippet, max_memory_gb)."""
+        if self.device_type == "mlx":
+            return self._get_mlx_stats()
+
         gpu_stats = self.torch_module.get_device_properties(0)
         max_mem = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
 
-        # Device name
-        name = gpu_stats.name + ". " if gpu_stats.name else self._get_default_name()
-
-        # Toolkit snippet
+        if self.device_type == "hip":
+            name = resolve_hip_gpu_stats_name(gpu_stats)
+        else:
+            name = gpu_stats.name + ". " if gpu_stats.name else self._get_default_name()
         snippet = self._get_toolkit_snippet(gpu_stats)
 
         return name, snippet, max_mem
 
+    def _get_mlx_stats(self) -> tuple[str, str, float]:
+        import mlx
+        import mlx.core as mx
+
+        device_info = mx.device_info()
+        name = str(device_info.get("device_name", "") or "").strip()
+        name = name + ". " if name else self._get_default_name()
+        total_memory = (
+            device_info.get("memory_size")
+            or device_info.get("max_recommended_working_set_size")
+            or 0
+        )
+        max_mem = round(total_memory / 1024 / 1024 / 1024, 3)
+        mlx_version = getattr(mlx, "__version__", "unknown")
+        return name, f"MLX: {mlx_version}.", max_mem
+
     def _get_default_name(self) -> str:
         """Get default device name when props.name is empty."""
-        names = {"xpu": "Intel XPU", "cuda": "NVIDIA GPU", "hip": "AMD GPU"}
-        return names[self.device_type] + " Device. "
+        return self._DEFAULT_NAMES[self.device_type] + " Device. "
 
     def _get_toolkit_snippet(self, props) -> str:
         """Get toolkit version snippet."""
         if self.device_type == "cuda":
             return f"CUDA: {props.major}.{props.minor}. CUDA Toolkit: {torch.version.cuda}."
-        elif self.device_type == "hip":
+        if self.device_type == "hip":
             return f"ROCm Toolkit: {torch.version.hip}."
-        else:  # xpu
-            return f"Intel Toolkit: {torch.version.xpu}."
+        return f"Intel Toolkit: {torch.version.xpu}."
+
+    def clean_cache(self) -> None:
+        if self.device_type == "mlx":
+            import mlx.core as mx
+
+            clear_cache = getattr(mx, "clear_cache", None)
+            if clear_cache is None and hasattr(mx, "metal"):
+                clear_cache = getattr(mx.metal, "clear_cache", None)
+            if callable(clear_cache):
+                clear_cache()
+            return
+        self.torch_module.empty_cache()
+
+    def get_current_device(self) -> int:
+        if self.device_type == "mlx":
+            return 0
+        return self.torch_module.current_device()
 
 
 # Singleton instance
@@ -231,9 +311,9 @@ device_context = DeviceContext()
 # Module-level functions for backward compatibility
 def clean_gpu_cache() -> None:
     """Clear GPU cache for current device type."""
-    device_context.torch_module.empty_cache()
+    device_context.clean_cache()
 
 
 def get_current_device() -> int:
     """Get current device index."""
-    return device_context.torch_module.current_device()
+    return device_context.get_current_device()
