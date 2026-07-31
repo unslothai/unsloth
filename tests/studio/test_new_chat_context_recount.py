@@ -145,6 +145,8 @@ const state: any = {
   ggufContextLength: null,
   modelLoading: false,
   runningByThreadId: {},
+  // What the recount reads to tell an output-only audio GGUF from a chat one.
+  models: [],
 };
 
 function set(updater: any): void {
@@ -1214,3 +1216,47 @@ def test_a_stored_history_count_is_dropped_once_the_runtime_contradicts_it(mount
         if expected_total is None
         else "a stored count with nothing contradicting it must still publish"
     )
+
+
+@pytest.mark.parametrize(
+    ("model_flags", "expected_counts"),
+    [
+        # Output only: every send goes to /audio/generate instead of a chat completion.
+        ("{ isAudio: true, hasAudioInput: false }", 0),
+        # Audio IN, chat out: a normal completion, so the chat-template total is the right one.
+        ("{ isAudio: true, hasAudioInput: true }", 1),
+        ("{ isAudio: false, hasAudioInput: false }", 1),
+    ],
+    ids = ["output_only_audio", "audio_input_model", "plain_gguf"],
+)
+def test_an_output_only_audio_gguf_is_never_recounted(model_flags, expected_counts):
+    """A TTS GGUF sends through /audio/generate, which prices the latest user message alone
+    inside a codec prompt and answers with no usage. Counting the chat template over the whole
+    thread would park a total on the bar that describes nothing and that nothing corrects."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ refreshContextUsage, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{
+              activeThreadId: "thread-a",
+              contextUsage: null,
+              contextUsageByThreadId: {{}},
+              models: [{{ id: "unsloth/gguf-model", ...{model_flags} }}],
+            }});
+            await refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == expected_counts, (
+        "an output-only audio model must not be counted at all"
+        if expected_counts == 0
+        else "a model that answers with a chat completion must still be counted"
+    )
+    if expected_counts == 0:
+        assert out["contextUsage"] is None, "the bar stays blank, as it did before the recount"

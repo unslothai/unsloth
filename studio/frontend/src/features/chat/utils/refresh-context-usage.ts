@@ -187,6 +187,15 @@ export async function refreshContextUsage(options?: {
     return;
   }
 
+  // An output-only audio GGUF never sends a chat completion: the adapter routes the whole
+  // turn to /audio/generate, which prices the latest user message alone inside a TTS prompt
+  // and returns no usage. A chat-template total over the thread is a number that describes
+  // nothing and that nothing would ever correct, so leave the bar blank as before.
+  const activeModel = store.models?.find(
+    (model: { id: string }) => model.id === checkpoint,
+  );
+  if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
+
   const capturedThreadId = threadId ?? null;
   const capturedCheckpoint = checkpoint;
 
