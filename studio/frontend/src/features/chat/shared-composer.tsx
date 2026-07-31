@@ -143,7 +143,7 @@ import {
 export type CompareMessagePart =
   | { type: "text"; text: string }
   | { type: "image"; image: string }
-  | { type: "audio"; audio: string };
+  | { type: "audio"; audio: string; name: string };
 
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
@@ -489,6 +489,7 @@ export function SharedComposer({
   const [pendingAudio, setPendingAudio] = useState<{
     name: string;
     base64: string;
+    contentType: string;
   } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -853,7 +854,7 @@ export function SharedComposer({
         // Handle audio files
         if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
           fileToBase64(file).then((base64) => {
-            setPendingAudio({ name: file.name, base64 });
+            setPendingAudio({ name: file.name, base64, contentType: file.type });
             setPendingAudioStore(base64, file.name);
           });
           continue;
@@ -983,7 +984,11 @@ export function SharedComposer({
       }
     }
     if (pendingAudio) {
-      content.push({ type: "audio", audio: pendingAudio.base64 });
+      content.push({
+        type: "audio",
+        name: pendingAudio.name,
+        audio: `data:${pendingAudio.contentType};base64,${pendingAudio.base64}`,
+      });
     }
     if (msg) {
       content.push({ type: "text", text: msg });
