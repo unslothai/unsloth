@@ -22,6 +22,12 @@ TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
 TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
+TAURI_UPDATE_CONTEXT = FRONTEND / "hooks/tauri-update-context.ts"
+TAURI_UPDATE_HOOK = FRONTEND / "hooks/use-tauri-update.ts"
+UPDATE_INSTRUCTIONS = (
+    FRONTEND / "features/settings/components/update-studio-instructions.tsx"
+)
+DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 
 
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
@@ -29,6 +35,40 @@ APP_PROVIDER = FRONTEND / "app/provider.tsx"
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
+
+
+def test_desktop_update_offer_remains_actionable_from_settings():
+    provider = APP_PROVIDER.read_text(encoding = "utf-8")
+    context = TAURI_UPDATE_CONTEXT.read_text(encoding = "utf-8")
+    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
+    settings = UPDATE_INSTRUCTIONS.read_text(encoding = "utf-8")
+
+    assert "<TauriUpdateContext.Provider value={update}>" in provider
+    context_start = provider.index("<TauriUpdateContext.Provider value={update}>")
+    context_end = provider.index("</TauriUpdateContext.Provider>", context_start)
+    assert "{appContent}" in provider[context_start:context_end]
+    assert "appContent={" in provider
+    assert "useContext(TauriUpdateContext)" in context
+    assert "checkForUpdate," in hook
+    assert "setDismissed(false);" in hook
+    assert 'const available = update.info !== null && !checking;' in settings
+    assert "update.dismissed" not in settings
+    assert "void update.installUpdate();" in settings
+    assert "void update.checkForUpdate();" in settings
+
+
+def test_desktop_update_check_failures_are_retryable():
+    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
+    settings = UPDATE_INSTRUCTIONS.read_text(encoding = "utf-8")
+    policy = DESKTOP_UPDATE_POLICY.read_text(encoding = "utf-8")
+
+    assert "setCheckError(String(e));" in hook
+    assert "update.checkError !== null" in settings
+    assert 't("settings.about.update.retryCheck")' in settings
+    assert "server returned HTTP {status}" in policy
+    request = policy.split("let response = client", 1)[1].split("let metadata", 1)[0]
+    assert ".map_err(|error|" in request
+    assert "return Ok(None);" not in request
 
 
 def test_file_actions_route_through_native_commands_only_in_tauri():
