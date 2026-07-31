@@ -3768,3 +3768,52 @@ def test_a_root_weight_no_runtime_discovers_does_not_veto_one_it_does(tmp_path, 
 
     assert rows[0]["partial"] is False
     assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_a_torn_quant_does_not_charge_a_stale_incomplete_blob_to_the_weights_row(
+    tmp_path, monkeypatch
+):
+    """The legacy .incomplete walk attributes a repo-wide signal to a snapshot, and that question is
+    per row: a hybrid repo's weights row loads model.safetensors and never opens a .gguf, so a torn
+    quant must not make the leftover blob describe it."""
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+                "Model-Q4_K_M-00001-of-00002.gguf": b"GGUF" + b"\0" * 252,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    (repo_dir / "blobs" / "abc123.incomplete").write_bytes(b"\0" * 8)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_a_stale_incomplete_blob_still_reaches_the_snapshot_it_describes(tmp_path, monkeypatch):
+    """Control for the test above: with no quant to mis-attribute, the same leftover blob is charged
+    to the weights row exactly as before."""
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors.index.json": _shard_index(
+                    "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"
+                ),
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    (repo_dir / "blobs" / "abc123.incomplete").write_bytes(b"\0" * 8)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False

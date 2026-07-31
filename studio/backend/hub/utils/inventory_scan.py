@@ -667,9 +667,11 @@ def _repo_cache_dir_has_snapshot_legacy_partial(
 ) -> bool:
     if _repo_cache_dir_has_non_gguf_broken_snapshot_symlinks(repo_cache_dir, snapshot_dir):
         return True
-    # ``.incomplete`` blobs carry no revision, so they need attributing.
+    # ``.incomplete`` blobs carry no revision, so they need attributing. Judged on this row's
+    # weights like every other signal is_snapshot_partial composes: a torn quant beside them is
+    # another row's payload and must not veto this one.
     if snapshot_dir is not None and not _repo_signal_applies_to_snapshot(
-        repo_cache_dir, snapshot_dir
+        repo_cache_dir, snapshot_dir, quants = False
     ):
         return False
     incomplete_hashes = _repo_cache_dir_incomplete_hashes(repo_cache_dir)
