@@ -9,8 +9,9 @@
 #   $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex # do not prompt to launch
 #   $env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex    # pin Python version
 #   $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
-#   .\install.ps1 --no-torch                                                # equivalent flag
-# Or pass flags to a scriptblock: & ([scriptblock]::Create((irm https://unsloth.ai/install.ps1))) --no-torch
+#   $env:UNSLOTH_LLAMA_CPP_BACKEND='cpu'; irm https://unsloth.ai/install.ps1 | iex # force CPU llama.cpp (GGUF)
+#   .\install.ps1 --no-torch --cpu                                          # equivalent flags
+# Or pass flags to a scriptblock: & ([scriptblock]::Create((irm https://unsloth.ai/install.ps1))) --no-torch --cpu
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
@@ -133,12 +134,15 @@ function Install-UnslothStudio {
     $SkipAutostart = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
+    $LlamaCppBackendFlag = ""
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
             "--local"    { $StudioLocalInstall = $true }
             "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
+            "--cpu"      { $LlamaCppBackendFlag = "cpu" }
+            "--vulkan"   { $LlamaCppBackendFlag = "vulkan" }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
@@ -164,6 +168,12 @@ function Install-UnslothStudio {
     # Env-var equivalent for web installs; an explicit flag still wins.
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
     if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
+
+    # llama.cpp backend: a --cpu / --vulkan flag works through `iex` / scriptblock
+    # where $env:UNSLOTH_LLAMA_CPP_BACKEND set before the pipe would too, but the
+    # flag is the documented parity path to install.sh's --cpu (#7213). setup.ps1
+    # reads $env:UNSLOTH_LLAMA_CPP_BACKEND; an explicit flag wins over the env var.
+    if ($LlamaCppBackendFlag) { $env:UNSLOTH_LLAMA_CPP_BACKEND = $LlamaCppBackendFlag }
 
     # Propagate to child processes so they also respect verbose mode.
     # Process-scoped -- does not persist.
