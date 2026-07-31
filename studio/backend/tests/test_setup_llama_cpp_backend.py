@@ -134,7 +134,8 @@ def test_explicit_vulkan_prebuilt_failure_does_not_change_backend():
     assert guard < source_build
     guarded = sh[guard:source_build]
     assert "will not substitute a ROCm or CPU source build" in guarded
-    assert "exit 1" in guarded
+    # Aborts through the helper, which exits AND emits [TAURI:ERROR] in desktop mode.
+    assert "setup_fail 1" in guarded
 
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
     failure = ps1.index('step "llama.cpp" "prebuilt install failed"')
@@ -143,7 +144,7 @@ def test_explicit_vulkan_prebuilt_failure_does_not_change_backend():
     assert guard < source_build
     guarded = ps1[guard:source_build]
     assert "will not substitute a CUDA, ROCm, or CPU source build" in guarded
-    assert "exit 1" in guarded
+    assert "Exit-SetupFailure" in guarded
 
 
 def test_explicit_vulkan_source_build_fails_closed():
@@ -156,7 +157,7 @@ def test_explicit_vulkan_source_build_fails_closed():
         '[ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then'
     ) in guarded
     assert "Vulkan source builds are not supported" in guarded
-    assert "exit 1" in guarded
+    assert "setup_fail 1" in guarded
 
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
     local_branch = ps1.index("if ($LocalLlamaCppLinked) {")
@@ -166,7 +167,7 @@ def test_explicit_vulkan_source_build_fails_closed():
     guarded = ps1[local_branch:prebuilt_branch]
     assert "} elseif ($explicitVulkanSourceBuild -and $NeedLlamaSourceBuild) {" in guarded
     assert "Vulkan source builds are not supported" in guarded
-    assert "exit 1" in guarded
+    assert "Exit-SetupFailure" in guarded
 
 
 def test_force_compile_sets_need_source_build_before_vulkan_guard():
