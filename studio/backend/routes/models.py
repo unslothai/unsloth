@@ -2105,9 +2105,7 @@ async def scan_model_remote_code(
             except (OSError, RuntimeError, ValueError):
                 scan_target = normalized_model_name
         if exact_snapshot_path and not local_model:
-            exact_snapshot_repo_id = resolve_cached_repo_id_case(
-                exact_snapshot_repo_id
-            )
+            exact_snapshot_repo_id = resolve_cached_repo_id_case(exact_snapshot_repo_id)
             scan_target = _model_config_inspection_target(
                 exact_snapshot_repo_id,
                 True,
@@ -2174,9 +2172,7 @@ async def scan_model_remote_code(
             security_targets, hf_token = hf_token, subject = current_subject
         )
         payload = decision.response_payload()
-        payload["model_name"] = (
-            exact_snapshot_repo_id if exact_snapshot_path else model_name
-        )
+        payload["model_name"] = exact_snapshot_repo_id if exact_snapshot_path else model_name
         payload["requires_trust_remote_code"] = decision.has_remote_code
         # Prior approval for the unchanged repo lets the dialog be skipped; the scan still
         # ran, so this is a real fingerprint match under the current ruleset.

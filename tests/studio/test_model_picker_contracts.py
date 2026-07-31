@@ -2061,10 +2061,7 @@ def test_training_controls_expose_context_without_overriding_history_metadata():
     assert 'aria-label={`${t("studio.wizard.methodLabel")}: ${activeLabel}`}' in wizard
     assert '<SetupField label={t("studio.wizard.hfTokenLabel")}>' not in wizard
     assert "aria-labelledby={`${cardId}-title`}" in history
-    assert (
-        "aria-describedby={`${cardId}-status ${cardId}-details ${cardId}-metrics`}"
-        in history
-    )
+    assert "aria-describedby={`${cardId}-status ${cardId}-details ${cardId}-metrics`}" in history
     assert "aria-label={title}" not in history
 
 

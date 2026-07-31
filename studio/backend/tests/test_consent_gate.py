@@ -724,9 +724,7 @@ class TestStructuredFindingsForDialog:
         monkeypatch.setattr(
             models_route,
             "_model_config_inspection_target",
-            lambda name, prefer_local, path: inspection_calls.append(
-                (name, prefer_local, path)
-            )
+            lambda name, prefer_local, path: inspection_calls.append((name, prefer_local, path))
             or snapshot,
         )
         monkeypatch.setattr(
