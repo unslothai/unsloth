@@ -195,6 +195,77 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
         }
 
 
+def damaged_installed_files(limit: int = 8) -> List[str]:
+    """Installed files that are gone, or shorter than pip recorded.
+
+    pip treats a distribution with intact metadata as already satisfied, so an
+    update reinstalls nothing when a package's FILES are damaged: it reports
+    success and the backend then dies on import at boot. A missing-package check
+    cannot see this, because the damaged module still imports; the observed
+    failure was `cannot import name 'Depends' from 'fastapi'`, not a missing
+    fastapi. Comparing each RECORD entry against the filesystem does see it, and
+    since nothing is imported it costs well under a second even with torch
+    installed.
+
+    Only shrinkage and disappearance count. A file LARGER than recorded means two
+    distributions claim the same path (descript-audio-codec ships a top-level
+    tests/__init__.py that another package overwrites), which is a packaging
+    collision, not damage.
+
+    RECORD is parsed here rather than read through Distribution.files, which
+    drops entries whose file no longer exists and so can never report a deletion.
+
+    Describes this interpreter's environment. Callers that may be running
+    outside the managed venv should check first; see install_state().
+    """
+    import csv
+    import io
+    from importlib.metadata import distributions
+
+    found: List[str] = []
+    for dist in distributions():
+        try:
+            name = dist.metadata["Name"] or "?"
+            record = dist.read_text("RECORD")
+        except Exception:
+            # An unreadable or absent RECORD says nothing about damage: editable
+            # installs and system packages legitimately have none.
+            continue
+        if not record:
+            continue
+        for row in csv.reader(io.StringIO(record)):
+            if len(row) < 3 or not row[2]:
+                continue
+            rel = row[0]
+            # Installer-owned metadata is rewritten in place and drifts from the
+            # size recorded inside itself; .pyc is regenerated from source.
+            if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
+                continue
+            try:
+                recorded = int(row[2])
+            except ValueError:
+                continue
+            try:
+                actual = dist.locate_file(rel).stat().st_size
+            except OSError:
+                found.append(f"{name}: {rel} is missing")
+                continue
+            if actual < recorded:
+                found.append(f"{name}: {rel} is {actual} bytes, expected {recorded}")
+            if len(found) >= limit:
+                return found
+    return found
+
+
+def running_outside_managed_venv(extra_roots: Sequence[Path] = ()) -> bool:
+    """True when this interpreter is not the managed venv the caller means.
+
+    A pip-installed CLI can drive an update into a venv it does not live in, and
+    anything answered from this interpreter would then describe the wrong tree.
+    """
+    return _managed_root(extra_roots) is not None
+
+
 def _missing_studio_packages() -> List[str]:
     """Studio packages studio.txt asks for and the venv does not have."""
     module = load_install_manifest_module()

@@ -2889,6 +2889,39 @@ def setup(
     _run_setup_script(verbose = verbose)
 
 
+def _fail_if_install_damaged() -> None:
+    """Refuse to call an update successful when the tree it produced is damaged.
+
+    pip considers a distribution with intact metadata already satisfied, so an
+    update reinstalls nothing when a package's FILES are damaged: it prints
+    "Unsloth Studio Installed", exits 0, and the backend then dies at boot. That
+    is the shape behind "just re-run the installer", and it is only actionable
+    if the update says so.
+    """
+    if _studio_deps.running_outside_managed_venv((STUDIO_HOME / "unsloth_studio",)):
+        # This CLI does not live in the venv the update just wrote, so its own
+        # file list describes the wrong tree. Silence beats a wrong answer.
+        return
+    damaged = _studio_deps.damaged_installed_files()
+    if not damaged:
+        return
+    typer.echo("", err = True)
+    typer.echo("Update finished, but some installed files are damaged:", err = True)
+    for entry in damaged:
+        typer.echo(f"  {entry}", err = True)
+    typer.echo("", err = True)
+    typer.echo("An update cannot repair these. pip sees intact package metadata and", err = True)
+    typer.echo("reinstalls nothing, so Studio will keep failing to start. Reinstall", err = True)
+    typer.echo("over the top:", err = True)
+    if platform.system() == "Windows":
+        typer.echo("  irm https://unsloth.ai/install.ps1 | iex", err = True)
+    else:
+        typer.echo("  curl -fsSL https://unsloth.ai/install.sh | sh", err = True)
+    typer.echo("", err = True)
+    typer.echo("To update anyway without this check: unsloth studio update --no-verify", err = True)
+    raise typer.Exit(code = 1)
+
+
 @studio_app.command()
 def update(
     local: bool = typer.Option(False, "--local", help = "Install from local repo instead of PyPI"),
@@ -2900,6 +2933,11 @@ def update(
         "--verbose",
         "-v",
         help = "Full pip/build output during update for troubleshooting.",
+    ),
+    verify: bool = typer.Option(
+        True,
+        "--verify/--no-verify",
+        help = "After updating, check that the backend still imports.",
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
@@ -2931,6 +2969,8 @@ def update(
     # but leaving a stale binary around invites cross-version restore
     # confusion from _restore_self_exe_lock_windows.
     _cleanup_self_exe_lock_windows()
+    if verify:
+        _fail_if_install_damaged()
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
     if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
