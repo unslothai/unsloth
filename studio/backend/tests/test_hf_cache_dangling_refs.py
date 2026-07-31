@@ -1999,9 +1999,8 @@ def test_a_config_the_loader_cannot_open_by_name_does_not_classify(tmp_path, mon
 
 
 def test_a_weight_the_loader_cannot_open_by_name_does_not_serve(tmp_path, monkeypatch):
-    """Same rule as the config above, for the weight itself: the loader opens model.safetensors and
-    pytorch_model.bin by exact path, so on a case-sensitive volume MODEL.SAFETENSORS is not the file
-    it finds. The walk folds case, so this has to be probed rather than matched."""
+    """Same rule as the config above, for the weight itself: the loader opens these names by exact
+    path, so on a case-sensitive volume MODEL.SAFETENSORS is not the file it finds."""
     probe = tmp_path / "case-probe"
     probe.mkdir()
     (probe / "A").write_bytes(b"")
@@ -2029,8 +2028,7 @@ def test_a_weight_the_loader_cannot_open_by_name_does_not_serve(tmp_path, monkey
 def test_a_weight_under_the_wrong_case_does_not_hide_one_under_the_right_case(
     tmp_path, monkeypatch
 ):
-    """Control for the test above: the name the loader opens still decides, whether it sits beside a
-    differently cased copy or is reached further down the chain."""
+    """Control: the name the loader opens decides, beside a miscased copy or later in the chain."""
     for extra in ({"model.safetensors": b"\0" * 256}, {"pytorch_model.bin": b"\0" * 256}):
         root = tmp_path / next(iter(extra)).replace(".", "_")
         _repo_with(

@@ -1119,8 +1119,7 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
         unreachable = False
         for suffix in (".safetensors", ".bin"):
             selected = _LOADER_WEIGHT_NAMES[kind][suffix]
-            # Probed, not matched: the loader opens this exact path, so the filesystem answers the
-            # case question. The walk folds case, which would accept MODEL.SAFETENSORS here.
+            # Probed, not matched: the walk folds case, so it would accept MODEL.SAFETENSORS here.
             canonical_empty = _root_file_is_empty(snapshot_dir, selected)
             if canonical_empty is True:
                 # The loader opens this name first and finds it empty. Same exemption as below.

@@ -971,9 +971,8 @@ def test_a_projector_at_the_snapshot_root_serves_a_quant_in_a_subdirectory(monke
 
 
 def test_vision_is_read_from_the_cache_root_holding_the_row(monkeypatch, tmp_path):
-    """The same repo can sit in several cache roots, and the row describes one copy. A newer
-    duplicate elsewhere is a different download the load never reaches, so it cannot answer for
-    the projector this one ships."""
+    """The same repo can sit in several cache roots, and the row describes one copy: a duplicate
+    elsewhere is a download the load never reaches, so it cannot answer for this row's projector."""
     import os
 
     active = tmp_path / "active"
