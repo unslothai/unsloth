@@ -217,11 +217,9 @@ def _spaced_out(pattern, text: str) -> str:
 def neutralize_control_markup(text: str) -> str:
     """Break control markup in free text by spacing out the opener (#7066).
 
-    "</think>" becomes "< /think>", "[/INST]" becomes "[ /INST]": readable, but no
-    longer a delimiter to the template, the think extractor or the stop-sequence
-    matcher. A plain space, because every tokenizer vocabulary has one; U+2060 can
-    fall back to byte junk.
-    """
+    "</think>" -> "< /think>", "[/INST]" -> "[ /INST]": readable, but no longer a
+    delimiter to the template, the think extractor or the stop-sequence matcher. A plain
+    space, because every tokenizer vocabulary has one; U+2060 can fall back to byte junk."""
     return _spaced_out(_CONTROL_MARKUP, text)
 
 
@@ -231,11 +229,10 @@ def neutralize_turn_boundary_markup(text: str) -> str:
 
 
 def neutralize_tts_prompt_text(text: str, audio_type = None) -> str:
-    """Break the active codec's own delimiters in the text of a TTS prompt (#7066).
+    """Break the active codec's own delimiters in a TTS prompt (#7066).
 
-    Scoped to *audio_type* on purpose: this text is going to be spoken, so anything that
-    is not structure in THIS codec's prompt has to survive byte-exact.
-    """
+    Scoped to *audio_type*: this text is spoken, so anything that is not structure in THIS
+    codec's prompt has to survive byte-exact."""
     return _spaced_out(_TTS_MARKUP_BY_CODEC.get(audio_type, _TTS_MARKUP_DEFAULT), text)
 
 
@@ -246,19 +243,15 @@ def _neutralize_leaves(
 ):
     """Apply *rewrite* to every string leaf, keys included, of a nested structure.
 
-    Iterative rather than recursive: how deep this goes is the client's choice, and a
-    schema that ``json.loads`` accepts must not be able to exhaust the interpreter stack
-    and turn the request into a 500. Containers are rebuilt in reverse breadth-first
-    order, so a child is always finished before the parent that holds it, and a repeated
-    or self-referencing node is visited once.
+    Iterative, not recursive: the client picks the depth, and a schema ``json.loads``
+    accepts must not exhaust the interpreter stack and turn the request into a 500.
+    Containers are rebuilt in reverse breadth-first order, so a child is finished before
+    its parent and a repeated or self-referencing node is visited once.
 
-    With *warn_on_key_collision*, a dict whose keys collide after the rewrite is logged.
-    Rewriting keys is not injective: "a<think>" and "a< think>" both land on
-    "a< think>", so such a dict keeps only the last value. Reaching a collision takes two
-    keys differing only in markup the rewrite touches, which no real schema has, and the
-    alternative -- keeping one key raw so both survive -- would put the markup back in
-    the prompt. So the merge stands and is logged.
-    """
+    Rewriting keys is not injective ("a<think>" and "a< think>" both land on "a< think>"),
+    so a colliding dict keeps only the last value; *warn_on_key_collision* logs it. The
+    merge stands because the alternative, keeping one key raw so both survive, would put
+    the markup back in the prompt."""
     if isinstance(value, str):
         return rewrite(value)
     if not isinstance(value, (dict, list)):
@@ -329,15 +322,13 @@ def _neutralize_content_parts(
 ):
     """Neutralize an OpenAI-style content parts list (#7066).
 
-    Two things the naive per-part rewrite missed. A part that is a mapping without a
-    string "text" was passed through whole, yet /generate/stream accepts one and Llama-3.1
-    serializes the entire iterable with tojson, so any leaf of it reaches the prompt. And
-    a marker split across two adjacent text parts survived both sweeps, because Gemma-4
-    concatenates them with no separator (gemma-4.jinja:304) and reassembles the opener.
-    Inserting whitespace between them is not a fix, since the sibling paths trim each part
-    (gemma-4.jinja:339), so a run that only becomes a marker once joined is swept as one
-    string and collapses into a single part. A run that is already clean keeps its parts.
-    """
+    Two gaps a per-part rewrite misses. A mapping part without a string "text" was passed
+    through whole, yet /generate/stream accepts one and Llama-3.1 serializes the entire
+    iterable with tojson. And a marker split across two adjacent text parts survived both
+    sweeps, because Gemma-4 concatenates them with no separator (gemma-4.jinja:304) and
+    reassembles the opener. Whitespace between them is no fix, since the sibling paths trim
+    each part (gemma-4.jinja:339), so a run that only becomes a marker once joined is swept
+    as one string and collapses into one part. A clean run keeps its parts."""
     parts: list = []
     for part in content:
         if isinstance(part, str):
@@ -414,10 +405,9 @@ def _neutralize_content_parts(
 def _differs(new, old) -> bool:
     """True when the rewrite changed *old* into *new*.
 
-    The client controls how deep these structures nest and ``==`` recurses in C, so a
-    comparison that overflows must not turn the request into a 500. An overflow counts
-    as changed, which keeps the neutralized copy: the safe direction (#7066).
-    """
+    The client picks the nesting depth and ``==`` recurses in C, so an overflowing
+    comparison must not 500 the request. It counts as changed, keeping the neutralized
+    copy: the safe direction (#7066)."""
     try:
         return new != old
     except RecursionError:
@@ -435,12 +425,10 @@ def _neutralized_arguments(arguments):
     OpenAI ships ``arguments`` as JSON *text*, and every consumer decodes it back to an
     object AFTER this runs: ``_normalize_tool_call_arguments`` below re-renders through
     ``json.loads`` when a template rejects a string, and llama.cpp does the same in
-    ``workaround::func_args_not_string`` for any template whose capability probe reports
-    object arguments. So rewriting the raw text lets "\\u003ctool_call|\\u003e" through
-    untouched and the decoded marker forges a turn (#7066). Parse first, rewrite the
-    decoded leaves, then re-serialize, and leave a clean payload byte-identical so the
-    prefix cache still hits.
-    """
+    ``workaround::func_args_not_string``. So rewriting the raw text lets
+    "\\u003ctool_call|\\u003e" through and the decoded marker forges a turn (#7066). Parse
+    first, rewrite the decoded leaves, re-serialize; a clean payload stays byte-identical
+    so the prefix cache still hits."""
     if isinstance(arguments, str):
         decoded = safe = _UNPARSED
         try:
@@ -467,17 +455,13 @@ def _neutralized_arguments(arguments):
 def _neutralize_replayed_tool_call(tool_calls: list) -> list:
     """Neutralize a replayed tool call's name and arguments, keeping "id" exact.
 
-    Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so an
-    argument or a name echoing pasted text can close the call block and open a
-    "<|tool_response>" or "<|turn>model" of its own (#7066). The rewrite is the
-    identity on every dispatchable name (Studio composes ^[a-zA-Z0-9_-]{1,64}$), and
-    a tool result's "name" takes the same rewrite, so the two still agree when
-    Gemma-4 pairs them by name.
-
-    Both replay shapes are covered: the OpenAI nested one and the flat
-    {"id", "name", "arguments"} one that every template's "if tool_call.function"
-    guard exists to render.
-    """
+    Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so a name or
+    argument echoing pasted text can close the call block and open a "<|tool_response>" or
+    "<|turn>model" of its own (#7066). The rewrite is the identity on every dispatchable
+    name (Studio composes ^[a-zA-Z0-9_-]{1,64}$), and a tool result's "name" takes the same
+    rewrite, so the two still agree when Gemma-4 pairs them by name. Both replay shapes are
+    covered: the OpenAI nested one and the flat {"id", "name", "arguments"} one that every
+    template's "if tool_call.function" guard exists to render."""
     out: list = []
     for call in tool_calls:
         if not isinstance(call, dict):
@@ -523,11 +507,10 @@ def _neutralize_replayed_tool_call(tool_calls: list) -> list:
 def neutralize_control_markup_in_messages(messages: list) -> list:
     """Neutralize control markup in message content and tool-result names (#7066).
 
-    User / system / tool turns lose every marker; assistant turns lose only turn
-    boundaries and keep their structural think / channel / tool markup, which
-    replayed history legitimately holds. Returns the same list object when nothing
-    changed, so the common prompt stays byte-for-byte what it was.
-    """
+    User / system / tool turns lose every marker; assistant turns lose only turn boundaries
+    and keep the think / channel / tool markup replayed history legitimately holds. Returns
+    the same list object when nothing changed, so the prompt stays byte-for-byte what it
+    was."""
     if not messages:
         return messages
     changed = False
@@ -657,21 +640,20 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
 def neutralize_tool_descriptions(tools):
     """Neutralize a rendered tool catalog, dropping any tool with an unsafe name.
 
-    Every string in a declaration is prompt text: Gemma-4 interpolates the description
-    into its system turn and emits property keys / ``enum`` / ``required`` entries
-    inline, while Granite and Mistral-Small-3 render the whole entry with ``tojson``.
-    So markup anywhere in the schema closes the system turn and forges a model one
-    (#7066), and ``mcp_client`` copies a remote ``description`` / ``inputSchema``
-    verbatim. The rewrite covers the whole entry, not just the nested ``function``,
-    because ``ChatCompletionRequest.tools`` is a bare ``list[dict]``.
+    Every string in a declaration is prompt text: Gemma-4 interpolates the description into
+    its system turn and emits property keys / ``enum`` / ``required`` entries inline, while
+    Granite and Mistral-Small-3 render the whole entry with ``tojson``, and ``mcp_client``
+    copies a remote ``description`` / ``inputSchema`` verbatim. So markup anywhere in the
+    schema closes the system turn and forges a model one (#7066). The rewrite covers the
+    whole entry, not just the nested ``function``, because ``ChatCompletionRequest.tools``
+    is a bare ``list[dict]``.
 
     ``function.name`` is the dispatch identity: rewriting it silently breaks dispatch,
     leaving it exact forges a turn (Gemma-4 emits ``call:NAME`` unquoted), so a name
     carrying markup drops the tool with a warning instead. The predicate is the rewrite
     itself, not OpenAI's name grammar, so a passthrough client's ``ns.tool`` or
-    ``functions.NAME:IDX`` still ships. The rewrite is the identity on any markup-free
-    string, so a live catalog is returned unchanged.
-    """
+    ``functions.NAME:IDX`` still ships; it is the identity on markup-free strings, so a live
+    catalog is returned unchanged."""
     if not tools or not isinstance(tools, list):
         return tools
     out: list = []
@@ -842,10 +824,8 @@ def _unsafe_schema_identifier(value):
 def forced_tool_name(tool_choice):
     """The function name a ``tool_choice`` pins, or None when it pins nothing.
 
-    OpenAI spells it ``{"type": "function", "function": {"name": ...}}`` and Anthropic
-    ``{"type": "tool", "name": ...}``; the string forms ("auto" / "none" / "required")
-    pin no particular tool.
-    """
+    OpenAI: ``{"type": "function", "function": {"name": ...}}``; Anthropic:
+    ``{"type": "tool", "name": ...}``. The string forms pin no particular tool."""
     if not isinstance(tool_choice, dict):
         return None
     function = tool_choice.get("function")
@@ -871,10 +851,8 @@ def reconciled_tool_choice(tool_choice, openai_tools, safe_tools):
 
     Only when the neutralizer removed it: the name has to be in the caller's catalog and
     gone from the sanitized one. A client forcing a function it never declared is a
-    different, pre-existing case that the healing path deliberately reads to decide a
-    streamed call must NOT be promoted, so silently rewriting it there would change
-    unrelated behaviour.
-    """
+    different, pre-existing case the healing path deliberately reads to decide a streamed
+    call must NOT be promoted, so rewriting it there would change unrelated behaviour."""
     forced = forced_tool_name(tool_choice)
     if forced is None or forced in catalog_tool_names(safe_tools):
         return tool_choice

@@ -15836,17 +15836,14 @@ def _build_passthrough_payload(
 def _nudge_retry_messages(body, data, allowed_tools):
     """The nudge retry's message list, re-neutralized like the enable-tools loop.
 
-    The appended suffix is not sanitized text: the assistant turn replays the model's
-    own failed output, which can echo a boundary the client asked it to repeat, and the
-    user turn interpolates ``allowed_tools``, which ``heal_gate`` derives from the RAW
-    catalog on the /v1/messages path -- so a name dropped from ``tools`` for carrying
-    markup would come straight back as prose the template renders as structure (#7066).
-
-    Wrapping the whole concatenation is safe rather than just the suffix: the rewrite is
-    idempotent and returns each unchanged message object as-is, so the already
+    The appended suffix is not sanitized text: the assistant turn replays the model's own
+    failed output, and the user turn interpolates ``allowed_tools``, which ``heal_gate``
+    derives from the RAW catalog on the /v1/messages path -- so a name dropped from
+    ``tools`` for carrying markup would come straight back as prose the template renders
+    as structure (#7066). Wrapping the whole concatenation rather than just the suffix is
+    free: the rewrite is idempotent and returns unchanged messages as-is, so the already
     neutralized prefix stays byte-identical and llama-server still reuses the slot's KV
-    cache, which is the entire point of appending instead of rebuilding.
-    """
+    cache, the entire point of appending instead of rebuilding."""
     from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
     return neutralize_control_markup_in_messages(
         [*body.get("messages", []), *nudge_messages(data, allowed_tools)]
