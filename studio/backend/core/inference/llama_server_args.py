@@ -151,9 +151,7 @@ _CACHE_TYPE_K_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k"})
 _CACHE_TYPE_V_FLAGS: frozenset[str] = frozenset({"-ctv", "--cache-type-v"})
 _CACHE_FLAGS: frozenset[str] = _CACHE_TYPE_K_FLAGS | _CACHE_TYPE_V_FLAGS
 _REASONING_BUDGET_FLAGS: frozenset[str] = frozenset({"--reasoning-budget"})
-_REASONING_BUDGET_MESSAGE_FLAGS: frozenset[str] = frozenset(
-    {"--reasoning-budget-message"}
-)
+_REASONING_BUDGET_MESSAGE_FLAGS: frozenset[str] = frozenset({"--reasoning-budget-message"})
 _REASONING_BUDGET_MAX = 2_147_483_647
 _SPEC_FLAGS: frozenset[str] = frozenset(
     {
