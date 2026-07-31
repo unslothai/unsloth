@@ -155,15 +155,18 @@ def get_server(id: str) -> Optional[dict]:
         conn.close()
 
 
-def list_servers() -> list[dict]:
+def list_servers(*, decrypt_secrets: bool = True) -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute("SELECT * FROM mcp_servers ORDER BY created_at").fetchall()
         results = []
         for row in rows:
             result = dict(row)
-            result["oauth_client_secret"] = decrypt_client_secret(
-                result.pop("oauth_client_secret_encrypted", None)
+            encrypted_secret = result.pop("oauth_client_secret_encrypted", None)
+            result["oauth_client_secret"] = (
+                decrypt_client_secret(encrypted_secret)
+                if decrypt_secrets
+                else bool(encrypted_secret)
             )
             results.append(result)
         return results
