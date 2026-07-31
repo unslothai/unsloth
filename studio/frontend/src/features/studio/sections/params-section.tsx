@@ -311,23 +311,21 @@ export function ParamsSection({
   // clear a stale selection to lora on Apple Silicon -- whether persisted,
   // applied from a model default, or imported -- so the backend never
   // receives it.
-  const setLoraVariant = store.setLoraVariant;
   useEffect(() => {
     if (
       isMac &&
       (store.loraVariant === "loftq" || store.loraVariant === "dora")
     ) {
-      setLoraVariant("lora");
+      useTrainingConfigStore.setState({ loraVariant: "lora" });
     }
-  }, [isMac, store.loraVariant, setLoraVariant]);
+  }, [isMac, store.loraVariant]);
 
   // Packing is unsupported on MLX; clear it on Apple Silicon (checkbox disabled).
-  const setPacking = store.setPacking;
   useEffect(() => {
     if (isMac && store.packing) {
-      setPacking(false);
+      useTrainingConfigStore.setState({ packing: false });
     }
-  }, [isMac, store.packing, setPacking]);
+  }, [isMac, store.packing]);
 
   const trySetContextLength = (input: string): number | null => {
     const n = Number(input);

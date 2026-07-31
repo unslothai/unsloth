@@ -1042,6 +1042,7 @@ export const ko = {
       configLoaded: "구성이 로드되었습니다",
       failedToLoadConfig: "구성을 불러오지 못했습니다",
       invalidYamlFile: "잘못된 YAML 파일입니다",
+      configTooLarge: "학습 구성 파일이 너무 큽니다(최대 1 MiB).",
       failedToReadFile: "파일을 읽지 못했습니다",
       failedToSaveConfig: "구성을 저장하지 못했습니다",
       parametersReset: "매개변수가 모델 기본값으로 재설정되었습니다",

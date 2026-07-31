@@ -1078,6 +1078,7 @@ export const ja = {
       configLoaded: "構成を読み込みました",
       failedToLoadConfig: "構成の読み込みに失敗しました",
       invalidYamlFile: "無効な YAML ファイルです",
+      configTooLarge: "トレーニング構成ファイルが大きすぎます（最大 1 MiB）。",
       failedToReadFile: "ファイルの読み込みに失敗しました",
       failedToSaveConfig: "構成の保存に失敗しました",
       parametersReset: "パラメーターをモデルのデフォルト値にリセットしました",

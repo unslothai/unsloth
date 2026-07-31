@@ -362,7 +362,8 @@ export function RunPreviewCard({
     s3Config,
     hasDataset,
   });
-  const methodMeta = TRAINING_METHOD_META[trainingMethod];
+  const methodMeta =
+    TRAINING_METHOD_META[trainingMethod] ?? TRAINING_METHOD_META.qlora;
   const lengthUnit = maxSteps && maxSteps > 0 ? "step" : "epoch";
   const lengthCount = lengthUnit === "step" ? maxSteps : epochs;
   const lengthLabel = t(

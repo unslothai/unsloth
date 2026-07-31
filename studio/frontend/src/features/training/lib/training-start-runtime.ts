@@ -12,6 +12,7 @@ import { emitTrainingRunsChanged } from "../events";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import { syncTrainingRuntimeFromBackend } from "./sync-runtime";
 import { resolveTrainingStartRequestOutcome } from "./training-start-reconciliation";
+import { createTrainingStartRequestId } from "./training-start-request-id";
 
 export const TRAINING_SETUP_CHANGED_ERROR =
   "studio.training.setupChanged" satisfies TranslationKey;
@@ -36,13 +37,14 @@ function wait(ms: number): Promise<void> {
 }
 
 export function tryAcquireTrainingStart(): TrainingStartLease | null {
+  const startRequestId = createTrainingStartRequestId();
   const runtime = useTrainingRuntimeStore.getState();
   if (!runtime.tryBeginStarting()) {
     return null;
   }
   return {
     resetGeneration: useTrainingRuntimeStore.getState().resetGeneration,
-    startRequestId: crypto.randomUUID(),
+    startRequestId,
   };
 }
 

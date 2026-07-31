@@ -9,12 +9,23 @@ const WINDOWS_RESERVED_NAME =
   /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 const FILENAME_SEGMENT_MAX_BYTES = 64;
 export const MAX_TRAINING_CONFIG_BYTES = 1024 * 1024;
+export const TRAINING_CONFIG_TOO_LARGE_ERROR_KEY =
+  "studio.training.configTooLarge" as const;
+
+export class TrainingConfigFileError extends Error {
+  readonly translationKey = TRAINING_CONFIG_TOO_LARGE_ERROR_KEY;
+
+  constructor() {
+    super(TRAINING_CONFIG_TOO_LARGE_ERROR_KEY);
+    this.name = "TrainingConfigFileError";
+  }
+}
 
 export async function readBrowserTrainingConfig(
   file: Pick<File, "size" | "text">,
 ): Promise<string> {
   if (file.size > MAX_TRAINING_CONFIG_BYTES) {
-    throw new Error("Training config is too large (maximum 1 MiB).");
+    throw new TrainingConfigFileError();
   }
   return await file.text();
 }

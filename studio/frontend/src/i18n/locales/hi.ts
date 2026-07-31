@@ -1042,6 +1042,8 @@ export const hi = {
       configLoaded: "कॉन्फ़िग लोड हुआ",
       failedToLoadConfig: "कॉन्फ़िग लोड करने में विफल",
       invalidYamlFile: "अमान्य YAML फ़ाइल",
+      configTooLarge:
+        "प्रशिक्षण कॉन्फ़िगरेशन फ़ाइल बहुत बड़ी है (अधिकतम 1 MiB)।",
       failedToReadFile: "फ़ाइल पढ़ने में विफल",
       failedToSaveConfig: "कॉन्फ़िग सहेजने में विफल",
       parametersReset: "पैरामीटर मॉडल डिफ़ॉल्ट पर रीसेट किए गए",

@@ -1040,6 +1040,8 @@ export const ar = {
       configLoaded: "تم تحميل التكوين",
       failedToLoadConfig: "فشل تحميل التكوين",
       invalidYamlFile: "ملف YAML غير صالح",
+      configTooLarge:
+        "ملف تكوين التدريب كبير جدًا (الحد الأقصى 1 MiB).",
       failedToReadFile: "فشلت قراءة الملف",
       failedToSaveConfig: "فشل حفظ التكوين",
       parametersReset: "تمت إعادة تعيين المعلمات إلى إعدادات النموذج الافتراضية",

@@ -103,8 +103,20 @@ export function useTrainingRuntimeLifecycle(): void {
         runtime.setStartError(null);
       }
     };
-    const unsubscribeConfig = useTrainingConfigStore.subscribe(clearStartError);
-    const unsubscribeToken = useHfTokenStore.subscribe(clearStartError);
+    const unsubscribeConfig = useTrainingConfigStore.subscribe(
+      (state, previousState) => {
+        if (state.userEditRevision !== previousState.userEditRevision) {
+          clearStartError();
+        }
+      },
+    );
+    const unsubscribeToken = useHfTokenStore.subscribe(
+      (state, previousState) => {
+        if (state.token !== previousState.token) {
+          clearStartError();
+        }
+      },
+    );
     return () => {
       unsubscribeConfig();
       unsubscribeToken();

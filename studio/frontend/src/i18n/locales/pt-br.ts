@@ -1147,6 +1147,8 @@ export const ptBR = {
       configLoaded: "Configuração carregada",
       failedToLoadConfig: "Falha ao carregar a configuração",
       invalidYamlFile: "Arquivo YAML inválido",
+      configTooLarge:
+        "O arquivo de configuração de treinamento é muito grande (máximo de 1 MiB).",
       failedToReadFile: "Falha ao ler o arquivo",
       failedToSaveConfig: "Falha ao salvar a configuração",
       parametersReset: "Parâmetros redefinidos para os padrões do modelo",

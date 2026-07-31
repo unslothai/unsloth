@@ -49,6 +49,7 @@ export type BrowseDatasetSelection =
 export type DatasetManualMapping = Record<string, string>;
 
 export interface TrainingConfigState {
+  userEditRevision: number;
   currentStep: StepNumber;
   modelType: ModelType | null;
   selectedModel: string | null;

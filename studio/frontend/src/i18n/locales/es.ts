@@ -1076,6 +1076,8 @@ export const es = {
       configLoaded: "Configuración cargada",
       failedToLoadConfig: "No se pudo cargar la configuración",
       invalidYamlFile: "Archivo YAML no válido",
+      configTooLarge:
+        "El archivo de configuración de entrenamiento es demasiado grande (máximo 1 MiB).",
       failedToReadFile: "No se pudo leer el archivo",
       failedToSaveConfig: "No se pudo guardar la configuración",
       parametersReset:

@@ -6,10 +6,10 @@ import test from "node:test";
 
 import {
   MAX_TRAINING_CONFIG_BYTES,
+  TRAINING_CONFIG_TOO_LARGE_ERROR_KEY,
+  TrainingConfigFileError,
   readBrowserTrainingConfig,
 } from "../src/features/studio/wizard/training-config-file.ts";
-
-const MAXIMUM_SIZE_ERROR = /maximum 1 MiB/;
 
 test("browser training config imports enforce the native size limit", async () => {
   let read = false;
@@ -23,7 +23,9 @@ test("browser training config imports enforce the native size limit", async () =
 
   await assert.rejects(
     readBrowserTrainingConfig(oversized),
-    MAXIMUM_SIZE_ERROR,
+    (error: unknown) =>
+      error instanceof TrainingConfigFileError &&
+      error.translationKey === TRAINING_CONFIG_TOO_LARGE_ERROR_KEY,
   );
   assert.equal(read, false);
 

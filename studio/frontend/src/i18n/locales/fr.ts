@@ -1082,6 +1082,8 @@ export const fr = {
       configLoaded: "Configuration chargée",
       failedToLoadConfig: "Échec du chargement de la configuration",
       invalidYamlFile: "Fichier YAML invalide",
+      configTooLarge:
+        "Le fichier de configuration d’entraînement est trop volumineux (maximum 1 Mio).",
       failedToReadFile: "Échec de la lecture du fichier",
       failedToSaveConfig: "Échec de l'enregistrement de la configuration",
       parametersReset: "Paramètres réinitialisés aux valeurs par défaut du modèle",

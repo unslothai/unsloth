@@ -1048,6 +1048,8 @@ export const ru = {
       configLoaded: "Конфигурация загружена",
       failedToLoadConfig: "Не удалось загрузить конфигурацию",
       invalidYamlFile: "Недопустимый файл YAML",
+      configTooLarge:
+        "Файл конфигурации обучения слишком большой (максимум 1 МиБ).",
       failedToReadFile: "Не удалось прочитать файл",
       failedToSaveConfig: "Не удалось сохранить конфигурацию",
       parametersReset: "Параметры сброшены к значениям модели по умолчанию",

@@ -1490,6 +1490,7 @@ export const en = {
       configLoaded: "Config loaded",
       failedToLoadConfig: "Failed to load config",
       invalidYamlFile: "Invalid YAML file",
+      configTooLarge: "Training config is too large (maximum 1 MiB).",
       failedToReadFile: "Failed to read file",
       failedToSaveConfig: "Failed to save config",
       parametersReset: "Parameters reset to model defaults",

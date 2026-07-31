@@ -1796,8 +1796,35 @@ def test_start_cta_prioritizes_current_blockers_over_previous_start_errors():
 def test_training_config_changes_clear_previous_start_error():
     source = _read("features/training/hooks/use-training-runtime-lifecycle.ts")
     assert "useTrainingConfigStore.subscribe" in source
+    assert "state.userEditRevision !== previousState.userEditRevision" in source
+    assert "useTrainingConfigStore.subscribe(clearStartError)" not in source
     assert "runtime.startError !== null" in source
     assert "runtime.setStartError(null)" in source
+
+
+def test_training_auto_method_selection_settles_before_readiness():
+    source = _read("features/training/stores/training-config-store.ts")
+    loader = source.split("const loadAndApplyModelDefaults = (modelName: string) =>", 1)[1]
+    loader = loader.split("const runDatasetCheck =", 1)[0]
+
+    assert "const autoSelectionPromise =" in loader
+    assert "isLoadingModelDefaults: autoSelectionPromise !== null" in loader
+    settlement = loader.split("if (autoSelectionPromise)", 1)[1]
+    assert "trainingMethod: method" in settlement
+    assert "isLoadingModelDefaults: false" in settlement
+
+
+def test_training_persistence_excludes_actions_and_sanitizes_method():
+    source = _read("features/training/stores/training-config-store.ts")
+    preview = _read("features/studio/wizard/run-preview-card.tsx")
+    partialize = source.split("function partializePersistedState", 1)[1]
+    partialize = partialize.split("function clampStep", 1)[0]
+
+    assert 'typeof value === "function"' in partialize
+    assert "isTrainingMethod(persistedState.trainingMethod)" in source
+    assert (
+        "TRAINING_METHOD_META[trainingMethod] ?? TRAINING_METHOD_META.qlora" in preview
+    )
 
 
 def test_training_setup_changed_error_uses_localization():

@@ -1098,6 +1098,7 @@ export const zhCN = {
       configLoaded: "配置已加载",
       failedToLoadConfig: "加载配置失败",
       invalidYamlFile: "无效的 YAML 文件",
+      configTooLarge: "训练配置文件过大（最大 1 MiB）。",
       failedToReadFile: "读取文件失败",
       failedToSaveConfig: "保存配置失败",
       parametersReset: "参数已重置为模型默认值",

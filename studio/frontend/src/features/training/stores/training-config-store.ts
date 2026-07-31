@@ -13,10 +13,10 @@ import {
 import { authFetch } from "@/features/auth";
 import { getHfToken, useHfTokenStore } from "@/features/hub";
 import { getLocale, translate } from "@/i18n";
-import { isAdapterMethod } from "@/types/training";
+import { toast } from "@/lib/toast";
+import { isAdapterMethod, isTrainingMethod } from "@/types/training";
 import type { DatasetFormat } from "@/types/training";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
-import { toast } from "sonner";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { checkDatasetFormat } from "../api/datasets-api";
@@ -47,9 +47,10 @@ const MAX_STEP: StepNumber = STEPS.length as StepNumber;
 async function autoSelectTrainingMethod(
   modelSizeBytes: number,
   contextLength: number,
+  signal: AbortSignal,
 ): Promise<TrainingMethod | null> {
   try {
-    const res = await authFetch("/api/system/hardware");
+    const res = await authFetch("/api/system/hardware", { signal });
     if (!res.ok) return null;
     const data = await res.json();
     const freeGb: number | null = data?.gpu?.vram_free_gb ?? null;
@@ -95,6 +96,7 @@ function createUploadBrowseDatasetSelection(
 }
 
 const initialState: TrainingConfigState = {
+  userEditRevision: 0,
   currentStep: MIN_STEP,
   modelType: null,
   selectedModel: null,
@@ -164,6 +166,7 @@ let _datasetFormatAutoForcedByCpt = false;
 // reload; the model-config fetch still re-derives them.
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
+    "userEditRevision",
     "isCheckingVision",
     "isLoadingModelDefaults",
     "modelDefaultsError",
@@ -181,7 +184,8 @@ function partializePersistedState(
   state: TrainingConfigStore,
 ): Partial<TrainingConfigStore> {
   return Object.fromEntries(
-    Object.entries(state).filter(([key]) => {
+    Object.entries(state).filter(([key, value]) => {
+      if (typeof value === "function") return false;
       const stateKey = key as keyof TrainingConfigState;
       return !NON_PERSISTED_STATE_KEYS.has(stateKey);
     }),
@@ -427,6 +431,17 @@ function buildTrainingMethodPatch(
 export const useTrainingConfigStore = create<TrainingConfigStore>()(
   persist(
     (set, get) => {
+      const setUserEdit = (
+        update:
+          | Partial<TrainingConfigState>
+          | ((state: TrainingConfigStore) => Partial<TrainingConfigState>),
+      ) => {
+        set((state) => ({
+          ...(typeof update === "function" ? update(state) : update),
+          userEditRevision: state.userEditRevision + 1,
+        }));
+      };
+
       const loadAndApplyModelDefaults = (modelName: string) => {
         _modelConfigController?.abort();
         const controller = new AbortController();
@@ -534,39 +549,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     ? "audio"
                     : "text");
 
-            // Auto-select LoRA vs QLoRA by model size vs GPU memory (see
-            // autoSelectTrainingMethod). Skip if the user chose CPT.
             const modelSizeBytes = modelDetails.model_size_bytes;
-            if (
-              modelSizeBytes &&
+            const autoSelectionPromise =
+              typeof modelSizeBytes === "number" &&
               modelSizeBytes > 0 &&
               get().trainingMethod !== "cpt"
-            ) {
-              void autoSelectTrainingMethod(
-                modelSizeBytes,
-                patch.contextLength ?? get().contextLength,
-              ).then((method) => {
-                if (!requestMatchesSelection()) return;
-                if (get().trainingMethod === "cpt") return;
-                if (
-                  _trainingMethodEditGeneration !== trainingMethodEditGeneration
-                ) {
-                  return;
-                }
-                if (method) {
-                  const lrPatch =
-                    !_learningRateManuallySet && !modelConfigHasLR
-                      ? {
-                          learningRate:
-                            method === "full"
-                              ? LR_DEFAULT_FULL
-                              : LR_DEFAULT_LORA,
-                        }
-                      : {};
-                  set({ trainingMethod: method, ...lrPatch });
-                }
-              });
-            }
+                ? autoSelectTrainingMethod(
+                    modelSizeBytes,
+                    patch.contextLength ?? get().contextLength,
+                    controller.signal,
+                  )
+                : null;
 
             // Preserve CPT hyperparams: YAML adapter defaults (r/alpha/targets/LR)
             // are tuned for standard LoRA and would clobber CPT settings.
@@ -580,13 +573,44 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
               isAudioModel: isAudio,
-              isLoadingModelDefaults: false,
+              isLoadingModelDefaults: autoSelectionPromise !== null,
               isCheckingVision: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: modelName,
               maxPositionEmbeddings:
                 modelDetails.max_position_embeddings ?? null,
             });
+
+            if (autoSelectionPromise) {
+              void autoSelectionPromise.then((method) => {
+                if (controller.signal.aborted || !requestMatchesSelection()) {
+                  return;
+                }
+                const methodWasEdited =
+                  _trainingMethodEditGeneration !==
+                  trainingMethodEditGeneration;
+                if (
+                  !method ||
+                  methodWasEdited ||
+                  get().trainingMethod === "cpt"
+                ) {
+                  set({ isLoadingModelDefaults: false });
+                  return;
+                }
+                const lrPatch =
+                  !_learningRateManuallySet && !modelConfigHasLR
+                    ? {
+                        learningRate:
+                          method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA,
+                      }
+                    : {};
+                set({
+                  trainingMethod: method,
+                  ...lrPatch,
+                  isLoadingModelDefaults: false,
+                });
+              });
+            }
           })
           .catch((error) => {
             if (controller.signal.aborted) return;
@@ -753,7 +777,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           datasetId,
           options,
         );
-        set({
+        setUserEdit({
           datasetSource: "huggingface",
           browseDatasetSelection,
           dataset: datasetId,
@@ -771,7 +795,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         _datasetCheckController?.abort();
         _datasetCheckController = null;
         _trainOnCompletionsManuallySet = false;
-        set({
+        setUserEdit({
           datasetSource: "upload",
           browseDatasetSelection:
             createUploadBrowseDatasetSelection(uploadedFile),
@@ -800,7 +824,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   knownCached: state.datasetKnownCached,
                   localPath: state.datasetLocalPath,
                 });
-        set({
+        setUserEdit({
           datasetSource: "s3",
           browseDatasetSelection,
           dataset: null,
@@ -884,7 +908,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             options?.isEmbedding ?? effectiveModelType === "embeddings";
           patch.modelDefaultsAppliedFor = null;
         }
-        set(patch);
+        setUserEdit(patch);
 
         if (!selectedModel) {
           _modelConfigController?.abort();
@@ -918,7 +942,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _modelConfigController?.abort();
           _modelConfigController = null;
 
-          set({
+          setUserEdit({
             modelType,
             selectedModel: null,
             modelKnownCached: false,
@@ -1036,11 +1060,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (state.modelDefaultsAppliedFor === state.selectedModel) return;
           void loadAndApplyModelDefaults(state.selectedModel);
         },
-        setProjectName: (projectName) => set({ projectName }),
+        setProjectName: (projectName) => setUserEdit({ projectName }),
         setTrainingMethod: (trainingMethod) => {
           _trainingMethodEditGeneration += 1;
           const state = get();
-          set(
+          setUserEdit(
             buildTrainingMethodPatch(
               state.trainingMethod,
               trainingMethod,
@@ -1076,7 +1100,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           restoreBrowseDatasetSourceInternal();
         },
         setDatasetFormat: (datasetFormat) =>
-          set((state) => {
+          setUserEdit((state) => {
             if (state.trainingMethod === "cpt") {
               if (isRawTextDatasetFormat(datasetFormat)) {
                 clearCptDatasetFormatTracking();
@@ -1099,7 +1123,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
-          set((state) => ({
+          setUserEdit((state) => ({
             dataset: datasetId,
             datasetKnownCached: false,
             datasetLocalPath: null,
@@ -1126,7 +1150,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
-          set({
+          setUserEdit({
             datasetSubset,
             datasetSplit: null,
             datasetEvalSplit: null,
@@ -1140,7 +1164,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const state = get();
           const nextState = { ...state, datasetSplit };
           const streamingPatch = streamingCompatiblePatch(nextState);
-          set({
+          setUserEdit({
             datasetSplit,
             datasetManualMapping: emptyManualMapping(),
             isDatasetImage: null,
@@ -1180,7 +1204,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetEvalSplit,
             evalSteps,
           });
-          set({
+          setUserEdit({
             datasetEvalSplit,
             evalSteps,
             ...streamingPatch,
@@ -1190,7 +1214,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setDatasetStreaming: (datasetStreaming) => {
           if (!datasetStreaming) {
             const changed = get().datasetStreaming;
-            set({
+            setUserEdit({
               datasetStreaming: false,
               ...(changed
                 ? {
@@ -1218,7 +1242,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const dropsTrainOnCompletions = state.trainOnCompletions;
           const dropsEval = !hasSeparateStreamingEvalSplit(state);
 
-          set({
+          setUserEdit({
             datasetStreaming: true,
             trainOnCompletions: false,
             evalSteps: dropsEval ? 0 : state.evalSteps,
@@ -1242,9 +1266,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           }
         },
         setDatasetManualMapping: (datasetManualMapping) =>
-          set({ datasetManualMapping }),
+          setUserEdit({ datasetManualMapping }),
         setDatasetAdvisorFields: (fields) =>
-          set({
+          setUserEdit({
             datasetSystemPrompt:
               fields.systemPrompt ?? get().datasetSystemPrompt,
             datasetLabelMapping:
@@ -1254,13 +1278,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 ? fields.notification
                 : get().datasetAdvisorNotification,
           }),
-        setDatasetSliceStart: (datasetSliceStart) => set({ datasetSliceStart }),
-        setDatasetSliceEnd: (datasetSliceEnd) => set({ datasetSliceEnd }),
+        setDatasetSliceStart: (datasetSliceStart) =>
+          setUserEdit({ datasetSliceStart }),
+        setDatasetSliceEnd: (datasetSliceEnd) =>
+          setUserEdit({ datasetSliceEnd }),
         setUploadedFile: (uploadedFile) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
-          set((state) => ({
+          setUserEdit((state) => ({
             uploadedFile,
             datasetKnownCached: false,
             datasetLocalPath: null,
@@ -1282,30 +1308,32 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           }));
         },
         setUploadedEvalFile: (uploadedEvalFile) =>
-          set({
+          setUserEdit({
             uploadedEvalFile,
             evalSteps: uploadedEvalFile ? 0.1 : 0,
           }),
-        setEpochs: (epochs) => set({ epochs }),
-        setContextLength: (contextLength) => set({ contextLength }),
-        setVisionImageSize: (visionImageSize) => set({ visionImageSize }),
+        setEpochs: (epochs) => setUserEdit({ epochs }),
+        setContextLength: (contextLength) => setUserEdit({ contextLength }),
+        setVisionImageSize: (visionImageSize) =>
+          setUserEdit({ visionImageSize }),
         setLearningRate: (learningRate) => {
           _learningRateManuallySet = true;
-          set({ learningRate });
+          setUserEdit({ learningRate });
         },
         setEmbeddingLearningRate: (embeddingLearningRate) =>
-          set({ embeddingLearningRate }),
-        setOptimizerType: (optimizerType) => set({ optimizerType }),
-        setLrSchedulerType: (lrSchedulerType) => set({ lrSchedulerType }),
-        setLoraRank: (loraRank) => set({ loraRank }),
-        setLoraAlpha: (loraAlpha) => set({ loraAlpha }),
-        setLoraDropout: (loraDropout) => set({ loraDropout }),
-        setLoraVariant: (loraVariant) => set({ loraVariant }),
-        setBatchSize: (batchSize) => set({ batchSize }),
+          setUserEdit({ embeddingLearningRate }),
+        setOptimizerType: (optimizerType) => setUserEdit({ optimizerType }),
+        setLrSchedulerType: (lrSchedulerType) =>
+          setUserEdit({ lrSchedulerType }),
+        setLoraRank: (loraRank) => setUserEdit({ loraRank }),
+        setLoraAlpha: (loraAlpha) => setUserEdit({ loraAlpha }),
+        setLoraDropout: (loraDropout) => setUserEdit({ loraDropout }),
+        setLoraVariant: (loraVariant) => setUserEdit({ loraVariant }),
+        setBatchSize: (batchSize) => setUserEdit({ batchSize }),
         setGradientAccumulation: (gradientAccumulation) =>
-          set({ gradientAccumulation }),
-        setWeightDecay: (weightDecay) => set({ weightDecay }),
-        setWarmupSteps: (warmupSteps) => set({ warmupSteps }),
+          setUserEdit({ gradientAccumulation }),
+        setWeightDecay: (weightDecay) => setUserEdit({ weightDecay }),
+        setWarmupSteps: (warmupSteps) => setUserEdit({ warmupSteps }),
         setMaxSteps: (maxSteps) => {
           const state = get();
           // streamingCompatiblePatch already turns streaming off when maxSteps<=0,
@@ -1314,64 +1342,65 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ...state,
             maxSteps,
           });
-          set({
+          setUserEdit({
             maxSteps,
             ...streamingPatch,
           });
           notifyStreamingCompat(streamingPatch);
         },
-        setSaveSteps: (saveSteps) => set({ saveSteps }),
+        setSaveSteps: (saveSteps) => setUserEdit({ saveSteps }),
         setEvalSteps: (evalSteps) => {
           const state = get();
           const streamingPatch = streamingCompatiblePatch({
             ...state,
             evalSteps,
           });
-          set({
+          setUserEdit({
             evalSteps,
             ...streamingPatch,
           });
           notifyStreamingCompat(streamingPatch);
         },
-        setPacking: (packing) => set({ packing }),
+        setPacking: (packing) => setUserEdit({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
-          set({
+          setUserEdit({
             trainOnCompletions,
             ...(trainOnCompletions ? { datasetStreaming: false } : {}),
           });
         },
         setGradientCheckpointing: (gradientCheckpointing) =>
-          set({ gradientCheckpointing }),
-        setRandomSeed: (randomSeed) => set({ randomSeed }),
-        setEnableWandb: (enableWandb) => set({ enableWandb }),
-        setWandbToken: (wandbToken) => set({ wandbToken }),
-        setWandbProject: (wandbProject) => set({ wandbProject }),
-        setEnableTensorboard: (enableTensorboard) => set({ enableTensorboard }),
-        setTensorboardDir: (tensorboardDir) => set({ tensorboardDir }),
-        setLogFrequency: (logFrequency) => set({ logFrequency }),
+          setUserEdit({ gradientCheckpointing }),
+        setRandomSeed: (randomSeed) => setUserEdit({ randomSeed }),
+        setEnableWandb: (enableWandb) => setUserEdit({ enableWandb }),
+        setWandbToken: (wandbToken) => setUserEdit({ wandbToken }),
+        setWandbProject: (wandbProject) => setUserEdit({ wandbProject }),
+        setEnableTensorboard: (enableTensorboard) =>
+          setUserEdit({ enableTensorboard }),
+        setTensorboardDir: (tensorboardDir) => setUserEdit({ tensorboardDir }),
+        setLogFrequency: (logFrequency) => setUserEdit({ logFrequency }),
         setFinetuneVisionLayers: (finetuneVisionLayers) =>
-          set({ finetuneVisionLayers }),
+          setUserEdit({ finetuneVisionLayers }),
         setFinetuneLanguageLayers: (finetuneLanguageLayers) =>
-          set({ finetuneLanguageLayers }),
+          setUserEdit({ finetuneLanguageLayers }),
         setFinetuneAttentionModules: (finetuneAttentionModules) =>
-          set({ finetuneAttentionModules }),
+          setUserEdit({ finetuneAttentionModules }),
         setFinetuneMLPModules: (finetuneMLPModules) =>
-          set({ finetuneMLPModules }),
-        setTargetModules: (targetModules) => set({ targetModules }),
-        setS3Config: (s3Config) => set({ s3Config }),
+          setUserEdit({ finetuneMLPModules }),
+        setTargetModules: (targetModules) => setUserEdit({ targetModules }),
+        setS3Config: (s3Config) => setUserEdit({ s3Config }),
         canProceed: () => canProceedForStep(get()),
         reset: () => {
           _trainOnCompletionsManuallySet = false;
           _learningRateManuallySet = false;
           _yamlLearningRate = undefined;
           clearCptDatasetFormatTracking();
-          set(initialState);
+          setUserEdit(initialState);
         },
         resetToModelDefaults: () => {
           const { selectedModel } = get();
           if (!selectedModel) return;
-          set({
+          setUserEdit({
             modelDefaultsAppliedFor: null,
             visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
           });
@@ -1384,7 +1413,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (patch.learningRate !== undefined) {
             _learningRateManuallySet = false;
           }
-          set(patch);
+          setUserEdit(patch);
         },
       };
     },
@@ -1481,6 +1510,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         return s as unknown as TrainingConfigStore;
       },
       partialize: partializePersistedState,
+      merge: (persisted, current) => {
+        const persistedState = persisted as Partial<TrainingConfigState>;
+        return {
+          ...current,
+          ...persistedState,
+          trainingMethod: isTrainingMethod(persistedState.trainingMethod)
+            ? persistedState.trainingMethod
+            : current.trainingMethod,
+        };
+      },
       onRehydrateStorage: () => (state) => {
         // datasetStreaming, maxSteps, and evalSteps persist, while
         // trainOnCompletions rehydrates to its default. That can resurrect an

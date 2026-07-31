@@ -154,6 +154,12 @@ def test_training_start_claims_runtime_before_first_await():
     assert "state.stopRequested" in claim
     assert "return { isStarting: true }" in claim
     assert "runtime.tryBeginStarting()" in start_runtime
+    acquire = start_runtime.split("export function tryAcquireTrainingStart", 1)[1].split(
+        "export function isTrainingStartLeaseActive", 1
+    )[0]
+    assert acquire.index("createTrainingStartRequestId()") < acquire.index(
+        "runtime.tryBeginStarting()"
+    )
 
     resume_entrypoint = resume_start.split("export async function resumeTrainingRun", 1)[1].split(
         "type ResumeAttemptPhase", 1
@@ -294,8 +300,10 @@ def test_anonymous_token_decision_does_not_erase_a_replacement_token():
 def test_token_changes_clear_stale_training_start_errors():
     source = TRAINING_RUNTIME_LIFECYCLE.read_text(encoding = "utf-8")
 
-    assert "useTrainingConfigStore.subscribe(clearStartError)" in source
-    assert "useHfTokenStore.subscribe(clearStartError)" in source
+    assert "useTrainingConfigStore.subscribe(" in source
+    assert "state.userEditRevision !== previousState.userEditRevision" in source
+    assert "useHfTokenStore.subscribe(" in source
+    assert "state.token !== previousState.token" in source
     assert "unsubscribeConfig()" in source
     assert "unsubscribeToken()" in source
 
