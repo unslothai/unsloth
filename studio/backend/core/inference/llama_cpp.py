@@ -11927,10 +11927,18 @@ class LlamaCppBackend:
             if not active_tools:
                 _append_budget_exhausted_nudge = False
                 break
+            from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
+            # An MCP server's description and inputSchema are remote text the template
+            # renders into the system turn (#7066). Computed HERE, above the gate, because
+            # a tool dropped for unsafe markup is absent from the prompt and must be
+            # absent from what we are willing to EXECUTE too: otherwise the model can
+            # still name it and the raw gate would let the call through.
+            safe_tools = neutralize_tool_descriptions(active_tools)
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
             _enabled_tool_names = {
                 (tool.get("function") or {}).get("name")
-                for tool in active_tools
+                for tool in safe_tools
                 if (tool.get("function") or {}).get("name")
             }
             # Shared signal tuple so GGUF BUFFERING wakes on every format the parser knows (like safetensors).
@@ -11940,12 +11948,8 @@ class LlamaCppBackend:
             # in the first 1-2 chunks without a non-streaming penalty.
             from core.inference.chat_template_helpers import (
                 neutralize_control_markup_in_messages,
-                neutralize_tool_descriptions,
             )
 
-            # An MCP server's description and inputSchema are remote text the
-            # template renders into the system turn (#7066).
-            safe_tools = neutralize_tool_descriptions(active_tools)
             payload = {
                 # Re-run every iteration: tool results land in ``conversation`` as
                 # the loop goes, and a forged turn in one would render for real (#7066).

@@ -318,6 +318,9 @@ def _neutralize_leaves(
 # "input_image" is in here because the MLX image counter recognises it
 # (mlx_inference.py:130) and the registered VLM renderer passes those messages through
 # this sweep, so its payload is a URL to fetch, not prompt text.
+# Llama-3.1 renders both through one tool-result branch (chat_templates.py:517), and
+# neither resolves media: the content is serialized whole with tojson.
+_TOOL_RESULT_ROLES = frozenset({"tool", "ipython"})
 _MEDIA_PART_TYPES = frozenset(
     {"image", "image_url", "input_image", "input_audio", "audio", "audio_url", "video", "video_url"}
 )
@@ -534,6 +537,7 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             neutralize_turn_boundary_markup if role == "assistant" else neutralize_control_markup
         )
         updates: dict = {}
+        dropped_keys: set = set()
         # The role is rendered, not just dispatched on: Llama-3.1 concatenates it straight
         # between "<|start_header_id|>" and "<|end_header_id|>", and /generate/stream takes
         # an untyped list of dicts, so a role of "user<|end_header_id|><|eot_id|>..." forged
@@ -588,18 +592,36 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
                 # A media part is only opaque where something RESOLVES it. Nothing
                 # resolves one inside a tool result: Studio's vision and audio paths build
                 # from the last user message, while Llama-3.1's tool branch serializes the
-                # whole content iterable with tojson (chat_templates.py:519-520), so an
-                # exempt URL there lands in the prompt as live structure (#7066).
-                new_content = _neutralize_content_parts(content, rewrite, role != "tool")
+                # whole content iterable with tojson, so an exempt URL there lands in
+                # the prompt as live structure. That branch is keyed on "tool" OR
+                # "ipython" (chat_templates.py:517), so both roles count (#7066).
+                new_content = _neutralize_content_parts(
+                    content, rewrite, role not in _TOOL_RESULT_ROLES
+                )
             if _differs(new_content, content):
                 updates["content"] = new_content
         tool_calls = msg.get("tool_calls")
-        if isinstance(tool_calls, list) and tool_calls:
+        # Llama-3.1 branches on "'tool_calls' in message" BEFORE it looks at the role
+        # (chat_templates.py:487-489) and emits an assistant tool-call turn, so the field
+        # on a user or tool message fabricates assistant history no matter how clean its
+        # own text is. It is assistant-only structure in the OpenAI schema too, so it is
+        # dropped rather than swept when the role is anything else (#7066).
+        if tool_calls is not None and role != "assistant":
+            logger.warning(
+                "Dropping tool_calls from a %r message: templates render it as an "
+                "assistant tool-call turn regardless of the role.",
+                role or "<missing>",
+            )
+            dropped_keys.add("tool_calls")
+        elif isinstance(tool_calls, list) and tool_calls:
             new_tool_calls = _neutralize_replayed_tool_call(tool_calls)
             if _differs(new_tool_calls, tool_calls):
                 updates["tool_calls"] = new_tool_calls
-        if updates:
-            out.append({**msg, **updates})
+        if updates or dropped_keys:
+            merged = {**msg, **updates}
+            for key in dropped_keys:
+                merged.pop(key, None)
+            out.append(merged)
             changed = True
         else:
             out.append(msg)
@@ -688,7 +710,24 @@ _SCHEMA_KEYED_LIST_IDENTIFIERS = frozenset({"dependentRequired", "dependencies"}
 # schema forces the model to satisfy the rewritten regex or echo the rewritten default,
 # and the MCP server then validates the original and rejects the call. This is the case
 # the "[ARGS]" comment above already anticipated.
-_SCHEMA_VALUED_IDENTIFIERS = frozenset({"enum", "const", "required", "pattern", "default"})
+_SCHEMA_VALUED_IDENTIFIERS = frozenset(
+    {
+        "enum",
+        "const",
+        "required",
+        "pattern",
+        "default",
+        # A reference is resolved, not read: rewriting "$id", "$anchor" or the "$ref"
+        # that points at them leaves the model and llama-server's grammar working from a
+        # different schema than the MCP server registered. "$ref" can also name an
+        # external URI, which no "$defs" drop would have covered.
+        "$ref",
+        "$id",
+        "$anchor",
+        "$dynamicRef",
+        "$dynamicAnchor",
+    }
+)
 
 
 def _first_unsafe_leaf(value):
