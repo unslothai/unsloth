@@ -40,13 +40,16 @@ _XFORMERS_MASK_CACHE_MAXSIZE = 32
 _XFORMERS_MASK_CACHE: OrderedDict[Tuple[Tuple[int, ...], int], Any] = OrderedDict()
 
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
-_PACKED_INFO_CACHE: dict = {}
+_PACKED_INFO_CACHE_MAXSIZE = 32
+_PACKED_INFO_CACHE: OrderedDict = OrderedDict()
 
 # Cache per device for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
-_SDPA_MASK_CACHE: dict = {}
+_SDPA_MASK_CACHE_MAXSIZE = 32
+_SDPA_MASK_CACHE: OrderedDict = OrderedDict()
 
 # Cache per device for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
-_XFORMERS_BLOCK_MASK_CACHE: dict = {}
+_XFORMERS_BLOCK_MASK_CACHE_MAXSIZE = 32
+_XFORMERS_BLOCK_MASK_CACHE: OrderedDict = OrderedDict()
 
 
 def _window_cache_key(sliding_window: Optional[int]) -> int:
@@ -531,6 +534,7 @@ def get_packed_info_from_kwargs(
 
     entry = _PACKED_INFO_CACHE.get(device)
     if entry is not None and entry["seq_lengths"] is seq_lengths:
+        _PACKED_INFO_CACHE.move_to_end(device)
         return entry["result"]
 
     lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
@@ -540,6 +544,8 @@ def get_packed_info_from_kwargs(
     max_seqlen = int(lengths.max().item())
     result = (lengths, cu_seqlens, max_seqlen)
     _PACKED_INFO_CACHE[device] = {"seq_lengths": seq_lengths, "result": result}
+    if len(_PACKED_INFO_CACHE) > _PACKED_INFO_CACHE_MAXSIZE:
+        _PACKED_INFO_CACHE.popitem(last = False)
     return result
 
 
@@ -558,6 +564,7 @@ def build_xformers_block_causal_mask(
         params = (sliding_window,)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)
         if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
+            _XFORMERS_BLOCK_MASK_CACHE.move_to_end(device)
             return entry["mask"]
 
         lengths_tensor = seq_lengths.to("cpu", torch.int32)
@@ -571,6 +578,8 @@ def build_xformers_block_causal_mask(
             "params": params,
             "mask": mask,
         }
+        if len(_XFORMERS_BLOCK_MASK_CACHE) > _XFORMERS_BLOCK_MASK_CACHE_MAXSIZE:
+            _XFORMERS_BLOCK_MASK_CACHE.popitem(last = False)
     else:
         mask = base_mask
 
@@ -596,6 +605,7 @@ def build_sdpa_packed_attention_mask(
     params = (dtype, sliding_window)
     entry = _SDPA_MASK_CACHE.get(device)
     if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
+        _SDPA_MASK_CACHE.move_to_end(device)
         return entry["mask"]
 
     total_tokens = int(seq_lengths.sum().item())
@@ -627,6 +637,8 @@ def build_sdpa_packed_attention_mask(
         "params": params,
         "mask": result,
     }
+    if len(_SDPA_MASK_CACHE) > _SDPA_MASK_CACHE_MAXSIZE:
+        _SDPA_MASK_CACHE.popitem(last = False)
     return result
 
 
