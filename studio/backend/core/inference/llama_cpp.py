@@ -1465,6 +1465,7 @@ def _with_gguf_load_marker(load: Callable):
                 kwargs.get("hf_variant"),
                 require_mmproj = bool(
                     kwargs.get("is_vision")
+                    and kwargs.get("load_mmproj", True)
                     and not extra_args_disable_mmproj(kwargs.get("extra_args"))
                 ),
                 hf_token = kwargs.get("hf_token"),
@@ -2261,6 +2262,8 @@ class LlamaCppBackend:
         self._spec_fallback_reason: Optional[str] = None
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
+        self._is_vision_capable: bool = False
+        self._load_mmproj: bool = True
         # Block-diffusion model (e.g. DiffusionGemma): served by the diffusion
         # runner, not llama-server. Set from the GGUF architecture at load.
         self._architecture: Optional[str] = None
@@ -2448,6 +2451,16 @@ class LlamaCppBackend:
     @property
     def is_vision(self) -> bool:
         return self._is_vision
+
+    @property
+    def is_vision_capable(self) -> bool:
+        """Whether the active GGUF supports a vision projector."""
+        return getattr(self, "_is_vision_capable", self._is_vision)
+
+    @property
+    def load_mmproj(self) -> bool:
+        """Whether the active GGUF actually launched with a usable projector."""
+        return getattr(self, "_load_mmproj", True)
 
     @property
     def is_diffusion(self) -> bool:
@@ -5659,6 +5672,8 @@ class LlamaCppBackend:
         self._gguf_path = model_path
         self._hf_repo = hf_repo
         self._is_vision = False
+        self._is_vision_capable = False
+        self._load_mmproj = False
         self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
         self._cache_type_kv = None
@@ -6893,6 +6908,7 @@ class LlamaCppBackend:
         # Common
         model_identifier: str,
         is_vision: bool = False,
+        load_mmproj: bool = True,
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
@@ -6933,6 +6949,7 @@ class LlamaCppBackend:
             "hf_token": hf_token,
             "model_identifier": model_identifier,
             "is_vision": is_vision,
+            "load_mmproj": load_mmproj,
             "n_ctx": n_ctx,
             "chat_template_override": chat_template_override,
             "cache_type_kv": cache_type_kv,
@@ -6982,6 +6999,7 @@ class LlamaCppBackend:
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
+                load_mmproj = load_mmproj,
                 n_parallel = n_parallel,
                 preserve_multi_gpu_on_layer = preserve_multi_gpu_on_layer,
             ):
@@ -7107,6 +7125,11 @@ class LlamaCppBackend:
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
             # can't quarantine future loads.
+            # Resolve the first-class toggle and explicit/inherited llama.cpp
+            # extras once. Every later gate uses this state.
+            effective_mmproj_requested = bool(
+                load_mmproj and not extra_args_disable_mmproj(extra_args)
+            )
             if hf_repo:
                 # Resolve the requested repo id to its cached canonical casing once,
                 # up front, so the main GGUF and its companions (mmproj / MTP drafter)
@@ -7128,7 +7151,7 @@ class LlamaCppBackend:
                         hf_token = hf_token,
                     )
                     # Auto-download mmproj for vision models unless opted out.
-                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
+                    if is_vision and effective_mmproj_requested and not mmproj_path:
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
@@ -7388,7 +7411,7 @@ class LlamaCppBackend:
                 gpus: list[tuple[int, int]] = []
                 # Keep fit-budget and launch-flag mmproj resolution in sync.
                 launch_mmproj_path = None
-                if not extra_args_disable_mmproj(extra_args):
+                if is_vision and effective_mmproj_requested:
                     launch_mmproj_path = self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
@@ -7397,11 +7420,18 @@ class LlamaCppBackend:
                 # mmproj passing the family-name heuristic must not flip a non-VLM
                 # GGUF into vision mode.
                 effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
-                if is_vision and not effective_is_vision:
+                if is_vision and effective_mmproj_requested and not effective_is_vision:
                     logger.warning(
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
                     )
+                elif is_vision and not effective_mmproj_requested:
+                    logger.info(
+                        "Vision projector disabled for this GGUF load; "
+                        "image input will be disabled for this session"
+                    )
+                # Record actual launch capability, not merely raw request intent.
+                effective_load_mmproj = bool(effective_is_vision)
                 # Seed before the try: the except (GPU-selection failure ->
                 # --fit on) falls through to the launch which reads this, and the
                 # probe that assigns it may throw first. Captured before manual
@@ -8775,6 +8805,10 @@ class LlamaCppBackend:
                     logger.info(
                         f"Appending user extra args to llama-server: {list(_emit_extra_args)}"
                     )
+                if is_vision and not effective_mmproj_requested:
+                    # The first-class/effective state remains authoritative even
+                    # if inherited extras contain an enabling mmproj flag.
+                    cmd.append("--no-mmproj")
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
@@ -8814,6 +8848,11 @@ class LlamaCppBackend:
                         _ct_raw = (env.get(_ct_var) or "").strip().lower()
                         if _ct_raw and _ct_raw not in self._TENSOR_PARALLEL_KV_TYPES:
                             env.pop(_ct_var, None)
+
+                if is_vision and not effective_mmproj_requested:
+                    env.pop("LLAMA_ARG_MMPROJ", None)
+                    env.pop("LLAMA_ARG_MMPROJ_AUTO", None)
+                    env.pop("LLAMA_ARG_MMPROJ_URL", None)
 
                 # A gpu_ids pin also owns inherited device placement.
                 if gpu_ids is not None:
@@ -9038,6 +9077,8 @@ class LlamaCppBackend:
                 else:
                     self._hf_variant = None
                 self._is_vision = effective_is_vision
+                self._is_vision_capable = bool(is_vision)
+                self._load_mmproj = effective_load_mmproj
                 self._model_identifier = model_identifier
 
                 # Store the effective (possibly capped) context separately; do
@@ -9254,6 +9295,7 @@ class LlamaCppBackend:
                         # classification below must not see the stripped --mmproj.
                         _last_spawn_cmd = list(cmd)
                         self._is_vision = False
+                        self._load_mmproj = False
                         self._mmproj_has_audio = False
                         self._start_llama_process(cmd, env)
                         if not self._wait_for_health(timeout = 600.0):
@@ -9750,6 +9792,7 @@ class LlamaCppBackend:
         chat_template_override: Optional[str],
         extra_args: Optional[List[str]],
         is_vision: bool,
+        load_mmproj: bool = True,
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
@@ -9784,6 +9827,12 @@ class LlamaCppBackend:
             return False
         if self._requested_n_ctx != int(n_ctx):
             return False
+        if not self._is_diffusion and (is_vision or self.is_vision_capable):
+            requested_load_mmproj = bool(
+                is_vision and load_mmproj and not extra_args_disable_mmproj(extra_args)
+            )
+            if bool(getattr(self, "_load_mmproj", True)) != requested_load_mmproj:
+                return False
 
         def _norm(value):
             if value is None:
@@ -10015,6 +10064,8 @@ class LlamaCppBackend:
             self._mtp_runtime_fallback_active = False
             self._hf_variant = None
             self._is_vision = False
+            self._is_vision_capable = False
+            self._load_mmproj = True
             self._is_audio = False
             self._audio_type = None
             self._audio_probed = False
@@ -10585,6 +10636,7 @@ class LlamaCppBackend:
             self._effective_context_length,
             self._effective_cache_types,
             self.effective_parallel_slots,
+            bool(self.load_mmproj),
             self._swa_full,
             self._kv_cache_unified,
             self._n_ubatch,

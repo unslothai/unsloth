@@ -1502,6 +1502,7 @@ async function autoLoadSmallestModel(): Promise<{
     max_seq_length: number;
     is_lora: boolean;
     gguf_variant?: string | null;
+    load_mmproj?: boolean;
     // GGUF-only: scopes the training guard to the same placement policy /load
     // will use. Manual mode must match because it makes placement user-owned.
     // The layer/MoE/split/KV/spec knobs are deliberately not sent: Auto mode's
@@ -1619,6 +1620,7 @@ async function autoLoadSmallestModel(): Promise<{
       config.speculativeType ?? specSettings.speculativeType;
     const effectiveSpecDraftNMax =
       config.specDraftNMax ?? specSettings.specDraftNMax;
+    const effectiveVisionProjector = config.visionProjectorEnabled ?? true;
     const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
       ? config.chatTemplateOverride
       : null;
@@ -1628,6 +1630,7 @@ async function autoLoadSmallestModel(): Promise<{
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
+        load_mmproj: effectiveVisionProjector,
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
         // The same remembered-derived GPU pick the load below sends.
@@ -1659,6 +1662,7 @@ async function autoLoadSmallestModel(): Promise<{
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       tensor_parallel: effectiveTensorParallel,
+      load_mmproj: effectiveVisionProjector,
       // GGUF-only: the safetensors fallback loads via HF auto-placement (no
       // explicit pins). The split ratio is deliberately never remembered
       // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's
@@ -1747,6 +1751,10 @@ async function autoLoadSmallestModel(): Promise<{
         loadedNParallel: committedSlots,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        visionProjectorEnabled:
+          loadResp.load_mmproj ?? effectiveVisionProjector,
+        loadedVisionProjectorEnabled:
+          loadResp.load_mmproj ?? effectiveVisionProjector,
         ...loadedGpuMemoryFields(loadResp),
         loadedCustomContextLength: keepCustomCtx,
         defaultChatTemplate: loadResp.chat_template ?? null,
@@ -1777,6 +1785,8 @@ async function autoLoadSmallestModel(): Promise<{
         loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        visionProjectorEnabled: loadResp.load_mmproj ?? true,
+        loadedVisionProjectorEnabled: loadResp.load_mmproj ?? true,
         // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
         // GGUF load left, matching the interactive/status sibling load paths.
         ...loadedGpuMemoryFields(loadResp),
@@ -1985,6 +1995,7 @@ async function autoLoadSmallestModel(): Promise<{
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: "UD-Q4_K_XL",
+          load_mmproj: true,
           // The same live-store GPU pick the load below sends (a fresh default
           // model has no remembered settings to prefer).
           gpu_ids: defaultGpuIds ?? undefined,
@@ -2005,6 +2016,7 @@ async function autoLoadSmallestModel(): Promise<{
         load_in_4bit: true,
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",
+        load_mmproj: true,
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
@@ -2062,6 +2074,8 @@ async function autoLoadSmallestModel(): Promise<{
         loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        visionProjectorEnabled: loadResp.load_mmproj ?? true,
+        loadedVisionProjectorEnabled: loadResp.load_mmproj ?? true,
         ...loadedGpuMemoryFields(loadResp),
         // Drives the GPU Memory controls' diffusion gate; set alongside the
         // GPU fields on every load path so the gate can't read stale.

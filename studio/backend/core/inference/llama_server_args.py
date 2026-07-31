@@ -198,6 +198,9 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
 _SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
 _TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
 _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
+_MMPROJ_SHADOWING_FLAGS: frozenset[str] = frozenset(
+    {"--mmproj-auto", "--no-mmproj", "--no-mmproj-auto"}
+)
 # llama.cpp placement flags. Opt-in (users may pass them under auto-select):
 # stripped only when gpu_ids is set, so they cannot override the selected pool
 # or choose a main GPU outside it (#7188).
@@ -225,6 +228,7 @@ _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
         "--no-jinja",
         "-cmoe",
         "--cpu-moe",
+        *_MMPROJ_SHADOWING_FLAGS,
     }
 )
 
@@ -481,6 +485,7 @@ def strip_shadowing_flags(
     strip_split_mode: bool = True,
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
+    strip_mmproj: bool = False,
     strip_device: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
@@ -513,6 +518,8 @@ def strip_shadowing_flags(
         shadowing |= _TENSOR_SPLIT_FLAGS
     if strip_offload:
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
+    if strip_mmproj:
+        shadowing |= _MMPROJ_SHADOWING_FLAGS
     if strip_device:
         shadowing |= _DEVICE_FLAGS
 

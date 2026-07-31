@@ -1032,8 +1032,13 @@ export function SharedComposer({
         gpuLayers: store.gpuLayers,
         nCpuMoe: store.nCpuMoe,
         splitRatio: store.splitRatio,
-        selectedGpuIds: store.selectedGpuIds,
+        // Reconcile the pick against the GPUs present now, like the model-switch
+        // path: an early remember-restore can hold a stale cross-host pick that
+        // /load would reject (the device cache is populated by send time).
+        selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
         selectedGpuIndexKind: store.selectedGpuIndexKind,
+        customContextLength: store.customContextLength,
+        visionProjectorEnabled: store.visionProjectorEnabled,
       };
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
@@ -1105,6 +1110,8 @@ export function SharedComposer({
           : ownRemembered
             ? ownConfig.tensorParallel
             : fallbackTensorParallel;
+        const effectiveVisionProjector =
+          ownConfig.visionProjectorEnabled ?? true;
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
@@ -1161,6 +1168,7 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          load_mmproj: effectiveVisionProjector,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           tensor_parallel: effectiveTensorParallel,
           // Scope the validate to the picked GPUs. GGUF-only, like the load
@@ -1232,6 +1240,7 @@ export function SharedComposer({
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
+          load_mmproj: effectiveVisionProjector,
           ...(targetIsGguf
             ? {
                 gpu_memory_mode: effectiveGpuMemoryMode,
@@ -1290,6 +1299,10 @@ export function SharedComposer({
           loadedNParallel: committedSlots,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          visionProjectorEnabled:
+            resp.load_mmproj ?? effectiveVisionProjector,
+          loadedVisionProjectorEnabled:
+            resp.load_mmproj ?? effectiveVisionProjector,
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,

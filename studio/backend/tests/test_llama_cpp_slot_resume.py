@@ -221,6 +221,15 @@ def test_fingerprint_tracks_effective_context_length(tmp_path):
     assert backend._slot_launch_fingerprint() != before
 
 
+def test_fingerprint_tracks_effective_projector_state(tmp_path):
+    backend = _resume_backend(tmp_path)
+    backend._load_mmproj = True
+
+    before = backend._slot_launch_fingerprint()
+    backend._load_mmproj = False
+    assert backend._slot_launch_fingerprint() != before
+
+
 def test_fingerprint_tracks_swa_full_mode(tmp_path):
     backend = _resume_backend(tmp_path)
     before = backend._slot_launch_fingerprint()

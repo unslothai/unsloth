@@ -22,6 +22,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
+  const visionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.visionProjectorEnabled,
+  );
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -50,6 +53,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
       tensorParallel: tensorParallel ?? false,
+      visionProjectorEnabled,
       chatTemplateOverride: chatTemplateOverride ?? null,
     };
     if (!isGguf) {
@@ -73,6 +77,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     specDraftNMax,
     nParallel,
     tensorParallel,
+    visionProjectorEnabled,
     chatTemplateOverride,
     gpuMemoryMode,
     gpuLayers,

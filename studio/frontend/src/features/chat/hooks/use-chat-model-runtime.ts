@@ -784,6 +784,9 @@ export function useChatModelRuntime() {
             ? false
             : (pendingLoadConfig?.tensorParallel ??
               stateBeforeUnload.tensorParallel);
+          let loadVisionProjector =
+            pendingLoadConfig?.visionProjectorEnabled ??
+            stateBeforeUnload.visionProjectorEnabled;
           const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           const loadGpuMemoryMode =
@@ -855,6 +858,9 @@ export function useChatModelRuntime() {
             const validateGpuLayers = resetsPerModelSettings
               ? GPU_LAYERS_AUTO
               : loadGpuLayers;
+            const validateVisionProjector = resetsPerModelSettings
+              ? (pendingLoadConfig?.visionProjectorEnabled ?? true)
+              : loadVisionProjector;
             // Per-model: the reset re-baselines to the staged config, like the load.
             const validateNParallel = resetsPerModelSettings
               ? (pendingLoadConfig?.nParallel ?? null)
@@ -882,6 +888,7 @@ export function useChatModelRuntime() {
               hf_token: hfToken,
               max_seq_length: validateMaxSeqLength,
               load_in_4bit: true,
+              load_mmproj: validateVisionProjector,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
@@ -989,6 +996,7 @@ export function useChatModelRuntime() {
                 // A Manual+Auto context pin is per-model; clear it so a different
                 // model loads at Auto/native, not the previous model's pin.
                 customContextLength: null,
+                visionProjectorEnabled: true,
               });
               loadSpeculativeType =
                 pendingLoadConfig?.speculativeType != null
@@ -1013,6 +1021,7 @@ export function useChatModelRuntime() {
               loadGpuLayers = pendingLoadConfig?.gpuLayers ?? GPU_LAYERS_AUTO;
               loadNCpuMoe = pendingLoadConfig?.nCpuMoe ?? 0;
               loadSplitRatio = null;
+              loadVisionProjector = true;
             }
 
             // Pinning layers on the SAME model keeps the currently resolved
@@ -1069,6 +1078,7 @@ export function useChatModelRuntime() {
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
               tensor_parallel: loadTensorParallel,
+              load_mmproj: loadVisionProjector,
               gpu_memory_mode: loadGpuMemoryMode,
               gpu_layers: loadGpuLayers,
               n_cpu_moe: loadNCpuMoe,
@@ -1130,6 +1140,8 @@ export function useChatModelRuntime() {
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
             const loadedTp = loadResponse.tensor_parallel ?? false;
+            const loadedVisionProjector =
+              loadResponse.load_mmproj ?? loadVisionProjector;
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
@@ -1211,6 +1223,8 @@ export function useChatModelRuntime() {
               loadedKvCacheDtype: loadedKv,
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
+              visionProjectorEnabled: loadedVisionProjector,
+              loadedVisionProjectorEnabled: loadedVisionProjector,
               ...loadedGpuMemoryFields(loadResponse),
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
@@ -1327,6 +1341,8 @@ export function useChatModelRuntime() {
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  load_mmproj:
+                    stateBeforeUnload.loadedVisionProjectorEnabled ?? true,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
@@ -1364,6 +1380,14 @@ export function useChatModelRuntime() {
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,
+                  visionProjectorEnabled:
+                    rollbackResponse.load_mmproj ??
+                    stateBeforeUnload.loadedVisionProjectorEnabled ??
+                    true,
+                  loadedVisionProjectorEnabled:
+                    rollbackResponse.load_mmproj ??
+                    stateBeforeUnload.loadedVisionProjectorEnabled ??
+                    true,
                   customContextLength:
                     stateBeforeUnload.loadedCustomContextLength,
                   loadedCustomContextLength:

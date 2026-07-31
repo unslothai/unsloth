@@ -217,6 +217,7 @@ export async function validateModel(
       // /load. Default placement is sized against the selected GPUs.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
+      load_mmproj: payload.load_mmproj ?? true,
       cache_type_kv: payload.cache_type_kv ?? null,
       tensor_parallel: payload.tensor_parallel ?? false,
       gpu_ids: payload.gpu_ids,
@@ -248,6 +249,7 @@ export async function fetchGgufStagedMetadata(payload: {
   contextLength: number | null;
   layerCount: number | null;
   moeLayerCount: number | null;
+  isVision: boolean;
   isDiffusion: boolean;
 }> {
   let nativePathLease: string | null = null;
@@ -262,6 +264,7 @@ export async function fetchGgufStagedMetadata(payload: {
         contextLength: null,
         layerCount: null,
         moeLayerCount: null,
+        isVision: false,
         isDiffusion: false,
       };
     }
@@ -282,6 +285,7 @@ export async function fetchGgufStagedMetadata(payload: {
     contextLength: res.context_length ?? null,
     layerCount: res.layer_count ?? null,
     moeLayerCount: res.moe_layer_count ?? null,
+    isVision: res.is_vision ?? false,
     isDiffusion: res.is_diffusion ?? false,
   };
 }

@@ -54,6 +54,7 @@ export function applyPerModelConfigToRuntime(
     tensorParallel: options.isDiffusion
       ? false
       : (config.tensorParallel ?? false),
+    visionProjectorEnabled: config.visionProjectorEnabled ?? true,
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is
     // a standing preference so an absent mode falls back to the persisted one.
@@ -100,6 +101,7 @@ export function currentRuntimePerModelConfig(
     specDraftNMax: s.specDraftNMax ?? null,
     nParallel: s.nParallel ?? null,
     tensorParallel: s.tensorParallel ?? false,
+    visionProjectorEnabled: s.visionProjectorEnabled,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous
     // model's GPU Memory settings back (see applyPerModelConfigToRuntime). The
@@ -126,6 +128,7 @@ export function perModelConfigsEqual(
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
+    (a.visionProjectorEnabled ?? true) === (b.visionProjectorEnabled ?? true) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&
     gpuFieldsEqual(a, b)
