@@ -310,8 +310,7 @@ def test_auto_load_sees_a_model_hidden_behind_a_dangling_ref(tmp_path, monkeypat
     rows = _autoload_rows(tmp_path, monkeypatch)
 
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
-    # Recovered rows carry the snapshot as their load identity: refs/main dangles, so
-    # from_pretrained("Org/Model") ignores what is already here.
+    # Recovered rows pin the snapshot: refs/main dangles, so from_pretrained(repo id) ignores what is here.
     assert rows[0]["load_id"] == str(snapshot)
     assert rows[0]["active_cache"] is True
 
@@ -343,8 +342,7 @@ def test_default_ref_resolves_only_when_main_names_a_snapshot(tmp_path):
 OLDER = "d" * 40
 
 
-# from_pretrained finds shards only through this map and opens every name it lists, never by
-# filename, so the names have to be real.
+# from_pretrained finds shards only through this map and opens every name it lists, so they must be real.
 def _shard_index(*shards: str) -> bytes:
     return json.dumps(
         {"metadata": {}, "weight_map": {f"w{i}": name for i, name in enumerate(shards)}}
@@ -556,8 +554,7 @@ def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_pat
     assert load_dir == repo_dir / "snapshots" / OLDER
     offered = _local_gguf_variants_for_autoload(rows[0], tmp_path)
     resolvable = {v.quant for v in list_local_gguf_variants(str(load_dir))[0]}
-    # Every quant offered as downloaded must resolve under the load id, unshadowed by the broken
-    # one.
+    # Every quant offered as downloaded must resolve under the load id, unshadowed by the broken one.
     assert set(offered) <= resolvable, (
         f"auto-load is offered {sorted(offered)} but load_id {load_dir.name[:8]} "
         f"resolves only {sorted(resolvable)}"
@@ -568,16 +565,14 @@ def test_a_half_split_quant_shadows_neither_the_load_id_nor_the_variants(tmp_pat
 @pytest.mark.parametrize(
     "newer_files, listed, offered",
     [
-        # With nothing complete anywhere the newest snapshot holding quants is still reported so it
-        # can be resumed or deleted, but a quant short a shard cannot be handed to /load.
+        # With nothing complete the newest snapshot holding quants is still reported, but not loadable.
         pytest.param(
             {"Model-Q8_0-00001-of-00002.gguf": b"\0" * 16},
             ["Q8_0"],
             [],
             id = "nothing-complete-anywhere",
         ),
-        # When that snapshot holds a whole quant beside the half-downloaded one, offering both
-        # shadows the usable one: auto-load takes only the smallest.
+        # When that snapshot holds a whole quant too, offering both shadows it: auto-load takes the smallest.
         pytest.param(
             {
                 "Model-Q8_0.gguf": b"\0" * 64,
@@ -638,8 +633,7 @@ def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(tmp_
         f"resolves only {sorted(resolvable)}"
     )
     assert "Q8_0" not in offered
-    # Pinning the snapshot holding the interrupted download must not flip the row partial: a whole
-    # quant is loadable from it.
+    # Pinning the snapshot holding the interrupted download must not flip the row partial.
     assert rows[0].get("partial") is False
     assert rows[0].get("capabilities", {}).get("can_chat") is True
 
@@ -682,8 +676,7 @@ def test_no_snapshot_holds_the_payload_so_a_dangling_ref_pins_nothing(tmp_path, 
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     load_id = rows[0]["load_id"]
     if load_id != "Org/Model":
-        # Behavioural: a pinned directory is only useful if from_pretrained can read weights out of
-        # it.
+        # Behavioural: a pinned directory is only useful if from_pretrained can read weights out of it.
         pinned = Path(load_id)
         held = sorted(entry.name for entry in pinned.iterdir())
         assert (pinned / "config.json").is_file() and any(
@@ -701,8 +694,8 @@ MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n-
 @pytest.mark.parametrize(
     "older_files, newer_files, ref, pinned",
     [
-        # Reading the newest snapshot while the load id names the payload one describes a directory
-        # the row does not hand out, so the quant chip and type filter judge absent data.
+        # Reading the newest snapshot while the load id names the payload one describes a directory the row
+        # does not hand out, so the quant chip and type filter judge absent data.
         pytest.param(
             {
                 "config.json": QUANTIZED_CONFIG,
@@ -714,8 +707,7 @@ MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n-
             True,
             id = "payload-snapshot-supplies-the-row",
         ),
-        # The rule stays narrow: with no self-contained payload snapshot there is nothing to scope
-        # to, so the newest snapshot still supplies the row.
+        # The rule stays narrow: with no self-contained payload snapshot the newest still supplies the row.
         pytest.param(
             {"model.safetensors": b"\0" * 11},
             {"config.json": QUANTIZED_CONFIG, "README.md": MODEL_CARD},
@@ -723,8 +715,8 @@ MODEL_CARD = b"---\npipeline_tag: text-generation\nlibrary_name: transformers\n-
             False,
             id = "newest-snapshot-fallback",
         ),
-        # Both revisions are self-contained and ``refs/main`` resolves onto the OLDER one, so the
-        # load id stays the repo id and the row must be described from that older directory.
+        # Both revisions are self-contained and refs/main resolves onto the OLDER one, so the load id
+        # stays the repo id and the row must be described from that older directory.
         pytest.param(
             {
                 "config.json": QUANTIZED_CONFIG,
@@ -786,8 +778,8 @@ def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "older_files, newer_files, has_vision",
     [
-        # A projector fetched on its own lands in a newer snapshot with no main quant, so the row
-        # pins the older one and must not OR the flag over.
+        # A projector fetched on its own lands in a newer snapshot with no main quant, so the row pins
+        # the older one and must not OR the flag over.
         pytest.param(
             {"Model-Q4_K_M.gguf": b"\0" * 32},
             {"mmproj-F16.gguf": b"\0" * 64},
@@ -934,11 +926,10 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
 @pytest.mark.parametrize(
     "newer_files, ref, advertised, partial",
     [
-        # The signal belongs to the newest snapshot while the row advertises an older, complete one,
-        # so inheriting it turns ``can_chat`` off wrongly.
+        # The signal belongs to the newest snapshot while the row advertises an older, complete one.
         pytest.param({"config.json": b"{}"}, NEWER, OLDER, False, id = "pinned-older-snapshot"),
         # Negative side: the row advertises the newest snapshot, which the signal does describe. No
-        # ``refs/main`` (a commit-pinned fetch) carries no evidence either way.
+        # refs/main (a commit-pinned fetch) carries no evidence either way.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 13},
             None,
@@ -946,8 +937,8 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
             True,
             id = "advertised-snapshot",
         ),
-        # A ``refs/main`` naming a commit with no directory does carry evidence: it is rewritten
-        # before the first file lands, so that attempt left none.
+        # A refs/main naming a commit with no directory does carry evidence: it is rewritten before
+        # the first file lands, so that attempt left none.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 13},
             UPSTREAM_HEAD,
@@ -955,8 +946,7 @@ def _write_repo_wide_signal(kind: str, hub_cache: Path) -> None:
             False,
             id = "unmaterialised-attempt",
         ),
-        # ``refs/main`` resolves onto the OLDER payload snapshot though the newer one is
-        # self-contained too, so the load reads it while the signal belongs to the newest.
+        # refs/main resolves onto the OLDER payload snapshot though the newer one is self-contained too.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 13},
             OLDER,
@@ -982,8 +972,7 @@ def test_repo_wide_partial_signals_are_charged_to_the_newest_snapshot(
 
     rows = _autoload_rows(tmp_path, monkeypatch)
 
-    # *advertised* is a commit whose snapshot the row pins, or the repo id when the row keeps it and
-    # lets ``refs/main`` resolve the directory.
+    # *advertised* is a commit whose snapshot the row pins, or the repo id when refs/main resolves it.
     expected_load_id = (
         advertised if advertised == "Org/Model" else str(repo_dir / "snapshots" / advertised)
     )
@@ -1037,15 +1026,13 @@ def test_a_gguf_download_interrupted_in_its_own_snapshot_is_still_partial(tmp_pa
 @pytest.mark.parametrize(
     "older_files, partial",
     [
-        # Half a split quant and no manifest or marker: the ``.incomplete`` blob is the only
-        # evidence, so the dangling ref must not clear it.
+        # Half a split quant and no manifest or marker: the .incomplete blob is the only evidence.
         pytest.param(
             {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32},
             True,
             id = "pinned-snapshot-holds-half-a-split-quant",
         ),
-        # Negative side: the pinned snapshot serves the whole quant, so the unmaterialised attempt
-        # is charged to nothing and the row stays chattable.
+        # Negative side: the pinned snapshot serves the whole quant, so the row stays chattable.
         pytest.param(
             {
                 "Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 32,
@@ -1080,15 +1067,13 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
 @pytest.mark.parametrize(
     "older_files, partial",
     [
-        # The safetensors half of the case above: a shard names the set's total, so half a set is
-        # provable from the directory alone.
+        # The safetensors half of the case above: a shard names the set's total, so half a set is provable.
         pytest.param(
             {"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 32},
             True,
             id = "pinned-snapshot-holds-half-a-sharded-set",
         ),
-        # Negative side: the whole set is here, so the unmaterialised attempt is charged to nothing
-        # and the row stays chattable.
+        # Negative side: the whole set is here, so the row stays chattable.
         pytest.param(
             {
                 "config.json": b"{}",
@@ -1099,15 +1084,13 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
             False,
             id = "pinned-snapshot-holds-the-whole-sharded-set",
         ),
-        # Nothing names a total, so there is no proof of breakage: this is the #7374 shape and it
-        # must keep loading from disk.
+        # Nothing names a total, so there is no proof of breakage: the #7374 shape must keep loading.
         pytest.param(
             {"config.json": b"{}", "model.safetensors": b"\0" * 32},
             False,
             id = "pinned-snapshot-holds-an-unsharded-payload",
         ),
-        # from_pretrained loads one family, so an interrupted alternative checkpoint family beside a
-        # complete one must not take auto-load away.
+        # from_pretrained loads one family, so a torn alternative beside a complete one keeps auto-load.
         pytest.param(
             {
                 "config.json": b"{}",
@@ -1128,8 +1111,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
             False,
             id = "pinned-snapshot-holds-a-whole-sharded-family-beside-a-broken-one",
         ),
-        # The half-fetched set above stays proof of breakage: neither a training artefact nor an
-        # adapter is a runnable base weight family.
+        # The half-fetched set above stays proof: neither a training artefact nor an adapter is a base family.
         pytest.param(
             {
                 "config.json": b"{}",
@@ -1149,8 +1131,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_broken_snapshot(
             True,
             id = "half-a-sharded-set-beside-an-adapter",
         ),
-        # A COMPLETE auxiliary set is not a runnable base family either, so it cannot stand in for
-        # the torn base shards beside it.
+        # A COMPLETE auxiliary set is not a base family either, so it cannot stand in for torn base shards.
         pytest.param(
             {
                 "config.json": b"{}",
@@ -1196,15 +1177,14 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapsho
 @pytest.mark.parametrize(
     "older_files, partial",
     [
-        # Half a sharded set and NO other trace: no manifest, marker, ``.incomplete`` blob or broken
-        # symlink, as a cancelled fetch that cleaned its blobs up, or a copied cache, leaves.
+        # Half a sharded set and NO other trace: no manifest, marker, .incomplete blob or broken symlink,
+        # as a cancelled fetch that cleaned its blobs up, or a copied cache, leaves.
         pytest.param(
             {"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 32},
             True,
             id = "half-a-sharded-set-and-no-other-trace",
         ),
-        # Negative side, and #7374's own shape: the payload is whole, so the recovered row must load
-        # from disk rather than refetch.
+        # Negative side, and #7374's own shape: the payload is whole, so the row loads from disk.
         pytest.param(
             {
                 "config.json": b"{}",
@@ -1221,8 +1201,7 @@ def test_a_dangling_ref_keeps_a_legacy_partial_signal_for_a_half_fetched_snapsho
             False,
             id = "an-unsharded-payload-and-no-other-trace",
         ),
-        # One whole family beside a torn one still loads, exactly as it does when an ``.incomplete``
-        # blob is present.
+        # One whole family beside a torn one still loads, as it does with an .incomplete blob present.
         pytest.param(
             {
                 "config.json": b"{}",
@@ -1283,8 +1262,7 @@ def test_a_resolving_ref_is_not_judged_on_the_recovery_walk(tmp_path, monkeypatc
     assert inventory_scan.default_ref_snapshot(repo_dir) is not None
     rows = _autoload_rows(tmp_path, monkeypatch)
 
-    # The ref resolves, so the load id stays the repo id and the row keeps the answer it had before
-    # the recovery branch existed.
+    # The ref resolves, so the load id stays the repo id and the row keeps its pre-recovery answer.
     assert rows[0]["load_id"] == "Org/Model"
     assert rows[0].get("partial") is False
 
@@ -1311,8 +1289,7 @@ def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
 @pytest.mark.parametrize(
     "older_files, newer_files, ref, advertised, partial",
     [
-        # A re-download that stops before materialising its snapshot leaves a manifest of the NEW
-        # revision's files, which no rename or resize survives.
+        # A re-download that stops before materialising its snapshot leaves a manifest of the NEW revision.
         pytest.param(
             {"Model-Q4_K_M.gguf": b"\0" * 32},
             {"config.json": b"{}"},
@@ -1321,8 +1298,7 @@ def test_an_update_that_never_materialised_leaves_the_cached_payload_chattable(
             False,
             id = "pinned-older-snapshot",
         ),
-        # Negative side: the quant the manifest names is not complete under the pinned snapshot, so
-        # the manifest is all that can judge it.
+        # Negative side: the manifest's quant is not complete under the pinned snapshot, so only it can judge.
         pytest.param(
             {"config.json": b"{}"},
             {"Model-Q4_K_M.gguf": b"\0" * 32},
@@ -1514,8 +1490,7 @@ def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
 
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     assert rows[0]["active_cache"] is True
-    # Behavioural anchor: the row the picker shows loads out of the active root, and there is no
-    # projector there.
+    # Behavioural anchor: the row the picker shows loads out of the active root, with no projector there.
     assert not (active / "models--Org--Model" / "snapshots" / SNAPSHOT / "mmproj-F16.gguf").exists()
     assert rows[0]["capabilities"].get("supports_vision") is False
 
@@ -1536,16 +1511,15 @@ _REPO_WIDE_HELPERS = frozenset(
         "getattr",
     }
 )
-# Only the shared ordering key may read a snapshot directory's mtime; _blob_mtime reads a blob's,
-# which orders nothing.
+# Only the shared ordering key may read a snapshot dir's mtime; _blob_mtime orders nothing.
 _MTIME_READERS = {
     "hub/utils/hf_cache_state.py": frozenset({"snapshot_selection_key"}),
     "hub/utils/gguf.py": frozenset(),
     "hub/services/models/cache_inventory.py": frozenset({"_blob_mtime"}),
     # Mirrors what huggingface_hub records per revision; it selects nothing.
     "hub/utils/inventory_scan.py": frozenset({"_recover_repo_hidden_by_dangling_refs"}),
-    # The compatibility routes, listed so the two snapshot selectors here cannot reintroduce their
-    # own mtime reads. The names left rank plain directories or repo/blob mtimes, never a snapshot.
+    # The compatibility routes, listed so the two snapshot selectors cannot reintroduce their own
+    # mtime reads. The names left rank plain directories or repo/blob mtimes, never a snapshot.
     "routes/models.py": frozenset(
         {
             "_blob_mtime",
@@ -2844,8 +2818,8 @@ def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
 @pytest.mark.parametrize(
     "files, cannot_serve",
     [
-        # Classifies safetensors, since a real transformers safetensors file beside a config.json
-        # outranks the adapter, so the torn base decides and the whole adapter cannot stand in.
+        # Classifies safetensors, since a real transformers file beside a config.json outranks the adapter,
+        # so the torn base decides and the whole adapter cannot stand in.
         (
             {
                 "config.json": b"{}",
@@ -2855,8 +2829,7 @@ def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
             },
             True,
         ),
-        # Same two configs, but the only real weights are the adapter's, so this classifies adapter
-        # and loads. A config.json alone does not make a snapshot a base row.
+        # Same two configs, but the only real weights are the adapter's, so this classifies adapter and loads.
         (
             {
                 "config.json": b"{}",
@@ -2966,12 +2939,11 @@ def test_a_recovery_whose_default_ref_resolves_is_still_listed(tmp_path, monkeyp
 @pytest.mark.parametrize(
     "refs, on_disk, partial",
     [
-        # The case this fixes: refs/main resolves, so the row loads by id and the manifest
-        # describes what that load reads. A stale ref elsewhere must not suppress it.
+        # The case this fixes: refs/main resolves, so the row loads by id and the manifest describes
+        # what that load reads. A stale ref elsewhere must not suppress it.
         ({"main": SNAPSHOT, "stale": UPSTREAM_HEAD}, 13, True),
         ({"main": SNAPSHOT}, 13, True),
-        # refs/main dangling is the exemption: that attempt is pinned to a revision absent from
-        # disk, so this snapshot did not produce the manifest.
+        # refs/main dangling is the exemption: that attempt is pinned to a revision absent from disk.
         ({"main": UPSTREAM_HEAD}, 13, False),
         # Negative control: a stale ref must not flag a snapshot that matches.
         ({"main": SNAPSHOT, "stale": UPSTREAM_HEAD}, 999, False),
@@ -3221,8 +3193,8 @@ def test_an_adapter_file_does_not_stand_in_for_a_checkpoint_row(tmp_path, monkey
     [
         {"config.json": b"{}", "model.safetensors": b"\0" * 256},
         {"adapter_config.json": b'{"peft_type":"LORA"}', "adapter_model.bin": b"\0" * 256},
-        # Classifies from the suffix while naming no family this walk recognises. Absence of a
-        # family is not evidence of breakage, or every diffusion and .ckpt payload reads as broken.
+        # Classifies from the suffix while naming no family this walk recognises. Absence of a family is
+        # not evidence of breakage, or every diffusion and .ckpt payload reads as broken.
         {"config.json": b"{}", "diffusion_pytorch_model.safetensors": b"\0" * 256},
         {"config.json": b"{}", "model.ckpt": b"\0" * 256},
     ],
@@ -3241,8 +3213,7 @@ def test_a_payload_whose_own_kind_is_present_stays_chattable(files, tmp_path, mo
 @pytest.mark.parametrize(
     "files, partial",
     [
-        # from_pretrained maps shards through the index and never globs the names. Without one it
-        # reports no model.safetensors at all, so the set on disk is unreachable.
+        # from_pretrained maps shards through the index and never globs, so without one the set is unreachable.
         (
             {
                 "config.json": b'{"model_type":"llama"}',

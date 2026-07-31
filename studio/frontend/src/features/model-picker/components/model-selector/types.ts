@@ -41,8 +41,7 @@ export interface ModelSelectorChangeMeta {
   isDiffusion?: boolean;
   config?: PerModelConfig;
   forceReload?: boolean;
-  /** What to send as model_path when the pick is listed under one id but loads
-   *  from another, e.g. a cached repo pinned to a snapshot directory. */
+  /** What to send as model_path when the pick loads from elsewhere, e.g. a pinned snapshot dir. */
   loadId?: string | null;
   /** Native path token so an active-model reload can reopen a file-picked GGUF. */
   nativePathToken?: string;

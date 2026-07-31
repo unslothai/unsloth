@@ -531,8 +531,7 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     assert {v.quant for v in response.variants if v.downloaded} == {"Q4_K_M"}
     assert not any(v.partial for v in response.variants)
 
-    # Control: with refs/main resolving, the marker describes what a repo-id load reads, so an
-    # unpinned request still reports the quant as broken.
+    # Control: with refs/main resolving, the marker describes what a repo-id load reads.
     (repo_dir / "refs" / "main").write_text("e" * 40, encoding = "utf-8")
     unpinned = asyncio.run(GV.get_gguf_variants_response("Org/Quant"))
     assert all(v.partial for v in unpinned.variants)

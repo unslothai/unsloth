@@ -1447,11 +1447,8 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
-/** Whether a cache row is a model the user can actually chat with.
-*
-*  The cache endpoints also return resume/delete-only rows (partial: true, can_chat: false); loading
-*  one wastes an attempt and suppresses the default download. Both fields are optional so an older
-*  backend keeps trying the row. */
+/** Whether a cache row is chattable. Resume/delete-only rows waste an attempt and suppress the
+*  default download; both fields are optional so an older backend keeps trying the row. */
 function isChattableCachedRepo(repo: {
   partial?: boolean;
   capabilities?: { can_chat?: boolean } | null;
@@ -1510,8 +1507,8 @@ async function autoLoadSmallestModel(): Promise<{
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
   const skippedAutoLoadCandidates = new Set<string>();
-  // Why the last load attempt failed, set only when loadModel rejected, so enumeration hiccups keep
-  // falling through. Boxed because a `let` assigned only in a nested function narrows to `null`.
+  // Why the last load attempt failed, set only when loadModel rejected. Boxed because a `let`
+  // assigned only in a nested function narrows to `null`.
   const loadFailure: {
     current: { label: string; detail: string; blamesModel: boolean } | null;
   } = { current: null };
@@ -1577,7 +1574,7 @@ async function autoLoadSmallestModel(): Promise<{
 
   function recordTerminalFailure(label: string, error: unknown): void {
     // Only the two terminal markers: an ordinary failure stays this candidate's problem and the
-    // sweep moves on, which is how a transient blip on the first candidate still recovers.
+    // sweep moves on.
     const marker = error as {
       unslothTransportFailure?: boolean;
       unslothUserCancelled?: boolean;
@@ -1602,7 +1599,7 @@ async function autoLoadSmallestModel(): Promise<{
       return await canAutoLoad(payload);
     } catch (error) {
       // validateModel prepares the token too, so a dismissed dialog or dead backend surfaces here,
-      // not from loadModel, and the sweep's bare catches would drop it and hit the Hub download.
+      // and the sweep's bare catches would drop it and hit the Hub download.
       recordTerminalFailure(label, error);
       throw error;
     }
@@ -1659,8 +1656,8 @@ async function autoLoadSmallestModel(): Promise<{
       // replacement-token recovery flow could run.
       const preparedToken = await prepareHfTokenForUse(hfToken);
       if (!preparedToken.proceed) {
-        // Raised before loadModel, so its catch never sees it: route it through the same helper as
-        // the other two sites, or every later candidate reopens the dialog.
+        // Raised before loadModel, so its catch never sees it: route it through the same helper or
+        // every later candidate reopens the dialog.
         const cancelled = Object.assign(new Error("Model load cancelled."), {
           unslothUserCancelled: true,
         });
@@ -1760,8 +1757,7 @@ async function autoLoadSmallestModel(): Promise<{
           }
         : {}),
     }).catch((error: unknown) => {
-      // The sweep's parameterless catches discard this error, so record it before rethrowing or a
-      // genuine load failure falls through to the Hub download.
+      // The sweep's parameterless catches discard this error, so record it before rethrowing.
       noteLoadFailure(failureLabel, error);
       throw error;
     });
@@ -1774,8 +1770,8 @@ async function autoLoadSmallestModel(): Promise<{
     // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
     persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
     const loadedModelId = loadResp.model || modelPath;
-    // The identity stays the backend's, per the inactive-cache contract this path already keeps.
-    // The pin is recorded alongside it so a later reload of this model finds the same directory.
+    // The identity stays the backend's, per the inactive-cache contract. The pin is recorded
+    // alongside it so a later reload of this model finds the same directory.
     useChatRuntimeStore.setState({
       activeLoadId: modelPath === candidate.id ? null : modelPath,
     });
@@ -1901,8 +1897,7 @@ async function autoLoadSmallestModel(): Promise<{
       listCachedGguf().catch(() => []),
       listCachedModels().catch(() => []),
     ]);
-    // Filtered once, so the last-used lookup sees the same set as the sweeps and neither spends an
-    // attempt on a resume-only row.
+    // Filtered once, so the last-used lookup sees the same set as the sweeps.
     const ggufRepos = allGgufRepos.filter(isChattableCachedRepo);
     const modelRepos = allModelRepos.filter(isChattableCachedRepo);
 

@@ -75,8 +75,7 @@ import type {
 
 export type SelectedModelInput = {
   id: string;
-  /** Sent as model_path in place of the id. The id stays the identity the UI
-   *  shows, dedupes and stores, so a pin does not rename a model. */
+  /** Sent as model_path in place of the id, which stays the identity the UI shows. */
   loadId?: string | null;
   isLora?: boolean;
   ggufVariant?: string;
@@ -314,8 +313,8 @@ async function syncInferenceStatusToStore(options?: {
       if (checkpointId) {
         const previousGgufVariant =
           useChatRuntimeStore.getState().activeGgufVariant;
-        // A model loaded outside this tab replaces the resident one, and the pin describes the
-        // model it was taken for. Keeping it would reload that one from another's settings.
+        // A model loaded outside this tab replaces the resident one, and the pin was taken for the old
+        // one. Keeping it would reload that one from another's settings.
         if (
           checkpointId !== selectedCheckpoint ||
           (statusRes.gguf_variant ?? null) !== (previousGgufVariant ?? null)
@@ -1304,8 +1303,7 @@ export function useChatModelRuntime() {
               }
               try {
                 const rollbackResponse = await loadModel({
-                  // The pin the rolled-back model loaded from: without it this retries the ref
-                  // that needed pinning and leaves nothing resident.
+                  // The pin the rolled-back model loaded from: without it this retries the ref that needed pinning.
                   model_path: previousActiveLoadId || previousCheckpoint,
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,

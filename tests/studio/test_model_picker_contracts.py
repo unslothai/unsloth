@@ -383,20 +383,19 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert picker.count("loadId: c.load_id") == 2, "the safetensors row and its gear need the pin"
     block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
-    # The variant click is the one case that has to withhold it: a quant not in the pinned
-    # snapshot is about to be downloaded into a different one.
+    # The variant click is the one case that must withhold it: a quant outside the pinned snapshot
+    # is about to be downloaded into a different one.
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
-    # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants
-    # this repo still offers, which is the whole point of the expanded list.
+    # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants.
     assert (
         "listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)"
         in picker
     )
     assert "cachePath={c.cache_path}" in picker
 
-    # A reload rebuilds its target from the checkpoint, which is the id, so the pin has to be
-    # remembered on the resident model or Apply sends the load back down the repo's ref.
+    # A reload rebuilds its target from the checkpoint id, so the pin has to be remembered on the
+    # resident model or Apply sends the load back down the repo's ref.
     page = _read("features/chat/chat-page.tsx")
     assert "loadId: activeLoadId," in page
     assert "activeLoadId: string | null;" in _read("features/chat/stores/chat-runtime-store.ts")
@@ -404,14 +403,14 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "activeLoadId: loadPath === modelId ? null : loadPath," in runtime
     # A failed swap already unloaded the pinned model, so the rollback has to reload it from the
-    # same place and put the pin back, or it retries the ref that needed pinning.
+    # same place and put the pin back.
     assert "model_path: previousActiveLoadId || previousCheckpoint," in runtime
     assert "activeLoadId: previousActiveLoadId ?? null," in runtime
     # A model loaded outside this tab replaces the resident one, and the pin belonged to the old.
     assert "useChatRuntimeStore.setState({ activeLoadId: null });" in runtime
 
-    # The auto-load keys identity off the backend (see the inactive-cache contract above), so the
-    # pin is recorded beside it rather than replacing it, and a reload finds the same directory.
+    # The auto-load keys identity off the backend, so the pin is recorded beside it rather than
+    # replacing it, and a reload finds the same directory.
     adapter = _read("features/chat/api/chat-adapter.ts")
     assert "activeLoadId: modelPath === candidate.id ? null : modelPath," in adapter
     assert (
@@ -1274,8 +1273,8 @@ def test_chat_autoload_records_a_terminal_validation_failure():
     assert "unslothTransportFailure === true" in recorder
     assert "unslothUserCancelled === true" in recorder
     assert recorder.count("noteLoadFailure(label, error)") == 2
-    # A declined dialog halts the sweep, since retrying reopens it per candidate; a transport
-    # failure deliberately does not.
+    # A declined dialog halts the sweep, since retrying reopens it per candidate; a transport failure
+    # deliberately does not.
     assert "autoLoadCancelled = true;" in recorder
     assert recorder.index("autoLoadCancelled = true;") < recorder.index(
         "unslothTransportFailure === true"

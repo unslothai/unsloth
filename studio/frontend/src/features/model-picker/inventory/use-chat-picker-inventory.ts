@@ -28,8 +28,7 @@ function isCompleteCachedRow(row: CachedInventoryRow): boolean {
 function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
   return {
     repo_id: row.repoId,
-    // Listed by repo id, loaded by the pinned id. Dropping it sends the picker
-    // back down the ref the cached listing stepped around.
+    // Listed by repo id, loaded by the pinned id: dropping it sends the picker back down the ref.
     load_id: row.loadId,
     size_bytes: row.bytes,
     cache_path: row.cachePath ?? "",
@@ -42,8 +41,7 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
   return {
     repo_id: row.repoId,
     load_id: row.loadId,
-    // Delete targets the copy the row describes; without it the request falls back to the
-    // active cache, which for a deduplicated row is not the copy on screen.
+    // Delete targets the copy the row describes; without it the request falls back to the active cache.
     cache_path: row.cachePath,
     size_bytes: row.bytes,
     last_modified: row.lastModified ?? undefined,

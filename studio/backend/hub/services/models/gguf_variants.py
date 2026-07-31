@@ -568,8 +568,7 @@ async def get_gguf_variants_response(
                 # An unlabelled quant cannot be judged, so it is kept as ready.
                 return complete is None or not v.quant or v.quant in complete
 
-            # The picker never re-checks downloaded, so the default comes from the ready rows. With
-            # none ready every row is the fallback, making it a download target rather than a load.
+            # The default comes from the ready rows; with none ready every row is the fallback.
             ready = [v for v in variants if _downloaded(v)]
             best = pick_best_gguf([v.filename for v in (ready or variants)])
             default_variant = extract_quant_label(best) if best else None
@@ -838,8 +837,7 @@ async def get_gguf_variants_response(
             repo_id,
             repo_cache_dir,
         )
-        # A marker or manifest carries no revision, so attribute it the way the inventory row does
-        # rather than letting a later attempt mark the pinned snapshot's own quant broken.
+        # A marker or manifest carries no revision, so attribute it the way the inventory row does.
         repo_signal_applies = hf_cache_scan.repo_signal_applies_to_snapshot(
             repo_cache_dir, scan_snapshot_dir
         )

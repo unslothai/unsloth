@@ -33,8 +33,8 @@ TEMP = WORKDIR / "temp" / "chat_autoload_failure_gate"
 DEFAULT_MODEL = "unsloth/Qwen3.5-4B-MTP-GGUF"
 GEMMA_REPO = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
 
-# Stubs for everything autoLoadSmallestModel imports; each scenario supplies the cache inventory and
-# how /validate and /load answer per model_path.
+# Stubs for everything autoLoadSmallestModel imports; each scenario supplies the cache inventory
+# and how /validate and /load answer per model_path.
 PREAMBLE = """
 type LastLocalModelKind = "gguf" | "model";
 type GgufVariantDetail = {
@@ -205,8 +205,8 @@ def _require_node():
             ["node", "--experimental-strip-types", "--version"],
             capture_output = True,
             text = True,
-            # A cold Windows runner can take seconds just to start node, and a probe that runs out
-            # of patience means the runtime is unusable here, not that the gate is broken.
+            # A cold Windows runner can take seconds just to start node, so an impatient probe means the
+            # runtime is unusable here, not that the gate is broken.
             timeout = 60,
         )
     except (OSError, subprocess.SubprocessError):

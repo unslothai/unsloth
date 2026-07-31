@@ -329,8 +329,7 @@ def list_gguf_variants_from_hf_cache(
         if root is not None
         else iter_hf_cache_snapshots(repo_id)
     )
-    # A local load reads one snapshot dir, so pick the same one the inventory row does: the newest
-    # holding a whole quant, else the first non-empty. has_vision travels with it, never OR-ed.
+    # Pick the snapshot the inventory row does: newest holding a whole quant, else first non-empty.
     fallback: Optional[tuple[list[GgufVariantInfo], bool, set]] = None
     for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
@@ -577,8 +576,7 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
         if is_mmproj_filename(file.name):
-            # An interrupted download leaves the name with nothing behind it, and a projector
-            # llama.cpp cannot open is not vision support.
+            # A projector llama.cpp cannot open is not vision support.
             try:
                 has_vision = has_vision or file.stat().st_size > 0
             except OSError:

@@ -3150,8 +3150,7 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
             return None
     except (OSError, RuntimeError, ValueError):
         pass
-    # snapshot_selection_key is shared by every selector, so this route and the /gguf-variants lister
-    # name one snapshot. Snapshot mtime, not blob mtime: HF reuses old blobs in new snapshots.
+    # Shared selection key, so this route and the /gguf-variants lister name one snapshot.
     candidates = [
         Path(snapshot)
         for revision in repo_info.revisions
@@ -3159,9 +3158,7 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
         and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
     ]
     candidates.sort(key = snapshot_selection_key, reverse = True)
-    # Newest first, skipping any holding no whole quant: an interrupted download would otherwise beat
-    # an older snapshot that can still load. One whole quant is enough, as the lister trims its offer
-    # to the completed subset.
+    # Newest first, skipping any holding no whole quant, else an interrupted download beats a loadable one.
     for snapshot in candidates:
         if snapshot_has_complete_variants(str(snapshot)):
             return str(snapshot)
@@ -3275,8 +3272,7 @@ async def list_cached_models(
             active_root = None
 
         seen_lower: dict[str, dict] = {}
-        # Repos whose active-cache copy cannot be loaded by id. This schema carries no path, so a
-        # client reads another cache's copy under the same id and follows the broken one instead.
+        # Repos whose active-cache copy cannot be loaded by id; this schema carries no path.
         unusable_active: set[str] = set()
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
@@ -3288,8 +3284,7 @@ async def list_cached_models(
                     # custom Whisper checkpoints, not just curated repo ids.
                     if _is_hidden_model(repo_id, str(repo_info.repo_path)):
                         continue
-                    # No partial or load id here, so a recovered repo that only loads by snapshot
-                    # path, or is short a shard, would read as ready. The Hub inventory lists it.
+                    # No partial or load id here, so a snapshot-path-only repo would read as ready.
                     if _recovered_repo_is_unusable_by_repo_id(repo_info):
                         try:
                             if (
