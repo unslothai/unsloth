@@ -2913,7 +2913,24 @@ def update(
         os.environ["STUDIO_LOCAL_INSTALL"] = "1"
         # Pass the repo root explicitly so install_python_stack.py doesn't
         # have to guess from SCRIPT_DIR (which may be inside site-packages).
-        repo_root = Path(__file__).resolve().parents[2]
+        # Deriving it from __file__ only holds while this CLI runs from a
+        # checkout. Once an update has installed unsloth into the venv
+        # non-editably, parents[2] IS site-packages, and uv rejects it with
+        # "does not appear to be a Python project: neither 'setup.py' nor
+        # 'pyproject.toml' found" -- which is what a second `update --local`
+        # hit on Windows, where the first update replaces the editable install.
+        _explicit = os.environ.get("STUDIO_LOCAL_REPO")
+        repo_root = Path(_explicit) if _explicit else Path(__file__).resolve().parents[2]
+        if not (repo_root / "pyproject.toml").is_file():
+            typer.echo("Error: --local needs an Unsloth checkout to install from.", err = True)
+            typer.echo(f"  no pyproject.toml under: {repo_root}", err = True)
+            typer.echo("  This CLI is running from an installed copy, not a source tree.", err = True)
+            typer.echo("", err = True)
+            typer.echo("  Point at a checkout:", err = True)
+            typer.echo("    STUDIO_LOCAL_REPO=/path/to/unsloth unsloth studio update --local", err = True)
+            typer.echo("  Or update from PyPI:", err = True)
+            typer.echo("    unsloth studio update", err = True)
+            raise typer.Exit(2)
         os.environ["STUDIO_LOCAL_REPO"] = str(repo_root)
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
