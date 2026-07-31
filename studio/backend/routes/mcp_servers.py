@@ -170,7 +170,7 @@ async def create_mcp_server(
         oauth_client_id = oauth_client_id if use_oauth else None,
         oauth_client_secret = oauth_client_secret if use_oauth else None,
     )
-    return _row_to_response(mcp_servers_db.get_server(server_id))
+    return _row_to_response(mcp_servers_db.get_server(server_id, decrypt_secret = False))
 
 
 def _changes_from_payload(
@@ -232,7 +232,7 @@ async def update_mcp_server(
     payload: McpServerUpdate,
     current_subject: str = Depends(get_current_subject),
 ):
-    old = mcp_servers_db.get_server(server_id)
+    old = mcp_servers_db.get_server(server_id, decrypt_secret = False)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     changes = _changes_from_payload(
@@ -289,12 +289,12 @@ async def update_mcp_server(
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
         await asyncio.to_thread(close_stdio_sessions, old["url"], parse_server_headers(old))
-    return _row_to_response(mcp_servers_db.get_server(server_id))
+    return _row_to_response(mcp_servers_db.get_server(server_id, decrypt_secret = False))
 
 
 @router.delete("/{server_id}", status_code = 204)
 async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
-    old = mcp_servers_db.get_server(server_id)
+    old = mcp_servers_db.get_server(server_id, decrypt_secret = False)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     if old.get("use_oauth"):
@@ -368,7 +368,9 @@ async def import_mcp_servers(
     entries, errors = parse_mcp_config(payload.config)
     created: list[McpServerResponse] = []
     skipped: list[str] = []
-    seen_urls = {row["url"] for row in mcp_servers_db.list_servers()}
+    seen_urls = {
+        row["url"] for row in mcp_servers_db.list_servers(decrypt_secrets = False)
+    }
 
     for entry in entries:
         try:
@@ -390,7 +392,9 @@ async def import_mcp_servers(
             use_oauth = entry.use_oauth and not is_stdio(url),
         )
         seen_urls.add(url)
-        created.append(_row_to_response(mcp_servers_db.get_server(server_id)))
+        created.append(
+            _row_to_response(mcp_servers_db.get_server(server_id, decrypt_secret = False))
+        )
 
     return McpServerImportResult(created = created, skipped = skipped, errors = errors)
 

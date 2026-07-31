@@ -7184,7 +7184,13 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
 
 
 async def get_enabled_mcp_tools() -> list[dict]:
-    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    server_metadata = mcp_servers_db.list_servers(decrypt_secrets = False)
+    servers = [
+        server
+        for row in server_metadata
+        if row.get("is_enabled")
+        and (server := mcp_servers_db.get_enabled_server(row["id"])) is not None
+    ]
     # Never spawn stdio servers when stdio is disabled on this host.
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
@@ -7214,7 +7220,13 @@ async def get_enabled_mcp_tools() -> list[dict]:
         # An edit/delete can land while we await a probe; re-read and drop a
         # result whose server changed or was removed mid-probe, else a stale
         # tool list (or cool-off on a just-fixed server) persists.
-        current = {s["id"]: s for s in mcp_servers_db.list_servers()}
+        current_metadata = mcp_servers_db.list_servers(decrypt_secrets = False)
+        current = {
+            server["id"]: server
+            for row in current_metadata
+            if row.get("is_enabled")
+            and (server := mcp_servers_db.get_enabled_server(row["id"])) is not None
+        }
         for server, payload in zip(uncached, results):
             fresh = current.get(server["id"])
             if fresh is None or any(
