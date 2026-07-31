@@ -2101,9 +2101,7 @@ async def scan_model_remote_code(
         if local_model:
             normalized_model_name = normalize_path(model_name)
             try:
-                scan_target = str(
-                    Path(normalized_model_name).expanduser().resolve(strict = False)
-                )
+                scan_target = str(Path(normalized_model_name).expanduser().resolve(strict = False))
             except (OSError, RuntimeError, ValueError):
                 scan_target = normalized_model_name
         if exact_snapshot_path and not local_model:
