@@ -2726,11 +2726,14 @@ def test_non_string_role_does_not_raise(role):
     assert "</think>" not in json.dumps(out)
 
 
-@pytest.mark.parametrize("schema", [
-    {"dependentRequired": {"safe": ["</think>"]}},
-    {"dependentRequired": {"</think>": ["a"]}},
-    {"dependentSchemas": {"<s>": {"type": "object"}}},
-])
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"dependentRequired": {"safe": ["</think>"]}},
+        {"dependentRequired": {"</think>": ["a"]}},
+        {"dependentSchemas": {"<s>": {"type": "object"}}},
+    ],
+)
 def test_tool_with_unsafe_dependent_schema_identifiers_is_dropped(schema):
     """Both dependent* keywords are keyed BY a property name, and dependentRequired's
     values are lists of property names too, so each is the contract the MCP server
@@ -2741,11 +2744,20 @@ def test_tool_with_unsafe_dependent_schema_identifiers_is_dropped(schema):
 
 def test_clean_dependent_schema_keeps_its_tool():
     """Only an identifier the rewrite would actually change drops the tool."""
-    tools = [{"type": "function", "function": {
-        "name": "pay", "description": "charge a card </think>",
-        "parameters": {"type": "object",
-                       "properties": {"card": {"type": "string"}, "cvv": {"type": "string"}},
-                       "dependentRequired": {"card": ["cvv"]}}}}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "pay",
+                "description": "charge a card </think>",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"card": {"type": "string"}, "cvv": {"type": "string"}},
+                    "dependentRequired": {"card": ["cvv"]},
+                },
+            },
+        }
+    ]
     out = neutralize_tool_descriptions(tools)
     assert len(out) == 1
     assert out[0]["function"]["parameters"]["dependentRequired"] == {"card": ["cvv"]}

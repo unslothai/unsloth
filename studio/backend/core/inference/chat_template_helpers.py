@@ -661,10 +661,16 @@ def neutralize_tool_descriptions(tools):
 # MCP server still expects the original, so the tool breaks. function.name is already
 # dropped for exactly this reason, and these get the same treatment (#7066).
 _SCHEMA_KEYED_IDENTIFIERS = frozenset(
-    {"properties", "patternProperties", "$defs", "definitions",
-     # Both dependent* keywords are keyed BY a property name, and dependentRequired's
-     # values are lists of property names as well, so it is checked on both sides below.
-     "dependentSchemas", "dependentRequired"}
+    {
+        "properties",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        # Both dependent* keywords are keyed BY a property name, and dependentRequired's
+        # values are lists of property names as well, so it is checked on both sides below.
+        "dependentSchemas",
+        "dependentRequired",
+    }
 )
 _SCHEMA_KEYED_LIST_IDENTIFIERS = frozenset({"dependentRequired"})
 # "pattern" and "default" belong here for the same reason: a grammar built from the
