@@ -1088,9 +1088,11 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
         for shard in weight_map.values()
         if isinstance(shard, str)
     }
-    if not family_files <= named:
+    # Coverage matters only for the family this index describes: one it names nothing of is stale
+    # content beside it, which the loader never reads because it opens weight_map and nothing else.
+    if not family_files <= named and not named.isdisjoint(family_files):
         return True
-    for shard in set(weight_map.values()):
+    for shard in weight_map.values():
         # Names are relative to the index: anything reaching outside is not a shard of this family.
         if not isinstance(shard, str) or not shard:
             return True
@@ -1103,7 +1105,19 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
                 return True
         except (OSError, ValueError):
             return True
-    return False
+    # A shard names its own total, so an index listing one of a set has to list the whole set: the
+    # loader opens exactly what is mapped and silently drops whatever the map leaves out.
+    declared: dict[tuple[str, str, int], set[int]] = {}
+    for shard in weight_map.values():
+        if not isinstance(shard, str):
+            continue
+        rel = PurePosixPath(shard.replace("\\", "/"))
+        match = _WEIGHT_SHARD_RE.search(rel.name)
+        if match is None:
+            continue
+        key = (str(rel.parent), rel.name[: match.start()], int(match.group(2)))
+        declared.setdefault(key, set()).add(int(match.group(1)))
+    return any(total <= 0 or len(seen) < total for (_d, _p, total), seen in declared.items())
 
 
 def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
@@ -1138,18 +1152,19 @@ def _snapshot_lacks_a_complete_weight_family(snapshot_dir: Path) -> bool:
                 return kind != wanted and wanted not in payload.ungrouped
             # from_pretrained reads the snapshot root, so only families named there are judged; a
             # subdirectory layout is carried by ungrouped instead.
+            if kind == "base" and suffix in payload.root_indexes:
+                # Selected and loaded for exactly what it names, wherever those paths point, so
+                # judge its contents rather than this walk's families: a numbered file it names
+                # nothing of is never read. The next name is never tried.
+                if suffix in payload.unusable_root_indexes:
+                    return kind == wanted or wanted not in payload.ungrouped
+                return kind != wanted and wanted not in payload.ungrouped
             families = {
                 family: indices
                 for family, indices in payload.groups[kind].items()
                 if family[3] == suffix and family[0] in ("", ".")
             }
             if not families:
-                if kind == "base" and suffix in payload.root_indexes:
-                    # Selected and loaded for exactly what it names, wherever those paths point, so
-                    # judge its contents, not this walk's families. The next name is never tried.
-                    if suffix in payload.unusable_root_indexes:
-                        return kind == wanted or wanted not in payload.ungrouped
-                    return kind != wanted and wanted not in payload.ungrouped
                 if any(
                     root.endswith(suffix)
                     for root in payload.whole[kind] | payload.empty_whole[kind]

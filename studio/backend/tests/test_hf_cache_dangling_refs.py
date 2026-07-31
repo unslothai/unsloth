@@ -3813,3 +3813,128 @@ def test_a_stale_incomplete_blob_still_reaches_the_snapshot_it_describes(tmp_pat
 
     assert rows[0]["partial"] is True
     assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_an_index_whose_map_holds_a_non_string_does_not_hide_the_repo(tmp_path, monkeypatch):
+    """A weight_map value is whatever the file says, not necessarily a path. Reading one has to
+    survive it: a raised TypeError escapes the scan and drops every row for the repo, so a hand
+    edited index next to a loadable checkpoint would make the whole model disappear."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"llama"}',
+                "pytorch_model.bin": b"\0" * 256,
+                "model.safetensors.index.json": json.dumps(
+                    {"metadata": {}, "weight_map": {"w0": []}}
+                ).encode(),
+            }
+        },
+        refs = {"main": SNAPSHOT},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_a_stale_root_shard_beside_a_whole_index_does_not_tear_the_snapshot(tmp_path, monkeypatch):
+    """The index names nested shards and every one of them is there, so from_pretrained reads a
+    whole model. A leftover root shard the map names nothing of is never opened, and judging the
+    walk's families ahead of the index that was selected charges the load for it anyway."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors.index.json": _shard_index(
+                    "weights/model-00001-of-00001.safetensors"
+                ),
+                "weights/model-00001-of-00001.safetensors": b"\0" * 256,
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_an_index_naming_half_of_the_family_it_describes_still_reads_as_torn(tmp_path, monkeypatch):
+    """Control for the test above. A shard names its own total, so an index listing one of a set
+    has to list the whole set: the loader opens exactly what is mapped and silently drops the
+    rest, which is an interrupted download rather than stale content beside a whole one."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors.index.json": _shard_index(
+                    "model-00001-of-00002.safetensors"
+                ),
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_torn_revision_does_not_choose_the_format_over_a_whole_one(tmp_path, monkeypatch):
+    """The repo-wide format flags are OR-ed across revisions, so they can name a format whose every
+    revision is torn while another format has a whole revision sitting right there. Load what
+    loads: an interrupted safetensors attempt must not hide the checkpoint beside it."""
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors.index.json": _SHARD_INDEX,
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+            },
+            NEWER: {
+                "config.json": b'{"model_type":"llama"}',
+                "pytorch_model.bin": b"\0" * 256,
+            },
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+    _age(repo_dir / "snapshots" / OLDER, 600)
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["model_format"] == "checkpoint"
+    assert Path(rows[0]["load_id"]).name == NEWER
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_a_repo_whose_only_format_is_torn_still_reads_as_torn(tmp_path, monkeypatch):
+    """Control for the test above: with no whole revision in any other format there is nothing to
+    fall back to, so the torn safetensors revision stays the answer."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors.index.json": _SHARD_INDEX,
+                "model-00001-of-00002.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["model_format"] == "safetensors"
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False

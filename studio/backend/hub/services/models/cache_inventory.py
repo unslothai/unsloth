@@ -642,6 +642,36 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     model_format = (
         _classify_non_gguf_model_format(**repo_flags, trusted_hf_cache_repo = True) or "unknown"
     )
+
+    def _revisions_of(fmt: str) -> tuple[list, list]:
+        # Weights pool across revisions, so the pinned snapshot must classify alone; trusted=False
+        # because from_pretrained needs config.json in that one directory. Filename classification
+        # also matches torn revisions, so the whole ones are tracked separately.
+        snapshots = [
+            snapshot
+            for snapshot, flags in revision_flags
+            if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False) == fmt
+        ]
+        return snapshots, [
+            s
+            for s in snapshots
+            if hf_cache_scan.snapshot_holds_a_complete_payload(s, quants = False)
+        ]
+
+    payload_snapshots, complete = _revisions_of(model_format)
+    if not complete:
+        # The repo-wide flags are OR-ed across revisions, so they can name a format whose every
+        # revision is torn while another format has a whole one sitting right there. Load what
+        # loads: an interrupted safetensors attempt must not hide a complete checkpoint.
+        for candidate in ("safetensors", "checkpoint", "adapter"):
+            if candidate == model_format:
+                continue
+            candidate_snapshots, candidate_complete = _revisions_of(candidate)
+            if candidate_complete:
+                model_format = candidate
+                payload_snapshots, complete = candidate_snapshots, candidate_complete
+                break
+
     if model_format == "adapter":
         selected_blobs = adapter_blobs
     elif model_format == "safetensors":
@@ -650,20 +680,6 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         selected_blobs = checkpoint_blobs
     else:
         selected_blobs = all_weight_blobs
-
-    # Weights pool across revisions, so the pinned snapshot must classify alone; trusted=False
-    # because from_pretrained needs config.json in that one directory.
-    payload_snapshots = [
-        snapshot
-        for snapshot, flags in revision_flags
-        if _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False) == model_format
-    ]
-    # Filename classification also matches torn revisions, so prefer the newest whole one.
-    complete = [
-        s
-        for s in payload_snapshots
-        if hf_cache_scan.snapshot_holds_a_complete_payload(s, quants = False)
-    ]
     return _CachedNonGgufPayload(
         size_bytes = sum(size for size, _mtime in selected_blobs.values()),
         has_runnable_weights = model_format != "unknown",
