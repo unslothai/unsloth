@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-const provider = "unsloth";
+// Distinct from the normal `unsloth` provider: subagent mode preserves the user's Pi config.
+const provider = "unsloth-studio-subagent";
 const maxResultCharacters = 100_000;
 const maxParallelAgents = 4;
 const cancelGraceMilliseconds = 2_000;
@@ -26,6 +27,7 @@ if (configPath) {
 const model = typeof config.model === "string" ? config.model : "";
 const baseUrl = typeof config.baseUrl === "string" ? config.baseUrl : "";
 const apiKey = typeof config.apiKey === "string" ? config.apiKey : "";
+const approve = config.approve === true;
 const contextWindow = positiveInt(config.contextWindow, 32768);
 const maxTokens = positiveInt(config.maxTokens, Math.min(Math.floor(contextWindow / 4), 8192));
 let activeAgents = 0;
@@ -168,6 +170,7 @@ async function runLocalAgent(
 		"json",
 		"--print",
 		"--no-session",
+		...(approve ? ["--approve"] : []),
 		"--provider",
 		provider,
 		"--model",

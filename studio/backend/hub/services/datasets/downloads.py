@@ -145,7 +145,10 @@ def _dataset_status(key: str, *, repo_id: Optional[str] = None) -> DatasetDownlo
 
 
 async def download_dataset_response(
-    body: DownloadDatasetRequest, hf_token: Optional[str] = None
+    body: DownloadDatasetRequest,
+    hf_token: Optional[str] = None,
+    *,
+    allow_ambient_token: bool = True,
 ) -> dict:
     """Start a background download for a HuggingFace dataset."""
     repo_id = body.repo_id.strip()
@@ -198,6 +201,7 @@ async def download_dataset_response(
             hf_token,
             use_xet = use_xet,
             cache_env = cache_env,
+            allow_ambient_token = allow_ambient_token,
         ),
         hf_token = hf_token,
         label = repo_id,

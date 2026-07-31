@@ -37,6 +37,8 @@ export interface ModelSelectorChangeMeta {
   /** Direct local .gguf file picked without a variant (custom folder / LM
    *  Studio). Marks it as a GGUF source for the deferred-load staging flow. */
   isGguf?: boolean;
+  /** Staged metadata confirmed the separate DiffusionGemma runner. */
+  isDiffusion?: boolean;
   config?: PerModelConfig;
   forceReload?: boolean;
   /** Native path token so an active-model reload can reopen a file-picked GGUF. */

@@ -4077,6 +4077,7 @@ def test_spawn_worker_does_not_reuse_backend_hf_token(monkeypatch, worker_args):
         worker_args,
         None,
         use_xet = False,
+        allow_ambient_token = False,
     )
 
     assert isinstance(proc, _Proc)
