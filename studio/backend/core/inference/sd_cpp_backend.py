@@ -761,9 +761,7 @@ class SdCppDiffusionBackend:
             if kind == "diffusion_model" and local_root.exists():
                 path = str(resolve_local_gguf_child(local_root, fn))
             else:
-                path = hf_hub_download_with_xet_fallback(
-                    repo, fn, hf_token, cancel_event = cancel
-                )
+                path = hf_hub_download_with_xet_fallback(repo, fn, hf_token, cancel_event = cancel)
             paths[kind] = path
             with self._lock:
                 if self._loading is not None:

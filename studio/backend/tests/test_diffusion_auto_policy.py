@@ -243,9 +243,7 @@ def test_disk_gate_reserves_the_checkpoint_not_the_dense_shards_for_a_hosted_pre
     assert est.steady_transformer_mib == 6_451  # the quantised checkpoint
     assert est.download_transformer_mib == 23_460  # the fp32 shards it replaces
     monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 6_451 + 10 * 1024 + 512)
-    gated = resolve_dense_quant_candidate(
-        fam = _fam("z-image"), target = object(), requested = "int8"
-    )
+    gated = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "int8")
     assert isinstance(gated, DenseQuantEstimate) and gated.prequant is True
     # force_dense (a LoRA bake) skips the shortcut, so the SAME disk must refuse the candidate.
     assert (

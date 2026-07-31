@@ -194,7 +194,10 @@ def _text_encoder_is_fp8(repo_id: str, token: Optional[str]) -> bool:
     if local_root.is_dir():
         index = local_root / "text_encoder" / "model.safetensors.index.json"
         if index.is_file():
-            return any(k.endswith("_scale") for k in json.loads(index.read_text(encoding = "utf-8"))["weight_map"])
+            return any(
+                k.endswith("_scale")
+                for k in json.loads(index.read_text(encoding = "utf-8"))["weight_map"]
+            )
     else:
         try:
             index_path = hf_hub_download(

@@ -713,9 +713,7 @@ class DiffusionBackend:
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         # GGUF transformer (hub repos only; a local path is already on disk).
         if gguf_filename and not Path(repo_id).expanduser().exists():
-            hf_hub_download_with_xet_fallback(
-                repo_id, gguf_filename, hf_token, cancel_event = cancel
-            )
+            hf_hub_download_with_xet_fallback(repo_id, gguf_filename, hf_token, cancel_event = cancel)
         # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
         snapshot_root: Optional[str] = None
         for rfilename in base_files:

@@ -2663,7 +2663,8 @@ class GalleryImage(BaseModel):
         None, description = "How the model was loaded: gguf, single_file or pipeline"
     )
     gguf_filename: Optional[str] = Field(
-        None, description = "The single-file checkpoint the load committed, for a gguf/single_file load"
+        None,
+        description = "The single-file checkpoint the load committed, for a gguf/single_file load",
     )
     transformer_quant: Optional[str] = Field(
         None,

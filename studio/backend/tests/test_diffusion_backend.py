@@ -2483,7 +2483,9 @@ def test_transformer_quant_prequant_load_fails_falls_back_to_dense(
     assert _FakeTransformer.last == {}  # GGUF not used
 
 
-def test_prequant_failure_never_pulls_unprefetched_dense_shards(fake_runtime, tmp_path, monkeypatch):
+def test_prequant_failure_never_pulls_unprefetched_dense_shards(
+    fake_runtime, tmp_path, monkeypatch
+):
     # The prefetch skips the base repo's transformer/ shards whenever a prequant checkpoint is
     # expected, so a prequant fetch that fails (unpublished / gated / renamed artifact, a hub 5xx,
     # a flaky link) would send from_pretrained after those shards INSIDE the load lock during
@@ -2520,7 +2522,9 @@ def test_run_load_flags_the_transformer_prefetched_from_the_staged_file_list(mon
     monkeypatch.setattr(
         "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
     )
-    monkeypatch.setattr(DiffusionBackend, "_te_prequant_plan_files", staticmethod(lambda *a, **k: {}))
+    monkeypatch.setattr(
+        DiffusionBackend, "_te_prequant_plan_files", staticmethod(lambda *a, **k: {})
+    )
     monkeypatch.setattr(DiffusionBackend, "_prefetch_files", lambda self, *a, **k: None)
     monkeypatch.setattr(
         DiffusionBackend,
@@ -2529,7 +2533,10 @@ def test_run_load_flags_the_transformer_prefetched_from_the_staged_file_list(mon
     )
     cases = (
         (["model_index.json", "vae/config.json"], False),
-        (["model_index.json", "transformer/diffusion_pytorch_model-00001-of-00003.safetensors"], True),
+        (
+            ["model_index.json", "transformer/diffusion_pytorch_model-00001-of-00003.safetensors"],
+            True,
+        ),
         ([], False),  # size estimate failed: nothing staged, so nothing may be materialised
     )
     for base_files, _expected in cases:
