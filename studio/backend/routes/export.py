@@ -64,8 +64,8 @@ async def _ensure_export_supported() -> None:
 
     from utils.hardware import export_capability
 
-    # Detection is deferred until after the socket binds, so the first call can
-    # wait on a cold torch import. Keep that wait off uvicorn's event loop.
+    # Detection is deferred until after the socket binds, so the first call can wait
+    # on a cold torch import. Keep that off uvicorn's event loop.
     cap = await asyncio.to_thread(export_capability)
     if not cap.get("export_supported", True):
         raise HTTPException(

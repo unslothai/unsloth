@@ -104,8 +104,8 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
     """
     from utils.hardware import get_gpu_utilization
 
-    # Off-loop for the same reason as /hardware/visible below, plus the first
-    # call blocks on hardware detection while the warm is still importing torch.
+    # Off-loop like /hardware/visible below; the first call also blocks on
+    # hardware detection while the warm is importing torch.
     return await asyncio.to_thread(get_gpu_utilization)
 
 
@@ -245,14 +245,10 @@ async def start_training(
                     status_code = 400,
                     detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
                 )
-            # DEVICE is no longer set by the lifespan -- the warm thread fills it
-            # in a moment after the socket binds, so a start that lands in that
-            # window would read None, skip the MLX rejection, and hand a
-            # streaming dataset to the MLX loader (which materializes it whole).
-            # Force detection first. Off-loop because it imports torch: inline it
-            # would stall every other request for that whole import, which is the
-            # very stall the deferred startup exists to remove (same treatment as
-            # /api/health and /api/system/gpu-visibility).
+            # The warm thread fills DEVICE shortly after the socket binds, so a
+            # start landing in that window would read None, skip the MLX rejection,
+            # and hand a streaming dataset to the MLX loader (which materializes it
+            # whole). Force detection first, off-loop because it imports torch.
             await asyncio.to_thread(ensure_hardware_detected)
             if _hw.DEVICE == _hw.DeviceType.MLX:
                 raise HTTPException(
@@ -297,8 +293,8 @@ async def start_training(
                 )
         else:
             # The synchronous backend start builds its worker config with
-            # get_device(). Detect off-loop first so an ordinary early start
-            # cannot stall login, liveness, or health while torch imports.
+            # get_device(). Detect off-loop first so an early start cannot stall
+            # login or health.
             await asyncio.to_thread(ensure_hardware_detected)
 
         # Convert request to backend kwargs.

@@ -81,10 +81,9 @@ def test_the_budget_stays_under_the_desktop_probe_timeout():
         f"/api/health waits up to {budget}s for detection but the desktop probe "
         f"gives up at {probe_timeout}s"
     )
-    # Connect, routing and JSON all come out of the same 2s, and the budget
-    # itself overruns whenever a C-extension import holds the GIL past it (0.24s
-    # measured here at a 1.5s budget). A budget that only just fits leaves the
-    # launch one slow host away from the dead end.
+    # Connect, routing and JSON share the same 2s, and the budget overruns whenever a
+    # C-extension import holds the GIL past it (0.24s measured at a 1.5s budget). A
+    # budget that only just fits is one slow host away from the dead end.
     assert probe_timeout - budget >= 0.9, (
         f"only {probe_timeout - budget}s of headroom between the health budget "
         f"and the {probe_timeout}s probe timeout"

@@ -116,8 +116,8 @@ def test_a_second_lifespan_warms_again_however_the_first_ended(monkeypatch):
     assert warmup.join_background_warm(30) is True
     assert runs == [1, 1], "the second lifespan did not run the warm again"
 
-    # Path two: no reset ran at all, because the warm outlived the shutdown that
-    # tried. The finished thread must not still hold the latch.
+    # Path two: no reset ran, because the warm outlived the shutdown that tried.
+    # The finished thread must not still hold the latch.
     assert warmup.start_background_warm() is True
     assert warmup.join_background_warm(30) is True
     assert runs == [1, 1, 1], (

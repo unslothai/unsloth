@@ -220,10 +220,8 @@ def test_the_warm_covers_every_package_import_main_used_to_pull():
     assert [name for name, _ in torch_warmup._STAGES] == [
         "hardware",  # torch, via utils.hardware
         # Not a package import: it builds the orchestrator singleton, whose
-        # constructor waits on detection. Lazily the first request pays that,
-        # and the reach is wide -- six sync helpers call the getter and async
-        # handlers call those inline. Ordered right after hardware so it reuses
-        # the detection this thread just did.
+        # constructor waits on detection that the first request would otherwise
+        # pay for. Ordered right after hardware so it reuses this thread's.
         "inference_backend",
         "transformers",  # via model_config's registry read
         "datasets",  # via utils/datasets/raw_text.py
@@ -246,9 +244,8 @@ def test_the_unsloth_zoo_stage_goes_through_the_shim(monkeypatch):
     from utils import torch_warmup
 
     # Through sys.modules, not `from utils import hf_xet_fallback`: another test
-    # in this suite re-imports the shim and leaves the `utils` package attribute
-    # pointing at a different module object than sys.modules holds. The code
-    # under test resolves the name the way import_module does.
+    # re-imports the shim and leaves the package attribute pointing at a different
+    # object. The code under test resolves the name the way import_module does.
     hf_xet_fallback = importlib.import_module("utils.hf_xet_fallback")
 
     monkeypatch.setattr(torch_warmup, "_torch_installed", lambda: True)
@@ -295,9 +292,8 @@ def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys, cap
     assert status["stages"]["after"]["ok"] is True
     assert status["finished"] is True
     # The operator has to be able to grep it. Which sink structlog is bound to
-    # depends on what configured logging earlier in the session, so accept
-    # either: stdout when it renders directly, the stdlib records when another
-    # test has routed it through logging.
+    # depends on what configured logging earlier, so accept either stdout or the
+    # stdlib records.
     logged = capsys.readouterr().out + "\n".join(r.getMessage() for r in caplog.records)
     assert "stage exploded" in logged
 
@@ -306,29 +302,27 @@ def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys, cap
 # The warm window: routes must not block uvicorn's loop while torch loads
 # ---------------------------------------------------------------------------
 #
-# Detection used to finish before the socket bound, so get_device() was free by
-# the time any request arrived and an `async def` could call it inline. It is
-# not free any more: for the length of the warm it blocks on _DETECT_LOCK and
-# the torch import. Called on the event loop that stalls every other request --
-# measured at 1547ms on a /api/liveness that touches nothing.
+# Detection used to finish before the socket bound, so get_device() was free by the
+# time any request arrived. It is not free any more: for the length of the warm it
+# blocks on _DETECT_LOCK and the torch import, stalling every other request on the
+# loop -- measured at 1547ms on a /api/liveness that touches nothing.
 #
-# These are the first-paint and polled routes, i.e. the ones certain to land
-# inside the warm window. Each must reach its blocking helper only through
-# asyncio.to_thread.
+# The first-paint and polled routes, certain to land inside the warm window. Each
+# must reach its blocking helper only through asyncio.to_thread.
 
 _OFFLOAD_REQUIRED = [
     ("main.py", "get_gpu_visibility", "get_backend_visible_gpu_info"),
     ("routes/training.py", "get_hardware_utilization", "get_gpu_utilization"),
-    # Not first-paint, but it lands in the warm window whenever a start is
-    # submitted early, and its MLX streaming guard now forces detection itself.
+    # Not first-paint, but lands in the warm window whenever a start is submitted
+    # early, and its MLX streaming guard forces detection itself.
     ("routes/training.py", "start_training", "ensure_hardware_detected"),
     ("routes/export.py", "_ensure_export_supported", "export_capability"),
     ("routes/models.py", "list_models", "get_inference_backend"),
     ("routes/inference.py", "get_status", "get_inference_backend"),
     ("routes/inference.py", "get_api_monitor", "_monitor_active_model"),
     ("routes/inference.py", "get_api_monitor", "_monitor_context_length"),
-    # Not first-paint either, but a GGUF load or validate carrying gpu_ids lands
-    # in the warm window and this probes the device before any teardown.
+    # Not first-paint either, but a load or validate carrying gpu_ids lands in the
+    # warm window and this probes the device before any teardown.
     ("routes/inference.py", "_resolve_gguf_gpu_ids_for_request", "get_device"),
 ]
 
@@ -494,8 +488,8 @@ def test_purge_declines_when_a_compiled_submodule_is_loaded():
     sys.modules["zzz_ext_pkg.pure"] = ModuleType("zzz_ext_pkg.pure")
     try:
         assert purge_partial_import("zzz_ext_pkg") == []
-        # Both survive: the pure submodule too, since re-running __init__ against
-        # a half-purged package is not a state worth creating.
+        # Both survive: re-running __init__ against a half-purged package is not a
+        # state worth creating.
         assert "zzz_ext_pkg.binding" in sys.modules
         assert "zzz_ext_pkg.pure" in sys.modules
     finally:
@@ -521,8 +515,8 @@ def test_a_broken_torch_purges_its_own_zombie(monkeypatch):
 
     def fake_import(name, *args, **kwargs):
         if name == "torch":
-            # The zombie signature: `torch/__init__` raised after executing a
-            # pure-Python submodule, leaving it behind with the parent evicted.
+            # Zombie signature: `torch/__init__` raised after executing a pure-Python
+            # submodule, leaving it behind with the parent evicted.
             sys.modules["torch._early"] = ModuleType("torch._early")
             sys.modules.pop("torch", None)
             raise OSError("undefined symbol: cudaGetDeviceCount")
@@ -568,8 +562,8 @@ def test_one_detection_pass_probes_torch_once(monkeypatch):
     def fake_import(name, *args, **kwargs):
         if name == "torch":
             attempts.append(name)
-            # A compiled submodule left loaded: purge declines, so a retry is a
-            # full re-run of torch/__init__ rather than a cheap cache miss.
+            # A loaded compiled submodule makes purge decline, so a retry re-runs
+            # torch/__init__ in full.
             ext = ModuleType("torch._C")
             ext.__file__ = "/nonexistent/torch/_C.cpython-313-x86_64-linux-gnu.so"
             sys.modules["torch._C"] = ext

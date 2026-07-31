@@ -4967,13 +4967,10 @@ async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
         from utils.hardware import DeviceType, get_device
         from utils.hardware.hardware import resolve_requested_gpu_ids
 
-        # One hop for the whole device-dependent block, not just get_device().
-        # resolve_requested_gpu_ids() reaches get_device() and
-        # get_physical_gpu_count() itself, so both wait on the same detection lock
-        # while the warm is importing torch. The auto-switch path calls this
-        # helper before any of the explicit-gpu_ids offloads, so leaving it inline
-        # let the first OpenAI request to a model with a stored pin hold the event
-        # loop for that whole import, stalling login, liveness and health.
+        # One hop for the whole device-dependent block: resolve_requested_gpu_ids()
+        # reaches get_device() itself, so both wait on the detection lock while the
+        # warm imports torch. Inline, an early request with a stored pin held the
+        # event loop for that whole import.
         def _device_and_resolution() -> tuple[object, bool, list]:
             is_vulkan = LlamaCppBackend._is_vulkan_backend()
             return (
@@ -5045,9 +5042,8 @@ async def _resolve_gguf_gpu_ids_for_request(
         diffusion_kind = _classify_diffusion_gguf(config)
     confirmed_diffusion = diffusion_kind is True
     definitively_non_diffusion = diffusion_kind is False
-    # Off-loop: get_device() waits on the detection lock, so a GGUF load or
-    # validate carrying gpu_ids in the warm window would hold the event-loop
-    # thread for the cold torch import -- the stall the deferred startup removes.
+    # Off-loop: get_device() waits on the detection lock, so a load or validate
+    # carrying gpu_ids in the warm window would block on the cold torch import.
     device = await asyncio.to_thread(get_device)
     lacks_gpu_lib = getattr(llama_backend, "_backend_lacks_gpu_lib", None)
 
@@ -5952,10 +5948,9 @@ async def _load_model_impl(
                     gguf_variant = request.gguf_variant,
                 )
 
-        # The guard and the call go to the worker together: from_identifier can
-        # import transformers to build the detection registry, and the probe in
-        # the guard is itself a network round trip. Neither belongs on the
-        # event-loop thread while the warm is still running.
+        # Guard and call go to the worker together: from_identifier can import
+        # transformers to build the detection registry, and the guard's probe is a
+        # network round trip. Neither belongs on the event loop.
         config = await asyncio.to_thread(_resolve_config)
 
         if not config:
@@ -6699,10 +6694,9 @@ async def validate_model(
 
         # The frontend validates before it loads, so this needs the same guard as
         # /load; otherwise the stall just moves here and /load is never reached.
-        # Off-loop for both reasons: the guard is a network round trip, and the
-        # first from_identifier builds the vision/audio detection registry, which
-        # imports transformers or blocks on _DETECTION_SETS_LOCK while the warm
-        # thread is importing it.
+        # Off-loop for both reasons: the guard is a network round trip, and the first
+        # from_identifier builds the detection registry, which imports transformers or
+        # blocks on _DETECTION_SETS_LOCK while the warm holds it.
         def _resolve_config():
             with _hf_offline_if_unreachable_for(model_identifier):
                 return ModelConfig.from_identifier(
@@ -7443,9 +7437,8 @@ async def confirm_tool_call(
 @studio_router.get("/monitor")
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Unsloth."""
-    # Both helpers reach get_inference_backend(), whose first call waits on
-    # hardware detection. Polled from first paint, so keep it off the event loop
-    # until the warm has torch loaded.
+    # Both helpers reach get_inference_backend(), whose first call waits on hardware
+    # detection, and this is polled from first paint. Keep it off the event loop.
     active_model, context_length = await asyncio.to_thread(
         lambda: (_monitor_active_model(), _monitor_context_length())
     )
@@ -7741,10 +7734,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_latest_tag = _latest_tag,
             )
 
-        # Otherwise, report Unsloth backend status. Off-loop: the first call
-        # builds the orchestrator singleton, which reads the default model list
-        # and so waits on hardware detection, and the chat UI polls this from
-        # first paint -- before the warm has finished importing torch.
+        # Otherwise report Unsloth backend status. Off-loop: the first call builds the
+        # orchestrator singleton, which waits on hardware detection, and the chat UI
+        # polls this from first paint.
         backend = await asyncio.to_thread(get_inference_backend)
 
         is_vision = False
@@ -12539,8 +12531,7 @@ async def _openai_catalog_objects() -> list[dict]:
     by_id: dict[str, dict] = {}
     # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(),
     # whose cold build waits on hardware detection. Inline, an early GET /v1/models
-    # held the event-loop thread for the rest of the torch import -- the offload
-    # further down this module could not help, because this call already happened.
+    # held the event-loop thread for the rest of the torch import.
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
 
@@ -12615,8 +12606,8 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # Loaded models resolve without a catalog scan (the common case); only build
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
-    # Off-loop for the same reason as the catalog helper: this reaches the
-    # inference singleton, whose cold build waits on hardware detection.
+    # Off-loop like the catalog helper: reaches the inference singleton, whose cold
+    # build waits on hardware detection.
     _loaded = await asyncio.to_thread(_openai_model_objects)
     for entry in _loaded:
         eid = entry["id"]

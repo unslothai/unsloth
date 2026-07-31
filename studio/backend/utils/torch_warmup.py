@@ -102,14 +102,10 @@ def purge_partial_import(package: str) -> list:
         return []
     prefix = package + "."
     stale = [name for name in list(sys.modules) if name.startswith(prefix)]
-    # Re-check under the same reasoning as the guard above, immediately before
-    # touching anything: a request that lost the race to import this package
-    # starts its retry the moment the failing import releases the module lock, and
-    # publishes the parent as soon as its __init__ begins. Popping submodules from
-    # under that live import produces exactly the half-initialised package this
-    # function exists to prevent. Narrow, not closed -- an airtight purge would
-    # need CPython's per-module import lock, which is private -- but it removes the
-    # interleaving where the parent appears between the collection and the pops.
+    # Re-check immediately before touching anything: a retrying importer publishes the
+    # parent as soon as its __init__ begins, and popping submodules from under it would
+    # produce the very half-initialised package this function prevents. Narrows the
+    # window rather than closing it -- CPython's per-module import lock is private.
     if package in sys.modules:
         logger.info(
             "not purging %s: another importer republished it while collecting its "
@@ -129,8 +125,7 @@ def purge_partial_import(package: str) -> list:
         )
         return []
     for name in stale:
-        # Last check per pop, for the same race: bail the moment the parent is
-        # back rather than continuing to strip modules a live import is using.
+        # Same race, per pop: bail the moment the parent is back.
         if package in sys.modules:
             logger.warning(
                 "stopped purging %s partway: another importer republished it. The "
@@ -149,13 +144,10 @@ def purge_partial_import(package: str) -> list:
     return stale
 
 
-# Stage name -> the package it imports, for the failure purge below. Only the
-# unsloth_zoo stage used to purge, so a datasets, transformers or torch import
-# that died partway left its submodules in sys.modules with the parent evicted:
-# the retry re-runs __init__ against cache hits and yields a package that
-# imports but is missing attributes, broken until restart. Every stage that
-# imports a package needs the same cleanup, not just the one that had it.
-# inference_backend is absent on purpose: it builds an object, it imports nothing.
+# Stage name -> the package it imports, for the failure purge below. Every importing
+# stage needs it: a partial import leaves submodules cached under an evicted parent, and
+# the retry yields a package missing attributes until restart. inference_backend is
+# absent on purpose -- it builds an object and imports nothing.
 _STAGE_PACKAGE = {
     "hardware": "torch",
     "transformers": "transformers",
@@ -170,13 +162,11 @@ def _run_stage(name: str, fn) -> None:
         fn()
     except BaseException as exc:  # noqa: BLE001 - a warm failure must be visible, not fatal
         _status["stages"][name] = {"ok": False, "error": repr(exc)}
-        # warning, not debug: the stage stays cold and the first request pays
-        # for it, so it must be greppable on a "slow first inference" report.
+        # warning, not debug: the stage stays cold and the first request pays for it.
         logger.warning("torch warm stage %r failed: %r", name, exc)
         package = _STAGE_PACKAGE.get(name)
         if package:
-            # Declines by itself when a loaded C extension is among the
-            # leftovers, so this stays safe for torch.
+            # Declines by itself when a loaded C extension is among the leftovers.
             purge_partial_import(package)
     else:
         _status["stages"][name] = {
@@ -186,9 +176,8 @@ def _run_stage(name: str, fn) -> None:
 
 
 def _warm_hardware() -> None:
-    # Imports torch and enumerates devices. Requests wait on this same call, so
-    # they hit the cached result or block on the lock this thread holds -- never
-    # a second, racing detection.
+    # Imports torch and enumerates devices. Requests wait on this same call, so they
+    # hit the cache or block on this thread's lock -- never a second, racing detection.
     from utils.hardware import ensure_hardware_detected
     ensure_hardware_detected()
 
@@ -201,11 +190,9 @@ def _warm_transformers() -> None:
 
 
 def _warm_datasets() -> None:
-    # raw_text.py used to import this for an annotation alone, and `datasets`
-    # reaches torch via datasets.formatting.torch_formatter. Nothing needs it
-    # early, but it was imported early, so warm it and keep the first dataset
-    # operation as cheap as before. 0.3s once transformers is loaded. Ungated:
-    # datasets imports without torch.
+    # Nothing needs datasets early, but `import main` pulled it in, so warm it and keep
+    # the first dataset operation as cheap as before. 0.3s once transformers is loaded.
+    # Ungated: datasets imports without torch.
     importlib.import_module("datasets")
 
 
@@ -227,24 +214,17 @@ def _warm_unsloth_zoo() -> None:
     """
     if not _torch_installed():
         return
-    # Private, deliberately: this is the exact function the removed eager import
-    # drove. The public names reach it only through an attribute whose degraded
-    # fallback is indistinguishable from success.
+    # Private, deliberately: the exact function the removed eager import drove. The
+    # public names reach it only via an attribute whose degraded fallback looks like
+    # success.
     from utils.hf_xet_fallback import _load_shared
 
     if not _load_shared():
-        # _load_shared() already logged why and left the shim on its degraded
-        # stubs, so downloads still work -- but the stage is cold and that must
-        # show in warm_status(). Purge first so the next *direct* importer of
-        # unsloth_zoo (model loading, export, the MLX paths) re-runs its
-        # __init__ against an empty cache rather than against the submodules
-        # this failure left behind.
-        #
-        # It deliberately does not un-stick the shim's own negative cache:
-        # _load_shared() pins one DownloadStallError for the process, and the
-        # raise site in _wait_response() and the `except` in load_model() must
-        # keep resolving to that same class. Re-arming it per call would let the
-        # two disagree mid-download and the stall handler would be bypassed.
+        # Downloads still work on the shim's degraded stubs, but the stage is cold and
+        # warm_status() must say so. Purge first so the next direct importer of
+        # unsloth_zoo re-runs __init__ against an empty cache. The shim's own negative
+        # cache stays pinned on purpose: raise site and `except` must keep resolving to
+        # one DownloadStallError class, or the stall handler is bypassed.
         purge_partial_import("unsloth_zoo")
         raise RuntimeError("unsloth_zoo unavailable; the download stall watchdog stays degraded")
 
@@ -253,20 +233,12 @@ def _warm_unsloth_zoo() -> None:
 # (which patches transformers on import), datasets between them because that is
 # where `import main` reached it.
 def _warm_inference_backend() -> None:
-    # Build the orchestrator singleton here, off the loop, right after detection.
-    #
-    # Its constructor calls get_default_models() -> hw.get_device(), so whoever
-    # builds it first pays for detection. Lazily that is whichever request
-    # arrives first, and the reach is much wider than the handlers that name the
-    # getter: _loaded_satisfies, _resolves_to_resident, _unload_may_evict,
-    # _monitor_active_model, _monitor_context_length and _openai_model_objects
-    # are all sync helpers that call it, and async handlers call those inline.
-    # Offloading every one of those call sites would be a wide mechanical change
-    # across the OpenAI, Responses and monitor paths; building it once here
-    # makes the getter a plain dict read before any of them run.
-    #
-    # Ordered after hardware so it does not duplicate the detection this thread
-    # has already done, and it stays inside _run_stage's failure handling.
+    # Build the orchestrator singleton here, off the loop, right after detection. Its
+    # constructor reaches hw.get_device(), so whoever builds it first pays for detection
+    # -- lazily that is some request, and many sync helpers call the getter inline from
+    # async handlers. Building it once here makes the getter a plain dict read. Ordered
+    # after hardware so it reuses this thread's detection and keeps _run_stage's
+    # failure handling.
     from core.inference import get_inference_backend
     get_inference_backend()
 

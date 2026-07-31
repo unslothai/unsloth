@@ -35,8 +35,8 @@ import core.inference.orchestrator as orch
 
 _ORCHESTRATOR_SRC = Path(orch.__file__)
 
-# Wide enough that every thread is inside the window before the first one
-# leaves it, and small enough to stay a unit test. The real window is ~2.9s.
+# Wide enough that every thread is inside the window before the first leaves
+# it, small enough to stay a unit test. The real window is ~2.9s.
 _BUILD_SECONDS = 0.20
 _THREADS = 8
 
@@ -103,8 +103,7 @@ def test_concurrent_first_calls_build_exactly_one_orchestrator(fresh_singleton, 
     for t in threads:
         t.start()
     for t in threads:
-        # Generous: a deadlock (a non-reentrant lock taken twice) fails here
-        # rather than hanging the suite.
+        # Generous, so a deadlock fails here rather than hanging the suite.
         t.join(timeout = 60)
         assert not t.is_alive(), f"{t.name} never returned from get_inference_backend()"
 
@@ -137,8 +136,8 @@ def test_warm_path_does_not_take_the_lock(fresh_singleton, stub_orchestrator):
 
     returned: list[object] = []
     with orch._inference_backend_lock:
-        # Lock held by this thread: a warm call from another thread must still
-        # return, which it can only do by skipping the lock entirely.
+        # Lock held by this thread: a warm call from another must still return,
+        # which it can only do by skipping the lock.
         t = threading.Thread(target = lambda: returned.append(orch.get_inference_backend()))
         t.start()
         t.join(timeout = 10)

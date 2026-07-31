@@ -30,11 +30,10 @@ from typing import Any, Generator, Optional, Tuple, Union
 from utils.hardware import get_device, prepare_gpu_selection
 from utils.utils import hf_env_offline
 
-# Re-exported from the shared helper so GGUF, training, and inference share one
-# type; kept importable here for backwards compatibility. Resolved through PEP
-# 562, not a module-level import: the shim resolves the name by importing
-# unsloth_zoo, hence torch, and routes/inference.py imports this module at
-# startup purely for the two GenStream* classes below.
+# Re-exported from the shared helper so GGUF, training and inference share one type.
+# Resolved through PEP 562, not a module-level import: the shim resolves the name by
+# importing unsloth_zoo, hence torch, and routes/inference.py imports this module at
+# startup only for the two GenStream* classes below.
 DownloadStallError: type
 
 
@@ -156,13 +155,9 @@ class InferenceOrchestrator:
         from core.inference.defaults import get_default_models
 
         self._static_models = get_default_models()
-        # The list depends on detection (chat-only hosts get the GGUF set), and
-        # detection is not once-per-process: the MLX self-heal re-detects after a
-        # successful repair and flips CHAT_ONLY. The warm builds this singleton
-        # before that repair runs, so without a staleness check an Apple Silicon
-        # host whose MLX stack was repaired would keep serving the chat-only list
-        # for the rest of the process, even after the reload the log tells the
-        # user to do.
+        # The list depends on detection (chat-only hosts get the GGUF set), and the MLX
+        # self-heal re-detects after a repair the warm ran before. Without a staleness
+        # check a repaired Mac would serve the chat-only list for the whole process.
         import utils.hardware.hardware as _hw_mod
 
         self._static_models_generation = _hw_mod.DETECTION_GENERATION
@@ -173,12 +168,9 @@ class InferenceOrchestrator:
         atexit.register(self._cleanup)
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
 
-        # Deliberately NOT started here. Construction moved onto the startup warm
-        # thread so the first request does not pay for it, and starting the fetch
-        # from __init__ would have turned that into an unprompted outbound request
-        # to huggingface.co on every boot -- before anyone signs in, on a host that
-        # may never serve a request at all. Lazily started by the first reader of
-        # the ranking instead, which is where it happened before the warm existed.
+        # Deliberately NOT started here: construction now runs on the startup warm
+        # thread, so fetching from __init__ would mean an unprompted call to
+        # huggingface.co on every boot. The first reader of the ranking starts it.
         self._top_models_started = False
 
     # ------------------------------------------------------------------
@@ -2168,22 +2160,18 @@ class InferenceOrchestrator:
 
 # ========== GLOBAL INSTANCE ==========
 _inference_backend = None
-# Guards the lazy construction below. The first build runs hardware detection
-# (get_default_models -> hw.get_device()), which takes seconds on a cold start,
-# and the routes that need the backend during first paint call this getter from
-# executor threads -- so without the lock several of them observe None inside
-# that window and each build their own orchestrator. The last one to finish wins
-# the global and the rest are orphaned, taking any load started on them (their
-# own subprocess, loading_models and active_model_name are per-instance) out of
-# reach of every later status or generation call.
+# Guards the lazy construction below. The first build runs hardware detection, which
+# takes seconds cold, and first-paint routes call this getter from executor threads --
+# without the lock several would see None and each build their own orchestrator, leaving
+# all but the last one orphaned along with any load started on them.
 _inference_backend_lock = threading.Lock()
 
 
 def get_inference_backend() -> InferenceOrchestrator:
     """Global inference backend instance (orchestrator)."""
     global _inference_backend
-    # Double-checked: the cheap read keeps the warm path lock-free, and the
-    # recheck under the lock is what actually decides who constructs.
+    # Double-checked: the cheap read keeps the warm path lock-free; the recheck under
+    # the lock decides who constructs.
     if _inference_backend is None:
         with _inference_backend_lock:
             if _inference_backend is None:

@@ -38,10 +38,9 @@ import routes.training as training_routes
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from utils.hardware import hardware as hw
 
-# A minimal streaming start that clears every OTHER streaming precondition, so
-# the MLX guard is the only thing that can reject it: HF dataset (not local, not
-# S3), text (not vision/audio/embedding), max_steps > 0, no train_on_completions,
-# no eval split. load_in_4bit is off so the latest-sidecar probe stays offline.
+# A minimal streaming start clearing every other streaming precondition, so only the
+# MLX guard can reject it: HF text dataset, max_steps > 0, no train_on_completions, no
+# eval split. load_in_4bit is off so the latest-sidecar probe stays offline.
 _STREAMING_START = {
     "model_name": "unsloth/Llama-3.2-1B-Instruct",
     "training_type": "LoRA/QLoRA",

@@ -39,8 +39,7 @@ def test_defaults_refresh_when_hardware_is_redetected(monkeypatch):
     orch = _orchestrator(monkeypatch, ["chat-only-gguf"])
     assert orch.default_models == ["chat-only-gguf"]
 
-    # The MLX repair succeeds and re-detects: CHAT_ONLY flips and the curated
-    # list is now the full one.
+    # The MLX repair succeeds and re-detects: CHAT_ONLY flips, the curated list is full.
     monkeypatch.setattr(defaults_mod, "get_default_models", lambda: ["full-a", "full-b"])
     monkeypatch.setattr(hw, "DETECTION_GENERATION", 2)
 

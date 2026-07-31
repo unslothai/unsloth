@@ -47,23 +47,18 @@ async def run_lifespan_shutdown(
 
     try:
         hw_module.DEVICE = None
-        # The completion signal has to go with it. /api/health takes a set event
-        # as "detection finished, DEVICE is authoritative", so leaving it set
-        # over a cleared DEVICE would make a second lifespan in this process
-        # publish a device that is no longer there instead of re-detecting.
-        # getattr: the unit tests inject a minimal hardware stub.
+        # The completion signal goes with it: /api/health reads a set event as
+        # "DEVICE is authoritative", so leaving it set over a cleared DEVICE would
+        # make a second lifespan publish a device that is gone. getattr: tests
+        # inject a stub.
         detection_complete = getattr(hw_module, "DETECTION_COMPLETE", None)
         if detection_complete is not None:
             detection_complete.clear()
-        # The verdict those two describe goes back to its pre-detection value as
-        # well. Health falls back to a bare CHAT_ONLY read while the event is
-        # clear, so a GPU run that left CHAT_ONLY False would have the next
-        # lifespan publishing chat_only: false before anything re-measured it --
-        # and frontend/src/config/env.ts stores that answer even without
-        # device_type, which is enough to show Train and Export and let the route
-        # guard through on a host whose capabilities are not known yet. True is
-        # the conservative direction: features stay hidden until detection says
-        # otherwise, never offered and then withdrawn.
+        # Reset the verdict those two describe as well. Health falls back to a bare
+        # CHAT_ONLY read while the event is clear, so a GPU run leaving CHAT_ONLY
+        # False would let the next lifespan publish chat_only: false before anything
+        # re-measured it, showing Train and Export on an unknown host. True is the
+        # conservative direction: hidden until detection says otherwise.
         hw_module.CHAT_ONLY = True
         hw_module.CHAT_ONLY_REASON = None
         hw_module.IS_ROCM = False

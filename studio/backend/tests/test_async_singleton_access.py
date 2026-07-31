@@ -24,11 +24,9 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-# Every read below pins utf-8. Path.read_text() defaults to the locale
-# encoding, which is cp1252 on Windows, and routes/inference.py carries 2442
-# non-ASCII bytes that cp1252 cannot decode (it dies on 0x81). Without this
-# these guards do not fail honestly on Windows -- they raise UnicodeDecodeError,
-# which reads as "the offload is missing" when nothing is wrong with the code.
+# Every read below pins utf-8: Path.read_text() defaults to the locale encoding
+# (cp1252 on Windows), which cannot decode the non-ASCII bytes in
+# routes/inference.py, so these guards would raise instead of failing honestly.
 _ROUTE_FILES = ("routes/inference.py", "routes/models.py")
 
 
@@ -112,13 +110,10 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
                 ):
                     offenders.append(f"{rel}:{sub.lineno} async {fn.name} -> {sub.func.id}()")
 
-    # These reach the singleton through a sync helper and are NOT individually
-    # offloaded. Offloading ~19 call sites across the OpenAI, Responses, monitor
-    # and unload paths is a wide mechanical change, and the warm now builds the
-    # orchestrator in its own stage right after hardware detection, so the getter
-    # is a plain dict read before any of them run. This is a frozen baseline, not
-    # an endorsement: the set must not grow, and anything new has to be offloaded
-    # at the call site or justified here.
+    # These reach the singleton through a sync helper and are NOT individually offloaded:
+    # the warm builds the orchestrator right after hardware detection, so the getter is a
+    # plain dict read before any of them run. A frozen baseline, not an endorsement -- the
+    # set must not grow without an offload or a justification here.
     known = {
         "_resolves_to_resident",
         "_unload_may_evict",

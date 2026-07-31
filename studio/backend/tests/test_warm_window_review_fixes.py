@@ -166,8 +166,8 @@ def test_building_the_orchestrator_makes_no_outbound_request():
     tree = ast.parse(
         (_BACKEND / "core" / "inference" / "orchestrator.py").read_text(encoding = "utf-8")
     )
-    # Scope to the class: this module defines more than one __init__, and picking
-    # whichever ast.walk yields first made this assert a different constructor.
+    # Scope to the class: the module defines more than one __init__, and ast.walk
+    # would otherwise assert on a different constructor.
     cls = next(
         node
         for node in ast.walk(tree)
@@ -407,9 +407,8 @@ def test_the_purge_rechecks_before_touching_sys_modules():
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "purge_partial_import"
     )
-    # `package in sys.modules` is a Compare with an In op whose comparator is the
-    # sys.modules attribute; matching the dumped text for "sys.modules" finds
-    # nothing, because the dump spells it Attribute(..., attr='modules').
+    # `package in sys.modules` is a Compare/In whose comparator is the sys.modules
+    # attribute; a dumped-text search misses it (the dump spells it attr='modules').
     checks = [
         sub
         for sub in ast.walk(fn)
@@ -707,8 +706,8 @@ def test_detection_wait_requires_a_device_not_just_the_event():
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "_await_hardware_detection"
     )
-    # The docstring names DEVICE, so match the executable form: a comparison of
-    # the DEVICE attribute against None. A dumped-text search passes on prose.
+    # The docstring names DEVICE, so match the executable form (DEVICE compared to
+    # None); a dumped-text search would pass on prose.
     device_tests = [
         sub
         for sub in ast.walk(fn)
@@ -743,8 +742,8 @@ def test_the_delete_guard_runs_off_the_event_loop():
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "delete_cached_model_response"
     )
 
-    # The guards must not be called directly from the coroutine body; they belong
-    # to the nested helper that is handed to the worker.
+    # The guards belong to the nested helper handed to the worker, not the
+    # coroutine body.
     nested = {node.name for node in ast.walk(fn) if isinstance(node, ast.FunctionDef)}
     assert "_load_state_blocks_delete" in nested, (
         "the load-state guards are called inline again; get_inference_backend() "
@@ -895,7 +894,7 @@ def test_the_standalone_vision_probe_runs_off_the_event_loop():
     )
 
     # Nested helpers are the offload, so only the handler's own body counts as
-    # inline. The helper the worker runs may call is_vision_model freely.
+    # inline.
     nested = {
         sub
         for helper in ast.walk(fn)

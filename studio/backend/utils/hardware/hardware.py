@@ -79,24 +79,20 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 CHAT_ONLY_REASON: Optional[str] = None
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
-# Detection now has several callers at once: the startup warm thread, plus any
-# early request through get_device(). Without this lock two runs interleave on
-# the globals above -- detect_hardware() resets CHAT_ONLY/IS_ROCM at entry, so a
-# reader between the reset and the CUDA branch sees "chat only" on a GPU host.
-# Re-entrant: get_device() -> detect_hardware() nests on the same thread.
+# Detection has several concurrent callers (the warm thread, plus any early
+# get_device()). Without this lock two runs interleave on the globals above and a
+# reader between detect_hardware()'s reset and the CUDA branch sees "chat only" on a
+# GPU host. Re-entrant: get_device() -> detect_hardware() nests on one thread.
 _DETECT_LOCK = threading.RLock()
-# Set once ensure_hardware_detected() has a settled answer, including its
-# CPU/chat-only fallback. Poll this rather than DEVICE: DEVICE is assigned
-# mid-detection, so it goes non-None while later probes can still change it.
+# Set once ensure_hardware_detected() has a settled answer, including its CPU/chat-only
+# fallback. Poll this, not DEVICE: DEVICE is assigned mid-detection and can be revised.
 DETECTION_COMPLETE = threading.Event()
-# Bumped every time detection settles on an answer. Detection is not
-# once-per-process: the MLX self-heal re-detects after a successful repair and
-# flips CHAT_ONLY, so anything that snapshots a detection-derived value has to
-# be able to tell that its snapshot is stale.
+# Bumped every time detection settles. Detection is not once-per-process (the MLX
+# self-heal re-detects and flips CHAT_ONLY), so snapshot holders can spot staleness.
 DETECTION_GENERATION = 0
 
-# Drives start_background_detection(). Separate from _DETECT_LOCK because it is
-# only ever held for the bookkeeping below, never across the import.
+# Drives start_background_detection(). Separate from _DETECT_LOCK: held only for the
+# bookkeeping below, never across the import.
 _DETECT_KICK_LOCK = threading.Lock()
 _DETECT_THREAD: Optional[threading.Thread] = None
 
@@ -168,22 +164,16 @@ def _has_torch() -> bool:
         import torch
         return True
     except Exception:
-        # A failure part-way through torch/__init__ leaves its submodules in
-        # sys.modules with the parent evicted, so the next importer
-        # (transformers, warm stage two) re-runs __init__ against those cache
-        # hits and gets a torch missing pieces. purge_partial_import() clears
-        # that, and declines once a compiled submodule is loaded -- re-importing
-        # one aborts the process. See the note there.
+        # A part-way failure leaves torch submodules in sys.modules with the parent
+        # evicted, so the next importer re-runs __init__ against those cache hits and
+        # gets a torch missing pieces. purge_partial_import() clears that (and declines
+        # once a compiled submodule is loaded -- re-importing one aborts the process).
         try:
             from utils.torch_warmup import purge_partial_import
         except Exception:
-            # This module is also read and exec'd on its own, with no package
-            # around it -- tests/python/test_e2e_no_torch_sandbox.py copies
-            # hardware.py into a torch-less venv and runs detect_hardware() out
-            # of a namespace dict. A sibling import is unresolvable there, and a
-            # hard dependency on one turned "no torch, take the CPU path" into a
-            # ModuleNotFoundError. Nothing to purge in that case anyway: the
-            # import failed with no torch on the machine at all.
+            # This module is also exec'd standalone with no package around it (see
+            # tests/python/test_e2e_no_torch_sandbox.py), where a sibling import is
+            # unresolvable. Nothing to purge there anyway: torch is simply absent.
             pass
         else:
             purge_partial_import("torch")
@@ -270,34 +260,23 @@ def detect_hardware() -> DeviceType:
     """
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM, DETECTION_GENERATION
     with _DETECT_LOCK:
-        # A forced pass runs while a previous answer is already published, and it
-        # mutates the globals partway through -- _detect_hardware_locked() resets
-        # CHAT_ONLY to True and CHAT_ONLY_REASON to None before re-probing. With
-        # the event left set, /api/health reports that intermediate state as
-        # settled, and the sidebar's MLX recovery poll (which only continues
-        # while chat_only_reason == "mlx_unavailable") caches a reply whose
-        # reason is None and stops polling, leaving Train hidden on a host the
+        # A forced pass mutates the globals partway through, and with the event left
+        # set /api/health would serve that intermediate state as settled -- the sidebar
+        # MLX poll would cache reason=None, stop, and leave Train hidden on a host the
         # repair just fixed. Clear for the duration, republish once it settles.
         was_complete = DETECTION_COMPLETE.is_set()
-        # The whole published verdict, not just the event: the reset above plus a
-        # DEVICE assigned partway through means a raise leaves a half-written
-        # answer, and the MLX autorepair path catches the exception, so that half
-        # would become what /api/health serves. Losing a "mlx_unavailable" reason
-        # there is the permanent case -- the sidebar poll only continues while it
-        # reads that reason, so it would stop and leave Train hidden on a host the
-        # repair may yet fix.
+        # The whole published verdict, not just the event: a raise mid-pass leaves a
+        # half-written answer that the autorepair path swallows, and health would then
+        # serve it -- losing "mlx_unavailable" stops the sidebar poll for good.
         published = (DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM)
         DETECTION_COMPLETE.clear()
         try:
             device = _detect_hardware_locked()
         except BaseException:
             DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM = published
-            # Restore rather than leave it clear. A permanently unset event is
-            # worse than the intermediate state it would hide: health would go
-            # provisional for the life of the process, because
-            # start_background_detection() declines once DEVICE is set, so
-            # nothing would ever republish. This puts the caller back where a
-            # failed forced re-detect already left it.
+            # Restore rather than leave it clear: start_background_detection()
+            # declines once DEVICE is set, so a permanently unset event would keep
+            # health provisional for the life of the process.
             if was_complete:
                 DETECTION_COMPLETE.set()
             raise
@@ -328,25 +307,15 @@ def ensure_hardware_detected() -> DeviceType:
                 DEVICE = DeviceType.CPU
                 CHAT_ONLY = True
                 CHAT_ONLY_REASON = "detection_failed"
-            # Inside the branch: this function is the cached path too -- every
-            # get_device() on a warm process reaches it and returns immediately.
-            # The orchestrator reads this counter as "hardware was re-detected"
-            # and rebuilds its curated defaults, so bumping it per call made any
-            # GPU or export helper trigger a needless rebuild and a false
-            # "hardware was re-detected" log on the next model list. A forced
-            # detect_hardware() advances it on its own path.
+            # Inside the branch: this is also the cached path, and the orchestrator
+            # rebuilds its curated defaults whenever this counter moves, so bumping it
+            # per call caused needless rebuilds. Forced detect_hardware() bumps it too.
             DETECTION_GENERATION += 1
-        # Set only here, where a final value is guaranteed. The detection
-        # branches assign DEVICE partway through and keep probing -- the XPU
-        # branch sets DEVICE and CHAT_ONLY before torch.xpu.get_device_name(0),
-        # which can raise -- so "DEVICE is not None" means "a candidate was
-        # picked", not "detection finished". A waiter that treats the
-        # intermediate value as authoritative can publish training-enabled for a
-        # host the except above is about to degrade to CPU/chat-only.
-        #
-        # Unconditional, unlike the counter above: setting a set event is a no-op,
-        # and a waiter arriving long after the first detection still has to find
-        # it set.
+        # Set only here, where a final value is guaranteed: a non-None DEVICE only means
+        # a candidate was picked (the XPU branch assigns it before a probe that can
+        # raise), so a waiter trusting it can publish training-enabled for a host that
+        # ends up CPU/chat-only. Unconditional, unlike the counter: re-setting is a
+        # no-op and a late waiter still has to find it set.
         DETECTION_COMPLETE.set()
         return DEVICE
 
@@ -358,13 +327,10 @@ def _detect_hardware_locked() -> DeviceType:
     CHAT_ONLY_REASON = None
     IS_ROCM = False
 
-    # Probe torch once per pass. A failed probe is expensive (the import runs to
-    # wherever it breaks) and self-repairing purge is refused whenever a compiled
-    # submodule is already loaded, so a second probe re-runs torch/__init__
-    # against those same cache hits: same failure, same declined purge, twice the
-    # wall clock on the path that is already degrading to CPU. It can also
-    # disagree with itself -- a re-run against a half-populated cache need not
-    # fail the same way -- so both branches below must see one answer, not two.
+    # Probe torch once per pass. A failed probe is expensive and the self-repairing
+    # purge is declined once a compiled submodule is loaded, so a second probe just
+    # repeats the cost -- and can disagree with the first. Both branches below need
+    # one answer, not two.
     torch_ok = _has_torch()
 
     # --- CUDA / ROCm / XPU: try PyTorch ---
@@ -503,12 +469,9 @@ def export_capability() -> dict:
             "export_unsupported_reason": None,
             "export_unsupported_message": None,
         }
-    # No accelerator: name the blocker. Detection having failed outright comes
-    # first, because the branches below all describe a host that was measured.
-    # ensure_hardware_detected() records CPU + "detection_failed" when the probe
-    # raises, so an accelerator host with a broken CUDA/XPU probe would otherwise
-    # be told to install PyTorch or that it has no GPU -- both send the user to
-    # fix something that is not wrong.
+    # No accelerator: name the blocker. Outright detection failure comes first, since
+    # the branches below all describe a host that was actually measured -- otherwise a
+    # GPU host with a broken probe is told to install PyTorch or that it has no GPU.
     if CHAT_ONLY_REASON == "detection_failed":
         reason = "detection_failed"
         message = (

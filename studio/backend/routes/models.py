@@ -1743,10 +1743,9 @@ def _looks_like_mlx_repo(model_id: str) -> bool:
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
     try:
-        # Off-loop: constructing the orchestrator singleton reads the default
-        # model list, which calls get_device(). The frontend fetches this on
-        # load, so before the warm finishes an inline call would freeze the
-        # whole server for the length of the torch import.
+        # Off-loop: building the orchestrator singleton reads the default model
+        # list, which calls get_device(). The frontend fetches this on load, so
+        # inline it would freeze the server for the whole torch import.
         inference_backend = await asyncio.to_thread(get_inference_backend)
 
         default_models = inference_backend.default_models
@@ -2604,10 +2603,9 @@ async def check_vision_model(
         # A local path resolves from disk, so it skips the probe.
         from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
-        # Off the loop: the guard's probes are blocking and stall unrelated
-        # requests, and the registry sets behind is_vision_model() are built
-        # lazily, so the first call also imports transformers or waits on
-        # _DETECTION_SETS_LOCK while the warm thread holds it.
+        # Off-loop: the guard's probes are blocking, and the sets behind
+        # is_vision_model() are built lazily, so the first call also imports
+        # transformers or waits on _DETECTION_SETS_LOCK while the warm holds it.
         def _check():
             with _hf_offline_if_unreachable_for(model_name):
                 return is_vision_model(model_name, hf_token = hf_token)

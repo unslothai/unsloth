@@ -74,8 +74,8 @@ def test_post_warm_thread_joins_the_warm_before_doing_stack_work():
     body = _post_warm_body()
     statements = [n for n in body.body if not isinstance(n, ast.Expr) or True]
 
-    # The join has to come first, otherwise these imports race the warm rather
-    # than building on it.
+    # The join has to come first, or these imports race the warm instead of
+    # building on it.
     join_line = None
     work_lines = []
     for sub in ast.walk(body):
@@ -149,8 +149,7 @@ def test_post_warm_thread_is_started_by_the_lifespan():
         "warm would never run"
     )
 
-    # ...and the helper must target the real work, or the above is satisfied by a
-    # thread that does nothing.
+    # ...and the helper must target the real work, or a do-nothing thread passes.
     tree = ast.parse(_MAIN.read_text(encoding = "utf-8"))
     starter = next(
         node

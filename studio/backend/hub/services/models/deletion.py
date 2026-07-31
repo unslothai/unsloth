@@ -610,12 +610,9 @@ async def delete_cached_model_response(
     # Guard fails closed: if a live backend's load state can't be read, abort
     # with 503 rather than risk unlinking weights under a running process.
     #
-    # Off-loop, as one hop: both guards are sync, and the second reaches
-    # get_inference_backend(), whose cold build waits on hardware detection. Run
-    # inline from this coroutine it held the event-loop thread for the rest of the
-    # torch import, stalling liveness and login -- and only when no GGUF model was
-    # loaded, since the `or` short-circuits before it otherwise. One worker keeps
-    # that short-circuit and the fail-closed except exactly as they were.
+    # Off-loop, as one hop: both guards are sync and the second reaches
+    # get_inference_backend(), whose cold build waits on hardware detection. One
+    # worker keeps the `or` short-circuit and the fail-closed except as they were.
     def _load_state_blocks_delete() -> bool:
         return _llama_cpp_blocks_delete(repo_id, variant) or (
             _inference_backend_blocks_delete(repo_id)
