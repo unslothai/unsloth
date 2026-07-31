@@ -57,7 +57,7 @@ import {
 } from "@/lib/vram";
 import { ArrowDown01Icon, ChipIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   toCachedTrainModelDisplayCandidate,
@@ -139,6 +139,7 @@ export function TrainModelSelector() {
     cachedRows,
     localRows,
     downloadedReady,
+    inventorySettled,
     inventoryError,
     inventoryWarning,
     refreshInventory,
@@ -255,11 +256,23 @@ export function TrainModelSelector() {
     [cachedRows, localRows],
   );
 
+  const hasDeviceItems = trainableLocalModels.length > 0;
   const pickerView = picker.getViewState({
-    hasDeviceItems: trainableLocalModels.length > 0,
-    isLoadingDevice: isLoadingLocalModels,
+    hasDeviceItems,
+    isDeviceInventorySettled: inventorySettled,
   });
   const { activeQuery, handleOpenChange, handleQueryChange, tab } = pickerView;
+  const settleInferredTab = picker.settleInferredTab;
+
+  useEffect(() => {
+    if (!picker.open) {
+      return;
+    }
+    settleInferredTab({
+      hasDeviceItems,
+      isDeviceInventorySettled: inventorySettled,
+    });
+  }, [hasDeviceItems, inventorySettled, picker.open, settleInferredTab]);
 
   const filteredLocalModels = useMemo(() => {
     const tokens = tokenizeQuery(picker.deviceQuery);
@@ -581,6 +594,7 @@ export function TrainModelSelector() {
         <button
           type="button"
           data-tour="studio-model-picker"
+          title={selectedModel ?? undefined}
           className={cn(
             PICKER_TRIGGER_CLASS,
             "w-full min-w-[180px] justify-between",

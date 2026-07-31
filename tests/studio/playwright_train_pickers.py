@@ -400,6 +400,14 @@ def select_picker_tab(page, name: str) -> None:
     expect(tab).to_have_attribute("aria-selected", "true")
 
 
+def assert_selected_picker_tab(page, name: str) -> None:
+    tab = page.get_by_role(
+        "tab",
+        name = re.compile(rf"^\s*{re.escape(name)}\s*$", re.I),
+    ).first
+    expect(tab).to_have_attribute("aria-selected", "true", timeout = TIMEOUT_MS)
+
+
 def close_picker(page, search) -> None:
     page.keyboard.press("Escape")
     expect(search).to_be_hidden(timeout = TIMEOUT_MS)
@@ -418,7 +426,7 @@ def assert_picker_tab_persists(page, tour: str, noun: str, tab_name: str) -> Non
 def test_model_picker(page) -> None:
     info("model picker: open, arrow navigation, ambiguous keyboard match")
     model_trigger, search = open_picker(page, "studio-model-picker", "models")
-    select_picker_tab(page, "On Device")
+    assert_selected_picker_tab(page, "On Device")
     search = page.get_by_role("textbox", name = "Search models").first
     model_options = page.locator('[data-picker-option="true"]').filter(
         has_text = "Twin Model",
@@ -516,7 +524,7 @@ def test_dataset_picker(page) -> None:
         "studio-dataset-picker",
         "datasets",
     )
-    select_picker_tab(page, "On Device")
+    assert_selected_picker_tab(page, "On Device")
     search = page.get_by_role("textbox", name = "Search datasets").first
     search.fill("Twin Dataset")
     expect(

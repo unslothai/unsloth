@@ -3,6 +3,10 @@
 
 import { EMBEDDING_TAGS } from "@/features/hub";
 import type { ModelType } from "@/types/training";
+import {
+  type TrainingModelModalityMetadata,
+  inferTrainingModelModalityFlags,
+} from "./model-modality-inference";
 
 export interface ModelTypeCapabilityFlags {
   isEmbedding?: boolean | null;
@@ -27,11 +31,7 @@ export function inferTrainingModelTypeFromFlags({
   return "text";
 }
 
-export interface TrainingModelTypeMetadata {
-  tags?: readonly string[] | null;
-  pipelineTag?: string | null;
-  identifiers?: readonly (string | null | undefined)[];
-}
+export type TrainingModelTypeMetadata = TrainingModelModalityMetadata;
 
 function hasEmbeddingHint({
   tags,
@@ -43,67 +43,10 @@ function hasEmbeddingHint({
   return (tags ?? []).some((tag) => EMBEDDING_TAGS.has(tag.toLowerCase()));
 }
 
-const VISION_TAGS = new Set([
-  "image-text-to-text",
-  "image-to-text",
-  "visual-question-answering",
-  "video-text-to-text",
-  "any-to-any",
-  "multimodal",
-  "vision",
-]);
-const AUDIO_TAGS = new Set([
-  "automatic-speech-recognition",
-  "audio-text-to-text",
-  "text-to-speech",
-  "text-to-audio",
-  "audio-to-audio",
-  "audio-classification",
-]);
-const SEP = "(?:^|[-_/. ])";
-const END = "(?=$|[-_/. ])";
-const VISION_NAME_RE = new RegExp(
-  `${SEP}(?:vl|llava|pixtral|moondream|smolvlm|internvl|cogvlm|idefics|paligemma|vision)${END}`,
-  "i",
-);
-const AUDIO_NAME_RE = new RegExp(
-  `${SEP}(?:whisper|tts|parakeet|parler|musicgen|bark|orpheus|csm|voice|speech|audio)${END}`,
-  "i",
-);
-
-function hasAny(tagSet: Set<string>, wanted: Set<string>): boolean {
-  for (const tag of wanted) {
-    if (tagSet.has(tag)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function detectTrainingCapabilities(opts: {
-  id: string;
-  tags?: readonly string[];
-  pipelineTag?: string;
-}): Pick<ModelTypeCapabilityFlags, "isAudio" | "isVision"> {
-  const tagSet = new Set((opts.tags ?? []).map((tag) => tag.toLowerCase()));
-  if (opts.pipelineTag) {
-    tagSet.add(opts.pipelineTag.toLowerCase());
-  }
-  return {
-    isAudio: hasAny(tagSet, AUDIO_TAGS) || AUDIO_NAME_RE.test(opts.id),
-    isVision: hasAny(tagSet, VISION_TAGS) || VISION_NAME_RE.test(opts.id),
-  };
-}
-
 export function trainingModelTypeFlagsFromMetadata(
   metadata: TrainingModelTypeMetadata,
 ): ModelTypeCapabilityFlags {
-  const { tags, pipelineTag, identifiers = [] } = metadata;
-  const capabilities = detectTrainingCapabilities({
-    id: identifiers.filter(Boolean).join(" "),
-    tags: tags ?? undefined,
-    pipelineTag: pipelineTag ?? undefined,
-  });
+  const capabilities = inferTrainingModelModalityFlags(metadata);
   return {
     isEmbedding: hasEmbeddingHint(metadata),
     isAudio: capabilities.isAudio,

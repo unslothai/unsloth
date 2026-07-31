@@ -2018,6 +2018,8 @@ async def get_model_config(
             ),
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise log_and_http_error(
             e,

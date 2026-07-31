@@ -36,7 +36,7 @@ import { cn } from "@/lib/utils";
 import { ArrowDown01Icon, Database02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { datasetSelectionDisplayName } from "../lib/display";
 import {
   type DatasetDeviceItem,
@@ -104,6 +104,7 @@ export function DatasetSelector() {
     cachedRows,
     localRows,
     downloadedReady,
+    inventorySettled,
     inventoryError,
     inventoryWarning,
     refreshInventory,
@@ -181,11 +182,23 @@ export function DatasetSelector() {
     );
   }, [cachedRows, localRows, t]);
 
+  const hasDeviceItems = deviceItems.length > 0;
   const pickerView = picker.getViewState({
-    hasDeviceItems: deviceItems.length > 0,
-    isLoadingDevice: isLoadingLocal,
+    hasDeviceItems,
+    isDeviceInventorySettled: inventorySettled,
   });
   const { activeQuery, handleOpenChange, handleQueryChange, tab } = pickerView;
+  const settleInferredTab = picker.settleInferredTab;
+
+  useEffect(() => {
+    if (!picker.open) {
+      return;
+    }
+    settleInferredTab({
+      hasDeviceItems,
+      isDeviceInventorySettled: inventorySettled,
+    });
+  }, [hasDeviceItems, inventorySettled, picker.open, settleInferredTab]);
 
   const {
     results: hfResults,
@@ -356,6 +369,9 @@ export function DatasetSelector() {
         <button
           type="button"
           data-tour="studio-dataset-picker"
+          title={
+            (datasetSource === "upload" ? uploadedFile : dataset) ?? undefined
+          }
           className={cn(PICKER_TRIGGER_CLASS, "w-full justify-between")}
         >
           <span className="flex min-w-0 items-center gap-1.5">

@@ -1563,35 +1563,6 @@ def test_model_identity_normalizes_cross_platform_trailing_separators():
     assert json.loads(result.stdout) == expected
 
 
-def test_non_explicit_picker_tab_infers_both_connectivity_directions():
-    source = _read("components/resource-picker/use-picker-state.ts")
-    resolver = source.split("function resolvePickerTab", 1)[1]
-    resolver = resolver.split("export function usePickerState", 1)[0]
-    compact = " ".join(resolver.split())
-
-    assert (
-        "const inferredTab = hasExplicitTabPreference ? selectedTab : "
-        "shouldUseDeviceTab ? PICKER_TAB.device : PICKER_TAB.hub;" in compact
-    )
-    assert "return lockedInferredTab ?? inferredTab;" in compact
-
-
-def test_inferred_picker_tab_is_locked_for_the_open_session():
-    source = _read("components/resource-picker/use-picker-state.ts")
-    close_picker = source.split("const closePicker = useCallback", 1)[1]
-    close_picker = close_picker.split("const getViewState", 1)[0]
-    assert "setLockedInferredTab(null);" in close_picker
-
-    view = source.split("const getViewState = useCallback", 1)[1]
-    view = view.split("return {", 1)[0]
-    open_change = view.split("const handleOpenChange", 1)[1]
-    assert "if (nextOpen)" in open_change
-    assert "if (!hasExplicitTabPreference)" in open_change
-    assert "hasExplicitTabPreference || isLoadingDevice" not in open_change
-    assert "setLockedInferredTab(tab);" in open_change
-    assert "closePicker();" in open_change
-
-
 def test_dataset_display_name_handles_cross_platform_trailing_separators():
     source = _read("features/dataset-picker/lib/display.ts")
     display_name = _read("components/resource-picker/dataset-display-name.ts")

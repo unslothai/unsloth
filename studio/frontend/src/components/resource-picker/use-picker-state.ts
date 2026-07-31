@@ -4,16 +4,18 @@
 import { useDebouncedValue } from "@/hooks";
 import { useCallback, useState } from "react";
 import {
+  type PickerDeviceInventoryState,
+  resolveInferredPickerTabLock,
+  resolvePickerTab,
+} from "./picker-tab-policy";
+import {
   PICKER_TAB,
   type PickerTab,
   readPickerTabPreference,
   writePickerTabPreference,
 } from "./picker-tab-state";
 
-type PickerViewInput = {
-  hasDeviceItems: boolean;
-  isLoadingDevice: boolean;
-};
+type PickerViewInput = PickerDeviceInventoryState;
 
 type PickerViewState = {
   activeQuery: string;
@@ -21,28 +23,6 @@ type PickerViewState = {
   handleQueryChange: (next: string) => void;
   tab: PickerTab;
 };
-
-function resolvePickerTab({
-  hasDeviceItems,
-  hasExplicitTabPreference,
-  isLoadingDevice,
-  lockedInferredTab,
-  online,
-  selectedTab,
-}: PickerViewInput & {
-  hasExplicitTabPreference: boolean;
-  lockedInferredTab: PickerTab | null;
-  online: boolean;
-  selectedTab: PickerTab;
-}): PickerTab {
-  const shouldUseDeviceTab = !online || (!isLoadingDevice && hasDeviceItems);
-  const inferredTab = hasExplicitTabPreference
-    ? selectedTab
-    : shouldUseDeviceTab
-      ? PICKER_TAB.device
-      : PICKER_TAB.hub;
-  return lockedInferredTab ?? inferredTab;
-}
 
 export function usePickerState({
   storageKey,
@@ -87,12 +67,32 @@ export function usePickerState({
     setLockedInferredTab(null);
   }, []);
 
+  const settleInferredTab = useCallback(
+    ({ hasDeviceItems, isDeviceInventorySettled }: PickerViewInput) => {
+      const inferredTab = resolveInferredPickerTabLock({
+        hasDeviceItems,
+        hasExplicitTabPreference,
+        isDeviceInventorySettled,
+        online,
+        selectedTab,
+      });
+      if (inferredTab === null) {
+        return;
+      }
+      setLockedInferredTab((current) => current ?? inferredTab);
+    },
+    [hasExplicitTabPreference, online, selectedTab],
+  );
+
   const getViewState = useCallback(
-    ({ hasDeviceItems, isLoadingDevice }: PickerViewInput): PickerViewState => {
+    ({
+      hasDeviceItems,
+      isDeviceInventorySettled,
+    }: PickerViewInput): PickerViewState => {
       const tab = resolvePickerTab({
         hasDeviceItems,
         hasExplicitTabPreference,
-        isLoadingDevice,
+        isDeviceInventorySettled,
         lockedInferredTab,
         online,
         selectedTab,
@@ -111,8 +111,15 @@ export function usePickerState({
       };
       const handleOpenChange = (nextOpen: boolean) => {
         if (nextOpen) {
-          if (!hasExplicitTabPreference) {
-            setLockedInferredTab(tab);
+          const inferredTab = resolveInferredPickerTabLock({
+            hasDeviceItems,
+            hasExplicitTabPreference,
+            isDeviceInventorySettled,
+            online,
+            selectedTab,
+          });
+          if (inferredTab !== null) {
+            setLockedInferredTab(inferredTab);
           }
           setOpen(true);
           return;
@@ -141,5 +148,6 @@ export function usePickerState({
     handleTabChange,
     hubQuery,
     open,
+    settleInferredTab,
   };
 }
