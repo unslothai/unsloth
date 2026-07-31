@@ -909,10 +909,7 @@ def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
 def test_binary_env_windows_skips_inaccessible_inherited_path_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    denied = (
-        r"C:\WINDOWS\system32\config\systemprofile"
-        r"\AppData\Local\Microsoft\WindowsApps"
-    )
+    denied = r"C:\WINDOWS\system32\config\systemprofile\AppData\Local\Microsoft\WindowsApps"
     install_dir = tmp_path / "llama.cpp"
     bin_dir = install_dir / "bin"
     runtime_dir = tmp_path / "runtime"
@@ -3546,10 +3543,7 @@ def test_diffusion_visual_server_refuses_unapproved_release_asset(monkeypatch, t
 
 
 def test_dedupe_existing_dirs_skips_inaccessible_path_entry(monkeypatch):
-    denied = (
-        r"C:\WINDOWS\system32\config\systemprofile"
-        r"\AppData\Local\Microsoft\WindowsApps"
-    )
+    denied = r"C:\WINDOWS\system32\config\systemprofile\AppData\Local\Microsoft\WindowsApps"
 
     class FakePath:
         def __init__(self, raw):
@@ -3571,16 +3565,13 @@ def test_dedupe_existing_dirs_skips_inaccessible_path_entry(monkeypatch):
     with pytest.raises(PermissionError, match = "Access is denied"):
         INSTALL_LLAMA_PREBUILT.dedupe_existing_dirs([denied])
 
-    assert INSTALL_LLAMA_PREBUILT.dedupe_existing_dirs([denied, PACKAGE_ROOT], skip_unusable = True) == [
-        str(PACKAGE_ROOT.resolve())
-    ]
+    assert INSTALL_LLAMA_PREBUILT.dedupe_existing_dirs(
+        [denied, PACKAGE_ROOT], skip_unusable = True
+    ) == [str(PACKAGE_ROOT.resolve())]
 
 
 def test_windows_runtime_dirs_marks_path_candidates_as_optional(monkeypatch, tmp_path):
-    denied = (
-        r"C:\WINDOWS\system32\config\systemprofile"
-        r"\AppData\Local\Microsoft\WindowsApps"
-    )
+    denied = r"C:\WINDOWS\system32\config\systemprofile\AppData\Local\Microsoft\WindowsApps"
     observed = {}
 
     def fake_dedupe(paths, *, skip_unusable = False):
@@ -3605,10 +3596,14 @@ def test_setup_source_build_fallback_requires_expected_prebuilt_exit():
 
     ps_fallback = setup_ps1.index("} elseif ($prebuiltExit -eq 2) {")
     ps_source = setup_ps1.index("$NeedLlamaSourceBuild = $true", ps_fallback)
-    ps_error = setup_ps1.index("prebuilt helper failed unexpectedly (exit code $prebuiltExit)", ps_source)
+    ps_error = setup_ps1.index(
+        "prebuilt helper failed unexpectedly (exit code $prebuiltExit)", ps_source
+    )
     assert ps_fallback < ps_source < ps_error
 
     sh_fallback = setup_sh.index('elif [ "$_PREBUILT_STATUS" -eq 2 ]; then')
     sh_source = setup_sh.index("_NEED_LLAMA_SOURCE_BUILD=true", sh_fallback)
-    sh_error = setup_sh.index("prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS)", sh_source)
+    sh_error = setup_sh.index(
+        "prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS)", sh_source
+    )
     assert sh_fallback < sh_source < sh_error

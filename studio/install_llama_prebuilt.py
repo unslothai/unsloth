@@ -4408,9 +4408,7 @@ def is_retryable_server_bind_error(
     return False
 
 
-def dedupe_existing_dirs(
-    paths: Iterable[str | Path], *, skip_unusable: bool = False
-) -> list[str]:
+def dedupe_existing_dirs(paths: Iterable[str | Path], *, skip_unusable: bool = False) -> list[str]:
     unique: list[str] = []
     seen: set[str] = set()
     for raw in paths:
