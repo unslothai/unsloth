@@ -368,9 +368,7 @@ async def import_mcp_servers(
     entries, errors = parse_mcp_config(payload.config)
     created: list[McpServerResponse] = []
     skipped: list[str] = []
-    seen_urls = {
-        row["url"] for row in mcp_servers_db.list_servers(decrypt_secrets = False)
-    }
+    seen_urls = {row["url"] for row in mcp_servers_db.list_servers(decrypt_secrets = False)}
 
     for entry in entries:
         try:
@@ -392,9 +390,7 @@ async def import_mcp_servers(
             use_oauth = entry.use_oauth and not is_stdio(url),
         )
         seen_urls.add(url)
-        created.append(
-            _row_to_response(mcp_servers_db.get_server(server_id, decrypt_secret = False))
-        )
+        created.append(_row_to_response(mcp_servers_db.get_server(server_id, decrypt_secret = False)))
 
     return McpServerImportResult(created = created, skipped = skipped, errors = errors)
 
