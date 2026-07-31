@@ -567,7 +567,9 @@ def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
 
     async def _drive():
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
-        for _ in range(200):
+        # Wall clock, not an iteration count: Windows rounds a 10 ms sleep to its ~15.6 ms tick.
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
             await asyncio.sleep(0.01)
             if manifests and not saved.exists():
                 break
@@ -699,9 +701,24 @@ def _mock_override_store(monkeypatch):
 
     store = {}
 
-    def _merge_entry(key, entry_key, entry_value):
+    def _merge_entry(
+        key,
+        entry_key,
+        entry_value,
+        *,
+        fill_absent_fields = False,
+    ):
         current = dict(store.get(key) or {})
-        if entry_value:
+        if fill_absent_fields:
+            # Fill only: every stored value wins, nothing is deleted.
+            if not entry_value:
+                return current
+            stored = current.get(entry_key)
+            if isinstance(stored, dict):
+                current[entry_key] = {**entry_value, **stored}
+            else:
+                current[entry_key] = entry_value
+        elif entry_value:
             current[entry_key] = entry_value
         else:
             current.pop(entry_key, None)
@@ -712,6 +729,21 @@ def _mock_override_store(monkeypatch):
     monkeypatch.setattr(db, "get_app_setting", lambda k, default = None: store.get(k, default))
     settings._cache.clear()
     return store
+
+
+@pytest.fixture
+def override_store(monkeypatch):
+    """The in-memory override store, for a test that needs nothing else mocked."""
+    _mock_override_store(monkeypatch)
+
+
+def _put(model_id, **fields):
+    """One override PUT through the route, spelled the way the UI sends it."""
+    import routes.settings as settings_route
+    return settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = model_id, **fields),
+        "tester",
+    )
 
 
 def test_model_override_roundtrip(monkeypatch):
@@ -1600,9 +1632,10 @@ def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
 def test_load_route_holds_lifecycle_gate(monkeypatch):
     # Lock the manual /load gate against silent revert: the route must wrap the
     # load in inference_lifecycle_gate so idle-unload can't fire mid-load.
+    # Asserted on the gated coroutine: the route only adds the padded response.
     import inspect
 
-    src = inspect.getsource(inference_route.load_model)
+    src = inspect.getsource(inference_route.load_model_gated)
     assert "inference_lifecycle_gate" in src
     assert "_load_model_impl" in src
 
@@ -1625,7 +1658,9 @@ def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unload
     standard_wait = src.index("await _wait_for_model_switch_idle", standard_branch)
     standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
     standard_cancel = src.index("on_reload_confirmed(cancel = True)", standard_wait)
-    unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
+    # No parens: both teardowns are asyncio.to_thread args (on-loop a 160s one would
+    # block /load's tunnel padding).
+    unload_gguf = src.index("llama_backend.unload_model", standard_wait)
 
     assert already_loaded < gguf_wait < gguf_sidecar_check < gguf_cancel < unload_unsloth
     assert standard_branch < standard_wait < standard_sidecar_check
@@ -3824,8 +3859,9 @@ def test_note_model_unloaded_clears_reload_stash(monkeypatch):
 
 def test_unload_route_clears_reload_stash(monkeypatch):
     # The /unload route must clear the stash on both the GGUF and non-GGUF branches.
+    # Asserted on the impl: the route only adds the padded response.
     import inspect
-    src = inspect.getsource(inference_route.unload_model)
+    src = inspect.getsource(inference_route._unload_model_impl)
     assert src.count("note_model_unloaded()") >= 2
 
 
@@ -4792,6 +4828,919 @@ def test_env_idle_below_floor_is_clamped(monkeypatch):
     assert settings.get_auto_unload_idle_seconds() == 0
 
 
+# Per-model launch config: normalization, LoadRequest mapping, key resolution.
+
+
+def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
+    # A stale field must not cost the user the whole config, so bad values are
+    # dropped one by one rather than rejecting the payload.
+    entry = settings.normalize_model_override(
+        {
+            "max_seq_length": 8192,
+            "kv_cache_dtype": "not_a_dtype",
+            "speculative_type": "mtp",
+            "spec_draft_n_max": 999,  # out of range for the MTP draft count
+            "gpu_memory_mode": "auto",  # only "manual" is a real override
+            "gpu_layers": -1,  # -1 is Auto, which is already the default
+            "n_cpu_moe": 0,
+            "gpu_ids": [1, 1, 0, "2", -5],
+            "tensor_parallel": False,
+            "llama_extra_args": [],
+        }
+    )
+    assert entry == {"max_seq_length": 8192, "speculative_type": "mtp", "gpu_ids": [1, 0, 2]}
+
+
+def test_normalize_model_override_rejects_oversized_chat_template():
+    small = settings.normalize_model_override({"chat_template_override": "{{ bos }}"})
+    assert small["chat_template_override"] == "{{ bos }}"
+    # The limit is bytes, not characters, so a multi-byte template just under the
+    # character limit can still be over.
+    huge = "é" * settings.MAX_CHAT_TEMPLATE_OVERRIDE_BYTES
+    assert "chat_template_override" not in settings.normalize_model_override(
+        {"chat_template_override": huge}
+    )
+
+
+def test_spec_draft_n_max_only_stored_for_mtp_modes():
+    mtp = settings.normalize_model_override({"speculative_type": "mtp", "spec_draft_n_max": 4})
+    assert mtp["spec_draft_n_max"] == 4
+    # A non-MTP mode ignores the draft count, so storing it shows an edit that
+    # never takes effect.
+    ngram = settings.normalize_model_override({"speculative_type": "ngram", "spec_draft_n_max": 4})
+    assert "spec_draft_n_max" not in ngram
+
+
+def test_resolve_fit_max_seq_length_hands_sizing_to_fit_under_manual_auto_layers():
+    # Manual GPU memory with Auto layers hands the context to llama.cpp --fit, so
+    # the load sends the context pin (or 0), not the stored max seq length.
+    override = {"gpu_memory_mode": "manual", "max_seq_length": 8192}
+    assert settings.resolve_fit_max_seq_length(override, is_gguf = True) == 0
+    assert (
+        settings.resolve_fit_max_seq_length(
+            {**override, "custom_context_length": 4096}, is_gguf = True
+        )
+        == 4096
+    )
+    # Pinning the layer count takes --fit back out of the picture.
+    assert settings.resolve_fit_max_seq_length({**override, "gpu_layers": 20}, is_gguf = True) == 8192
+    # Not a GGUF, so none of this applies.
+    assert settings.resolve_fit_max_seq_length(override, is_gguf = False) == 8192
+
+
+def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
+    override = {
+        "max_seq_length": 4096,
+        "kv_cache_dtype": "q8_0",
+        "tensor_parallel": True,
+        "gpu_memory_mode": "manual",
+        "gpu_layers": 20,
+        "n_cpu_moe": 3,
+        "gpu_ids": [0, 1],
+    }
+    gguf = settings.model_override_load_kwargs(override, is_gguf = True)
+    assert gguf["cache_type_kv"] == "q8_0"
+    assert gguf["tensor_parallel"] is True
+    assert gguf["gpu_layers"] == 20
+    assert gguf["gpu_ids"] == [0, 1]
+
+    # A safetensors model loads through HF auto-placement, so a GGUF GPU pin would
+    # silently change where the weights land.
+    safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
+    assert safetensors["max_seq_length"] == 4096
+    assert "gpu_layers" not in safetensors
+    assert "gpu_ids" not in safetensors
+    assert "n_cpu_moe" not in safetensors
+    assert "gpu_memory_mode" not in safetensors
+
+    # Every key must be a real LoadRequest field, or the load raises TypeError when
+    # the user's request arrives.
+    LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
+
+
+def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
+    # The settings page has no control for pass-through flags, so a save carries over the
+    # ones already stored while writing the field the user just edited, leaving one entry
+    # holding both. Sent together they reach llama-server with the extras appended last,
+    # and its parser takes the final -c, so the stale flag would pin the old context.
+    _mock_override_store(monkeypatch)
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--ctx-size", "8192", "--top-k", "40"])
+    saved = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["max_seq_length"] == 32768
+    assert entry["llama_extra_args"] == ["--ctx-size", "8192", "--top-k", "40"]
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    request = rec.calls[0]
+    assert request.max_seq_length == 32768
+    # The shadowing flag goes; the sampling flag beside it is nobody's first-class field.
+    assert request.llama_extra_args == ["--top-k", "40"]
+
+
+def test_load_kwargs_strip_only_the_shadow_groups_the_override_supplies():
+    # Same rule the /load route applies to inherited extras: one group per first-class
+    # field actually being sent, so a flag with nothing to shadow still passes through.
+    override = {
+        "llama_extra_args": [
+            "-c",
+            "8192",
+            "--cache-type-k",
+            "f16",
+            "--spec-type",
+            "ngram",
+            "--jinja",
+            "--split-mode",
+            "row",
+            "--top-p",
+            "0.9",
+        ],
+        "max_seq_length": 32768,
+        "kv_cache_dtype": "q8_0",
+        "speculative_type": "mtp",
+        "chat_template_override": "{{ bos_token }}",
+        "tensor_parallel": True,
+    }
+    stripped = settings.model_override_load_kwargs(override, is_gguf = True)
+    assert stripped["llama_extra_args"] == ["--top-p", "0.9"]
+
+    # Nothing is supplied to shadow them, so every flag survives.
+    kept = settings.model_override_load_kwargs(
+        {"llama_extra_args": override["llama_extra_args"]}, is_gguf = True
+    )
+    assert kept["llama_extra_args"] == override["llama_extra_args"]
+
+    # And one field strips one group.
+    ctx_only = settings.model_override_load_kwargs(
+        {"llama_extra_args": override["llama_extra_args"], "max_seq_length": 32768},
+        is_gguf = True,
+    )
+    assert ctx_only["llama_extra_args"] == override["llama_extra_args"][2:]
+
+
+def test_saved_parallel_slots_reach_an_api_load(monkeypatch):
+    # Parallel decode slots are a per-model setting the picker sends on every GGUF load.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: {"n_parallel": 8})
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].n_parallel == 8
+
+
+def test_parallel_slots_are_stored_and_gated_on_gguf():
+    override = settings.normalize_model_override({"n_parallel": 8})
+    assert override == {"n_parallel": 8}
+    # Blank, out of range and non-integer all mean "follow the server-wide default".
+    for bad in (None, 0, -1, settings.PARALLEL_SLOTS_MAX + 1, "many", True):
+        assert "n_parallel" not in settings.normalize_model_override({"n_parallel": bad})
+
+    gguf = settings.model_override_load_kwargs(override, is_gguf = True)
+    assert gguf["n_parallel"] == 8
+    # A safetensors load has no llama-server slots, exactly as the picker gates it.
+    assert "n_parallel" not in settings.model_override_load_kwargs(override, is_gguf = False)
+    LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
+
+
+def test_override_route_persists_parallel_slots(override_store):
+    # The picker's mirror must carry the field, or a slot-count-only change saves as empty.
+    resp = _put("unsloth/B-GGUF:Q4_K_M", n_parallel = 8)
+    assert resp.overrides["unsloth/B-GGUF:Q4_K_M"] == {"n_parallel": 8}
+
+
+def test_eviction_cleanup_clears_mirrored_fields_but_keeps_launch_flags(override_store):
+    # Evicting a local entry for storage budget is not a forget, so cleanup sends remove=false.
+    settings.set_model_override(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["--flash-attn"],
+        custom_context_length = 32768,
+        kv_cache_dtype = "q8_0",
+    )
+    resp = _put("unsloth/B-GGUF:Q4_K_M", remove = False)
+    assert resp.overrides["unsloth/B-GGUF:Q4_K_M"] == {"llama_extra_args": ["--flash-attn"]}
+
+    # Nothing server-owned left, so the row goes rather than lingering empty.
+    settings.set_model_override("unsloth/C-GGUF:Q4_K_M", custom_context_length = 32768)
+    gone = _put("unsloth/C-GGUF:Q4_K_M", remove = False)
+    assert "unsloth/C-GGUF:Q4_K_M" not in gone.overrides
+
+
+def test_auto_switch_prefers_variant_qualified_override(monkeypatch):
+    # Settings are per quant; the bare repo id is only the fallback.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {
+        "unsloth/B-GGUF": {"max_seq_length": 1024},
+        "unsloth/B-GGUF:Q4_K_M": {"max_seq_length": 8192, "gpu_layers": 20},
+    }
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert req.max_seq_length == 8192
+    assert req.gpu_layers == 20
+
+
+def test_auto_switch_falls_back_to_bare_repo_override(monkeypatch):
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {"unsloth/B-GGUF": {"max_seq_length": 1024}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].max_seq_length == 1024
+
+
+def test_override_route_preserves_launch_flags_across_a_settings_only_update(override_store):
+    # The settings page has no control for llama_extra_args, so it omits the field.
+    _put("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
+    resp = _put("unsloth/B-GGUF", max_seq_length = 4096)
+    entry = resp.overrides["unsloth/B-GGUF"]
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    assert entry["max_seq_length"] == 4096
+
+    # An explicit empty list is the UI's "forget", and with no fields left the entry goes.
+    gone = _put("unsloth/B-GGUF", llama_extra_args = [])
+    assert "unsloth/B-GGUF" not in gone.overrides
+
+
+def test_override_found_under_a_concrete_path_with_variant(monkeypatch):
+    # A local folder resolves to repo id + path; settings saved against the path must be found.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/models/local/Qwen3-8B-Q4_K_M.gguf", "Q4_K_M", "unsloth/Qwen3-8B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {"/models/local/Qwen3-8B-Q4_K_M.gguf:Q4_K_M": {"max_seq_length": 8192}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/Qwen3-8B-GGUF")
+    assert rec.calls[0].max_seq_length == 8192
+
+
+def test_path_qualified_override_beats_repo_qualified(monkeypatch):
+    # Most specific first: the settings page keys a local row by the path being loaded,
+    # while the repo id is only the advertised alias. The row the user edited wins.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/models/local/x.gguf", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {
+        "unsloth/B-GGUF:Q4_K_M": {"max_seq_length": 8192},
+        "/models/local/x.gguf:Q4_K_M": {"max_seq_length": 1024},
+    }
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].max_seq_length == 1024
+
+
+def test_first_quant_save_keeps_legacy_bare_repo_launch_flags(override_store):
+    # Flags predating per-quant settings live under the bare repo id.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["max_seq_length"] == 4096
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_bare_repo_carry_over_does_not_split_a_windows_path(override_store):
+    # The colon in "C:\models\x.gguf" is not a variant separator: splitting looks up "C".
+    settings.set_model_override("C", llama_extra_args = ["--flash-attn"])
+
+    resp = _put(r"C:\models\x.gguf", max_seq_length = 4096)
+    assert "llama_extra_args" not in resp.overrides[r"C:\models\x.gguf"]
+
+
+def test_windows_path_with_quant_still_carries_over(override_store):
+    settings.set_model_override(r"C:\models\x.gguf", llama_extra_args = ["--flash-attn"])
+
+    resp = _put(r"C:\models\x.gguf:Q4_K_M", max_seq_length = 4096)
+    assert resp.overrides[r"C:\models\x.gguf:Q4_K_M"]["llama_extra_args"] == ["--flash-attn"]
+
+
+# The snapshot dir a repo cached outside the active HF cache loads from, which is what an
+# older release keyed that row by and what the loader still reads before the repo id.
+_LEGACY_SNAPSHOT = "/home/u/.cache/hub-alt/models--unsloth--B-GGUF/snapshots/2f1c9ab"
+
+
+def test_a_repo_save_retires_the_legacy_snapshot_path_entry(monkeypatch):
+    """The two spellings of one cached repo cannot both be stored, or the older wins.
+
+    The one-time backfill mirrors the pre-upgrade path-qualified key to the server, the
+    Settings page then keys the same row by its repo id, and the loader reads the load
+    path first: without retiring the leftover, every API load applies the settings the
+    user just replaced.
+    """
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    assert resp.overrides["unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 32768
+    assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
+
+    # End to end: the load the request triggers carries the saved value, not the retired one.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (_LEGACY_SNAPSHOT, "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert rec.calls[0].max_seq_length == 32768
+
+
+def test_the_retired_snapshot_path_entry_hands_over_its_launch_flags(override_store):
+    # The page can neither show nor restore llama_extra_args, so retiring the entry has to
+    # carry them, exactly as the bare repo id does on a first per-quant save.
+    settings.set_model_override(
+        f"{_LEGACY_SNAPSHOT}:Q4_K_M",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 4096,
+    )
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    assert entry["max_seq_length"] == 32768
+    assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
+
+
+def test_a_standalone_gguf_save_keeps_its_filename_label_launch_flags(override_store):
+    # An early build keyed a loose .gguf by the quant label from its filename, and the bare
+    # path the picker writes today is read before that key (see
+    # test_the_filename_label_key_no_longer_shadows_the_bare_path), so writing the bare entry
+    # without the legacy flags puts them out of reach of a page that cannot show or restore
+    # them. The forget path already consults the same derived key.
+    path = "/models/Qwen3-8B-Q4_K_M.gguf"
+    settings.set_model_override(
+        f"{path}:q4_k_m",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 4096,
+    )
+
+    resp = _put(path, max_seq_length = 32768)
+    entry = resp.overrides[path]
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    assert entry["max_seq_length"] == 32768
+
+
+def test_a_snapshot_path_save_retires_the_repo_id_entry(override_store):
+    # The same rule the other way round: a row the picker still keys by its path (an inactive
+    # cache reached as a local row) must not be shadowed, so the last spelling saved survives.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+
+    resp = _put(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+    assert resp.overrides[f"{_LEGACY_SNAPSHOT}:Q4_K_M"]["max_seq_length"] == 4096
+    assert "unsloth/B-GGUF:Q4_K_M" not in resp.overrides
+
+
+def test_forgetting_a_cached_repo_also_clears_its_snapshot_path_entry(override_store):
+    # Clearing only the repo id would leave the path entry applying what was forgotten.
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", remove = True, llama_extra_args = [])
+    assert resp.overrides == {}
+
+
+def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
+    # Only the same repo and the same quant fold together: a ./models path is keyed by its path
+    # alone, another quant has its own settings, and a bare entry backs every quant.
+    settings.set_model_override("/models/local/x.gguf:Q4_K_M", max_seq_length = 1024)
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q8_0", max_seq_length = 2048)
+    settings.set_model_override(_LEGACY_SNAPSHOT, max_seq_length = 4096)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    assert resp.overrides["/models/local/x.gguf:Q4_K_M"]["max_seq_length"] == 1024
+    assert resp.overrides[f"{_LEGACY_SNAPSHOT}:Q8_0"]["max_seq_length"] == 2048
+    assert resp.overrides[_LEGACY_SNAPSHOT]["max_seq_length"] == 4096
+
+
+def test_the_one_time_fill_retires_nothing(override_store):
+    # fill_absent_fields only adds what is missing; the migration mirroring both spellings
+    # of one row must not have its own first write deleted by its second.
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768, fill_absent_fields = True)
+    assert resp.overrides[f"{_LEGACY_SNAPSHOT}:Q4_K_M"]["max_seq_length"] == 4096
+    assert resp.overrides["unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 32768
+
+
+def test_a_fill_never_creates_a_snapshot_path_key_over_a_repo_id_entry(override_store):
+    # A fill only adds, so it cannot retire the other spelling the way a save does. Creating
+    # the snapshot path key would leave two entries for one quant, and the loader reads the
+    # load path before the advertised repo id, so an upgraded browser's pre-upgrade copy would
+    # shadow the newer server config on every API load. Fill into the entry that is already
+    # there instead: nothing outranks it and the fields it lacks still arrive.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+
+    resp = _put(
+        f"{_LEGACY_SNAPSHOT}:Q4_K_M",
+        max_seq_length = 2048,
+        kv_cache_dtype = "q8_0",
+        fill_absent_fields = True,
+    )
+    assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["max_seq_length"] == 32768
+    assert entry["kv_cache_dtype"] == "q8_0"
+
+
+def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
+    # A two-GPU pin on a one-GPU box used to 400 the load; one dead field degrades to defaults.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings,
+        "get_model_override",
+        lambda mid: {"gpu_ids": [0, 1], "max_seq_length": 4096},
+    )
+
+    async def _unusable(ids):
+        return False
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _unusable)
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert not req.gpu_ids
+    # The rest of the config still applies.
+    assert req.max_seq_length == 4096
+
+
+def test_usable_gpu_ids_are_kept(monkeypatch):
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
+
+    async def _usable(ids):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].gpu_ids == [0, 1]
+
+
+def test_override_gpu_ids_probe_never_raises(monkeypatch):
+    # On the load path, so a hardware error must read as "unusable", not a 500.
+    import utils.hardware.hardware as hw
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("driver exploded")
+
+    monkeypatch.setattr(hw, "resolve_requested_gpu_ids", boom)
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is False
+
+
+def test_vulkan_ordinal_absent_from_the_probe_is_unusable(monkeypatch):
+    # resolve_requested_gpu_ids only rejects malformed ordinals; presence needs the ggml probe.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/bin/llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda binary: [(0, 8192)])
+    )
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([7])) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0, 1])) is False
+
+
+def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
+    # Nothing to probe with, and refusing would drop a valid pin on every load.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: None))
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
+
+
+def test_default_save_preserves_flags_instead_of_removing(override_store):
+    # All-default values send no fields, shape-identical to a removal; guessing wrong wipes flags.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
+
+    resp = _put("unsloth/B-GGUF", remove = False)
+    assert resp.overrides["unsloth/B-GGUF"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_explicit_remove_still_clears_everything(override_store):
+    settings.set_model_override(
+        "unsloth/B-GGUF", llama_extra_args = ["--flash-attn"], max_seq_length = 4096
+    )
+    resp = _put("unsloth/B-GGUF", remove = True, llama_extra_args = [])
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_bare_payload_without_remove_flag_still_removes(override_store):
+    # The original contract, kept for any caller that predates the flag.
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
+    resp = _put("unsloth/B-GGUF")
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_remove_false_with_real_fields_saves_normally(override_store):
+    resp = _put("unsloth/B-GGUF", remove = False, max_seq_length = 8192)
+    assert resp.overrides["unsloth/B-GGUF"]["max_seq_length"] == 8192
+
+
+def test_override_lookup_falls_back_to_case_insensitive(override_store):
+    # The browser lowercases ids while the resolver asks for the repo's real casing.
+    settings.set_model_override("unsloth/qwen3-8b-gguf:q4_k_m", max_seq_length = 8192)
+    got = settings.get_model_override("unsloth/Qwen3-8B-GGUF:Q4_K_M")
+    assert got["max_seq_length"] == 8192
+
+
+def test_exact_override_match_beats_a_case_variant(override_store):
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 1024)
+    settings.set_model_override("/models/Foo.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/models/Foo.gguf")["max_seq_length"] == 8192
+    assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 1024
+
+
+def test_ambiguous_case_fallback_matches_nothing(override_store):
+    # Two POSIX paths differing only in case are two files; guessing applies the wrong settings.
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 1024)
+    settings.set_model_override("/models/FOO.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/models/Foo.gguf") == {}
+
+
+def test_request_used_api_key_distinguishes_key_from_session():
+    from auth.authentication import API_KEY_PREFIX
+
+    class _Req:
+        def __init__(self, header):
+            self.headers = {"authorization": header} if header else {}
+
+    assert inference_route._request_used_api_key(_Req(f"Bearer {API_KEY_PREFIX}abc")) is True
+    assert inference_route._request_used_api_key(_Req(f"bearer {API_KEY_PREFIX}abc")) is True
+    assert inference_route._request_used_api_key(_Req("Bearer eyJhbGciOiJIUzI1NiJ9.x")) is False
+    assert inference_route._request_used_api_key(_Req("")) is False
+    assert inference_route._request_used_api_key(_Req(None)) is False
+    # Hot path: a malformed request object must read as "not an API key" rather than raise.
+    assert inference_route._request_used_api_key(object()) is False
+    # A stand-in whose headers answer with anything at all, which is how the load
+    # routes are driven in tests: a monitor label must never take a load down.
+    from unittest.mock import MagicMock
+
+    assert inference_route._request_used_api_key(MagicMock()) is False
+
+
+def test_case_fallback_never_applies_to_a_posix_path(override_store):
+    # Two casings are two models on Linux, so a near miss loads defaults, not the other's pin.
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 8192, gpu_ids = [1])
+    assert settings.get_model_override("/models/Foo.gguf") == {}
+    assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 8192
+
+
+def test_case_fallback_does_apply_to_a_windows_path(override_store):
+    # NTFS is case-insensitive: these name one file, and the browser folds drive paths.
+    settings.set_model_override(r"c:\models\foo.gguf", max_seq_length = 8192)
+    assert settings.get_model_override(r"C:\models\FOO.gguf")["max_seq_length"] == 8192
+    assert settings.get_model_override("C:/Models/Foo.gguf")["max_seq_length"] == 8192
+
+
+def test_case_fallback_applies_to_unc_and_wsl_drive_paths(override_store):
+    settings.set_model_override(r"\\server\share\foo.gguf", max_seq_length = 4096)
+    settings.set_model_override("/mnt/c/models/bar.gguf", max_seq_length = 2048)
+    assert settings.get_model_override(r"\\Server\Share\FOO.gguf")["max_seq_length"] == 4096
+    assert settings.get_model_override("/mnt/C/Models/Bar.gguf")["max_seq_length"] == 2048
+
+
+def test_a_plain_posix_path_under_mnt_stays_case_sensitive(override_store):
+    # Only /mnt/<letter> is a WSL drive mount; /mnt/data is an ordinary case-sensitive mount.
+    settings.set_model_override("/mnt/data/models/foo.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/mnt/data/models/Foo.gguf") == {}
+
+
+def test_an_ambiguous_windows_case_fallback_still_matches_nothing(override_store):
+    # Two keys folding to one has no single answer, so the load takes defaults.
+    settings.set_model_override(r"c:\models\foo.gguf", max_seq_length = 1024)
+    settings.set_model_override("C:/models/FOO.gguf", max_seq_length = 8192)
+    assert settings.get_model_override(r"C:\Models\Foo.gguf") == {}
+
+
+def test_case_fallback_still_covers_repo_ids(override_store):
+    # The migration case this fallback exists for.
+    settings.set_model_override("unsloth/qwen3-8b-gguf:q4_k_m", max_seq_length = 8192)
+    assert settings.get_model_override("unsloth/Qwen3-8B-GGUF:Q4_K_M")["max_seq_length"] == 8192
+
+
+def test_explicit_remove_is_not_blocked_by_stale_invalid_flags(override_store):
+    # remove is the operation discriminator: a rejected flag must not turn a forget into a 400.
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
+    resp = _put("unsloth/B-GGUF", remove = True, llama_extra_args = ["--port", "1234"])
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_explicit_remove_wins_over_config_fields_in_the_same_payload(override_store):
+    # remove is the operation discriminator: a stale field beside it must not make it an update.
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
+    resp = _put("unsloth/B-GGUF", remove = True, max_seq_length = 8192, tensor_parallel = True)
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_posix_colon_in_a_path_is_not_treated_as_a_quant(override_store):
+    # "/models/foo:bar.gguf" is one filename: splitting grafts /models/foo's flags onto it.
+    settings.set_model_override("/models/foo", llama_extra_args = ["--flash-attn"])
+    resp = _put("/models/foo:bar.gguf", max_seq_length = 4096)
+    assert "llama_extra_args" not in resp.overrides["/models/foo:bar.gguf"]
+
+
+def test_unknown_quant_label_on_a_gguf_still_carries_flags_over(override_store):
+    # A .gguf with no quant token is labelled by its stem, so the UI saves ":custom".
+    settings.set_model_override("/models/custom.gguf", llama_extra_args = ["--flash-attn"])
+    resp = _put("/models/custom.gguf:custom", max_seq_length = 4096)
+    assert resp.overrides["/models/custom.gguf:custom"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_bpw_qualified_variants_still_carry_flags_over(override_store):
+    # model_config.py keeps a bits-per-weight modifier on the label, and that form reaches keys.
+    settings.set_model_override("unsloth/Repo-GGUF", llama_extra_args = ["--flash-attn"])
+    resp = _put("unsloth/Repo-GGUF:IQ4_XS-3.53bpw", max_seq_length = 4096)
+    assert resp.overrides["unsloth/Repo-GGUF:IQ4_XS-3.53bpw"]["llama_extra_args"] == [
+        "--flash-attn"
+    ]
+
+
+def test_a_posix_path_variant_folds_while_the_path_does_not(override_store):
+    # The browser lowercases the quant but keeps POSIX path casing.
+    settings.set_model_override("/models/Foo:q4_k_m", max_seq_length = 8192)
+    assert settings.get_model_override("/models/Foo:Q4_K_M")["max_seq_length"] == 8192
+    assert settings.get_model_override("/models/foo:Q4_K_M") == {}
+
+
+def test_an_unknown_gguf_label_is_reachable_in_either_casing(override_store):
+    # The stem-derived label is lowercased in storage while the scanner keeps filename casing.
+    settings.set_model_override("/models/CustomModel.gguf:custommodel", max_seq_length = 8192)
+    got = settings.get_model_override("/models/CustomModel.gguf:CustomModel")
+    assert got["max_seq_length"] == 8192
+    # The path itself is still case-sensitive on POSIX.
+    assert settings.get_model_override("/models/custommodel.gguf:CustomModel") == {}
+
+
+def test_a_posix_colon_filename_is_not_folded_as_a_variant(override_store):
+    # "/models/foo:Bar.gguf" is one filename: folding its tail reaches a different file.
+    settings.set_model_override("/models/foo:bar.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/models/foo:Bar.gguf") == {}
+
+
+def test_a_suffix_the_scanner_would_not_derive_carries_nothing_over(override_store):
+    # Only the scanner's exact label is accepted, so a stray colon suffix reaches nothing.
+    settings.set_model_override("/models/custom.gguf", llama_extra_args = ["--flash-attn"])
+    resp = _put("/models/custom.gguf:something-else", max_seq_length = 4096)
+    assert "llama_extra_args" not in resp.overrides["/models/custom.gguf:something-else"]
+
+
+def test_unknown_quant_label_carries_over_for_a_windows_path(override_store):
+    # Written on Windows, read back where a backslash is an ordinary filename character.
+    settings.set_model_override(r"C:\models\custom.gguf", llama_extra_args = ["--flash-attn"])
+    resp = _put(r"C:\models\custom.gguf:custom", max_seq_length = 4096)
+    assert resp.overrides[r"C:\models\custom.gguf:custom"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_real_quant_suffix_on_a_path_still_carries_flags_over(override_store):
+    settings.set_model_override("/models/x.gguf", llama_extra_args = ["--flash-attn"])
+    resp = _put("/models/x.gguf:Q4_K_M", max_seq_length = 4096)
+    assert resp.overrides["/models/x.gguf:Q4_K_M"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatch):
+    # The pre-flight check can't mirror every loader rule, and a stale pin must not block a load.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings, "get_model_override", lambda mid: {"gpu_ids": [0], "max_seq_length": 4096}
+    )
+
+    async def _usable(ids):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
+
+    calls = {"n": 0}
+
+    async def _load(request, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise HTTPException(
+                status_code = 400,
+                detail = "GPU selection (gpu_ids) is not supported for a DiffusionGemma GGUF",
+            )
+        return await rec(request, *args, **kwargs)
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+
+    _run_hook("unsloth/B-GGUF")
+    assert calls["n"] == 2
+    served = rec.calls[-1]
+    assert not served.gpu_ids
+    assert served.max_seq_length == 4096
+
+
+def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0]})
+
+    async def _usable(ids):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
+
+    calls = {"n": 0}
+
+    async def _load(request, *args, **kwargs):
+        calls["n"] += 1
+        raise HTTPException(status_code = 400, detail = "Corrupt GGUF header")
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+
+    with pytest.raises(HTTPException):
+        _run_hook("unsloth/B-GGUF")
+    assert calls["n"] == 1
+
+
+def test_removal_clears_the_entry_a_load_would_actually_resolve(override_store):
+    # A forget can carry a different casing; removing only the literal key leaves a live entry.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192)
+    assert settings.get_model_override("unsloth/b-gguf:q4_k_m")["max_seq_length"] == 8192
+
+    _put("unsloth/b-gguf:q4_k_m", remove = True)
+    assert settings.get_model_overrides() == {}
+    assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {}
+
+
+def test_save_updates_the_existing_case_variant_instead_of_forking_it(override_store):
+    # The backfill stores lowercase keys while a later UI save carries the catalog's casing.
+    settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
+    _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    assert list(settings.get_model_overrides()) == ["unsloth/b-gguf:q4_k_m"]
+    assert settings.get_model_override("Unsloth/B-GGUF:Q4_K_M")["max_seq_length"] == 4096
+
+
+def test_removal_of_a_path_still_only_touches_the_exact_key(override_store):
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 8192)
+    _put("/models/Foo.gguf", remove = True)
+    # A different file must survive its neighbour being forgotten.
+    assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 8192
+
+
+def test_forget_clears_the_filename_derived_key_a_load_still_reads(override_store):
+    # The picker once keyed a standalone .gguf by its filename quant label; backfill carries it.
+    settings.set_model_override(
+        "/models/Qwen3-8B-Q4_K_M.gguf:q4_k_m",
+        max_seq_length = 8192,
+    )
+    _put("/models/Qwen3-8B-Q4_K_M.gguf", remove = True)
+    assert settings.get_model_override("/models/Qwen3-8B-Q4_K_M.gguf:Q4_K_M") == {}
+    assert settings.get_model_overrides() == {}
+
+
+def test_forget_clears_the_bare_repo_entry_the_quant_inherited_from(override_store):
+    # A save under repo:QUANT copies the flags off a legacy bare entry and leaves it in place,
+    # and the loader falls back to it, so clearing only the qualified key hands them back.
+    settings.set_model_override(
+        "unsloth/B-GGUF",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 8192,
+    )
+    _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    _put("unsloth/B-GGUF:Q4_K_M", remove = True)
+    assert settings.get_model_override("unsloth/B-GGUF") == {}
+    assert settings.get_model_overrides() == {}
+
+
+def test_forget_keeps_a_bare_entry_another_quant_still_has_settings_under(override_store):
+    # The bare entry backs every quant with no entry of its own, so forgetting Q4 must not
+    # strip it while Q8 is still there: this forget is not the last word on the model.
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 8192)
+    settings.set_model_override("unsloth/B-GGUF:Q8_0", max_seq_length = 2048)
+    _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    _put("unsloth/B-GGUF:Q4_K_M", remove = True)
+    assert settings.get_model_override("unsloth/B-GGUF") == {"max_seq_length": 8192}
+    assert settings.get_model_override("unsloth/B-GGUF:Q8_0") == {"max_seq_length": 2048}
+
+
+def test_forget_clears_every_spelling_of_one_model(override_store):
+    # Two spellings of one repo can coexist; clearing only the named one makes the survivor
+    # the sole fold match, so the next load reapplies what was just forgotten.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192)
+    settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
+    _put("unsloth/B-GGUF:Q4_K_M", remove = True)
+    assert settings.get_model_overrides() == {}
+    assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {}
+
+
+def test_forget_of_one_windows_spelling_clears_the_other(override_store):
+    # Windows paths fold, so two spellings are one file and both have to go.
+    settings.set_model_override(r"C:\Models\x.gguf", max_seq_length = 8192)
+    settings.set_model_override("c:/models/X.gguf", max_seq_length = 4096)
+    _put(r"C:\Models\x.gguf", remove = True)
+    assert settings.get_model_overrides() == {}
+
+
+def test_forget_of_a_posix_path_still_spares_its_case_sibling(override_store):
+    # POSIX paths do not fold: two casings are two files, so a forget spares the sibling.
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 8192)
+    settings.set_model_override("/models/Foo.gguf", max_seq_length = 4096)
+    _put("/models/foo.gguf", remove = True)
+    assert list(settings.get_model_overrides()) == ["/models/Foo.gguf"]
+
+
+def test_forget_leaves_another_file_own_derived_key_alone(override_store):
+    # The derived key uses the forgotten file's own path, so a quant-sharing neighbour survives.
+    settings.set_model_override("/models/Other-Q4_K_M.gguf:q4_k_m", max_seq_length = 4096)
+    _put("/models/Qwen3-8B-Q4_K_M.gguf", remove = True)
+    assert settings.get_model_override("/models/Other-Q4_K_M.gguf:Q4_K_M")["max_seq_length"] == 4096
+
+
+def test_forget_of_a_repo_quant_key_derives_nothing(override_store):
+    # Only a bare .gguf path derives a label.
+    settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
+    _put("unsloth/B-GGUF", remove = True)
+    assert settings.get_model_override("unsloth/b-gguf:q4_k_m")["max_seq_length"] == 8192
+
+
 def test_a_tag_that_names_no_quant_resolves_to_the_repo(monkeypatch):
     # A downloaded but unloaded GGUF asked for as org/model:latest missed the resolver,
     # so the switch could not load it (404ing on a quant that was never a quant with
@@ -5020,3 +5969,475 @@ def test_two_local_paths_differing_only_in_case_are_not_the_same_model(monkeypat
     alias = _FakeBackend(loaded_id = "unsloth/Qwen3-4B-GGUF")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: alias)
     assert inference_route._loaded_satisfies("unsloth/qwen3-4b-gguf") is True
+
+
+def test_abs_path_ids_are_recognised_in_either_platform_spelling():
+    """Path() follows the running OS, so a Windows host read "/home/me/x.gguf" as
+    relative and a POSIX host read "C:\\models\\x.gguf" the same way, and either
+    then reached /v1/models as a published host path. Ids outlive the machine
+    that wrote them (settings sync, WSL, a copied config), and the model-override
+    identity already folds both spellings."""
+    from types import SimpleNamespace
+
+    for spelling in ("/home/me/models/x.gguf", "C:\\models\\x.gguf", "//host/share/x.gguf"):
+        assert resolver._is_abs_path_id(spelling) is True, spelling
+        # An alias wins, and with none the path is stripped to a public id.
+        assert (
+            resolver._advertised_loader_id(
+                SimpleNamespace(id = spelling, model_id = "org/X-GGUF", display_name = "X")
+            )
+            == "org/X-GGUF"
+        )
+        advertised = resolver._advertised_loader_id(
+            SimpleNamespace(id = spelling, model_id = None, display_name = None)
+        )
+        assert advertised is not None
+        assert "/" not in advertised and "\\" not in advertised, advertised
+
+    # A repo id has no leading separator, drive or UNC prefix under either reading.
+    for repo_id in ("org/Repo-GGUF", "Repo", "org/Repo-GGUF:Q4_K_M"):
+        assert resolver._is_abs_path_id(repo_id) is False, repo_id
+
+
+def test_fill_absent_fields_put_never_replaces_a_newer_server_value(override_store):
+    """The one-time localStorage backfill reads the override map once and then
+    writes each model in turn, so a save by another tab during that pass was
+    overwritten by this browser's older copy. fill_absent_fields writes only what
+    the entry lacks, so every value already on the server wins."""
+    import routes.settings as settings_route
+
+    # The other tab's save lands first.
+    newer = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", max_seq_length = 8192)
+    settings_route.update_openai_auto_switch_override(newer, "tester")
+
+    # The backfill's write, carrying this browser's older localStorage value.
+    backfill = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF", max_seq_length = 2048, fill_absent_fields = True
+    )
+    resp = settings_route.update_openai_auto_switch_override(backfill, "tester")
+    assert resp.overrides["unsloth/B-GGUF"]["max_seq_length"] == 8192
+
+    # With nothing stored it still creates, or the migration would never run.
+    fresh = settings_route.ModelOverridePayload(
+        model_id = "unsloth/C-GGUF", max_seq_length = 2048, fill_absent_fields = True
+    )
+    resp2 = settings_route.update_openai_auto_switch_override(fresh, "tester")
+    assert resp2.overrides["unsloth/C-GGUF"]["max_seq_length"] == 2048
+
+
+def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entry(monkeypatch):
+    """Codex P1: the override map shipped before the browser mirror did, storing only
+    llama_extra_args and max_seq_length. An upgraded install holds such an entry while
+    localStorage holds the context, KV cache, speculative and GPU settings, and an
+    entry-level skip would strand exactly what the migration exists to carry."""
+    import routes.settings as settings_route
+
+    store = _mock_override_store(monkeypatch)
+
+    legacy = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 8192,
+    )
+    settings_route.update_openai_auto_switch_override(legacy, "tester")
+
+    backfill = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M",
+        # A field the server already has, plus the ones only the browser holds.
+        max_seq_length = 2048,
+        custom_context_length = 32768,
+        kv_cache_dtype = "q8_0",
+        speculative_type = "ngram",
+        gpu_ids = [0, 1],
+        fill_absent_fields = True,
+    )
+    resp = settings_route.update_openai_auto_switch_override(backfill, "tester")
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    # The server's own values survive untouched.
+    assert entry["max_seq_length"] == 8192
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    # The browser-only settings are now there, so an API load applies them.
+    assert entry["custom_context_length"] == 32768
+    assert entry["kv_cache_dtype"] == "q8_0"
+    assert entry["speculative_type"] == "ngram"
+    assert entry["gpu_ids"] == [0, 1]
+    # One entry, not two: the fill resolves onto the key a load reads.
+    assert list(store[settings.MODEL_OVERRIDES_SETTING_KEY]) == ["unsloth/B-GGUF:Q4_K_M"]
+
+    # An ordinary save is still a replacement, or an edit could never clear a field.
+    edit = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096
+    )
+    resp2 = settings_route.update_openai_auto_switch_override(edit, "tester")
+    assert resp2.overrides["unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 4096
+    assert "kv_cache_dtype" not in resp2.overrides["unsloth/B-GGUF:Q4_K_M"]
+
+
+def test_fill_absent_fields_matches_a_legacy_casing_and_never_deletes(override_store):
+    """The stored key can carry the casing an older install typed, and it must not
+    be duplicated or emptied by a fill for the folded spelling."""
+    import routes.settings as settings_route
+
+    stored = settings_route.ModelOverridePayload(
+        model_id = "Unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192
+    )
+    settings_route.update_openai_auto_switch_override(stored, "tester")
+
+    folded = settings_route.ModelOverridePayload(
+        model_id = "unsloth/b-gguf:q4_k_m", max_seq_length = 2048, fill_absent_fields = True
+    )
+    resp = settings_route.update_openai_auto_switch_override(folded, "tester")
+    assert list(resp.overrides) == ["Unsloth/B-GGUF:Q4_K_M"]
+    assert resp.overrides["Unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 8192
+
+    # An all-default fill is a no-op, not the "empty payload means forget" path.
+    empty = settings_route.ModelOverridePayload(
+        model_id = "Unsloth/B-GGUF:Q4_K_M", fill_absent_fields = True
+    )
+    resp2 = settings_route.update_openai_auto_switch_override(empty, "tester")
+    assert resp2.overrides["Unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 8192
+
+    # A fill that is also a delete has no meaning.
+    with pytest.raises(HTTPException) as excinfo:
+        _put("Unsloth/B-GGUF:Q4_K_M", remove = True, fill_absent_fields = True)
+    assert excinfo.value.status_code == 400
+
+
+def test_fill_absent_fields_does_not_break_the_empty_payload_removal(override_store):
+    """fill_absent_fields is a write mode, not a saved field: leaving it in the dumped
+    payload would make every request look non-empty and silently retire the legacy
+    "a payload carrying only model_id forgets this model" contract."""
+    import routes.settings as settings_route
+
+    stored = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", max_seq_length = 4096)
+    settings_route.update_openai_auto_switch_override(stored, "tester")
+    empty = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF")
+    resp = settings_route.update_openai_auto_switch_override(empty, "tester")
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatch):
+    """The real store, not the in-memory stand-in: the read has to share the write's
+    transaction, or a concurrent writer still slips between them."""
+    import storage.studio_db as db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(db, "_schema_ready", False)
+
+    key = "test_map_entry_create"
+    assert db.upsert_app_setting_map_entry(key, "a", {"v": 1}) == {"a": {"v": 1}}
+    # Present: the stored value stays, and a field it lacks is added.
+    assert db.upsert_app_setting_map_entry(key, "a", {"v": 2}, fill_absent_fields = True) == {
+        "a": {"v": 1}
+    }
+    assert db.get_app_setting(key) == {"a": {"v": 1}}
+    assert db.upsert_app_setting_map_entry(key, "a", {"v": 2, "w": 7}, fill_absent_fields = True) == {
+        "a": {"v": 1, "w": 7}
+    }
+    assert db.get_app_setting(key) == {"a": {"v": 1, "w": 7}}
+    # Absent: created.
+    assert db.upsert_app_setting_map_entry(key, "b", {"v": 3}, fill_absent_fields = True) == {
+        "a": {"v": 1, "w": 7},
+        "b": {"v": 3},
+    }
+    # A fill never deletes, even with nothing to store.
+    assert db.upsert_app_setting_map_entry(key, "a", None, fill_absent_fields = True) == {
+        "a": {"v": 1, "w": 7},
+        "b": {"v": 3},
+    }
+    # The ordinary write still replaces and still removes.
+    db.upsert_app_setting_map_entry(key, "a", {"v": 9})
+    db.upsert_app_setting_map_entry(key, "b", None)
+    assert db.get_app_setting(key) == {"a": {"v": 9}}
+
+
+def test_gpu_ids_dedupe_is_not_a_scan_of_the_list_being_built():
+    """gpu_ids arrives from an authenticated client and normalize_model_override
+    de-duplicates it. Testing membership against the growing list walks up to
+    MAX_GPU_ID entries per element; a set keeps the pass linear. Order, bounds and
+    the bool rejection all have to survive the change."""
+    import time
+
+    from utils.openai_auto_switch_settings import MAX_GPU_ID, normalize_model_override
+
+    assert normalize_model_override({"gpu_ids": [3, 1, 3, 0, 1, 2]})["gpu_ids"] == [3, 1, 0, 2]
+    # bool is an int subclass; [True, False] must not pin GPUs 1 and 0.
+    assert normalize_model_override({"gpu_ids": [True, False]}) == {}
+    assert normalize_model_override({"gpu_ids": [MAX_GPU_ID + 1, -1, 2]})["gpu_ids"] == [2]
+
+    ids = [index % (MAX_GPU_ID + 1) for index in range(200_000)]
+    started = time.perf_counter()
+    normalized = normalize_model_override({"gpu_ids": ids})
+    elapsed = time.perf_counter() - started
+    assert len(normalized["gpu_ids"]) == MAX_GPU_ID + 1
+    # The scan version took ~1s for this input on a dev box; a linear pass is ~50ms.
+    assert elapsed < 0.5, elapsed
+
+
+def test_gpu_ids_payload_is_bounded():
+    """A list longer than the number of ids the normalizer can store adds nothing
+    but work, so it is rejected at the boundary. A real device list is tiny."""
+    import pydantic
+
+    import routes.settings as settings_route
+    from utils.openai_auto_switch_settings import MAX_GPU_ID
+
+    assert settings_route.MAX_GPU_IDS == MAX_GPU_ID + 1
+    at_limit = settings_route.ModelOverridePayload(
+        model_id = "x", gpu_ids = list(range(settings_route.MAX_GPU_IDS))
+    )
+    assert len(at_limit.gpu_ids) == settings_route.MAX_GPU_IDS
+    with pytest.raises(pydantic.ValidationError):
+        settings_route.ModelOverridePayload(
+            model_id = "x", gpu_ids = [0] * (settings_route.MAX_GPU_IDS + 1)
+        )
+    # The ordinary case is untouched.
+    assert settings_route.ModelOverridePayload(model_id = "x", gpu_ids = [0, 1]).gpu_ids == [0, 1]
+
+
+# ── codex round: the concrete key beats the advertised alias ──────────
+
+
+def _switch_with_overrides(monkeypatch, resolves_to, stored, requested):
+    """Run the auto-switch hook against a real override map and return the load."""
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = resolves_to, backend = backend, recorder = rec)
+    _mock_override_store(monkeypatch)
+    for key, max_seq_length in stored.items():
+        settings.set_model_override(key, max_seq_length = max_seq_length)
+    _run_hook(requested)
+    assert len(rec.calls) == 1
+    return rec.calls[0]
+
+
+def test_a_loose_gguf_prefers_its_path_keyed_settings_over_the_alias(monkeypatch):
+    """Codex: the settings UI keys a standalone .gguf by its bare path, while
+    override_id is the filename stem /v1/models advertises and an overrides PUT can
+    be written against. Reading the alias first let it shadow the saved settings for
+    good, so an API load kept applying the old flags."""
+    path = "/srv/models/Qwen3-8B-Q4_K_M.gguf"
+    alias = "Qwen3-8B-Q4_K_M"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {alias: 2048, path: 32768},
+        requested = alias,
+    )
+    assert req.max_seq_length == 32768
+
+    # The alias is still read when it is the only key.
+    req2 = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {alias: 2048},
+        requested = alias,
+    )
+    assert req2.max_seq_length == 2048
+
+
+def test_the_filename_label_key_no_longer_shadows_the_bare_path(monkeypatch):
+    """An early build of this feature keyed a standalone .gguf by the quant label
+    derived from its filename. Those entries stay readable, but the bare path the
+    picker writes today comes first."""
+    path = "/srv/models/Qwen3-8B-Q4_K_M.gguf"
+    alias = "Qwen3-8B-Q4_K_M"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {f"{path}:Q4_K_M": 2048, path: 32768},
+        requested = alias,
+    )
+    assert req.max_seq_length == 32768
+
+    req2 = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {f"{path}:Q4_K_M": 2048},
+        requested = alias,
+    )
+    assert req2.max_seq_length == 2048
+
+
+def test_a_variant_qualified_path_key_beats_the_same_quant_under_the_alias(monkeypatch):
+    """An LM Studio dir or a non-active HF cache is configured against its path, so
+    a same-quant entry under the repo id (another copy of the same repo, or a
+    hand-written PUT) must not win over the row the user actually edited."""
+    path = "/srv/lmstudio/publisher/Qwen3-8B-GGUF"
+    repo = "publisher/Qwen3-8B-GGUF"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, "Q4_K_M", repo),
+        stored = {f"{repo}:Q4_K_M": 2048, f"{path}:Q4_K_M": 32768},
+        requested = f"{repo}:Q4_K_M",
+    )
+    assert req.max_seq_length == 32768
+
+
+def test_a_cached_repo_still_resolves_by_its_repo_id(monkeypatch):
+    """The Hub keys a cached repo row by its repo id, which is the advertised id,
+    and no path entry exists for it, so it still resolves on the second try."""
+    snapshot = "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123"
+    repo = "unsloth/Qwen3-8B-GGUF"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (snapshot, "Q4_K_M", repo),
+        stored = {f"{repo}:Q4_K_M": 32768},
+        requested = f"{repo}:Q4_K_M",
+    )
+    assert req.max_seq_length == 32768
+
+    # A bare entry under the repo id keeps working too.
+    req2 = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (snapshot, "Q4_K_M", repo),
+        stored = {repo: 16384},
+        requested = f"{repo}:Q4_K_M",
+    )
+    assert req2.max_seq_length == 16384
+
+
+def test_a_fill_does_not_replay_a_stored_flag_through_validation(monkeypatch):
+    """The migration now writes for entries it used to skip, and an omitted
+    llama_extra_args is normally carried over from the stored entry. Replaying a
+    flag that has been denylisted since it was saved would 400 the one-time
+    migration, which then retries on every start. A fill keeps the stored flags
+    without sending them back."""
+    import routes.settings as settings_route
+    from core.inference import llama_server_args
+
+    store = _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--flash-attn"])
+
+    # The flag is refused from now on, as a later release's denylist would.
+    real_validate = llama_server_args.validate_extra_args
+
+    def _reject_flash_attn(args):
+        if args and "--flash-attn" in args:
+            raise ValueError("--flash-attn is managed by the server.")
+        return real_validate(args)
+
+    monkeypatch.setattr(llama_server_args, "validate_extra_args", _reject_flash_attn)
+
+    fill = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M", custom_context_length = 32768, fill_absent_fields = True
+    )
+    resp = settings_route.update_openai_auto_switch_override(fill, "tester")
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    assert entry["custom_context_length"] == 32768
+    assert list(store[settings.MODEL_OVERRIDES_SETTING_KEY]) == ["unsloth/B-GGUF:Q4_K_M"]
+
+    # An ordinary save still validates what it is handed.
+    with pytest.raises(HTTPException) as excinfo:
+        _put("unsloth/C-GGUF", llama_extra_args = ["--flash-attn"])
+    assert excinfo.value.status_code == 400
+
+
+def test_override_payload_rejects_booleans_for_numeric_fields():
+    """bool subclasses int and pydantic parses non-strictly, so `true` would
+    arrive as 1: `max_seq_length: true` becomes a one-token context and
+    `gpu_ids: [true]` pins GPU 1. _bounded_int rejects bools for exactly that
+    reason, but never sees one, because coercion happens at the route boundary
+    first. Reject them there so that guard is reachable through this path."""
+    import pytest
+    from pydantic import ValidationError
+    from routes.settings import ModelOverridePayload
+
+    for field, value in (
+        ("max_seq_length", True),
+        ("custom_context_length", True),
+        ("spec_draft_n_max", True),
+        ("n_parallel", True),
+        ("gpu_layers", False),
+        ("n_cpu_moe", True),
+        ("gpu_ids", [True]),
+        ("gpu_ids", [0, False, 2]),
+    ):
+        with pytest.raises(ValidationError):
+            ModelOverridePayload(model_id = "unsloth/x-GGUF:Q4_K_M", **{field: value})
+
+    # Only bools are rejected: real values, including real booleans, still validate.
+    ok = ModelOverridePayload(
+        model_id = "unsloth/x-GGUF:Q4_K_M",
+        max_seq_length = 4096,
+        gpu_layers = -1,
+        n_cpu_moe = 0,
+        gpu_ids = [0, 1],
+        tensor_parallel = True,
+        remove = True,
+        fill_absent_fields = True,
+    )
+    assert ok.max_seq_length == 4096
+    assert ok.gpu_ids == [0, 1]
+    assert ok.gpu_layers == -1
+    assert ok.tensor_parallel is True
+    assert ok.remove is True
+    assert ok.fill_absent_fields is True
+
+
+# ── codex round: the alias retirement has to be atomic with the write ──
+
+
+def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkeypatch):
+    """A save writes its target key, then reads the map back to retire the other spelling
+    of the same cached repo, in a second transaction. This route is a plain `def`, so
+    FastAPI runs it in a threadpool: two clients saving one quant, one by repo id and one
+    by the snapshot path an upgraded install still holds, can both write before either
+    cleanup runs and then retire each other's row. Both calls return 200 and nothing is
+    stored. Whichever runs second must retire the first instead."""
+    import threading
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    repo = "unsloth/Qwen3-8B-GGUF:Q4_K_M"
+    snapshot = "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123:Q4_K_M"
+
+    ready = threading.Barrier(2)
+    written = threading.Barrier(2)
+    write_lock = threading.Lock()
+    wrote = set()
+    real_set = settings_route.set_model_override
+
+    def _set_then_sync(model_id, *args, **kwargs):
+        # One write is one transaction in production (BEGIN IMMEDIATE), so keep the fake
+        # store's read-modify-write atomic too: only the gap between writes is on trial.
+        with write_lock:
+            result = real_set(model_id, *args, **kwargs)
+        ident = threading.get_ident()
+        if ident not in wrote:
+            wrote.add(ident)
+            try:
+                # Hold each save just after it stored its own key, so neither looks for
+                # aliases until both are there. Broken instead when the two are serialized:
+                # the second saver cannot reach this while the first is still inside.
+                written.wait(timeout = 1.0)
+            except threading.BrokenBarrierError:
+                pass
+        return result
+
+    monkeypatch.setattr(settings_route, "set_model_override", _set_then_sync)
+
+    failures = []
+
+    def _save(model_id, max_seq_length):
+        try:
+            ready.wait(timeout = 10.0)
+            _put(model_id, max_seq_length = max_seq_length)
+        except BaseException as exc:  # noqa: BLE001 - re-reported below
+            failures.append(exc)
+
+    threads = [
+        threading.Thread(target = _save, args = (repo, 8192)),
+        threading.Thread(target = _save, args = (snapshot, 4096)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 30.0)
+        assert not thread.is_alive()
+    assert not failures, failures
+
+    stored = settings.get_model_overrides()
+    assert list(stored) in ([repo], [snapshot]), stored
+    assert stored[list(stored)[0]]["max_seq_length"] in (4096, 8192)

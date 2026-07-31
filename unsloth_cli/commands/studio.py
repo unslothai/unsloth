@@ -1222,6 +1222,8 @@ def _load_model_via_http(
     import urllib.request
     import urllib.error
 
+    from unsloth_cli._inference import raise_for_deferred_error, require_completed_padded_body
+
     payload: dict = {
         "model_path": model,
         "max_seq_length": max_seq_length,
@@ -1238,8 +1240,9 @@ def _load_model_via_http(
         payload["llama_extra_args"] = list(llama_extra_args)
 
     data = json.dumps(payload).encode()
+    url = f"http://127.0.0.1:{port}/api/inference/load"
     req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/inference/load",
+        url,
         data = data,
         headers = {
             "Content-Type": "application/json",
@@ -1249,7 +1252,14 @@ def _load_model_via_http(
     )
     try:
         with urllib.request.urlopen(req, timeout = timeout) as resp:
-            return json.loads(resp.read())
+            try:
+                body = json.loads(resp.read())
+            except ValueError:
+                body = None  # truncated padded reply; rejected below
+        # A slow load commits its 200 before it finishes and pads the body, so a late
+        # failure arrives in-band; raise it as the HTTPError this function already turns
+        # into the RuntimeError the caller reports. A truncated body is no report at all.
+        return require_completed_padded_body(url, raise_for_deferred_error(url, body))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors = "replace")
         raise RuntimeError(f"Model load failed (HTTP {exc.code}): {body}") from exc

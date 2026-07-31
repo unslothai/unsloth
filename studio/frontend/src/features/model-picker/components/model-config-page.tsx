@@ -40,6 +40,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { syncModelOverride } from "../api/model-overrides";
 import {
   useDefaultChatTemplate,
   useModelMaxPositionEmbeddings,
@@ -62,6 +63,7 @@ import {
   floorMaxSeqLength,
   isDefaultConfig,
   normalizeMaxSeqLength,
+  normalizePerModelConfig,
   resolveInitialConfig,
   savePerModelConfig,
 } from "../model-config/per-model-config";
@@ -699,6 +701,11 @@ interface ModelConfigPageProps {
   initialConfig?: PerModelConfig | null;
   isDiffusion?: boolean;
   variant?: "page" | "sidebar";
+  /**
+   * Page variant only: render the built-in "Run settings" title block. A host that
+   * already shows the model name as its page heading turns this off.
+   */
+  showHeader?: boolean;
 }
 
 export function ModelConfigPage({
@@ -710,6 +717,7 @@ export function ModelConfigPage({
   initialConfig = null,
   isDiffusion = false,
   variant = "page",
+  showHeader = true,
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
@@ -723,9 +731,12 @@ export function ModelConfigPage({
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
+  // What settings are stored under, which is not always what loads. Every read, write
+  // and mirror uses it; the probes keep target.id, since they have to open the model.
+  const configId = target.configId ?? target.id;
   const gpuDevices = useGpuDevices();
   const resolveInitial = () => {
-    const resolved = resolveInitialConfig(target.id, target.ggufVariant);
+    const resolved = resolveInitialConfig(configId, target.ggufVariant);
     if (loadedConfig) {
       return { config: loadedConfig, remembered: resolved.remembered };
     }
@@ -1017,16 +1028,47 @@ export function ModelConfigPage({
     const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
     const effectivePersistenceOnly =
       isActiveModel && effectiveAtBaseline && rememberChanged;
-    const defaultConfig = isDefaultConfig(effectiveRuntimeConfig);
+    // Judge what storage keeps: savePerModelConfig normalizes first, so judging the raw
+    // object reported saved while the write dropped it.
+    const normalizedRuntimeConfig = normalizePerModelConfig(
+      effectiveRuntimeConfig,
+    );
+    const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);
     let saveFailed = false;
+    const evicted: { modelId: string; ggufVariant: string | null }[] = [];
     if (remember) {
       saveFailed = !savePerModelConfig(
-        target.id,
+        configId,
         target.ggufVariant,
-        effectiveRuntimeConfig,
+        normalizedRuntimeConfig,
+        evicted,
       );
     } else {
-      saveFailed = !deletePerModelConfig(target.id, target.ggufVariant);
+      saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
+    }
+    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort:
+    // the localStorage write above already governs this browser, and it is skipped when that
+    // write failed, or the two would permanently disagree. Gated on auto-switch reach, not just
+    // GGUF-ness, since the resolver skips Ollama, and a native-path lease is the same case: the
+    // id is only the file's display name, which the resolver never keys.
+    if (
+      !saveFailed &&
+      (target.apiLoadable ?? target.isGguf) &&
+      !nativePathToken
+    ) {
+      syncModelOverride(
+        configId,
+        target.ggufVariant,
+        remember ? normalizedRuntimeConfig : null,
+      );
+    }
+    // Saving can push the local map over budget and drop other models, whose server
+    // entries would keep applying with nothing able to forget them. Not a Forget: only
+    // the mirrored fields go, and launch flags set through the API stay.
+    for (const dropped of evicted) {
+      syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
+        keepLaunchFlags: true,
+      });
     }
     if (effectivePersistenceOnly) {
       if (saveFailed) {
@@ -1056,7 +1098,7 @@ export function ModelConfigPage({
 
   return (
     <div className="flex flex-col">
-      {variant === "page" && (
+      {variant === "page" && showHeader && (
         <div className="flex items-center gap-2.5 pb-4">
           {onBack && (
             <button

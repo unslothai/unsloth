@@ -1459,7 +1459,7 @@ if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
 elif [ "$_explicit_vulkan_source_build" = true ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
     step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "$C_ERR"
     substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override"
-    exit 1
+    setup_fail 1 "Vulkan was explicitly requested, but this installation requires a source build, which this installer does not support. Use the prebuilt Vulkan bundle or unset the Vulkan override."
 elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
@@ -1578,7 +1578,7 @@ else
         # run reports success on the backend the user asked to replace.
         if [ "$_explicit_vulkan_backend" = true ]; then
             step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
-            exit 1
+            setup_fail 1 "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
         fi
     else
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
@@ -1590,7 +1590,7 @@ else
         if [ "$_explicit_vulkan_backend" = true ]; then
             step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build" "$C_ERR"
             substep "check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG"
-            exit 1
+            setup_fail 1 "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
         else
             substep "falling back to source build"
             _NEED_LLAMA_SOURCE_BUILD=true

@@ -3885,7 +3885,7 @@ if ($LocalLlamaCppLinked) {
     Write-Host ""
     step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "Red"
     substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override" "Yellow"
-    exit 1
+    Exit-SetupFailure "Vulkan was explicitly requested, but this installation requires a source build, which this installer does not support. Use the prebuilt Vulkan bundle or unset the Vulkan override."
 } elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-Host ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
@@ -4057,7 +4057,7 @@ if ($LocalLlamaCppLinked) {
             # run reports success on the backend the user asked to replace.
             if ($explicitVulkanBackend) {
                 step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "Red"
-                exit 1
+                Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
             }
         } else {
             step "llama.cpp" "prebuilt install failed" "Yellow"
@@ -4068,7 +4068,7 @@ if ($LocalLlamaCppLinked) {
             if ($explicitVulkanBackend) {
                 step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build" "Red"
                 substep "Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG" "Yellow"
-                exit 1
+                Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
             } else {
                 substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
                 $NeedLlamaSourceBuild = $true

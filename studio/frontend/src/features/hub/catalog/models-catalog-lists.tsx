@@ -263,6 +263,7 @@ export function DownloadedList({
   compact = false,
   sort,
   onInventoryChange,
+  onOpenModelSettings,
 }: {
   cachedRows: CachedInventoryRow[];
   localRows: LocalInventoryRow[];
@@ -284,6 +285,7 @@ export function DownloadedList({
   compact?: boolean;
   sort: InventorySort;
   onInventoryChange?: () => void;
+  onOpenModelSettings?: (row: CachedInventoryRow | LocalInventoryRow) => void;
 }) {
   // Pinned repos surface first regardless of the active sort; the chosen sort
   // still orders rows within the pinned and unpinned groups.
@@ -383,6 +385,7 @@ export function DownloadedList({
       compact={compact}
       onSelect={onSelect}
       onChange={onInventoryChange}
+      onOpenSettings={onOpenModelSettings}
     />
   );
 

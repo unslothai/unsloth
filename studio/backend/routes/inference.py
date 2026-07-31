@@ -11,6 +11,7 @@ import time
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.requests import ClientDisconnect
 from typing import Any, Callable, List, Literal, Optional, Union
@@ -1008,7 +1009,8 @@ try:
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
         _extra_args_set_spec_type,
-        _hf_offline_if_dns_dead,
+        _hf_offline_if_unreachable,
+        _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _planned_main_cache_types,
@@ -1057,7 +1059,8 @@ except ImportError:
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
         _extra_args_set_spec_type,
-        _hf_offline_if_dns_dead,
+        _hf_offline_if_unreachable,
+        _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _planned_main_cache_types,
@@ -1565,6 +1568,74 @@ def _tracked_cancel_unstarted_cleanup(tracker):
     return _cleanup
 
 
+# Cloudflare quick tunnels (--secure) drop a request whose origin has sent no body
+# bytes for ~100s, and a 600 GB GGUF load runs 100-330s. Measured on a real quick
+# tunnel: headers at t=0 with no body still 524s, one space every 20s survives. So
+# a slow call commits a 200 and pads until its payload is ready; leading whitespace
+# is legal JSON, so clients parse the body as-is.
+_TUNNEL_KEEPALIVE_AFTER_S = 15.0
+_TUNNEL_KEEPALIVE_EVERY_S = 20.0
+
+# Underscored so it cannot collide with a real field or the OpenAI ``error`` envelope.
+_DEFERRED_ERROR_KEY = "_deferred_error"
+
+
+def _deferred_error_body(status_code: int, detail) -> bytes:
+    body = {_DEFERRED_ERROR_KEY: {"status_code": status_code, "detail": detail}}
+    return json.dumps(body).encode()
+
+
+async def _tunnel_safe_json(coro, *, label: str):
+    """Await ``coro``, padding the response body if it outruns the tunnel timer.
+
+    A call finishing within ``_TUNNEL_KEEPALIVE_AFTER_S`` keeps the current
+    contract exactly, HTTPException status code included; every early failure
+    (validation, unknown identifier, download-manager and sidecar 409s) raises in
+    that window. Only a slower call switches to a padded stream, and it must
+    report a late failure in the body because the status line is already gone.
+
+    A client disconnect does not cancel the work: the model stays resident, as
+    it does today.
+    """
+    task = asyncio.ensure_future(coro)
+    # A client that disconnects mid-pad leaves nobody to await the task, and an
+    # unretrieved exception logs "Task exception was never retrieved". Retrieving
+    # it here does not consume it: result() below still raises.
+    task.add_done_callback(lambda t: t.cancelled() or t.exception())
+    done, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_AFTER_S)
+    if done:
+        return task.result()  # re-raises exactly as an un-wrapped await would
+
+    logger.info(
+        f"{label} exceeded {_TUNNEL_KEEPALIVE_AFTER_S:.0f}s; "
+        "padding the response so a proxy cannot time it out"
+    )
+
+    async def _body():
+        while True:
+            finished, _ = await asyncio.wait({task}, timeout = _TUNNEL_KEEPALIVE_EVERY_S)
+            if not finished:
+                yield b" "
+                continue
+            try:
+                payload = task.result()
+            except HTTPException as exc:
+                logger.info(f"{label} failed with {exc.status_code} after the response committed")
+                yield _deferred_error_body(exc.status_code, exc.detail)
+            except Exception as exc:
+                logger.exception(f"{label} failed after the response was committed")
+                yield _deferred_error_body(500, f"{type(exc).__name__}: {exc}")
+            else:
+                yield json.dumps(jsonable_encoder(payload)).encode()
+            return
+
+    return _SameTaskStreamingResponse(
+        _body(),
+        media_type = "application/json",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 async def _aclose_stream_resources(
     *,
     watchers = (),
@@ -1817,8 +1888,29 @@ from core.inference.anthropic_compat import (
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
-from auth.authentication import get_current_subject
+from auth.authentication import API_KEY_PREFIX, get_current_subject
 from state import active_generations
+
+
+def _request_used_api_key(request: Any) -> bool:
+    """True when this request authenticated with an sk-unsloth key.
+
+    Studio's own chat hits these same endpoints with a session JWT, so this is
+    what separates "someone is using Unsloth as an API server" from "someone is
+    using Unsloth".
+    """
+    # Total by construction: this only decides a monitor label and must never fail a
+    # load. Only a real Request hands back a string; the load routes take stand-ins too.
+    try:
+        header = request.headers.get("authorization")
+    except Exception:
+        return False
+    if not isinstance(header, str):
+        return False
+    scheme, _, token = header.partition(" ")
+    return scheme.lower() == "bearer" and token.startswith(API_KEY_PREFIX)
+
+
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
@@ -3868,6 +3960,9 @@ def _target_is_vision(load_path: str) -> bool:
     # paths, where the token is unused, but the rule requires it regardless).
     from utils.models.model_config import is_vision_model
     try:
+        # Deliberately unguarded: the resolver only yields local paths, so this returns
+        # from the mmproj filesystem branch without touching the hub. A reachability
+        # probe here would add seconds per request and prevent nothing.
         return bool(is_vision_model(load_path, hf_token = os.environ.get("HF_TOKEN")))
     except Exception as exc:
         # Detection failure: don't block the swap, let the load decide.
@@ -4067,6 +4162,7 @@ async def _maybe_auto_download_model(
     fastapi_request: Optional[Request],
     *,
     require_vision: bool = False,
+    current_subject: Optional[str] = None,
 ) -> None:
     """Opt-in: start fetching a named GGUF this server doesn't have.
 
@@ -4089,6 +4185,9 @@ async def _maybe_auto_download_model(
             requested_model,
             hf_token = _auto_download_hf_token(fastapi_request),
             require_vision = require_vision,
+            subject = current_subject,
+            # These endpoints also serve Studio's chat on a JWT, so only mark real API traffic.
+            via_api_key = _request_used_api_key(fastapi_request),
         )
     except Exception as exc:
         # Never turn a servable request into a 500 over the download attempt.
@@ -4108,11 +4207,41 @@ async def _maybe_auto_download_model(
         if isinstance(path, str)
         else refusal.message
     )
+    _record_refused_request(fastapi_request, requested_model, refusal, current_subject)
     raise HTTPException(
         status_code = refusal.status,
         detail = detail,
         headers = ({"Retry-After": str(refusal.retry_after)} if refusal.retry_after else None),
     )
+
+
+def _record_refused_request(
+    fastapi_request: Optional[Request],
+    requested_model: str,
+    refusal: Any,
+    current_subject: Optional[str],
+) -> None:
+    """Log the refused call itself, not just the download it is waiting on.
+
+    The refusal replaces the request, so the handler's own ``api_monitor.start``
+    never runs. Only the caller that dispatched a download gets a row from
+    ``record_lifecycle``; anyone refused while it runs left no trace at all, and a
+    download some other caller started carries their attribution, so an API-key
+    client waiting on it never opened the overlay and read as Studio's own traffic.
+    """
+    state = getattr(fastapi_request, "state", None)
+    if getattr(state, "skip_api_monitor", False):
+        return
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    entry_id = api_monitor.start(
+        endpoint = path if isinstance(path, str) else "/v1",
+        method = str(getattr(fastapi_request, "method", "") or "POST"),
+        model = requested_model,
+        prompt = "",
+        subject = current_subject,
+        via_api_key = _request_used_api_key(fastapi_request),
+    )
+    api_monitor.fail(entry_id, refusal.message)
 
 
 def _loaded_satisfies(requested: str) -> bool:
@@ -4417,6 +4546,7 @@ async def _maybe_auto_switch_model(
         get_openai_auto_switch_enabled,
         get_auto_unload_idle_seconds,
         get_model_override,
+        model_override_load_kwargs,
     )
     from core.inference.local_model_resolver import resolve_local_gguf
     from core.inference.llama_keepwarm import (
@@ -4457,7 +4587,10 @@ async def _maybe_auto_switch_model(
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
                 await _maybe_auto_download_model(
-                    requested_model, fastapi_request, require_vision = require_vision
+                    requested_model,
+                    fastapi_request,
+                    require_vision = require_vision,
+                    current_subject = current_subject,
                 )
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
@@ -4565,22 +4698,84 @@ async def _maybe_auto_switch_model(
                         if _already_serving():
                             _record_serving_alias()
                             return
-                        # Apply this model's saved launch flags so the swap honors the config.
-                        override = get_model_override(override_id)
+                        # Apply the saved launch config so an API swap loads as the picker
+                        # would. Order: variant-qualified keys before bare ids, and the
+                        # load path before the advertised id, since the settings UI keys
+                        # local rows by that path while override_id is a derived alias, so
+                        # reading the alias first let an older entry shadow a fresh save. A
+                        # cached repo has no path entry and resolves on the second try; an
+                        # early build keyed a loose .gguf by its filename label, so
+                        # "<path>:LABEL" is read too, after the bare path used today.
+                        file_variant = None
+                        if not variant and target_id.lower().endswith(".gguf"):
+                            from hub.utils.gguf import extract_quant_label
+                            file_variant = extract_quant_label(os.path.basename(target_id))
+                        override = {}
+                        for override_key in (
+                            f"{target_id}:{variant}" if variant else None,
+                            f"{override_id}:{variant}" if variant else None,
+                            target_id,
+                            f"{target_id}:{file_variant}" if file_variant else None,
+                            override_id,
+                        ):
+                            if not override_key:
+                                continue
+                            override = get_model_override(override_key)
+                            if override:
+                                break
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-                        if override.get("llama_extra_args") is not None:
-                            load_kwargs["llama_extra_args"] = override["llama_extra_args"]
-                        if override.get("max_seq_length") is not None:
-                            load_kwargs["max_seq_length"] = override["max_seq_length"]
+                        load_kwargs.update(
+                            model_override_load_kwargs(
+                                override,
+                                # Set for every GGUF the resolver returns; the reload
+                                # stash carries the quant it froze.
+                                is_gguf = bool(variant) or target_id.lower().endswith(".gguf"),
+                            )
+                        )
+                        saved_gpu_ids = load_kwargs.get("gpu_ids")
+                        if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
+                            saved_gpu_ids
+                        ):
+                            # Stale pin (GPU removed, another host): drop the one dead
+                            # field rather than 400 the whole load.
+                            load_kwargs.pop("gpu_ids", None)
+                            logger.warning(
+                                "Dropping saved gpu_ids %s for %s: not available here.",
+                                saved_gpu_ids,
+                                override_id,
+                            )
                         # Reuse the load impl so its dedup, tensor fallback, and threading
                         # apply. Call the impl directly: we already hold the lifecycle gate
                         # the /load route would otherwise take, so the route would deadlock.
-                        await _load_model_impl(
-                            LoadRequest(**load_kwargs),
-                            fastapi_request,
-                            current_subject,
-                            current_request_counted = True,
-                        )
+                        try:
+                            await _load_model_impl(
+                                LoadRequest(**load_kwargs),
+                                fastapi_request,
+                                current_subject,
+                                current_request_counted = True,
+                            )
+                        except HTTPException as exc:
+                            # The pre-flight check cannot mirror every loader gpu_ids rule,
+                            # and a stale pin must never block a request, so retry without it.
+                            if not (
+                                exc.status_code == 400
+                                and load_kwargs.get("gpu_ids")
+                                and "gpu" in str(exc.detail).lower()
+                            ):
+                                raise
+                            logger.warning(
+                                "Retrying %s without saved gpu_ids %s: %s",
+                                override_id,
+                                load_kwargs.get("gpu_ids"),
+                                exc.detail,
+                            )
+                            load_kwargs.pop("gpu_ids", None)
+                            await _load_model_impl(
+                                LoadRequest(**load_kwargs),
+                                fastapi_request,
+                                current_subject,
+                                current_request_counted = True,
+                            )
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
@@ -4819,6 +5014,42 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     except Exception as e:
         logger.debug("Could not identify diffusion GGUF for training guard: %s", e)
     return True if name_says_diffusion else None
+
+
+async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
+    """Whether a per-model GPU pin is usable on this machine right now.
+
+    normalize_model_override cannot know the device list, so it stores whatever
+    was valid where the config was written. This is the load-time reconciliation
+    for the device-availability rules, which are the ones that go stale.
+
+    Deliberately not exhaustive: model-dependent rules (a Vulkan diffusion GGUF
+    refuses gpu_ids outright) need a ModelConfig this has no reason to build.
+    The caller's retry-without-the-pin covers those, and covers rules added
+    later, so a check missing here costs one extra attempt, not the load.
+    """
+    try:
+        from utils.hardware import DeviceType, get_device
+        from utils.hardware.hardware import resolve_requested_gpu_ids
+
+        is_vulkan = LlamaCppBackend._is_vulkan_backend()
+        if get_device() == DeviceType.XPU and not is_vulkan:
+            # Rejected outright on XPU.
+            return False
+        resolved = resolve_requested_gpu_ids(gpu_ids, is_vulkan = is_vulkan)
+        if is_vulkan and resolved:
+            # Vulkan ordinals are their own index space, so presence needs the ggml probe.
+            binary = LlamaCppBackend._find_llama_server_binary()
+            if binary:
+                probed = {
+                    gpu[0]
+                    for gpu in await asyncio.to_thread(LlamaCppBackend._get_gpu_memory, binary)
+                }
+                if not {int(gpu_id) for gpu_id in resolved}.issubset(probed):
+                    return False
+        return True
+    except Exception:
+        return False
 
 
 def _reject_draft_device_with_gpu_ids(
@@ -5466,6 +5697,19 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    return await _tunnel_safe_json(
+        load_model_gated(request, fastapi_request, current_subject), label = "Model load"
+    )
+
+
+async def load_model_gated(request: LoadRequest, fastapi_request: Request, current_subject: str):
+    """Everything ``POST /load`` does except the tunnel-safe padding.
+
+    In-process callers (preview) must await THIS, not the route: the route's slow
+    path returns a StreamingResponse nobody in-process drains, so awaiting it would
+    return mid-load and hide a late failure in an unread body. This blocks until the
+    model is resident and raises the real exception.
+    """
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate
@@ -5511,6 +5755,10 @@ async def _load_model_impl(
         event = "load",
         model = _lifecycle_model_label(request.model_path, request.gguf_variant),
         running = True,
+        # Auto-switch loads run before the request row opens, so a failure leaves only this.
+        via_api_key = _request_used_api_key(fastapi_request),
+        # The row is shared, so name its owner or the overlay pops open in unrelated tabs.
+        subject = current_subject,
     )
 
     native_grant_backed = False
@@ -5740,14 +5988,19 @@ async def _load_model_impl(
         cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active)
 
         # is_lora auto-detected from adapter_config.json on disk/HF.
-        # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
-        # checks before the worker starts.
-        with _hf_offline_if_dns_dead():
-            config = ModelConfig.from_identifier(
-                model_id = model_identifier,
-                hf_token = request.hf_token,
-                gguf_variant = request.gguf_variant,
-            )
+        # Probe wrap so offline loads skip 30-60s of soft-failed network checks before
+        # the worker starts. Off-loop: the guard can spend seconds on DNS plus a HEAD and
+        # its TCP fallback, and this handler is awaited directly by the route, so running
+        # it inline would stall every unrelated request. Same shape as /validate.
+        def _resolve_config():
+            with _hf_offline_if_unreachable_for(model_identifier):
+                return ModelConfig.from_identifier(
+                    model_id = model_identifier,
+                    hf_token = request.hf_token,
+                    gguf_variant = request.gguf_variant,
+                )
+
+        config = await asyncio.to_thread(_resolve_config)
 
         if not config:
             raise HTTPException(
@@ -5806,7 +6059,13 @@ async def _load_model_impl(
         # to match. Off-loop: tier resolution reads configs.
         if effective_load_in_4bit and not config.is_gguf:
             from utils.transformers_version import latest_tier_active_for
-            if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
+            if await asyncio.to_thread(
+                _offline_guarded,
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                latest_tier_active_for,
+                config.identifier,
+                request.hf_token,
+            ):
                 effective_load_in_4bit = False
                 logger.info(
                     f"Latest-transformers sidecar active for '{model_log_label}' - "
@@ -5815,8 +6074,10 @@ async def _load_model_impl(
                 )
 
         # Apply the training coexistence policy before the unload step below
-        # frees the resident model. Off-loop: the default-mode guard does sync work.
+        # frees the resident model. Off-loop and guarded: the guard does sync HF work.
         await asyncio.to_thread(
+            _offline_guarded,
+            (model_identifier, config.identifier, getattr(config, "base_model", None)),
             _guard_chat_load_against_training,
             config,
             model_identifier = model_identifier,
@@ -6161,10 +6422,11 @@ async def _load_model_impl(
                 current_request_counted = current_request_counted,
                 timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
             )
-        # Unload any active GGUF model first
+        # Unload any active GGUF model first, off-loop: a 600 GB teardown measures
+        # 160s and on-loop would block _tunnel_safe_json's own padding.
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
-            llama_backend.unload_model()
+            await asyncio.to_thread(llama_backend.unload_model)
 
         # Shut down any export subprocess to free VRAM
         try:
@@ -6347,6 +6609,44 @@ async def _load_model_impl(
         api_monitor.fail_open(_load_event, "Load did not complete")
 
 
+def _any_remote(targets) -> bool:
+    """True unless every target is a local path. Falsy entries are skipped (no base to
+    read); anything unresolvable counts as remote, since guarding a local read costs one
+    memoised verdict while missing a remote one costs the retry backoff."""
+    from utils.paths import is_local_path
+
+    for target in (targets,) if isinstance(targets, str) else targets or ():
+        if not target:
+            continue  # no base is not an unknown base: nothing to read, nothing to guard
+        try:
+            if not (isinstance(target, str) and is_local_path(target)):
+                return True
+        except Exception:
+            return True  # unresolvable: guard, since missing a remote read costs the backoff
+    return False
+
+
+def _offline_guarded(targets, fn, /, *args, **kwargs):
+    """Run one blocking preflight inside the same forced-offline window as config
+    resolution. The config is not the only remote read here: the upgrade, trust-remote-code
+    and sizing preflights each fetch raw metadata, and would otherwise burn the retry
+    backoff the guard exists to skip. The verdict is memoised, so this costs no extra
+    probe. Call from a worker thread: the guard is process-global and blocks on a cold
+    verdict.
+
+    ``targets`` is what this call actually READS, not the outer request, because a local
+    adapter can resolve to a remote base and the base is what gets fetched. Positional-only,
+    so a wrapped call's own model_identifier kwarg cannot collide."""
+    from contextlib import nullcontext
+
+    # The module-level symbol, not a fresh import: route tests patch
+    # routes.inference._hf_offline_if_unreachable to stay deterministic, and a local
+    # re-import would bypass the patch and run a real probe.
+    ctx = _hf_offline_if_unreachable() if _any_remote(targets) else nullcontext()
+    with ctx:
+        return fn(*args, **kwargs)
+
+
 def _requires_trust_remote_code_for_model(
     model_identifier: str, hf_token: Optional[str] = None
 ) -> bool:
@@ -6429,7 +6729,10 @@ async def validate_model(
     Checks that ModelConfig.from_identifier() can resolve model_path, but does
     NOT load model weights into GPU memory.
     """
-    from core.inference.llama_cpp import LlamaServerNotFoundError
+    from core.inference.llama_cpp import (
+        LlamaServerNotFoundError,
+        _hf_offline_if_unreachable_for,
+    )
 
     native_grant_backed = False
     model_log_label = request.model_path
@@ -6437,11 +6740,18 @@ async def validate_model(
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
-        config = ModelConfig.from_identifier(
-            model_id = model_identifier,
-            hf_token = request.hf_token,
-            gguf_variant = request.gguf_variant,
-        )
+
+        # The frontend validates before it loads, so this needs the same guard as
+        # /load; otherwise the stall just moves here and /load is never reached.
+        def _resolve_config():
+            with _hf_offline_if_unreachable_for(model_identifier):
+                return ModelConfig.from_identifier(
+                    model_id = model_identifier,
+                    hf_token = request.hf_token,
+                    gguf_variant = request.gguf_variant,
+                )
+
+        config = await asyncio.to_thread(_resolve_config)
 
         if not config:
             raise HTTPException(
@@ -6481,7 +6791,13 @@ async def validate_model(
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             # Resolve a LOCAL or REMOTE adapter's base so its code/weights are reviewed too.
-            _base = get_base_model_from_lora_identifier(model_identifier, request.hf_token)
+            _base = await asyncio.to_thread(
+                _offline_guarded,
+                model_identifier,
+                get_base_model_from_lora_identifier,
+                model_identifier,
+                request.hf_token,
+            )
             if _base:
                 security_targets.append(_base)
         except Exception:
@@ -6499,7 +6815,11 @@ async def validate_model(
             # Cover [adapter, base]: the worker activates transformers for the base model.
             for _target in security_targets:
                 _upgrade = await asyncio.to_thread(
-                    check_upgrade_for_model, _target, request.hf_token
+                    _offline_guarded,
+                    _target,
+                    check_upgrade_for_model,
+                    _target,
+                    request.hf_token,
                 )
                 if _upgrade is not None:
                     transformers_upgrade = TransformersUpgradeInfo(**_upgrade)
@@ -6511,9 +6831,14 @@ async def validate_model(
         # exactly as /load does.
         requires_trust_remote_code = False
         if not is_gguf:
-            requires_trust_remote_code = any(
-                _requires_trust_remote_code_for_model(_t, request.hf_token)
-                for _t in security_targets
+            # Reads raw config/tokenizer JSON, so guarded and off-loop like the rest.
+            requires_trust_remote_code = await asyncio.to_thread(
+                _offline_guarded,
+                security_targets,
+                lambda: any(
+                    _requires_trust_remote_code_for_model(_t, request.hf_token)
+                    for _t in security_targets
+                ),
             )
 
         # Mirror /load's latest-sidecar 16-bit flip so the guard sizes it the same way. An
@@ -6532,15 +6857,21 @@ async def validate_model(
                 and not requires_trust_remote_code
             )
             if _install_only_upgrade or await asyncio.to_thread(
-                latest_tier_active_for, config.identifier, request.hf_token
+                _offline_guarded,
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                latest_tier_active_for,
+                config.identifier,
+                request.hf_token,
             ):
                 effective_load_in_4bit = False
         # A metadata-only probe reads the GGUF header and allocates no VRAM, so the
         # training guard must not refuse it. Real loads omit include_context_length /
         # include_chat_template, and /load applies the guard again.
         if not (request.include_context_length or request.include_chat_template):
-            # Off-loop: guard does sync nvidia-smi / HF work.
+            # Off-loop and guarded: the guard does sync nvidia-smi / HF work.
             await asyncio.to_thread(
+                _offline_guarded,
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
                 _guard_chat_load_against_training,
                 config,
                 model_identifier = model_identifier,
@@ -6572,8 +6903,15 @@ async def validate_model(
         # already resolved above for the sizing flip).
         requires_security_review = False
         if not is_gguf:
-            requires_security_review = any(
-                _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
+            # _fetch_security_status does hf_model_info with 10s and 20s timeouts, so this
+            # needs the same window and worker thread as the preflights above.
+            requires_security_review = await asyncio.to_thread(
+                _offline_guarded,
+                security_targets,
+                lambda: any(
+                    _requires_security_review_for_model(_t, request.hf_token)
+                    for _t in security_targets
+                ),
             )
         # Native context length, read from the local GGUF header when present.
         # Lets the staged ("Load on selection" off) flow populate the context
@@ -6935,6 +7273,19 @@ async def install_latest_transformers_route(
 
 @router.post("/unload", response_model = UnloadResponse)
 async def unload_model(request: UnloadRequest, current_subject: str = Depends(get_current_subject)):
+    """Unload a model from memory.
+
+    Padded like /load: a 600 GB GGUF teardown measures 160s, past the proxy timer.
+    See ``_tunnel_safe_json``. No in-process caller today; a future one must await
+    ``_unload_model_impl`` (as preview awaits ``load_model_gated``), since the padded
+    path returns a StreamingResponse, not the payload.
+    """
+    return await _tunnel_safe_json(
+        _unload_model_impl(request, current_subject), label = "Model unload"
+    )
+
+
+async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     """
     Unload a model from memory.
     Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
@@ -7034,7 +7385,9 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 await _drain_and_recancel_before_teardown(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
-                llama_backend.unload_model()
+                # Off-loop like the in-flight branch above: a 160s teardown on the
+                # loop would block this route's own padding.
+                await asyncio.to_thread(llama_backend.unload_model)
                 note_model_unloaded()
                 api_monitor.record_lifecycle(
                     event = "unload",
@@ -7143,12 +7496,31 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     # the UI can explain the empty list instead of claiming there was no API traffic.
     return {
         "status": operating_status,
+        # The clock every entry's started_at is on. The monitor dates its first snapshot
+        # against this, since the browser's clock need not agree over a tunnel.
+        "server_time": time.time(),
         "active_model": active_model,
         "context_length": _monitor_context_length(),
         "active_requests": active_requests,
         "logging_enabled": api_monitor.enabled,
         "entries": api_monitor.snapshot(include_details = False, subject = current_subject),
     }
+
+
+@studio_router.delete("/monitor")
+async def clear_api_monitor(current_subject: str = Depends(get_current_subject)):
+    """Drop this caller's recorded API history so a debugging session starts clean.
+
+    Scoped to the current subject, like every read on the monitor: an unscoped
+    wipe would erase another user's history and zero their active-request count
+    while their generation is still streaming.
+
+    The caller's own in-flight requests are dropped from the log too; they keep
+    streaming to their client, they just stop being reported here (a later append
+    re-adds nothing, since the entry id no longer resolves).
+    """
+    api_monitor.clear(subject = current_subject)
+    return {"cleared": True}
 
 
 @studio_router.get("/monitor/{entry_id}")
@@ -8636,6 +9008,7 @@ async def _proxy_to_external_provider(
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
             endpoint = request.url.path,
+            via_api_key = _request_used_api_key(request),
             method = request.method,
             model = model,
             prompt = _monitor_prompt_from_messages(payload.messages),
@@ -9199,6 +9572,7 @@ async def openai_chat_completions(
         if not getattr(request.state, "skip_api_monitor", False):
             tts_monitor_id = api_monitor.start(
                 endpoint = request.url.path,
+                via_api_key = _request_used_api_key(request),
                 method = request.method,
                 model = model_label,
                 prompt = _monitor_prompt_from_messages(payload.messages),
@@ -9269,6 +9643,7 @@ async def openai_chat_completions(
         if not getattr(request.state, "skip_api_monitor", False):
             monitor_id = api_monitor.start(
                 endpoint = request.url.path,
+                via_api_key = _request_used_api_key(request),
                 method = request.method,
                 model = model_name,
                 prompt = _monitor_prompt_from_messages(payload.messages),
@@ -9422,6 +9797,7 @@ async def openai_chat_completions(
     if monitor_id is None and not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
             endpoint = request.url.path,
+            via_api_key = _request_used_api_key(request),
             method = request.method,
             model = model_name,
             prompt = _monitor_prompt_from_messages(payload.messages),
@@ -12381,6 +12757,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     monitor_model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default")
     monitor_id = api_monitor.start(
         endpoint = request.url.path,
+        via_api_key = _request_used_api_key(request),
         method = request.method,
         model = monitor_model,
         prompt = prompt_text,
@@ -12643,6 +13020,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
             endpoint = request.url.path,
+            via_api_key = _request_used_api_key(request),
             method = request.method,
             model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
             prompt = prompt_text,
@@ -13273,6 +13651,7 @@ async def _responses_non_streaming(
         monitor_id = api_monitor.start(
             endpoint = getattr(getattr(request, "url", None), "path", "/v1/responses"),
             method = getattr(request, "method", "POST"),
+            via_api_key = _request_used_api_key(request),
             model = payload.model,
             prompt = _monitor_prompt_from_messages(messages),
             context_length = _monitor_context_length(),
@@ -14483,6 +14862,7 @@ async def openai_responses(
         if not getattr(request.state, "skip_api_monitor", False):
             monitor_id = api_monitor.start(
                 endpoint = request.url.path,
+                via_api_key = _request_used_api_key(request),
                 method = request.method,
                 model = payload.model,
                 prompt = _monitor_prompt_from_messages(messages),
@@ -15133,6 +15513,7 @@ async def anthropic_messages(
         monitor_id = api_monitor.start(
             endpoint = getattr(request_url, "path", "/v1/messages"),
             method = getattr(request, "method", "POST"),
+            via_api_key = _request_used_api_key(request),
             model = model_name,
             prompt = _monitor_prompt_from_messages(openai_messages),
             context_length = monitor_context_length,
