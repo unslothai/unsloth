@@ -2826,13 +2826,16 @@ def test_custom_provider_is_treated_as_template_applying():
     assert 'provider_type == "custom"' in providers
 
 
-@pytest.mark.parametrize("schema", [
-    {"enum": [["<s>"]]},
-    {"const": {"tag": "</think>"}},
-    {"enum": [{"</think>": 1}]},
-    {"default": {"a": ["<|im_end|>"]}},
-    {"properties": {"x": {"enum": [[["[INST]"]]]}}},
-])
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"enum": [["<s>"]]},
+        {"const": {"tag": "</think>"}},
+        {"enum": [{"</think>": 1}]},
+        {"default": {"a": ["<|im_end|>"]}},
+        {"properties": {"x": {"enum": [[["[INST]"]]]}}},
+    ],
+)
 def test_tool_with_nested_semantic_literals_is_dropped(schema):
     """JSON Schema lets an enum entry or a const be any value, so a compound literal is
     still something the model has to reproduce exactly and the MCP server validates. Only
@@ -2844,12 +2847,21 @@ def test_tool_with_nested_semantic_literals_is_dropped(schema):
 
 def test_clean_compound_literals_keep_their_tool():
     """A compound literal with no markup is ordinary schema and keeps its tool."""
-    tools = [{"type": "function", "function": {"name": "f", "parameters": {
-        "type": "object",
-        "enum": [["a", "b"], {"k": "v"}],
-        "const": {"tag": "ok"},
-        "default": 5,
-        "description": "picks one </think> of them"}}}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "enum": [["a", "b"], {"k": "v"}],
+                    "const": {"tag": "ok"},
+                    "default": 5,
+                    "description": "picks one </think> of them",
+                },
+            },
+        }
+    ]
     out = neutralize_tool_descriptions(tools)
     assert len(out) == 1
     assert out[0]["function"]["parameters"]["enum"] == [["a", "b"], {"k": "v"}]
