@@ -1252,6 +1252,8 @@ def _classify_audio_capability(
             else audio_type
         )
         return classified, model_type in _AUDIO_INPUT_MODEL_TYPES, False
+    if audio_type is None and is_embedding_model(model_name, hf_token):
+        return None, False, False
     return (
         audio_type,
         is_audio_input_type(audio_type),

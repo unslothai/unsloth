@@ -54,6 +54,13 @@ def test_non_audio_tokens_classify_none():
     assert _classify(["<bos>", "<eos>", "<pad>"]) is None
 
 
+def test_standalone_encoder_is_not_chat_capable(monkeypatch):
+    monkeypatch.setattr(model_config, "_raw_config_model_type", lambda *args, **kwargs: "bert")
+    monkeypatch.setattr(model_config, "is_embedding_model", lambda *args, **kwargs: True)
+
+    assert _classify_audio_capability("org/encoder", None) == (None, False, False)
+
+
 def test_structured_audio_chat_family_overrides_codec_markers(monkeypatch):
     monkeypatch.setattr(
         model_config,

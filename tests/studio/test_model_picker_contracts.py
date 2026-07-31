@@ -124,6 +124,21 @@ def test_chat_autoload_validates_server_active_model_capability_before_adoption(
     assert "await options.acceptStatus(status)" in adopt_fn
 
 
+def test_chat_autoload_capability_rejection_warns_before_default_download():
+    """An all-non-chat cache must warn, not start downloading the default model."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
+    auto_load = auto_load.split("export function createOpenAIStreamAdapter", 1)[0]
+
+    capability_stop = auto_load.index("if (blockedByCapability &&")
+    default_download = auto_load.index("// No cached models — try downloading")
+    guard = auto_load[capability_stop:default_download]
+
+    assert capability_stop < default_download
+    assert "loadAttempts === 0" in guard
+    assert "blockedByCapability: true" in guard
+
+
 def test_recipe_model_load_toast_is_persistent_and_dismissible():
     """Recipe model loading uses the same dismissible persistent lifecycle as
     chat loading because both call the non-abortable loadModel API."""

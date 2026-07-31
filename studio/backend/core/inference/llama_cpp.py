@@ -1260,6 +1260,16 @@ def _cached_variant_candidates(
         logger.debug(f"Cache lookup for variant failed: {e}")
 
 
+def _cached_candidate_has_required_mmproj(
+    candidate: Optional[tuple[str, str, list[str], Path]],
+    require_mmproj: bool,
+) -> bool:
+    """Whether an exact cached candidate carries its projector in that snapshot."""
+    if candidate is None:
+        return False
+    return not require_mmproj or _pick_mmproj(_gguf_snapshot_files(candidate[3])) is not None
+
+
 def _cached_candidate_matches_revision_size(
     repo_id: str, candidate: tuple[str, str, list[str], Path], hf_token: Optional[str]
 ) -> bool:
@@ -5810,6 +5820,7 @@ class LlamaCppBackend:
         hf_token: Optional[str] = None,
         force: bool = False,
         allow_smaller_fallback: bool = True,
+        require_mmproj: bool = False,
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """Download GGUF file(s) from HuggingFace. Returns local path.
@@ -5819,9 +5830,10 @@ class LlamaCppBackend:
 
         ``force`` re-fetches even when a (possibly stale) blob is cached.
         ``allow_smaller_fallback=False`` raises on low disk instead of silently
-        switching to a smaller quant. ``cancel_event`` overrides
-        ``self._cancel_event`` so an update can use a private event without
-        touching the shared one; defaults to the shared event.
+        switching to a smaller quant. ``require_mmproj`` prevents reusing a
+        cached weight snapshot that lacks its matching projector. ``cancel_event``
+        overrides ``self._cancel_event`` so an update can use a private event
+        without touching the shared one; defaults to the shared event.
         """
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         from utils.hf_cache_settings import get_hf_cache_paths
@@ -5884,6 +5896,7 @@ class LlamaCppBackend:
                 cached_main = cached_gguf_for_load(
                     hf_repo,
                     hf_variant,
+                    require_mmproj = require_mmproj,
                     verify_sizes = True,
                     hf_token = hf_token,
                 )
@@ -5891,7 +5904,7 @@ class LlamaCppBackend:
                 candidate = _cached_complete_candidate(hf_repo, gguf_filename, gguf_extra_shards)
                 cached_main = (
                     candidate[0]
-                    if candidate is not None
+                    if _cached_candidate_has_required_mmproj(candidate, require_mmproj)
                     and _cached_candidate_matches_revision_size(hf_repo, candidate, hf_token)
                     else None
                 )
@@ -5991,10 +6004,10 @@ class LlamaCppBackend:
                         fallback_candidate = _cached_complete_candidate(
                             hf_repo, gguf_filename, gguf_extra_shards
                         )
-                        if fallback_candidate is not None and (
-                            _cached_candidate_matches_revision_size(
-                                hf_repo, fallback_candidate, hf_token
-                            )
+                        if _cached_candidate_has_required_mmproj(
+                            fallback_candidate, require_mmproj
+                        ) and _cached_candidate_matches_revision_size(
+                            hf_repo, fallback_candidate, hf_token
                         ):
                             logger.info(f"Reusing cached fallback GGUF: {fallback_candidate[0]}")
                             return fallback_candidate[0]
@@ -6075,8 +6088,12 @@ class LlamaCppBackend:
         if cancel_event.is_set():
             return None
 
-        # Keep companion files in the main GGUF's snapshot.
+        # Keep companion files in the main GGUF's snapshot and pin any missing
+        # companion download to that exact revision.
+        near_revision: Optional[str] = None
         if near_path:
+            snapshot = _snapshot_dir_of(near_path)
+            near_revision = snapshot.name if snapshot is not None else None
             cached = _companion_snapshot_sibling(near_path, pick)
             if cached:
                 logger.info("Reusing cached %s: %s", label, cached)
@@ -6101,7 +6118,13 @@ class LlamaCppBackend:
             if cancel_event.is_set():
                 return None
             try:
-                target = pick(list_repo_files(hf_repo, token = hf_token))
+                target = pick(
+                    list_repo_files(
+                        hf_repo,
+                        token = hf_token,
+                        revision = near_revision,
+                    )
+                )
                 break
             except Exception as e:
                 if type(e).__name__ in (
@@ -6157,6 +6180,7 @@ class LlamaCppBackend:
                 target,
                 hf_token,
                 cancel_event = cancel_event,
+                revision = near_revision,
                 cache_dir = companion_cache_dir,
             )
         except Exception as e:
@@ -7144,6 +7168,11 @@ class LlamaCppBackend:
             # Classify before killing the healthy server (#7205); Phase 2 reuses this
             # path. Diffusion changes the meaning or validity of requested placement,
             # so both the remote and the local branch settle it above the teardown.
+            needs_mmproj = bool(
+                (is_vision or has_audio_input) and not extra_args_disable_mmproj(extra_args)
+            )
+            require_download_mmproj = needs_mmproj and not mmproj_path
+
             _preflight_model_path = None
             if hf_repo and (_vulkan_ordinal_pin or _cpu_only_pin):
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
@@ -7159,6 +7188,7 @@ class LlamaCppBackend:
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
                         hf_token = hf_token,
+                        require_mmproj = require_download_mmproj,
                     )
                 _preflight_is_diffusion = self._gguf_path_is_diffusion(
                     _preflight_model_path, model_identifier
@@ -7208,9 +7238,8 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     hf_repo = _resolved_repo
-                needs_mmproj = bool(
-                    (is_vision or has_audio_input) and not extra_args_disable_mmproj(extra_args)
-                )
+                # ``needs_mmproj`` was settled before the optional preflight so
+                # both download paths apply the same revision-pairing policy.
                 cached_main_for_supplied_mmproj = None
                 if needs_mmproj and mmproj_path:
                     cached_main_for_supplied_mmproj = cached_gguf_for_load(
@@ -7224,6 +7253,7 @@ class LlamaCppBackend:
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
                         hf_token = hf_token,
+                        require_mmproj = require_download_mmproj,
                     )
                     # Vision and audio-input GGUFs both need their projector.
                     if needs_mmproj:

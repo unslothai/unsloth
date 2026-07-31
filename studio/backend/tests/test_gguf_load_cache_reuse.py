@@ -218,6 +218,60 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / MAIN)
 
+    def test_required_projector_fetches_main_and_projector_from_one_revision(
+        self, hf_cache
+    ):
+        """A main-only old snapshot must not be paired with the live projector."""
+        backend = LlamaCppBackend()
+        _build_cache(hf_cache, REPO, {MAIN: 4}, snapshot_sha = "a" * 40)
+        new_revision = "b" * 40
+        new_snapshot = (
+            hf_cache
+            / f"models--{REPO.replace('/', '--')}"
+            / "snapshots"
+            / new_revision
+        )
+        listed_revisions: list[str | None] = []
+        downloaded: list[tuple[str, str | None]] = []
+
+        def fake_list_repo_files(_repo, *, token = None, revision = None):
+            listed_revisions.append(revision)
+            return [MAIN, "mmproj-F16.gguf"]
+
+        def fake_download(_repo, filename, _token = None, **kwargs):
+            revision = kwargs.get("revision")
+            downloaded.append((filename, revision))
+            target = new_snapshot / filename
+            target.parent.mkdir(parents = True, exist_ok = True)
+            target.write_bytes(b"new")
+            return str(target)
+
+        with (
+            patch("huggingface_hub.list_repo_files", fake_list_repo_files),
+            patch(
+                "huggingface_hub.get_paths_info",
+                lambda _repo, paths, **_kwargs: [
+                    _types.SimpleNamespace(path = path, size = 4) for path in paths
+                ],
+            ),
+            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+            patch(
+                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+                fake_download,
+            ),
+        ):
+            main = backend._download_gguf(
+                hf_repo = REPO,
+                hf_variant = VARIANT,
+                require_mmproj = True,
+            )
+            projector = backend._download_mmproj(hf_repo = REPO, near_path = main)
+
+        assert main == str(new_snapshot / MAIN)
+        assert projector == str(new_snapshot / "mmproj-F16.gguf")
+        assert listed_revisions == [None, new_revision]
+        assert downloaded == [(MAIN, None), ("mmproj-F16.gguf", new_revision)]
+
     def test_reuse_size_check_uses_cached_snapshot_revision(self, hf_cache):
         """Current-revision size changes do not invalidate an older complete copy."""
         backend = LlamaCppBackend()

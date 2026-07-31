@@ -1967,6 +1967,17 @@ async function autoLoadSmallestModel(): Promise<{
       }
     }
 
+    // Cached models were present, but every candidate classified as non-chat.
+    // Warn instead of silently downloading a fallback model.
+    if (blockedByCapability && loadAttempts === 0 && !hadNonTrustFailure) {
+      toast.dismiss(toastId);
+      return {
+        loaded: false,
+        blockedByTrustRemoteCode,
+        blockedByCapability: true,
+      };
+    }
+
     // Cap also gates the default download, so total /api/inference/load
     // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
