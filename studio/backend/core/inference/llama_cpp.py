@@ -49,6 +49,7 @@ from core.inference.llama_server_args import (
     parse_cache_override,
     parse_cache_override_per_axis,
     parse_ctx_override,
+    parse_gpu_layers_override,
     parse_split_mode_override,
     resolve_requested_ctx,
     strip_shadowing_flags,
@@ -1755,6 +1756,93 @@ def _swa_full_from_args_or_env(
         return True
     value = (os.environ if env is None else env).get("LLAMA_ARG_SWA_FULL")
     return value in _LLAMA_ARG_TRUE_VALUES
+
+
+def _kv_offload_from_args(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Resolve llama.cpp's environment and last-wins KV-offload flags (default on):
+    LLAMA_ARG_KV_OFFLOAD parses before argv, and ``-kvo`` / ``--kv-offload`` is the
+    positive form, so a CLI re-enable beats a false env."""
+    enabled = True
+    value = (os.environ if env is None else env).get("LLAMA_ARG_KV_OFFLOAD")
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        enabled = False
+    elif value in _LLAMA_ARG_TRUE_VALUES:
+        enabled = True
+    for raw in extra_args or ():
+        flag = _flag_name(str(raw))
+        if flag in {"-kvo", "--kv-offload"}:
+            enabled = True
+        elif flag in {"-nkvo", "--no-kv-offload"}:
+            enabled = False
+    return enabled
+
+
+def _is_positive_int(value: Optional[str]) -> bool:
+    """Whether ``value`` parses as an int > 0 (llama.cpp's std::stoi)."""
+    try:
+        return int(str(value).strip()) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _pipeline_parallel_disabled_by_args(
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    n_layers: Optional[int] = None,
+) -> bool:
+    """Whether the launch turns OFF llama.cpp's pipeline parallelism, i.e. the 4x in
+    ``_CTX_COMPUTE_SPLIT_MULT``. llama-context.cpp requires ``-sm layer``, KV offload
+    on and an empty tensor-override list (among other things); anything here is back to
+    1x, and charging the multiplier anyway would waste context. Studio passes none of
+    it, but extra_args and the environment can.
+
+    ``-cmoe`` / ``-ncmoe`` count: both push into ``tensor_buft_overrides`` exactly like
+    ``-ot`` (common/arg.cpp). ``-otd`` does not - it targets the draft model.
+    LLAMA_ARG_SPLIT_MODE is not read here: the launch pops a non-layer inherited value
+    on the layer path, so it never reaches the child. Ambiguous input resolves to
+    "still pipelined" - over-reserving only costs context, under-reserving OOMs the
+    split. ``n_layers`` is the GGUF block count for the ``-ngl`` check below; None/0
+    means unknown."""
+    source_env = os.environ if env is None else env
+    if source_env.get("LLAMA_ARG_OVERRIDE_TENSOR"):
+        return True
+    if source_env.get("LLAMA_ARG_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    if _is_positive_int(source_env.get("LLAMA_ARG_N_CPU_MOE")):
+        return True
+    if not _kv_offload_from_args(extra_args, env = env):
+        return True
+    # -sm none/row keep the layer path and pass through, so they really do disable
+    # it. -sm tensor does not: the layer branch is only reached after a downgrade,
+    # which strips the flag (strip_split_mode_only) and leaves the child on layer.
+    split_mode = parse_split_mode_override(extra_args)
+    if split_mode is not None and split_mode.strip().lower() not in {"layer", "tensor"}:
+        return True
+    # Pipelining needs n_gpu_layers > n_layer_all, so a user -ngl (appended after
+    # Studio's -ngl -1, last-wins) that cannot exceed the count loads a prefix and
+    # turns it off. Negative (all layers) or above the count keeps the step, even
+    # in between: n_layers is block_count and can undercount n_layer_all (MTP layers).
+    if n_layers:
+        try:
+            gpu_layers = parse_gpu_layers_override(extra_args)
+        except ValueError:
+            gpu_layers = None  # malformed: unknown, so keep the step
+        if gpu_layers is not None and 0 <= gpu_layers <= n_layers:
+            return True
+    values = [str(raw) for raw in extra_args or ()]
+    for i, raw in enumerate(values):
+        flag = _flag_name(raw)
+        # Any -ot counts even if it matches nothing: the list need only be non-empty.
+        if flag in {"-ot", "--override-tensor", "-cmoe", "--cpu-moe"}:
+            return True
+        if flag in {"-ncmoe", "--n-cpu-moe"}:
+            # -ncmoe 0 pushes no override, so it leaves pipelining on.
+            _, eq, inline = raw.partition("=")
+            if _is_positive_int(inline if eq else (values[i + 1] if i + 1 < len(values) else "")):
+                return True
+    return False
 
 
 def _kv_unified_from_args(
@@ -4376,6 +4464,103 @@ class LlamaCppBackend:
         )
         return None, True
 
+    @staticmethod
+    def _select_gpus_split_aware(
+        model_size_bytes: int,
+        gpus: list[tuple[int, int]],
+        usable_fraction: Optional[float] = None,
+        total_by_idx: Optional[dict[int, int]] = None,
+        per_device_overhead_bytes: int = 0,
+        min_gpus: int = 1,
+        split_extra_bytes: int = 0,
+    ) -> tuple[Optional[list[int]], bool]:
+        """``_select_gpus``, re-checked at the multi-device context-compute rate.
+
+        The device count comes out of the footprint, so the first pass must price the
+        compute buffer at the single-device rate -- but a layer split replicates a BIGGER
+        one per card (see ``_CTX_COMPUTE_SPLIT_MULT``). ``split_extra_bytes`` is that
+        per-device step (0 when llama.cpp declines pipeline parallelism): charge it and
+        re-select once the count is known to be > 1, exact in one retry since the step is
+        count-independent. The bigger overhead can cut ``_select_gpus``'s usable-card
+        count to one, and a lone card is not a split, so a retry landing below two
+        devices is re-priced without the delta. Still no fit returns (None, True) ->
+        --fit on, i.e. CPU offload rather than a pin that OOMs at launch."""
+        gpu_indices, use_fit = LlamaCppBackend._select_gpus(
+            model_size_bytes,
+            gpus,
+            usable_fraction = usable_fraction,
+            total_by_idx = total_by_idx,
+            per_device_overhead_bytes = per_device_overhead_bytes,
+            min_gpus = min_gpus,
+        )
+        if use_fit or split_extra_bytes <= 0 or not gpu_indices or len(gpu_indices) < 2:
+            return gpu_indices, use_fit
+        retry_indices, retry_fit = LlamaCppBackend._select_gpus(
+            model_size_bytes + split_extra_bytes,
+            gpus,
+            usable_fraction = usable_fraction,
+            total_by_idx = total_by_idx,
+            per_device_overhead_bytes = per_device_overhead_bytes + split_extra_bytes,
+            min_gpus = min_gpus,
+        )
+        if not retry_fit and retry_indices and len(retry_indices) >= 2:
+            return retry_indices, retry_fit
+        single, single_fit = LlamaCppBackend._select_gpus(
+            model_size_bytes,
+            gpus,
+            usable_fraction = usable_fraction,
+            total_by_idx = total_by_idx,
+            per_device_overhead_bytes = per_device_overhead_bytes,
+            min_gpus = 1,
+        )
+        if not single_fit and single is not None and len(single) == 1:
+            return single, False
+        return retry_indices, retry_fit
+
+    @staticmethod
+    def _every_gpu_holds_reserve(usable_mib: Iterable[float], reserve_bytes: int) -> bool:
+        """Whether every card in a layer-split subset can hold the reserve it replicates
+        (flat per-device overhead + its own context-compute copy). A pooled budget cannot
+        see this: in the sum a roomy card's spare VRAM covers a nearly full card's copy,
+        and the small card OOMs at launch. Bites when the subset loop cannot start at
+        one GPU (``_auto_min_gpus`` >= 2, set by every tensor -> layer downgrade);
+        starting at one, the failed n-1 subset already bounds the smallest card from
+        below by the reserve."""
+        reserve_mib = reserve_bytes / (1024 * 1024)
+        values = list(usable_mib)
+        return bool(values) and all(usable >= reserve_mib for usable in values)
+
+    @staticmethod
+    def _cap_ctx_to_per_device_reserve(
+        ctx: int,
+        usable_mib: Iterable[float],
+        reserve_bytes_fn: Callable[[int], int],
+        min_ctx: int = 4096,
+    ) -> int:
+        """Largest context in [``min_ctx``, ``ctx``] whose replicated per-device reserve
+        still fits the SMALLEST card of a layer-split subset; 0 when even ``min_ctx``
+        does not. The reserve shrinks with the context, so a subset
+        ``_every_gpu_holds_reserve`` turns down at the pooled context usually serves a
+        lower one: 40000 + 2500 MiB free holds 31488, not the 4096 a drop would leave.
+        Bisects the reserve, which is monotone in context on every branch but
+        proportional on only some: deepseek4's flat indexer term makes a closed form
+        answer 43341 on a 4000 MiB card, whose reserve there is 6048 MiB. The MiB
+        comparison mirrors ``_every_gpu_holds_reserve``, so that gate accepts what this
+        returns."""
+        values = list(usable_mib)
+        if not values or ctx < min_ctx:
+            return 0
+        smallest = min(values)
+        lo, hi, best = min_ctx, ctx, 0
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if reserve_bytes_fn(mid) / (1024 * 1024) <= smallest:
+                best, lo = mid, mid + 1
+            else:
+                hi = mid - 1
+        best = (best // 256) * 256  # same alignment _fit_context_to_vram uses
+        return best if best >= min_ctx else 0
+
     # ── KV cache VRAM estimation ─────────────────────────────────────
 
     def _can_estimate_kv(self) -> bool:
@@ -4820,6 +5005,14 @@ class LlamaCppBackend:
     _CTX_COMPUTE_BYTES_PER_EMBD = 2.25  # quantized KV, regular attention (dequant scratch)
     _CTX_COMPUTE_BYTES_PER_EMBD_MLA = 1.25  # quantized KV, MLA (compressed attn: measured 0.94x)
     _CTX_COMPUTE_F16_MASK_SAFETY = 1.5  # f16/bf16/f32 KV: KQ mask only (n_ubatch*2 B/tok)
+    # Per-device f16 ctx-linear rate steps 4x once the model spans >1 device under
+    # `-sm layer`: pipeline parallelism sets the ggml scheduler's n_copies to
+    # GGML_SCHED_MAX_COPIES == 4, and the [n_kv, n_ubatch] f16 KQ mask is a
+    # GGML_TENSOR_FLAG_INPUT, so 1 live copy becomes 4. Hence a step on "is split", not
+    # a ramp in device count: measured 2.00 B/tok/ubatch on 1 GPU and 8.00 on 2-8 GPUs,
+    # architecture- and --parallel-independent. Charging 1x on a split under-reserves
+    # 2.67x (= 8/(2*1.5)). llama.cpp declines it in _pipeline_parallel_disabled_by_args.
+    _CTX_COMPUTE_SPLIT_MULT = 4
     # DeepSeek-V4 (deepseek4): its lightning indexer + sparse attention reserve a large
     # context-scaling compute buffer the rates above miss (present even with an f16
     # cache). Measured on UD-Q4_K_XL (ub=512): ~2 GiB at 16k -> ~65.5 GiB at 1M. Without
@@ -4877,6 +5070,8 @@ class LlamaCppBackend:
         n_ctx: int,
         n_ubatch: Optional[int] = None,
         cache_type_kv: Optional[str] = None,
+        *,
+        layer_split: bool = False,
     ) -> int:
         """Context-linear growth of the per-device compute buffer (bytes), charged
         on top of the flat ``_estimate_compute_buffer_bytes``. The flash-attn KQ
@@ -4886,7 +5081,12 @@ class LlamaCppBackend:
         the KQ mask, a flat n_ubatch*2 bytes per context token. ``cache_type_kv`` None
         -> f16 (llama.cpp's default; an env-set quantized cache is budgeted as f16 on
         the KV side, whose over-reservation absorbs the dequant scratch). Returns 0
-        when dims are missing or ``n_ctx`` <= 0."""
+        when dims are missing or ``n_ctx`` <= 0.
+
+        ``layer_split`` adds the extra KQ-mask copies a multi-device split pays (see
+        ``_CTX_COMPUTE_SPLIT_MULT``) on every architecture except deepseek4, whose own
+        rate already subsumes them. Tensor mode passes False, having been measured
+        separately at the single-device rate (see ``_plan_tensor_parallel``)."""
         n_embd = self._embedding_length or 0
         if n_embd <= 0 or n_ctx <= 0:
             return 0
@@ -4894,9 +5094,15 @@ class LlamaCppBackend:
             1,
             int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch),
         )
+        # One KQ mask copy ([n_kv, n_ubatch] f16), n_embd-independent. Every rate below
+        # is a single-GPU total containing exactly one, so a split adds the extra copies.
+        mask_rate = ub * 2 * self._CTX_COMPUTE_F16_MASK_SAFETY
+        split_extra = (self._CTX_COMPUTE_SPLIT_MULT - 1) * mask_rate if layer_split else 0.0
         if getattr(self, "_architecture", None) == "deepseek4":
             # DSV4 indexer/CSA buffer (see constants): flat + linear, ub-scaled. Fires
             # for any KV type -- the indexer scratch is present even with an f16 cache.
+            # No split_extra, unlike every other arch: 72000 already clears the measured
+            # 65.5 KiB/tok by 4928 B/tok, more than the 4608 the mask copies cost.
             ub_scale = ub / self._DEFAULT_N_UBATCH
             return int(
                 self._DSV4_CTX_COMPUTE_FLAT_BYTES
@@ -4910,9 +5116,13 @@ class LlamaCppBackend:
             # fit for that so a q8_0 cache gets a small honest context instead of an
             # unloadable one that crash-loops the server.
             if cache_type_kv and _kv_bytes_per_elem(cache_type_kv) < 2.0:
-                return int(self._INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK * n_ctx * ub_scale)
-            # Banded flash path (see constants): linear, ub-scaled.
-            return int(self._INKLING_CTX_COMPUTE_BYTES_PER_TOK * n_ctx * ub_scale)
+                rate = self._INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK
+            else:
+                # Banded flash path (see constants): linear, ub-scaled.
+                rate = self._INKLING_CTX_COMPUTE_BYTES_PER_TOK
+            # Both paths allocate the mask, and 8192 has only ~1.5x headroom over the
+            # 5.6 KiB/tok banded measurement -- a split alone would overrun it.
+            return int(rate * n_ctx * ub_scale + split_extra * n_ctx)
         if _kv_bytes_per_elem(cache_type_kv) < 2.0:
             # Quantized cache: the dequant scratch dominates and scales with n_embd.
             # MLA (compressed KV) needs far less of it: measured 0.94 x n_embd on
@@ -4925,9 +5135,11 @@ class LlamaCppBackend:
             )
             per_tok = rate * n_embd * ub_scale
         else:
-            # f16/bf16/f32: only the KQ mask ([n_kv, n_ubatch] f16), n_embd-independent.
-            per_tok = ub * 2 * self._CTX_COMPUTE_F16_MASK_SAFETY
-        return int(per_tok * n_ctx)
+            # f16/bf16/f32: only the KQ mask.
+            per_tok = mask_rate
+        # Only the mask goes 1x -> 4x, not the dequant scratch, so ADD the extra copies:
+        # max() would under-reserve the quantized path by the whole dequant scratch.
+        return int((per_tok + split_extra) * n_ctx)
 
     def _slots_that_fit_on_gpu(
         self,
@@ -4944,15 +5156,17 @@ class LlamaCppBackend:
         swa_full: bool = False,
         kv_unified: bool = True,
         flash_attn: bool = True,
+        split_extra_bytes: int = 0,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
         so Unsloth keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
         to host and collapses decode ~3x (oobabooga #6718). ``base_footprint_bytes`` is the
         slot-independent footprint (weights + soft overhead + MTP + context-linear compute,
         minus the folded compute buffer); each candidate re-adds the slot-sized compute buffer
-        and KV, then re-selects GPUs like the explicit-context path. Returns (gpu_indices,
-        use_fit=False, slots) for the largest fitting count, else (None, True, n_parallel).
-        Only ever reduces; deterministic and unit-testable with synthetic VRAM maps."""
+        and KV, then re-selects GPUs like the explicit-context path -- ``split_extra_bytes``
+        included, so a multi-GPU candidate is re-checked at the split rate. Returns
+        (gpu_indices, use_fit=False, slots) for the largest fitting count, else (None, True,
+        n_parallel). Only ever reduces; unit-testable with synthetic VRAM maps."""
         for slots in range(n_parallel - 1, 0, -1):
             cb = self._estimate_compute_buffer_bytes(
                 n_ubatch = n_ubatch, n_parallel = slots, per_device_tensor = False
@@ -4972,13 +5186,14 @@ class LlamaCppBackend:
                     flash_attn = flash_attn,
                 )
             )
-            gpu_indices, use_fit = self._select_gpus(
+            gpu_indices, use_fit = self._select_gpus_split_aware(
                 total,
                 gpus,
                 usable_fraction = pin_fraction,
                 total_by_idx = total_by_idx,
                 per_device_overhead_bytes = per_device_overhead_bytes,
                 min_gpus = min_gpus,
+                split_extra_bytes = split_extra_bytes,
             )
             if not use_fit:
                 return gpu_indices, False, slots
@@ -7285,6 +7500,9 @@ class LlamaCppBackend:
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
                 )
+                _pipeline_parallel_off = _pipeline_parallel_disabled_by_args(
+                    extra_args, n_layers = self._n_layers
+                )
                 # A hard-crash recovery may relaunch this same plan with FA off.
                 # Size that larger cache up front so the recovery cannot OOM.
                 planned_flash_attn = False
@@ -7801,10 +8019,21 @@ class LlamaCppBackend:
                         # scratch), so pass it through. In a layer split this buffer is
                         # replicated on EVERY device (measured ~equal per GPU), so scale
                         # by the device count; a large model at high context otherwise
-                        # under-reserves ~(n-1)x it (e.g. Qwen3.5-397B on 3 GPUs).
+                        # under-reserves ~(n-1)x it (e.g. Qwen3.5-397B on 3 GPUs). The
+                        # per-device rate also steps up once split, unless llama.cpp
+                        # declines the pipeline parallelism that causes the step.
                         return max(1, n_gpus) * self._compute_buffer_ctx_bytes(
-                            ctx, _effective_ubatch, cache_type_kv
+                            ctx,
+                            _effective_ubatch,
+                            cache_type_kv,
+                            layer_split = n_gpus > 1 and not _pipeline_parallel_off,
                         )
+
+                    def _cc_split_extra(ctx: int) -> int:
+                        # Per-device step from the single-device rate to the split one,
+                        # for the paths that must select GPUs before they know the
+                        # count. 0 when llama.cpp declines pipeline parallelism.
+                        return max(0, _cc_bytes(ctx, 2) // 2 - _cc_bytes(ctx))
 
                     # Layer-split compute buffer (one lump; tensor mode reserves it
                     # per device in _plan_tensor_parallel). Context-independent, so
@@ -8102,8 +8331,10 @@ class LlamaCppBackend:
                             )
                             # The compute buffer is replicated on every device in a
                             # layer split; fold it into the per-device reserve so a
-                            # multi-GPU pin sizes each card for its own copy.
-                            gpu_indices, use_fit = self._select_gpus(
+                            # multi-GPU pin sizes each card for its own copy. Priced
+                            # single-device (the count comes out of this figure), then
+                            # re-checked at the split rate, falling back to --fit on.
+                            gpu_indices, use_fit = self._select_gpus_split_aware(
                                 requested_total,
                                 gpus,
                                 usable_fraction = _pin_fraction,
@@ -8111,6 +8342,7 @@ class LlamaCppBackend:
                                 per_device_overhead_bytes = _pipeline_overhead_bytes
                                 + _cc_bytes(effective_ctx),
                                 min_gpus = _layer_min_gpus,
+                                split_extra_bytes = _cc_split_extra(effective_ctx),
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
@@ -8163,11 +8395,43 @@ class LlamaCppBackend:
                                 footprint_mib = (
                                     _ms + kv + _mtp_bytes(capped) + _cc_sub(capped)
                                 ) / (1024 * 1024)
-                                if footprint_mib <= pool_budget:
-                                    effective_ctx = capped
-                                    gpu_indices = sorted(idx for idx, _ in subset)
-                                    use_fit = False
-                                    break
+                                if footprint_mib > pool_budget:
+                                    continue
+                                # Pooling admits a subset whose per-device reserve
+                                # does not fit the smallest card, which then OOMs at
+                                # launch; only knowable once `capped` is chosen.
+                                _usable_mib = [_gpu_usable(g, pin_fraction) for g in subset]
+                                _reserve_at = lambda c, n = n_gpus: (
+                                    (_pipeline_overhead_bytes if n > 1 else 0)
+                                    + _cc_bytes(c, n) // n
+                                )
+                                if not self._every_gpu_holds_reserve(
+                                    _usable_mib, _reserve_at(capped)
+                                ):
+                                    # Keep the largest context the smallest card holds
+                                    # rather than lose the subset to the 4096 drop below.
+                                    # Costs no context: subsets are prefixes of a
+                                    # usable-descending ranking and the reserve is the
+                                    # same function of context for every n > 1, so any
+                                    # later subset clears the gate no higher than this.
+                                    capped = self._cap_ctx_to_per_device_reserve(
+                                        capped, _usable_mib, _reserve_at
+                                    )
+                                    if capped <= 0:
+                                        continue
+                                    # Pooled terms only shrink with the context, so this
+                                    # cannot newly fail; re-price rather than lean on that
+                                    # across the KV and MTP branches.
+                                    kv = _kv_bytes(capped)
+                                    footprint_mib = (
+                                        _ms + kv + _mtp_bytes(capped) + _cc_sub(capped)
+                                    ) / (1024 * 1024)
+                                    if footprint_mib > pool_budget:
+                                        continue
+                                effective_ctx = capped
+                                gpu_indices = sorted(idx for idx, _ in subset)
+                                use_fit = False
+                                break
                             else:
                                 # Native ctx doesn't fit. Drop to 4096 and
                                 # re-check before --fit on: a model overflowing
@@ -8183,10 +8447,18 @@ class LlamaCppBackend:
                                             + _mtp_bytes(effective_ctx)
                                             + _cc_bytes(effective_ctx, n_gpus)
                                         ) / (1024 * 1024)
-                                        if footprint_mib <= _pool_budget_mib(subset, pin_fraction):
-                                            gpu_indices = sorted(idx for idx, _ in subset)
-                                            use_fit = False
-                                            break
+                                        if footprint_mib > _pool_budget_mib(subset, pin_fraction):
+                                            continue
+                                        # Pooling hides the per-device reserve here too.
+                                        if not self._every_gpu_holds_reserve(
+                                            (_gpu_usable(g, pin_fraction) for g in subset),
+                                            (_pipeline_overhead_bytes if n_gpus > 1 else 0)
+                                            + _cc_bytes(effective_ctx, n_gpus) // n_gpus,
+                                        ):
+                                            continue
+                                        gpu_indices = sorted(idx for idx, _ in subset)
+                                        use_fit = False
+                                        break
 
                     elif gpus:
                         # Can't estimate KV -- file-size-only check; keep the
@@ -8295,6 +8567,7 @@ class LlamaCppBackend:
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
                             flash_attn = planned_flash_attn,
+                            split_extra_bytes = _cc_split_extra(effective_ctx),
                         )
                         if not _uf_slots:
                             logger.info(
