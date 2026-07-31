@@ -466,17 +466,13 @@ def test_variant_readiness_is_counted_in_the_snapshot_the_row_pinned(monkeypatch
     )
 
     scoped = asyncio.run(
-        GV.get_gguf_variants_response(
-            "Org/Quant", prefer_local_cache = True, local_path = str(pinned)
-        )
+        GV.get_gguf_variants_response("Org/Quant", prefer_local_cache = True, local_path = str(pinned))
     )
     assert {v.quant for v in scoped.variants if v.downloaded} == {"Q4_K_M"}
 
     # Control: naming the sibling counts that directory instead.
     other = asyncio.run(
-        GV.get_gguf_variants_response(
-            "Org/Quant", prefer_local_cache = True, local_path = str(sibling)
-        )
+        GV.get_gguf_variants_response("Org/Quant", prefer_local_cache = True, local_path = str(sibling))
     )
     assert {v.quant for v in other.variants if v.downloaded} == {"Q8_0"}
 
