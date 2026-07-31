@@ -120,8 +120,16 @@ for _flag in --help -h; do
     run_uninstall "$FIXTURE_HOME" "$_flag"
     check "$_flag exits 0" "0" "$RC"
     assert_says "$_flag prints usage" "Unsloth Studio uninstaller" "$OUT"
+    # Inside the loop: make_home mints a fresh fixture per iteration, so a check
+    # placed after the loop only ever sees the last flag's home and --help could
+    # wipe an install unnoticed.
+    assert_fixture "$_flag keeps the install" "$FIXTURE_HOME" present
 done
-assert_fixture "help keeps the install" "$FIXTURE_HOME" present
+
+# The piped help form has to be spelled out, because the obvious one is
+# destructive: -h is a shell option (hashall), so `... | sh -h` is consumed by
+# the shell and the script uninstalls with no arguments.
+assert_says "usage documents the piped help form" "sh -s -- --help" "$OUT"
 
 echo "=== unknown arguments: abort before touching anything ==="
 
@@ -140,10 +148,14 @@ assert_fixture "a rejected positional argument keeps the install" "$FIXTURE_HOME
 make_home
 run_uninstall "$FIXTURE_HOME" --dry-run --help
 check "'--dry-run --help' exits 2" "2" "$RC"
+# An exit code alone would pass even if the guard rejected the argument only
+# after the removal had already started.
+assert_fixture "'--dry-run --help' keeps the install" "$FIXTURE_HOME" present
 
 make_home
 run_uninstall "$FIXTURE_HOME" --help --dry-run
 check "'--help --dry-run' exits 0" "0" "$RC"
+assert_fixture "'--help --dry-run' keeps the install" "$FIXTURE_HOME" present
 
 echo "=== no arguments: the guard must not have broken the uninstall ==="
 
@@ -162,6 +174,18 @@ else
     check "no arguments still uninstalls (exit 0)" "0" "$RC"
     assert_fixture "no arguments removes the install" "$FIXTURE_HOME" gone
 fi
+
+echo "=== behaviour: the documented piped help form reaches the guard ==="
+
+# Portable counterpart to the Linux-only pipe-buffer case below: `sh -s --` is
+# the only piped spelling that gets arguments to the script rather than to the
+# shell, so it is the one the usage text points at and the one that has to work
+# everywhere.
+make_home
+OUT=$(HOME="$FIXTURE_HOME" sh -s -- --help < "$UNINSTALL_SH" 2>&1) || true
+assert_says     "'sh -s -- --help' prints usage"               "Unsloth Studio uninstaller" "$OUT"
+assert_not_says "'sh -s -- --help' never starts the uninstall" "$BODY_MARKER" "$OUT"
+assert_fixture  "'sh -s -- --help' keeps the install" "$FIXTURE_HOME" present
 
 echo "=== behaviour: a piped --help must not break the writer ==="
 
