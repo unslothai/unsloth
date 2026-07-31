@@ -602,11 +602,13 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
             name = lower.replace("\\", "/").rsplit("/", 1)[-1]
             if _is_gguf_filename(lower):
                 continue
-            if name == "config.json":
-                flags["has_config"] = True
-                continue
-            if name == "adapter_config.json":
-                flags["has_adapter_config"] = True
+            # The pin names the snapshot root and from_pretrained reads the config there, so a
+            # nested copy is not one a load of this revision would find.
+            if name in ("config.json", "adapter_config.json"):
+                if "/" in _cached_repo_file_name(f):
+                    continue
+                key = "has_config" if name == "config.json" else "has_adapter_config"
+                flags[key] = True
                 continue
             is_adapter = _is_adapter_weight_name(name)
             is_safetensors = (

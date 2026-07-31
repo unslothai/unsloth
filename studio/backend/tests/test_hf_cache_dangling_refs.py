@@ -1954,6 +1954,67 @@ def test_a_layout_that_keeps_its_weights_in_subdirectories_still_loads(tmp_path,
     assert rows[0]["capabilities"]["can_chat"] is True
 
 
+def test_a_config_in_a_subdirectory_does_not_serve_the_snapshot_root(tmp_path, monkeypatch):
+    """The pin names the snapshot root, and from_pretrained opens the config there. A copy under
+    backup/ is not the one that load finds, so it cannot classify the snapshot as loadable."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "backup/config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is True
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_a_nested_config_beside_the_root_one_leaves_the_row_alone(tmp_path, monkeypatch):
+    """Negative control: the root config is what the loader opens, so a second copy underneath it
+    changes nothing."""
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "config.json": b'{"model_type":"llama"}',
+                "backup/config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+    assert rows[0]["load_id"] == str(repo_dir / "snapshots" / OLDER)
+
+
+def test_a_nested_adapter_config_does_not_serve_the_snapshot_root(tmp_path, monkeypatch):
+    """peft resolves adapter_config.json at the directory it is handed, the same as the base
+    loader, so a nested copy cannot classify the snapshot as an adapter either."""
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            OLDER: {
+                "backup/adapter_config.json": b'{"peft_type":"LORA"}',
+                "adapter_model.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": UPSTREAM_HEAD},
+    )
+
+    rows = _autoload_rows(tmp_path, monkeypatch)
+
+    assert rows == [] or rows[0]["partial"] is True
+
+
 def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypatch):
     """The compatibility model list carries no path, so a client loads by id out of the active
     cache. With a broken copy there, publishing another cache's copy under the same id offers a

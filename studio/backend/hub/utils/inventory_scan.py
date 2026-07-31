@@ -901,15 +901,20 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         name = path.name.lower()
         if is_gguf_filename(name):
             continue
+        # Both loaders open the config at the directory they are handed and never a nested one, so
+        # only the root copy is the one a pin on this snapshot would find.
+        at_root = path.parent == snapshot_dir
         if name == "config.json":
-            flags["has_config"] = True
-            if _required_config_is_unreadable(path, empty):
-                unreadable.update(("safetensors", "checkpoint"))
+            if at_root:
+                flags["has_config"] = True
+                if _required_config_is_unreadable(path, empty):
+                    unreadable.update(("safetensors", "checkpoint"))
             continue
         if name == "adapter_config.json":
-            flags["has_adapter_config"] = True
-            if _required_config_is_unreadable(path, empty):
-                unreadable.add("adapter")
+            if at_root:
+                flags["has_adapter_config"] = True
+                if _required_config_is_unreadable(path, empty):
+                    unreadable.add("adapter")
             continue
         if empty:
             # The loader picks a name by existence, so a zero-byte weight is one it opens and cannot
