@@ -80,13 +80,16 @@ function renderValue(label: string, value: unknown): string[] {
 }
 
 function renderBlock(block: ConversationMarkdownBlock): string {
+  // Emitted verbatim: leading indentation can be an indented code block, so
+  // trimming is only ever an emptiness test, never applied to the output.
   if (block.kind === "text") {
-    return block.text.trim();
+    return block.text.trim() ? block.text : "";
   }
   if (block.kind === "thinking") {
+    if (!block.text.trim()) return "";
     // Collapsed so a transcript reads as the conversation first, with the
     // reasoning still there for anyone who wants it.
-    return `<details>\n<summary>thinking</summary>\n\n${block.text.trim()}\n\n</details>`;
+    return `<details>\n<summary>thinking</summary>\n\n${block.text}\n\n</details>`;
   }
   if (block.kind === "attachment") {
     return block.label;

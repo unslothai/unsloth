@@ -126,6 +126,26 @@ test("widens code spans and fences past backticks in the payload", () => {
   assert.ok(multiline.includes("````\n```\nx\n```\n````"));
 });
 
+test("keeps whitespace that markdown depends on", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "    indented_code_block()\n" },
+      { kind: "thinking", text: "  padded reasoning  " },
+      { kind: "text", text: "   " },
+    ]),
+    [
+      "    indented_code_block()\n",
+      "",
+      "<details>",
+      "<summary>thinking</summary>",
+      "",
+      "  padded reasoning  ",
+      "",
+      "</details>",
+    ].join("\n"),
+  );
+});
+
 test("collapses thinking and leaves prose untouched", () => {
   assert.equal(
     renderConversationBlocks([
