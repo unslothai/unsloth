@@ -3467,23 +3467,18 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
-        """True only for AMD unified-memory APUs (gfx1150/gfx1151/gfx1152), where
-        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM (it
-        hurts discrete GPUs). gpu_indices (PHYSICAL ids) scopes the check to the
-        selected GPUs, so a dGPU on a mixed host is not treated as unified-memory;
-        None means every visible GPU."""
+    def _rocm_arch_by_physical_id() -> dict[int, str]:
+        """Base gcnArchName (lowercased, ':xnack' suffix stripped) per PHYSICAL
+        device id, honoring the active ROCm visibility mask (HIP, then ROCR,
+        then CUDA). Devices torch cannot describe are omitted; empty on any
+        error or when torch/CUDA is unavailable."""
+        arch_by_id: dict[int, str] = {}
         try:
             import torch
 
-            if getattr(torch.version, "hip", None) is None:
-                return False
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
-                return False
-            # Map visible ordinal -> physical id via the active ROCm mask (HIP,
-            # then ROCR, then CUDA), mirroring _get_gpu_memory's ROCm branch.
+                return arch_by_id
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
-            arch_by_id: dict[int, str] = {}
             for ordinal in range(torch.cuda.device_count()):
                 try:
                     _arch = (
@@ -3497,6 +3492,23 @@ class LlamaCppBackend:
                     else ordinal
                 )
                 arch_by_id[pid] = _arch.split(":")[0].strip().lower()
+        except Exception:
+            return arch_by_id
+        return arch_by_id
+
+    @staticmethod
+    def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
+        """True only for AMD unified-memory APUs (gfx1150/gfx1151/gfx1152), where
+        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM (it
+        hurts discrete GPUs). gpu_indices (PHYSICAL ids) scopes the check to the
+        selected GPUs, so a dGPU on a mixed host is not treated as unified-memory;
+        None means every visible GPU."""
+        try:
+            import torch
+
+            if getattr(torch.version, "hip", None) is None:
+                return False
+            arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
             for _i in list(gpu_indices) if gpu_indices is not None else list(arch_by_id):
                 # gfx1152 is Krackan Point (Radeon 860M/840M), the third RDNA 3.5
                 # APU: same shared GPU/system-RAM pool as Strix Point/Halo.
@@ -3667,34 +3679,24 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _installed_llama_gfx_archs() -> Optional[frozenset]:
+    def _installed_llama_gfx_archs(binary: Optional[str] = None) -> Optional[frozenset]:
         """Concrete gfx archs the installed llama.cpp ROCm prebuilt was built
-        for, read from UNSLOTH_PREBUILT_INFO.json in the install dir
-        (mapped_targets, recorded at install time). Returns None when unknown
-        -- missing file, source build, or a non-ROCm bundle -- so callers fail
-        open and keep every device (#7624)."""
-        roots = []
-        custom = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
-        if custom:
-            roots.append(Path(custom))
-        roots.append(Path.home() / ".unsloth" / "llama.cpp")
-        for root in roots:
-            info = root / "UNSLOTH_PREBUILT_INFO.json"
-            try:
-                if not info.is_file():
-                    continue
-                data = json.loads(info.read_text(encoding = "utf-8"))
-            except Exception as e:
-                logger.debug(f"Could not read {info}: {e}")
-                return None
-            targets = data.get("mapped_targets")
-            if not isinstance(targets, list):
-                return None
-            archs = frozenset(
-                str(t).split(":")[0].strip().lower() for t in targets if str(t).strip()
-            )
-            return archs or None
-        return None
+        for (mapped_targets, recorded in UNSLOTH_PREBUILT_INFO.json at install
+        time). Returns None when unknown -- no marker (source build / custom
+        link) or a non-ROCm bundle -- so callers fail open and keep every
+        device (#7624)."""
+        from utils.llama_cpp_freshness import read_install_marker
+
+        marker = read_install_marker(binary or LlamaCppBackend._find_llama_server_binary())
+        if not marker:
+            return None
+        targets = marker.get("mapped_targets")
+        if not isinstance(targets, list):
+            return None
+        archs = frozenset(
+            str(t).split(":")[0].strip().lower() for t in targets if str(t).strip()
+        )
+        return archs or None
 
     @staticmethod
     def _get_gpu_free_memory(binary: Optional[str] = None) -> list[tuple[int, int]]:
@@ -3827,10 +3829,14 @@ class LlamaCppBackend:
             # free-memory rank can't pick a GPU the binary has no kernels for
             # (#7624: an iGPU reporting shared RAM outranks the dGPU and
             # llama-server dies with "device kernel image is invalid"). None =
-            # unknown coverage (source build / non-ROCm) -> keep every device.
+            # unknown coverage (source build / non-ROCm) -> keep every device;
+            # a device with no reported arch fails open the same way.
             supported_archs = None
+            arch_by_id: dict[int, str] = {}
             if getattr(torch.version, "hip", None) is not None:
-                supported_archs = LlamaCppBackend._installed_llama_gfx_archs()
+                supported_archs = LlamaCppBackend._installed_llama_gfx_archs(binary)
+                if supported_archs is not None:
+                    arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
@@ -3840,20 +3846,7 @@ class LlamaCppBackend:
                     else ordinal
                 )
                 if supported_archs is not None:
-                    try:
-                        _arch = (
-                            getattr(
-                                torch.cuda.get_device_properties(ordinal),
-                                "gcnArchName",
-                                "",
-                            )
-                            or ""
-                        )
-                    except Exception:
-                        _arch = ""
-                    _base = _arch.split(":")[0].strip().lower()
-                    # Unknown arch fails open; only skip a device the prebuilt
-                    # demonstrably cannot run on.
+                    _base = arch_by_id.get(idx, "")
                     if _base and _base not in supported_archs:
                         logger.warning(
                             f"Skipping GPU {idx} ({_base}): installed llama.cpp "
