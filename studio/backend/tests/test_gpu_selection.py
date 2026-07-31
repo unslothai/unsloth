@@ -1048,7 +1048,7 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
@@ -1117,7 +1117,7 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ) as training_guard,
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
@@ -1253,7 +1253,7 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
@@ -1309,7 +1309,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_classify_diffusion_gguf", return_value = False),
             patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
             patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
             patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
         ):
@@ -1370,7 +1370,7 @@ class TestRouteErrors(unittest.TestCase):
             ),
             patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
             patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
             patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
         ):
@@ -1512,7 +1512,7 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
             patch(
                 "core.export.get_export_backend",
                 return_value = SimpleNamespace(current_checkpoint = None),
@@ -1583,7 +1583,7 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable", nullcontext),
             patch(
                 "core.export.get_export_backend",
                 return_value = SimpleNamespace(current_checkpoint = None),

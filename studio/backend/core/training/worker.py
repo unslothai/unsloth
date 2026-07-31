@@ -2330,6 +2330,46 @@ def run_mlx_training_process(
         )
 
 
+def _training_job_is_local(config) -> bool:
+    """True when neither the model nor the dataset needs the Hub, so the probe is wasted.
+
+    Fail closed: anything unresolvable counts as remote, since skipping a needed probe
+    costs the retry backoff the probe exists to avoid.
+    """
+    try:
+        from utils.paths import is_local_path
+    except Exception:
+        return False
+    if config.get("hf_dataset"):
+        return False
+    model = config.get("model_name")
+    try:
+        if not (model and is_local_path(model)):
+            return False
+        # A local checkpoint can name a remote base, which activation resolves and later
+        # training and security code fetches. Readable from disk, so no network needed
+        # to decide. Matches the inference worker's gate.
+        base, needs_hub = _recorded_local_base(model)
+        if needs_hub:
+            return False
+        return not base or is_local_path(base)
+    except Exception:
+        return False
+
+
+def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
+    """``(base, needs_hub)`` for the base this checkpoint records on disk.
+
+    Delegates to the resolver's own disk reads so the gate cannot drift from what
+    activation later resolves. Fail closed on an unavailable reader.
+    """
+    try:
+        from utils.transformers_version import recorded_local_base
+        return recorded_local_base(model_name)
+    except Exception:
+        return None, True
+
+
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python — no stale module state.
 
@@ -2358,31 +2398,44 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             flush = True,
         )
 
-    # Offline auto-detect: skip ~25s of HF retries per call when DNS is dead.
-    if "HF_HUB_OFFLINE" not in os.environ:
-        import socket as _socket
-        import threading as _threading
+    # Offline auto-detect: skip ~25s of HF retries per call when the hub is unreachable.
+    # Skipped for a filesystem-only job: a local checkpoint with a local dataset never
+    # reaches the Hub, and main's check here was DNS-only and returned at once, so probing
+    # unconditionally would add seconds to every such startup.
+    if "HF_HUB_OFFLINE" not in os.environ and not _training_job_is_local(config):
+        _offline = False
+        _network_offline = False
+        try:
+            from utils.utils import hf_dns_dead, hf_env_offline, hf_probe_disabled
 
-        # Daemon thread so we don't mutate process-wide setdefaulttimeout.
-        _result: list = [None]
-
-        def _probe() -> None:
-            try:
-                _socket.gethostbyname("huggingface.co")
-                _result[0] = False
-            except Exception:
-                _result[0] = True
-
-        _t = _threading.Thread(target = _probe, daemon = True)
-        _t.start()
-        _t.join(2.0)
-        if _result[0] is None or _result[0] is True:
+            # Hub ignores TRANSFORMERS_OFFLINE, so translate it before probing.
+            _offline = hf_env_offline()
+            # hf_dns_dead follows HF_ENDPOINT and stands down when a proxy is configured,
+            # so a reachable mirror (or proxy-only egress) is never called offline.
+            if not _offline:
+                _offline = _network_offline = hf_dns_dead()
+            if not _offline and not hf_probe_disabled():
+                # DNS answers even without egress (WAN down, captive portal). These flags
+                # last the whole job, so only a connection failure counts: a momentary
+                # 502/503 must not block every download for the rest of the run.
+                from utils.transformers_version import hf_endpoint_unreachable
+                _offline = _network_offline = hf_endpoint_unreachable(
+                    gateway_errors_offline = False,
+                    proxy_timeouts_offline = False,
+                )
+        except Exception:
+            _offline = _network_offline = False
+        if _offline:
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-            os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+            # Only when the network itself is the reason. TRANSFORMERS_OFFLINE alone asks
+            # for cached model files, not for a cache-only dataset: egress may be fine,
+            # and an uncached hf_dataset would then fail for the whole job.
+            if _network_offline:
+                os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
             # logger isn't configured yet; print to stderr instead.
             print(
-                "huggingface.co unreachable; HF_HUB_OFFLINE=1 set for this worker.",
+                "Hugging Face endpoint unreachable; HF_HUB_OFFLINE=1 set for this worker.",
                 file = sys.stderr,
                 flush = True,
             )

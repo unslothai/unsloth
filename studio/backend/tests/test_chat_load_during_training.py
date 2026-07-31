@@ -1341,7 +1341,9 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             patch.object(self.route, "resolve_effective_chat_template_override", return_value = None),
             patch.object(self.route, "get_inference_backend", return_value = inf),
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
-            patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
+            patch.object(
+                self.route, "_hf_offline_if_unreachable", lambda: contextlib.nullcontext()
+            ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             _stub_guard_deps(training_active = True, decision = (False, info)),
         ):
@@ -1407,7 +1409,9 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             ),
             patch.object(self.route, "get_inference_backend", return_value = inf),
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
-            patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
+            patch.object(
+                self.route, "_hf_offline_if_unreachable", lambda: contextlib.nullcontext()
+            ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):

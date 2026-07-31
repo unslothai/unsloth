@@ -1009,7 +1009,8 @@ try:
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
         _extra_args_set_spec_type,
-        _hf_offline_if_dns_dead,
+        _hf_offline_if_unreachable,
+        _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _planned_main_cache_types,
@@ -1058,7 +1059,8 @@ except ImportError:
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
         _extra_args_set_spec_type,
-        _hf_offline_if_dns_dead,
+        _hf_offline_if_unreachable,
+        _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _planned_main_cache_types,
@@ -3891,6 +3893,9 @@ def _target_is_vision(load_path: str) -> bool:
     # paths, where the token is unused, but the rule requires it regardless).
     from utils.models.model_config import is_vision_model
     try:
+        # Deliberately unguarded: the resolver only yields local paths, so this returns
+        # from the mmproj filesystem branch without touching the hub. A reachability
+        # probe here would add seconds per request and prevent nothing.
         return bool(is_vision_model(load_path, hf_token = os.environ.get("HF_TOKEN")))
     except Exception as exc:
         # Detection failure: don't block the swap, let the load decide.
@@ -5916,14 +5921,19 @@ async def _load_model_impl(
         cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active)
 
         # is_lora auto-detected from adapter_config.json on disk/HF.
-        # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
-        # checks before the worker starts.
-        with _hf_offline_if_dns_dead():
-            config = ModelConfig.from_identifier(
-                model_id = model_identifier,
-                hf_token = request.hf_token,
-                gguf_variant = request.gguf_variant,
-            )
+        # Probe wrap so offline loads skip 30-60s of soft-failed network checks before
+        # the worker starts. Off-loop: the guard can spend seconds on DNS plus a HEAD and
+        # its TCP fallback, and this handler is awaited directly by the route, so running
+        # it inline would stall every unrelated request. Same shape as /validate.
+        def _resolve_config():
+            with _hf_offline_if_unreachable_for(model_identifier):
+                return ModelConfig.from_identifier(
+                    model_id = model_identifier,
+                    hf_token = request.hf_token,
+                    gguf_variant = request.gguf_variant,
+                )
+
+        config = await asyncio.to_thread(_resolve_config)
 
         if not config:
             raise HTTPException(
@@ -5982,7 +5992,13 @@ async def _load_model_impl(
         # to match. Off-loop: tier resolution reads configs.
         if effective_load_in_4bit and not config.is_gguf:
             from utils.transformers_version import latest_tier_active_for
-            if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
+            if await asyncio.to_thread(
+                _offline_guarded,
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                latest_tier_active_for,
+                config.identifier,
+                request.hf_token,
+            ):
                 effective_load_in_4bit = False
                 logger.info(
                     f"Latest-transformers sidecar active for '{model_log_label}' - "
@@ -5991,8 +6007,10 @@ async def _load_model_impl(
                 )
 
         # Apply the training coexistence policy before the unload step below
-        # frees the resident model. Off-loop: the default-mode guard does sync work.
+        # frees the resident model. Off-loop and guarded: the guard does sync HF work.
         await asyncio.to_thread(
+            _offline_guarded,
+            (model_identifier, config.identifier, getattr(config, "base_model", None)),
             _guard_chat_load_against_training,
             config,
             model_identifier = model_identifier,
@@ -6524,6 +6542,44 @@ async def _load_model_impl(
         api_monitor.fail_open(_load_event, "Load did not complete")
 
 
+def _any_remote(targets) -> bool:
+    """True unless every target is a local path. Falsy entries are skipped (no base to
+    read); anything unresolvable counts as remote, since guarding a local read costs one
+    memoised verdict while missing a remote one costs the retry backoff."""
+    from utils.paths import is_local_path
+
+    for target in (targets,) if isinstance(targets, str) else targets or ():
+        if not target:
+            continue  # no base is not an unknown base: nothing to read, nothing to guard
+        try:
+            if not (isinstance(target, str) and is_local_path(target)):
+                return True
+        except Exception:
+            return True  # unresolvable: guard, since missing a remote read costs the backoff
+    return False
+
+
+def _offline_guarded(targets, fn, /, *args, **kwargs):
+    """Run one blocking preflight inside the same forced-offline window as config
+    resolution. The config is not the only remote read here: the upgrade, trust-remote-code
+    and sizing preflights each fetch raw metadata, and would otherwise burn the retry
+    backoff the guard exists to skip. The verdict is memoised, so this costs no extra
+    probe. Call from a worker thread: the guard is process-global and blocks on a cold
+    verdict.
+
+    ``targets`` is what this call actually READS, not the outer request, because a local
+    adapter can resolve to a remote base and the base is what gets fetched. Positional-only,
+    so a wrapped call's own model_identifier kwarg cannot collide."""
+    from contextlib import nullcontext
+
+    # The module-level symbol, not a fresh import: route tests patch
+    # routes.inference._hf_offline_if_unreachable to stay deterministic, and a local
+    # re-import would bypass the patch and run a real probe.
+    ctx = _hf_offline_if_unreachable() if _any_remote(targets) else nullcontext()
+    with ctx:
+        return fn(*args, **kwargs)
+
+
 def _requires_trust_remote_code_for_model(
     model_identifier: str, hf_token: Optional[str] = None
 ) -> bool:
@@ -6606,7 +6662,10 @@ async def validate_model(
     Checks that ModelConfig.from_identifier() can resolve model_path, but does
     NOT load model weights into GPU memory.
     """
-    from core.inference.llama_cpp import LlamaServerNotFoundError
+    from core.inference.llama_cpp import (
+        LlamaServerNotFoundError,
+        _hf_offline_if_unreachable_for,
+    )
 
     native_grant_backed = False
     model_log_label = request.model_path
@@ -6614,11 +6673,18 @@ async def validate_model(
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
-        config = ModelConfig.from_identifier(
-            model_id = model_identifier,
-            hf_token = request.hf_token,
-            gguf_variant = request.gguf_variant,
-        )
+
+        # The frontend validates before it loads, so this needs the same guard as
+        # /load; otherwise the stall just moves here and /load is never reached.
+        def _resolve_config():
+            with _hf_offline_if_unreachable_for(model_identifier):
+                return ModelConfig.from_identifier(
+                    model_id = model_identifier,
+                    hf_token = request.hf_token,
+                    gguf_variant = request.gguf_variant,
+                )
+
+        config = await asyncio.to_thread(_resolve_config)
 
         if not config:
             raise HTTPException(
@@ -6658,7 +6724,13 @@ async def validate_model(
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             # Resolve a LOCAL or REMOTE adapter's base so its code/weights are reviewed too.
-            _base = get_base_model_from_lora_identifier(model_identifier, request.hf_token)
+            _base = await asyncio.to_thread(
+                _offline_guarded,
+                model_identifier,
+                get_base_model_from_lora_identifier,
+                model_identifier,
+                request.hf_token,
+            )
             if _base:
                 security_targets.append(_base)
         except Exception:
@@ -6676,7 +6748,11 @@ async def validate_model(
             # Cover [adapter, base]: the worker activates transformers for the base model.
             for _target in security_targets:
                 _upgrade = await asyncio.to_thread(
-                    check_upgrade_for_model, _target, request.hf_token
+                    _offline_guarded,
+                    _target,
+                    check_upgrade_for_model,
+                    _target,
+                    request.hf_token,
                 )
                 if _upgrade is not None:
                     transformers_upgrade = TransformersUpgradeInfo(**_upgrade)
@@ -6688,9 +6764,14 @@ async def validate_model(
         # exactly as /load does.
         requires_trust_remote_code = False
         if not is_gguf:
-            requires_trust_remote_code = any(
-                _requires_trust_remote_code_for_model(_t, request.hf_token)
-                for _t in security_targets
+            # Reads raw config/tokenizer JSON, so guarded and off-loop like the rest.
+            requires_trust_remote_code = await asyncio.to_thread(
+                _offline_guarded,
+                security_targets,
+                lambda: any(
+                    _requires_trust_remote_code_for_model(_t, request.hf_token)
+                    for _t in security_targets
+                ),
             )
 
         # Mirror /load's latest-sidecar 16-bit flip so the guard sizes it the same way. An
@@ -6709,15 +6790,21 @@ async def validate_model(
                 and not requires_trust_remote_code
             )
             if _install_only_upgrade or await asyncio.to_thread(
-                latest_tier_active_for, config.identifier, request.hf_token
+                _offline_guarded,
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
+                latest_tier_active_for,
+                config.identifier,
+                request.hf_token,
             ):
                 effective_load_in_4bit = False
         # A metadata-only probe reads the GGUF header and allocates no VRAM, so the
         # training guard must not refuse it. Real loads omit include_context_length /
         # include_chat_template, and /load applies the guard again.
         if not (request.include_context_length or request.include_chat_template):
-            # Off-loop: guard does sync nvidia-smi / HF work.
+            # Off-loop and guarded: the guard does sync nvidia-smi / HF work.
             await asyncio.to_thread(
+                _offline_guarded,
+                (model_identifier, config.identifier, getattr(config, "base_model", None)),
                 _guard_chat_load_against_training,
                 config,
                 model_identifier = model_identifier,
@@ -6749,8 +6836,15 @@ async def validate_model(
         # already resolved above for the sizing flip).
         requires_security_review = False
         if not is_gguf:
-            requires_security_review = any(
-                _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
+            # _fetch_security_status does hf_model_info with 10s and 20s timeouts, so this
+            # needs the same window and worker thread as the preflights above.
+            requires_security_review = await asyncio.to_thread(
+                _offline_guarded,
+                security_targets,
+                lambda: any(
+                    _requires_security_review_for_model(_t, request.hf_token)
+                    for _t in security_targets
+                ),
             )
         # Native context length, read from the local GGUF header when present.
         # Lets the staged ("Load on selection" off) flow populate the context
