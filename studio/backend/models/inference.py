@@ -205,6 +205,17 @@ class LoadRequest(BaseModel):
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
+    reasoning_budget: int = Field(
+        -1,
+        ge = -1,
+        le = 2_147_483_647,
+        description = "llama-server reasoning token budget (-1 = model/default behavior).",
+    )
+    reasoning_budget_message: str = Field(
+        "",
+        max_length = 65_536,
+        description = "Message emitted by llama-server when the reasoning budget is exhausted.",
+    )
     force_cancel_active: bool = Field(
         False,
         description = (
@@ -489,6 +500,12 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
     )
+    reasoning_budget: int = Field(
+        -1, description = "Effective llama-server reasoning token budget."
+    )
+    reasoning_budget_message: str = Field(
+        "", description = "Effective llama-server reasoning-budget exhaustion message."
+    )
     supports_preserve_thinking: bool = Field(
         False,
         description = "Whether the template understands the optional preserve_thinking kwarg (Qwen3.6-style)",
@@ -663,6 +680,12 @@ class InferenceStatusResponse(BaseModel):
     )
     reasoning_always_on: bool = Field(
         False, description = "Whether reasoning is always on (not toggleable)"
+    )
+    reasoning_budget: int = Field(
+        -1, description = "Effective llama-server reasoning token budget."
+    )
+    reasoning_budget_message: str = Field(
+        "", description = "Effective llama-server reasoning-budget exhaustion message."
     )
     supports_preserve_thinking: bool = Field(
         False,

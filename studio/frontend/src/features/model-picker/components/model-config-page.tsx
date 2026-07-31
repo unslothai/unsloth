@@ -102,6 +102,8 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.speculativeType ?? "auto") !== "auto" ||
     config.specDraftNMax != null ||
     config.nParallel != null ||
+    config.reasoningBudget !== -1 ||
+    config.reasoningBudgetMessage !== "" ||
     config.tensorParallel ||
     config.chatTemplateOverride != null ||
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
@@ -123,6 +125,8 @@ function withoutUnsupportedDiffusionSettings(
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
+    config.reasoningBudget === -1 &&
+    config.reasoningBudgetMessage === "" &&
     !config.tensorParallel &&
     !hasUnsupportedGpuPick
   ) {
@@ -133,6 +137,8 @@ function withoutUnsupportedDiffusionSettings(
     gpuMemoryMode: "auto",
     gpuLayers: undefined,
     nCpuMoe: undefined,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     tensorParallel: false,
     ...(hasUnsupportedGpuPick
       ? {
@@ -676,6 +682,67 @@ function GgufAdvancedSettings({
         />
       </div>
 
+      {!isDiffusion && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Reasoning Budget</span>
+            <InfoHint>
+              Maximum thinking tokens. -1 is unrestricted, 0 ends reasoning
+              immediately, and a positive value sets a token budget.
+            </InfoHint>
+          </div>
+          <input
+            type="number"
+            min={-1}
+            max={2_147_483_647}
+            step={1}
+            value={config.reasoningBudget}
+            onChange={(event) => {
+              const raw = event.target.value;
+              if (raw === "") {
+                update({ reasoningBudget: -1 });
+                return;
+              }
+              const parsed = Number.parseInt(raw, 10);
+              if (Number.isFinite(parsed)) {
+                update({
+                  reasoningBudget: Math.max(
+                    -1,
+                    Math.min(2_147_483_647, parsed),
+                  ),
+                });
+              }
+            }}
+            aria-label="Reasoning Budget"
+            className={NUMBER_INPUT_CLASS}
+          />
+        </div>
+      )}
+
+      {!isDiffusion && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
+            <InfoHint>
+              Optional text injected before the end-of-thinking tag when the
+              model reaches its reasoning budget.
+            </InfoHint>
+          </div>
+          <input
+            type="text"
+            value={config.reasoningBudgetMessage}
+            placeholder="None"
+            onChange={(event) =>
+              update({
+                reasoningBudgetMessage: event.target.value.slice(0, 65_536),
+              })
+            }
+            aria-label="Reasoning Budget Message"
+            className={`h-8 w-[180px] min-w-0 ${CONTROL_SURFACE} px-3 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`}
+          />
+        </div>
+      )}
+
       <GpuMemorySettings
         config={config}
         update={update}
@@ -998,7 +1065,13 @@ export function ModelConfigPage({
       : config;
     const effectiveConfig = resolvedIsDiffusion
       ? withoutUnsupportedDiffusionSettings(committedConfig, gpuIndexKind)
-      : committedConfig;
+      : target.isGguf
+        ? committedConfig
+        : {
+            ...committedConfig,
+            reasoningBudget: -1,
+            reasoningBudgetMessage: "",
+          };
     // pinFixedLayerContext above was computed from the render-time config, before
     // the same-click GPU Layers draft was committed. Recompute it from
     // effectiveConfig so committing a positive fixed-layer value still pins the

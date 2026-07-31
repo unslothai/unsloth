@@ -171,6 +171,8 @@ class ChatPresetLoadConfig(BaseModel):
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
     nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
+    reasoningBudget: Optional[int] = Field(default = None, ge = -1, le = 2_147_483_647)
+    reasoningBudgetMessage: Optional[str] = Field(default = None, max_length = 65_536)
     tensorParallel: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None

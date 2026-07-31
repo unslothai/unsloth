@@ -18,6 +18,8 @@ export interface PerModelConfig {
   speculativeType: string | null;
   specDraftNMax: number | null;
   nParallel: number | null;
+  reasoningBudget: number;
+  reasoningBudgetMessage: string;
   tensorParallel: boolean;
   chatTemplateOverride: string | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs still
@@ -38,6 +40,8 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   tensorParallel: false,
   chatTemplateOverride: null,
 };
@@ -84,7 +88,7 @@ export const MTP_SPECULATIVE_TYPES: ReadonlySet<string> = new Set([
 const STORAGE_KEY = "unsloth_model_configs";
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-const STORAGE_SCHEMA_VERSION = 1;
+const STORAGE_SCHEMA_VERSION = 2;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
@@ -103,6 +107,8 @@ const STORED_CONFIG_FIELDS = new Set([
   "speculativeType",
   "specDraftNMax",
   "nParallel",
+  "reasoningBudget",
+  "reasoningBudgetMessage",
   "tensorParallel",
   "chatTemplateOverride",
   "gpuMemoryMode",
@@ -318,6 +324,8 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
       typeof raw.specDraftNMax === "number" ? raw.specDraftNMax : null,
     // Legacy blobs predate the parallel-slots knob.
     nParallel: null,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     tensorParallel:
       typeof raw.tensorParallel === "boolean" ? raw.tensorParallel : false,
     chatTemplateOverride: null,
@@ -490,9 +498,25 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     speculativeType,
     specDraftNMax,
     nParallel:
-      typeof partial.nParallel === "number" && Number.isFinite(partial.nParallel)
-        ? Math.max(N_PARALLEL_MIN, Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)))
+      typeof partial.nParallel === "number" &&
+      Number.isFinite(partial.nParallel)
+        ? Math.max(
+            N_PARALLEL_MIN,
+            Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)),
+          )
         : null,
+    reasoningBudget:
+      typeof partial.reasoningBudget === "number" &&
+      Number.isFinite(partial.reasoningBudget)
+        ? Math.max(
+            -1,
+            Math.min(2_147_483_647, Math.trunc(partial.reasoningBudget)),
+          )
+        : DEFAULT_PER_MODEL_CONFIG.reasoningBudget,
+    reasoningBudgetMessage:
+      typeof partial.reasoningBudgetMessage === "string"
+        ? partial.reasoningBudgetMessage.slice(0, 65_536)
+        : DEFAULT_PER_MODEL_CONFIG.reasoningBudgetMessage,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
@@ -640,6 +664,9 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&
+    config.reasoningBudget === DEFAULT_PER_MODEL_CONFIG.reasoningBudget &&
+    config.reasoningBudgetMessage ===
+      DEFAULT_PER_MODEL_CONFIG.reasoningBudgetMessage &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
     (config.chatTemplateOverride ?? null) === null &&

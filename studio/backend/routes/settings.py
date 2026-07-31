@@ -173,6 +173,8 @@ class ModelOverridePayload(BaseModel):
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
+    reasoning_budget: Optional[int] = Field(default = None, ge = -1, le = 2_147_483_647)
+    reasoning_budget_message: Optional[str] = Field(default = None, max_length = 65_536)
     tensor_parallel: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
@@ -206,6 +208,7 @@ class ModelOverridePayload(BaseModel):
         "custom_context_length",
         "spec_draft_n_max",
         "n_parallel",
+        "reasoning_budget",
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
@@ -603,6 +606,8 @@ def update_openai_auto_switch_override(
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
                 n_parallel = payload.n_parallel,
+                reasoning_budget = payload.reasoning_budget,
+                reasoning_budget_message = payload.reasoning_budget_message,
                 tensor_parallel = payload.tensor_parallel,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,

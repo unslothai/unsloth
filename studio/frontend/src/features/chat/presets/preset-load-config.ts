@@ -33,6 +33,8 @@ export type PresetLoadConfig = Pick<
   | "speculativeType"
   | "specDraftNMax"
   | "nParallel"
+  | "reasoningBudget"
+  | "reasoningBudgetMessage"
   | "tensorParallel"
   | "gpuMemoryMode"
   | "gpuLayers"
@@ -49,12 +51,12 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   tensorParallel: false,
 };
 
-function toComparablePerModelConfig(
-  config: PresetLoadConfig,
-): PerModelConfig {
+function toComparablePerModelConfig(config: PresetLoadConfig): PerModelConfig {
   return {
     ...DEFAULT_PER_MODEL_CONFIG,
     ...config,
@@ -85,8 +87,12 @@ export function normalizePresetLoadConfig(
   const gpuMemoryMode =
     partial.gpuMemoryMode === "manual" ? ("manual" as const) : undefined;
   let gpuLayers: number | undefined;
-  if (typeof partial.gpuLayers === "number" && Number.isFinite(partial.gpuLayers)) {
-    gpuLayers = partial.gpuLayers < 0 ? GPU_LAYERS_AUTO : Math.floor(partial.gpuLayers);
+  if (
+    typeof partial.gpuLayers === "number" &&
+    Number.isFinite(partial.gpuLayers)
+  ) {
+    gpuLayers =
+      partial.gpuLayers < 0 ? GPU_LAYERS_AUTO : Math.floor(partial.gpuLayers);
   }
   let nCpuMoe: number | undefined;
   if (typeof partial.nCpuMoe === "number" && Number.isFinite(partial.nCpuMoe)) {
@@ -119,6 +125,18 @@ export function normalizePresetLoadConfig(
             Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)),
           )
         : null,
+    reasoningBudget:
+      typeof partial.reasoningBudget === "number" &&
+      Number.isFinite(partial.reasoningBudget)
+        ? Math.max(
+            -1,
+            Math.min(2_147_483_647, Math.trunc(partial.reasoningBudget)),
+          )
+        : -1,
+    reasoningBudgetMessage:
+      typeof partial.reasoningBudgetMessage === "string"
+        ? partial.reasoningBudgetMessage.slice(0, 65_536)
+        : "",
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
@@ -132,9 +150,7 @@ export function normalizePresetLoadConfig(
   return hasPresetLoadConfig(coalesced) ? coalesced : undefined;
 }
 
-export function hasPresetLoadConfig(
-  config?: PresetLoadConfig | null,
-): boolean {
+export function hasPresetLoadConfig(config?: PresetLoadConfig | null): boolean {
   return !isSamePresetLoadConfig(config, EMPTY_PRESET_LOAD_CONFIG);
 }
 
@@ -152,12 +168,12 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
   const snapshot = currentRuntimePerModelConfig({ includeMaxSeqLength: true });
   const store = useChatRuntimeStore.getState();
   const isGguf =
-    store.activeGgufVariant != null ||
-    store.ggufContextLength != null ||
-    (store.params.checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
+    !store.loadedIsDiffusion &&
+    (store.activeGgufVariant != null ||
+      store.ggufContextLength != null ||
+      (store.params.checkpoint?.toLowerCase().endsWith(".gguf") ?? false));
   const effectiveContextLength =
-    snapshot.customContextLength ??
-    (isGguf ? store.ggufContextLength : null);
+    snapshot.customContextLength ?? (isGguf ? store.ggufContextLength : null);
   const captured: PresetLoadConfig = {
     customContextLength: effectiveContextLength ?? null,
     maxSeqLength: normalizeMaxSeqLength(snapshot.maxSeqLength),
@@ -165,6 +181,8 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),
     specDraftNMax: snapshot.specDraftNMax ?? null,
     nParallel: snapshot.nParallel ?? null,
+    reasoningBudget: isGguf ? snapshot.reasoningBudget : -1,
+    reasoningBudgetMessage: isGguf ? snapshot.reasoningBudgetMessage : "",
     tensorParallel: snapshot.tensorParallel ?? false,
     ...(snapshot.gpuMemoryMode === "manual"
       ? { gpuMemoryMode: "manual" as const }
@@ -205,29 +223,33 @@ function coalesceDefaultLoadKnobs(
   return result;
 }
 
-export function applyPresetLoadConfig(
-  config?: PresetLoadConfig | null,
-): void {
+export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
   if (config == null) {
     return;
   }
   const store = useChatRuntimeStore.getState();
-  applyPerModelConfigToRuntime({
-    ...DEFAULT_PER_MODEL_CONFIG,
-    maxSeqLength: normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
-    customContextLength: config.customContextLength ?? null,
-    kvCacheDtype: config.kvCacheDtype ?? null,
-    speculativeType: config.speculativeType ?? null,
-    specDraftNMax: config.specDraftNMax ?? null,
-    nParallel: config.nParallel ?? null,
-    tensorParallel: config.tensorParallel ?? false,
-    chatTemplateOverride: null,
-    gpuMemoryMode: config.gpuMemoryMode,
-    gpuLayers: config.gpuLayers,
-    nCpuMoe: config.nCpuMoe,
-    selectedGpuIds: store.selectedGpuIds,
-    selectedGpuIndexKind: store.selectedGpuIndexKind,
-  });
+  applyPerModelConfigToRuntime(
+    {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      maxSeqLength:
+        normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
+      customContextLength: config.customContextLength ?? null,
+      kvCacheDtype: config.kvCacheDtype ?? null,
+      speculativeType: config.speculativeType ?? null,
+      specDraftNMax: config.specDraftNMax ?? null,
+      nParallel: config.nParallel ?? null,
+      reasoningBudget: config.reasoningBudget ?? -1,
+      reasoningBudgetMessage: config.reasoningBudgetMessage ?? "",
+      tensorParallel: config.tensorParallel ?? false,
+      chatTemplateOverride: null,
+      gpuMemoryMode: config.gpuMemoryMode,
+      gpuLayers: config.gpuLayers,
+      nCpuMoe: config.nCpuMoe,
+      selectedGpuIds: store.selectedGpuIds,
+      selectedGpuIndexKind: store.selectedGpuIndexKind,
+    },
+    { isDiffusion: store.loadedIsDiffusion },
+  );
 }
 
 export function formatPresetLoadConfigSummary(
@@ -248,6 +270,9 @@ export function formatPresetLoadConfigSummary(
   }
   if (config.nParallel != null) {
     parts.push(`${config.nParallel} slots`);
+  }
+  if (config.reasoningBudget !== -1) {
+    parts.push(`Reasoning ${config.reasoningBudget}`);
   }
   if (config.gpuMemoryMode === "manual") {
     parts.push("GPU manual");

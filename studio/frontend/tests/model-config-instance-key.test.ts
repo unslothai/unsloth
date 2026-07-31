@@ -18,6 +18,8 @@ const LIVE: PerModelConfig = {
   speculativeType: "ngram",
   specDraftNMax: 6,
   nParallel: 4,
+  reasoningBudget: 2048,
+  reasoningBudgetMessage: "Budget exhausted",
   tensorParallel: true,
   chatTemplateOverride: null,
   gpuMemoryMode: "manual",
@@ -34,6 +36,8 @@ const SAVED: PerModelConfig = {
   speculativeType: "auto",
   specDraftNMax: null,
   nParallel: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   tensorParallel: false,
   chatTemplateOverride: null,
   gpuMemoryMode: "auto",
@@ -100,6 +104,8 @@ test("every mirrored setting moves the instance key", () => {
     { ...LIVE, speculativeType: "off" },
     { ...LIVE, specDraftNMax: 4 },
     { ...LIVE, nParallel: 1 },
+    { ...LIVE, reasoningBudget: 0 },
+    { ...LIVE, reasoningBudgetMessage: "Done thinking" },
     { ...LIVE, tensorParallel: false },
     { ...LIVE, chatTemplateOverride: "{{ bos_token }}" },
     { ...LIVE, gpuMemoryMode: "auto" },
@@ -119,7 +125,10 @@ test("every mirrored setting moves the instance key", () => {
 
 test("the model and its quant still key the editor", () => {
   const base = modelConfigInstanceKey(MODEL, VARIANT, LIVE);
-  assert.notEqual(modelConfigInstanceKey("unsloth/Other-GGUF", VARIANT, LIVE), base);
+  assert.notEqual(
+    modelConfigInstanceKey("unsloth/Other-GGUF", VARIANT, LIVE),
+    base,
+  );
   assert.notEqual(modelConfigInstanceKey(MODEL, "Q8_0", LIVE), base);
   // A loose .gguf carries no quant; null and undefined are the same absence.
   assert.equal(

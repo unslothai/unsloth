@@ -694,6 +694,31 @@ def test_auto_switch_applies_partial_override(monkeypatch):
     assert req.max_seq_length == 0  # untouched default
 
 
+def test_auto_switch_applies_reasoning_budget_override(monkeypatch):
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings,
+        "get_model_override",
+        lambda model_id: {
+            "reasoning_budget": 2048,
+            "reasoning_budget_message": "Conclude now",
+        },
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert req.reasoning_budget == 2048
+    assert req.reasoning_budget_message == "Conclude now"
+
+
 def _mock_override_store(monkeypatch):
     """Back the override read + atomic-merge write with an in-memory dict."""
     import storage.studio_db as db
@@ -759,6 +784,27 @@ def test_model_override_roundtrip(monkeypatch):
     settings.set_model_override("unsloth/B-GGUF", llama_extra_args = [], max_seq_length = None)
     assert settings.get_model_override("unsloth/B-GGUF") == {}
     assert settings.get_model_overrides() == {}
+
+
+def test_reasoning_budget_override_route_roundtrip(monkeypatch):
+    _mock_override_store(monkeypatch)
+
+    response = _put(
+        "unsloth/B-GGUF",
+        reasoning_budget = 2048,
+        reasoning_budget_message = "Conclude now",
+    )
+
+    assert response.overrides["unsloth/B-GGUF"] == {
+        "reasoning_budget": 2048,
+        "reasoning_budget_message": "Conclude now",
+    }
+    assert settings.model_override_load_kwargs(
+        response.overrides["unsloth/B-GGUF"], is_gguf = True
+    ) == {
+        "reasoning_budget": 2048,
+        "reasoning_budget_message": "Conclude now",
+    }
 
 
 def test_override_route_rejects_managed_flag_and_removes(monkeypatch):

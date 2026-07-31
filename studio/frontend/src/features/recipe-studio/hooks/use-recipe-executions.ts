@@ -257,6 +257,8 @@ async function loadLocalModelSelection(
       hf_token: null,
       // biome-ignore lint/style/useNamingConvention: api schema
       max_seq_length: isGguf ? 0 : 4096,
+      reasoning_budget: -1,
+      reasoning_budget_message: "",
       // biome-ignore lint/style/useNamingConvention: api schema
       load_in_4bit: true,
       // biome-ignore lint/style/useNamingConvention: api schema

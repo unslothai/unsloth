@@ -228,6 +228,34 @@ export function applyActiveModelStatusToStore(
   const rememberedNParallel = remembered?.remembered
     ? (remembered.config.nParallel ?? null)
     : null;
+  const reasoningBudgetApplicable =
+    status.is_gguf === true && status.is_diffusion !== true;
+  const incomingReasoningBudget = reasoningBudgetApplicable
+    ? (status.reasoning_budget ?? -1)
+    : -1;
+  const incomingReasoningBudgetMessage = reasoningBudgetApplicable
+    ? (status.reasoning_budget_message ?? "")
+    : "";
+  const reasoningBudgetStatusChanged =
+    prevState.loadedReasoningBudget !== incomingReasoningBudget ||
+    prevState.loadedReasoningBudgetMessage !== incomingReasoningBudgetMessage;
+  const reasoningBudgetEditPending =
+    prevState.loadedReasoningBudget !== null &&
+    prevState.reasoningBudget !== prevState.loadedReasoningBudget;
+  const reasoningBudgetMessageEditPending =
+    prevState.loadedReasoningBudgetMessage !== null &&
+    prevState.reasoningBudgetMessage !==
+      prevState.loadedReasoningBudgetMessage;
+  const reasoningBudgetStatusFields = {
+    loadedReasoningBudget: incomingReasoningBudget,
+    loadedReasoningBudgetMessage: incomingReasoningBudgetMessage,
+    ...(!reasoningBudgetEditPending || hydratingExistingModel
+      ? { reasoningBudget: incomingReasoningBudget }
+      : {}),
+    ...(!reasoningBudgetMessageEditPending || hydratingExistingModel
+      ? { reasoningBudgetMessage: incomingReasoningBudgetMessage }
+      : {}),
+  };
   // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
   // and status only exposes the RESOLVED context; re-seed the pin from the
   // requested value (parity with the load paths' keepCustomCtx). Baselines
@@ -376,13 +404,19 @@ export function applyActiveModelStatusToStore(
     // re-sends it. /status omits the echo for non-GGUF and sends an explicit
     // null for diffusion, so an absent field on a GGUF is an older backend.
     ...(seedLoadParams &&
-      (status.is_gguf === false || status.requested_parallel_slots === null) && {
+      (status.is_gguf === false ||
+        status.requested_parallel_slots === null) && {
         loadedNParallel: null,
       }),
     // Per-model: a change underneath this tab blanks the control like
     // performLoad's cross-model reset, or the old count follows onto the new
     // model. The baseline above still carries the rollback.
     ...(seedLoadParams && slotsModelChanged && { nParallel: null }),
+    ...(seedLoadParams &&
+      (prevState.loadedReasoningBudget === null ||
+        hydratingExistingModel ||
+        reasoningBudgetStatusChanged) &&
+      reasoningBudgetStatusFields),
     // AFTER that clear, which both a first hydration and a model change trip:
     // either would leave the control blank while the model runs on a remembered
     // override, so the next Apply would save the blank over it. Adopted only

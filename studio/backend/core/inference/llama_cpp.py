@@ -52,6 +52,8 @@ from core.inference.llama_server_args import (
     parse_gpu_layers_override,
     parse_split_mode_override,
     resolve_requested_ctx,
+    resolve_reasoning_budget,
+    resolve_reasoning_budget_message,
     strip_shadowing_flags,
     strip_split_mode_only,
 )
@@ -2412,6 +2414,8 @@ class LlamaCppBackend:
         self._chat_template_override: Optional[str] = None
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
+        self._reasoning_budget: int = -1
+        self._reasoning_budget_message: str = ""
         self._reasoning_style: str = "enable_thinking"
         self._reasoning_effort_levels: list = []
         self._supports_preserve_thinking: bool = False
@@ -2624,6 +2628,14 @@ class LlamaCppBackend:
         """n_ctx the last load was invoked with (not the effective cap).
         0 means Auto. Used by the route to detect Auto-vs-explicit flips."""
         return self._requested_n_ctx
+
+    @property
+    def reasoning_budget(self) -> int:
+        return self._reasoning_budget
+
+    @property
+    def reasoning_budget_message(self) -> str:
+        return self._reasoning_budget_message
 
     @property
     def extra_args_source(self) -> Optional[tuple[str, Optional[str]]]:
@@ -5920,6 +5932,8 @@ class LlamaCppBackend:
         self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
         self._cache_type_kv = None
+        self._reasoning_budget = -1
+        self._reasoning_budget_message = ""
         self._swa_full = False
         self._kv_cache_unified = False
         self._n_ubatch = self._DEFAULT_N_UBATCH
@@ -7156,6 +7170,8 @@ class LlamaCppBackend:
         cache_type_kv: Optional[str] = None,
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
+        reasoning_budget: int = -1,
+        reasoning_budget_message: str = "",
         tensor_parallel: bool = False,
         gpu_memory_mode: Literal["auto", "manual"] = "auto",
         gpu_layers: int = -1,
@@ -7196,6 +7212,8 @@ class LlamaCppBackend:
             "cache_type_kv": cache_type_kv,
             "speculative_type": speculative_type,
             "spec_draft_n_max": spec_draft_n_max,
+            "reasoning_budget": reasoning_budget,
+            "reasoning_budget_message": reasoning_budget_message,
             "tensor_parallel": tensor_parallel,
             # GPU-memory placement: replayed on respawn so a server SIGKILL'd by
             # GPU/RAM pressure reloads onto the same devices with the same
@@ -7231,6 +7249,8 @@ class LlamaCppBackend:
                 cache_type_kv = cache_type_kv,
                 speculative_type = speculative_type,
                 spec_draft_n_max = spec_draft_n_max,
+                reasoning_budget = reasoning_budget,
+                reasoning_budget_message = reasoning_budget_message,
                 tensor_parallel = tensor_parallel,
                 gpu_memory_mode = gpu_memory_mode,
                 gpu_layers = gpu_layers,
@@ -9006,6 +9026,16 @@ class LlamaCppBackend:
                     )
                     logger.info(f"Reasoning model: {reasoning_kw} by default")
 
+                reasoning_budget = resolve_reasoning_budget(extra_args, reasoning_budget)
+                reasoning_budget_message = resolve_reasoning_budget_message(
+                    extra_args, reasoning_budget_message
+                )
+                cmd.extend(["--reasoning-budget", str(reasoning_budget)])
+                if reasoning_budget_message:
+                    cmd.extend(["--reasoning-budget-message", reasoning_budget_message])
+                self._reasoning_budget = reasoning_budget
+                self._reasoning_budget_message = reasoning_budget_message
+
                 if launch_mmproj_path and effective_is_vision:
                     cmd.extend(["--mmproj", launch_mmproj_path])
                     logger.info(f"Using mmproj for vision: {launch_mmproj_path}")
@@ -9098,6 +9128,10 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                # These launch settings are first-class and always have explicit
+                # defaults, so inherited llama.cpp env values must not contradict
+                # the command or the state echoed through /load and /status.
+                env.pop("LLAMA_ARG_THINK_BUDGET_MESSAGE", None)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(env)
                 # Omitting --threads relies on llama.cpp's physical-core default, so
@@ -10068,6 +10102,8 @@ class LlamaCppBackend:
         is_vision: bool,
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
+        reasoning_budget: int = -1,
+        reasoning_budget_message: str = "",
         tensor_parallel: bool = False,
         gpu_memory_mode: Literal["auto", "manual"] = "auto",
         gpu_layers: int = -1,
@@ -10110,6 +10146,12 @@ class LlamaCppBackend:
             return value
 
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
+            return False
+        if self._reasoning_budget != resolve_reasoning_budget(extra_args, reasoning_budget):
+            return False
+        if self._reasoning_budget_message != resolve_reasoning_budget_message(
+            extra_args, reasoning_budget_message
+        ):
             return False
         # Reconcile a user --split-mode in extras AND an inherited tensor
         # LLAMA_ARG_SPLIT_MODE env, but only against a server that actually
@@ -10356,6 +10398,8 @@ class LlamaCppBackend:
             self._chat_template_override = None
             self._supports_reasoning = False
             self._reasoning_always_on = False
+            self._reasoning_budget = -1
+            self._reasoning_budget_message = ""
             self._reasoning_style = "enable_thinking"
             self._reasoning_effort_levels = []
             self._reasoning_default = True

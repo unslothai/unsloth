@@ -32,6 +32,10 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   n_parallel?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
+  reasoning_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  reasoning_budget_message?: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
   tensor_parallel?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   chat_template_override?: string;
@@ -99,6 +103,12 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   // Blank follows the server-wide --parallel default, which is the app default here.
   if (config.nParallel && config.nParallel > 0) {
     payload.n_parallel = config.nParallel;
+  }
+  if (config.reasoningBudget !== -1) {
+    payload.reasoning_budget = config.reasoningBudget;
+  }
+  if (config.reasoningBudgetMessage) {
+    payload.reasoning_budget_message = config.reasoningBudgetMessage;
   }
   if (config.tensorParallel) {
     payload.tensor_parallel = true;

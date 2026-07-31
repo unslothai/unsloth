@@ -129,6 +129,8 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     parse_cache_override(out)
     parse_split_mode_override(out)
     parse_gpu_layers_override(out)
+    parse_reasoning_budget_override(out)
+    parse_reasoning_budget_message_override(out)
     return out
 
 
@@ -146,6 +148,12 @@ _CONTEXT_FLAGS: frozenset[str] = frozenset({"-c", "--ctx-size"})
 _CACHE_TYPE_K_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k"})
 _CACHE_TYPE_V_FLAGS: frozenset[str] = frozenset({"-ctv", "--cache-type-v"})
 _CACHE_FLAGS: frozenset[str] = _CACHE_TYPE_K_FLAGS | _CACHE_TYPE_V_FLAGS
+_REASONING_BUDGET_FLAGS: frozenset[str] = frozenset({"--reasoning-budget"})
+_REASONING_BUDGET_MESSAGE_FLAGS: frozenset[str] = frozenset(
+    {"--reasoning-budget-message"}
+)
+_REASONING_BUDGET_MAX = 2_147_483_647
+_REASONING_BUDGET_MESSAGE_MAX_CHARS = 65_536
 _SPEC_FLAGS: frozenset[str] = frozenset(
     {
         "--spec-default",
@@ -326,6 +334,46 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     return _last_flag_value(args, _CACHE_FLAGS)
 
 
+def parse_reasoning_budget_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``--reasoning-budget`` value."""
+    raw_value = _last_flag_value(args, _REASONING_BUDGET_FLAGS)
+    if raw_value is None:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("llama-server --reasoning-budget requires an integer value") from exc
+    if value < -1:
+        raise ValueError("llama-server --reasoning-budget requires a value of at least -1")
+    if value > _REASONING_BUDGET_MAX:
+        raise ValueError(
+            f"llama-server --reasoning-budget requires a value of at most {_REASONING_BUDGET_MAX}"
+        )
+    return value
+
+
+def parse_reasoning_budget_message_override(
+    args: Optional[Iterable[str]],
+) -> Optional[str]:
+    """Return the last user-supplied ``--reasoning-budget-message`` value."""
+    value = _last_flag_value(args, _REASONING_BUDGET_MESSAGE_FLAGS)
+    if value is not None and len(value) > _REASONING_BUDGET_MESSAGE_MAX_CHARS:
+        raise ValueError(
+            "llama-server --reasoning-budget-message exceeds the 65536-character limit"
+        )
+    return value
+
+
+def resolve_reasoning_budget(args: Optional[Iterable[str]], fallback: int) -> int:
+    override = parse_reasoning_budget_override(args)
+    return override if override is not None else fallback
+
+
+def resolve_reasoning_budget_message(args: Optional[Iterable[str]], fallback: str) -> str:
+    override = parse_reasoning_budget_message_override(args)
+    return override if override is not None else fallback
+
+
 def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     """Return the last user-supplied GPU layer count from extras.
 
@@ -482,6 +530,8 @@ def strip_shadowing_flags(
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
     strip_device: bool = False,
+    strip_reasoning_budget: bool = False,
+    strip_reasoning_budget_message: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
@@ -515,6 +565,10 @@ def strip_shadowing_flags(
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
     if strip_device:
         shadowing |= _DEVICE_FLAGS
+    if strip_reasoning_budget:
+        shadowing |= _REASONING_BUDGET_FLAGS
+    if strip_reasoning_budget_message:
+        shadowing |= _REASONING_BUDGET_MESSAGE_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []

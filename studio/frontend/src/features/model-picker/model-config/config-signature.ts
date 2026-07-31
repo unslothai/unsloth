@@ -54,6 +54,8 @@ export function loadedConfigSignature(
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.nParallel ?? "",
+    config.reasoningBudget,
+    `${config.reasoningBudgetMessage.length}:${hashString(config.reasoningBudgetMessage)}`,
     config.tensorParallel ? "1" : "0",
     config.chatTemplateOverride == null
       ? ""
