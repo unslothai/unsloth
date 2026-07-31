@@ -1425,7 +1425,7 @@ class TestRouteErrors(unittest.TestCase):
             ),
             patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable_for", nullcontext),
             # The chat handoff passes a `register` hook (the in-flight marker), so accept it.
             patch.object(arb, "acquire_for", lambda owner, register = None: acquired.append(owner)),
         ):
@@ -1480,7 +1480,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
             patch.object(inference_route, "_resolve_inherited_extra_args", lambda *a, **k: None),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable_for", nullcontext),
             patch.object(llama_cpp, "_hub_download_blocks_gguf_load", lambda *a, **k: True),
             patch.object(arb, "acquire_for", lambda *a, **k: acquired.append(a[0])),
         ):
@@ -1544,7 +1544,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
             patch.object(inference_route, "_resolve_inherited_extra_args", lambda *a, **k: None),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
-            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "_hf_offline_if_unreachable_for", nullcontext),
             patch.object(llama_cpp, "_hub_download_blocks_gguf_load", lambda *a, **k: False),
             patch.object(arb, "acquire_for", _acquire),
         ):

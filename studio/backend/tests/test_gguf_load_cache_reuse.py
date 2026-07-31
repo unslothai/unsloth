@@ -831,11 +831,15 @@ class TestLoadHubDownloadExclusion:
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
             encoding = "utf-8"
         )
-        # _load_model_impl has more than one `if config.is_gguf:`, so anchor on
-        # the branch that actually owns the load marker rather than the first
-        # one in the file, which belongs to an earlier check.
+        # Anchor on the enclosing function, not on a nearby `if config.is_gguf:`. The previous
+        # anchor took the last such line before the load marker, which only worked while
+        # _resolve_inherited_extra_args happened to sit above every one of them; main since
+        # hoisted that call above the gpu_ids preflight ("resolve inherited extras once before
+        # command-dependent preflights"), so the rindex started landing BETWEEN the call and the
+        # marker and the first assertion compared against a later, unrelated call site. The
+        # ordering being asserted is a property of _load_model_impl as a whole.
         marker = source.index("enter_context(gguf_load_in_flight")
-        gguf_branch_start = source.rindex("if config.is_gguf:", 0, marker)
+        gguf_branch_start = source.rindex("async def _load_model_impl", 0, marker)
         gguf_branch = source[gguf_branch_start:]
 
         # One chain, in this order:
