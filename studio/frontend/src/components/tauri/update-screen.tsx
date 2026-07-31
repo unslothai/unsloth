@@ -29,7 +29,7 @@ function Logo() {
         className="h-[60px] w-[60px] object-contain"
       />
       <span
-        className="text-[50px] font-semibold leading-none tracking-[-0.02em] text-foreground"
+        className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
         style={{ fontFamily: '"Hellix", sans-serif' }}
       >
         unsloth

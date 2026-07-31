@@ -109,7 +109,7 @@ function Logo() {
         className="h-[60px] w-[60px] object-contain"
       />
       <span
-        className="text-[50px] font-semibold leading-none tracking-[-0.02em] text-foreground"
+        className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
         style={{ fontFamily: '"Hellix", sans-serif' }}
       >
         unsloth
@@ -165,7 +165,7 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
       </div>
       <div className="mb-10 flex flex-col items-center gap-3">
         <p
-          className="text-[13px] font-semibold tracking-[-0.01em] text-muted-foreground"
+          className="text-ui-13 font-semibold tracking-[-0.01em] text-muted-foreground"
           style={{ fontFamily: '"Hellix", sans-serif' }}
         >
           To install Unsloth, click Get Started.
