@@ -49,16 +49,16 @@ def test_macos_prebuilt_copy_failure_runs_generated_icns_fallback(tmp_path):
     )
     (fake_bin / "sips").write_text(
         "#!/bin/sh\n"
-        "while [ \"$#\" -gt 0 ]; do\n"
-        "  if [ \"$1\" = --out ]; then shift; out=$1; fi\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  if [ "$1" = --out ]; then shift; out=$1; fi\n'
         "  shift\n"
         "done\n"
         'mkdir -p "$(dirname "$out")"; printf resized > "$out"\n'
     )
     (fake_bin / "iconutil").write_text(
         "#!/bin/sh\n"
-        "while [ \"$#\" -gt 0 ]; do\n"
-        "  if [ \"$1\" = -o ]; then shift; out=$1; fi\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  if [ "$1" = -o ]; then shift; out=$1; fi\n'
         "  shift\n"
         "done\n"
         'printf generated > "$out"\n'
