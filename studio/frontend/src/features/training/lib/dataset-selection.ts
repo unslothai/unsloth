@@ -2,10 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DatasetSource } from "@/types/training";
+import { isValidHubResourceId } from "../../../components/resource-picker/hub-resource-id.ts";
 
 export function isHuggingFaceDatasetSelected(
   source: DatasetSource,
   dataset: string | null,
 ): boolean {
-  return source === "huggingface" && Boolean(dataset?.trim());
+  const selectedDataset = dataset?.trim();
+  if (source !== "huggingface" || !selectedDataset) {
+    return false;
+  }
+  return isValidHubResourceId(selectedDataset);
 }

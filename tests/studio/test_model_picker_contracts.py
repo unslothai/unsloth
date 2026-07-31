@@ -1901,11 +1901,14 @@ def test_run_preview_uses_the_app_locale_for_numbers_and_plural_rules():
 def test_freeform_device_model_keeps_local_path_intent():
     selector = _read("features/model-picker/components/train-model-selector.tsx")
     assert "return looksLikeLocalPath(trimmed) ? trimmed : `./${trimmed}`;" in selector
+    resolver = selector.split("function resolveFreeformTrainingModelPick", 1)[1]
+    resolver = resolver.split("export function TrainModelSelector", 1)[0]
+    assert "{ knownCached: false, localPath, modelFormat: null }" in resolver
     freeform = selector.split("function pickFreeformModel", 1)[1]
     freeform = freeform.split("function pickDeviceModel", 1)[0]
     assert "const localPath = explicitLocalPath(id);" in freeform
-    assert "pick(" in freeform
-    assert "{ knownCached: false, localPath, modelFormat: null }" in freeform
+    assert "resolveFreeformTrainingModelPick(" in freeform
+    assert "pick(selection.id, selection.options, selection.modelTypeFlags);" in freeform
 
 
 def test_freeform_model_validation_rejects_binary_peft_artifact():
@@ -2127,6 +2130,8 @@ def test_picker_shell_handles_ime_focus_and_short_viewports():
     assert shell.count("isImeCompositionKey(") >= 3
     assert "onCompositionStart" in shell
     assert "onCompositionEnd" in shell
+    assert "onOpenAutoFocus" in shell
+    assert "autoFocus" not in shell
     assert 'aria-label={t("picker.searchAriaLabel", { noun })}' in shell
     assert "max-h-(--radix-popover-content-available-height)" in shell
     assert "gap-0 overflow-hidden" in shell
@@ -2207,13 +2212,14 @@ def test_partial_local_datasets_are_not_selectable():
     assert device_items.count(".filter((d) => !d.partial)") == 2
 
 
-def test_dataset_panel_treats_the_explicit_hub_source_as_authoritative():
+def test_dataset_panel_requires_a_valid_hub_id_without_filename_heuristics():
     selection = _read("features/training/lib/dataset-selection.ts")
     panel = _read("features/studio/sections/dataset-section.tsx")
     helpers = _read("features/studio/sections/dataset-panel-helpers.ts")
 
-    assert 'source === "huggingface"' in selection
+    assert 'source !== "huggingface"' in selection
     assert "dataset?.trim()" in selection
+    assert "isValidHubResourceId" in selection
     assert "isHuggingFaceDatasetSelected(" in panel
     assert "isLikelyLocalDatasetRef" not in panel
     assert "isLikelyLocalDatasetRef" not in helpers

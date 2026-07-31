@@ -239,6 +239,12 @@ export function PickerShell({
         sideOffset={8}
         collisionPadding={16}
         onKeyDown={handlePickerNavigation}
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          panelRef.current
+            ?.querySelector<HTMLInputElement>('[data-picker-search="true"]')
+            ?.focus();
+        }}
         aria-label={t("picker.searchAriaLabel", { noun })}
         className={cn(
           "max-h-(--radix-popover-content-available-height) w-[min(420px,calc(100vw-2rem))] gap-0 overflow-hidden rounded-2xl p-4",
@@ -267,7 +273,6 @@ export function PickerShell({
             />
             <Input
               data-picker-search="true"
-              autoFocus={true}
               value={tab === PICKER_TAB.hub ? hubQuery : deviceQuery}
               onChange={(e) => {
                 setQueryStatus("");

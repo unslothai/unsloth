@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { isHuggingFaceDatasetSelected } from "../src/features/training/lib/dataset-selection.ts";
 
-test("Hugging Face source remains authoritative for filename-like repo ids", () => {
+test("accepts filename-like Hub ids without treating local paths as Hub datasets", () => {
   assert.equal(
     isHuggingFaceDatasetSelected("huggingface", "owner/data.arrow"),
     true,
@@ -17,4 +17,18 @@ test("Hugging Face source remains authoritative for filename-like repo ids", () 
   );
   assert.equal(isHuggingFaceDatasetSelected("upload", "data.arrow"), false);
   assert.equal(isHuggingFaceDatasetSelected("huggingface", "  "), false);
+  for (const path of [
+    "/datasets/train",
+    "./datasets/train",
+    "../datasets/train",
+    "~/datasets/train",
+    String.raw`C:\datasets\train`,
+    String.raw`\\server\datasets\train`,
+  ]) {
+    assert.equal(
+      isHuggingFaceDatasetSelected("huggingface", path),
+      false,
+      path,
+    );
+  }
 });

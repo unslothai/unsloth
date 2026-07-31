@@ -3,22 +3,6 @@
 
 import { normalizeModelIdentity } from "@/features/hub";
 
-const WINDOWS_ABSOLUTE_PATH_RE = /^[A-Za-z]:\//;
-
-function normalizeCachePath(path: string): string {
-  const normalized = normalizeModelIdentity(path.trim());
-  const minLength = normalized.startsWith("//")
-    ? 2
-    : WINDOWS_ABSOLUTE_PATH_RE.test(normalized)
-      ? 3
-      : 1;
-  let end = normalized.length;
-  while (end > minLength && normalized.charCodeAt(end - 1) === 47) {
-    end -= 1;
-  }
-  return end === normalized.length ? normalized : normalized.slice(0, end);
-}
-
 export function cacheLocalPathMatchesSelection(
   currentLocalPath: string | null | undefined,
   expectedLocalPath: string | null | undefined,
@@ -30,8 +14,8 @@ export function cacheLocalPathMatchesSelection(
     return currentLocalPath == null && expectedLocalPath == null;
   }
   return (
-    normalizeCachePath(currentLocalPath) ===
-    normalizeCachePath(expectedLocalPath)
+    normalizeModelIdentity(currentLocalPath) ===
+    normalizeModelIdentity(expectedLocalPath)
   );
 }
 
