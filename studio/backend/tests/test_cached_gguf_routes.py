@@ -525,13 +525,9 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
             [],
         ),
     )
-    assert download_manifest.write_cancel_marker(
-        "model", "Org/Quant", "Q4_K_M", hub_cache = active
-    )
+    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q4_K_M", hub_cache = active)
 
-    response = asyncio.run(
-        GV.get_gguf_variants_response("Org/Quant", local_path = str(pinned))
-    )
+    response = asyncio.run(GV.get_gguf_variants_response("Org/Quant", local_path = str(pinned)))
     assert {v.quant for v in response.variants if v.downloaded} == {"Q4_K_M"}
     assert not any(v.partial for v in response.variants)
 
