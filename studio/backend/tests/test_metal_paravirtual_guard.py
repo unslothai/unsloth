@@ -462,3 +462,155 @@ def test_the_backstop_defers_to_a_user_owned_spec_type():
     assert llama_cpp._extra_args_set_spec_type(["--spec-type", "ngram-mod"]) is True
     src = _load_model_source()
     assert "not _extra_args_set_spec_type(extra_args)" in src
+
+
+# ── ...and give the slots back when MTP never launches ────────────────
+
+
+def _if_block(predicate, tree = None):
+    """The one `if` statement in load_model whose test satisfies `predicate`."""
+    found = [
+        node
+        for node in ast.walk(tree if tree is not None else _load_model_tree())
+        if isinstance(node, ast.If) and predicate(node.test)
+    ]
+    assert len(found) == 1, f"expected exactly one matching block, found {len(found)}"
+    return found[0]
+
+
+def _names(node) -> set:
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
+def _is_mtp_clamp(test) -> bool:
+    return "spec_flags" in _names(test) and "n_parallel" in _names(test)
+
+
+def _is_slot_restore(test) -> bool:
+    return "_mtp_clamped_slots" in _names(test)
+
+
+def _run_clamp_then_fallback(*, n_parallel, extra_args, spec_flags, cmd, asked_for = None):
+    """Execute the real clamp block, rebuild fallback_cmd the way the MTP retry
+    does, then execute the real restore block. Returns the two argvs and the
+    slot count that _commit_effective_parallel_slots would receive."""
+    scope = {
+        "n_parallel": n_parallel,
+        "extra_args": extra_args,
+        "spec_flags": spec_flags,
+        "cmd": list(cmd),
+        "_mtp_clamped_slots": 0,
+        "model_identifier": "owner/repo",
+        "logger": llama_cpp.logger,
+        "_extra_args_set_spec_type": llama_cpp._extra_args_set_spec_type,
+        "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
+        # The pre-fit ask, which the restore must NOT reach for.
+        "_pending_load_kwargs": {"n_parallel": n_parallel if asked_for is None else asked_for},
+    }
+    exec(ast.unparse(_if_block(_is_mtp_clamp)), scope)
+    clamped = list(scope["cmd"])
+    # The retry swaps the spec slice for --spec-default; the slice sits at the
+    # tail of this synthetic argv.
+    spec_at = len(clamped) - len(spec_flags)
+    scope["fallback_cmd"] = clamped[:spec_at] + ["--spec-default"]
+    exec(ast.unparse(_if_block(_is_slot_restore)), scope)
+    return clamped, scope["fallback_cmd"], scope["n_parallel"]
+
+
+def _cmd(slots: int, spec_flags: list) -> list:
+    return ["llama-server", "-m", "/m.gguf", "--parallel", str(slots), "--kv-unified", *spec_flags]
+
+
+def test_the_mtp_fallback_gets_the_requested_slots_back():
+    """MTP aborts at startup, the retry drops speculative decoding entirely, and
+    that server serves chats in parallel just fine -- so it must not inherit the
+    single slot MTP needed. The KV fit was sized for the full count."""
+    spec = ["--spec-type", "draft-mtp"]
+    clamped, fallback, slots = _run_clamp_then_fallback(
+        n_parallel = 4,
+        extra_args = ["--top-k", "40"],
+        spec_flags = spec,
+        cmd = _cmd(4, spec),
+    )
+    assert clamped[clamped.index("--parallel") + 1] == "1"  # MTP itself still gets one
+    assert fallback[fallback.index("--parallel") + 1] == "4"
+    # _commit_effective_parallel_slots reads this, and /status echoes it.
+    assert slots == 4
+
+
+def test_the_fallback_gets_back_what_the_fit_sized_not_what_the_user_asked():
+    """_slots_that_fit_on_gpu can already have cut the count before the clamp, so
+    restoring the raw ask would launch a server the VRAM budget never covered."""
+    spec = ["--spec-type", "draft-mtp"]
+    _, fallback, slots = _run_clamp_then_fallback(
+        n_parallel = 4,
+        extra_args = None,
+        spec_flags = spec,
+        cmd = _cmd(4, spec),
+        asked_for = 8,
+    )
+    assert fallback[fallback.index("--parallel") + 1] == "4"
+    assert slots == 4
+
+
+def test_a_single_slot_mtp_load_stays_single_slot_on_the_fallback():
+    """The negative that matters most: nothing was clamped, so nothing is owed."""
+    spec = ["--spec-type", "draft-mtp"]
+    clamped, fallback, slots = _run_clamp_then_fallback(
+        n_parallel = 1,
+        extra_args = None,
+        spec_flags = spec,
+        cmd = _cmd(1, spec),
+    )
+    assert clamped[clamped.index("--parallel") + 1] == "1"
+    assert fallback[fallback.index("--parallel") + 1] == "1"
+    assert slots == 1
+
+
+def test_a_user_owned_spec_type_is_not_handed_slots_it_never_asked_to_lose():
+    """The pre-flight clamp already reduced this load before the KV fit, so the
+    fit is sized for one slot and the backstop never records a debt."""
+    clamped, fallback, slots = _run_clamp_then_fallback(
+        n_parallel = 1,
+        extra_args = ["--spec-type", "draft-mtp"],
+        spec_flags = [],
+        cmd = _cmd(1, []),
+    )
+    assert clamped[clamped.index("--parallel") + 1] == "1"
+    assert fallback[fallback.index("--parallel") + 1] == "1"
+    assert slots == 1
+
+
+def test_a_non_mtp_resolution_keeps_its_slots_end_to_end():
+    """No clamp, so the restore has nothing to rewrite and must not touch a
+    count that was already correct."""
+    spec = ["--spec-default"]
+    clamped, fallback, slots = _run_clamp_then_fallback(
+        n_parallel = 4,
+        extra_args = None,
+        spec_flags = spec,
+        cmd = _cmd(4, spec),
+    )
+    assert clamped[clamped.index("--parallel") + 1] == "4"
+    assert fallback[fallback.index("--parallel") + 1] == "4"
+    assert slots == 4
+
+
+def test_the_restore_is_scoped_to_the_retry_that_actually_drops_mtp():
+    """A successful MTP launch, and the FA-off retry that keeps MTP, must both
+    stay at one slot: the restore belongs to the --spec-default retry alone."""
+    tree = _load_model_tree()
+    restore = _if_block(_is_slot_restore, tree)
+    owners = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and any(restore in ast.walk(stmt) for stmt in node.body)
+        and "_spec_requested_mtp" in _names(node.test)
+    ]
+    assert len(owners) == 1, "the slot restore left the MTP-fallback branch"
+    assert "healthy" in _names(owners[0].test), "the restore must only run on a failed MTP start"
+    # ...and after the retry argv exists, or it would rewrite nothing.
+    src = _load_model_source()
+    assert src.index("fallback_cmd = (") < src.index("_mtp_clamped_slots > 1")
+    assert src.index("_mtp_clamped_slots > 1") < src.index("_spawn_and_wait(fallback_cmd")

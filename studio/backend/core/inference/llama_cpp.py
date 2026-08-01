@@ -9152,6 +9152,8 @@ class LlamaCppBackend:
                 # Skipped when the user's extras own --spec-type: _build_speculative_flags
                 # emits nothing then, and judging the empty flag list would fall through
                 # to LLAMA_ARG_SPEC_TYPE and clamp a launch that is not MTP at all.
+                # Slots given up here, for the MTP-fallback restore below.
+                _mtp_clamped_slots = 0
                 if (
                     n_parallel > 1
                     and not _extra_args_set_spec_type(extra_args)
@@ -9171,6 +9173,7 @@ class LlamaCppBackend:
                         cmd[_np_at + 1] = "1"
                         # _commit_effective_parallel_slots below reports what launched,
                         # so rebind rather than only patching cmd.
+                        _mtp_clamped_slots = n_parallel
                         n_parallel = 1
 
                 # Apply custom chat template override if provided.
@@ -9794,6 +9797,16 @@ class LlamaCppBackend:
                     # spec flag, so a trailing --spec-default overrides it too.
                     if _extra_args_requests_mtp(extra_args, env = _launch_spec_env):
                         fallback_cmd.append("--spec-default")
+                    # fallback_cmd inherits the MTP slot clamp, but this retry is
+                    # not MTP: hand back the slots the KV fit was sized for, or the
+                    # caller's --parallel N silently serves one chat at a time (and
+                    # the requested-vs-requested dedupe makes that stick). Every
+                    # later retry derives from this argv, so rebind n_parallel now.
+                    if _mtp_clamped_slots > 1 and "--parallel" in fallback_cmd:
+                        fallback_cmd[fallback_cmd.index("--parallel") + 1] = str(
+                            _mtp_clamped_slots
+                        )
+                        n_parallel = _mtp_clamped_slots
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:
                         self._speculative_type = "default"
