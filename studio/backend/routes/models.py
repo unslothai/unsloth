@@ -874,7 +874,13 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
             ]
             custom_models = []
             for model in _generic:
-                if model.model_format != "gguf" or model.partial:
+                # An unclassified directory (``model_format is None``) still has to be
+                # content-checked. Since #7648 a folder whose only GGUF is an MTP drafter
+                # no longer classifies as ``"gguf"``, and treating that as "some other
+                # format, keep it" would register the companion directory as a model.
+                if (
+                    model.model_format is not None and model.model_format != "gguf"
+                ) or model.partial:
                     custom_models.append(model)
                     continue
                 path = Path(model.path)
