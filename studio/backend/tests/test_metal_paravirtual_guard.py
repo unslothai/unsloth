@@ -342,6 +342,124 @@ def test_the_drafter_cpu_pin_outlives_the_pass_through_extras():
     assert pin_at > extras_at, "the drafter CPU pin is emitted before the user extras"
 
 
+# ── a projector that cannot be pinned must not be served at all ───────
+
+
+class _FakeLogger:
+    def __init__(self):
+        self.warnings: list = []
+
+    def warning(self, msg, *args):
+        self.warnings.append(msg % args if args else msg)
+
+    def info(self, msg, *args):
+        pass
+
+
+def _mmproj_gate(*, paravirtual: bool, caps: dict, is_vision: bool = True, mmproj = "/p.gguf"):
+    """Execute load_model's real projector-resolution statements and report what
+    the launch would see: (mmproj path, vision flag, warnings)."""
+    body = None
+    for node in ast.walk(_load_model_tree()):
+        stmts = getattr(node, "body", None)
+        if not isinstance(stmts, list):
+            continue
+        starts = [
+            i
+            for i, s in enumerate(stmts)
+            if isinstance(s, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "launch_mmproj_path" for t in s.targets)
+        ]
+        ends = [
+            i
+            for i, s in enumerate(stmts)
+            if isinstance(s, ast.If) and {"is_vision", "effective_is_vision"} <= _names(s.test)
+        ]
+        if starts and ends:
+            body = stmts[starts[0] : ends[0] + 1]
+            break
+    assert body is not None, "the projector-resolution block moved out of load_model"
+    log = _FakeLogger()
+    scope = {
+        "extra_args": None,
+        "extra_args_disable_mmproj": lambda _a: False,
+        "self": types.SimpleNamespace(
+            _resolve_launch_mmproj_path = lambda **_kw: mmproj,
+        ),
+        "model_path": "/m.gguf",
+        "mmproj_path": None,
+        "_paravirtual_cpu_forced": paravirtual,
+        "server_caps": caps,
+        "is_vision": is_vision,
+        "logger": log,
+    }
+    exec(ast.unparse(ast.Module(body = body, type_ignores = [])), scope)
+    return scope["launch_mmproj_path"], scope["effective_is_vision"], log.warnings
+
+
+def test_a_projector_that_cannot_be_pinned_is_dropped():
+    """clip.cpp never reads --gpu-layers, so on a build without
+    --no-mmproj-offload the vision encoder stays on the virtualised device the
+    rest of this fallback exists to avoid. Serving image embeddings built from
+    corrupt output is the failure being prevented, so drop the projector."""
+    path, vision, warnings = _mmproj_gate(paravirtual = True, caps = {})
+    assert path is None
+    assert vision is False
+    assert any("--no-mmproj-offload" in w for w in warnings), "the reason must be named"
+    assert any("unsloth studio update" in w for w in warnings), "the fix must be named"
+
+
+def test_dropping_the_projector_does_not_double_warn():
+    """The generic "no usable mmproj" line would blame a missing projector for a
+    capability gap, so exactly one explanation reaches the user."""
+    _path, _vision, warnings = _mmproj_gate(paravirtual = True, caps = {})
+    assert len(warnings) == 1, warnings
+
+
+def test_a_pinnable_projector_survives_on_the_same_hardware():
+    """The negative that matters most: a build WITH the flag keeps vision, since
+    --no-mmproj-offload puts the encoder on the CPU where it is correct."""
+    path, vision, warnings = _mmproj_gate(
+        paravirtual = True, caps = {"supports_no_mmproj_offload": True}
+    )
+    assert path == "/p.gguf"
+    assert vision is True
+    assert warnings == []
+
+
+def test_a_real_mac_keeps_vision_on_a_build_without_the_flag():
+    """The drop is scoped to the virtualised device: an old llama.cpp on physical
+    Apple Silicon (or any non-Mac) must keep its projector on the GPU."""
+    path, vision, warnings = _mmproj_gate(paravirtual = False, caps = {})
+    assert path == "/p.gguf"
+    assert vision is True
+    assert warnings == []
+
+
+def test_a_text_only_gguf_is_unaffected_either_way():
+    """No projector to drop, so the guard must not manufacture a warning."""
+    for caps in ({}, {"supports_no_mmproj_offload": True}):
+        path, vision, warnings = _mmproj_gate(
+            paravirtual = True, caps = caps, is_vision = False, mmproj = None
+        )
+        assert path is None
+        assert vision is False
+        assert warnings == []
+
+
+def test_the_drop_precedes_everything_the_projector_feeds():
+    """launch_mmproj_path drives the --mmproj flag, the mmproj VRAM budget and the
+    audio-encoder probe, so clearing it after any of those would launch a
+    projector the guard believes it dropped (or offer audio input that is gone)."""
+    src = _load_model_source()
+    gate_at = src.index("_pv_mmproj_unpinnable = bool(")
+    assert gate_at < src.index('cmd.extend(["--mmproj", launch_mmproj_path])')
+    assert gate_at < src.index("self._mmproj_vram_bytes(launch_mmproj_path)")
+    assert gate_at < src.index("read_mmproj_audio_capability(launch_mmproj_path)")
+    # ...and the session flag the frontend reads follows the same variable.
+    assert "self._is_vision = effective_is_vision" in src
+
+
 # ── a pass-through GPU split mode must not fail the CPU-only load ────
 
 

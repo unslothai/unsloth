@@ -7830,11 +7830,31 @@ class LlamaCppBackend:
                         model_path = model_path,
                         mmproj_path = mmproj_path,
                     )
+                # A virtualised Metal device corrupts the vision encoder too, and
+                # --no-mmproj-offload is the only way to keep it off there (clip.cpp
+                # never reads --gpu-layers). Without that flag the choice is a
+                # projector on the corrupt device or no projector, so drop it: this
+                # fallback exists to stop corrupt output, and silently encoding every
+                # image from garbage is the failure it is meant to prevent.
+                _pv_mmproj_unpinnable = bool(
+                    launch_mmproj_path
+                    and _paravirtual_cpu_forced
+                    and not server_caps.get("supports_no_mmproj_offload")
+                )
+                if _pv_mmproj_unpinnable:
+                    logger.warning(
+                        "Disabling image/audio input for this session: this Mac's "
+                        "Metal device is virtualised and this llama-server build has "
+                        "no --no-mmproj-offload, so the vision projector would keep "
+                        "running on the device whose output is corrupt. Run 'unsloth "
+                        "studio update' to install a build that supports it."
+                    )
+                    launch_mmproj_path = None
                 # Need both a resolved mmproj AND the config vision flag; a stray
                 # mmproj passing the family-name heuristic must not flip a non-VLM
                 # GGUF into vision mode.
                 effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
-                if is_vision and not effective_is_vision:
+                if is_vision and not effective_is_vision and not _pv_mmproj_unpinnable:
                     logger.warning(
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
@@ -9256,11 +9276,11 @@ class LlamaCppBackend:
                     # true. So on a virtualised Metal device the vision encoder
                     # would keep running the corrupt path the CPU pin above exists
                     # to avoid, and every image would be encoded from garbage.
-                    # Probe-gated: a build without the flag would refuse to start,
-                    # which is worse than the corrupt encoder it prevents. Deferred
-                    # past the pass-through extras like the drafter pin, since
-                    # --mmproj-offload is a real positive flag a user can pass and
-                    # llama.cpp is last-wins.
+                    # Probe-gated, and a build without the flag never gets here: the
+                    # projector is dropped up front rather than served on the corrupt
+                    # device. Deferred past the pass-through extras like the drafter
+                    # pin, since --mmproj-offload is a real positive flag a user can
+                    # pass and llama.cpp is last-wins.
                     if _paravirtual_cpu_forced and server_caps.get("supports_no_mmproj_offload"):
                         _pv_mmproj_cpu_pin = ["--no-mmproj-offload"]
                         logger.warning(
