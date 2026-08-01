@@ -717,6 +717,8 @@ function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
 
 function GgufVariantExpander({
   repoId,
+  loadId,
+  cachePath,
   onSelect,
   gpuGb,
   systemRamGb,
@@ -733,6 +735,10 @@ function GgufVariantExpander({
   onHasVision,
 }: {
   repoId: string;
+  /** Snapshot the cached listing pinned this repo to, if any. */
+  loadId?: string | null;
+  /** Cache directory this downloaded row represents, if any. */
+  cachePath?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
@@ -792,6 +798,7 @@ function GgufVariantExpander({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const localSource = loadId || cachePath || null;
 
   useEffect(() => {
     let canceled = false;
@@ -801,7 +808,9 @@ function GgufVariantExpander({
       setError(null);
     });
 
-    listGgufVariants(repoId, hfToken)
+    // The row's own directory, so disk contents count against that cache, not the active one. No
+    // preferLocalCache: it answers from disk alone and drops the undownloaded.
+    listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)
       .then((res) => {
         if (canceled) return;
         const normalized = normalizeGgufVariantsResponse(res);
@@ -824,7 +833,7 @@ function GgufVariantExpander({
     return () => {
       canceled = true;
     };
-  }, [repoId, refreshKey, hfToken]);
+  }, [repoId, localSource, refreshKey, hfToken]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
@@ -837,6 +846,8 @@ function GgufVariantExpander({
       onSelect(repoId, {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
+        // Only for a quant already in the pinned snapshot: a new download lands elsewhere.
+        loadId: downloaded === true ? loadId : undefined,
         ggufVariant: quant,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
@@ -844,7 +855,7 @@ function GgufVariantExpander({
         isGguf: true,
       });
     },
-    [repoId, isLocalPath, onSelect, sourceOverride, nativeContext],
+    [repoId, loadId, isLocalPath, onSelect, sourceOverride, nativeContext],
   );
 
   // GGUF fit classification matching llama-server's _select_gpus logic:
@@ -1003,6 +1014,8 @@ function GgufVariantExpander({
         const oom = fit === "oom";
         const tight = fit === "tight";
         const expectedBytes = ggufVariantExpectedBytes(v);
+        // A folder has no download to resume; a quant short a shard has no files to load.
+        const unusableLocal = isLocalPath && v.partial === true;
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
         return (
@@ -1010,11 +1023,14 @@ function GgufVariantExpander({
             <button
               type="button"
               {...variantList.getOptionProps(variantOptionKey, false)}
+              disabled={unusableLocal}
               onClick={() =>
                 handleVariantClick(v.quant, v.downloaded, expectedBytes)
               }
               className={cn(
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+                unusableLocal &&
+                  "cursor-default opacity-50 hover:bg-transparent dark:hover:bg-transparent",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -1023,7 +1039,11 @@ function GgufVariantExpander({
                 >
                   {v.quant}
                 </span>
-                {v.downloaded ? (
+                {unusableLocal ? (
+                  <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
+                    incomplete
+                  </span>
+                ) : v.downloaded ? (
                   <>
                     <span className="ml-1.5 text-ui-9 font-sans font-medium text-green-600/90 dark:text-green-400/80">
                       downloaded
@@ -1064,6 +1084,7 @@ function GgufVariantExpander({
                   onConfigure(repoId, {
                     source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
                     isLora: false,
+                    loadId,
                     ggufVariant: v.quant,
                     isDownloaded: true,
                     expectedBytes,
@@ -2910,6 +2931,8 @@ export function HubModelPicker({
         {isGgufExpanded(c.repo_id) && (
           <GgufVariantExpander
             repoId={c.repo_id}
+            loadId={c.load_id}
+            cachePath={c.cache_path}
             onDevice={true}
             allowPin={true}
             onHasVision={(v) => reportVision(c.repo_id, v)}
@@ -2968,6 +2991,7 @@ export function HubModelPicker({
               onSelect(c.repo_id, {
                 source: "hub",
                 isLora: false,
+                loadId: c.load_id,
                 isDownloaded: true,
               })
             }
@@ -2982,6 +3006,7 @@ export function HubModelPicker({
               onConfigure(c.repo_id, {
                 source: "hub",
                 isLora: false,
+                loadId: c.load_id,
                 isDownloaded: true,
                 isGguf: false,
               })
