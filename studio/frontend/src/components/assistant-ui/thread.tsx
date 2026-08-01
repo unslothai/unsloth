@@ -1366,7 +1366,8 @@ const ThreadWelcome: FC<{
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
-            {showGreetingSloth && (
+            {/* Temporary chat keeps the title on its own, no mascot. */}
+            {showGreetingSloth && !incognito && (
               <MascotImg
                 src={currentEmojiSrc}
                 className="size-[44px] -translate-y-[2px]"
