@@ -96,3 +96,43 @@ def test_a_pypi_update_never_looks_for_a_checkout(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     assert seen["STUDIO_LOCAL_INSTALL"] == "0"
     assert seen["STUDIO_LOCAL_REPO"] is None
+
+
+def test_a_relative_override_is_absolutised(monkeypatch, tmp_path):
+    # setup.sh does `cd "$SCRIPT_DIR"` before install_python_stack.py runs, so
+    # a relative path handed straight through resolves against studio/ (which
+    # has no pyproject.toml) and hits the exact uv error the guard replaces.
+    checkout = tmp_path / "unsloth"
+    checkout.mkdir()
+    (checkout / "pyproject.toml").write_text("[project]\nname = 'unsloth'\n")
+    studio, seen = _neutered(monkeypatch)
+    monkeypatch.chdir(checkout)
+    monkeypatch.setenv("STUDIO_LOCAL_REPO", ".")
+    result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
+    assert result.exit_code == 0, result.output
+    assert Path(seen["STUDIO_LOCAL_REPO"]).is_absolute(), seen["STUDIO_LOCAL_REPO"]
+    assert Path(seen["STUDIO_LOCAL_REPO"]) == checkout.resolve()
+
+
+def test_a_tilde_override_is_expanded(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    checkout = home / "unsloth"
+    checkout.mkdir(parents = True)
+    (checkout / "pyproject.toml").write_text("[project]\nname = 'unsloth'\n")
+    studio, seen = _neutered(monkeypatch)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("STUDIO_LOCAL_REPO", "~/unsloth")
+    result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
+    assert result.exit_code == 0, result.output
+    assert Path(seen["STUDIO_LOCAL_REPO"]) == checkout.resolve()
+
+
+def test_a_blank_override_falls_back_to_the_derived_root(monkeypatch):
+    # `STUDIO_LOCAL_REPO= ` (install.sh resets it to empty) must not become
+    # Path(" ") and fail the guard on a perfectly good checkout.
+    studio, seen = _neutered(monkeypatch)
+    monkeypatch.setenv("STUDIO_LOCAL_REPO", "   ")
+    result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
+    assert result.exit_code == 0, result.output
+    assert Path(seen["STUDIO_LOCAL_REPO"]) == _REPO_ROOT

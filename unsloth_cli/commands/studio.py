@@ -2919,8 +2919,17 @@ def update(
         # "does not appear to be a Python project: neither 'setup.py' nor
         # 'pyproject.toml' found" -- which is what a second `update --local`
         # hit on Windows, where the first update replaces the editable install.
-        _explicit = os.environ.get("STUDIO_LOCAL_REPO")
-        repo_root = Path(_explicit) if _explicit else Path(__file__).resolve().parents[2]
+        # Absolutise the override: setup.sh does `cd "$SCRIPT_DIR"` before it
+        # runs install_python_stack.py, so a relative STUDIO_LOCAL_REPO would
+        # be re-resolved against studio/ (no pyproject.toml) and hand uv back
+        # the very error this guard exists to replace. .strip()/.expanduser()
+        # match the handling in _refresh_desktop_shortcuts.
+        _explicit = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
+        repo_root = (
+            Path(_explicit).expanduser().resolve()
+            if _explicit
+            else Path(__file__).resolve().parents[2]
+        )
         if not (repo_root / "pyproject.toml").is_file():
             typer.echo("Error: --local needs an Unsloth checkout to install from.", err = True)
             typer.echo(f"  no pyproject.toml under: {repo_root}", err = True)
