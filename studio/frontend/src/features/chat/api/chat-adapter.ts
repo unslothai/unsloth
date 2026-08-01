@@ -3,6 +3,12 @@
 
 import { getAuthToken } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
+import {
+  DOWNLOAD_KIND,
+  downloadManager,
+  jobKeyOf,
+  subscribeJobListeners,
+} from "@/features/hub/download-manager";
 import { resolveInitialConfig } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
@@ -14,6 +20,7 @@ import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
+  isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
@@ -41,6 +48,7 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import {
+  type LoadingModelPick,
   type PendingImageEditReference,
   type RagAutoInject,
   GPU_LAYERS_AUTO,
@@ -1374,6 +1382,131 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
     check();
   });
 }
+type FirstChatDownloadTerminal = "complete" | "cancelled" | "error";
+
+type FirstChatManagedDownloadDeps<TLoad> = {
+  subscribe: (handlers: {
+    onComplete: (variant: string | null) => void;
+    onCancelled: (variant: string | null) => void;
+    onError: (variant: string | null) => void;
+  }) => () => void;
+  isRequestedVariant: (variant: string | null) => boolean;
+  requestStart: () => Promise<
+    "started" | "cancelling" | "conflict" | "busy" | "error"
+  >;
+  tryAdoptServerActiveModel: () => Promise<boolean>;
+  readActivationState: () => { modelLoading: boolean; checkpoint: string };
+  waitForModelReady: () => Promise<void>;
+  reserveActivation: () => boolean;
+  loadModel: () => Promise<TLoad>;
+  isExternalCheckpoint: (checkpoint: string) => boolean;
+  publishLoadedModel: (loaded: TLoad) => Promise<void> | void;
+  releaseActivation: () => void;
+  dismissToast: () => void;
+};
+
+export async function runFirstChatManagedDownload<TLoad>(
+  deps: FirstChatManagedDownloadDeps<TLoad>,
+): Promise<boolean> {
+  let terminal: FirstChatDownloadTerminal;
+  while (true) {
+    let terminalResult: FirstChatDownloadTerminal | null = null;
+    let resolveTerminal!: (result: FirstChatDownloadTerminal) => void;
+    const terminalPromise = new Promise<FirstChatDownloadTerminal>(
+      (resolve) => {
+        resolveTerminal = resolve;
+      },
+    );
+    let unsubscribe: (() => void) | null = null;
+    let cleaned = false;
+    const cleanup = (): void => {
+      if (cleaned) return;
+      cleaned = true;
+      unsubscribe?.();
+    };
+    const settle = (result: FirstChatDownloadTerminal): void => {
+      if (terminalResult !== null) return;
+      terminalResult = result;
+      cleanup();
+      resolveTerminal(result);
+    };
+
+    unsubscribe = deps.subscribe({
+      onComplete: (variant) => {
+        if (deps.isRequestedVariant(variant)) settle("complete");
+      },
+      onCancelled: (variant) => {
+        if (deps.isRequestedVariant(variant)) settle("cancelled");
+      },
+      onError: (variant) => {
+        if (deps.isRequestedVariant(variant)) settle("error");
+      },
+    });
+    if (cleaned) unsubscribe();
+
+    let startOutcome: "started" | "cancelling" | "conflict" | "busy" | "error" =
+      "error";
+    let startThrew = false;
+    try {
+      startOutcome = await deps.requestStart();
+    } catch {
+      startThrew = true;
+    }
+
+    if (terminalResult !== null) {
+      terminal = terminalResult;
+    } else if (
+      !startThrew &&
+      (startOutcome === "started" || startOutcome === "cancelling")
+    ) {
+      terminal = await terminalPromise;
+    } else {
+      cleanup();
+      deps.dismissToast();
+      return false;
+    }
+
+    if (startOutcome === "cancelling" && terminal === "cancelled") continue;
+    break;
+  }
+  if (terminal !== "complete") {
+    deps.dismissToast();
+    return false;
+  }
+
+  if (await deps.tryAdoptServerActiveModel()) {
+    deps.dismissToast();
+    return true;
+  }
+
+  while (true) {
+    const current = deps.readActivationState();
+    if (current.modelLoading) {
+      await deps.waitForModelReady();
+      continue;
+    }
+    if (current.checkpoint) {
+      deps.dismissToast();
+      return true;
+    }
+    if (!deps.reserveActivation()) continue;
+
+    try {
+      const loaded = await deps.loadModel();
+      if (deps.isExternalCheckpoint(deps.readActivationState().checkpoint)) {
+        deps.dismissToast();
+        return true;
+      }
+      await deps.publishLoadedModel(loaded);
+      return true;
+    } catch {
+      deps.dismissToast();
+      return false;
+    } finally {
+      deps.releaseActivation();
+    }
+  }
+}
 
 /**
  * Auto-load the smallest downloaded model when the user chats without
@@ -1382,6 +1515,8 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
+const DEFAULT_AUTO_LOAD_REPO = "unsloth/Qwen3.5-4B-MTP-GGUF";
+const DEFAULT_AUTO_LOAD_VARIANT = "UD-Q4_K_XL";
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
   /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
@@ -1981,10 +2116,10 @@ async function autoLoadSmallestModel(): Promise<{
       );
       if (
         !(await canAutoLoad({
-          model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
+          model_path: DEFAULT_AUTO_LOAD_REPO,
           max_seq_length: 0,
           is_lora: false,
-          gguf_variant: "UD-Q4_K_XL",
+          gguf_variant: DEFAULT_AUTO_LOAD_VARIANT,
           // The same live-store GPU pick the load below sends (a fresh default
           // model has no remembered settings to prefer).
           gpu_ids: defaultGpuIds ?? undefined,
@@ -1994,90 +2129,178 @@ async function autoLoadSmallestModel(): Promise<{
         toast.dismiss(toastId);
         return { loaded: false, blockedByTrustRemoteCode };
       }
-      loadAttempts += 1;
-      const loadResp = await loadModel({
-        model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
-        hf_token: hfToken,
-        // Model default under both modes: Auto layers + no pin means
-        // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
-        // preflight above sends the same).
-        max_seq_length: 0,
-        load_in_4bit: true,
-        is_lora: false,
-        gguf_variant: "UD-Q4_K_XL",
-        trust_remote_code: trustRemoteCode,
-        speculative_type: specSettings.speculativeType,
-        spec_draft_n_max: specSettings.specDraftNMax,
-        // GPU Memory mode is a standing preference, so honor it on auto-load.
-        // The layer/MoE/split knobs and the context pin are per-model: the live
-        // store may hold edits drafted for a staged pick, and a fresh default
-        // model has no remembered settings, so those stay at their defaults like
-        // the cached-candidate path. The GPU pick deliberately differs (it's the
-        // picker's current on-screen selection, which the canAutoLoad preflight
-        // above already committed to).
-        gpu_memory_mode: rt.gpuMemoryMode,
-        gpu_layers: GPU_LAYERS_AUTO,
-        n_cpu_moe: 0,
-        gpu_ids: defaultGpuIds ?? undefined,
-      });
-      saveSpeculativeType(specSettings.speculativeType);
-      persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
-      useChatRuntimeStore
-        .getState()
-        .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
-      const store = useChatRuntimeStore.getState();
-      store.setModelRequiresTrustRemoteCode(
-        loadResp.requires_trust_remote_code ?? false,
-      );
-      store.setParams({
-        ...store.params,
-        maxTokens: loadResp.context_length ?? 131072,
-      });
-      const defaultModel: ChatModelSummary = {
-        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
-        name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
-        isVision: loadResp.is_vision ?? false,
-        isLora: false,
-        isGguf: true,
-      };
-      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-MTP-GGUF")) {
-        store.setModels([...store.models, defaultModel]);
+      while (true) {
+        const current = useChatRuntimeStore.getState();
+        if (current.modelLoading) {
+          await waitForModelReady();
+          continue;
+        }
+        if (current.params.checkpoint) {
+          toast.dismiss(toastId);
+          return { loaded: true, blockedByTrustRemoteCode: false };
+        }
+        break;
       }
-      useChatRuntimeStore.setState({
-        ggufContextLength: loadResp.context_length ?? 131072,
-        ggufMaxContextLength:
-          loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-        supportsReasoning: loadResp.supports_reasoning ?? false,
-        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-        reasoningEnabled: loadResp.supports_reasoning ?? false,
-        ...reasoningCapsFromLoad(loadResp),
-        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
-        supportsTools: loadResp.supports_tools ?? false,
-        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-        kvCacheDtype: loadResp.cache_type_kv ?? null,
-        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        // The request above omits n_parallel: a staged override left from a
-        // preset would read as applied and be re-sent by the next Apply.
-        nParallel: null,
-        loadedNParallel: null,
-        tensorParallel: loadResp.tensor_parallel ?? false,
-        loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        ...loadedGpuMemoryFields(loadResp),
-        // Drives the GPU Memory controls' diffusion gate; set alongside the
-        // GPU fields on every load path so the gate can't read stale.
-        loadedIsDiffusion: loadResp.is_diffusion ?? false,
-        defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedIsMultimodal: isMultimodalResponse(loadResp),
-        activeModelIsLocal: loadResp.is_local_model ?? false,
-        ...resolveLoadedSpeculativeSettings(loadResp),
+
+      const defaultPick: LoadingModelPick = {
+        id: DEFAULT_AUTO_LOAD_REPO,
+        ggufVariant: DEFAULT_AUTO_LOAD_VARIANT,
+        nativePathToken: null,
+      };
+      const expectedJobKey = jobKeyOf(
+        DOWNLOAD_KIND.MODEL,
+        DEFAULT_AUTO_LOAD_REPO,
+        DEFAULT_AUTO_LOAD_VARIANT,
+      );
+      const loadedDefault = await runFirstChatManagedDownload({
+        subscribe: (handlers) =>
+          subscribeJobListeners(
+            DOWNLOAD_KIND.MODEL,
+            DEFAULT_AUTO_LOAD_REPO,
+            handlers,
+          ),
+        isRequestedVariant: (variant) =>
+          jobKeyOf(DOWNLOAD_KIND.MODEL, DEFAULT_AUTO_LOAD_REPO, variant) ===
+          expectedJobKey,
+        requestStart: () =>
+          downloadManager.requestStart({
+            kind: DOWNLOAD_KIND.MODEL,
+            repoId: DEFAULT_AUTO_LOAD_REPO,
+            variant: DEFAULT_AUTO_LOAD_VARIANT,
+            expectedBytes: 0,
+          }),
+        tryAdoptServerActiveModel: () => tryAdoptServerActiveModel(),
+        readActivationState: () => {
+          const current = useChatRuntimeStore.getState();
+          return {
+            modelLoading: current.modelLoading,
+            checkpoint: current.params.checkpoint,
+          };
+        },
+        waitForModelReady: () => waitForModelReady(),
+        reserveActivation: () => {
+          let reserved = false;
+          useChatRuntimeStore.setState((state) => {
+            if (state.modelLoading || state.params.checkpoint) return state;
+            reserved = true;
+            return { modelLoading: true, loadingModelPick: defaultPick };
+          });
+          return reserved;
+        },
+        loadModel: async () => {
+          loadAttempts += 1;
+          return loadModel({
+            model_path: DEFAULT_AUTO_LOAD_REPO,
+            hf_token: hfToken,
+            // Model default under both modes: Auto layers + no pin means
+            // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
+            // preflight above sends the same).
+            max_seq_length: 0,
+            load_in_4bit: true,
+            is_lora: false,
+            gguf_variant: DEFAULT_AUTO_LOAD_VARIANT,
+            trust_remote_code: trustRemoteCode,
+            speculative_type: specSettings.speculativeType,
+            spec_draft_n_max: specSettings.specDraftNMax,
+            // GPU Memory mode is a standing preference, so honor it on auto-load.
+            // The layer/MoE/split knobs and the context pin are per-model: the live
+            // store may hold edits drafted for a staged pick, and a fresh default
+            // model has no remembered settings, so those stay at their defaults like
+            // the cached-candidate path. The GPU pick deliberately differs (it's the
+            // picker's current on-screen selection, which the canAutoLoad preflight
+            // above already committed to).
+            gpu_memory_mode: rt.gpuMemoryMode,
+            gpu_layers: GPU_LAYERS_AUTO,
+            n_cpu_moe: 0,
+            gpu_ids: defaultGpuIds ?? undefined,
+          });
+        },
+        isExternalCheckpoint: (checkpoint) => isExternalModelId(checkpoint),
+        publishLoadedModel: async (loadResp) => {
+          saveSpeculativeType(specSettings.speculativeType);
+          persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
+          useChatRuntimeStore
+            .getState()
+            .setCheckpoint(DEFAULT_AUTO_LOAD_REPO, DEFAULT_AUTO_LOAD_VARIANT);
+          const store = useChatRuntimeStore.getState();
+          store.setModelRequiresTrustRemoteCode(
+            loadResp.requires_trust_remote_code ?? false,
+          );
+          store.setParams({
+            ...store.params,
+            maxTokens: loadResp.context_length ?? 131072,
+          });
+          const defaultModel: ChatModelSummary = {
+            id: DEFAULT_AUTO_LOAD_REPO,
+            name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
+            isVision: loadResp.is_vision ?? false,
+            isLora: false,
+            isGguf: true,
+          };
+          if (!store.models.some((m) => m.id === DEFAULT_AUTO_LOAD_REPO)) {
+            store.setModels([...store.models, defaultModel]);
+          }
+          useChatRuntimeStore.setState({
+            ggufContextLength: loadResp.context_length ?? 131072,
+            ggufMaxContextLength:
+              loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+            supportsReasoning: loadResp.supports_reasoning ?? false,
+            reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
+            reasoningEnabled: loadResp.supports_reasoning ?? false,
+            ...reasoningCapsFromLoad(loadResp),
+            supportsPreserveThinking:
+              loadResp.supports_preserve_thinking ?? false,
+            supportsTools: loadResp.supports_tools ?? false,
+            ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
+            kvCacheDtype: loadResp.cache_type_kv ?? null,
+            loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+            // The request above omits n_parallel: a staged override left from a
+            // preset would read as applied and be re-sent by the next Apply.
+            nParallel: null,
+            loadedNParallel: null,
+            tensorParallel: loadResp.tensor_parallel ?? false,
+            loadedTensorParallel: loadResp.tensor_parallel ?? false,
+            ...loadedGpuMemoryFields(loadResp),
+            // Drives the GPU Memory controls' diffusion gate; set alongside the
+            // GPU fields on every load path so the gate can't read stale.
+            loadedIsDiffusion: loadResp.is_diffusion ?? false,
+            defaultChatTemplate: loadResp.chat_template ?? null,
+            chatTemplateOverride: null,
+            loadedIsMultimodal: isMultimodalResponse(loadResp),
+            activeModelIsLocal: loadResp.is_local_model ?? false,
+            ...resolveLoadedSpeculativeSettings(loadResp),
+          });
+          recordLastLocalModelLoad({
+            id: DEFAULT_AUTO_LOAD_REPO,
+            kind: "gguf",
+            ggufVariant: DEFAULT_AUTO_LOAD_VARIANT,
+          });
+          showAutoLoadSuccess("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)");
+        },
+        releaseActivation: () => {
+          useChatRuntimeStore.setState((state) => {
+            const current = state.loadingModelPick;
+            if (
+              current !== defaultPick ||
+              current.id !== defaultPick.id ||
+              current.ggufVariant !== defaultPick.ggufVariant ||
+              current.nativePathToken !== defaultPick.nativePathToken
+            ) {
+              return state;
+            }
+            return { modelLoading: false, loadingModelPick: null };
+          });
+        },
+        dismissToast: () => toast.dismiss(toastId),
       });
-      recordLastLocalModelLoad({
-        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
-        kind: "gguf",
-        ggufVariant: "UD-Q4_K_XL",
-      });
-      showAutoLoadSuccess("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)");
+      if (!loadedDefault) {
+        hadNonTrustFailure = true;
+        return {
+          loaded: false,
+          blockedByTrustRemoteCode:
+            blockedByTrustRemoteCode && !hadNonTrustFailure,
+        };
+      }
       return { loaded: true, blockedByTrustRemoteCode: false };
     } catch {
       toast.dismiss(toastId);

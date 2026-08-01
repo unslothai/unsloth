@@ -1201,6 +1201,63 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src
 
 
+def test_first_chat_download_uses_terminal_handoff_and_reserved_activation():
+    src = _read("features/chat/api/chat-adapter.ts")
+    preflight_start = src.index("!(await canAutoLoad({", src.index("No cached models"))
+    preflight = src[preflight_start : src.index("while (true)", preflight_start)]
+    assert re.search(
+        r"\)\s*\{\s*toast\.dismiss\(toastId\);\s*"
+        r"return \{ loaded: false, blockedByTrustRemoteCode \};\s*\}",
+        preflight,
+    ), "the failed preflight return must remain inside its guard"
+    block = src[src.index("const expectedJobKey = jobKeyOf(") : src.index("if (!loadedDefault)")]
+    assert block.index("subscribeJobListeners(") < block.index("downloadManager.requestStart({")
+    assert all(
+        token in block
+        for token in (
+            "kind: DOWNLOAD_KIND.MODEL,",
+            "repoId: DEFAULT_AUTO_LOAD_REPO,",
+            "variant: DEFAULT_AUTO_LOAD_VARIANT,",
+            "expectedBytes: 0,",
+            "runFirstChatManagedDownload({",
+        )
+    )
+    helper = src[
+        src.index("export async function runFirstChatManagedDownload") : src.index(
+            "/**\n * Auto-load"
+        )
+    ]
+    assert helper.index("current.modelLoading") < helper.index("current.checkpoint")
+    assert helper.index("const loaded = await deps.loadModel()") < helper.index(
+        "deps.isExternalCheckpoint"
+    )
+    assert helper.index("deps.isExternalCheckpoint") < helper.index("deps.publishLoadedModel")
+    assert "downloadManager.cancel" not in block
+    assert "modelLoading: true, loadingModelPick: defaultPick" in block
+    assert "current !== defaultPick" in block and "loadingModelPick: null" in block
+    assert block.index("loadAttempts += 1") < block.index("return loadModel({")
+    assert "load_in_4bit: true" in block and "is_lora: false" in block
+
+
+def test_download_manager_pending_start_guard_is_exact_and_identity_safe():
+    pending = _read("features/hub/download-manager/pending-start.ts")
+    transport = _read("features/hub/download-manager/transport-conflict.ts")
+    runtime = _read("features/hub/download-manager/runtime-registry.ts")
+    assert "Map<string, Promise<DownloadStartOutcome>>" in pending
+    assert ".then(action)" in pending
+    assert "pendingStarts.get(key) === pending" in pending
+    guard = transport[
+        transport.index("const startKey = jobKeyOf") : transport.index(
+            "export async function requestStart"
+        )
+    ]
+    assert guard.index("pendingStarts.get(startKey)") < guard.index("hasPendingStartForRepo")
+    assert guard.index("hasPendingStartForRepo") < guard.index("hasActiveSiblingOrRuntime")
+    assert 'job.state === "cancelling" ? "cancelling" : "started"' in transport
+    assert "runOrJoinPendingStart(" in guard
+    assert "pendingStartRepoKeys: PendingStartMap = new Map()" in runtime
+
+
 def test_only_gguf_configs_are_mirrored_to_the_server():
     """The server override map is read by the OpenAI-compatible auto-switch, and its
     resolver indexes GGUFs only."""

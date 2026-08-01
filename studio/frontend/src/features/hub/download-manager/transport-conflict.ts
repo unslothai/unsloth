@@ -9,7 +9,10 @@ import {
   apiTransportStatusWithRetry,
   effectiveTransportMode,
 } from "./download-api-adapter";
-import type { DownloadRequest } from "./download-manager-types";
+import {
+  ACTIVE_STATES,
+  TRANSPORT_STATUS_TIMEOUT_MS,
+} from "./download-manager-config";
 import {
   findActiveJobForRepo,
   getState,
@@ -17,11 +20,18 @@ import {
   jobKeyOf,
   repoKeyOf,
   setConflict,
+  useDownloadManagerStore,
 } from "./download-manager-state";
+import type { DownloadRequest } from "./download-manager-types";
+import {
+  type DownloadStartOutcome,
+  hasPendingStartForRepo,
+  resolveJoinedPendingStart,
+  runOrJoinPendingStart,
+} from "./pending-start";
 import { startJob } from "./poll-loop";
 import { runtimeRegistry } from "./runtime-registry";
 import { getTransportMode } from "./transport-preference";
-import { ACTIVE_STATES, TRANSPORT_STATUS_TIMEOUT_MS } from "./download-manager-config";
 
 function reportConflictStartError(error: unknown): void {
   const description =
@@ -29,28 +39,14 @@ function reportConflictStartError(error: unknown): void {
   toast.error("Couldn't start download", { description });
 }
 
-function pendingStartKey(req: DownloadRequest): string {
-  return jobKeyOf(req.kind, req.repoId, req.variant);
-}
-
-function hasPendingStartForRepo(repoKey: string): boolean {
-  for (const key of runtimeRegistry.pendingStartRepoKeys) {
-    if (key === repoKey || key.startsWith(`${repoKey}#`)) return true;
-  }
-  return false;
-}
-
-function hasActiveOrPendingStart(req: DownloadRequest): boolean {
-  const key = pendingStartKey(req);
+function hasActiveSiblingOrRuntime(req: DownloadRequest, key: string): boolean {
   if (req.kind === "model" && req.variant) {
     return hasVariantRepoActivity(req.kind, req.repoId, key, {
       includeOwnRuntime: true,
-      includePending: true,
+      includePending: false,
     });
   }
-  if (runtimeRegistry.pendingStartRepoKeys.has(key)) return true;
   const repoKey = repoKeyOf(req.kind, req.repoId);
-  if (hasPendingStartForRepo(repoKey)) return true;
   return (
     Boolean(findActiveJobForRepo(getState().jobs, req.kind, req.repoId)) ||
     Boolean(runtimeRegistry.runtimes.get(repoKey))
@@ -82,12 +78,13 @@ async function activeSiblingTransport(
 
 // Outcome of a start request so callers can tell whether a transfer for this
 // exact request is actually live before telling the user it began. "started"
-// means a running/cancelling job exists for this key (a fresh start or an
-// already-active one). "conflict" means a transport partial conflict was
-// recorded and must be resolved from the Hub download card; "busy" means the
-// repo is occupied by a sibling variant/snapshot/pending start that is not this
-// transfer; "error" means the start failed or was refused.
-export type DownloadStartOutcome = "started" | "conflict" | "busy" | "error";
+// means a running job exists for this key (a fresh start or an already-active
+// one). "cancelling" means an already-active exact job is stopping, so a new
+// caller may wait for its terminal event before retrying. "conflict" means a
+// transport partial conflict was recorded and must be resolved from the Hub
+// download card; "busy" means the repo is occupied by a sibling
+// variant/snapshot/pending start that is not this transfer; "error" means the
+// start failed or was refused.
 
 // A start can no-op without throwing: the backend can refuse it (startJob
 // finalizes "error"), startJob's peer guard can skip it, or
@@ -99,25 +96,43 @@ function isJobActiveFor(req: DownloadRequest): boolean {
   return Boolean(job && ACTIVE_STATES.has(job.state));
 }
 
+function existingJobStartOutcome(
+  req: DownloadRequest,
+): "started" | "cancelling" | null {
+  const job = getState().jobs[jobKeyOf(req.kind, req.repoId, req.variant)];
+  if (!job || !ACTIVE_STATES.has(job.state)) return null;
+  return job.state === "cancelling" ? "cancelling" : "started";
+}
+
 async function runWithPendingStartGuard(
   req: DownloadRequest,
   action: () => Promise<DownloadStartOutcome>,
 ): Promise<DownloadStartOutcome> {
-  const startKey = pendingStartKey(req);
-  // Already active or pending for the repo: only report "started" when this
-  // exact request is the live transfer; a peer/snapshot/pending start has not.
-  if (hasActiveOrPendingStart(req)) {
-    return isJobActiveFor(req) ? "started" : "busy";
+  const startKey = jobKeyOf(req.kind, req.repoId, req.variant);
+  const pendingStarts = runtimeRegistry.pendingStartRepoKeys;
+
+  const exactPending = pendingStarts.get(startKey);
+  if (exactPending) {
+    return resolveJoinedPendingStart(
+      exactPending,
+      () => existingJobStartOutcome(req) === "cancelling",
+      (listener) => useDownloadManagerStore.subscribe(listener),
+    );
   }
-  runtimeRegistry.pendingStartRepoKeys.add(startKey);
-  try {
-    return await action();
-  } catch (error) {
-    reportConflictStartError(error);
-    return "error";
-  } finally {
-    runtimeRegistry.pendingStartRepoKeys.delete(startKey);
-  }
+
+  const repoKey = repoKeyOf(req.kind, req.repoId);
+  if (hasPendingStartForRepo(pendingStarts, repoKey)) return "busy";
+
+  const existingOutcome = existingJobStartOutcome(req);
+  if (existingOutcome) return existingOutcome;
+  if (hasActiveSiblingOrRuntime(req, startKey)) return "busy";
+
+  return runOrJoinPendingStart(
+    pendingStarts,
+    startKey,
+    action,
+    reportConflictStartError,
+  );
 }
 
 export async function requestStart(

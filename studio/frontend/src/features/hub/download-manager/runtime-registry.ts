@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { JobListeners, JobRuntime } from "./download-manager-types";
 import { evictOldestUnprotected } from "../lib/lru-map";
+import type { JobListeners, JobRuntime } from "./download-manager-types";
+import type { PendingStartMap } from "./pending-start";
 
 const MAX_SUPPRESSED_COMPLETED_INVENTORY_HINTS = 64;
 
@@ -12,7 +13,7 @@ class DownloadManagerRuntimeRegistry {
   readonly removalTimers = new Map<string, number>();
   readonly hydrationRetryTimers = new Set<number>();
   readonly suppressedCompletedInventoryHints = new Set<string>();
-  readonly pendingStartRepoKeys = new Set<string>();
+  readonly pendingStartRepoKeys: PendingStartMap = new Map();
   inventoryBumpTimer: number | null = null;
 
   clearRemovalTimer(key: string): void {
