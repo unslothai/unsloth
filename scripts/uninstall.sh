@@ -279,9 +279,10 @@ _unsloth_uninstall_main() {
     _remove_path "$HOME/.unsloth/.llama.cpp.install.lock"
     _remove_path "$HOME/.unsloth/.node.install.lock"
     _remove_path "$HOME/.unsloth/.whisper.cpp.install.lock"
-    # Taking over an abandoned lock renames it to .stale.<pid> rather than deleting
-    # it (install_node_prebuilt.py:553), so those accumulate. Unmatched globs stay
-    # literal, hence the existence test.
+    # Taking over an abandoned lock renames it to .stale.<pid> before unlinking
+    # (install_node_prebuilt.py); a crash between the two steps strands the rename,
+    # and a stranded one blocks the rmdir below. Unmatched globs stay literal,
+    # hence the existence test.
     for _stale in "$HOME"/.unsloth/.*.install.lock.stale.*; do
         [ -e "$_stale" ] && _remove_path "$_stale"
     done
