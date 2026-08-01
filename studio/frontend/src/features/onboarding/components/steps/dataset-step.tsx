@@ -29,11 +29,18 @@ import {
   useHfTokenStore,
 } from "@/features/hub";
 import {
+  formatUploadSize,
+  getCachedUploadLimitBytes,
+  getCachedUploadLimitLabel,
+  loadUploadLimitSettings,
+} from "@/features/settings";
+import {
   HfDatasetSubsetSplitSelectors,
   TRAINING_DATASET_UPLOAD_EXTENSIONS,
   uploadTrainingDataset,
   useTrainingConfigStore,
 } from "@/features/training";
+import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import type { DatasetFormat } from "@/types/training";
 import {
@@ -44,6 +51,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { HfTokenField } from "../hf-token-field";
 
 const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
   { value: "auto", label: "Auto Detect" },
@@ -54,6 +62,7 @@ const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
 ];
 
 export function DatasetStep() {
+  const t = useT();
   const hfToken = useHfTokenStore((state) => state.token);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -90,6 +99,20 @@ export function DatasetStep() {
   const uploadFile = async (file: File) => {
     setIsUploading(true);
     try {
+      const uploadLimit = await loadUploadLimitSettings().catch(() => ({
+        maxUploadSizeBytes: getCachedUploadLimitBytes(),
+        maxUploadSizeLabel: getCachedUploadLimitLabel(),
+      }));
+      if (file.size > uploadLimit.maxUploadSizeBytes) {
+        toast.error(t("studio.dataset.fileTooLarge"), {
+          description: t("studio.dataset.fileTooLargeDescription", {
+            file: file.name,
+            size: formatUploadSize(file.size),
+            limit: uploadLimit.maxUploadSizeLabel,
+          }),
+        });
+        return;
+      }
       const uploaded = await uploadTrainingDataset(file);
       bumpInventoryVersion();
       selectLocalDataset(uploaded.stored_path);
@@ -106,6 +129,8 @@ export function DatasetStep() {
 
   return (
     <FieldGroup>
+      <HfTokenField />
+
       <Field>
         <FieldLabel>Choose a dataset</FieldLabel>
         <FieldDescription>

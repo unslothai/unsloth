@@ -236,20 +236,15 @@ fn ensure_artifact_root(kind: NativeArtifactKind, canonical_path: &Path) -> Resu
 }
 
 fn reject_sensitive_artifact(path: &Path) -> Result<(), String> {
-    let lowered = path.to_string_lossy().to_ascii_lowercase();
-    for needle in [
-        "/auth/",
-        "\\auth\\",
-        "/auth.db",
-        "\\auth.db",
-        "/studio.db",
-        "\\studio.db",
-        "/pid",
-        "\\pid",
-    ] {
-        if lowered.contains(needle) {
-            return Err("Sensitive Unsloth state cannot be registered as an artifact.".to_string());
-        }
+    let has_sensitive_segment = path.components().any(|component| {
+        let segment = component.as_os_str().to_string_lossy().to_ascii_lowercase();
+        segment == "auth"
+            || segment == "pid"
+            || segment.starts_with("auth.db")
+            || segment.starts_with("studio.db")
+    });
+    if has_sensitive_segment {
+        return Err("Sensitive Unsloth state cannot be registered as an artifact.".to_string());
     }
     if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
         if matches!(
@@ -390,5 +385,24 @@ mod tests {
         fs::write(&path, b"MZ").unwrap();
         assert!(classify_native_dataset_path(&path).is_err());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn sensitive_artifact_names_require_an_exact_path_segment() {
+        for path in [
+            Path::new("/outputs/pid/metrics.json"),
+            Path::new("/outputs/auth/credentials.json"),
+            Path::new("/outputs/studio.db"),
+            Path::new("/outputs/auth.db.backup"),
+        ] {
+            assert!(reject_sensitive_artifact(path).is_err());
+        }
+        for path in [
+            Path::new("/outputs/pid_sweep_3/metrics.json"),
+            Path::new("/outputs/auth_results/metrics.json"),
+            Path::new("/outputs/studio_database/metrics.json"),
+        ] {
+            assert!(reject_sensitive_artifact(path).is_ok());
+        }
     }
 }

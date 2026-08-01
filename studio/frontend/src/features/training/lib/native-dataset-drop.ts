@@ -33,6 +33,10 @@ function extensionOf(path: string): string {
   return dot >= 0 ? filename.slice(dot).toLowerCase() : "";
 }
 
+export function isTrainingDatasetUploadPath(path: string): boolean {
+  return DATASET_EXTENSION_SET.has(extensionOf(path));
+}
+
 export function nativePathFilename(path: string): string {
   const filename = path.split(/[\\/]/).pop()?.trim() ?? "";
   const sanitized = Array.from(filename, (character) => {
@@ -56,7 +60,7 @@ export function classifyNativeTrainingDatasetDrop(
   }
   const filename = nativePathFilename(path);
   const extension = extensionOf(path);
-  if (DATASET_EXTENSION_SET.has(extension)) {
+  if (isTrainingDatasetUploadPath(path)) {
     return { kind: "dataset", path, filename };
   }
   if (DOCUMENT_EXTENSION_SET.has(extension)) {

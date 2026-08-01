@@ -15,6 +15,7 @@ import type {
   TrainingProgressPayload,
   TrainingStatusResponse,
 } from "../types/runtime";
+import { takeSseFrame } from "./sse-framing";
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
@@ -284,14 +285,13 @@ export async function streamTrainingProgress(options: {
 
       buffer += decoder.decode(value, { stream: true });
 
-      let separatorIndex = buffer.search(/\r?\n\r?\n/);
-      while (separatorIndex >= 0) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-        buffer = buffer.slice(separatorIndex + separatorLength);
+      let frame = takeSseFrame(buffer);
+      while (frame) {
+        const rawEvent = frame.event;
+        buffer = frame.remainder;
 
         if (rawEvent.startsWith("retry:")) {
-          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          frame = takeSseFrame(buffer);
           continue;
         }
 
@@ -306,7 +306,7 @@ export async function streamTrainingProgress(options: {
           }
         }
 
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
+        frame = takeSseFrame(buffer);
       }
     }
   } finally {

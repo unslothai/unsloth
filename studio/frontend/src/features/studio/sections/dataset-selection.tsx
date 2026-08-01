@@ -12,13 +12,14 @@ import {
   HfDatasetSubsetSplitSelectors,
   cacheLocalPathMatchesSelection,
   isHuggingFaceDatasetSelected,
+  shouldClearMissingLocalDatasetSelection,
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { FileAttachmentIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { formatUpdatedDate } from "./dataset-panel-helpers";
 import { EvaluationDatasetUpload } from "./dataset-upload";
@@ -234,12 +235,21 @@ function SelectedDatasetCard({
 
 export function DatasetSelectionSection({
   localDatasets,
+  localInventorySettled,
   uploads,
 }: {
   localDatasets: LocalDatasetInfo[];
+  localInventorySettled: boolean;
   uploads: DatasetUploads;
 }) {
-  const uploadedFile = useTrainingConfigStore((state) => state.uploadedFile);
+  const { datasetSource, selectLocalDataset, uploadedFile } =
+    useTrainingConfigStore(
+      useShallow((state) => ({
+        datasetSource: state.datasetSource,
+        selectLocalDataset: state.selectLocalDataset,
+        uploadedFile: state.uploadedFile,
+      })),
+    );
   const selectedLocalDataset = useMemo(() => {
     if (!uploadedFile) {
       return null;
@@ -250,6 +260,25 @@ export function DatasetSelectionSection({
       ) ?? null
     );
   }, [localDatasets, uploadedFile]);
+
+  useEffect(() => {
+    if (
+      shouldClearMissingLocalDatasetSelection({
+        source: datasetSource,
+        selectedPath: uploadedFile,
+        inventorySettled: localInventorySettled,
+        inventoryMatchFound: selectedLocalDataset !== null,
+      })
+    ) {
+      selectLocalDataset(null);
+    }
+  }, [
+    datasetSource,
+    localInventorySettled,
+    selectedLocalDataset,
+    selectLocalDataset,
+    uploadedFile,
+  ]);
 
   return (
     <>

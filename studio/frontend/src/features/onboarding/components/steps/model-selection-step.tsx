@@ -25,6 +25,7 @@ import type { TrainingMethod } from "@/types/training";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useShallow } from "zustand/react/shallow";
+import { HfTokenField } from "../hf-token-field";
 
 export function ModelSelectionStep() {
   const { selectedModel, trainingMethod, setTrainingMethod } =
@@ -38,6 +39,8 @@ export function ModelSelectionStep() {
 
   return (
     <FieldGroup>
+      <HfTokenField />
+
       <Field>
         <FieldLabel>Choose a model</FieldLabel>
         <FieldDescription>

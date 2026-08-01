@@ -41,7 +41,7 @@ export function DatasetPanel() {
       modelType: state.modelType,
     })),
   );
-  const localDatasets = useLocalDatasetInventory(datasetSource);
+  const localDatasetInventory = useLocalDatasetInventory(datasetSource);
   const uploads = useDatasetUploads();
   const effectiveModelType = modelType ?? "text";
   const isMultimodalModel =
@@ -78,7 +78,8 @@ export function DatasetPanel() {
       )}
 
       <DatasetSelectionSection
-        localDatasets={localDatasets}
+        localDatasets={localDatasetInventory.rows}
+        localInventorySettled={localDatasetInventory.settled}
         uploads={uploads}
       />
       <DatasetAdvancedSettingsSection />

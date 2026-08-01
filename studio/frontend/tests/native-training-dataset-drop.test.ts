@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   TRAINING_DATASET_UPLOAD_EXTENSIONS,
   classifyNativeTrainingDatasetDrop,
+  isTrainingDatasetUploadPath,
   nativeDropPositionHitsBounds,
 } from "../src/features/training/lib/native-dataset-drop.ts";
 
@@ -32,6 +33,21 @@ test("classifies supported desktop training drops", () => {
     classifyNativeTrainingDatasetDrop(["/data/a.csv", "/data/b.csv"]).kind,
     "multiple",
   );
+});
+
+test("distinguishes uploaded files from recipe output directories", () => {
+  for (const path of [
+    "/datasets/uploads/train.JSONL",
+    String.raw`C:\datasets\uploads\train.parquet`,
+  ]) {
+    assert.equal(isTrainingDatasetUploadPath(path), true, path);
+  }
+  for (const path of [
+    "/datasets/recipes/recipe_support/parquet-files",
+    String.raw`C:\datasets\recipes\recipe_support\parquet-files`,
+  ]) {
+    assert.equal(isTrainingDatasetUploadPath(path), false, path);
+  }
 });
 
 test("hit testing converts native physical coordinates to CSS pixels", () => {

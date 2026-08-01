@@ -101,13 +101,19 @@ function reconcileDatasetReference(
     if (!current.datasetKnownCached) {
       return;
     }
-    if (
-      reference &&
-      cachedInventoryPathMatchesSelection(
-        reference.cache_path,
-        expectedLocalPath,
-      )
-    ) {
+    if (reference) {
+      if (
+        cachedInventoryPathMatchesSelection(
+          reference.cache_path,
+          expectedLocalPath,
+        )
+      ) {
+        return;
+      }
+      current.setSelectedDatasetCacheReference(
+        expectedDataset,
+        reference.cache_path ?? null,
+      );
       return;
     }
     current.clearSelectedDatasetCacheReference(
@@ -143,13 +149,16 @@ function reconcileModelReference(
     if (!current.modelKnownCached) {
       return;
     }
-    if (
-      reference &&
-      cachedInventoryPathMatchesSelection(
-        reference.localPath,
-        expectedLocalPath,
-      )
-    ) {
+    if (reference) {
+      if (
+        cachedInventoryPathMatchesSelection(
+          reference.localPath,
+          expectedLocalPath,
+        )
+      ) {
+        return;
+      }
+      current.setSelectedModelCacheReference(expectedModel, reference);
       return;
     }
     current.clearSelectedModelCacheReference(expectedModel, expectedLocalPath);

@@ -27,6 +27,7 @@ import {
   onTrainingRunDeleted,
   onTrainingRunUpdated,
   onTrainingRunsChanged,
+  shouldShowTrainingArtifactsDeleted,
   useTrainingActions,
 } from "@/features/training";
 import { translate, useT } from "@/i18n";
@@ -447,8 +448,7 @@ export function HistoryCardGrid({
             ? statusBadge.resumed_later
             : (statusBadge[run.status] ?? statusBadge.error);
           const isRunning = run.status === "running";
-          const artifactsMissing =
-            run.artifacts_available === false && run.status !== "running";
+          const artifactsMissing = shouldShowTrainingArtifactsDeleted(run);
           const canResume =
             run.can_resume && !wasContinued && !artifactsMissing;
           const isResuming = resumeTarget === run.id;

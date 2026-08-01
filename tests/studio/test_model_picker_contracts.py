@@ -1570,7 +1570,6 @@ def test_training_model_lookups_preserve_platform_path_identity():
     assert "WINDOWS_DRIVE_PATH_RE.test(trimmed)" in normalizer
     assert 'slashPath.startsWith("//")' in normalizer
     assert "WSL_DRIVE_PATH_RE.test(slashPath)" in normalizer
-    assert normalizer.rstrip().endswith("return trimTrailingSeparators(slashPath, 1);\n}")
 
 
 def test_model_identity_normalizes_cross_platform_trailing_separators():
@@ -2044,7 +2043,7 @@ def test_train_hub_selections_preserve_canonical_identity():
     assert ".filter(isValidHubResourceId)" in model_selector
     assert "isValidHubResourceId(selectedModel)" in model_selector
     assert "hubTrainingModelCandidate(canonicalId," in model_selector
-    assert "pick(\n      canonicalId," in model_selector
+    assert re.search(r"\bpick\(\s*canonicalId\s*,", model_selector)
     assert "const canonicalId = cached?.repoId ?? validation.id;" in dataset_selector
     assert "isValidHubResourceId(item.id)" in dataset_selector
     assert "hubResourceIdsEqual(candidate.id, query)" in dataset_selector

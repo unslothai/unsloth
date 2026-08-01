@@ -37,5 +37,11 @@ export function useLocalDatasetInventory(datasetSource: DatasetSource) {
     };
   }, [datasetSource, refresh]);
 
-  return localDatasets.rows;
+  return {
+    rows: localDatasets.rows,
+    settled:
+      localDatasets.ready &&
+      !localDatasets.loading &&
+      localDatasets.error === null,
+  };
 }

@@ -16,6 +16,7 @@ export { useTrainingActions } from "./hooks/use-training-actions";
 export {
   getTrainingRunDisplayTitle,
   getTrainingRunModelSubtitle,
+  shouldShowTrainingArtifactsDeleted,
 } from "./lib/run-display";
 export {
   isRawTextDatasetFormat,
@@ -81,11 +82,15 @@ export {
 } from "./lib/cache-reference";
 export { validateTrainingModelCandidate } from "./lib/freeform-model-validation";
 export { isLocalTrainingModelSelection } from "./lib/model-selection";
-export { isHuggingFaceDatasetSelected } from "./lib/dataset-selection";
+export {
+  isHuggingFaceDatasetSelected,
+  shouldClearMissingLocalDatasetSelection,
+} from "./lib/dataset-selection";
 export {
   TRAINING_DATASET_UPLOAD_EXTENSIONS,
   TRAINING_DOCUMENT_REDIRECT_EXTENSIONS,
   classifyNativeTrainingDatasetDrop,
+  isTrainingDatasetUploadPath,
   nativeDropPositionHitsBounds,
 } from "./lib/native-dataset-drop";
 export {

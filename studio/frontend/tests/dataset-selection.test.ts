@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isHuggingFaceDatasetSelected } from "../src/features/training/lib/dataset-selection.ts";
+import {
+  isHuggingFaceDatasetSelected,
+  shouldClearMissingLocalDatasetSelection,
+} from "../src/features/training/lib/dataset-selection.ts";
 
 test("accepts filename-like Hub ids without treating local paths as Hub datasets", () => {
   assert.equal(
@@ -31,4 +34,38 @@ test("accepts filename-like Hub ids without treating local paths as Hub datasets
       path,
     );
   }
+});
+
+test("clears missing recipe selections only after local inventory settles", () => {
+  const recipeSelection = {
+    source: "upload" as const,
+    selectedPath: "/datasets/recipes/recipe_support/parquet-files",
+    inventorySettled: true,
+    inventoryMatchFound: false,
+  };
+  assert.equal(
+    shouldClearMissingLocalDatasetSelection(recipeSelection),
+    true,
+  );
+  assert.equal(
+    shouldClearMissingLocalDatasetSelection({
+      ...recipeSelection,
+      inventorySettled: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldClearMissingLocalDatasetSelection({
+      ...recipeSelection,
+      inventoryMatchFound: true,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldClearMissingLocalDatasetSelection({
+      ...recipeSelection,
+      selectedPath: String.raw`C:\datasets\uploads\train.jsonl`,
+    }),
+    false,
+  );
 });

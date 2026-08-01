@@ -117,7 +117,7 @@ export function DatasetSelector() {
   }, [refreshInventory]);
   const openDataRecipes = useCallback(() => {
     closePicker();
-    navigate({ to: "/data-recipes" });
+    navigate({ to: "/data-recipes" }).catch(() => undefined);
   }, [closePicker, navigate]);
 
   const cachedDatasetById = useMemo(() => {

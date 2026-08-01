@@ -280,6 +280,7 @@ export function useDatasetUploads() {
       });
     });
   });
+  const canHandleNativeDrop = useEffectEvent(() => !isUploading);
 
   useEffect(() => {
     if (!isTauri) {
@@ -347,7 +348,7 @@ export function useDatasetUploads() {
               event.payload.paths,
             );
             eligible =
-              !isUploading &&
+              canHandleNativeDrop() &&
               (dropped.kind === "dataset" || dropped.kind === "document");
             setIsDatasetDragOver(
               eligible && hitsTarget(event.payload.position),
@@ -366,7 +367,7 @@ export function useDatasetUploads() {
             return;
           }
           const shouldHandle =
-            !isUploading && hitsTarget(event.payload.position);
+            canHandleNativeDrop() && hitsTarget(event.payload.position);
           eligible = false;
           setIsDatasetDragOver(false);
           if (shouldHandle) {
@@ -385,7 +386,7 @@ export function useDatasetUploads() {
       disposed = true;
       stopListening();
     };
-  }, [datasetDropTargetId, isUploading]);
+  }, [datasetDropTargetId]);
 
   const handleEvalFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
