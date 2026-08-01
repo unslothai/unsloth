@@ -3766,9 +3766,9 @@ class TestDamagedLatestSidecarRepairHandoff:
         self._damage(live)
 
         assert tv._overlay_transformers_dir("latest") is None  # scans, tries, fails
-        assert tv._venv_dir_is_valid(str(live), ("transformers==5.99.0",)), (
-            "precondition: only the scan can see this damage, not the cheap predicate"
-        )
+        assert tv._venv_dir_is_valid(
+            str(live), ("transformers==5.99.0",)
+        ), "precondition: only the scan can see this damage, not the cheap predicate"
 
         monkeypatch.setattr(
             tv,
