@@ -1661,7 +1661,11 @@ def test_a_broken_torch_install_is_not_reported_as_a_host_without_a_gpu():
 
 
 def test_an_absent_torch_is_still_just_absent():
-    """Negative control: ImportError is "not installed", not a broken install."""
+    """Negative control: a genuinely missing package is not a broken install.
+
+    Python raises ModuleNotFoundError with name "torch" for that, which is the only
+    signal narrow enough to trust: plain ImportError is what a broken wheel raises.
+    """
     from utils.hardware import hardware as hw
 
     saved_error = hw.TORCH_IMPORT_ERROR
@@ -1669,16 +1673,57 @@ def test_an_absent_torch_is_still_just_absent():
 
     def _missing(name, *a, **k):
         if name == "torch" or name.startswith("torch."):
-            raise ImportError("No module named 'torch'")
+            raise ModuleNotFoundError("No module named 'torch'", name = "torch")
         return real_import(name, *a, **k)
 
     try:
         hw.TORCH_IMPORT_ERROR = "stale"
         with mock.patch.object(builtins, "__import__", _missing):
             assert hw._has_torch() is False
-        assert (
-            hw.TORCH_IMPORT_ERROR is None
-        ), "a --no-torch install would be reported as a detection failure"
+        assert hw.TORCH_IMPORT_ERROR is None, (
+            "a --no-torch install would be reported as a detection failure"
+        )
+    finally:
+        hw.TORCH_IMPORT_ERROR = saved_error
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        # The common Linux shape: raised from inside torch's own __init__ by
+        # `from torch._C import *` when a native dependency does not resolve.
+        ImportError("libcudart.so.12: cannot open shared object file"),
+        # Windows.
+        OSError("[WinError 126] The specified module could not be found"),
+        # A missing submodule still means torch itself is installed.
+        ModuleNotFoundError("No module named 'torch._C'", name = "torch._C"),
+    ],
+    ids = ["import_error_native_lib", "os_error_windows", "missing_submodule"],
+)
+def test_a_broken_torch_is_never_mistaken_for_an_absent_one(exc):
+    """ImportError is not a synonym for "not installed".
+
+    Keying on the exception class reports a wheel with unresolved CUDA libraries as a
+    host with no GPU, and sends export_capability() down the "install PyTorch" branch
+    for a PyTorch that is installed, re-running the failing import on every check.
+    """
+    from utils.hardware import hardware as hw
+
+    saved_error = hw.TORCH_IMPORT_ERROR
+    real_import = builtins.__import__
+
+    def _broken(name, *a, **k):
+        if name == "torch" or name.startswith("torch."):
+            raise exc
+        return real_import(name, *a, **k)
+
+    try:
+        hw.TORCH_IMPORT_ERROR = None
+        with mock.patch.object(builtins, "__import__", _broken):
+            assert hw._has_torch() is False
+        assert hw.TORCH_IMPORT_ERROR is not None, (
+            f"{type(exc).__name__} from an installed torch was read as absent"
+        )
     finally:
         hw.TORCH_IMPORT_ERROR = saved_error
 

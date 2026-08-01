@@ -203,9 +203,13 @@ def _has_torch() -> bool:
         TORCH_IMPORT_ERROR = None
         return True
     except Exception as exc:
-        # ImportError is a plain "not installed"; anything else is an installed torch
-        # whose import blew up. Both still purge.
-        TORCH_IMPORT_ERROR = None if isinstance(exc, ImportError) else repr(exc)
+        # ImportError does NOT mean "not installed": a wheel whose native libraries do
+        # not resolve raises ImportError from inside torch's own __init__ (the common
+        # "libcudart.so.N: cannot open shared object file"), and OSError on Windows.
+        # Absent is the narrower case Python names exactly. A submodule failure carries
+        # its own name and stays a broken install. Both still purge.
+        absent = isinstance(exc, ModuleNotFoundError) and exc.name == "torch"
+        TORCH_IMPORT_ERROR = None if absent else repr(exc)
         if TORCH_IMPORT_ERROR is not None:
             logger.error("torch is installed but failed to import: %r", exc)
         # A part-way failure leaves torch submodules cached under an evicted parent, so
