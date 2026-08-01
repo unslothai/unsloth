@@ -335,6 +335,54 @@ def exercise_floating_monitor_geometry(page):
             and box["y"] + box["height"] <= surface["height"] - inset + tolerance
         )
 
+    # Every assertion below compares heights sampled seconds apart against this
+    # baseline, so the panel must already be showing its final row set. Until the
+    # first /api/system response is applied the panel paints use-system.ts's
+    # zero-filled DEFAULT_SYSTEM, which has no GPU: on a host that reports one
+    # (macos-14 reports a single MLX device) the VRAM row then appears and adds
+    # ~59px permanently. The caller only waited for the /api/system *request*, so
+    # sampling here can capture the pre-payload height -- a height the panel never
+    # returns to, which "content shrink" would then wait out its whole deadline
+    # chasing. Wait for the payload itself, and for the panel to have finished
+    # resizing to it.
+    try:
+        page.wait_for_function(
+            r"""() => {
+                const monitor = document.querySelector(
+                    '[data-testid="floating-monitor"]'
+                );
+                const content = document.querySelector(
+                    '[data-testid="floating-monitor-content"]'
+                );
+                if (!(monitor && content)) return false;
+                // DEFAULT_SYSTEM reports a 0 GiB RAM total; a real payload never does.
+                const readout = content.innerText.match(
+                    /([\d.]+)\s*GiB\s*\/\s*([\d.]+)\s*GiB/
+                );
+                if (!readout || !(Number.parseFloat(readout[2]) > 0)) return false;
+                // The rows commit a pass before the panel resizes to them, so the
+                // panel is only done reacting once its scroll region exactly fits
+                // the content it was reconciled against.
+                const scroll = content.parentElement;
+                const monitorHeight = monitor.getBoundingClientRect().height;
+                const contentHeight = content.getBoundingClientRect().height;
+                const scrollHeight = scroll.getBoundingClientRect().height;
+                if (Math.abs(scrollHeight - contentHeight) > 1) return false;
+                // Row insertion also lands a frame before the gap between rows
+                // does, and that intermediate state is self-consistent. Require
+                // the geometry to hold for two consecutive animation frames --
+                // this runs under the default polling="raf", and it is how
+                // Playwright itself defines a stable element.
+                const signature = monitorHeight + "x" + contentHeight;
+                const settled = window.__unslothMonitorGeometry === signature;
+                window.__unslothMonitorGeometry = signature;
+                return settled;
+            }""",
+            timeout = 30_000,
+        )
+    except Exception as exc:
+        fail(f"floating monitor never settled on an /api/system payload: {exc!r}")
+
     initial_box = monitor_box("initial placement")
     expect_close(
         initial_box["x"] + initial_box["width"],
