@@ -1314,7 +1314,10 @@ async def health_check(request: Request):
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
-        "chat_only": snapshot[0] if snapshot is not None else _hw_module.CHAT_ONLY,
+        # Literal True with no snapshot, not a CHAT_ONLY read: a pass in flight sets the
+        # flag False before the probe that can still fall back to CPU, and a deferred
+        # reply is stored as-is by hardware-verdict.ts.
+        "chat_only": snapshot[0] if snapshot is not None else True,
         "desktop_protocol_version": 1,
         # Lockstep: see the note in /api/liveness above.
         "desktop_manageability_version": 2,

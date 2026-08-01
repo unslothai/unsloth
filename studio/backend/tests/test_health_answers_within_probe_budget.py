@@ -157,6 +157,78 @@ def _probe(detect_seconds: float) -> dict:
     return json.loads(line[len("RESULT") :])
 
 
+# A pass that sets CHAT_ONLY False and then degrades, the shape every accelerator
+# branch has: the flag is assigned before the device-name probe that can raise, and
+# detect_hardware() restores the previous verdict on the way out.
+_MID_PASS_SNIPPET = r"""
+import json, os, threading, time
+
+os.environ.pop("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", None)
+
+import main
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+hw = main._hw_module
+hw.DEVICE = None
+hw.CHAT_ONLY = True
+hw.CHAT_ONLY_REASON = None
+hw.DETECTION_COMPLETE.clear()
+
+def degrading_detect(*_):
+    # The XPU branch verbatim: DEVICE and CHAT_ONLY assigned, then a probe that hangs
+    # and would raise. DETECTION_COMPLETE is never set, so the verdict is not settled.
+    hw.DEVICE = hw.DeviceType.XPU
+    hw.CHAT_ONLY = False
+    time.sleep(30.0)
+    return hw.DEVICE
+
+hw.ensure_hardware_detected = degrading_detect
+
+app = FastAPI()
+app.add_api_route("/api/health", main.health_check, methods = ["GET"])
+client = TestClient(app)
+
+# start_background_detection() runs the stub, which flips the global well inside the
+# budget; the reply lands while the pass is still in flight.
+body = client.get("/api/health").json()
+
+print("RESULT" + json.dumps({
+    "chat_only": body.get("chat_only"),
+    "hardware_detecting": body.get("hardware_detecting"),
+    "global_chat_only": hw.CHAT_ONLY,
+    "complete": hw.DETECTION_COMPLETE.is_set(),
+}))
+"""
+
+
+def test_an_unsettled_pass_is_never_published_as_training_capable():
+    """chat_only with no snapshot must be the literal True, not the live global.
+
+    Every accelerator branch of _detect_hardware_locked assigns CHAT_ONLY = False and
+    then keeps probing (torch.xpu.get_device_name, the MLX stack check), and a raise
+    there degrades the host to CPU. DETECTION_COMPLETE is still clear throughout, so
+    the reply is marked provisional; with the kill switch on it is also marked
+    hardware_detection_deferred, and hardware-verdict.ts stores data.chat_only verbatim
+    for deferred replies. Reading the global therefore flashes Train and Export on a
+    host that ends up chat-only.
+    """
+    proc = _run(_MID_PASS_SNIPPET)
+    assert (
+        proc.returncode == 0
+    ), f"probe failed\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr[-4000:]}"
+    line = next(ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT"))
+    result = json.loads(line[len("RESULT") :])
+
+    assert not result["complete"], "the stub settled detection; the window is not modelled"
+    assert result["global_chat_only"] is False, "the mid-pass flip did not happen"
+    assert result["hardware_detecting"] is True, "expected a provisional reply"
+    assert result["chat_only"] is True, (
+        "health published chat_only=False from a detection pass still in flight; the "
+        "frontend enables Train and Export until the real verdict lands"
+    )
+
+
 def test_health_answers_within_the_budget_while_detection_is_slow():
     """The regression: detection outlasts the probe, health must not.
 
