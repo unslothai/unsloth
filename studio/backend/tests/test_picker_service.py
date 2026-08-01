@@ -4,6 +4,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from picker.service import (
     MAX_TEMPLATE_METADATA_BYTES,
     _chat_template_from_dir,
@@ -222,6 +224,44 @@ def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch)
     monkeypatch.setattr(huggingface_hub.HfApi, "get_paths_info", _fake_get_paths_info)
 
     assert read_default_chat_template("org/oversized-model") is None
+
+
+@pytest.mark.parametrize(
+    ("hf_token", "expected_token"),
+    (
+        (None, False),
+        ("  request-token\n", "request-token"),
+    ),
+)
+def test_remote_template_uses_only_explicit_request_token(
+    tmp_path, monkeypatch, hf_token, expected_token
+):
+    import huggingface_hub
+
+    template_path = tmp_path / "chat_template.jinja"
+    template_path.write_text("REMOTE_TEMPLATE", encoding = "utf-8")
+    captured_tokens = []
+
+    class _Api:
+        def __init__(self, *, token):
+            captured_tokens.append(token)
+
+        def get_paths_info(self, _repo_id, paths, **kwargs):
+            captured_tokens.append(kwargs["token"])
+            return [SimpleNamespace(path = paths[0], size = template_path.stat().st_size)]
+
+    def _fake_download(*_args, **kwargs):
+        captured_tokens.append(kwargs["token"])
+        return str(template_path)
+
+    monkeypatch.setenv("HF_TOKEN", "operator-secret-token")
+    monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
+    monkeypatch.setattr("picker.service.iter_hf_cache_snapshots", lambda _resolved: [])
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _fake_download)
+
+    assert read_default_chat_template("org/model", hf_token) == "REMOTE_TEMPLATE"
+    assert captured_tokens == [expected_token, expected_token, expected_token]
 
 
 def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, monkeypatch):

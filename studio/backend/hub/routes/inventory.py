@@ -124,7 +124,11 @@ async def download_model(
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await downloads.download_model_response(body, hf_token)
+    return await downloads.download_model_response(
+        body,
+        hf_token,
+        allow_ambient_token = False,
+    )
 
 
 @router.post("/download/cancel", response_model = CancelDownloadResponse, status_code = 202)

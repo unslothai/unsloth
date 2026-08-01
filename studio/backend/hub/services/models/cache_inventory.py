@@ -19,6 +19,7 @@ from loggers import get_logger
 from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils import download_registry
+from hub.utils.hf_tokens import hf_token_arg
 from hub.utils.snapshot_filters import (
     snapshot_download_blob_hashes,
     snapshot_download_size,
@@ -80,7 +81,7 @@ def get_repo_snapshot_metadata_cached(
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi(token = hf_token).model_info(
+        info = HfApi(token = hf_token_arg(hf_token)).model_info(
             repo_id,
             files_metadata = True,
             timeout = _MODEL_METADATA_TIMEOUT_SECONDS,

@@ -88,7 +88,11 @@ async def download_dataset(
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await downloads.download_dataset_response(body, hf_token)
+    return await downloads.download_dataset_response(
+        body,
+        hf_token,
+        allow_ambient_token = False,
+    )
 
 
 @router.post("/download/cancel", response_model = CancelDatasetDownloadResponse, status_code = 202)
