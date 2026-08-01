@@ -640,7 +640,9 @@ def _peek_inference_backend() -> Any:
         from core.inference.orchestrator import peek_inference_backend
     except Exception:
         return get_inference_backend()
-    return get_inference_backend() if get_inference_backend is not _real else peek_inference_backend()
+    return (
+        get_inference_backend() if get_inference_backend is not _real else peek_inference_backend()
+    )
 
 
 def _loaded_context_length() -> int | None:

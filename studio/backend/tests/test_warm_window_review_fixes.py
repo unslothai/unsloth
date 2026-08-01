@@ -1385,9 +1385,9 @@ def test_the_metadata_cleanup_does_not_construct_the_backend():
         and isinstance(sub.func, ast.Name)
         and sub.func.id == "get_inference_backend"
     ]
-    assert not constructing, (
-        "the cleanup path constructs the ML backend again for a metadata-only decision"
-    )
+    assert (
+        not constructing
+    ), "the cleanup path constructs the ML backend again for a metadata-only decision"
     assert any(
         isinstance(sub, ast.Call)
         and isinstance(sub.func, ast.Name)
