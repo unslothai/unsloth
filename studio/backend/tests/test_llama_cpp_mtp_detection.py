@@ -29,27 +29,36 @@ _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-_httpx_stub = _types.ModuleType("httpx")
-for _exc in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-):
-    setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
-_httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
-_httpx_stub.Client = type(
-    "C",
-    (),
-    {
-        "__init__": lambda s, **kw: None,
-        "__enter__": lambda s: s,
-        "__exit__": lambda s, *a: None,
-    },
-)
-sys.modules.setdefault("httpx", _httpx_stub)
+# Real httpx wins when it is installed: setdefault only checks whether httpx is
+# already imported, not whether it exists, so the stub used to shadow the real
+# module for the rest of the session. Files importing later then found a working
+# httpx and kept it, and this stub is a subset (no Response), so routes/inference
+# blew up in any combined run. Same guard the sibling test files already use.
+try:  # noqa: SIM105
+    import httpx  # noqa: F401
+except ImportError:
+    _httpx_stub = _types.ModuleType("httpx")
+    for _exc in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+    ):
+        setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
+    _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
+    _httpx_stub.Response = type("Response", (), {})
+    _httpx_stub.Client = type(
+        "C",
+        (),
+        {
+            "__init__": lambda s, **kw: None,
+            "__enter__": lambda s: s,
+            "__exit__": lambda s, *a: None,
+        },
+    )
+    sys.modules["httpx"] = _httpx_stub
 
 import pytest
 
