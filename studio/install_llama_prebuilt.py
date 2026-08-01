@@ -5711,7 +5711,31 @@ def _write_marker(marker_path: Path, marker: dict) -> bool:
     """
     data = (json.dumps(marker, indent = 2) + "\n").encode("utf-8")
     try:
-        atomic_write_bytes(marker_path, data)
+        try:
+            mode = stat.S_IMODE(marker_path.stat().st_mode)
+        except OSError:
+            mode = None
+        # Own temp file rather than atomic_write_bytes so the mode is restored
+        # BEFORE the swap: os.replace keeps the source file's mode, and
+        # NamedTemporaryFile is 0600, which would leave a shared install's
+        # marker readable only by whoever ran setup -- the very case the atomic
+        # path exists to serve. chmod after the swap would leave a window.
+        with tempfile.NamedTemporaryFile(
+            prefix = marker_path.name + ".tmp-",
+            dir = marker_path.parent,
+            delete = False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            if mode is not None:
+                os.chmod(tmp_path, mode)
+            atomic_replace_from_tempfile(tmp_path, marker_path)
+        except OSError:
+            tmp_path.unlink(missing_ok = True)
+            raise
         return True
     except OSError:
         return False

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -3849,6 +3850,30 @@ def test_fallback_survives_a_failing_system_report(tmp_path, monkeypatch):
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+@pytest.mark.parametrize("mode", [0o444, 0o644, 0o664])
+def test_marker_sync_preserves_the_marker_mode(tmp_path, mode):
+    """A shared install's marker must stay readable by everyone who could read it.
+
+    os.replace keeps the SOURCE file's mode and NamedTemporaryFile is 0600, so a
+    naive atomic refresh would leave UNSLOTH_PREBUILT_INFO.json readable only by
+    whoever ran setup -- and other users could no longer recognise or update the
+    shared installation.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker.write_text(json.dumps({"force_cpu": False}) + "\n", encoding = "utf-8")
+    os.chmod(marker, mode)
+
+    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+
+    assert stat.S_IMODE(marker.stat().st_mode) == mode
+    assert json.loads(marker.read_text(encoding = "utf-8"))["force_cpu"] is True
+    # and no temp file is stranded next to it
+    assert [p.name for p in install_dir.iterdir() if ".tmp-" in p.name] == []
+
+
 def test_marker_sync_leaves_a_valid_marker_intact_when_the_write_fails(tmp_path, monkeypatch):
     """A failed refresh must never truncate the marker.
 
@@ -3865,11 +3890,12 @@ def test_marker_sync_leaves_a_valid_marker_intact_when_the_write_fails(tmp_path,
     def out_of_space(*args, **kwargs):
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "atomic_write_bytes", out_of_space)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "atomic_replace_from_tempfile", out_of_space)
 
     INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
 
     assert marker.read_text(encoding = "utf-8") == original
+    assert [q.name for q in install_dir.iterdir() if ".tmp-" in q.name] == []
 
 
 def test_python_runtime_dirs_skips_an_inaccessible_glob_result(monkeypatch, tmp_path):
@@ -4042,7 +4068,7 @@ def test_marker_sync_never_fails_setup_when_the_write_cannot_land(tmp_path, monk
     def refuse(*args, **kwargs):
         raise PermissionError(13, "Access is denied", str(marker), 5)
 
-    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "atomic_write_bytes", refuse)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "atomic_replace_from_tempfile", refuse)
 
     logged: list[str] = []
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
