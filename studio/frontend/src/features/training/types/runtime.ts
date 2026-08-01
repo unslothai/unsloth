@@ -134,7 +134,7 @@ export interface TrainingRuntimeActions {
   applyStatus: (payload: TrainingStatusResponse) => void;
   applyMetrics: (payload: TrainingMetricsResponse) => void;
   applyProgress: (payload: TrainingProgressPayload, eventId?: number) => void;
-  setStartQueued: (jobId: string, message: string) => void;
+  setStartPending: (jobId: string | null, message: string) => void;
   setRuntimeError: (message: string) => void;
   setSelectedHistoryRunId: (id: string | null) => void;
   setCurrentRunViewActive: (value: boolean) => void;

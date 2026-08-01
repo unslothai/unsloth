@@ -16,6 +16,10 @@ export const ja = {
       "キャッシュ済みまたはローカルの{noun}を使用するには、「デバイス」に切り替えてください。",
     offlineSwitchDevice: "デバイス",
     searchAriaLabel: "{noun}を検索",
+    modelSourceAriaLabel: "モデルのソース",
+    hubSectionAriaLabel: "Hub セクション",
+    pickModelFile: "ディスクからモデルファイルを選択",
+    ejectLoadedModel: "読み込み済みモデルをアンロード",
     multipleMatches:
       "一致する{noun}が複数あります。リストから1つ選択してください。",
     rateLimitedTitle: "Hugging Face のレート制限に達しました",
@@ -1435,6 +1439,8 @@ export const ja = {
       loadingModel: "モデルを読み込み中...",
       checkingDataset: "データセットを確認中...",
       startFailed: "トレーニングの開始に失敗しました",
+      startUnconfirmed:
+        "トレーニングが開始されたか確認できませんでした。バックグラウンドで状態を確認しています。",
       stopFailed: "トレーニングの停止に失敗しました",
       trainingStillActiveTitle: "トレーニングはまだ実行中です",
       stopBeforeConfig:

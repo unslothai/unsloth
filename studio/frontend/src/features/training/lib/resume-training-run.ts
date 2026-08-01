@@ -24,6 +24,7 @@ import {
   reconcileTrainingStartTransportFailure,
   releaseTrainingStart,
   settleAcceptedTrainingStart,
+  settleUnconfirmedTrainingStart,
   tryAcquireTrainingStart,
 } from "./training-start-runtime";
 
@@ -146,6 +147,11 @@ class ResumeTrainingStartAttempt {
     return settleAcceptedTrainingStart(this.lease, jobId, message);
   }
 
+  settleUnconfirmed(message: string): boolean {
+    this.phase = "finished";
+    return settleUnconfirmedTrainingStart(this.lease, message);
+  }
+
   async fail(error: unknown): Promise<boolean> {
     if (this.phase === "finished") {
       return false;
@@ -162,6 +168,10 @@ class ResumeTrainingStartAttempt {
       }
       if (recovery.kind === "rejected") {
         failure = new TrainingStartError(recovery.error, recovery.errorCode);
+      } else {
+        const message = translate("studio.training.startUnconfirmed");
+        toast.warning(message);
+        return this.settleUnconfirmed(message);
       }
     }
     if (!isTrainingStartLeaseActive(this.lease)) {

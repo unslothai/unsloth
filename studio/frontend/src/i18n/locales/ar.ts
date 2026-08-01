@@ -15,6 +15,10 @@ export const ar = {
       "انتقل إلى «الجهاز» لاستخدام {noun} المحلية أو المخزّنة مؤقتًا.",
     offlineSwitchDevice: "الجهاز",
     searchAriaLabel: "البحث في {noun}",
+    modelSourceAriaLabel: "مصدر النموذج",
+    hubSectionAriaLabel: "قسم Hub",
+    pickModelFile: "اختيار ملف نموذج من القرص",
+    ejectLoadedModel: "إخراج النموذج المحمّل",
     multipleMatches:
       "توجد عدة نتائج مطابقة ضمن {noun}. اختر نتيجة من القائمة.",
     rateLimitedTitle: "تم بلوغ حد طلبات Hugging Face",
@@ -1522,6 +1526,8 @@ export const ar = {
         unsupportedDatasetSource: "مصدر مجموعة البيانات غير مدعوم.",
       },
       startFailed: "فشل بدء التدريب",
+      startUnconfirmed:
+        "تعذّر على Unsloth تأكيد بدء التدريب. جارٍ التحقق من الحالة في الخلفية.",
       stopFailed: "فشل إيقاف التدريب",
       trainingStillActiveTitle: "لا يزال التدريب نشطًا",
       stopBeforeConfig: "أوقف التدريب أولًا، ثم عُد إلى التكوين.",

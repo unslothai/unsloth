@@ -5,6 +5,7 @@ import asyncio
 import importlib.util
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -74,6 +75,29 @@ def test_accepted_start_request_remains_queryable():
     assert record is not None
     assert record.state == "accepted"
     assert record.job_id == "job-1"
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_status"),
+    [
+        ("pending", "pending"),
+        ("accepted", "queued"),
+        ("rejected", "error"),
+    ],
+)
+def test_duplicate_start_response_preserves_reservation_state(state, expected_status):
+    route = _load_training_route(f"training_route_duplicate_{state}_test")
+    response = route._start_request_response(
+        SimpleNamespace(
+            job_id = "job-1",
+            state = state,
+            message = "status message",
+            error = "rejected" if state == "rejected" else None,
+            error_code = None,
+        )
+    )
+
+    assert response.status == expected_status
 
 
 def test_cancelled_route_during_spawn_keeps_the_worker_result_authoritative():

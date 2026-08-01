@@ -15,6 +15,10 @@ export const ptBR = {
       "Mude para Dispositivo para usar {noun} locais ou em cache.",
     offlineSwitchDevice: "Dispositivo",
     searchAriaLabel: "Buscar {noun}",
+    modelSourceAriaLabel: "Origem do modelo",
+    hubSectionAriaLabel: "Seção do Hub",
+    pickModelFile: "Escolher um arquivo de modelo no disco",
+    ejectLoadedModel: "Ejetar o modelo carregado",
     multipleMatches:
       "Há vários {noun} correspondentes. Escolha uma opção na lista.",
     rateLimitedTitle: "Limite de requisições do Hugging Face atingido",
@@ -1536,6 +1540,8 @@ export const ptBR = {
         unsupportedDatasetSource: "Fonte de dataset não compatível.",
       },
       startFailed: "Falha ao iniciar o treinamento",
+      startUnconfirmed:
+        "O Unsloth não conseguiu confirmar se o treinamento foi iniciado. O status está sendo verificado em segundo plano.",
       stopFailed: "Falha ao interromper o treinamento",
       trainingStillActiveTitle: "O treinamento ainda está ativo",
       stopBeforeConfig:

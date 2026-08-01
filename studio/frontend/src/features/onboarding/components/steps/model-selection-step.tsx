@@ -19,7 +19,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { TrainModelSelector } from "@/features/model-picker";
+import { TrainModelSelector } from "@/features/train-model-picker";
 import { useTrainingConfigStore } from "@/features/training";
 import type { TrainingMethod } from "@/types/training";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";

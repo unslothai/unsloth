@@ -16,8 +16,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { HfTokenIndicator } from "@/features/hub";
-import { TrainModelSelector } from "@/features/model-picker";
 import { useSettingsDialogStore } from "@/features/settings";
+import { TrainModelSelector } from "@/features/train-model-picker";
 import {
   TRAINING_METHOD_META,
   TRAINING_METHOD_ORDER,

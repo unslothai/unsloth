@@ -13,7 +13,7 @@ import {
 import {
   toTrainModelDisplayCandidate,
   trainModelSelectionDisplayName,
-} from "@/features/model-picker";
+} from "@/features/train-model-picker";
 import { isLocalTrainingModelSelection } from "@/features/training";
 import { useMemo } from "react";
 

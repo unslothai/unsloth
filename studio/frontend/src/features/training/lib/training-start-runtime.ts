@@ -5,13 +5,17 @@ import { type TranslationKey, translate } from "@/i18n";
 import {
   acknowledgeTrainingStartRequest,
   getTrainingStartRequestStatus,
+  getTrainingStatus,
   resetTraining,
   stopTraining,
 } from "../api/train-api";
 import { emitTrainingRunsChanged } from "../events";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import { syncTrainingRuntimeFromBackend } from "./sync-runtime";
-import { resolveTrainingStartRequestOutcome } from "./training-start-reconciliation";
+import {
+  resolveTrainingStartRequestOutcome,
+  statusConfirmsActiveTrainingStart,
+} from "./training-start-reconciliation";
 import { createTrainingStartRequestId } from "./training-start-request-id";
 
 export const TRAINING_SETUP_CHANGED_ERROR =
@@ -96,11 +100,22 @@ export async function settleAcceptedTrainingStart(
     await cancelSupersededTrainingStart(jobId);
     return false;
   }
-  useTrainingRuntimeStore.getState().setStartQueued(jobId, message);
+  useTrainingRuntimeStore.getState().setStartPending(jobId, message);
   await Promise.allSettled([
     Promise.resolve().then(emitTrainingRunsChanged),
     syncTrainingRuntimeFromBackend(),
   ]);
+  return true;
+}
+
+export function settleUnconfirmedTrainingStart(
+  lease: TrainingStartLease,
+  message: string,
+): boolean {
+  if (!isTrainingStartLeaseActive(lease)) {
+    return false;
+  }
+  useTrainingRuntimeStore.getState().setStartPending(null, message);
   return true;
 }
 
@@ -151,7 +166,7 @@ export async function reconcileTrainingStartTransportFailure(
 
     useTrainingRuntimeStore
       .getState()
-      .setStartQueued(outcome.jobId, outcome.message);
+      .setStartPending(outcome.jobId, outcome.message);
     await Promise.allSettled([
       Promise.resolve().then(emitTrainingRunsChanged),
       syncTrainingRuntimeFromBackend(),
@@ -161,11 +176,23 @@ export async function reconcileTrainingStartTransportFailure(
   if (pending && isTrainingStartLeaseActive(lease)) {
     useTrainingRuntimeStore
       .getState()
-      .setStartQueued(pending.jobId, pending.message);
+      .setStartPending(pending.jobId, pending.message);
     await Promise.allSettled([
       Promise.resolve().then(emitTrainingRunsChanged),
       syncTrainingRuntimeFromBackend(),
     ]);
+    return { kind: "recovered" };
+  }
+  const status = await getTrainingStatus().catch(() => null);
+  if (
+    status &&
+    isTrainingStartLeaseActive(lease) &&
+    statusConfirmsActiveTrainingStart(status, lease.startRequestId)
+  ) {
+    const runtime = useTrainingRuntimeStore.getState();
+    runtime.applyStatus(status);
+    runtime.setStarting(false);
+    emitTrainingRunsChanged();
     return { kind: "recovered" };
   }
   return { kind: "unknown" };

@@ -82,7 +82,7 @@ export interface TrainingStartRequest {
 
 export interface TrainingStartResponse {
   job_id: string;
-  status: "queued" | "error";
+  status: "pending" | "queued" | "error";
   message: string;
   error: string | null;
   error_code?: string | null;

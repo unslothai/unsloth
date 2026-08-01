@@ -15,6 +15,10 @@ export const ru = {
       "Переключитесь на «Устройство», чтобы использовать локальные или кэшированные {noun}.",
     offlineSwitchDevice: "Устройство",
     searchAriaLabel: "Поиск: {noun}",
+    modelSourceAriaLabel: "Источник модели",
+    hubSectionAriaLabel: "Раздел Hub",
+    pickModelFile: "Выбрать файл модели на диске",
+    ejectLoadedModel: "Выгрузить загруженную модель",
     multipleMatches:
       "В категории «{noun}» найдено несколько совпадений. Выберите одно из списка.",
     rateLimitedTitle: "Достигнут лимит запросов Hugging Face",
@@ -1508,6 +1512,8 @@ export const ru = {
       loadingModel: "Загрузка модели...",
       checkingDataset: "Проверка датасета...",
       startFailed: "Не удалось запустить обучение",
+      startUnconfirmed:
+        "Unsloth не удалось подтвердить запуск обучения. Состояние проверяется в фоновом режиме.",
       stopFailed: "Не удалось остановить обучение",
       trainingStillActiveTitle: "Обучение ещё выполняется",
       stopBeforeConfig:

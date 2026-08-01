@@ -106,17 +106,21 @@ export async function startTraining(
     );
     throw error;
   }
+  let result: TrainingStartResponse;
   try {
-    const result = (await response.json()) as TrainingStartResponse;
-    if (result.status === "error") {
-      await acknowledgeTrainingStartRequest(startRequestId).catch(
-        () => undefined,
-      );
-    }
-    return result;
+    result = (await response.json()) as TrainingStartResponse;
   } catch (error) {
     throw new TrainingStartOutcomeUnknownError(error);
   }
+  if (result.status === "pending") {
+    throw new TrainingStartOutcomeUnknownError(new Error(result.message));
+  }
+  if (result.status === "error") {
+    await acknowledgeTrainingStartRequest(startRequestId).catch(
+      () => undefined,
+    );
+  }
+  return result;
 }
 
 export async function getTrainingStartRequestStatus(

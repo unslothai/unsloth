@@ -15,6 +15,10 @@ export const de = {
       "Wechseln Sie zu „Gerät“, um zwischengespeicherte oder lokale {noun} zu verwenden.",
     offlineSwitchDevice: "Gerät",
     searchAriaLabel: "Suche: {noun}",
+    modelSourceAriaLabel: "Modellquelle",
+    hubSectionAriaLabel: "Hub-Bereich",
+    pickModelFile: "Modelldatei vom Datenträger auswählen",
+    ejectLoadedModel: "Geladenes Modell auswerfen",
     multipleMatches:
       "Mehrere passende {noun} gefunden. Wählen Sie einen Eintrag aus der Liste aus.",
     rateLimitedTitle: "Hugging Face-Ratenlimit erreicht",
@@ -1578,6 +1582,8 @@ export const de = {
         unsupportedDatasetSource: "Nicht unterstützte Datensatzquelle.",
       },
       startFailed: "Training konnte nicht gestartet werden",
+      startUnconfirmed:
+        "Unsloth konnte nicht bestätigen, ob das Training gestartet wurde. Der Status wird im Hintergrund geprüft.",
       stopFailed: "Training konnte nicht gestoppt werden",
       trainingStillActiveTitle: "Training läuft noch",
       stopBeforeConfig:

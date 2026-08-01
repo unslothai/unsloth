@@ -31,6 +31,7 @@ import {
   reconcileTrainingStartTransportFailure,
   releaseTrainingStart,
   settleAcceptedTrainingStart,
+  settleUnconfirmedTrainingStart,
   tryAcquireTrainingStart,
 } from "./training-start-runtime";
 import {
@@ -212,6 +213,11 @@ class FreshTrainingStartAttempt {
     return settleAcceptedTrainingStart(this.lease, jobId, message);
   }
 
+  settleUnconfirmed(message: string): boolean {
+    this.phase = "finished";
+    return settleUnconfirmedTrainingStart(this.lease, message);
+  }
+
   async recoverTransportFailure() {
     if (this.phase !== "transport") {
       return { kind: "unknown" } as const;
@@ -279,6 +285,9 @@ export async function startFreshTrainingRun(): Promise<boolean> {
           normalizeTrainingStartError(recovery.error, recovery.errorCode),
         );
       }
+      const message = translate("studio.training.startUnconfirmed");
+      toast.warning(message);
+      return attempt.settleUnconfirmed(message);
     }
     if (attempt.abortIfInputsChanged()) {
       return false;
@@ -368,7 +377,7 @@ function applyDetectedDatasetModality(
       "studio.dataset.streaming.notifications.disabledForDetectedModality",
     );
     toast.info(message);
-    return attempt.cancel(message);
+    return true;
   }
   if (
     isImage === attempt.config.isDatasetImage &&

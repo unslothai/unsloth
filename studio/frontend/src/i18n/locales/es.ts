@@ -15,6 +15,10 @@ export const es = {
       "Cambia a Dispositivo para usar {noun} locales o en caché.",
     offlineSwitchDevice: "Dispositivo",
     searchAriaLabel: "Buscar {noun}",
+    modelSourceAriaLabel: "Origen del modelo",
+    hubSectionAriaLabel: "Sección del Hub",
+    pickModelFile: "Elegir un archivo de modelo del disco",
+    ejectLoadedModel: "Expulsar el modelo cargado",
     multipleMatches:
       "Hay varios {noun} coincidentes. Elige uno de la lista.",
     rateLimitedTitle: "Se alcanzó el límite de solicitudes de Hugging Face",
@@ -1569,6 +1573,8 @@ export const es = {
         unsupportedDatasetSource: "Origen de conjunto de datos no compatible.",
       },
       startFailed: "No se pudo iniciar el entrenamiento",
+      startUnconfirmed:
+        "Unsloth no pudo confirmar si el entrenamiento se inició. Se está comprobando el estado en segundo plano.",
       stopFailed: "No se pudo detener el entrenamiento",
       trainingStillActiveTitle: "El entrenamiento sigue activo",
       stopBeforeConfig:

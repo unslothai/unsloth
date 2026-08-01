@@ -33,6 +33,7 @@ import {
   useEffect,
   useEffectEvent,
   useId,
+  useRef,
   useState,
 } from "react";
 import { getFileExtension } from "./dataset-panel-helpers";
@@ -62,6 +63,7 @@ export function useDatasetUploads() {
     (state) => state.setUploadedEvalFile,
   );
   const [isUploading, setIsUploading] = useState(false);
+  const uploadLockRef = useRef(false);
   const [isDatasetDragOver, setIsDatasetDragOver] = useState(false);
   const [uploadLimitBytes, setUploadLimitBytes] = useState(
     getCachedUploadLimitBytes,
@@ -110,24 +112,40 @@ export function useDatasetUploads() {
     }
   };
 
+  const acquireUploadLock = () => {
+    if (uploadLockRef.current) {
+      return false;
+    }
+    uploadLockRef.current = true;
+    setIsUploading(true);
+    return true;
+  };
+
+  const releaseUploadLock = () => {
+    uploadLockRef.current = false;
+    setIsUploading(false);
+  };
+
   const uploadFile = async (
     file: File,
     onSuccess: (storedPath: string) => void,
     successMessage: string,
   ) => {
-    const latestLimit = await getLatestUploadLimit();
-    if (file.size > latestLimit.maxUploadSizeBytes) {
-      toast.error(t("studio.dataset.fileTooLarge"), {
-        description: t("studio.dataset.fileTooLargeDescription", {
-          file: file.name,
-          size: formatUploadSize(file.size),
-          limit: latestLimit.maxUploadSizeLabel,
-        }),
-      });
+    if (!acquireUploadLock()) {
       return;
     }
-    setIsUploading(true);
     try {
+      const latestLimit = await getLatestUploadLimit();
+      if (file.size > latestLimit.maxUploadSizeBytes) {
+        toast.error(t("studio.dataset.fileTooLarge"), {
+          description: t("studio.dataset.fileTooLargeDescription", {
+            file: file.name,
+            size: formatUploadSize(file.size),
+            limit: latestLimit.maxUploadSizeLabel,
+          }),
+        });
+        return;
+      }
       const uploaded = await uploadTrainingDataset(file);
       bumpInventoryVersion();
       onSuccess(uploaded.stored_path);
@@ -142,28 +160,30 @@ export function useDatasetUploads() {
               : t("studio.dataset.unknownError"),
       });
     } finally {
-      setIsUploading(false);
+      releaseUploadLock();
     }
   };
 
   const uploadNativeFile = async (path: string, filename: string) => {
-    const latestLimit = await getLatestUploadLimit();
-    const intent = await registerNativeDatasetPath(path);
-    if (
-      intent.path.sizeBytes != null &&
-      intent.path.sizeBytes > latestLimit.maxUploadSizeBytes
-    ) {
-      toast.error(t("studio.dataset.fileTooLarge"), {
-        description: t("studio.dataset.fileTooLargeDescription", {
-          file: filename,
-          size: formatUploadSize(intent.path.sizeBytes),
-          limit: latestLimit.maxUploadSizeLabel,
-        }),
-      });
+    if (!acquireUploadLock()) {
       return;
     }
-    setIsUploading(true);
     try {
+      const latestLimit = await getLatestUploadLimit();
+      const intent = await registerNativeDatasetPath(path);
+      if (
+        intent.path.sizeBytes != null &&
+        intent.path.sizeBytes > latestLimit.maxUploadSizeBytes
+      ) {
+        toast.error(t("studio.dataset.fileTooLarge"), {
+          description: t("studio.dataset.fileTooLargeDescription", {
+            file: filename,
+            size: formatUploadSize(intent.path.sizeBytes),
+            limit: latestLimit.maxUploadSizeLabel,
+          }),
+        });
+        return;
+      }
       const grant = await consumeNativePathToken(
         intent.path.token,
         "dataset-import",
@@ -184,7 +204,7 @@ export function useDatasetUploads() {
               : t("studio.dataset.unknownError"),
       });
     } finally {
-      setIsUploading(false);
+      releaseUploadLock();
     }
   };
 
@@ -223,7 +243,7 @@ export function useDatasetUploads() {
   const handleDatasetDrop = (event: DragEvent<HTMLButtonElement>) => {
     event.preventDefault();
     setIsDatasetDragOver(false);
-    if (isUploading) {
+    if (uploadLockRef.current) {
       return;
     }
     const files = Array.from(event.dataTransfer.files);
@@ -241,7 +261,7 @@ export function useDatasetUploads() {
 
   const handleDatasetDragOver = (event: DragEvent<HTMLButtonElement>) => {
     event.preventDefault();
-    if (isUploading) {
+    if (uploadLockRef.current) {
       return;
     }
     event.dataTransfer.dropEffect = "copy";
@@ -269,18 +289,9 @@ export function useDatasetUploads() {
       setDocumentRedirectOpen(true);
       return;
     }
-    uploadNativeFile(dropped.path, dropped.filename).catch((error) => {
-      toast.error(t("studio.dataset.uploadFailed"), {
-        description:
-          error instanceof Error
-            ? error.message
-            : typeof error === "string"
-              ? error
-              : t("studio.dataset.unknownError"),
-      });
-    });
+    void uploadNativeFile(dropped.path, dropped.filename);
   });
-  const canHandleNativeDrop = useEffectEvent(() => !isUploading);
+  const canHandleNativeDrop = useEffectEvent(() => !uploadLockRef.current);
 
   useEffect(() => {
     if (!isTauri) {

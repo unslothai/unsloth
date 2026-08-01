@@ -15,6 +15,10 @@ export const fr = {
       "Passez à « Appareil » pour utiliser des {noun} en cache ou locaux.",
     offlineSwitchDevice: "Appareil",
     searchAriaLabel: "Rechercher des {noun}",
+    modelSourceAriaLabel: "Source du modèle",
+    hubSectionAriaLabel: "Section du Hub",
+    pickModelFile: "Choisir un fichier de modèle sur le disque",
+    ejectLoadedModel: "Éjecter le modèle chargé",
     multipleMatches:
       "Plusieurs {noun} correspondent. Choisissez-en un dans la liste.",
     rateLimitedTitle: "Limite de requêtes Hugging Face atteinte",
@@ -1581,6 +1585,8 @@ export const fr = {
           "Source de jeu de données non prise en charge.",
       },
       startFailed: "Échec du démarrage de l'entraînement",
+      startUnconfirmed:
+        "Unsloth n'a pas pu confirmer le démarrage de l'entraînement. Vérification de l'état en arrière-plan.",
       stopFailed: "Échec de l'arrêt de l'entraînement",
       trainingStillActiveTitle: "L'entraînement est toujours actif",
       stopBeforeConfig:

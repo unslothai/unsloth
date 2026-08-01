@@ -14,6 +14,10 @@ export const ko = {
     offlineBody: "캐시된 또는 로컬 {noun}을 사용하려면 '기기'로 전환하세요.",
     offlineSwitchDevice: "기기",
     searchAriaLabel: "{noun} 검색",
+    modelSourceAriaLabel: "모델 소스",
+    hubSectionAriaLabel: "Hub 섹션",
+    pickModelFile: "디스크에서 모델 파일 선택",
+    ejectLoadedModel: "로드된 모델 꺼내기",
     multipleMatches:
       "일치하는 {noun} 항목이 여러 개 있습니다. 목록에서 하나를 선택하세요.",
     rateLimitedTitle: "Hugging Face 요청 한도에 도달했습니다",
@@ -1492,6 +1496,8 @@ export const ko = {
       loadingModel: "모델을 로딩하는 중...",
       checkingDataset: "데이터셋을 확인하는 중...",
       startFailed: "학습을 시작하지 못했습니다",
+      startUnconfirmed:
+        "학습이 시작되었는지 확인할 수 없습니다. 백그라운드에서 상태를 확인하고 있습니다.",
       stopFailed: "학습을 중지하지 못했습니다",
       trainingStillActiveTitle: "학습이 아직 진행 중입니다",
       stopBeforeConfig: "먼저 학습을 중지한 후 구성 화면으로 돌아가세요.",

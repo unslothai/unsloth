@@ -12,6 +12,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat";
+import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
@@ -352,6 +353,7 @@ function ModelSelectorContent({
   className?: string;
   dataTour?: string;
 }) {
+  const t = useT();
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
@@ -574,7 +576,7 @@ function ModelSelectorContent({
           <>
             {tabs.length > 1 ? (
               <PillTabs
-                ariaLabel="Model source"
+                ariaLabel={t("picker.modelSourceAriaLabel")}
                 tabs={tabs}
                 value={effectiveTab}
                 onValueChange={setActiveTab}
@@ -599,7 +601,7 @@ function ModelSelectorContent({
                 section={effectiveHubSection}
                 sectionToggle={
                   <PillTabs
-                    ariaLabel="Hub section"
+                    ariaLabel={t("picker.hubSectionAriaLabel")}
                     tabs={hubSectionTabs}
                     value={effectiveHubSection}
                     onValueChange={(next) => {
@@ -627,10 +629,10 @@ function ModelSelectorContent({
                   type="button"
                   onClick={onPickLocalModel}
                   className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
-                  title="Pick a model file from disk"
+                  title={t("picker.pickModelFile")}
                 >
                   <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
-                  Pick a model file from disk
+                  {t("picker.pickModelFile")}
                 </button>
               </div>
             ) : null}
@@ -640,10 +642,10 @@ function ModelSelectorContent({
                   type="button"
                   onClick={onEject}
                   className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-                  title="Eject model"
+                  title={t("picker.ejectLoadedModel")}
                 >
                   <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-                  Eject loaded model
+                  {t("picker.ejectLoadedModel")}
                 </button>
               </div>
             ) : null}

@@ -197,7 +197,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
         resetGeneration: state.resetGeneration + 1,
       })),
 
-    setStartQueued: (jobId, message) =>
+    setStartPending: (jobId, message) =>
       set((state) => ({
         ...state,
         jobId,

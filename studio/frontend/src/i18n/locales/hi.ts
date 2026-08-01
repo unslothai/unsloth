@@ -15,6 +15,10 @@ export const hi = {
       "कैश किए गए या स्थानीय {noun} का उपयोग करने के लिए डिवाइस पर जाएं।",
     offlineSwitchDevice: "डिवाइस",
     searchAriaLabel: "{noun} खोजें",
+    modelSourceAriaLabel: "मॉडल स्रोत",
+    hubSectionAriaLabel: "Hub सेक्शन",
+    pickModelFile: "डिस्क से मॉडल फ़ाइल चुनें",
+    ejectLoadedModel: "लोड किया गया मॉडल इजेक्ट करें",
     multipleMatches:
       "एक से अधिक मेल खाते {noun} मिले। सूची में से एक चुनें।",
     rateLimitedTitle: "Hugging Face की अनुरोध सीमा पूरी हो गई",
@@ -1529,6 +1533,8 @@ export const hi = {
         unsupportedDatasetSource: "असमर्थित डेटासेट स्रोत।",
       },
       startFailed: "ट्रेनिंग शुरू करने में विफल",
+      startUnconfirmed:
+        "Unsloth यह पुष्टि नहीं कर सका कि ट्रेनिंग शुरू हुई या नहीं। बैकग्राउंड में स्थिति जांची जा रही है।",
       stopFailed: "ट्रेनिंग रोकने में विफल",
       trainingStillActiveTitle: "ट्रेनिंग अभी भी सक्रिय है",
       stopBeforeConfig: "पहले ट्रेनिंग रोकें, फिर कॉन्फ़िगरेशन पर लौटें।",

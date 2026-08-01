@@ -158,7 +158,11 @@ def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset"
 def _start_request_response(record) -> TrainingJobResponse:
     return TrainingJobResponse(
         job_id = record.job_id,
-        status = "error" if record.state == "rejected" else "queued",
+        status = {
+            "pending": "pending",
+            "accepted": "queued",
+            "rejected": "error",
+        }[record.state],
         message = record.message,
         error = record.error,
         error_code = record.error_code,

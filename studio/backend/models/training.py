@@ -632,7 +632,9 @@ class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
 
     job_id: str = Field(..., description = "Unique training job identifier")
-    status: Literal["queued", "error"] = Field(..., description = "Initial job status")
+    status: Literal["pending", "queued", "error"] = Field(
+        ..., description = "Initial job status"
+    )
     message: str = Field(..., description = "Human-readable status message")
     error: Optional[str] = Field(None, description = "Error details if status is 'error'")
     error_code: Optional[str] = Field(None, description = "Stable error code if status is 'error'")
