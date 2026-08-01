@@ -1856,9 +1856,9 @@ def test_the_default_model_list_is_stamped_before_it_is_built():
         and isinstance(sub.func, ast.Name)
         and sub.func.id == "get_default_models"
     )
-    assert capture < build_call, (
-        "_refresh_static_models_if_stale reads the generation after building the list"
-    )
+    assert (
+        capture < build_call
+    ), "_refresh_static_models_if_stale reads the generation after building the list"
     guarded = next(
         (
             node
@@ -2345,9 +2345,9 @@ def test_a_slow_refresh_cannot_overwrite_a_newer_default_list():
         backend._static_models_generation_before = backend._static_models_generation
         with mock.patch("core.inference.defaults.get_default_models", lambda: ["gen1"]):
             backend._refresh_static_models_if_stale()
-        assert backend._static_models == ["gen2"], (
-            "an older reader overwrote the newer default list"
-        )
+        assert backend._static_models == [
+            "gen2"
+        ], "an older reader overwrote the newer default list"
         assert backend._static_models_generation == 2
     finally:
         hw_mod.DETECTION_GENERATION = saved_generation
@@ -2368,15 +2368,15 @@ def test_a_refresh_whose_generation_moved_mid_build_does_not_commit():
         hw_mod.DETECTION_GENERATION = 2
 
         def _slow_build():
-            hw_mod.DETECTION_GENERATION = 3   # a re-detection lands mid-build
+            hw_mod.DETECTION_GENERATION = 3  # a re-detection lands mid-build
             return ["built-against-2"]
 
         with mock.patch("core.inference.defaults.get_default_models", _slow_build):
             backend._refresh_static_models_if_stale()
         assert backend._static_models == ["old"], "a list built against a retired generation landed"
-        assert backend._static_models_generation == 1, (
-            "the stamp moved without the value, so the next read would not refresh"
-        )
+        assert (
+            backend._static_models_generation == 1
+        ), "the stamp moved without the value, so the next read would not refresh"
     finally:
         hw_mod.DETECTION_GENERATION = saved_generation
 
