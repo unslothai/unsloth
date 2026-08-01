@@ -103,6 +103,7 @@ import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boun
 import {
   PLUS_MENU_ORDER,
   composerDraftKey,
+  dictationFailed,
   readComposerDraft,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
@@ -1858,6 +1859,9 @@ const Composer: FC<{
     }
     if (!sendAfterDictationRef.current) return;
     sendAfterDictationRef.current = false;
+    // A partial transcript (a failed chunk, or an engine error after one
+    // landed) belongs in the composer, but must not send half a message.
+    if (dictationFailed()) return;
     // Silence or a failed transcription: keep the draft, submit nothing.
     const { text } = aui.composer().getState();
     if (!dictationProducedText(dictationBaseTextRef.current, text)) return;
@@ -2055,9 +2059,19 @@ const Composer: FC<{
           // left plus stays visible alongside it.
           <ChatDictationBar
             onSend={sendAfterDictation}
-            // Same gate as the regular send: handleSubmit would otherwise
-            // reject the submit after transcription, with no way to retry.
-            sendDisabled={disabled || hasPendingAttachments}
+            // Every state handleSubmit rejects, since it would reject after
+            // transcription with the send intent already spent. Text presence
+            // is left out: the transcript supplies it.
+            sendDisabled={
+              disabled ||
+              hasPendingAttachments ||
+              isResearchActive ||
+              ((threadIsRunning || promptQueueActive) &&
+                (disableQueue ||
+                  Boolean(overlay) ||
+                  hasAttachments ||
+                  hasPendingAudio))
+            }
           />
         ) : (
           <>

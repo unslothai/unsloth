@@ -14,6 +14,10 @@ import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 import { startDictationLevelMeter } from "./dictation-level";
 import {
+  markDictationFailed,
+  resetDictationFailure,
+} from "./dictation-outcome";
+import {
   type StudioDictationSession,
   isMissingDeviceError,
   resolveDictationChatId,
@@ -265,6 +269,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     if (!StudioModelDictationAdapter.isSupported()) {
       throw new Error("Recording is not supported in this browser.");
     }
+    resetDictationFailure();
 
     // Pin the model, language, and linked chat chosen when recording began, so a
     // mid-session settings change or thread switch cannot affect later segments
@@ -329,6 +334,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const reportTranscriptionError = (error: unknown) => {
       if (reportedTranscriptionError || cancelled || ended) return;
       reportedTranscriptionError = true;
+      // Transcribed segments are kept, so the send must not fire on them.
+      markDictationFailed();
       const message =
         error instanceof Error && error.message
           ? error.message

@@ -12,6 +12,10 @@ import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { startDictationLevelMeter } from "./dictation-level";
+import {
+  markDictationFailed,
+  resetDictationFailure,
+} from "./dictation-outcome";
 
 /** Chat open while dictating, so the saved dictation can link back to it. */
 export function activeDictationChatId(): string | undefined {
@@ -139,6 +143,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       throw new Error("Speech recognition is not supported in this browser.");
     }
 
+    resetDictationFailure();
     const recognition = new SpeechRecognitionAPI();
     recognition.lang = this.language ?? resolveDictationLanguage();
     recognition.continuous = this.continuous;
@@ -371,6 +376,8 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       } else {
         toast.error(description);
       }
+      // Any finalized chunks stay in the composer, but must not send alone.
+      markDictationFailed();
       finish("error");
     });
 
