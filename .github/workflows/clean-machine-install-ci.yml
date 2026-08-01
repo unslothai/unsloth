@@ -1561,6 +1561,18 @@ jobs:
             -Overlay "$overlayArg" *>&1 | Tee-Object -FilePath logs/install-outer.log
           exit $LASTEXITCODE
 
+      # Both rows. A `docker exec` that lost its container also exits 0, so the exit code
+      # alone cannot tell a completed harness from one that never ran. Read the harness's
+      # own verdict instead. Needs no `if:`, because a failed Install skips it.
+      - name: Assert the in-container harness reported passing
+        shell: pwsh
+        run: |
+          $log = Get-Content logs/install-outer.log -Raw
+          if (-not ($log -match 'VIRGIN WINDOWS CONTAINER INSTALL PASSED')) {
+            Write-Host '::error::the install step exited 0 but the in-container harness never printed its passing verdict'
+            exit 1
+          }
+
       # The overlay row runs this ref's studio/setup.ps1, so it carries #7549 and must
       # install end to end. The in-container harness already asserts the venv interpreter,
       # the CLI, `import torch`, the no-winget path, the overlay marker and nobuild, exiting
@@ -1571,12 +1583,6 @@ jobs:
         shell: pwsh
         run: |
           $log = Get-Content logs/install-outer.log -Raw
-          # A `docker exec` that lost its container also exits 0, so read the harness's own
-          # verdict rather than trust the exit code alone.
-          if (-not ($log -match 'VIRGIN WINDOWS CONTAINER INSTALL PASSED')) {
-            Write-Host '::error::the install step exited 0 but the in-container harness never printed its passing verdict'
-            exit 1
-          }
           # The overlay hook is this PR's own feature and gates unconditionally: without it
           # this row is indistinguishable from the released-wheel one.
           if (-not ($log -match 'CI: overlaying source checkout')) {
