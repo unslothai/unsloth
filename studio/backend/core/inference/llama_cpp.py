@@ -2546,6 +2546,12 @@ class LlamaCppBackend:
         # Separate MTP drafter launched with the current model; reload-dedup
         # key so a drafter that appears next to the weights forces a reload.
         self._mtp_draft_path: Optional[str] = None
+        # Drafter this load resolved and then deliberately suppressed (virtualised
+        # Metal with no draft-layer flag). The dedup keys on the drafter the caller
+        # asked for, and that file is still on disk, so without this the detected
+        # path never matches the launched None and every repeat Apply tears down a
+        # healthy server. Only an update can lift the suppression, and that unloads.
+        self._mtp_draft_suppressed_path: Optional[str] = None
         # Why MTP was disabled on the last load that asked for it (auto on an
         # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
@@ -2769,6 +2775,13 @@ class LlamaCppBackend:
     @property
     def mtp_draft_path(self) -> Optional[str]:
         return self._mtp_draft_path
+
+    @property
+    def mtp_draft_suppressed_path(self) -> Optional[str]:
+        """Drafter the last load resolved and then dropped on purpose, else None.
+        Duplicate-load checks accept it alongside mtp_draft_path so the drafter
+        still on disk does not read as a settings change."""
+        return self._mtp_draft_suppressed_path
 
     @property
     def spec_fallback_reason(self) -> Optional[str]:
@@ -9265,6 +9278,7 @@ class LlamaCppBackend:
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
                     mtp_draft_path = mtp_draft_path,
                 )
+                _pv_suppressed_draft_path: Optional[str] = None
                 # Same shape as the projector drop above: the CPU pin below needs a
                 # draft-layer flag from the probe, and without one the drafter keeps
                 # its own automatic placement on the virtualised device. Unlike the
@@ -9297,6 +9311,11 @@ class LlamaCppBackend:
                         "stays correct either way; this only costs speed. Run "
                         "'unsloth studio update' to install a build that supports it."
                     )
+                    # Remember what was suppressed: the drafter stays on disk, so
+                    # the caller and the route keep detecting it, and comparing
+                    # that against the launched None would reload a healthy server
+                    # on every repeat Apply.
+                    _pv_suppressed_draft_path = launch_mtp_draft_path
                     launch_mtp_draft_path = None
                     if extra_args:
                         extra_args = strip_shadowing_flags(
@@ -9633,6 +9652,18 @@ class LlamaCppBackend:
                     ):
                         env.pop(_pv_spec_var, None)
 
+                # The projector guard has the same blind spot, and a worse one: it
+                # only ever clears Unsloth's resolved path, so an inherited
+                # LLAMA_ARG_MMPROJ loads a projector the guard believes it dropped,
+                # unpinned and independent of --gpu-layers 0. LLAMA_ARG_MMPROJ_URL
+                # goes too: its download overwrites mmproj.path, so it outranks even
+                # the --mmproj Unsloth emits. Unsloth always passes its own projector
+                # on the command line (with --no-mmproj-offload), so on this device an
+                # inherited one is only ever the corrupt path.
+                if _paravirtual_cpu_forced:
+                    for _pv_mmproj_var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
+                        env.pop(_pv_mmproj_var, None)
+
                 # Windows + full offload: PASSIVE OMP + 2 threads stop
                 # spin-wait burning CPU. CPU/partial offload keeps default
                 # OMP parallelism. #5692.
@@ -9839,6 +9870,7 @@ class LlamaCppBackend:
                 self._gguf_path = model_path
                 self._hf_repo = hf_repo
                 self._mtp_draft_path = launch_mtp_draft_path
+                self._mtp_draft_suppressed_path = _pv_suppressed_draft_path
                 # For local GGUF files, extract variant from filename if absent
                 if hf_variant:
                     self._hf_variant = hf_variant
@@ -10724,11 +10756,15 @@ class LlamaCppBackend:
         # the route-level probe covers HF cache repos. No sub-3B gate: both
         # sides come from the same config detection, so a sub-3B mismatch
         # only happens when a drafter genuinely appeared (one benign reload,
-        # then the stored path converges).
+        # then the stored path converges). A drafter the last load dropped on
+        # purpose counts as launched here: the file is still there, so comparing
+        # it against the stored None would reload the same drafter-free server
+        # forever. Only an update lifts that suppression, and it unloads first.
         if (
             gguf_path is not None
             and req_mode in ("auto", "mtp", "mtp+ngram")
-            and (mtp_draft_path or None) != (self._mtp_draft_path or None)
+            and (mtp_draft_path or None)
+            != (self._mtp_draft_path or self._mtp_draft_suppressed_path or None)
         ):
             return False
 
@@ -10846,6 +10882,7 @@ class LlamaCppBackend:
             self._gguf_path = None
             self._hf_repo = None
             self._mtp_draft_path = None
+            self._mtp_draft_suppressed_path = None
             self._spec_fallback_reason = None
             self._last_load_kwargs = None
             self._mtp_runtime_fallback_active = False

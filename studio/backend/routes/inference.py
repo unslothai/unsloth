@@ -3716,7 +3716,10 @@ def _request_matches_loaded_settings(
                         skip_root = True,
                         accept = _usable,
                     )
-            stored = llama_backend.mtp_draft_path
+            # A drafter the load deliberately suppressed (virtualised Metal with no
+            # draft-layer flag) counts as the stored one: it is still on disk, so
+            # detecting it again must not read as a settings change and reload.
+            stored = llama_backend.mtp_draft_path or llama_backend.mtp_draft_suppressed_path
             try:
                 detected_resolved = Path(detected).resolve() if detected else None
                 stored_resolved = Path(stored).resolve() if stored else None

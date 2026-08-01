@@ -35,8 +35,11 @@ sys.modules.setdefault("structlog", _structlog_stub)
 # module for the rest of the session. Files importing later then found a working
 # httpx and kept it, and this stub is a subset (no Response), so routes/inference
 # blew up in any combined run. find_spec rather than an import, so installing the
-# stub stays this module's only side effect on sys.modules.
-if _find_spec("httpx") is None:
+# stub stays this module's only side effect on sys.modules. sys.modules is tested
+# first because find_spec raises ValueError on a module already there without a
+# spec, which is every bare-ModuleType httpx stub in this tree, and raising here
+# would be a collection error rather than one failed test.
+if "httpx" not in sys.modules and _find_spec("httpx") is None:
     _httpx_stub = _types.ModuleType("httpx")
     for _exc in (
         "ConnectError",

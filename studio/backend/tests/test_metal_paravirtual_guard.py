@@ -949,3 +949,213 @@ def test_the_restore_is_scoped_to_the_retry_that_actually_drops_mtp():
     src = _load_model_source()
     assert src.index("fallback_cmd = (") < src.index("_mtp_clamped_slots > 1")
     assert src.index("_mtp_clamped_slots > 1") < src.index("_spawn_and_wait(fallback_cmd")
+
+
+# ── a suppressed drafter must not churn the server it left healthy ───
+
+
+def _loaded_cpu_backend(monkeypatch, tmp_path):
+    """A healthy paravirtual CPU server, plus the drafter still sitting on disk."""
+    _paravirtual(monkeypatch)
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0)
+    )
+    backend = llama_cpp.LlamaCppBackend()
+    backend._process = _FakeProcess()
+    backend._healthy = True
+    backend._audio_probed = True
+    backend._model_identifier = "owner/repo"
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF")
+    drafter = tmp_path / "mtp-model.gguf"
+    drafter.write_bytes(b"GGUF")
+    backend._gguf_path = str(gguf)
+    backend._requested_n_ctx = 8192
+    backend._requested_n_parallel = 1
+    backend._requested_spec_mode = "auto"
+    # What the first load on a virtualised Mac left behind.
+    backend._gpu_memory_mode = "manual"
+    backend._gpu_layers = 0
+    return backend, gguf, drafter
+
+
+def _target_state(backend, gguf, **overrides):
+    kwargs = dict(
+        model_identifier = "owner/repo",
+        gguf_path = str(gguf),
+        hf_variant = None,
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = None,
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gpu_memory_mode = "manual",
+        gpu_layers = 0,
+        n_parallel = 1,
+    )
+    kwargs.update(overrides)
+    return backend._already_in_target_state(**kwargs)
+
+
+def test_a_suppressed_drafter_does_not_reload_the_server_it_left_healthy(monkeypatch, tmp_path):
+    """The drop clears the launched drafter, but the file stays on disk and the
+    caller keeps supplying it, so comparing it against the stored None would tear
+    down and respawn the same drafter-free server on every repeat Apply."""
+    backend, gguf, drafter = _loaded_cpu_backend(monkeypatch, tmp_path)
+    backend._mtp_draft_path = None
+    backend._mtp_draft_suppressed_path = str(drafter)
+
+    def _never(*args, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError("tore down a healthy server on a duplicate /load")
+
+    monkeypatch.setattr(backend, "_find_llama_server_binary", _never)
+    monkeypatch.setattr(backend, "_kill_process", _never)
+
+    assert (
+        backend.load_model(
+            model_identifier = "owner/repo",
+            gguf_path = str(gguf),
+            mtp_draft_path = str(drafter),
+            n_ctx = 8192,
+            gpu_memory_mode = "auto",
+            gpu_layers = -1,
+            n_parallel = 1,
+        )
+        is True
+    )
+
+
+def test_the_route_dedupe_reads_the_suppressed_drafter_too(monkeypatch, tmp_path):
+    """The route re-detects the sibling before load_model ever runs, so leaving it
+    on the backend path alone would still reload on every Apply."""
+    from models.inference import LoadRequest
+    from routes.inference import _request_matches_loaded_settings
+
+    _paravirtual(monkeypatch)
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0)
+    )
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF")
+    drafter = tmp_path / "mtp-model.gguf"
+    drafter.write_bytes(b"GGUF")
+    backend = llama_cpp.LlamaCppBackend()
+    backend._gguf_path = str(gguf)
+    backend._mtp_draft_path = None
+    backend._mtp_draft_suppressed_path = str(drafter)
+    request = LoadRequest(model_path = str(gguf))
+    assert _request_matches_loaded_settings(request, backend)
+    # The negative: nothing was suppressed, so a drafter that genuinely appeared
+    # next to the weights must still reload.
+    backend._mtp_draft_suppressed_path = None
+    assert not _request_matches_loaded_settings(request, backend)
+
+
+def test_a_drafter_that_genuinely_appeared_still_reloads(monkeypatch, tmp_path):
+    """The negative that matters most: without a suppression on record, a drafter
+    dropped next to the weights must still force the reload that engages it."""
+    backend, gguf, drafter = _loaded_cpu_backend(monkeypatch, tmp_path)
+    backend._mtp_draft_path = None
+    backend._mtp_draft_suppressed_path = None
+    assert _target_state(backend, gguf, mtp_draft_path = str(drafter)) is False
+
+
+def test_only_the_drafter_that_was_suppressed_dedupes(monkeypatch, tmp_path):
+    """A different drafter, or the suppressed one disappearing, is a real change:
+    the fast path is scoped to the exact file the load decided not to launch."""
+    backend, gguf, drafter = _loaded_cpu_backend(monkeypatch, tmp_path)
+    backend._mtp_draft_path = None
+    backend._mtp_draft_suppressed_path = str(drafter)
+    other = tmp_path / "mtp-other.gguf"
+    other.write_bytes(b"GGUF")
+    assert _target_state(backend, gguf, mtp_draft_path = str(other)) is False
+    assert _target_state(backend, gguf, mtp_draft_path = None) is False
+    # ...and the one that was suppressed still matches.
+    assert _target_state(backend, gguf, mtp_draft_path = str(drafter)) is True
+
+
+def test_the_suppression_does_not_outlive_the_server(monkeypatch, tmp_path):
+    """Unload clears it beside the launched path: a stale record would dedupe the
+    next load of a different model, and an update (the only way to lift the
+    suppression) unloads first."""
+    backend, _gguf, drafter = _loaded_cpu_backend(monkeypatch, tmp_path)
+    backend._mtp_draft_suppressed_path = str(drafter)
+    backend.unload_model()
+    assert backend.mtp_draft_suppressed_path is None
+
+
+def test_a_launched_drafter_records_no_suppression(monkeypatch, tmp_path):
+    """The negative on the recording side: a build that can pin the drafter
+    launches it, so nothing is suppressed and the ordinary comparison applies."""
+    backend, _gguf, _drafter = _loaded_cpu_backend(monkeypatch, tmp_path)
+    assert backend.mtp_draft_suppressed_path is None
+    src = _load_model_source()
+    # Only the unpinnable branch records it, and it records what it is about to clear.
+    assert src.index("_pv_suppressed_draft_path = launch_mtp_draft_path") < src.index(
+        "                    launch_mtp_draft_path = None"
+    )
+    assert "self._mtp_draft_suppressed_path = _pv_suppressed_draft_path" in src
+
+
+# ── an inherited projector must not slip past the projector guard ────
+
+
+def _mmproj_env_scrub(*, paravirtual: bool) -> dict:
+    """Execute load_model's real inherited-projector env scrub and report the env
+    the child would be spawned with."""
+    block = _if_block(
+        lambda test: isinstance(test, ast.Name) and test.id == "_paravirtual_cpu_forced",
+        _mmproj_env_tree(),
+    )
+    scope = {
+        "_paravirtual_cpu_forced": paravirtual,
+        "env": {
+            "LLAMA_ARG_MMPROJ": "/inherited/proj.gguf",
+            "LLAMA_ARG_MMPROJ_URL": "https://example.invalid/proj.gguf",
+            "LLAMA_ARG_THREADS": "8",
+        },
+    }
+    exec(ast.unparse(ast.Module(body = [block], type_ignores = [])), scope)
+    return scope["env"]
+
+
+def _mmproj_env_tree() -> ast.AST:
+    """load_model's statements, narrowed to the ones mentioning _pv_mmproj_var."""
+    keep = [
+        node
+        for node in ast.walk(_load_model_tree())
+        if isinstance(node, ast.If) and "_pv_mmproj_var" in _names(node)
+    ]
+    assert keep, "the inherited-projector env scrub left load_model"
+    return ast.Module(body = keep, type_ignores = [])
+
+
+def test_an_inherited_projector_is_dropped_from_the_child_env():
+    """argv cannot un-set LLAMA_ARG_MMPROJ: llama.cpp reads it directly, so an
+    inherited projector loads on the virtualised device independently of
+    --gpu-layers 0, which is the corrupt path the guard exists to prevent.
+    LLAMA_ARG_MMPROJ_URL goes with it because its download overwrites
+    mmproj.path, so it outranks even the --mmproj Unsloth emits."""
+    env = _mmproj_env_scrub(paravirtual = True)
+    assert "LLAMA_ARG_MMPROJ" not in env
+    assert "LLAMA_ARG_MMPROJ_URL" not in env
+    # ...and nothing else in the inherited env is touched here.
+    assert env == {"LLAMA_ARG_THREADS": "8"}
+
+
+def test_a_real_mac_keeps_its_inherited_projector():
+    """The negative that matters: the scrub is scoped to the virtualised device.
+    On physical Apple Silicon (or any non-Mac) the projector runs correctly on the
+    GPU, so a deliberate LLAMA_ARG_MMPROJ must reach llama-server untouched."""
+    env = _mmproj_env_scrub(paravirtual = False)
+    assert env["LLAMA_ARG_MMPROJ"] == "/inherited/proj.gguf"
+    assert env["LLAMA_ARG_MMPROJ_URL"] == "https://example.invalid/proj.gguf"
+
+
+def test_the_env_scrub_lands_before_the_spawn():
+    """The env is built once and handed to Popen, so a scrub placed after the
+    spawn would leave the projector loaded on the device it just dropped."""
+    src = _load_model_source()
+    scrub = 'for _pv_mmproj_var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")'
+    assert src.index(scrub) < src.index("_spawn_and_wait(")
