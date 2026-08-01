@@ -364,12 +364,11 @@ function applyDetectedDatasetModality(
     ) {
       return false;
     }
-    toast.info(
-      translate(
-        "studio.dataset.streaming.notifications.disabledForDetectedModality",
-      ),
+    const message = translate(
+      "studio.dataset.streaming.notifications.disabledForDetectedModality",
     );
-    return attempt.cancel();
+    toast.info(message);
+    return attempt.cancel(message);
   }
   if (
     isImage === attempt.config.isDatasetImage &&

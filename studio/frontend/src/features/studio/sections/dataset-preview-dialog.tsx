@@ -18,6 +18,7 @@ import {
   useTrainingActions,
   useTrainingConfigStore,
 } from "@/features/training";
+import { useT } from "@/i18n";
 import type { DatasetSource } from "@/types/training";
 import {
   AlertCircleIcon,
@@ -108,6 +109,7 @@ export function DatasetPreviewDialog({
   initialData,
   isVlm = false,
 }: DatasetPreviewDialogProps) {
+  const t = useT();
   const previewRequest = useMemo<DatasetPreviewRequest | null>(() => {
     if (!open) {
       return null;
@@ -575,8 +577,8 @@ export function DatasetPreviewDialog({
               </div>
               <p className="text-sm text-muted-foreground font-medium">
                 {isHfDataset
-                  ? "Fetching dataset preview from Hugging Face..."
-                  : "Loading preview..."}
+                  ? t("studio.dataset.previewLoadingHuggingFace")
+                  : t("studio.dataset.previewLoading")}
               </p>
               {isHfDataset && (
                 <p className="text-xs text-muted-foreground/60">

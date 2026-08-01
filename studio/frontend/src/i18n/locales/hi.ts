@@ -1341,6 +1341,26 @@ export const hi = {
       uploadSingleFileDescription:
         "ट्रेनिंग डेटासेट अपलोड एक ही फ़ाइल स्वीकार करता है।",
       preview: "डेटासेट का पूर्वावलोकन करें",
+      previewLoadingHuggingFace:
+        "Hugging Face से डेटासेट पूर्वावलोकन प्राप्त किया जा रहा है...",
+      previewLoading: "पूर्वावलोकन लोड हो रहा है...",
+      mappingRequirements: {
+        audioAndText: "ऑडियो और टेक्स्ट",
+        imageAndText: "इमेज और टेक्स्ट",
+        instructionAndOutput: "निर्देश और आउटपुट",
+        humanAndGpt: "ह्यूमन और GPT",
+        userAndAssistant: "यूज़र और असिस्टेंट",
+      },
+      mappingStatus: {
+        heuristicTitle: "ह्यूरिस्टिक से पहचानी गई मैपिंग",
+        readyTitle: "मैपिंग तैयार है",
+        requiredTitle: "डेटासेट कॉलम मैप करें",
+        heuristicDescription:
+          "हमने ह्यूरिस्टिक का उपयोग करके नीचे दी गई कॉलम मैपिंग अपने आप पहचानी है। कॉलम हेडर के ड्रॉपडाउन से इसकी समीक्षा और बदलाव करें, या बेहतर मैपिंग के लिए AI सहायता का उपयोग करें।",
+        readyDescription: "सब ठीक है। हम इस डेटासेट को अपने आप बदल देंगे।",
+        requiredDescription:
+          "हेडर के ड्रॉपडाउन का उपयोग करके कॉलम को भूमिकाएँ दें। कम से कम {required} असाइन करें।",
+      },
       split: "स्प्लिट",
       subset: "उपसमूह",
       s3: {
@@ -1422,6 +1442,7 @@ export const hi = {
       stableRank: "स्थिर Rank",
       memoryEfficient: "मेमोरी कुशल",
       weightDecomposed: "भार-विघटित",
+      notSupportedAppleSilicon: "Apple Silicon पर समर्थित नहीं",
       optimization: "ऑप्टिमाइज़ेशन",
       schedule: "शेड्यूल",
       memory: "मेमोरी",

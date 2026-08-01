@@ -1333,6 +1333,27 @@ export const ar = {
       uploadSingleFileDescription:
         "يقبل تحميل مجموعة بيانات التدريب ملفًا واحدًا.",
       preview: "معاينة مجموعة البيانات",
+      previewLoadingHuggingFace:
+        "جارٍ جلب معاينة مجموعة البيانات من Hugging Face...",
+      previewLoading: "جارٍ تحميل المعاينة...",
+      mappingRequirements: {
+        audioAndText: "الصوت والنص",
+        imageAndText: "الصورة والنص",
+        instructionAndOutput: "التعليمات والمخرجات",
+        humanAndGpt: "الإنسان وGPT",
+        userAndAssistant: "المستخدم والمساعد",
+      },
+      mappingStatus: {
+        heuristicTitle: "تعيين مكتشف بالاستدلال",
+        readyTitle: "التعيين جاهز",
+        requiredTitle: "تعيين أعمدة مجموعة البيانات",
+        heuristicDescription:
+          "اكتشفنا تلقائيًا تعيين الأعمدة أدناه باستخدام الاستدلال. راجعه وعدّله من القوائم المنسدلة في رؤوس الأعمدة، أو استخدم مساعدة الذكاء الاصطناعي للحصول على تعيين أدق.",
+        readyDescription:
+          "يبدو كل شيء جيدًا. سنحوّل مجموعة البيانات هذه تلقائيًا.",
+        requiredDescription:
+          "عيّن أدوارًا للأعمدة باستخدام القوائم المنسدلة في الرؤوس. يجب تعيين {required} على الأقل.",
+      },
       split: "التقسيم",
       subset: "المجموعة الفرعية",
       s3: {
@@ -1414,6 +1435,7 @@ export const ar = {
       stableRank: "Rank مستقر",
       memoryEfficient: "موفّر للذاكرة",
       weightDecomposed: "أوزان مُفكَّكة",
+      notSupportedAppleSilicon: "غير مدعوم على Apple Silicon",
       optimization: "التحسين",
       schedule: "الجدولة",
       memory: "الذاكرة",

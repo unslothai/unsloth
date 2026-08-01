@@ -1333,6 +1333,26 @@ export const ko = {
       uploadSingleFileDescription:
         "학습 데이터셋 업로드는 단일 파일만 받습니다.",
       preview: "데이터셋 미리보기",
+      previewLoadingHuggingFace:
+        "Hugging Face에서 데이터셋 미리보기를 가져오는 중...",
+      previewLoading: "미리보기를 불러오는 중...",
+      mappingRequirements: {
+        audioAndText: "오디오 및 텍스트",
+        imageAndText: "이미지 및 텍스트",
+        instructionAndOutput: "지시문 및 출력",
+        humanAndGpt: "human 및 gpt",
+        userAndAssistant: "사용자 및 어시스턴트",
+      },
+      mappingStatus: {
+        heuristicTitle: "휴리스틱으로 감지된 매핑",
+        readyTitle: "매핑 준비 완료",
+        requiredTitle: "데이터셋 열 매핑",
+        heuristicDescription:
+          "휴리스틱을 사용해 아래 열 매핑을 자동으로 감지했습니다. 열 머리글의 드롭다운에서 검토하고 조정하거나 AI 지원을 사용해 더 정확하게 매핑하세요.",
+        readyDescription: "문제없습니다. 이 데이터셋을 자동으로 변환합니다.",
+        requiredDescription:
+          "머리글의 드롭다운을 사용해 열에 역할을 할당하세요. 최소한 {required}을(를) 할당해야 합니다.",
+      },
       split: "분할",
       subset: "서브셋",
       s3: {
@@ -1414,6 +1434,7 @@ export const ko = {
       stableRank: "안정 랭크",
       memoryEfficient: "메모리 효율적",
       weightDecomposed: "가중치 분해",
+      notSupportedAppleSilicon: "Apple Silicon에서는 지원되지 않음",
       optimization: "최적화",
       schedule: "스케줄",
       memory: "메모리",

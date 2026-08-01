@@ -1371,6 +1371,27 @@ export const es = {
       uploadSingleFileDescription:
         "La subida del conjunto de datos de entrenamiento acepta un solo archivo.",
       preview: "Vista previa del conjunto de datos",
+      previewLoadingHuggingFace:
+        "Obteniendo la vista previa del conjunto de datos desde Hugging Face...",
+      previewLoading: "Cargando vista previa...",
+      mappingRequirements: {
+        audioAndText: "audio y texto",
+        imageAndText: "imagen y texto",
+        instructionAndOutput: "instrucción y salida",
+        humanAndGpt: "humano y GPT",
+        userAndAssistant: "usuario y asistente",
+      },
+      mappingStatus: {
+        heuristicTitle: "Asignación detectada mediante heurísticas",
+        readyTitle: "Asignación lista",
+        requiredTitle: "Asignar columnas del conjunto de datos",
+        heuristicDescription:
+          "Detectamos automáticamente la asignación de columnas mediante heurísticas. Revísala y ajústala con los menús desplegables de los encabezados, o usa la asistencia de IA para obtener una asignación más precisa.",
+        readyDescription:
+          "Todo está listo. Convertiremos este conjunto de datos automáticamente.",
+        requiredDescription:
+          "Asigna roles a las columnas con los menús desplegables de los encabezados. Como mínimo, asigna {required}.",
+      },
       split: "Partición",
       subset: "Subconjunto",
       s3: {
@@ -1457,6 +1478,7 @@ export const es = {
       stableRank: "Rango estable",
       memoryEfficient: "Eficiente en memoria",
       weightDecomposed: "Pesos descompuestos",
+      notSupportedAppleSilicon: "No compatible con Apple Silicon",
       optimization: "Optimización",
       schedule: "Programación",
       memory: "Memoria",

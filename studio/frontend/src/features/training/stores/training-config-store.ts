@@ -67,6 +67,20 @@ let _trainOnCompletionsManuallySet = false;
 // switching method auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
 let _learningRateManuallySet = false;
 let _trainingMethodEditGeneration = 0;
+let _modelDefaultsEditBaseline: {
+  modelName: string;
+  userEditRevision: number;
+} | null = null;
+
+function canReapplyModelDefaults(
+  modelName: string,
+  userEditRevision: number,
+): boolean {
+  return (
+    _modelDefaultsEditBaseline?.modelName === modelName &&
+    _modelDefaultsEditBaseline.userEditRevision === userEditRevision
+  );
+}
 
 // Stash the YAML learning rate so setTrainingMethod can restore it when
 // switching back from full to adapter.
@@ -236,11 +250,22 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         }));
       };
 
-      const loadAndApplyModelDefaults = (modelName: string) => {
+      const loadAndApplyModelDefaults = (
+        modelName: string,
+        options?: { applyTrainingDefaults?: boolean },
+      ) => {
+        const applyTrainingDefaults = options?.applyTrainingDefaults ?? true;
         _modelConfigController?.abort();
         const controller = new AbortController();
         const trainingMethodEditGeneration = _trainingMethodEditGeneration;
         const requestState = get();
+        const requestedUserEditRevision = requestState.userEditRevision;
+        if (applyTrainingDefaults) {
+          _modelDefaultsEditBaseline = {
+            modelName,
+            userEditRevision: requestedUserEditRevision,
+          };
+        }
         const requestedKnownCached =
           requestState.selectedModel === modelName &&
           requestState.modelKnownCached;
@@ -248,6 +273,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           requestState.selectedModel === modelName
             ? requestState.modelLocalPath
             : null;
+        const canApplyTrainingDefaults = () =>
+          applyTrainingDefaults &&
+          get().userEditRevision === requestedUserEditRevision;
         const preferLocalCache =
           requestedKnownCached && Boolean(requestedLocalPath?.trim());
         const requestMatchesSelection = () => {
@@ -278,9 +306,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (controller.signal.aborted) return;
             if (!requestMatchesSelection()) return;
 
-            _trainOnCompletionsManuallySet = false;
-            _learningRateManuallySet = false;
-            _yamlLearningRate = undefined;
+            const shouldApplyTrainingDefaults = canApplyTrainingDefaults();
+            if (shouldApplyTrainingDefaults) {
+              _trainOnCompletionsManuallySet = false;
+              _learningRateManuallySet = false;
+              _yamlLearningRate = undefined;
+            }
 
             if (modelDetails.is_lora) {
               set({
@@ -301,14 +332,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               return;
             }
 
-            const patch = mapBackendModelConfigToTrainingPatch(
-              modelDetails.config,
-            );
+            const patch = shouldApplyTrainingDefaults
+              ? mapBackendModelConfigToTrainingPatch(modelDetails.config)
+              : {};
 
             // Treat a model-config LR as authoritative so async auto-select
             // won't overwrite it.
             const modelConfigHasLR = patch.learningRate !== undefined;
-            _yamlLearningRate = patch.learningRate;
+            if (shouldApplyTrainingDefaults) {
+              _yamlLearningRate = patch.learningRate;
+            }
 
             // YAML LRs are tuned for adapters (LoRA/QLoRA); on full fine-tune,
             // use the full-finetune default instead of the YAML adapter LR.
@@ -317,17 +350,30 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
 
             // Vision model + known image dataset: force trainOnCompletions off.
-            if (modelDetails.is_vision && get().isDatasetImage === true) {
+            if (
+              shouldApplyTrainingDefaults &&
+              modelDetails.is_vision &&
+              get().isDatasetImage === true
+            ) {
               patch.trainOnCompletions = false;
             }
 
             const isAudio = !!modelDetails.is_audio;
             // Pure audio model -> always uncheck trainOnCompletions.
-            if (isAudio && !modelDetails.is_vision) {
+            if (
+              shouldApplyTrainingDefaults &&
+              isAudio &&
+              !modelDetails.is_vision
+            ) {
               patch.trainOnCompletions = false;
             }
             // Audio-capable vision model (e.g. gemma3n) + audio dataset -> uncheck.
-            if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
+            if (
+              shouldApplyTrainingDefaults &&
+              isAudio &&
+              modelDetails.is_vision &&
+              get().isDatasetAudio
+            ) {
               patch.trainOnCompletions = false;
             }
 
@@ -345,6 +391,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             const modelSizeBytes = modelDetails.model_size_bytes;
             const autoSelectionPromise =
+              shouldApplyTrainingDefaults &&
               typeof modelSizeBytes === "number" &&
               modelSizeBytes > 0 &&
               get().trainingMethod !== "cpt"
@@ -358,7 +405,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             // Preserve CPT hyperparams: YAML adapter defaults (r/alpha/targets/LR)
             // are tuned for standard LoRA and would clobber CPT settings.
             const cptOverrides =
-              get().trainingMethod === "cpt" ? getCptModelDefaultsPatch() : {};
+              shouldApplyTrainingDefaults && get().trainingMethod === "cpt"
+                ? getCptModelDefaultsPatch()
+                : {};
 
             set({
               ...patch,
@@ -416,8 +465,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 error instanceof Error
                   ? error.message
                   : "Failed to load model defaults",
-              // Defaults load failed; reset so no prior model's value lingers.
-              visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
+              ...(canApplyTrainingDefaults()
+                ? { visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize }
+                : {}),
             });
 
             if (preferLocalCache) {
@@ -770,10 +820,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             modelKnownCached: true,
             modelLocalPath: options.localPath,
             modelFormat: options.modelFormat,
-            ...(cacheReferenceChanged ? { modelDefaultsAppliedFor: null } : {}),
           });
           if (cacheReferenceChanged) {
-            void loadAndApplyModelDefaults(model);
+            void loadAndApplyModelDefaults(model, {
+              applyTrainingDefaults: canReapplyModelDefaults(
+                model,
+                state.userEditRevision,
+              ),
+            });
           }
         },
         clearSelectedModelCacheReference: (model, localPath) => {
@@ -793,9 +847,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             modelKnownCached: false,
             modelLocalPath: null,
             modelFormat: null,
-            modelDefaultsAppliedFor: null,
           });
-          void loadAndApplyModelDefaults(model);
+          void loadAndApplyModelDefaults(model, {
+            applyTrainingDefaults: canReapplyModelDefaults(
+              model,
+              state.userEditRevision,
+            ),
+          });
         },
         clearSelectedDatasetCacheReference: (dataset, localPath) => {
           const state = get();
@@ -1190,6 +1248,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _trainOnCompletionsManuallySet = false;
           _learningRateManuallySet = false;
           _yamlLearningRate = undefined;
+          _modelDefaultsEditBaseline = null;
           clearCptDatasetFormatTracking();
           setUserEdit(initialTrainingConfigState);
         },

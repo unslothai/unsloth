@@ -1290,6 +1290,25 @@ export const zhCN = {
       uploadOneFileAtATime: "一次只能上传一个文件",
       uploadSingleFileDescription: "训练数据集上传只接受单个文件。",
       preview: "预览数据集",
+      previewLoadingHuggingFace: "正在从 Hugging Face 获取数据集预览...",
+      previewLoading: "正在加载预览...",
+      mappingRequirements: {
+        audioAndText: "音频和文本",
+        imageAndText: "图像和文本",
+        instructionAndOutput: "指令和输出",
+        humanAndGpt: "human 和 gpt",
+        userAndAssistant: "用户和助手",
+      },
+      mappingStatus: {
+        heuristicTitle: "通过启发式方法检测到的映射",
+        readyTitle: "映射已就绪",
+        requiredTitle: "映射数据集列",
+        heuristicDescription:
+          "我们已使用启发式方法自动检测下方的列映射。请通过列标题中的下拉菜单检查和调整，或使用 AI 辅助获得更准确的映射。",
+        readyDescription: "一切正常。我们将自动转换此数据集。",
+        requiredDescription:
+          "使用标题中的下拉菜单为列分配角色。至少需要分配 {required}。",
+      },
       split: "切分",
       subset: "子集",
       s3: {
@@ -1363,6 +1382,7 @@ export const zhCN = {
       stableRank: "稳定 Rank",
       memoryEfficient: "节省内存",
       weightDecomposed: "权重分解",
+      notSupportedAppleSilicon: "Apple 芯片暂不支持",
       optimization: "优化",
       schedule: "计划",
       memory: "内存",

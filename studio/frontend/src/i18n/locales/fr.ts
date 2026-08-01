@@ -1380,6 +1380,27 @@ export const fr = {
       uploadSingleFileDescription:
         "Le téléversement du jeu de données d'entraînement accepte un seul fichier.",
       preview: "Aperçu du jeu de données",
+      previewLoadingHuggingFace:
+        "Récupération de l’aperçu du jeu de données depuis Hugging Face...",
+      previewLoading: "Chargement de l’aperçu...",
+      mappingRequirements: {
+        audioAndText: "audio et texte",
+        imageAndText: "image et texte",
+        instructionAndOutput: "instruction et sortie",
+        humanAndGpt: "humain et GPT",
+        userAndAssistant: "utilisateur et assistant",
+      },
+      mappingStatus: {
+        heuristicTitle: "Mappage détecté par heuristique",
+        readyTitle: "Mappage prêt",
+        requiredTitle: "Mapper les colonnes du jeu de données",
+        heuristicDescription:
+          "Nous avons détecté automatiquement le mappage des colonnes ci-dessous à l’aide d’heuristiques. Vérifiez-le et ajustez-le avec les menus des en-têtes de colonnes, ou utilisez l’assistance IA pour un mappage plus précis.",
+        readyDescription:
+          "Tout est prêt. Nous convertirons automatiquement ce jeu de données.",
+        requiredDescription:
+          "Attribuez des rôles aux colonnes à l’aide des menus des en-têtes. Attribuez au minimum {required}.",
+      },
       split: "Split",
       subset: "Sous-ensemble",
       s3: {
@@ -1466,6 +1487,7 @@ export const fr = {
       stableRank: "Rang stable",
       memoryEfficient: "Économe en mémoire",
       weightDecomposed: "Poids décomposés",
+      notSupportedAppleSilicon: "Non pris en charge sur Apple Silicon",
       optimization: "Optimisation",
       schedule: "Planification",
       memory: "Mémoire",

@@ -1349,6 +1349,27 @@ export const ptBR = {
       uploadSingleFileDescription:
         "O upload do dataset de treinamento aceita apenas um único arquivo.",
       preview: "Pré-visualizar dataset",
+      previewLoadingHuggingFace:
+        "Buscando a pré-visualização do dataset no Hugging Face...",
+      previewLoading: "Carregando pré-visualização...",
+      mappingRequirements: {
+        audioAndText: "áudio e texto",
+        imageAndText: "imagem e texto",
+        instructionAndOutput: "instrução e saída",
+        humanAndGpt: "humano e GPT",
+        userAndAssistant: "usuário e assistente",
+      },
+      mappingStatus: {
+        heuristicTitle: "Mapeamento detectado por heurística",
+        readyTitle: "Mapeamento pronto",
+        requiredTitle: "Mapear colunas do dataset",
+        heuristicDescription:
+          "Detectamos automaticamente o mapeamento de colunas abaixo usando heurísticas. Revise e ajuste pelos menus nos cabeçalhos das colunas ou use a assistência de IA para um mapeamento mais preciso.",
+        readyDescription:
+          "Tudo certo. Converteremos este dataset automaticamente.",
+        requiredDescription:
+          "Atribua funções às colunas usando os menus nos cabeçalhos. Atribua pelo menos {required}.",
+      },
       split: "Divisão (Split)",
       subset: "Subconjunto (Subset)",
       s3: {
@@ -1427,6 +1448,7 @@ export const ptBR = {
       stableRank: "Stable Rank",
       memoryEfficient: "Eficiente em Memória",
       weightDecomposed: "Pesos Decompostos",
+      notSupportedAppleSilicon: "Não compatível com Apple Silicon",
       optimization: "Otimização",
       schedule: "Cronograma",
       memory: "Memória",

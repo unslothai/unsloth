@@ -1294,6 +1294,27 @@ export const ja = {
       uploadOneFileAtATime: "一度に1つのファイルのみアップロードできます",
       uploadSingleFileDescription: "トレーニングデータセットのアップロードは単一のファイルのみ受け付けます。",
       preview: "データセットのプレビュー",
+      previewLoadingHuggingFace:
+        "Hugging Face からデータセットのプレビューを取得しています...",
+      previewLoading: "プレビューを読み込んでいます...",
+      mappingRequirements: {
+        audioAndText: "音声とテキスト",
+        imageAndText: "画像とテキスト",
+        instructionAndOutput: "指示と出力",
+        humanAndGpt: "human と gpt",
+        userAndAssistant: "ユーザーとアシスタント",
+      },
+      mappingStatus: {
+        heuristicTitle: "ヒューリスティックで検出されたマッピング",
+        readyTitle: "マッピングの準備完了",
+        requiredTitle: "データセット列をマッピング",
+        heuristicDescription:
+          "ヒューリスティックを使用して、以下の列マッピングを自動検出しました。列ヘッダーのドロップダウンで確認・調整するか、AI アシストを使用してより適切にマッピングしてください。",
+        readyDescription:
+          "問題ありません。このデータセットは自動的に変換されます。",
+        requiredDescription:
+          "ヘッダーのドロップダウンを使用して列にロールを割り当ててください。少なくとも {required} を割り当てる必要があります。",
+      },
       split: "分割",
       subset: "サブセット",
       s3: {
@@ -1364,6 +1385,7 @@ export const ja = {
       stableRank: "Stable Rank",
       memoryEfficient: "メモリ効率化",
       weightDecomposed: "重み分解",
+      notSupportedAppleSilicon: "Apple Silicon ではサポートされていません",
       optimization: "最適化",
       schedule: "スケジュール",
       memory: "メモリ",

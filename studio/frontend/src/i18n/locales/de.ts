@@ -1379,6 +1379,27 @@ export const de = {
       uploadSingleFileDescription:
         "Der Trainingsdatensatz-Upload akzeptiert eine einzelne Datei.",
       preview: "Datensatz-Vorschau",
+      previewLoadingHuggingFace:
+        "Datensatzvorschau wird von Hugging Face abgerufen...",
+      previewLoading: "Vorschau wird geladen...",
+      mappingRequirements: {
+        audioAndText: "Audio und Text",
+        imageAndText: "Bild und Text",
+        instructionAndOutput: "Anweisung und Ausgabe",
+        humanAndGpt: "Mensch und GPT",
+        userAndAssistant: "Benutzer und Assistent",
+      },
+      mappingStatus: {
+        heuristicTitle: "Heuristisch erkannte Zuordnung",
+        readyTitle: "Zuordnung bereit",
+        requiredTitle: "Datensatzspalten zuordnen",
+        heuristicDescription:
+          "Die Spaltenzuordnung unten wurde automatisch anhand von Heuristiken erkannt. Prüfen und ändern Sie sie über die Dropdown-Menüs in den Spaltenüberschriften oder verwenden Sie KI-Unterstützung für eine intelligentere Zuordnung.",
+        readyDescription:
+          "Sieht gut aus. Dieser Datensatz wird automatisch konvertiert.",
+        requiredDescription:
+          "Weisen Sie den Spalten über die Dropdown-Menüs in den Überschriften Rollen zu. Weisen Sie mindestens {required} zu.",
+      },
       split: "Split",
       subset: "Teilmenge",
       s3: {
@@ -1465,6 +1486,7 @@ export const de = {
       stableRank: "Stable Rank",
       memoryEfficient: "Speichereffizient",
       weightDecomposed: "Gewichtszerlegt",
+      notSupportedAppleSilicon: "Auf Apple Silicon nicht unterstützt",
       optimization: "Optimierung",
       schedule: "Zeitplan",
       memory: "Speicher",

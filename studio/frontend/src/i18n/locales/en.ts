@@ -1319,6 +1319,27 @@ export const en = {
       uploadSingleFileDescription:
         "Training dataset upload accepts a single file.",
       preview: "Preview dataset",
+      previewLoadingHuggingFace:
+        "Fetching dataset preview from Hugging Face...",
+      previewLoading: "Loading preview...",
+      mappingRequirements: {
+        audioAndText: "audio and text",
+        imageAndText: "image and text",
+        instructionAndOutput: "instruction and output",
+        humanAndGpt: "human and GPT",
+        userAndAssistant: "user and assistant",
+      },
+      mappingStatus: {
+        heuristicTitle: "Heuristic-detected mapping",
+        readyTitle: "Mapping ready",
+        requiredTitle: "Map dataset columns",
+        heuristicDescription:
+          "We auto-detected the column mapping below using heuristics. Please review and adjust using the dropdowns in the column headers, or use AI Assist for a smarter mapping.",
+        readyDescription:
+          "Looks good. We'll convert this dataset automatically.",
+        requiredDescription:
+          "Assign roles to columns using the dropdowns in the headers. At minimum, assign {required}.",
+      },
       split: "Split",
       subset: "Subset",
       s3: {
@@ -1400,6 +1421,7 @@ export const en = {
       stableRank: "Stable Rank",
       memoryEfficient: "Memory Efficient",
       weightDecomposed: "Weight-Decomposed",
+      notSupportedAppleSilicon: "Not supported on Apple Silicon",
       optimization: "Optimization",
       schedule: "Schedule",
       memory: "Memory",

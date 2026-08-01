@@ -373,10 +373,7 @@ export function ParamsSection({
                 value: input,
               });
               const learningRate = Number(input);
-              if (
-                input !== "" &&
-                Number.isFinite(learningRate)
-              ) {
+              if (input !== "" && Number.isFinite(learningRate)) {
                 store.setLearningRate(learningRate);
                 setLearningRateDraft({ learningRate, value: input });
               }

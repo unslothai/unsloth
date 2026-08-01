@@ -47,7 +47,9 @@ export function SidebarModelConfig({
   // filename and /status echoes that back. Keying settings by it would write "<path>:Q4_K_M"
   // while every other surface uses the bare path, so one file would carry two configs. Same
   // rule as settingsGgufVariantForRow.
-  const settingsGgufVariant = isStandaloneGgufPath(modelId) ? null : ggufVariant;
+  const settingsGgufVariant = isStandaloneGgufPath(modelId)
+    ? null
+    : ggufVariant;
   const target = useMemo<ModelPickTarget>(() => {
     const leaf = leafName(modelId);
     return {

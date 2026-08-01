@@ -490,8 +490,12 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     speculativeType,
     specDraftNMax,
     nParallel:
-      typeof partial.nParallel === "number" && Number.isFinite(partial.nParallel)
-        ? Math.max(N_PARALLEL_MIN, Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)))
+      typeof partial.nParallel === "number" &&
+      Number.isFinite(partial.nParallel)
+        ? Math.max(
+            N_PARALLEL_MIN,
+            Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)),
+          )
         : null,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"

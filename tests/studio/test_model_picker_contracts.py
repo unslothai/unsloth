@@ -1304,7 +1304,9 @@ def test_training_picker_controls_keep_visible_keyboard_focus():
     dataset = _read("features/dataset-picker/components/dataset-selector.tsx")
     options = _read("components/resource-picker/selectable-picker-item.tsx")
     token = _read("features/hub/components/hf-token-indicator.tsx")
-    dataset_controls = _read("features/studio/sections/dataset-panel-controls.tsx")
+    dataset_controls = _read(
+        "features/studio/sections/dataset-advanced-settings.tsx"
+    )
     dataset_upload = _read("features/studio/sections/dataset-upload.tsx")
     assert "export const PICKER_TRIGGER_CLASS" in focus
     assert "PICKER_FOCUS_VISIBLE_CLASS" in focus
@@ -1418,8 +1420,8 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
         "const commitResult = onExactQueryCommit"
     )
     assert "{canUseThis && (" in shell
-    assert shell.index('commitResult?.kind === "ambiguous"') < shell.index(
-        "const exactMatch = scrollRef.current"
+    assert shell.index("function findMatchingOption") < shell.index(
+        'commitResult?.kind === "ambiguous"'
     )
     assert "values.includes(query)" in shell
     assert 'value.trim().normalize("NFC").toLowerCase()' in matcher
@@ -1430,7 +1432,8 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
     assert 'kind: "ambiguous", firstItem: titleMatches[0]' in matcher
     assert 'commitResult?.kind === "handled"' in shell
     assert 'commitResult?.kind === "ambiguous"' in shell
-    assert "optionMatchesQuery(option, commitResult.focusValue)" in shell
+    assert "findMatchingOption(commitResult.focusValue)" in shell
+    assert "optionMatchesQuery(option, query)" in shell
     ambiguity = shell.split('commitResult?.kind === "ambiguous"', 1)[1].split(
         "if (canUseThis)", 1
     )[0]
@@ -1719,7 +1722,7 @@ def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
     assert "state.datasetUserTemplate = undefined;" in migration
     assert "state.datasetAssistantTemplate = undefined;" in migration
 
-    toggle = _read("features/studio/sections/dataset-panel-controls.tsx")
+    toggle = _read("features/studio/sections/dataset-source-toggle.tsx")
     assert "restoreBrowseDatasetSource();" in toggle
     assert "selectLocalDataset(uploadedFile)" not in toggle
     assert "selectHfDataset(dataset)" not in toggle
@@ -1839,7 +1842,7 @@ def test_training_config_changes_clear_previous_start_error():
 
 def test_training_auto_method_selection_settles_before_readiness():
     source = _read("features/training/stores/training-config-store.ts")
-    loader = source.split("const loadAndApplyModelDefaults = (modelName: string) =>", 1)[1]
+    loader = source.split("const loadAndApplyModelDefaults = (", 1)[1]
     loader = loader.split("const runDatasetCheck =", 1)[0]
 
     assert "const autoSelectionPromise =" in loader
@@ -2013,7 +2016,7 @@ def test_filtered_hub_pages_render_empty_state_and_keep_pagination_sentinel():
             hub_list,
             re.S,
         )
-    footer = _read("components/resource-picker/picker-tab-toggle.tsx")
+    footer = _read("components/resource-picker/picker-pagination.tsx")
     assert '<div ref={sentinelRef} className="h-px" />' in footer
 
 
@@ -2114,7 +2117,7 @@ def test_picker_capabilities_survive_model_config_probe_failures():
     vision_probe = api.split("export async function checkVisionModel", 1)[1].split(
         "export async function checkEmbeddingModel", 1
     )[0]
-    loader = store.split("const loadAndApplyModelDefaults = (modelName: string) =>", 1)[1]
+    loader = store.split("const loadAndApplyModelDefaults = (", 1)[1]
     failure = loader.split(".catch((error) =>", 1)[1].split("const runDatasetCheck =", 1)[0]
 
     assert "...options," in selector
@@ -2177,7 +2180,7 @@ def test_streaming_dataset_preflight_does_not_read_local_cache():
     assert "isDatasetImage: isImage" in modality
     assert "isDatasetAudio: isAudio" in modality
     assert "disabledForDetectedModality" in modality
-    assert "return attempt.cancel();" in modality
+    assert "return attempt.cancel(message);" in modality
     assert "TRAINING_SETUP_CHANGED_ERROR" not in modality
     cache_setter = store.split("setSelectedDatasetCacheReference: (dataset, localPath) =>", 1)[
         1
@@ -2185,6 +2188,28 @@ def test_streaming_dataset_preflight_does_not_read_local_cache():
     assert "const cacheReferenceChanged =" in cache_setter
     assert "cacheReferenceChanged && !state.datasetStreaming" in cache_setter
     assert "recheckSelectedDatasetForStreamingMode(false)" in cache_setter
+
+
+def test_cache_reconciliation_does_not_replace_edited_model_defaults():
+    store = _read("features/training/stores/training-config-store.ts")
+    loader = store.split("const loadAndApplyModelDefaults = (", 1)[1].split(
+        "const runDatasetCheck =", 1
+    )[0]
+    cache_setters = store.split("setSelectedModelCacheReference:", 1)[1].split(
+        "clearSelectedDatasetCacheReference:", 1
+    )[0]
+
+    assert "const requestedUserEditRevision = requestState.userEditRevision;" in loader
+    assert "const canApplyTrainingDefaults = () =>" in loader
+    assert "applyTrainingDefaults &&" in loader
+    assert "get().userEditRevision === requestedUserEditRevision" in loader
+    assert "shouldApplyTrainingDefaults" in loader
+    failure = loader.split(".catch((error) =>", 1)[1]
+    assert "...(canApplyTrainingDefaults()" in failure
+    assert cache_setters.count("applyTrainingDefaults: canReapplyModelDefaults(") == 2
+    assert "function canReapplyModelDefaults(" in store
+    assert "_modelDefaultsEditBaseline.userEditRevision" in store
+    assert "modelDefaultsAppliedFor: null" not in cache_setters
 
 
 def test_embedding_payload_survives_legacy_persisted_state():
@@ -2245,7 +2270,7 @@ def test_manual_training_method_wins_over_delayed_auto_selection():
     source = _read("features/training/stores/training-config-store.ts")
 
     assert "let _trainingMethodEditGeneration = 0;" in source
-    loader = source.split("const loadAndApplyModelDefaults = (modelName: string) =>", 1)[1].split(
+    loader = source.split("const loadAndApplyModelDefaults = (", 1)[1].split(
         "const runDatasetCheck =", 1
     )[0]
     assert "const trainingMethodEditGeneration = _trainingMethodEditGeneration;" in loader
@@ -2267,7 +2292,7 @@ def test_selected_cache_references_flow_into_metadata_requests():
 
     assert 'params.set("prefer_local_cache", "true")' in model_api
     assert 'params.set("local_path", options.localPath)' in model_api
-    loader = store.split("const loadAndApplyModelDefaults = (modelName: string) =>", 1)[1].split(
+    loader = store.split("const loadAndApplyModelDefaults = (", 1)[1].split(
         "const runDatasetCheck =", 1
     )[0]
     assert "requestedKnownCached" in loader

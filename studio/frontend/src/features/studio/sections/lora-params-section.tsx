@@ -251,7 +251,7 @@ export function LoraParamsSection(): ReactElement | null {
                   <p className="text-xs font-medium">{option.label}</p>
                   <p className="text-ui-10 text-muted-foreground">
                     {unsupportedOnMlx
-                      ? "Not supported on Apple Silicon"
+                      ? t("studio.params.notSupportedAppleSilicon")
                       : option.desc}
                   </p>
                 </button>

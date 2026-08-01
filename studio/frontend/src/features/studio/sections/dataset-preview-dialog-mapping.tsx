@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
@@ -90,16 +91,17 @@ export function DatasetMappingCard({
   advisorNotification?: string | null;
   advisorSystemPrompt?: string;
 }) {
+  const t = useT();
   const entries = Object.entries(mapping);
   const requiredLabel = isAudio
-    ? "audio and text"
+    ? t("studio.dataset.mappingRequirements.audioAndText")
     : isVlm
-      ? "image and text"
+      ? t("studio.dataset.mappingRequirements.imageAndText")
       : format === "alpaca"
-        ? "instruction and output"
+        ? t("studio.dataset.mappingRequirements.instructionAndOutput")
         : format === "sharegpt"
-          ? "human and gpt"
-          : "user and assistant";
+          ? t("studio.dataset.mappingRequirements.humanAndGpt")
+          : t("studio.dataset.mappingRequirements.userAndAssistant");
 
   return (
     <div
@@ -131,9 +133,9 @@ export function DatasetMappingCard({
           <p className="text-sm font-semibold tracking-tight">
             {mappingOk
               ? autoDetected
-                ? "Heuristic-detected mapping"
-                : "Mapping ready"
-              : "Map dataset columns"}
+                ? t("studio.dataset.mappingStatus.heuristicTitle")
+                : t("studio.dataset.mappingStatus.readyTitle")
+              : t("studio.dataset.mappingStatus.requiredTitle")}
           </p>
           <p
             className={cn(
@@ -145,9 +147,11 @@ export function DatasetMappingCard({
           >
             {mappingOk
               ? autoDetected
-                ? "We auto-detected the column mapping below using heuristics. Please review and adjust using the dropdowns in the column headers, or use AI Assist for a smarter mapping."
-                : "Looks good. We'll convert this dataset automatically."
-              : `Assign roles to columns using the dropdowns in the headers. At minimum, assign ${requiredLabel}.`}
+                ? t("studio.dataset.mappingStatus.heuristicDescription")
+                : t("studio.dataset.mappingStatus.readyDescription")
+              : t("studio.dataset.mappingStatus.requiredDescription", {
+                  required: requiredLabel,
+                })}
           </p>
           {entries.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center gap-2">

@@ -1349,6 +1349,27 @@ export const ru = {
       uploadSingleFileDescription:
         "Загрузка датасета для обучения принимает один файл.",
       preview: "Предпросмотр датасета",
+      previewLoadingHuggingFace:
+        "Получение предпросмотра датасета из Hugging Face...",
+      previewLoading: "Загрузка предпросмотра...",
+      mappingRequirements: {
+        audioAndText: "аудио и текст",
+        imageAndText: "изображение и текст",
+        instructionAndOutput: "инструкцию и ответ",
+        humanAndGpt: "человека и GPT",
+        userAndAssistant: "пользователя и ассистента",
+      },
+      mappingStatus: {
+        heuristicTitle: "Сопоставление определено эвристически",
+        readyTitle: "Сопоставление готово",
+        requiredTitle: "Сопоставьте столбцы датасета",
+        heuristicDescription:
+          "Мы автоматически определили сопоставление столбцов с помощью эвристик. Проверьте и измените его в выпадающих списках заголовков или используйте ИИ-помощник для более точного сопоставления.",
+        readyDescription:
+          "Всё готово. Этот датасет будет преобразован автоматически.",
+        requiredDescription:
+          "Назначьте роли столбцам с помощью выпадающих списков в заголовках. Как минимум назначьте {required}.",
+      },
       split: "Выборка",
       subset: "Подмножество",
       s3: {
@@ -1430,6 +1451,7 @@ export const ru = {
       stableRank: "Стабильный ранг",
       memoryEfficient: "Экономия памяти",
       weightDecomposed: "Декомпозиция весов",
+      notSupportedAppleSilicon: "Не поддерживается на Apple Silicon",
       optimization: "Оптимизация",
       schedule: "Расписание",
       memory: "Память",
