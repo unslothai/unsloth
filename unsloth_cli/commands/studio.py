@@ -281,12 +281,25 @@ def _load_run_module():
     return _RUN_MODULE
 
 
-def _find_setup_script() -> Optional[Path]:
+def _find_setup_script(repo_root: Optional[Path] = None) -> Optional[Path]:
     """Find studio/setup.sh or studio/setup.ps1.
 
     No CWD dependency — works from any directory.
+
+    `repo_root` is the explicit --local checkout, when there is one. Its setup
+    script has to win: the scripts build the frontend under their own
+    $SCRIPT_DIR, and the editable install of `repo_root` removes the installed
+    tree that the installed copy's script would have built into. studio/frontend
+    /dist is gitignored, so a fresh checkout would then have no frontend at all.
     """
     name = "setup.ps1" if platform.system() == "Windows" else "setup.sh"
+    # 0. The checkout the caller actually asked to install from. No fallback:
+    #    dropping back to the installed copy's script is the exact behaviour
+    #    this branch exists to stop, so a checkout without one is unusable
+    #    rather than a reason to use somebody else's.
+    if repo_root is not None:
+        s = repo_root / "studio" / name
+        return s if s.is_file() else None
     # 1. Relative to __file__ (site-packages or editable repo root)
     s = _PACKAGE_ROOT / "studio" / name
     if s.is_file():
@@ -2677,11 +2690,17 @@ def stop():
 # ── unsloth studio setup / update ─────────────────────────────────────
 
 
-def _run_setup_script(*, verbose: bool = False) -> None:
+def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     """Find and run the studio setup/update script."""
-    script = _find_setup_script()
+    script = _find_setup_script(repo_root)
     if not script:
-        typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")
+        if repo_root is not None:
+            name = "setup.ps1" if platform.system() == "Windows" else "setup.sh"
+            typer.echo(f"Error: {repo_root} has no studio/{name}.", err = True)
+            typer.echo("  --local needs a complete checkout: the setup script builds", err = True)
+            typer.echo("  the frontend into the tree that is installed editable.", err = True)
+        else:
+            typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")
         raise typer.Exit(1)
 
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
@@ -3006,18 +3025,59 @@ def update(
     # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package
+    repo_root: Optional[Path] = None
     if local:
         os.environ["STUDIO_LOCAL_INSTALL"] = "1"
         # Pass the repo root explicitly so install_python_stack.py doesn't
         # have to guess from SCRIPT_DIR (which may be inside site-packages).
-        repo_root = Path(__file__).resolve().parents[2]
+        # Deriving it from __file__ only holds while this CLI runs from a
+        # checkout. Once an update has installed unsloth into the venv
+        # non-editably, parents[2] IS site-packages, and uv rejects it with
+        # "does not appear to be a Python project: neither 'setup.py' nor
+        # 'pyproject.toml' found" -- which is what a second `update --local`
+        # hit on Windows, where the first update replaces the editable install.
+        # Absolutise the override: setup.sh does `cd "$SCRIPT_DIR"` before it
+        # runs install_python_stack.py, so a relative STUDIO_LOCAL_REPO would
+        # be re-resolved against studio/ (no pyproject.toml) and hand uv back
+        # the very error this guard exists to replace. .strip()/.expanduser()
+        # match the handling in _refresh_desktop_shortcuts.
+        _explicit = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
+        repo_root = (
+            Path(_explicit).expanduser().resolve()
+            if _explicit
+            else Path(__file__).resolve().parents[2]
+        )
+        if not (repo_root / "pyproject.toml").is_file():
+            typer.echo("Error: --local needs an Unsloth checkout to install from.", err = True)
+            typer.echo(f"  no pyproject.toml under: {repo_root}", err = True)
+            typer.echo("  This CLI is running from an installed copy, not a source tree.", err = True)
+            typer.echo("", err = True)
+            typer.echo("  Point at a checkout:", err = True)
+            if platform.system() == "Windows":
+                # PowerShell has no `VAR=value command` prefix form: it parses
+                # the assignment as a command name and fails to find it. This
+                # guard fires on the Windows update path, so the POSIX spelling
+                # would be unusable for most of the people who see it.
+                typer.echo(
+                    "    $env:STUDIO_LOCAL_REPO='C:\\path\\to\\unsloth'; "
+                    "unsloth studio update --local",
+                    err = True,
+                )
+            else:
+                typer.echo(
+                    "    STUDIO_LOCAL_REPO=/path/to/unsloth unsloth studio update --local",
+                    err = True,
+                )
+            typer.echo("  Or update from PyPI:", err = True)
+            typer.echo("    unsloth studio update", err = True)
+            raise typer.Exit(2)
         os.environ["STUDIO_LOCAL_REPO"] = str(repo_root)
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
     _release_self_exe_lock_windows()
     try:
-        _run_setup_script(verbose = verbose)
+        _run_setup_script(verbose = verbose, repo_root = repo_root)
     except BaseException:
         # Restore unsloth.exe from .deleteme if setup failed before pip
         # produced a replacement; otherwise the user has no CLI for recovery.
