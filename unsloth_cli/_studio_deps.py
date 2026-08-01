@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import inspect
+import os
 import re
 import sys
 from pathlib import Path
@@ -195,6 +196,26 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
         }
 
 
+def _scan_paths() -> Dict[str, list]:
+    """`path=` kwarg limiting a distribution scan to this interpreter's own tree.
+
+    Empty when the interpreter's site-packages cannot be resolved, which leaves
+    the scan at its default of the whole sys.path: over-scanning is the safe
+    direction here, since the alternative is looking at nothing.
+    """
+    import sysconfig
+
+    paths = []
+    for key in ("purelib", "platlib"):
+        try:
+            entry = sysconfig.get_paths().get(key)
+        except Exception:
+            continue
+        if entry and entry not in paths and os.path.isdir(entry):
+            paths.append(entry)
+    return {"path": paths} if paths else {}
+
+
 def damaged_installed_files(limit: int = 8) -> List[str]:
     """Installed files that are gone, or shorter than pip recorded.
 
@@ -207,10 +228,18 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     since nothing is imported it costs well under a second even with torch
     installed.
 
-    Only shrinkage and disappearance count. A file LARGER than recorded means two
-    distributions claim the same path (descript-audio-codec ships a top-level
-    tests/__init__.py that another package overwrites), which is a packaging
-    collision, not damage.
+    Only shrinkage and disappearance count, and only for paths a single
+    distribution claims. When two claim one path (descript-audio-codec ships a
+    top-level tests/__init__.py that another package overwrites) whichever copy
+    landed is the one on disk, so its size says nothing about either RECORD --
+    in EITHER direction. Sizes are therefore compared after the whole scan, once
+    multiply-owned paths are known, rather than during it.
+
+    Scanned over the interpreter's own site-packages rather than all of
+    sys.path. distributions() searches every sys.path entry, so a damaged
+    distribution reachable only through an inherited PYTHONPATH would otherwise
+    fail every update while sitting outside the installation, where neither
+    printed repair command can reach it.
 
     RECORD is parsed here rather than read through Distribution.files, which
     drops entries whose file no longer exists and so can never report a deletion.
@@ -222,8 +251,9 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     import io
     from importlib.metadata import distributions
 
-    found: List[str] = []
-    for dist in distributions():
+    entries: List[tuple] = []
+    owners: Dict[str, int] = {}
+    for dist in distributions(**_scan_paths()):
         try:
             name = dist.metadata["Name"] or "?"
             record = dist.read_text("RECORD")
@@ -246,14 +276,26 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
             except ValueError:
                 continue
             try:
-                actual = dist.locate_file(rel).stat().st_size
-            except OSError:
-                found.append(f"{name}: {rel} is missing")
-            else:
-                if actual < recorded:
-                    found.append(f"{name}: {rel} is {actual} bytes, expected {recorded}")
-            if len(found) >= limit:
-                return found
+                target = dist.locate_file(rel)
+            except Exception:
+                continue
+            key = os.path.normcase(str(target))
+            owners[key] = owners.get(key, 0) + 1
+            entries.append((name, rel, recorded, target, key))
+
+    found: List[str] = []
+    for name, rel, recorded, target, key in entries:
+        if owners[key] > 1:
+            continue
+        try:
+            actual = target.stat().st_size
+        except OSError:
+            found.append(f"{name}: {rel} is missing")
+        else:
+            if actual < recorded:
+                found.append(f"{name}: {rel} is {actual} bytes, expected {recorded}")
+        if len(found) >= limit:
+            return found
     return found
 
 

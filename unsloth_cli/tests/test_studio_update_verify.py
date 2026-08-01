@@ -140,6 +140,51 @@ def test_a_file_larger_than_recorded_is_not_damage(site):
     assert _deps().damaged_installed_files() == []
 
 
+def test_a_shared_file_shorter_than_recorded_is_not_damage(site):
+    # The mirror of the case above. Two distributions claiming one path is a
+    # packaging collision, and whichever copy landed is the one on disk, so its
+    # size says nothing about either RECORD -- in either direction. Only the
+    # larger direction was excluded, so a collision that overwrote with a
+    # shorter file was reported as corruption and blocked every update.
+    _make_dist(site, "iota", {"shared/__init__.py": b"short\n"}, record_sizes = {"shared/__init__.py": 900})
+    _make_dist(site, "kappa", {"shared/__init__.py": b"short\n"}, record_sizes = {"shared/__init__.py": 5})
+    assert _deps().damaged_installed_files() == []
+
+
+def test_a_singly_owned_short_file_is_still_damage(site):
+    # The collision rule must not become a blanket exemption.
+    _make_dist(site, "lam", {"lam/a.py": b"x"}, record_sizes = {"lam/a.py": 900})
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "lam/a.py" in found[0]
+
+
+def test_the_scan_is_limited_to_this_interpreters_site_packages(monkeypatch, tmp_path):
+    # distributions() searches every sys.path entry, so a damaged distribution
+    # reachable only through an inherited PYTHONPATH failed every update while
+    # sitting outside the installation, where neither printed repair command can
+    # reach it. Only --no-verify broke the loop.
+    external = tmp_path / "elsewhere"
+    (external / "ext-1.0.dist-info").mkdir(parents = True)
+    (external / "ext").mkdir()
+    (external / "ext-1.0.dist-info" / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: ext\nVersion: 1.0\n"
+    )
+    (external / "ext-1.0.dist-info" / "RECORD").write_text("ext/mod.py,sha256=x,9999\n")
+    (external / "ext" / "mod.py").write_text("x\n")
+
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    monkeypatch.setattr(_deps(), "_scan_paths", lambda: {"path": [str(site)]})
+    monkeypatch.syspath_prepend(str(external))
+    # The external tree is on sys.path but not in the scan paths.
+    assert _deps().damaged_installed_files() == []
+
+    # And the same tree IS reported once it is what the scan points at.
+    monkeypatch.setattr(_deps(), "_scan_paths", lambda: {"path": [str(external)]})
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "ext/mod.py" in found[0]
+
+
 def test_installer_owned_metadata_is_ignored(site):
     # .dist-info files are rewritten in place and drift from the size recorded
     # inside themselves; two real distributions did exactly that.
