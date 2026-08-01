@@ -9087,8 +9087,7 @@ class LlamaCppBackend:
                 _pv_mmproj_cpu_pin: List[str] = []
                 if (
                     _paravirtual_cpu_forced
-                    and _extra_args_mtp_draft_path([*spec_flags, *(extra_args or [])])
-                    is not None
+                    and _extra_args_mtp_draft_path([*spec_flags, *(extra_args or [])]) is not None
                     and server_caps.get("spec_draft_ngl_flag")
                 ):
                     _pv_draft_cpu_pin = [str(server_caps["spec_draft_ngl_flag"]), "0"]

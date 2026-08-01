@@ -229,9 +229,9 @@ def test_gpu_companions_are_pinned_to_cpu_too():
     # The drafter flag name comes from the probe, never a literal: --spec-draft-ngl
     # only exists from llama.cpp b8955, and an older build exposing only -ngld would
     # refuse to start on the newer name, which is exactly what the gate prevents.
-    assert '"--spec-draft-ngl", "0"' not in src, (
-        "hardcoding the flag defeats the capability probe on builds that only have -ngld"
-    )
+    assert (
+        '"--spec-draft-ngl", "0"' not in src
+    ), "hardcoding the flag defeats the capability probe on builds that only have -ngld"
     assert 'server_caps["spec_draft_ngl_flag"]' in src
 
 
@@ -249,9 +249,7 @@ def test_the_companion_pins_are_keyed_on_the_hardware_not_the_request():
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Name) and t.id == "_paravirtual_cpu_forced" for t in node.targets
-        )
+        and any(isinstance(t, ast.Name) and t.id == "_paravirtual_cpu_forced" for t in node.targets)
     ]
     assert len(assigns) == 1, "the flag must have exactly one source of truth"
     (assign,) = assigns
@@ -270,9 +268,9 @@ def test_the_companion_pins_are_keyed_on_the_hardware_not_the_request():
         if not _mentions(node.test, {"gpu_memory_mode", "gpu_layers"}):
             continue
         nested = [n for stmt in node.body for n in ast.walk(stmt)]
-        assert assign not in nested, (
-            "_paravirtual_cpu_forced is gated on the requested placement again"
-        )
+        assert (
+            assign not in nested
+        ), "_paravirtual_cpu_forced is gated on the requested placement again"
 
 
 def test_a_user_owned_drafter_is_pinned_to_cpu_too():
@@ -324,9 +322,7 @@ def test_the_drafter_cpu_pin_outlives_the_pass_through_extras():
     assert "-ngld" not in llama_server_args._SPEC_FLAGS
     # A trailing value is what wins, which is the parser behaviour being defended.
     assert (
-        llama_cpp._extra_args_draft_offloaded_to_cpu(
-            ["--spec-draft-ngl", "0", "-ngld", "99"], {}
-        )
+        llama_cpp._extra_args_draft_offloaded_to_cpu(["--spec-draft-ngl", "0", "-ngld", "99"], {})
         is False
     )
 
