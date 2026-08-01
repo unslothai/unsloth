@@ -43,6 +43,13 @@ $PackageDir = Split-Path -Parent $ScriptDir
 # so any intermediate process defeats it (PowerShell/PowerShell#18681 is this
 # exact chain through Python). install.ps1 carries the same block for the same
 # reason; scripts/uninstall.ps1 needs none, as it loads no Security cmdlet.
+#
+# Not restored afterwards, deliberately. $env: is the process environment, so
+# running this script in an interactive console leaves the reordering in place
+# for that session. Narrowing the trigger to detect the broken chain would risk
+# skipping the fix on a chain this list does not anticipate, and the cost of
+# that is the install failing outright, against a session-lived module
+# precedence change here. See the matching note in install.ps1.
 if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {
     $_UnslothSystemModules = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
     if (Test-Path $_UnslothSystemModules) {
