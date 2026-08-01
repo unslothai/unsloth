@@ -4493,7 +4493,13 @@ def python_runtime_dirs() -> list[str]:
         candidates.extend(root.glob("nvidia/*/Library/bin/x86_64"))
         candidates.extend(root.glob("nvidia/*/Library/bin/x64"))
         candidates.extend(root.glob("torch/lib"))
-    return dedupe_existing_dirs(candidates)
+    # Every candidate here is an optional CUDA wheel dir found by globbing, so a
+    # child with a restrictive ACL under a readable root (the shape that started
+    # this) must not abort discovery -- that would defeat the guard above and
+    # windows_runtime_dirs' own skip_unusable. A dir that cannot be stat'd could
+    # not have served DLLs to the loader anyway. Matches the serve-time copy in
+    # backend/utils/prebuilt/runtime_libs.py, which is always lenient.
+    return dedupe_existing_dirs(candidates, skip_unusable = True)
 
 
 def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
@@ -5691,20 +5697,21 @@ def write_prebuilt_metadata(
 def _write_marker(marker_path: Path, marker: dict) -> bool:
     """Best-effort marker rewrite for the reuse path. Returns False if it stuck.
 
-    Atomic first: os.replace swaps in a sibling temp file, which succeeds on a
-    read-only marker in a writable dir (a shared or admin-owned install), where
-    a plain write_text would not. Never raises -- the reuse path runs after the
-    install is already valid, and an unexpected exit no longer falls back to a
-    source build, so failing here would abort setup over a metadata refresh.
+    Atomic only, deliberately. os.replace swaps in a sibling temp file, so it
+    succeeds on a read-only marker in a writable dir (a shared or admin-owned
+    install) where a plain write_text would not, and it can never leave a
+    half-written marker behind: an in-place retry would truncate a valid file
+    first, and an ENOSPC or I/O error mid-write would strand a partial
+    UNSLOTH_PREBUILT_INFO.json that later updates no longer recognise. The whole
+    install is worth more than this one refreshed field.
+
+    Never raises -- the reuse path runs after the install is already valid, and
+    an unexpected exit no longer falls back to a source build, so failing here
+    would abort setup over a metadata refresh.
     """
     data = (json.dumps(marker, indent = 2) + "\n").encode("utf-8")
     try:
         atomic_write_bytes(marker_path, data)
-        return True
-    except OSError:
-        pass
-    try:
-        marker_path.write_bytes(data)
         return True
     except OSError:
         return False

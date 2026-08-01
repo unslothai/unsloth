@@ -3849,6 +3849,57 @@ def test_fallback_survives_a_failing_system_report(tmp_path, monkeypatch):
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
+def test_marker_sync_leaves_a_valid_marker_intact_when_the_write_fails(tmp_path, monkeypatch):
+    """A failed refresh must never truncate the marker.
+
+    An in-place retry opens the valid marker with truncation, so an ENOSPC or
+    I/O error mid-write would strand a partial UNSLOTH_PREBUILT_INFO.json and
+    later updates would stop recognising the install.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    original = json.dumps({"force_cpu": False, "release_tag": "b9002"}, indent = 2) + "\n"
+    marker.write_text(original, encoding = "utf-8")
+
+    def out_of_space(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "atomic_write_bytes", out_of_space)
+
+    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+
+    assert marker.read_text(encoding = "utf-8") == original
+
+
+def test_python_runtime_dirs_skips_an_inaccessible_glob_result(monkeypatch, tmp_path):
+    """A readable site-packages root with a denied child must not abort discovery.
+
+    That is the shape of the bug this PR is about: the parent lists fine and the
+    entry underneath is denied. Guarding only the root would leave the strict
+    dedupe on the return to raise anyway.
+    """
+    root = tmp_path / "site-packages"
+    good = root / "torch" / "lib"
+    good.mkdir(parents = True)
+    denied = root / "nvidia" / "cublas" / "lib"
+    denied.mkdir(parents = True)
+
+    real_is_dir = Path.is_dir
+
+    def guarded_is_dir(self):
+        if str(self) == str(denied):
+            raise PermissionError(13, "Access is denied", str(self), 5)
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.sys, "path", [str(root)])
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.site, "getusersitepackages", lambda: "")
+
+    assert INSTALL_LLAMA_PREBUILT.python_runtime_dirs() == [str(good.resolve())]
+
+
 # ── inaccessible discovery roots outside dedupe_existing_dirs ──
 
 
@@ -3992,7 +4043,6 @@ def test_marker_sync_never_fails_setup_when_the_write_cannot_land(tmp_path, monk
         raise PermissionError(13, "Access is denied", str(marker), 5)
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "atomic_write_bytes", refuse)
-    monkeypatch.setattr(Path, "write_bytes", refuse)
 
     logged: list[str] = []
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
