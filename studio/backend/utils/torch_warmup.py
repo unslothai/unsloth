@@ -38,6 +38,7 @@ import os
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from functools import partial
 from typing import Optional
 
@@ -249,24 +250,46 @@ def _warm(epoch: Optional[int] = None) -> None:
     started = time.perf_counter()
     if epoch is None:
         epoch = _detection_epoch()
-    for name, fn in _STAGES:
-        if epoch is not None and _detection_epoch() != epoch:
-            # Checked before the first stage too: start_background_warm() reads the
-            # epoch before start(), so a shutdown landing between the two leaves this
-            # thread scheduled but already retired, with nothing yet run.
-            logger.info("torch warm stopped before %s: its lifespan ended", name)
-            return
-        # Only the real stage takes the epoch; a patched _STAGES entry is called bare.
-        _run_stage(name, partial(fn, epoch) if fn is _warm_hardware else fn)
-        if epoch is not None and _detection_epoch() != epoch:
-            # Shutdown retired this lifespan's detection. Later stages build the
-            # orchestrator, which reaches get_device() and would start a fresh one,
-            # republishing DEVICE after teardown cleared it.
-            logger.info("torch warm stopped after %s: its lifespan ended", name)
-            return
+    # The boundary checks below only see a shutdown that lands between stages. Inside
+    # one, the orchestrator constructor reaches get_device(), which takes no epoch; the
+    # scope binds it to this pass so a shutdown mid-construction discards it instead of
+    # republishing DEVICE for the lifespan that just ended.
+    with _owning_epoch(epoch):
+        for name, fn in _STAGES:
+            if epoch is not None and _detection_epoch() != epoch:
+                # Checked before the first stage too: start_background_warm() reads the
+                # epoch before start(), so a shutdown landing between the two leaves
+                # this thread scheduled but already retired, with nothing yet run.
+                logger.info("torch warm stopped before %s: its lifespan ended", name)
+                return
+            # Only the real stage takes the epoch; a patched _STAGES entry is called bare.
+            _run_stage(name, partial(fn, epoch) if fn is _warm_hardware else fn)
+            if epoch is not None and _detection_epoch() != epoch:
+                # Shutdown retired this lifespan's detection. Later stages build the
+                # orchestrator, which reaches get_device() and would start a fresh one,
+                # republishing DEVICE after teardown cleared it.
+                logger.info("torch warm stopped after %s: its lifespan ended", name)
+                return
     _status["finished"] = True
     _status["seconds"] = round(time.perf_counter() - started, 3)
     logger.info("torch warm finished in %.1fms", (time.perf_counter() - started) * 1000)
+
+
+@contextmanager
+def _owning_epoch(epoch: Optional[int]):
+    """hardware.owning_detection_epoch(), a no-op when hardware is not importable.
+
+    Same reason _detection_epoch() degrades to None: a --no-torch host still runs the
+    warm, and the stages themselves report their own absence.
+    """
+    try:
+        from utils.hardware import hardware as _hw
+        scope = _hw.owning_detection_epoch(epoch)
+    except Exception:
+        yield
+        return
+    with scope:
+        yield
 
 
 def _detection_epoch() -> Optional[int]:

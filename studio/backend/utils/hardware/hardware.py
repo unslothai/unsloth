@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import types
+from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 import structlog
 from loggers import get_logger
@@ -103,6 +104,29 @@ def invalidate_detection() -> int:
 def current_detection_epoch() -> int:
     with _EPOCH_LOCK:
         return DETECTION_EPOCH
+
+
+# The epoch nested detections on this thread belong to. get_device() takes no epoch, and
+# the warm builds the orchestrator, whose constructor reaches it: a shutdown landing
+# inside that stage would otherwise let the nested pass adopt the retiring epoch and
+# republish DEVICE over the teardown, so the next lifespan skips detection entirely.
+# Thread-local, so only the warm's own call stack is bound.
+_OWNING_EPOCH = threading.local()
+
+
+@contextmanager
+def owning_detection_epoch(epoch: Optional[int]):
+    """Bind epoch-less detections on this thread to ``epoch`` for the block.
+
+    Nested rather than assigned: a warm may run while an unrelated caller holds its own
+    scope on another thread, and restoring the previous value keeps them independent.
+    """
+    previous = getattr(_OWNING_EPOCH, "value", None)
+    _OWNING_EPOCH.value = epoch
+    try:
+        yield
+    finally:
+        _OWNING_EPOCH.value = previous
 
 
 def _discard_detection_locked() -> None:
@@ -354,6 +378,10 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
     supposed to lose to. Direct callers pass nothing and own the current epoch."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, DETECTION_GENERATION
     with _DETECT_LOCK:
+        if epoch is None:
+            # A nested read inside an owning scope belongs to that pass, not to whatever
+            # is current by the time it reaches here. See owning_detection_epoch().
+            epoch = getattr(_OWNING_EPOCH, "value", None)
         if epoch is None:
             epoch = current_detection_epoch()
         elif DEVICE is None and current_detection_epoch() != epoch:

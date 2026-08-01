@@ -2489,3 +2489,113 @@ def test_a_measured_authed_reply_drops_both_provisional_markers():
         "hardware_detecting",
         "hardware_detection_deferred",
     } <= popped, f"the measured reply still carries a provisional marker; popped {sorted(popped)}"
+
+
+# ------------------------------ a shutdown inside a stage, not between two of them
+def test_a_shutdown_inside_a_stage_cannot_republish_the_torn_down_verdict():
+    """The stage-boundary checks miss a shutdown that lands mid-stage.
+
+    _warm_inference_backend builds the orchestrator, whose constructor reaches
+    get_default_models() -> get_device(), and get_device() takes no epoch. A shutdown
+    landing after the pre-stage check but before that nested read used to let it adopt
+    the epoch it was retiring into and publish DEVICE over the teardown, so the next
+    lifespan found a non-None DEVICE and skipped detection altogether.
+    """
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        hw.DEVICE = None
+        hw.DETECTION_COMPLETE.clear()
+        warm_epoch = hw.current_detection_epoch()
+
+        def _probe():
+            hw.DEVICE = hw.DeviceType.CUDA
+            hw.CHAT_ONLY = False
+
+        # Inside the warm's scope, standing in for the orchestrator constructor.
+        with hw.owning_detection_epoch(warm_epoch):
+            hw.invalidate_detection()  # shutdown lands mid-stage
+            with mock.patch.object(hw, "_detect_hardware_locked", _probe):
+                hw.get_device()
+
+        assert hw.DEVICE is None, (
+            "a nested read inside a retired stage republished DEVICE after teardown; "
+            "the next lifespan skips detection and serves the old verdict"
+        )
+        assert not hw.DETECTION_COMPLETE.is_set()
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_a_nested_read_in_a_live_stage_still_publishes():
+    """Negative control: without a shutdown the scope changes nothing."""
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        hw.DEVICE = None
+        hw.DETECTION_COMPLETE.clear()
+
+        def _probe():
+            hw.DEVICE = hw.DeviceType.CUDA
+
+        with hw.owning_detection_epoch(hw.current_detection_epoch()):
+            with mock.patch.object(hw, "_detect_hardware_locked", _probe):
+                hw.get_device()
+
+        assert hw.DEVICE is hw.DeviceType.CUDA, "the scope discarded a live verdict"
+        assert hw.DETECTION_COMPLETE.is_set()
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_the_scope_is_per_thread_and_restores_what_it_replaced():
+    """Nested, and invisible to other threads: an unrelated caller must not inherit it."""
+    from utils.hardware import hardware as hw
+
+    seen: dict = {}
+
+    def _other() -> None:
+        seen["value"] = getattr(hw._OWNING_EPOCH, "value", None)
+
+    with hw.owning_detection_epoch(11):
+        with hw.owning_detection_epoch(22):
+            assert hw._OWNING_EPOCH.value == 22
+        assert hw._OWNING_EPOCH.value == 11, "the inner scope did not restore the outer"
+        thread = threading.Thread(target = _other)
+        thread.start()
+        thread.join()
+
+    assert seen["value"] is None, "another thread inherited the warm's owning epoch"
+    assert getattr(hw._OWNING_EPOCH, "value", None) is None
+
+
+def test_the_warm_runs_its_stages_inside_an_owning_scope():
+    """AST: the guard is the scope around the loop, not any one stage.
+
+    A future stage that reaches hardware some other way is covered only while the loop
+    body stays inside it.
+    """
+    tree = ast.parse((_BACKEND / "utils" / "torch_warmup.py").read_text(encoding = "utf-8"))
+    warm = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "_warm"
+    )
+    scoped = [
+        node
+        for node in warm.body
+        if isinstance(node, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and getattr(item.context_expr.func, "id", None) == "_owning_epoch"
+            for item in node.items
+        )
+    ]
+    assert scoped, "_warm no longer runs its stages inside _owning_epoch()"
+    assert any(
+        isinstance(node, ast.For) for node in scoped[0].body
+    ), "the stage loop moved out of the owning scope"
