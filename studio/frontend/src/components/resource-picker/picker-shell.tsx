@@ -24,10 +24,7 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  PICKER_FOCUS_VISIBLE_CLASS,
-  PICKER_OPTION_FOCUS_VISIBLE_CLASS,
-} from "./picker-focus";
+import { PICKER_OPTION_FOCUS_VISIBLE_CLASS } from "./picker-focus";
 import { PICKER_TAB, type PickerTab, pickerTabId } from "./picker-tab-state";
 import { PickerTabToggle } from "./picker-tab-toggle";
 
@@ -345,10 +342,7 @@ export function PickerShell({
                 tab === PICKER_TAB.hub ? placeholder.hub : placeholder.device
               }
               aria-label={t("picker.searchAriaLabel", { noun })}
-              className={cn(
-                "field-soft h-9 rounded-full pl-9 text-ui-12p5",
-                PICKER_FOCUS_VISIBLE_CLASS,
-              )}
+              className="field-soft h-9 rounded-full border-0 pl-9 text-ui-12p5 focus-visible:border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
             />
             {tab === PICKER_TAB.hub && isHubLoading && (
               <Spinner className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />

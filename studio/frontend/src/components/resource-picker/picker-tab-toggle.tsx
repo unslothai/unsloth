@@ -41,7 +41,7 @@ export function PickerTabToggle<T extends string>({
   return (
     <div
       role="tablist"
-      className="hub-menu-trigger hub-tab-toggle relative inline-flex h-8 w-full select-none items-center rounded-full p-0.5"
+      className="hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full select-none items-center rounded-full"
       onKeyDown={(event) => {
         const target = nextPickerTab(event.key, tab, first.value, second.value);
         if (target === null) {
@@ -57,8 +57,7 @@ export function PickerTabToggle<T extends string>({
       <SegmentedControlIndicator
         activeIndex={tab === second.value ? 1 : 0}
         optionCount={options.length}
-        width="calc(50% - 2px)"
-        className="inset-y-0.5 start-0.5"
+        className="inset-y-0 start-0"
       />
       {options.map((entry) => {
         const selected = tab === entry.value;
@@ -73,7 +72,7 @@ export function PickerTabToggle<T extends string>({
             tabIndex={selected ? 0 : -1}
             onClick={() => onTabChange(entry.value)}
             className={cn(
-              "relative z-10 inline-flex h-7 flex-1 select-none items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
+              "relative z-10 inline-flex h-full flex-1 select-none items-center justify-center rounded-full px-3 text-ui-12p5 font-medium transition-colors",
               PICKER_OPTION_FOCUS_VISIBLE_CLASS,
               selected
                 ? "text-foreground"

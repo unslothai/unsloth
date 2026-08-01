@@ -1294,6 +1294,7 @@ def test_cached_training_rows_remain_display_candidates_after_inventory_dedupe()
 
 def test_training_picker_controls_keep_visible_keyboard_focus():
     focus = _read("components/resource-picker/picker-focus.ts")
+    shell = _read("components/resource-picker/picker-shell.tsx")
     assert "focus-visible:ring-2" in focus
     assert "focus-visible:ring-ring" in focus
     assert "focus-visible:ring-offset-2" in focus
@@ -1321,6 +1322,13 @@ def test_training_picker_controls_keep_visible_keyboard_focus():
     assert "focus-visible:ring-0" not in model
     assert "focus-visible:ring-0" not in dataset
     assert "focus-visible:ring-0" not in token
+
+    search = shell.split("<Input", 1)[1].split("/>", 1)[0]
+    assert "PICKER_FOCUS_VISIBLE_CLASS" not in shell
+    assert "border-0" in search
+    assert "focus-visible:border-0" in search
+    assert "focus-visible:ring-0" in search
+    assert "focus-visible:ring-offset-0" in search
 
     hub_css = _read("features/hub/hub.css")
     focus_rule = hub_css.split(".field-soft:focus-visible", 1)[1]
@@ -1725,6 +1733,23 @@ def test_s3_round_trip_restores_source_qualified_browse_dataset_selection():
     assert "restoreBrowseDatasetSource();" in toggle
     assert "selectLocalDataset(uploadedFile)" not in toggle
     assert "selectHfDataset(dataset)" not in toggle
+
+
+def test_training_picker_segmented_controls_share_full_height_geometry():
+    segmented = _read("components/segmented-control.tsx")
+    picker_tabs = _read("components/resource-picker/picker-tab-toggle.tsx")
+
+    assert 'role="radiogroup"' in segmented
+    assert "aria-label={ariaLabel}" in segmented
+    assert "<fieldset" not in segmented
+    assert "<legend" not in segmented
+    assert "relative z-10 flex h-full min-w-0 flex-1" in segmented
+    assert "hub-tab-toggle relative inline-flex h-9 w-full" in picker_tabs
+    assert 'className="inset-y-0 start-0"' in picker_tabs
+    assert "inline-flex h-full flex-1" in picker_tabs
+    assert "text-ui-12p5 font-medium" in picker_tabs
+    assert "h-8 w-full" not in picker_tabs
+    assert "h-7 flex-1" not in picker_tabs
 
 
 def test_training_picker_localizes_semantic_inventory_sources():

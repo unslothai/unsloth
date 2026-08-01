@@ -62,13 +62,14 @@ export function SegmentedControl<T extends string>({
   );
 
   return (
-    <fieldset
+    <div
+      role="radiogroup"
+      aria-label={ariaLabel}
       className={cn(
-        "hub-tab-toggle relative m-0 inline-flex h-9 w-full min-w-0 items-center rounded-full border-0 p-0",
+        "hub-tab-toggle relative inline-flex h-9 w-full min-w-0 items-stretch rounded-full",
         className,
       )}
     >
-      <legend className="sr-only">{ariaLabel}</legend>
       <SegmentedControlIndicator
         activeIndex={activeIndex}
         optionCount={options.length}
@@ -80,7 +81,7 @@ export function SegmentedControl<T extends string>({
           <label
             key={option.value}
             className={cn(
-              "relative z-10 h-full min-w-0 flex-1 cursor-pointer rounded-full",
+              "relative z-10 flex h-full min-w-0 flex-1 cursor-pointer rounded-full",
               option.disabled && "cursor-not-allowed opacity-50",
             )}
           >
@@ -106,6 +107,6 @@ export function SegmentedControl<T extends string>({
           </label>
         );
       })}
-    </fieldset>
+    </div>
   );
 }
