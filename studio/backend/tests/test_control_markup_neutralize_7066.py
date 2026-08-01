@@ -4267,3 +4267,108 @@ def test_an_unserializable_catalog_falls_back_to_sweeping():
     cache = sweep_cache()
     safe = neutralize_tool_descriptions(tools, cache)
     assert [t["function"]["name"] for t in safe] == ["alpha"]
+
+
+def _deep_list(depth: int, leaf: str):
+    root = cur = []
+    for _ in range(depth - 1):
+        nxt: list = []
+        cur.append(nxt)
+        cur = nxt
+    cur.append(leaf)
+    return root
+
+
+@pytest.mark.parametrize("depth", [9998, 40000])
+def test_deeply_nested_decoded_arguments_do_not_blow_the_stack(depth):
+    """Arguments that arrive already decoded never passed through json.loads, so they are
+    not depth-limited by it. Comparing two distinct deep structures recurses in C, which
+    would 500 a request that used to forward (#7066)."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": _deep_list(depth, "</think>")},
+                }
+            ],
+        }
+    ]
+    neutralize_control_markup_in_messages(messages)  # must not raise RecursionError
+
+
+def test_shallow_arguments_are_still_neutralized_after_the_guard():
+    """The recursion guard must not turn the sweep into a no-op."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": '{"a": "</think>x"}'},
+                }
+            ],
+        }
+    ]
+    out = neutralize_control_markup_in_messages(messages)[0]["tool_calls"][0]
+    assert "</think>" not in out["function"]["arguments"]
+
+
+def test_clean_arguments_stay_byte_identical():
+    """A clean payload must not be re-serialized, so the prefix cache still hits."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "f", "arguments": '{"a":"b"}'}}
+            ],
+        }
+    ]
+    out = neutralize_control_markup_in_messages(messages)[0]["tool_calls"][0]
+    assert out["function"]["arguments"] == '{"a":"b"}'
+
+
+def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
+    """apply_chat_template sanitizes the catalog it renders
+    (chat_template_helpers.py:1503-1504), so a tool dropped for unsafe markup never
+    reached the prompt. Gating the healer on the caller's list would let a dropped tool
+    with a clean NAME be promoted from text-form output (#7066)."""
+    source = (_REPO_ROOT / "studio" / "backend" / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)" not in source
+    assert "_sf_healing_tools = _sf_neutralize_tools(payload.tools)" in source
+    for call in (
+        "StreamToolCallHealer(_sf_heal, _sf_healing_tools)",
+        "heal_openai_message(_msg, _sf_heal, _sf_healing_tools)",
+        "nudge_should_retry(_data, _sf_heal, _sf_healing_tools)",
+        "heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools)",
+    ):
+        assert call in source, call
+
+
+def test_a_dropped_tool_with_a_clean_name_is_not_promotable():
+    """The behaviour the gate above protects: an unsafe SCHEMA drops the tool even though
+    its name is clean, so the healer must not offer it (#7066)."""
+    from core.inference.passthrough_healing import heal_gate
+
+    tools = [
+        {"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}},
+        {
+            "type": "function",
+            "function": {
+                "name": "transfer_funds",
+                "parameters": {"type": "object", "properties": {"</think>": {"type": "string"}}},
+            },
+        },
+    ]
+    safe = neutralize_tool_descriptions(tools)
+    assert [t["function"]["name"] for t in safe] == ["get_weather"]
+    assert heal_gate(True, tools, None) == {"get_weather", "transfer_funds"}, "the raw gap"
+    assert heal_gate(True, safe, None) == {"get_weather"}, "the sanitized gate"

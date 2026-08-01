@@ -11315,8 +11315,18 @@ async def openai_chat_completions(
         and _sf_features.get("supports_tools", False)
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
+    # apply_chat_template sanitizes the catalog it renders
+    # (chat_template_helpers.py:1503-1504), so a tool dropped for unsafe markup never
+    # reached the prompt. Gating the healer on the caller's list instead would let a
+    # dropped tool with a clean NAME be promoted out of text-form output, handing the
+    # client a structured call for a tool the model was never shown (#7066).
+    from core.inference.chat_template_helpers import (
+        neutralize_tool_descriptions as _sf_neutralize_tools,
+    )
+
+    _sf_healing_tools = _sf_neutralize_tools(payload.tools) if _sf_client_tools else None
     _sf_heal = (
-        heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)
+        heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice)
         if _sf_client_tools
         else None
     )
@@ -11406,7 +11416,7 @@ async def openai_chat_completions(
 
                 # Client-tool passthrough: heal text-form calls on the fly
                 # (None => relay verbatim).
-                healer = StreamToolCallHealer(_sf_heal, payload.tools) if _sf_heal else None
+                healer = StreamToolCallHealer(_sf_heal, _sf_healing_tools) if _sf_heal else None
                 heal_state = {"idx": 0}
 
                 prev_text = ""
@@ -11630,13 +11640,13 @@ async def openai_chat_completions(
                 _msg["reasoning_content"] = _reasoning_text
             _finish = "stop"
             if _sf_heal:
-                if heal_openai_message(_msg, _sf_heal, payload.tools):
+                if heal_openai_message(_msg, _sf_heal, _sf_healing_tools):
                     _finish = "tool_calls"
                 elif nudge_enabled(payload.nudge_tool_calls):
                     _data = {
                         "choices": [{"message": {"role": "assistant", "content": _visible_text}}]
                     }
-                    if nudge_should_retry(_data, _sf_heal, payload.tools):
+                    if nudge_should_retry(_data, _sf_heal, _sf_healing_tools):
                         # A failed retry must not 500 the request; keep the first
                         # response (GGUF nudge parity). The retry's generate()
                         # overwrites stats_holder, so save the first attempt's stats
@@ -11658,7 +11668,7 @@ async def openai_chat_completions(
                             retry_msg = {"role": "assistant", "content": _retry_visible}
                             if _retry_reasoning:
                                 retry_msg["reasoning_content"] = _retry_reasoning
-                            if heal_openai_message(retry_msg, _sf_heal, payload.tools):
+                            if heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools):
                                 _visible_text, _msg, _finish = (
                                     _retry_visible,
                                     retry_msg,

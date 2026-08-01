@@ -520,7 +520,10 @@ def _neutralized_arguments(arguments):
         except (ValueError, TypeError, RecursionError):
             decoded = safe = _UNPARSED
         if decoded is not _UNPARSED:
-            if safe != decoded:
+            # _differs, not "!=": comparing two distinct deep structures recurses in C, so
+            # a payload that decoded fine could still blow the stack on the comparison and
+            # 500 a request that used to forward (#7066).
+            if _differs(safe, decoded):
                 # ensure_ascii keeps a decoded lone surrogate ("\ud800") as an escape: raw,
                 # it makes the outer request unencodable and raises UnicodeEncodeError on a
                 # payload that used to forward fine (#7066).
@@ -528,7 +531,9 @@ def _neutralized_arguments(arguments):
             # Parsed clean: the text itself cannot hold a marker the decode would show.
             return None
     new_arguments = _neutralize_argument_leaves(arguments)
-    return new_arguments if new_arguments != arguments else None
+    # Same guard for arguments that arrived already decoded, which never passed through
+    # json.loads and so were never depth-limited by it.
+    return new_arguments if _differs(new_arguments, arguments) else None
 
 
 def _replayed_ids(msg: dict):
