@@ -352,6 +352,19 @@ def test_update_exposes_verify_defaulting_on():
     assert getattr(opt, "default", None) is True
 
 
+def test_the_verify_help_does_not_promise_an_import_check():
+    # The scan compares RECORD entries against the filesystem and imports
+    # nothing, so it cannot see same-size corruption or an intact but
+    # incompatible package. Saying it checks that the backend still imports
+    # promises a stronger guarantee than it delivers.
+    import inspect
+
+    opt = inspect.signature(_studio().update).parameters["verify"].default
+    help_text = (getattr(opt, "help", "") or "").lower()
+    assert "import" not in help_text
+    assert "files" in help_text
+
+
 def _run_update(monkeypatch, argv, verified):
     studio = _studio()
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda *a, **k: None)

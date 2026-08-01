@@ -2976,7 +2976,7 @@ def update(
     verify: bool = typer.Option(
         True,
         "--verify/--no-verify",
-        help = "After updating, check that the backend still imports.",
+        help = "After updating, scan installed files for damage an update cannot repair.",
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
