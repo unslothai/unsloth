@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
-import { decodeDataUri } from "@/lib/data-uri";
+import { decodeDataUri, isDataUri } from "@/lib/data-uri";
 
 const NATIVE_FILE_NAME_HEADER = "x-unsloth-default-name";
 export class DownloadCancelledError extends Error {
@@ -96,7 +96,7 @@ export async function downloadFile(
 }
 
 export async function urlToBlob(url: string): Promise<Blob> {
-  if (url.startsWith("data:")) {
+  if (isDataUri(url)) {
     const { bytes, mimeType } = decodeDataUri(url);
     return new Blob([Uint8Array.from(bytes).buffer], { type: mimeType });
   }
@@ -108,7 +108,7 @@ export async function downloadUrl(
   url: string,
   filename: string,
 ): Promise<void> {
-  if (url.startsWith("data:")) {
+  if (isDataUri(url)) {
     const { bytes, mimeType } = decodeDataUri(url);
     await downloadFile(bytes, filename, mimeType);
     return;

@@ -6,12 +6,40 @@
 // `data:text/plain;base64;charset=utf-8,SGVsbG8=` stays literal text.
 const DATA_URI_BASE64_RE = /;[ \t]*base64[ \t]*$/i;
 const PERCENT_ESCAPE_RE = /%([0-9a-f]{2})/gi;
-const HEX_PAIR_RE = /^[0-9a-f]{2}$/i;
 const DEFAULT_MIME_TYPE = "text/plain;charset=US-ASCII";
+const PERCENT = 0x25;
 
 export interface DecodedDataUri {
   bytes: Uint8Array;
   mimeType: string;
+}
+
+/** URL schemes are case-insensitive, so `DATA:image/png;...` is a data URI. */
+export function isDataUri(url: string): boolean {
+  return url.slice(0, 5).toLowerCase() === "data:";
+}
+
+/** Hex digit value, or -1. Avoids allocating a substring per character. */
+function hexValue(code: number): number {
+  if (code >= 0x30 && code <= 0x39) {
+    return code - 0x30;
+  }
+  if (code >= 0x61 && code <= 0x66) {
+    return code - 0x57;
+  }
+  if (code >= 0x41 && code <= 0x46) {
+    return code - 0x37;
+  }
+  return -1;
+}
+
+function escapeAt(data: string, index: number): number {
+  if (data.charCodeAt(index) !== PERCENT) {
+    return -1;
+  }
+  const high = hexValue(data.charCodeAt(index + 1));
+  const low = hexValue(data.charCodeAt(index + 2));
+  return high < 0 || low < 0 ? -1 : high * 16 + low;
 }
 
 /**
@@ -22,9 +50,9 @@ export interface DecodedDataUri {
  * throws URIError instead of yielding [255, 0, 128]. Percent-decoding is
  * byte-oriented, and an invalid escape is left alone rather than rejected.
  *
- * Literal spans are encoded in one call rather than per character: payloads
- * here run to tens of megabytes, and a character at a time is seconds of
- * blocked UI.
+ * Everything goes into one growable buffer. Payloads here reach tens of
+ * megabytes, and a per-run or per-character allocation turns an encoded SVG
+ * into seconds of blocked UI and hundreds of MiB of garbage.
  */
 function percentDecodeOctets(data: string): Uint8Array {
   const encoder = new TextEncoder();
@@ -32,48 +60,56 @@ function percentDecodeOctets(data: string): Uint8Array {
     return encoder.encode(data);
   }
 
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  const push = (chunk: Uint8Array) => {
-    chunks.push(chunk);
-    total += chunk.length;
+  // Escapes shrink three characters to one byte and ASCII literals are 1:1, so
+  // the source length already fits all but non-ASCII payloads.
+  let out = new Uint8Array(data.length);
+  let length = 0;
+
+  const reserve = (extra: number) => {
+    if (length + extra <= out.length) {
+      return;
+    }
+    let capacity = Math.max(out.length, 1);
+    while (capacity < length + extra) {
+      capacity *= 2;
+    }
+    const grown = new Uint8Array(capacity);
+    grown.set(out.subarray(0, length));
+    out = grown;
   };
 
   let literalStart = 0;
+  const flushLiteral = (end: number) => {
+    if (end <= literalStart) {
+      return;
+    }
+    const literal = data.slice(literalStart, end);
+    // Worst case is 3 UTF-8 bytes per BMP character; a surrogate pair is 4
+    // bytes for 2 characters, so this bound holds either way.
+    reserve(literal.length * 3);
+    length += encoder.encodeInto(literal, out.subarray(length)).written;
+  };
+
   let index = 0;
   while (index < data.length) {
-    if (
-      data[index] !== "%" ||
-      !HEX_PAIR_RE.test(data.slice(index + 1, index + 3))
-    ) {
+    if (escapeAt(data, index) < 0) {
       index += 1;
       continue;
     }
-    if (index > literalStart) {
-      push(encoder.encode(data.slice(literalStart, index)));
-    }
-    const octets: number[] = [];
-    while (
-      data[index] === "%" &&
-      HEX_PAIR_RE.test(data.slice(index + 1, index + 3))
-    ) {
-      octets.push(Number.parseInt(data.slice(index + 1, index + 3), 16));
+    flushLiteral(index);
+    let octet = escapeAt(data, index);
+    while (octet >= 0) {
+      reserve(1);
+      out[length] = octet;
+      length += 1;
       index += 3;
+      octet = escapeAt(data, index);
     }
-    push(Uint8Array.from(octets));
     literalStart = index;
   }
-  if (data.length > literalStart) {
-    push(encoder.encode(data.slice(literalStart)));
-  }
+  flushLiteral(data.length);
 
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return bytes;
+  return out.slice(0, length);
 }
 
 function base64ToBytes(payload: string): Uint8Array {
@@ -87,7 +123,7 @@ function base64ToBytes(payload: string): Uint8Array {
 
 export function decodeDataUri(dataUri: string): DecodedDataUri {
   const separator = dataUri.indexOf(",");
-  if (!dataUri.startsWith("data:") || separator < 0) {
+  if (!isDataUri(dataUri) || separator < 0) {
     throw new Error("Invalid data URI.");
   }
   const metadata = dataUri.slice(5, separator);

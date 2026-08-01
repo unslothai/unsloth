@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { decodeDataUri } from "../src/lib/data-uri.ts";
+import { decodeDataUri, isDataUri } from "../src/lib/data-uri.ts";
 
 const INVALID_DATA_URI_RE = /Invalid data URI/;
 const DEFAULT_MIME = "text/plain;charset=US-ASCII";
@@ -138,6 +138,33 @@ test("decodes a large base64 payload without stalling", () => {
   const started = Date.now();
   const decoded = decodeDataUri(`data:image/png;base64,${payload}`);
   assert.equal(decoded.bytes.length, 3 * 1024 * 1024);
+  assert.ok(
+    Date.now() - started < 2000,
+    `decoding took ${Date.now() - started}ms`,
+  );
+});
+
+test("treats the data scheme case-insensitively", () => {
+  // URL schemes are case-insensitive and all three engines render DATA:.
+  assert.ok(isDataUri("DATA:image/png;base64,QUJD"));
+  assert.ok(isDataUri("Data:image/png;base64,QUJD"));
+  assert.ok(isDataUri("data:image/png;base64,QUJD"));
+  assert.ok(!isDataUri("https://example.com/a.png"));
+  assert.deepEqual(
+    Array.from(decodeDataUri("DATA:text/plain;base64,QUJD").bytes),
+    [65, 66, 67],
+  );
+});
+
+test("decodes an escape-heavy payload without stalling", () => {
+  // Encoded SVG text alternates literals and escapes, which used to allocate
+  // a separate array per run.
+  const source = "a%20".repeat(400000);
+  const started = Date.now();
+  const decoded = decodeDataUri(`data:image/svg+xml,${source}`);
+  assert.equal(decoded.bytes.length, 800000);
+  assert.equal(decoded.bytes[0], 97);
+  assert.equal(decoded.bytes[1], 32);
   assert.ok(
     Date.now() - started < 2000,
     `decoding took ${Date.now() - started}ms`,
