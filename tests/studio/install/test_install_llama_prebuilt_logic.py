@@ -3574,6 +3574,8 @@ def test_windows_runtime_dirs_marks_path_candidates_as_optional(monkeypatch, tmp
     denied = r"C:\WINDOWS\system32\config\systemprofile\AppData\Local\Microsoft\WindowsApps"
     observed = {}
 
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "pathsep", ";")
+
     def fake_dedupe(paths, *, skip_unusable = False):
         observed["paths"] = [str(path) for path in paths]
         observed["skip_unusable"] = skip_unusable
