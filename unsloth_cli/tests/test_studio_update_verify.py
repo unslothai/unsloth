@@ -189,6 +189,40 @@ def test_the_scan_is_limited_to_this_interpreters_site_packages(monkeypatch, tmp
     assert len(found) == 1 and "ext/mod.py" in found[0]
 
 
+def test_a_deleted_shared_file_is_still_reported(site):
+    # Multiple ownership makes the recorded SIZES ambiguous; it cannot explain
+    # the file being gone. Skipping shared paths outright hid real deletions.
+    _make_dist(site, "mu", {"shared/x.py": b"hello\n"}, record_sizes = {"shared/x.py": 10})
+    _make_dist(site, "nu", {}, record_sizes = {})
+    (site / "nu-1.0.dist-info" / "RECORD").write_text(
+        "nu-1.0.dist-info/METADATA,,\nshared/x.py,sha256=x,10\n"
+    )
+    (site / "shared" / "x.py").unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 2
+    assert all("shared/x.py is missing" in line for line in found)
+
+
+def test_a_row_without_a_recorded_size_is_still_checked(site):
+    # The size field is optional and real wheels leave it blank. Dropping those
+    # rows meant a deleted file was never reported.
+    _make_dist(site, "xi", {"xi/__init__.py": b"y\n"})
+    (site / "xi-1.0.dist-info" / "RECORD").write_text("xi/__init__.py,,\n")
+    (site / "xi" / "__init__.py").unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "xi/__init__.py is missing" in found[0]
+
+
+def test_a_directory_standing_in_for_a_module_is_damage(site):
+    # An empty directory is commonly 4096 bytes on POSIX, so it sails past the
+    # shrinkage test while importing as something other than the recorded module.
+    _make_dist(site, "omicron", {}, record_sizes = {})
+    (site / "omicron-1.0.dist-info" / "RECORD").write_text("omicron/mod.py,sha256=x,10\n")
+    (site / "omicron" / "mod.py").mkdir(parents = True)
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "not a regular file" in found[0]
+
+
 def test_installer_owned_metadata_is_ignored(site):
     # .dist-info files are rewritten in place and drift from the size recorded
     # inside themselves; two real distributions did exactly that.
@@ -442,6 +476,9 @@ def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, 
     # Without --no-deps, pip resolves the damaged package's graph and
     # --force-reinstall can swap the pinned CUDA/ROCm torch build.
     assert "--no-deps" in err
+    # A bare name would let --force-reinstall upgrade the orphan rather than
+    # repair it, which --no-deps does not prevent.
+    assert "<package>==<installed version>" in err
     assert "--no-verify" in err
 
 

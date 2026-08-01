@@ -18,6 +18,7 @@ import importlib.util
 import inspect
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -264,17 +265,23 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
         if not record:
             continue
         for row in csv.reader(io.StringIO(record)):
-            if len(row) < 3 or not row[2]:
+            rel = row[0] if row else ""
+            # A trailing slash is a directory entry, which has nothing to check.
+            if not rel or rel.endswith("/"):
                 continue
-            rel = row[0]
             # Installer-owned metadata is rewritten in place and drifts from the
             # size recorded inside itself; .pyc is regenerated from source.
             if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
                 continue
-            try:
-                recorded = int(row[2])
-            except ValueError:
-                continue
+            # The size field is optional and real wheels do leave it blank. Keep
+            # the row anyway with an unknown size: existence is still checkable,
+            # and dropping the row meant a deletion went unreported.
+            recorded: Optional[int] = None
+            if len(row) >= 3 and row[2]:
+                try:
+                    recorded = int(row[2])
+                except ValueError:
+                    recorded = None
             try:
                 target = dist.locate_file(rel)
             except Exception:
@@ -285,15 +292,21 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
 
     found: List[str] = []
     for name, rel, recorded, target, key in entries:
-        if owners[key] > 1:
-            continue
         try:
-            actual = target.stat().st_size
+            info = target.stat()
         except OSError:
+            # Multiple ownership makes the recorded SIZES ambiguous; it cannot
+            # explain the file being gone, so this branch runs for shared paths
+            # too.
             found.append(f"{name}: {rel} is missing")
         else:
-            if actual < recorded:
-                found.append(f"{name}: {rel} is {actual} bytes, expected {recorded}")
+            if not stat.S_ISREG(info.st_mode):
+                # A directory standing in for a recorded module still imports as
+                # something else, and on POSIX its st_size (commonly 4096) can
+                # sail past the shrinkage test.
+                found.append(f"{name}: {rel} is not a regular file")
+            elif owners[key] == 1 and recorded is not None and info.st_size < recorded:
+                found.append(f"{name}: {rel} is {info.st_size} bytes, expected {recorded}")
         if len(found) >= limit:
             return found
     return found

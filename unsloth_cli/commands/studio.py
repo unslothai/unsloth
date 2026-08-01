@@ -2945,12 +2945,17 @@ def _fail_if_install_damaged() -> None:
     # an unrelated orphan. The installer's own targeted repairs pair the two for
     # the same reason. The interpreter path is quoted because a custom root may
     # contain spaces, and on Windows a quoted command needs the call operator.
+    # <package>==<version> rather than a bare name: --force-reinstall reinstalls
+    # even when the package is already up to date, so an unpinned name fetches
+    # the newest release and silently upgrades an orphan whose consumers may
+    # depend on the older one. --no-deps does not protect against that.
+    _spec = "<package>==<installed version>"
     if platform.system() == "Windows":
         _py = str(Path(sys.executable)).replace("'", "''")
-        typer.echo(f"  & '{_py}' -m pip install --force-reinstall --no-deps <package>", err = True)
+        typer.echo(f"  & '{_py}' -m pip install --force-reinstall --no-deps {_spec}", err = True)
     else:
         _py = shlex.quote(str(Path(sys.executable)))
-        typer.echo(f"  {_py} -m pip install --force-reinstall --no-deps <package>", err = True)
+        typer.echo(f"  {_py} -m pip install --force-reinstall --no-deps {_spec}", err = True)
     typer.echo("", err = True)
     typer.echo("To update anyway without this check: unsloth studio update --no-verify", err = True)
     raise typer.Exit(code = 1)
