@@ -258,6 +258,11 @@ test("two spellings of one Windows path keep a single stored record", () => {
   assert.equal(listPerModelConfigs().length, 1);
 });
 
+test("a Windows drive root stays distinct from a drive-relative identity", () => {
+  assert.equal(normalizeModelIdentity("C:\\"), "c:/");
+  assert.equal(normalizeModelIdentity("C:"), "c:");
+});
+
 test("a POSIX path is case sensitive, so its two spellings stay separate", () => {
   store.clear();
   savePerModelConfig("/models/Foo.gguf", null, config(4096));

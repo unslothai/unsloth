@@ -2908,51 +2908,51 @@ html[data-chat-font] .aui-root {
 }
 
 @layer components {
-  .elevated-card {
-    border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
-    border-radius: 20px;
-    box-shadow: 0 0 60px 8px
-      color-mix(in srgb, var(--foreground) 5%, transparent);
-  }
+	.elevated-card {
+		border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+		border-radius: 20px;
+		box-shadow: 0 0 60px 8px
+			color-mix(in srgb, var(--foreground) 5%, transparent);
+	}
 
-  @media (min-width: 640px) {
-    .elevated-card {
-      border-radius: 28px;
-    }
-  }
+	@media (min-width: 640px) {
+		.elevated-card {
+			border-radius: 28px;
+		}
+	}
 
-  @media (min-width: 1024px) {
-    .elevated-card {
-      border-radius: 32px;
-    }
-  }
+	@media (min-width: 1024px) {
+		.elevated-card {
+			border-radius: 32px;
+		}
+	}
 
-  .dark .elevated-card {
-    border-color: transparent;
-    box-shadow: none;
-  }
+	.dark .elevated-card {
+		border-color: transparent;
+		box-shadow: none;
+	}
 
-  .page-title-halo {
-    text-shadow:
-      0 0 24px color-mix(in srgb, var(--primary) 18%, transparent),
-      0 0 56px color-mix(in srgb, var(--primary) 12%, transparent),
-      0 0 96px color-mix(in srgb, var(--primary) 8%, transparent);
-  }
+	.page-title-halo {
+		text-shadow:
+			0 0 24px color-mix(in srgb, var(--primary) 18%, transparent),
+			0 0 56px color-mix(in srgb, var(--primary) 12%, transparent),
+			0 0 96px color-mix(in srgb, var(--primary) 8%, transparent);
+	}
 
-  .dark .page-title-halo {
-    text-shadow: none;
-  }
+	.dark .page-title-halo {
+		text-shadow: none;
+	}
 
-  .train-section-chip {
-    background-color: color-mix(
-      in srgb,
-      var(--chip-tint, transparent) 12%,
-      transparent
-    );
-    color: color-mix(
-      in srgb,
-      var(--control-accent) 60%,
-      var(--foreground)
-    );
-  }
+	.train-section-chip {
+		background-color: color-mix(
+			in srgb,
+			var(--chip-tint, transparent) 12%,
+			transparent
+		);
+		color: color-mix(
+			in srgb,
+			var(--control-accent) 60%,
+			var(--foreground)
+		);
+	}
 }

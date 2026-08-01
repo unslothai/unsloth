@@ -14,16 +14,14 @@ import {
   subscribeUploadLimitSettings,
 } from "@/features/settings";
 import {
-  uploadNativeTrainingDataset,
-  uploadTrainingDataset,
-  useTrainingConfigStore,
-} from "@/features/training";
-import {
   TRAINING_DATASET_UPLOAD_EXTENSIONS,
   TRAINING_DOCUMENT_REDIRECT_EXTENSIONS,
   classifyNativeTrainingDatasetDrop,
   nativeDropPositionHitsBounds,
-} from "@/features/training/lib/native-dataset-drop";
+  uploadNativeTrainingDataset,
+  uploadTrainingDataset,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
@@ -33,7 +31,8 @@ import {
   type DragEvent,
   useCallback,
   useEffect,
-  useRef,
+  useEffectEvent,
+  useId,
   useState,
 } from "react";
 import { getFileExtension } from "./dataset-panel-helpers";
@@ -72,7 +71,7 @@ export function useDatasetUploads() {
   );
   const [documentRedirectOpen, setDocumentRedirectOpen] = useState(false);
   const [redirectFileName, setRedirectFileName] = useState<string | null>(null);
-  const datasetDropTargetRef = useRef<HTMLButtonElement>(null);
+  const datasetDropTargetId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -249,10 +248,7 @@ export function useDatasetUploads() {
     setIsDatasetDragOver(true);
   };
 
-  const nativeDropHandlerRef = useRef<(paths: string[]) => void>(
-    () => undefined,
-  );
-  nativeDropHandlerRef.current = (paths) => {
+  const handleNativeDrop = useEffectEvent((paths: string[]) => {
     const dropped = classifyNativeTrainingDatasetDrop(paths);
     if (dropped.kind === "multiple") {
       toast.error(t("studio.dataset.uploadOneFileAtATime"), {
@@ -283,7 +279,7 @@ export function useDatasetUploads() {
               : t("studio.dataset.unknownError"),
       });
     });
-  };
+  });
 
   useEffect(() => {
     if (!isTauri) {
@@ -294,7 +290,7 @@ export function useDatasetUploads() {
     let scaleFactor = window.devicePixelRatio || 1;
     let eligible = false;
     const hitsTarget = (position: { x: number; y: number }) => {
-      const target = datasetDropTargetRef.current;
+      const target = document.getElementById(datasetDropTargetId);
       return (
         target != null &&
         nativeDropPositionHitsBounds(
@@ -341,7 +337,7 @@ export function useDatasetUploads() {
           eligible = false;
           setIsDatasetDragOver(false);
           if (shouldHandle) {
-            nativeDropHandlerRef.current(event.payload.paths);
+            handleNativeDrop(event.payload.paths);
           }
         });
       })
@@ -358,7 +354,7 @@ export function useDatasetUploads() {
       disposed = true;
       unlisten?.();
     };
-  }, [isUploading]);
+  }, [datasetDropTargetId, isUploading]);
 
   const handleEvalFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -375,14 +371,16 @@ export function useDatasetUploads() {
   const handleOpenLearningRecipes = useCallback(() => {
     try {
       sessionStorage.setItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY, "1");
-    } catch {}
+    } catch {
+      // Continue when session storage is unavailable.
+    }
     setDocumentRedirectOpen(false);
     navigate({ to: "/data-recipes" }).catch(() => undefined);
   }, [navigate]);
 
   return {
+    datasetDropTargetId,
     documentRedirectOpen,
-    datasetDropTargetRef,
     handleDatasetDragOver,
     handleDatasetDrop,
     handleDatasetFileChange,

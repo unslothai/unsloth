@@ -1279,8 +1279,6 @@ export const de = {
     dataset: {
       source: "Datensatzquelle",
       sourceAriaLabel: "Datensatzquelle",
-      failedToLoadLocalDatasets:
-        "Lokale Datensätze konnten nicht geladen werden.",
       localDataset: "Lokaler Datensatz",
       localDatasetRows: " / {count} Zeilen",
       huggingFaceDataset: "Hugging Face Datensatz",
@@ -1380,7 +1378,6 @@ export const de = {
       uploadOneFileAtATime: "Laden Sie jeweils eine Datei hoch",
       uploadSingleFileDescription:
         "Der Trainingsdatensatz-Upload akzeptiert eine einzelne Datei.",
-      checkingToken: "Token wird geprüft...",
       preview: "Datensatz-Vorschau",
       split: "Split",
       subset: "Teilmenge",

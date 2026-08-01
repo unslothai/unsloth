@@ -1269,8 +1269,6 @@ export const es = {
     dataset: {
       source: "Origen del conjunto de datos",
       sourceAriaLabel: "Origen del conjunto de datos",
-      failedToLoadLocalDatasets:
-        "No se pudieron cargar los conjuntos de datos locales.",
       localDataset: "Conjunto de datos local",
       localDatasetRows: " / {count} filas",
       huggingFaceDataset: "Conjunto de datos de Hugging Face",
@@ -1372,7 +1370,6 @@ export const es = {
       uploadOneFileAtATime: "Sube un archivo a la vez",
       uploadSingleFileDescription:
         "La subida del conjunto de datos de entrenamiento acepta un solo archivo.",
-      checkingToken: "Comprobando token...",
       preview: "Vista previa del conjunto de datos",
       split: "Partición",
       subset: "Subconjunto",

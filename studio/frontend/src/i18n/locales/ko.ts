@@ -1234,7 +1234,6 @@ export const ko = {
     dataset: {
       source: "데이터셋 소스",
       sourceAriaLabel: "데이터셋 소스",
-      failedToLoadLocalDatasets: "로컬 데이터셋을 불러오지 못했습니다.",
       localDataset: "로컬 데이터셋",
       localDatasetRows: " / {count}행",
       huggingFaceDataset: "Hugging Face 데이터셋",
@@ -1333,7 +1332,6 @@ export const ko = {
       uploadOneFileAtATime: "한 번에 하나의 파일만 업로드하세요",
       uploadSingleFileDescription:
         "학습 데이터셋 업로드는 단일 파일만 받습니다.",
-      checkingToken: "토큰 확인 중...",
       preview: "데이터셋 미리보기",
       split: "분할",
       subset: "서브셋",

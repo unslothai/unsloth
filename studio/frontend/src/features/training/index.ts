@@ -83,6 +83,12 @@ export { validateTrainingModelCandidate } from "./lib/freeform-model-validation"
 export { isLocalTrainingModelSelection } from "./lib/model-selection";
 export { isHuggingFaceDatasetSelected } from "./lib/dataset-selection";
 export {
+  TRAINING_DATASET_UPLOAD_EXTENSIONS,
+  TRAINING_DOCUMENT_REDIRECT_EXTENSIONS,
+  classifyNativeTrainingDatasetDrop,
+  nativeDropPositionHitsBounds,
+} from "./lib/native-dataset-drop";
+export {
   isTrainableModelFormat,
   isUntrainableModelFormat,
 } from "./lib/model-support";

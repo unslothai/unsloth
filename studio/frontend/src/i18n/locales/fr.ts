@@ -1276,8 +1276,6 @@ export const fr = {
     dataset: {
       source: "Source du jeu de données",
       sourceAriaLabel: "Source du jeu de données",
-      failedToLoadLocalDatasets:
-        "Échec du chargement des jeux de données locaux.",
       localDataset: "Jeu de données local",
       localDatasetRows: " / {count} lignes",
       huggingFaceDataset: "Jeu de données Hugging Face",
@@ -1381,7 +1379,6 @@ export const fr = {
       uploadOneFileAtATime: "Téléversez un fichier à la fois",
       uploadSingleFileDescription:
         "Le téléversement du jeu de données d'entraînement accepte un seul fichier.",
-      checkingToken: "Vérification du token...",
       preview: "Aperçu du jeu de données",
       split: "Split",
       subset: "Sous-ensemble",

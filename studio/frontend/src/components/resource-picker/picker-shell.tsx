@@ -200,6 +200,8 @@ export function PickerShell({
     { value: PICKER_TAB.device, label: t("picker.onDevice") },
     { value: PICKER_TAB.hub, label: t("picker.huggingFace") },
   ] as const;
+  const canCommitQuery = tab !== PICKER_TAB.hub || online;
+  const canUseThis = showUseThis && canCommitQuery;
 
   function handlePickerNavigation(event: KeyboardEvent<HTMLDivElement>) {
     if (isImeCompositionKey(event, isComposingRef.current)) {
@@ -305,6 +307,9 @@ export function PickerShell({
                   return;
                 }
                 e.preventDefault();
+                if (!canCommitQuery) {
+                  return;
+                }
                 const commitResult = onExactQueryCommit?.(activeQuery);
                 if (commitResult?.kind === "handled") {
                   setQueryStatus("");
@@ -322,7 +327,7 @@ export function PickerShell({
                   return;
                 }
                 setQueryStatus("");
-                if (showUseThis) {
+                if (canUseThis) {
                   onUseThis();
                   return;
                 }
@@ -360,7 +365,7 @@ export function PickerShell({
             ref={scrollRef}
             className="min-h-0 max-h-[320px] flex-1 overflow-y-auto overscroll-contain rounded-[10px] [scrollbar-width:thin]"
           >
-            {showUseThis && (
+            {canUseThis && (
               <button
                 type="button"
                 data-picker-option="true"

@@ -1199,7 +1199,6 @@ export const ja = {
     dataset: {
       source: "データセットのソース",
       sourceAriaLabel: "データセットのソース",
-      failedToLoadLocalDatasets: "ローカルデータセットの読み込みに失敗しました。",
       localDataset: "ローカルデータセット",
       localDatasetRows: " / {count} 行",
       huggingFaceDataset: "Hugging Face データセット",
@@ -1294,7 +1293,6 @@ export const ja = {
       evalDatasetUploaded: "評価データセットをアップロードしました",
       uploadOneFileAtATime: "一度に1つのファイルのみアップロードできます",
       uploadSingleFileDescription: "トレーニングデータセットのアップロードは単一のファイルのみ受け付けます。",
-      checkingToken: "トークンを確認中...",
       preview: "データセットのプレビュー",
       split: "分割",
       subset: "サブセット",

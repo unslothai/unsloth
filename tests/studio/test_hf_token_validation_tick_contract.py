@@ -17,6 +17,9 @@ TRAINING_ACTIONS = REPO / "studio/frontend/src/features/training/hooks/use-train
 FRESH_TRAINING_START = (
     REPO / "studio/frontend/src/features/training/lib/start-fresh-training-run.ts"
 )
+TRAINING_START_INPUTS = (
+    REPO / "studio/frontend/src/features/training/lib/training-start-inputs.ts"
+)
 RESUME_TRAINING_START = REPO / "studio/frontend/src/features/training/lib/resume-training-run.ts"
 TRAINING_RUNTIME_STORE = (
     REPO / "studio/frontend/src/features/training/stores/training-runtime-store.ts"
@@ -255,6 +258,7 @@ def test_async_training_views_scope_results_to_the_current_request():
 
 def test_training_start_aborts_when_semantic_config_or_token_changes():
     source = FRESH_TRAINING_START.read_text(encoding = "utf-8")
+    start_inputs = TRAINING_START_INPUTS.read_text(encoding = "utf-8")
 
     input_guard = source.split("abortIfInputsChanged(): boolean", 1)[1].split(
         "enterTransport(): boolean", 1
@@ -272,7 +276,8 @@ def test_training_start_aborts_when_semantic_config_or_token_changes():
     assert "payload.model_local_path =" not in snapshot
     assert "payload.dataset_known_cached =" not in snapshot
     assert "payload.dataset_local_path =" not in snapshot
-    assert "isUntrainableModelFormat(config.modelFormat)" in snapshot
+    assert "normalizeTrainingStartPayloadForComparison(" in snapshot
+    assert "isUntrainableModelFormat(payload.model_format)" in start_inputs
     assert "modelType: config.modelType" in snapshot
     assert "isVisionModel: config.isVisionModel" in snapshot
     assert "isAudioModel: config.isAudioModel" in snapshot

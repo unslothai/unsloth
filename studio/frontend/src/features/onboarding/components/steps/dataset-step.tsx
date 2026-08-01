@@ -30,10 +30,10 @@ import {
 } from "@/features/hub";
 import {
   HfDatasetSubsetSplitSelectors,
+  TRAINING_DATASET_UPLOAD_EXTENSIONS,
   uploadTrainingDataset,
   useTrainingConfigStore,
 } from "@/features/training";
-import { TRAINING_DATASET_UPLOAD_EXTENSIONS } from "@/features/training/lib/native-dataset-drop";
 import { toast } from "@/lib/toast";
 import type { DatasetFormat } from "@/types/training";
 import {

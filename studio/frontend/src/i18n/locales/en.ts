@@ -1222,7 +1222,6 @@ export const en = {
     dataset: {
       source: "Dataset source",
       sourceAriaLabel: "Dataset source",
-      failedToLoadLocalDatasets: "Failed to load local datasets.",
       localDataset: "Local dataset",
       localDatasetRows: " / {count} rows",
       huggingFaceDataset: "Hugging Face Dataset",
@@ -1319,7 +1318,6 @@ export const en = {
       uploadOneFileAtATime: "Upload one file at a time",
       uploadSingleFileDescription:
         "Training dataset upload accepts a single file.",
-      checkingToken: "Checking token...",
       preview: "Preview dataset",
       split: "Split",
       subset: "Subset",

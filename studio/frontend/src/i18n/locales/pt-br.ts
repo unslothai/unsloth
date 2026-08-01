@@ -1248,7 +1248,6 @@ export const ptBR = {
     dataset: {
       source: "Origem do dataset",
       sourceAriaLabel: "Origem do dataset",
-      failedToLoadLocalDatasets: "Falha ao carregar datasets locais.",
       localDataset: "Dataset local",
       localDatasetRows: " / {count} linhas",
       huggingFaceDataset: "Dataset do Hugging Face",
@@ -1349,7 +1348,6 @@ export const ptBR = {
       uploadOneFileAtATime: "Envie um arquivo por vez",
       uploadSingleFileDescription:
         "O upload do dataset de treinamento aceita apenas um único arquivo.",
-      checkingToken: "Verificando token...",
       preview: "Pré-visualizar dataset",
       split: "Divisão (Split)",
       subset: "Subconjunto (Subset)",

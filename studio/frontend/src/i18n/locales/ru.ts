@@ -1247,7 +1247,6 @@ export const ru = {
     dataset: {
       source: "Источник датасета",
       sourceAriaLabel: "Источник датасета",
-      failedToLoadLocalDatasets: "Не удалось загрузить локальные датасеты.",
       localDataset: "Локальный датасет",
       localDatasetRows: " / {count} строк",
       huggingFaceDataset: "Датасет Hugging Face",
@@ -1349,7 +1348,6 @@ export const ru = {
       uploadOneFileAtATime: "Загружайте по одному файлу за раз",
       uploadSingleFileDescription:
         "Загрузка датасета для обучения принимает один файл.",
-      checkingToken: "Проверка токена...",
       preview: "Предпросмотр датасета",
       split: "Выборка",
       subset: "Подмножество",

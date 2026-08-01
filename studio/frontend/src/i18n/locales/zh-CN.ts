@@ -1197,7 +1197,6 @@ export const zhCN = {
     dataset: {
       source: "数据集来源",
       sourceAriaLabel: "数据集来源",
-      failedToLoadLocalDatasets: "加载本地数据集失败。",
       localDataset: "本地数据集",
       localDatasetRows: " / {count} 行",
       huggingFaceDataset: "Hugging Face 数据集",
@@ -1290,7 +1289,6 @@ export const zhCN = {
       evalDatasetUploaded: "评估数据集已上传",
       uploadOneFileAtATime: "一次只能上传一个文件",
       uploadSingleFileDescription: "训练数据集上传只接受单个文件。",
-      checkingToken: "正在检查 token...",
       preview: "预览数据集",
       split: "切分",
       subset: "子集",

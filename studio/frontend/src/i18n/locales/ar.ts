@@ -1234,7 +1234,6 @@ export const ar = {
     dataset: {
       source: "مصدر مجموعة البيانات",
       sourceAriaLabel: "مصدر مجموعة البيانات",
-      failedToLoadLocalDatasets: "فشل تحميل مجموعات البيانات المحلية.",
       localDataset: "مجموعة بيانات محلية",
       localDatasetRows: " / {count} صف",
       huggingFaceDataset: "مجموعة بيانات Hugging Face",
@@ -1333,7 +1332,6 @@ export const ar = {
       uploadOneFileAtATime: "حمّل ملفًا واحدًا في كل مرة",
       uploadSingleFileDescription:
         "يقبل تحميل مجموعة بيانات التدريب ملفًا واحدًا.",
-      checkingToken: "جارٍ التحقق من التوكن...",
       preview: "معاينة مجموعة البيانات",
       split: "التقسيم",
       subset: "المجموعة الفرعية",

@@ -1242,7 +1242,6 @@ export const hi = {
     dataset: {
       source: "डेटासेट स्रोत",
       sourceAriaLabel: "डेटासेट स्रोत",
-      failedToLoadLocalDatasets: "स्थानीय डेटासेट लोड करने में विफल।",
       localDataset: "स्थानीय डेटासेट",
       localDatasetRows: " / {count} पंक्तियां",
       huggingFaceDataset: "Hugging Face डेटासेट",
@@ -1341,7 +1340,6 @@ export const hi = {
       uploadOneFileAtATime: "एक बार में एक फ़ाइल अपलोड करें",
       uploadSingleFileDescription:
         "ट्रेनिंग डेटासेट अपलोड एक ही फ़ाइल स्वीकार करता है।",
-      checkingToken: "token जांचा जा रहा है...",
       preview: "डेटासेट का पूर्वावलोकन करें",
       split: "स्प्लिट",
       subset: "उपसमूह",

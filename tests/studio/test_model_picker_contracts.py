@@ -1411,7 +1411,13 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
     assert "onExactQueryCommit?: (query: string) => PickerExactQueryCommitResult;" in shell
     assert "isValidHubResourceId(activeQuery)" in selector
     assert "isValidHubResourceId(activeQuery)" in model_selector
-    assert shell.index('commitResult?.kind === "handled"') < shell.index("if (showUseThis)")
+    assert shell.index('commitResult?.kind === "handled"') < shell.index("if (canUseThis)")
+    assert "const canCommitQuery = tab !== PICKER_TAB.hub || online" in shell
+    assert "const canUseThis = showUseThis && canCommitQuery" in shell
+    assert shell.index("if (!canCommitQuery)") < shell.index(
+        "const commitResult = onExactQueryCommit"
+    )
+    assert "{canUseThis && (" in shell
     assert shell.index('commitResult?.kind === "ambiguous"') < shell.index(
         "const exactMatch = scrollRef.current"
     )
@@ -1426,7 +1432,7 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
     assert 'commitResult?.kind === "ambiguous"' in shell
     assert "optionMatchesQuery(option, commitResult.focusValue)" in shell
     ambiguity = shell.split('commitResult?.kind === "ambiguous"', 1)[1].split(
-        "if (showUseThis)", 1
+        "if (canUseThis)", 1
     )[0]
     assert "matchingOption?.focus()" in ambiguity
     assert 'matchingOption?.scrollIntoView({ block: "nearest" })' in ambiguity

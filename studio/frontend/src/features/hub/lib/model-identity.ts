@@ -29,7 +29,7 @@ export function normalizeModelIdentity(modelId: string): string {
   }
   const slashPath = trimmed.replace(/\\/g, "/");
   if (WINDOWS_DRIVE_PATH_RE.test(trimmed)) {
-    return normalizeCaseInsensitivePath(trimmed, 2);
+    return normalizeCaseInsensitivePath(trimmed, 3);
   }
   if (slashPath.startsWith("//")) {
     return normalizeCaseInsensitivePath(trimmed, 2);
