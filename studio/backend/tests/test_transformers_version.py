@@ -1801,6 +1801,82 @@ class TestVenvDirIsValidLogging:
 
 
 # ---------------------------------------------------------------------------
+# _venv_dir_is_valid RECORD integrity — issue #7715
+# The dir + METADATA checks pass a sidecar whose transformers dir and Version
+# are intact but which lost a file to a truncated/interrupted install. The
+# RECORD manifest catches that so wipe-and-reinstall self-heals.
+# ---------------------------------------------------------------------------
+
+
+class TestVenvDirIsValidRecordIntegrity:
+    def _make_venv(self, venv_dir: Path, pkg: str, version: str, files: dict[str, bytes]):
+        """Create a fake target-dir install of *pkg* at *version* whose RECORD lists
+        *files* (relative path -> content) at their true size."""
+        di = venv_dir / f"{pkg}-{version}.dist-info"
+        di.mkdir(parents = True)
+        (di / "METADATA").write_text(f"Name: {pkg}\nVersion: {version}\n")
+        rows = []
+        for rel, content in files.items():
+            path = venv_dir / rel
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_bytes(content)
+            rows.append(f"{rel},sha256=deadbeef,{len(content)}")
+        # A .dist-info RECORD row with no size (as pip writes for RECORD itself).
+        rows.append(f"{pkg}-{version}.dist-info/RECORD,,")
+        (di / "RECORD").write_text("\n".join(rows) + "\n")
+
+    def test_intact_record_passes(self, tmp_path: Path):
+        venv_dir = tmp_path / "venv"
+        self._make_venv(
+            venv_dir, "transformers", "5.3.0",
+            {"transformers/__init__.py": b"x = 1\n", "transformers/models.py": b"y = 2\n"},
+        )
+        assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is True
+
+    def test_missing_file_is_detected(self, tmp_path: Path, caplog):
+        venv_dir = tmp_path / "venv"
+        self._make_venv(
+            venv_dir, "transformers", "5.3.0",
+            {"transformers/__init__.py": b"x = 1\n", "transformers/models.py": b"y = 2\n"},
+        )
+        (venv_dir / "transformers" / "models.py").unlink()  # RECORD still lists it
+        caplog.set_level(logging.INFO)
+        assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is False
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING], (
+            "a missing RECORD file must be logged at WARNING"
+        )
+
+    def test_truncated_file_is_detected(self, tmp_path: Path):
+        venv_dir = tmp_path / "venv"
+        self._make_venv(
+            venv_dir, "transformers", "5.3.0",
+            {"transformers/__init__.py": b"x = 1\n", "transformers/models.py": b"y = 2\n" * 20},
+        )
+        # Overwrite shorter than the size RECORD captured.
+        (venv_dir / "transformers" / "models.py").write_bytes(b"y = 2\n")
+        assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is False
+
+    def test_larger_file_is_not_damage(self, tmp_path: Path):
+        venv_dir = tmp_path / "venv"
+        self._make_venv(
+            venv_dir, "transformers", "5.3.0",
+            {"transformers/__init__.py": b"x = 1\n"},
+        )
+        # A file larger than recorded is a packaging collision, not damage.
+        (venv_dir / "transformers" / "__init__.py").write_bytes(b"x = 1\n# extra\n")
+        assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is True
+
+    def test_no_record_falls_back_to_metadata(self, tmp_path: Path):
+        # Installers that omit RECORD keep the old dir + METADATA behaviour.
+        venv_dir = tmp_path / "venv"
+        (venv_dir / "transformers").mkdir(parents = True)
+        di = venv_dir / "transformers-5.3.0.dist-info"
+        di.mkdir()
+        (di / "METADATA").write_text("Name: transformers\nVersion: 5.3.0\n")
+        assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is True
+
+
+# ---------------------------------------------------------------------------
 # _ensure_venv_dir — issue #6103
 # A slow runtime install must log each package as it starts, otherwise it
 # looks like a hang.

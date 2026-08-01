@@ -29,6 +29,7 @@ Strategy:
 """
 
 import ast
+import csv
 import importlib
 import importlib.util
 import json
@@ -1920,6 +1921,55 @@ _VENV_T5_550_PACKAGES = (
 _VENV_T5_PACKAGES = _VENV_T5_550_PACKAGES
 
 
+def _dist_record_intact(venv_dir: str, dist_info: Path) -> bool:
+    """Return False when a file listed in *dist_info*'s RECORD is missing or shorter
+    than its recorded size -- the shape of damage (a truncated or deleted file inside
+    an otherwise-intact sidecar) that the directory + METADATA checks miss.
+
+    A file *larger* than recorded is a packaging collision, not damage, so it passes.
+    ``.pyc`` and ``.dist-info`` entries and rows without a recorded size are skipped.
+    A missing or unreadable RECORD leaves the existing METADATA gate in charge
+    (returns True), so installers that omit RECORD are unaffected."""
+    record = dist_info / "RECORD"
+    if not _safe_is_file(record):
+        return True
+    try:
+        rows = record.read_text(errors = "replace", encoding = "utf-8").splitlines()
+    except OSError:
+        return True
+    root = Path(venv_dir)
+    for row in csv.reader(rows):
+        if len(row) < 3 or not row[2]:
+            continue
+        rel = row[0]
+        norm = rel.replace("\\", "/")
+        if norm.endswith(".pyc") or ".dist-info/" in norm:
+            continue
+        try:
+            recorded = int(row[2])
+        except ValueError:
+            continue
+        try:
+            actual = (root / rel).stat().st_size
+        except OSError:
+            logger.warning(
+                "%s is missing %s (listed in RECORD) -- venv will be wiped and reinstalled",
+                venv_dir,
+                rel,
+            )
+            return False
+        if actual < recorded:
+            logger.warning(
+                "%s has a truncated %s (%d < %d bytes recorded) -- venv will be wiped and reinstalled",
+                venv_dir,
+                rel,
+                actual,
+                recorded,
+            )
+            return False
+    return True
+
+
 def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
     """Return True if *venv_dir* has all *packages* at the correct versions."""
     if not os.path.isdir(venv_dir) or not os.listdir(venv_dir):
@@ -1954,6 +2004,12 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
                             installed_ver,
                             pkg_version,
                         )
+                        return False
+                    # Version is right; the dir + METADATA gate can still miss a
+                    # truncated or deleted file inside an otherwise-intact package
+                    # (disk-full, interrupted pip). Verify the RECORD manifest so
+                    # that class of damage also self-heals via wipe-and-reinstall.
+                    if not _dist_record_intact(venv_dir, di):
                         return False
                     dist_info_found = True
                     break
