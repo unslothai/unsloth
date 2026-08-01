@@ -84,6 +84,36 @@ IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monit
 # reader between detect_hardware()'s reset and the CUDA branch sees "chat only" on a
 # GPU host. Re-entrant: get_device() -> detect_hardware() nests on one thread.
 _DETECT_LOCK = threading.RLock()
+
+# Bumped by shutdown so a detection already inside the torch import cannot
+# publish over the reset, leaving the next lifespan a non-None DEVICE that makes
+# it skip detection. Taking _DETECT_LOCK in shutdown would park teardown behind
+# that whole import, so compare an epoch instead.
+_EPOCH_LOCK = threading.Lock()
+DETECTION_EPOCH = 0
+
+
+def invalidate_detection() -> int:
+    """Retire any detection in flight. Returns the new epoch."""
+    global DETECTION_EPOCH
+    with _EPOCH_LOCK:
+        DETECTION_EPOCH += 1
+        return DETECTION_EPOCH
+
+
+def current_detection_epoch() -> int:
+    with _EPOCH_LOCK:
+        return DETECTION_EPOCH
+
+
+def _discard_detection_locked() -> None:
+    """Drop a verdict produced for an epoch that has been retired."""
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
+    DEVICE = None
+    CHAT_ONLY = True
+    CHAT_ONLY_REASON = None
+    IS_ROCM = False
+    DETECTION_COMPLETE.clear()
 # Set once ensure_hardware_detected() has a settled answer, including its CPU/chat-only
 # fallback. Poll this, not DEVICE: DEVICE is assigned mid-detection and can be revised.
 DETECTION_COMPLETE = threading.Event()
@@ -269,6 +299,7 @@ def detect_hardware() -> DeviceType:
         # half-written answer that the autorepair path swallows, and health would then
         # serve it -- losing "mlx_unavailable" stops the sidebar poll for good.
         published = (DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM)
+        epoch = current_detection_epoch()
         DETECTION_COMPLETE.clear()
         try:
             device = _detect_hardware_locked()
@@ -280,6 +311,10 @@ def detect_hardware() -> DeviceType:
             if was_complete:
                 DETECTION_COMPLETE.set()
             raise
+        if current_detection_epoch() != epoch:
+            # Shutdown ran mid-pass; this verdict belongs to a lifespan that ended.
+            _discard_detection_locked()
+            return device
         DETECTION_GENERATION += 1
         DETECTION_COMPLETE.set()
         return device
@@ -299,6 +334,7 @@ def ensure_hardware_detected() -> DeviceType:
     never happens."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, DETECTION_GENERATION
     with _DETECT_LOCK:
+        epoch = current_detection_epoch()
         if DEVICE is None:
             try:
                 _detect_hardware_locked()
@@ -311,6 +347,10 @@ def ensure_hardware_detected() -> DeviceType:
             # rebuilds its curated defaults whenever this counter moves, so bumping it
             # per call caused needless rebuilds. Forced detect_hardware() bumps it too.
             DETECTION_GENERATION += 1
+        if current_detection_epoch() != epoch:
+            # See detect_hardware(): a retired pass must not publish.
+            _discard_detection_locked()
+            return DEVICE
         # Set only here, where a final value is guaranteed: a non-None DEVICE only means
         # a candidate was picked (the XPU branch assigns it before a probe that can
         # raise), so a waiter trusting it can publish training-enabled for a host that

@@ -11,6 +11,7 @@ start GPU work or write model artifacts.
 from __future__ import annotations
 
 import hmac
+import asyncio
 from typing import Any
 
 from fastmcp import FastMCP
@@ -111,7 +112,9 @@ def create_studio_mcp() -> FastMCP:
             "training": _dump(training),
             "export": _dump(export),
             "inference": _dump(inference),
-            "hardware": get_gpu_utilization(),
+            # Off the loop: reaches hardware detection, which blocks on the warm's
+            # torch import. The only synchronous read left here.
+            "hardware": await asyncio.to_thread(get_gpu_utilization),
         }
 
     @mcp.tool

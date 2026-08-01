@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
+import {
+  isProvisionalVerdict,
+  resolveVerdict,
+} from "@/config/hardware-verdict";
 import { create } from "zustand";
 
 export const env = {
@@ -65,6 +69,12 @@ function shouldKeepAuthoritativePlatform(force?: boolean): boolean {
   return !force && usePlatformStore.getState().fetched;
 }
 
+// How long fetchDeviceType waits out a backend that is still detecting hardware,
+// and how often it re-reads while it does. Sized from the startup warm's torch
+// import (~1-2s measured on a cold launch), with headroom for a slower host.
+const HARDWARE_DETECT_WAIT_MS = 5000;
+const HARDWARE_DETECT_POLL_MS = 200;
+
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
   force?: boolean;
@@ -80,14 +90,26 @@ export async function fetchDeviceType(options?: {
       typeof window === "undefined"
         ? null
         : localStorage.getItem("unsloth_auth_token");
-    const res = await fetch(apiUrl("/api/health"), {
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-    });
+    // Re-read while the backend is still measuring: chat_only is its
+    // pre-detection default until then, and __root.tsx's beforeLoad acts on what
+    // this returns, sending a GPU host to /chat with Train hidden. The window is
+    // the warm's torch import, ~1-2s measured, so a bounded re-read lands the
+    // measurement without stalling boot.
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+    const deadline = Date.now() + HARDWARE_DETECT_WAIT_MS;
+    let res = await fetch(apiUrl("/api/health"), { headers });
+    while (res.ok && Date.now() < deadline) {
+      const peek = (await res.clone().json()) as { hardware_detecting?: boolean };
+      if (!isProvisionalVerdict(peek)) break;
+      await new Promise((resolve) => setTimeout(resolve, HARDWARE_DETECT_POLL_MS));
+      res = await fetch(apiUrl("/api/health"), { headers });
+    }
     if (res.ok) {
       const data = (await res.json()) as {
         device_type?: string;
         chat_only?: boolean;
         chat_only_reason?: string | null;
+        hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
         secure?: boolean;
@@ -102,8 +124,11 @@ export async function fetchDeviceType(options?: {
         return usePlatformStore.getState().deviceType;
       }
       const deviceType = data.device_type ?? detectLocalPlatform();
-      const chatOnly = data.chat_only ?? false;
-      const chatOnlyReason = data.chat_only_reason ?? null;
+      // A still-provisional reply keeps the stored verdict: see resolveVerdict.
+      const { chatOnly, chatOnlyReason } = resolveVerdict(
+        data,
+        usePlatformStore.getState(),
+      );
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
       // SSH); keeping fetched=false retries once a token exists.

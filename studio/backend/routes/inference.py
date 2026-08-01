@@ -4405,9 +4405,14 @@ async def _reject_unservable_model(
         # so match on the path too. Quants of one repo share a directory, so the path
         # alone cannot tell them apart: without the variant check an explicit :Q8_0
         # would be answered by a resident Q4_K_M.
+        # Off the loop: this reads the Transformers singleton, and the llama.cpp
+        # short-circuits above skip the two offloaded reads before it, so on a
+        # restart it was what built the singleton on the event-loop thread.
         if (
             resolved is not None
-            and _resolves_to_resident(resolved[0], llama_only = quantified)
+            and await asyncio.to_thread(
+                _resolves_to_resident, resolved[0], llama_only = quantified
+            )
             and (not quantified or _resident_quant_is(variant))
         ):
             return
@@ -4416,7 +4421,9 @@ async def _reject_unservable_model(
         advertised = _advertised_local_path(base)
         if (
             advertised is not None
-            and _resolves_to_resident(advertised, llama_only = quantified)
+            and await asyncio.to_thread(
+                _resolves_to_resident, advertised, llama_only = quantified
+            )
             and (not quantified or _resident_quant_is(variant))
         ):
             return

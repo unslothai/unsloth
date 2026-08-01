@@ -46,6 +46,11 @@ async def run_lifespan_shutdown(
             logger.warning("terminate_downloads failed at shutdown: %s", exc)
 
     try:
+        # Retire any detection still inside the torch import first, so it cannot
+        # publish over the reset below.
+        invalidate = getattr(hw_module, "invalidate_detection", None)
+        if invalidate is not None:
+            invalidate()
         hw_module.DEVICE = None
         # The completion signal goes with it: /api/health reads a set event as
         # "DEVICE is authoritative", so leaving it set over a cleared DEVICE would

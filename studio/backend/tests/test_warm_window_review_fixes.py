@@ -786,15 +786,36 @@ def test_the_delete_guard_keeps_its_short_circuit_and_fail_closed():
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "delete_cached_model_response"
     )
+    # Bind to the specific Try, not any Try whose dump mentions to_thread: a
+    # decoy try/to_thread/raise elsewhere in the handler satisfied that, so this
+    # passed with the real fail-closed guard deleted.
+    def _offloads_the_delete_guard(node: ast.Try) -> bool:
+        return any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "to_thread"
+            and any(
+                isinstance(a, ast.Name) and a.id == "_load_state_blocks_delete"
+                for a in call.args
+            )
+            for stmt in node.body
+            for call in ast.walk(stmt)
+        )
+
     guarded = [
         sub
         for sub in ast.walk(fn)
-        if isinstance(sub, ast.Try)
-        and any("to_thread" in ast.dump(h) for h in [sub])
-        and sub.handlers
+        if isinstance(sub, ast.Try) and sub.handlers and _offloads_the_delete_guard(sub)
     ]
     assert guarded, "the offloaded guard is no longer inside a try/except"
-    raises = [sub for sub in ast.walk(guarded[0]) if isinstance(sub, ast.Raise)]
+    # The raise must be in a handler. In the body it is whatever the guard itself
+    # raises on success, which says nothing about an unreadable load state.
+    raises = [
+        sub
+        for handler in guarded[0].handlers
+        for sub in ast.walk(handler)
+        if isinstance(sub, ast.Raise)
+    ]
     assert raises, "an unreadable load state no longer raises; delete would proceed"
 
 
@@ -1127,4 +1148,132 @@ def test_the_saved_gpu_override_check_runs_off_the_event_loop():
     assert {"get_device", "resolve_requested_gpu_ids"} <= reached, (
         "the offloaded helper no longer does the device resolution; the check "
         "moved somewhere this test does not cover"
+    )
+
+
+# ------------------------------------------ a retired detection cannot publish
+def test_a_detection_retired_by_shutdown_does_not_publish(monkeypatch):
+    """Shutdown clears the verdict; a detector inside the torch import must not
+    put it back.
+
+    Shutdown cannot take _DETECT_LOCK to stop it -- that parks teardown behind the
+    whole import, the stall this startup path exists to remove -- so it retires
+    the epoch instead. Without this, the detector republishes a complete,
+    settled-looking verdict over the reset, and the next lifespan reads a non-None
+    DEVICE and skips detection entirely, serving the retired run's answer.
+    """
+    monkeypatch.setattr(hw, "DEVICE", None, raising = False)
+    monkeypatch.setattr(hw, "CHAT_ONLY", True, raising = False)
+
+    def _detect_and_get_retired():
+        # Stands in for the torch import: shutdown lands while we are inside it.
+        hw.DEVICE = hw.DeviceType.CUDA
+        hw.CHAT_ONLY = False
+        hw.invalidate_detection()
+        return hw.DeviceType.CUDA
+
+    monkeypatch.setattr(hw, "_detect_hardware_locked", _detect_and_get_retired)
+    hw.DETECTION_COMPLETE.clear()
+    hw.detect_hardware()
+
+    assert hw.DEVICE is None, (
+        "a retired detection published its verdict; the next lifespan skips "
+        "detection and serves hardware the previous one measured"
+    )
+    assert hw.CHAT_ONLY is True
+    assert not hw.DETECTION_COMPLETE.is_set()
+
+
+def test_a_detection_that_is_not_retired_still_publishes(monkeypatch):
+    """Negative control: the epoch gate must not block ordinary detection."""
+    monkeypatch.setattr(hw, "DEVICE", None, raising = False)
+    monkeypatch.setattr(hw, "CHAT_ONLY", True, raising = False)
+
+    def _ok():
+        hw.DEVICE = hw.DeviceType.CUDA
+        hw.CHAT_ONLY = False
+        return hw.DeviceType.CUDA
+
+    monkeypatch.setattr(hw, "_detect_hardware_locked", _ok)
+    hw.DETECTION_COMPLETE.clear()
+    try:
+        assert hw.detect_hardware() is hw.DeviceType.CUDA
+        assert hw.DEVICE is hw.DeviceType.CUDA
+        assert hw.DETECTION_COMPLETE.is_set()
+    finally:
+        hw.DETECTION_COMPLETE.set()
+
+
+def test_shutdown_retires_the_detection_epoch():
+    """run_lifespan_shutdown must move the epoch, not just clear the globals."""
+    src = (_BACKEND / "utils" / "lifespan_shutdown.py").read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_lifespan_shutdown"
+    )
+    names = {
+        sub.value
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+    }
+    assert "invalidate_detection" in names, (
+        "shutdown no longer retires the detection epoch; a detector in the torch "
+        "import republishes over the reset"
+    )
+
+
+# ------------------------------------------- the MCP status tool stays off-loop
+def test_the_mcp_status_tool_reads_hardware_off_the_event_loop():
+    """get_gpu_utilization() reaches detection, which blocks on the warm import."""
+    path = _BACKEND / "mcp_server.py"
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    called_directly = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "get_gpu_utilization"
+    ]
+    assert not called_directly, (
+        "the MCP status tool calls get_gpu_utilization() inline again; it blocks "
+        "the event loop on the warm's torch import"
+    )
+    offloaded = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "to_thread"
+        and any(
+            isinstance(a, ast.Name) and a.id == "get_gpu_utilization" for a in node.args
+        )
+    ]
+    assert offloaded, "the hardware read is no longer handed to a worker thread"
+
+
+# -------------------------------- an authed reply is not both settled and not
+def test_an_authed_reply_drops_the_provisional_marker():
+    """base is built before the bearer await, so its marker can be out of date."""
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
+    )
+    pops = [
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr == "pop"
+        and any(
+            isinstance(a, ast.Constant) and a.value == "hardware_detecting"
+            for a in sub.args
+        )
+    ]
+    assert pops, (
+        "an authed reply can still carry hardware_detecting beside the measured "
+        "verdict it qualifies; a client may believe either one"
     )

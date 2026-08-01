@@ -58,11 +58,26 @@ def test_no_async_handler_builds_the_singleton_inline():
 
 
 def test_the_offload_is_actually_present():
-    """Guard against the sweep passing because the calls simply vanished."""
+    """Guard against the sweep passing because the calls simply vanished.
+
+    Counted off the AST, not the source text. A literal-string count says the
+    offload is gone the moment a formatter wraps one of these calls across lines,
+    and pre-commit.ci reformats this repo.
+    """
     total = 0
     for rel in _ROUTE_FILES:
-        text = (_BACKEND / rel).read_text(encoding = "utf-8")
-        total += text.count("await asyncio.to_thread(get_inference_backend)")
+        tree = ast.parse((_BACKEND / rel).read_text(encoding = "utf-8"))
+        total += sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "to_thread"
+            and any(
+                isinstance(a, ast.Name) and a.id == "get_inference_backend"
+                for a in node.args
+            )
+        )
     assert total >= 14, f"expected the offloaded call sites to survive, found {total}"
 
 
@@ -110,17 +125,42 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
                 ):
                     offenders.append(f"{rel}:{sub.lineno} async {fn.name} -> {sub.func.id}()")
 
-    # These reach the singleton through a sync helper and are NOT individually offloaded:
-    # the warm builds the orchestrator right after hardware detection, so the getter is a
-    # plain dict read before any of them run. A frozen baseline, not an endorsement -- the
-    # set must not grow without an offload or a justification here.
+    # These reach the singleton through a sync helper and are NOT individually
+    # offloaded. A known gap, not an endorsement: the warm runs its hardware stage
+    # before the inference_backend one, and the hardware stage is the multi-second
+    # torch import, so during exactly the window this startup path exists to fix
+    # the getter is cold and these do block. The set must not grow without an
+    # offload or a justification here.
     known = {
-        "_resolves_to_resident",
         "_unload_may_evict",
         "_monitor_active_model",
         "_monitor_context_length",
-        "_openai_model_objects",
     }
+    # _resolves_to_resident is offloaded at its two singleton-reading call sites.
+    # The third, in _openai_catalog_objects, passes llama_only = True, and the
+    # helper's candidate list spells that "None if llama_only else
+    # get_inference_backend()...", so the getter is never evaluated there. This
+    # sweep matches on the callee name and cannot see that, so exempt that one
+    # call site by argument rather than blanket-exempting the helper again.
+    def _is_llama_only(site: str) -> bool:
+        rel, rest = site.split(":", 1)
+        lineno = int(rest.split(" ", 1)[0])
+        tree = ast.parse((_BACKEND / rel).read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "_resolves_to_resident"
+                and node.lineno == lineno
+            ):
+                return any(
+                    kw.arg == "llama_only"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is True
+                    for kw in node.keywords
+                )
+        return False
+
+    offenders = [o for o in offenders if not _is_llama_only(o)]
     new = [o for o in offenders if o.rsplit("-> ", 1)[-1].rstrip("()") not in known]
     assert not new, (
         "new async handlers reaching the singleton through a sync helper; "

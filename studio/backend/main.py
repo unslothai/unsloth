@@ -1377,6 +1377,9 @@ async def health_check(request: Request):
         authed["chat_only"] = snapshot[0]
         authed["chat_only_reason"] = snapshot[1]
         authed["device_type"] = device_type
+        # base predates the bearer await, so its marker can describe a snapshot
+        # detection has since replaced. Do not ship "detecting" beside a measurement.
+        authed.pop("hardware_detecting", None)
     # Otherwise leave both out. The frontend treats a present device_type as "this
     # response is authoritative" (config/env.ts) and caches fetched=true, which would
     # pin a GPU host to chat-only for the rest of the SPA session. Omitting it keeps
