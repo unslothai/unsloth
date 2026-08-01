@@ -2123,8 +2123,12 @@ def run(
         if not studio_python:
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
-        # Re-exec via the studio venv's `unsloth` console-script.
-        studio_bin = studio_python.parent / "unsloth"
+        # Re-exec via the studio venv's `unsloth` console-script. Windows ships it as
+        # unsloth.exe, so the bare name is never a file there and `unsloth run` aborted
+        # with "venv missing 'unsloth' entry point" on a perfectly good install.
+        studio_bin = studio_python.parent / (
+            "unsloth.exe" if platform.system() == "Windows" else "unsloth"
+        )
         if not studio_bin.is_file():
             typer.echo("Unsloth venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
             raise typer.Exit(1)
