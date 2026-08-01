@@ -142,7 +142,12 @@ function Refresh-Environment {
     foreach ($level in @('Machine', 'User')) {
         $vars = [System.Environment]::GetEnvironmentVariables($level)
         foreach ($key in $vars.Keys) {
-            if ($key -eq 'Path') { continue }
+            # PSModulePath joins Path as an exception. Reloading it from the
+            # registry would undo the normalization at the top of this file,
+            # and several callers of this function run before the uv installer
+            # (which loads Microsoft.PowerShell.Security), so the module path
+            # would be broken again exactly where it has to be right.
+            if ($key -eq 'Path' -or $key -eq 'PSModulePath') { continue }
             Set-Item -Path "Env:$key" -Value $vars[$key] -ErrorAction SilentlyContinue
         }
     }
