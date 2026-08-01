@@ -1895,7 +1895,7 @@ const Composer: FC<{
     // Silence, a thread switch mid-transcription, or a plus-menu insertion
     // with no speech: keep the draft, submit nothing. Settled before the hold
     // below, so nothing to send never leaves an intent pending.
-    const { text } = aui.composer().getState();
+    const text = composerText;
     const sendable =
       !dictationFailed() &&
       shouldSubmitDictation({
