@@ -124,9 +124,7 @@ def test_fallback_is_settled_before_the_duplicate_load_check():
     request has to be normalized before it is compared, or every duplicate /load
     tears down a healthy CPU server and reloads it."""
     src = _load_model_source()
-    assert src.index("_metal_device_is_paravirtual()") < src.index(
-        "self._already_in_target_state("
-    )
+    assert src.index("_metal_device_is_paravirtual()") < src.index("self._already_in_target_state(")
 
 
 def test_repeat_auto_load_does_not_reload_a_healthy_cpu_server(monkeypatch, tmp_path):
