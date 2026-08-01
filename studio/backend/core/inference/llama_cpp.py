@@ -9114,6 +9114,48 @@ class LlamaCppBackend:
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
                     mtp_draft_path = mtp_draft_path,
                 )
+                # Same shape as the projector drop above: the CPU pin below needs a
+                # draft-layer flag from the probe, and without one the drafter keeps
+                # its own automatic placement on the virtualised device. Unlike the
+                # projector this is a throughput fix, not a correctness one -- a
+                # token is emitted only when the CPU-side target model samples it
+                # itself (common_sampler_sample_and_accept_n pushes the target's own
+                # draw and stops at the first mismatch), so a corrupt drafter can
+                # only get its proposals rejected. That costs a drafter forward pass
+                # per step and buys nothing, so drop the drafter instead. Both
+                # sources go: Unsloth's own resolved drafter, and a user/env one in
+                # the extras. The rest of the spec group leaves with it, since a
+                # --spec-type that needs a draft model (draft-simple, eagle3) aborts
+                # llama-server once the model is gone; the drafter-free modes are
+                # re-derived by _build_speculative_flags right below. A user who
+                # already pinned the drafter themselves keeps it: the probe only
+                # decides whether Unsloth can emit the flag, and their -ngld 0 /
+                # --spec-draft-device cpu puts the drafter on the CPU regardless.
+                _pv_draft_unpinnable = bool(
+                    _paravirtual_cpu_forced
+                    and not server_caps.get("spec_draft_ngl_flag")
+                    and (launch_mtp_draft_path or _extra_args_mtp_draft_path(extra_args))
+                    and not _extra_args_draft_offloaded_to_cpu(extra_args)
+                )
+                if _pv_draft_unpinnable:
+                    logger.warning(
+                        "Dropping the speculative drafter for this session: this "
+                        "Mac's Metal device is virtualised and this llama-server "
+                        "build advertises no draft-layer flag, so the drafter would "
+                        "keep running on the device whose output is corrupt. Output "
+                        "stays correct either way; this only costs speed. Run "
+                        "'unsloth studio update' to install a build that supports it."
+                    )
+                    launch_mtp_draft_path = None
+                    if extra_args:
+                        extra_args = strip_shadowing_flags(
+                            extra_args,
+                            strip_context = False,
+                            strip_cache = False,
+                            strip_spec = True,
+                            strip_template = False,
+                            strip_split_mode = False,
+                        )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -9137,9 +9179,10 @@ class LlamaCppBackend:
                 # corrupt path the CPU pin exists to avoid. An embedded MTP head
                 # needs nothing here: with no draft model that override is skipped
                 # (has_draft is false) and the head follows the main placement.
-                # Probe-gated like the other optional flags in this file: an older
-                # build would reject the unknown argument and refuse to start, which
-                # is worse than the corrupt drafter it prevents.
+                # Probe-gated like the other optional flags in this file, so the flag
+                # name matches the build (-ngld predates --spec-draft-ngl) and an
+                # unknown argument never refuses the start. A build advertising none
+                # of them never reaches this pin: the drafter was dropped above.
                 # extra_args is inspected alongside spec_flags because a user-owned
                 # --spec-type makes _build_speculative_flags return nothing, so the
                 # drafter is theirs (--model-draft in extras) and would go unpinned.
@@ -9425,6 +9468,19 @@ class LlamaCppBackend:
                 if gpu_ids is not None:
                     env.pop("LLAMA_ARG_DEVICE", None)
                     env.pop("LLAMA_ARG_MAIN_GPU", None)
+
+                # The unpinnable-drafter drop above rewrites argv, which cannot
+                # reach the drafter the child would pick up from its own env. The
+                # spec type goes too, for the same reason the CLI one did: llama.cpp
+                # appends types rather than replacing them, so an inherited
+                # draft-simple would outlive the model it needs.
+                if _pv_draft_unpinnable:
+                    for _pv_spec_var in (
+                        "LLAMA_ARG_SPEC_DRAFT_MODEL",
+                        "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
+                        "LLAMA_ARG_SPEC_TYPE",
+                    ):
+                        env.pop(_pv_spec_var, None)
 
                 # Windows + full offload: PASSIVE OMP + 2 threads stop
                 # spin-wait burning CPU. CPU/partial offload keeps default

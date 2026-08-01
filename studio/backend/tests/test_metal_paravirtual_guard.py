@@ -466,6 +466,210 @@ def test_the_drop_precedes_everything_the_projector_feeds():
     assert "self._is_vision = effective_is_vision" in src
 
 
+# ── a drafter that cannot be pinned must not be launched either ──────
+
+
+def _drafter_gate(
+    *,
+    paravirtual: bool,
+    caps: dict,
+    drafter = "/models/mtp-gemma.gguf",
+    extra_args = None,
+):
+    """Execute load_model's real unpinnable-drafter statements and report what the
+    launch would see: (resolved drafter, extra args, warnings)."""
+    body = None
+    for node in ast.walk(_load_model_tree()):
+        stmts = getattr(node, "body", None)
+        if not isinstance(stmts, list):
+            continue
+        starts = [
+            i
+            for i, s in enumerate(stmts)
+            if isinstance(s, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "_pv_draft_unpinnable" for t in s.targets)
+        ]
+        ends = [
+            i
+            for i, s in enumerate(stmts)
+            if isinstance(s, ast.If)
+            and isinstance(s.test, ast.Name)
+            and s.test.id == "_pv_draft_unpinnable"
+        ]
+        if starts and ends:
+            body = stmts[starts[0] : ends[0] + 1]
+            break
+    assert body is not None, "the unpinnable-drafter block moved out of load_model"
+    log = _FakeLogger()
+    scope = {
+        "_paravirtual_cpu_forced": paravirtual,
+        "server_caps": caps,
+        "launch_mtp_draft_path": drafter,
+        "extra_args": list(extra_args) if extra_args else extra_args,
+        "_extra_args_mtp_draft_path": llama_cpp._extra_args_mtp_draft_path,
+        "_extra_args_draft_offloaded_to_cpu": llama_cpp._extra_args_draft_offloaded_to_cpu,
+        "strip_shadowing_flags": llama_cpp.strip_shadowing_flags,
+        "logger": log,
+    }
+    exec(ast.unparse(ast.Module(body = body, type_ignores = [])), scope)
+    return scope["launch_mtp_draft_path"], scope["extra_args"], log.warnings
+
+
+@pytest.fixture(autouse = True)
+def _no_inherited_draft_env(monkeypatch):
+    """The drafter parsers fall back to os.environ, so a stray var on the test host
+    must not decide these cases."""
+    for var in (
+        "LLAMA_ARG_SPEC_DRAFT_MODEL",
+        "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
+        "LLAMA_ARG_N_GPU_LAYERS_DRAFT",
+    ):
+        monkeypatch.delenv(var, raising = False)
+
+
+def test_a_drafter_that_cannot_be_pinned_is_dropped(monkeypatch):
+    """A separate drafter takes params.speculative.draft.n_gpu_layers (default -1 =
+    auto), not the main --gpu-layers, so without a draft-layer flag to pin it the
+    drafter runs full-offload on the virtualised device."""
+    drafter, extras, warnings = _drafter_gate(paravirtual = True, caps = {})
+    assert drafter is None
+    assert any("draft-layer flag" in w for w in warnings), "the reason must be named"
+    assert any("unsloth studio update" in w for w in warnings), "the fix must be named"
+    # Dropping speculation cannot change a single emitted token: llama.cpp's
+    # common_sampler_sample_and_accept_n pushes the TARGET model's own draw and
+    # stops at the first draft mismatch, so this is a throughput fix and the
+    # warning must not claim the output was wrong.
+    assert not any("corrupt output" in w for w in warnings), warnings
+    assert any("only costs speed" in w for w in warnings), warnings
+    # An env-only drafter is the same launch, so it takes the same exit.
+    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/models/env.gguf")
+    drafter, _extras, warnings = _drafter_gate(paravirtual = True, caps = {}, drafter = None)
+    assert warnings, "an inherited LLAMA_ARG_SPEC_DRAFT_MODEL drafter went unnoticed"
+
+
+def test_the_drop_takes_a_user_owned_drafter_with_it():
+    """A user --spec-type makes _build_speculative_flags emit nothing, so clearing
+    only Unsloth's resolved path would leave their --model-draft on the device."""
+    extras = ["--spec-type", "draft-simple", "--model-draft", "/models/d.gguf", "--top-k", "40"]
+    drafter, out, warnings = _drafter_gate(
+        paravirtual = True, caps = {}, drafter = None, extra_args = extras
+    )
+    assert drafter is None
+    assert warnings
+    assert llama_cpp._extra_args_mtp_draft_path(out, {}) is None
+    # The spec type leaves with the model it needs, or a kept draft-simple would
+    # reach a llama-server that has no draft model to serve it.
+    assert "--spec-type" not in out and "draft-simple" not in out
+    # ...and nothing else is touched.
+    assert out == ["--top-k", "40"]
+
+
+def test_the_env_the_child_inherits_is_dropped_too():
+    """argv cannot un-set LLAMA_ARG_SPEC_DRAFT_MODEL: llama.cpp reads it directly,
+    and it appends spec types rather than replacing them, so an inherited
+    draft-simple would outlive the model that was just removed."""
+    src = _load_model_source()
+    gate_at = src.index("if _pv_draft_unpinnable:\n                    for _pv_spec_var in (")
+    block = src[gate_at : gate_at + 400]
+    for var in (
+        "LLAMA_ARG_SPEC_DRAFT_MODEL",
+        "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
+        "LLAMA_ARG_SPEC_TYPE",
+    ):
+        assert var in block, f"{var} survives the drafter drop into the child env"
+    assert "env.pop(_pv_spec_var, None)" in block
+
+
+def test_a_pinnable_drafter_survives_on_the_same_hardware():
+    """The negative that matters most: a build WITH a draft-layer flag keeps its
+    drafter, because --spec-draft-ngl 0 puts it on the CPU where it is correct."""
+    extras = ["--model-draft", "/models/d.gguf"]
+    drafter, out, warnings = _drafter_gate(
+        paravirtual = True,
+        caps = {"spec_draft_ngl_flag": "--spec-draft-ngl"},
+        extra_args = extras,
+    )
+    assert drafter == "/models/mtp-gemma.gguf"
+    assert out == extras
+    assert warnings == []
+    # The legacy alias is a supported build too, so it must not lose its drafter.
+    drafter, out, warnings = _drafter_gate(
+        paravirtual = True,
+        caps = {"spec_draft_ngl_flag": "--gpu-layers-draft"},
+        extra_args = extras,
+    )
+    assert drafter == "/models/mtp-gemma.gguf"
+    assert out == extras
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
+    "pin",
+    [
+        ["--spec-draft-ngl", "0"],
+        ["-ngld", "0"],
+        ["--gpu-layers-draft=0"],
+        ["--spec-draft-device", "cpu"],
+        ["--device-draft", "none"],
+    ],
+)
+def test_a_drafter_the_user_already_pinned_is_left_alone(pin):
+    """The probe only decides whether Unsloth can emit the flag. A user who passed
+    one themselves already has the drafter on the CPU, so there is nothing corrupt
+    left to protect them from and dropping it would cost them speed for nothing."""
+    extras = [*pin, "--model-draft", "/models/d.gguf"]
+    drafter, out, warnings = _drafter_gate(paravirtual = True, caps = {}, extra_args = extras)
+    assert drafter == "/models/mtp-gemma.gguf"
+    assert out == extras
+    assert warnings == []
+    # ...and last-wins still decides: a pin the user overrode is no pin at all.
+    overridden = ["--spec-draft-ngl", "0", "-ngld", "99", "--model-draft", "/models/d.gguf"]
+    drafter, _out, warnings = _drafter_gate(paravirtual = True, caps = {}, extra_args = overridden)
+    assert drafter is None
+    assert warnings
+
+
+def test_a_real_mac_keeps_its_drafter():
+    """The drop is scoped to the virtualised device: physical Apple Silicon (or any
+    non-Mac) keeps the drafter on the GPU, which is where it belongs."""
+    extras = ["--spec-type", "draft-simple", "--model-draft", "/models/d.gguf"]
+    drafter, out, warnings = _drafter_gate(paravirtual = False, caps = {}, extra_args = extras)
+    assert drafter == "/models/mtp-gemma.gguf"
+    assert out == extras
+    assert warnings == []
+
+
+def test_a_load_with_no_separate_drafter_is_unaffected():
+    """Nothing to drop, so the guard must not manufacture a warning -- and must not
+    strip the spec group from a load that never had a draft model. An embedded MTP
+    head is exactly that case: with no draft model llama.cpp skips the
+    n_gpu_layers override entirely, so the head already follows --gpu-layers 0."""
+    for caps in ({}, {"spec_draft_ngl_flag": "--spec-draft-ngl"}):
+        extras = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
+        drafter, out, warnings = _drafter_gate(
+            paravirtual = True, caps = caps, drafter = None, extra_args = extras
+        )
+        assert drafter is None
+        assert out == extras
+        assert warnings == []
+    # ...and neither is a plain text load with no extras at all.
+    drafter, out, warnings = _drafter_gate(paravirtual = True, caps = {}, drafter = None)
+    assert (drafter, out, warnings) == (None, None, [])
+
+
+def test_the_drafter_drop_precedes_the_flags_it_feeds():
+    """launch_mtp_draft_path becomes --model-draft and extra_args become the
+    pass-through tail, so clearing either after _build_speculative_flags has run
+    would launch a drafter the guard believes it dropped."""
+    src = _load_model_source()
+    gate_at = src.index("_pv_draft_unpinnable = bool(")
+    assert gate_at < src.index("spec_flags = self._build_speculative_flags(")
+    assert gate_at < src.index("cmd.extend(str(a) for a in _emit_extra_args)")
+    # The CPU pin is the other half of the same decision, so it can only be reached
+    # on a build that advertises a flag to pin with.
+    assert gate_at < src.index('_pv_draft_cpu_pin = [str(server_caps["spec_draft_ngl_flag"]), "0"]')
+
+
 # ── a pass-through GPU split mode must not fail the CPU-only load ────
 
 
