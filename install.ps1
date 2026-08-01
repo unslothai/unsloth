@@ -20,6 +20,35 @@ function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
 
+    # Same fix as studio/setup.ps1, for the same reason. This script also runs
+    # astral's uv installer in-process (Invoke-Expression, below), and that
+    # installer calls Get-ExecutionPolicy out of Microsoft.PowerShell.Security.
+    # The desktop app reaches here as Tauri -> Rust -> powershell.exe
+    # (studio/src-tauri/src/install.rs), and PowerShell only rewrites
+    # PSModulePath for a direct pwsh -> powershell.exe hop, so the Rust process
+    # in between leaves Windows PowerShell 5.1 leading with PowerShell 7's
+    # module directories and unable to load its own copy of that module.
+    #
+    # Not restored afterwards, deliberately. $env: is the process environment,
+    # so running this script in an interactive console leaves the reordering in
+    # place for that session. A try/finally would not change that for the case
+    # it is raised about: the interactive path ends by running Studio in the
+    # foreground, so the finally would not fire until the user stops the server.
+    # Narrowing the trigger instead would risk skipping the fix on some chain
+    # this list does not anticipate, and the cost of that is the install failing
+    # outright, against a session-lived module precedence change here.
+    if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {
+        $_UnslothSystemModules = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
+        if (Test-Path $_UnslothSystemModules) {
+            # Prepended: the problem is precedence, not absence.
+            $_UnslothKept = @(
+                $env:PSModulePath -split ';' |
+                    Where-Object { $_ -and ($_ -ne $_UnslothSystemModules) }
+            )
+            $env:PSModulePath = (@($_UnslothSystemModules) + $_UnslothKept) -join ';'
+        }
+    }
+
     # ── Tauri structured output ──
     function Write-TauriLog {
         param([string]$Tag, [string]$Message)

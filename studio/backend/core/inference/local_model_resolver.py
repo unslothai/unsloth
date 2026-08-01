@@ -99,7 +99,7 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local
     path so /load resolves the variant locally and never fetches a remote one."""
     from pathlib import Path
-    from utils.models.model_config import _is_mmproj, list_local_gguf_variants
+    from utils.models.model_config import detect_gguf_model, list_local_gguf_variants
 
     path = getattr(info, "path", None)
     if not isinstance(path, str):
@@ -114,7 +114,7 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             # advertise a projector and a switch could load it instead of the weights,
             # evicting the loaded model. The directory branch below is already mmproj
             # free (list_local_gguf_variants drops mmproj quants).
-            if p.suffix.lower() != ".gguf" or _is_mmproj(p.name):
+            if p.suffix.lower() != ".gguf" or detect_gguf_model(str(p)) is None:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
         load_dir = _resolve_load_dir(p)

@@ -335,57 +335,54 @@ def exercise_floating_monitor_geometry(page):
             and box["y"] + box["height"] <= surface["height"] - inset + tolerance
         )
 
-    def _panel_state():
-        return monitor.evaluate("""node => {
-            const content = node.querySelector('[data-testid=floating-monitor-content]');
-            const text = content ? content.innerText : "";
-            const totals = Array.from(text.matchAll(/\\/\\s*([\\d.]+)\\s*GiB/g))
-                .map(m => Number(m[1]));
-            return {
-                height: node.getBoundingClientRect().height,
-                minHeight: Number.parseFloat(node.style.minHeight) || 0,
-                rows: content ? content.children.length : 0,
-                live: totals.length > 0 && totals.every(v => v > 0),
-            };
-        }""")
+    # Every assertion below compares heights sampled seconds apart against this
+    # baseline, so the panel must already be showing its final row set. Until the
+    # first /api/system response is applied the panel paints use-system.ts's
+    # zero-filled DEFAULT_SYSTEM, which has no GPU: on a host that reports one
+    # (macos-14 reports a single MLX device) the VRAM row then appears and adds
+    # ~59px permanently. The caller only waited for the /api/system *request*, so
+    # sampling here can capture the pre-payload height -- a height the panel never
+    # returns to, which "content shrink" would then wait out its whole deadline
+    # chasing. Wait for the payload itself, and for the panel to have finished
+    # resizing to it.
+    try:
+        page.wait_for_function(
+            r"""() => {
+                const monitor = document.querySelector(
+                    '[data-testid="floating-monitor"]'
+                );
+                const content = document.querySelector(
+                    '[data-testid="floating-monitor-content"]'
+                );
+                if (!(monitor && content)) return false;
+                // DEFAULT_SYSTEM reports a 0 GiB RAM total; a real payload never does.
+                const readout = content.innerText.match(
+                    /([\d.]+)\s*GiB\s*\/\s*([\d.]+)\s*GiB/
+                );
+                if (!readout || !(Number.parseFloat(readout[2]) > 0)) return false;
+                // The rows commit a pass before the panel resizes to them, so the
+                // panel is only done reacting once its scroll region exactly fits
+                // the content it was reconciled against.
+                const scroll = content.parentElement;
+                const monitorHeight = monitor.getBoundingClientRect().height;
+                const contentHeight = content.getBoundingClientRect().height;
+                const scrollHeight = scroll.getBoundingClientRect().height;
+                if (Math.abs(scrollHeight - contentHeight) > 1) return false;
+                // Row insertion also lands a frame before the gap between rows
+                // does, and that intermediate state is self-consistent. Require
+                // the geometry to hold for two consecutive animation frames --
+                // this runs under the default polling="raf", and it is how
+                // Playwright itself defines a stable element.
+                const signature = monitorHeight + "x" + contentHeight;
+                const settled = window.__unslothMonitorGeometry === signature;
+                window.__unslothMonitorGeometry = signature;
+                return settled;
+            }""",
+            timeout = 30_000,
+        )
+    except Exception as exc:
+        fail(f"floating monitor never settled on an /api/system payload: {exc!r}")
 
-    def wait_until_rows_settled():
-        """Hold until the live rows have landed and the panel has re-laid-out.
-
-        Every assertion below compares against a baseline captured once, but the
-        rows come from /api/system, which the page fetches after mount: a freshly
-        mounted monitor grows when RAM (and VRAM) arrive. Baselining mid-arrival
-        makes some later step fail against the pre-arrival number, and which step
-        that is just depends on when the response lands -- observed as "content
-        shrink" against a warm backend and "blocked height" against a cold one,
-        from the same stale baseline.
-
-        Settled means: totals are real (not the pre-fetch zeros), and the
-        rendered box agrees with the resolved min-height, twice in a row. Best
-        effort -- on a host where /api/system never answers this returns whatever
-        it last saw rather than failing a geometry check on a data problem.
-        """
-        deadline = time.time() + 20
-        stable = 0
-        previous = None
-        while time.time() < deadline:
-            state = _panel_state()
-            settled = (
-                state["live"]
-                and state["rows"] > 0
-                and abs(state["height"] - state["minHeight"]) <= 0.5
-            )
-            if settled and state == previous:
-                stable += 1
-                if stable >= 2:
-                    return state
-            else:
-                stable = 0
-            previous = state
-            page.wait_for_timeout(150)
-        return _panel_state()
-
-    wait_until_rows_settled()
     initial_box = monitor_box("initial placement")
     expect_close(
         initial_box["x"] + initial_box["width"],
