@@ -1936,6 +1936,47 @@ def _extra_args_requests_mtp(
     return any(p.strip().lower() in ("mtp", "draft-mtp") for p in value.split(","))
 
 
+@functools.lru_cache(maxsize = 1)
+def _metal_device_is_paravirtual() -> bool:
+    """True when Metal is a virtualised Apple GPU, whose offload corrupts output.
+
+    On GitHub's macos-14/15 runners ("Apple Paravirtual device") the same model and
+    binary emit `&#!56789:;<=>@ABCDEF...` with offload but coherent text at
+    gpu_layers=0, while MLX on the same machine stays correct. Parallels, UTM and
+    cloud Macs are affected too. Physical Apple Silicon never reports "Paravirtual",
+    so it keeps full offload.
+    """
+    if sys.platform != "darwin":
+        return False
+    name = ""
+    try:
+        import mlx.core as mx
+
+        name = str(mx.device_info().get("device_name") or "")
+    except Exception:
+        name = ""
+    if "paravirtual" not in name.lower():
+        # MLX is not on every Mac, so ask the OS rather than assume bare metal.
+        try:
+            probe = subprocess.run(
+                ["system_profiler", "SPDisplaysDataType"],
+                capture_output = True, text = True, timeout = 30,
+                encoding = "utf-8", errors = "replace",
+            )
+            name = f"{name} {probe.stdout}"
+        except Exception:
+            pass
+    if "paravirtual" in name.lower():
+        logger.warning(
+            "Metal device looks virtualised (%s). llama.cpp GPU offload corrupts output "
+            "on paravirtual Apple GPUs, so GGUF inference will run on CPU. MLX is "
+            "unaffected.",
+            name.strip()[:120] or "unknown",
+        )
+        return True
+    return False
+
+
 def _extra_args_requests_separate_draft(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -7293,6 +7334,31 @@ class LlamaCppBackend:
                 )
                 n_parallel = 1
 
+            # A virtualised Apple GPU corrupts every offloaded layer, so pin GGUF
+            # inference to CPU there. Ahead of the KV estimates so the fit matches what
+            # launches; physical Apple Silicon is untouched.
+            if not (gpu_memory_mode == "manual" and gpu_layers == 0):
+                if _metal_device_is_paravirtual():
+                    logger.warning(
+                        "Forcing gpu_layers=0 for %s: this Mac's Metal device is "
+                        "virtualised and offloaded layers produce corrupt output.",
+                        model_identifier or gguf_path,
+                    )
+                    gpu_memory_mode = "manual"
+                    gpu_layers = 0
+
+            # llama.cpp's draft-mtp path serves one sequence only. Left at the default of
+            # 4 slots, concurrent chats do not merely slow down, they share tokens across
+            # replies. Clamped beside the --kv-unified clamp so the KV fit matches.
+            if n_parallel > 1 and _extra_args_requests_mtp(extra_args):
+                logger.warning(
+                    "MTP speculative decoding (--spec-type draft-mtp) does not support "
+                    "%d parallel slots; using 1. Load without MTP to serve chats in "
+                    "parallel.",
+                    n_parallel,
+                )
+                n_parallel = 1
+
             # ── Vulkan-ordinal preflight (BEFORE the Phase 1 kill) ────────
             # An explicit Vulkan pin the ggml probe never enumerated cannot be honored.
             # Validate it ABOVE the kill so an invalid selection leaves the live model
@@ -8933,6 +8999,27 @@ class LlamaCppBackend:
                 # can be retried with these flags swapped out (see below).
                 _spec_start = len(cmd)
                 cmd.extend(spec_flags)
+
+                # Backstop for the MTP clamp above, which only sees an explicit
+                # --spec-type in extra_args; speculative_type="auto"/"mtp" is not
+                # resolved until _build_speculative_flags runs, here. The KV fit was
+                # sized for more slots, so this over-reserves, never under-reserves.
+                if n_parallel > 1 and _extra_args_requests_mtp(spec_flags):
+                    try:
+                        _np_at = cmd.index("--parallel")
+                    except ValueError:
+                        _np_at = -1
+                    if _np_at >= 0:
+                        logger.warning(
+                            "%s resolved to MTP speculative decoding, which does not "
+                            "support %d parallel slots; using 1.",
+                            model_identifier,
+                            n_parallel,
+                        )
+                        cmd[_np_at + 1] = "1"
+                        # _commit_effective_parallel_slots below reports what launched,
+                        # so rebind rather than only patching cmd.
+                        n_parallel = 1
 
                 # Apply custom chat template override if provided.
                 self._chat_template_override = chat_template_override
