@@ -7,6 +7,7 @@ import test from "node:test";
 import { decodeDataUri } from "../src/lib/data-uri.ts";
 
 const INVALID_DATA_URI_RE = /Invalid data URI/;
+const DEFAULT_MIME = "text/plain;charset=US-ASCII";
 
 test("decodes base64 data URIs with their media type", () => {
   const decoded = decodeDataUri("data:audio/wav;base64,AAH6/w==");
@@ -83,5 +84,62 @@ test("percent-decodes a base64 payload before decoding it", () => {
   assert.deepEqual(
     Array.from(decodeDataUri("data:text/plain;base64,QUJ%44").bytes),
     [65, 66, 67],
+  );
+});
+
+test("treats base64 as the marker only when it ends the metadata", () => {
+  // A mid-metadata `base64` segment is an ordinary parameter.
+  assert.deepEqual(
+    Array.from(
+      decodeDataUri("data:text/plain;base64;charset=utf-8,SGVsbG8=").bytes,
+    ),
+    [83, 71, 86, 115, 98, 71, 56, 61],
+  );
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:base64,SGVsbG8=").bytes),
+    [83, 71, 86, 115, 98, 71, 56, 61],
+  );
+  assert.deepEqual(
+    Array.from(
+      decodeDataUri("data:text/plain;charset=utf-8;base64,SGVsbG8=").bytes,
+    ),
+    [72, 101, 108, 108, 111],
+  );
+});
+
+test("ignores a URL fragment", () => {
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain,abc#frag").bytes),
+    [97, 98, 99],
+  );
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain;base64,SGVsbG8=#frag").bytes),
+    [72, 101, 108, 108, 111],
+  );
+  // An escaped hash is payload, not a fragment.
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain,abc%23hash").bytes),
+    [97, 98, 99, 35, 104, 97, 115, 104],
+  );
+});
+
+test("falls back to the default media type when there is no slash", () => {
+  assert.equal(decodeDataUri("data:base64,SGVsbG8=").mimeType, DEFAULT_MIME);
+  assert.equal(decodeDataUri("data:;base64,AAA=").mimeType, DEFAULT_MIME);
+  assert.equal(
+    decodeDataUri("data:image/png;base64,QUJD").mimeType,
+    "image/png",
+  );
+});
+
+test("decodes a large base64 payload without stalling", () => {
+  // The 20 MiB attachment cap must not take seconds of blocked UI.
+  const payload = btoa("x".repeat(3 * 1024 * 1024));
+  const started = Date.now();
+  const decoded = decodeDataUri(`data:image/png;base64,${payload}`);
+  assert.equal(decoded.bytes.length, 3 * 1024 * 1024);
+  assert.ok(
+    Date.now() - started < 2000,
+    `decoding took ${Date.now() - started}ms`,
   );
 });
