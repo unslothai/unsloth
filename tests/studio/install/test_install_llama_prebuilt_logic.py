@@ -3892,17 +3892,13 @@ def test_marker_sync_strands_no_temp_file_when_the_first_write_fails(tmp_path, m
 
     class _Ctx:
         def __enter__(self):
-            self._cm = real_write(
-                prefix = marker.name + ".tmp-", dir = install_dir, delete = False
-            )
+            self._cm = real_write(prefix = marker.name + ".tmp-", dir = install_dir, delete = False)
             return _FullDisk(self._cm.__enter__())
 
         def __exit__(self, *exc):
             return self._cm.__exit__(*exc)
 
-    monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT.tempfile, "NamedTemporaryFile", lambda **kw: _Ctx()
-    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.tempfile, "NamedTemporaryFile", lambda **kw: _Ctx())
 
     INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
 
