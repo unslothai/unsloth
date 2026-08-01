@@ -2870,6 +2870,12 @@ html[data-chat-font] .aui-root {
 		width: calc(var(--ui-icon-size) * 1.15);
 		height: calc(var(--ui-icon-size) * 1.15);
 	}
+	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
+	   curve a 22px glyph would follow), so only its scaling changed. */
+	& .unsloth-composer-plus svg {
+		width: calc(var(--ui-icon-size) * 1.375);
+		height: calc(var(--ui-icon-size) * 1.375);
+	}
 	& svg.size-\[36px\] { width: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); height: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); }
 	& svg.w-3 { width: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
 	& svg.h-3 { height: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
