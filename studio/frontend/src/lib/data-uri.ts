@@ -8,17 +8,31 @@ const DATA_URI_BASE64_RE = /;[ \t]*base64[ \t]*$/i;
 const PERCENT_ESCAPE_RE = /%([0-9a-f]{2})/gi;
 const DEFAULT_MIME_TYPE = "text/plain;charset=US-ASCII";
 const PERCENT = 0x25;
-// The URL parser removes every ASCII tab and newline from the input before it
-// parses anything, so `data:text/plain;base64\n,...` really is base64. Only raw
-// characters go; an escaped %0A is payload.
+// The URL parser normalises its input before parsing anything: it removes any
+// leading and trailing C0 control or space, then removes every ASCII tab and
+// newline. So ` data:text/plain;base64\n,...` really is base64. Only raw
+// characters go; an escaped %0A or %20 is payload.
 const URL_WHITESPACE_RE = /[\t\n\r]/g;
 const HAS_URL_WHITESPACE_RE = /[\t\n\r]/;
 
-function stripUrlWhitespace(url: string): string {
+function trimUrlControls(url: string): string {
+  let start = 0;
+  let end = url.length;
+  while (start < end && url.charCodeAt(start) <= 0x20) {
+    start += 1;
+  }
+  while (end > start && url.charCodeAt(end - 1) <= 0x20) {
+    end -= 1;
+  }
+  return start === 0 && end === url.length ? url : url.slice(start, end);
+}
+
+function normalizeUrl(url: string): string {
+  const trimmed = trimUrlControls(url);
   // Testing first keeps the common case from copying a multi-megabyte string.
-  return HAS_URL_WHITESPACE_RE.test(url)
-    ? url.replace(URL_WHITESPACE_RE, "")
-    : url;
+  return HAS_URL_WHITESPACE_RE.test(trimmed)
+    ? trimmed.replace(URL_WHITESPACE_RE, "")
+    : trimmed;
 }
 
 export interface DecodedDataUri {
@@ -29,9 +43,7 @@ export interface DecodedDataUri {
 /** URL schemes are case-insensitive, so `DATA:image/png;...` is a data URI. */
 export function isDataUri(url: string): boolean {
   // Only the scheme is needed, so this stays O(1) on a huge payload.
-  return (
-    stripUrlWhitespace(url.slice(0, 16)).slice(0, 5).toLowerCase() === "data:"
-  );
+  return normalizeUrl(url.slice(0, 32)).slice(0, 5).toLowerCase() === "data:";
 }
 
 /** Hex digit value, or -1. Avoids allocating a substring per character. */
@@ -137,7 +149,7 @@ function base64ToBytes(payload: string): Uint8Array {
 }
 
 export function decodeDataUri(rawDataUri: string): DecodedDataUri {
-  const dataUri = stripUrlWhitespace(rawDataUri);
+  const dataUri = normalizeUrl(rawDataUri);
   const separator = dataUri.indexOf(",");
   if (!isDataUri(dataUri) || separator < 0) {
     throw new Error("Invalid data URI.");

@@ -197,3 +197,24 @@ test("removes URL tabs and newlines the way the URL parser does", () => {
     [97, 98, 10, 99, 100],
   );
 });
+
+test("trims leading and trailing C0 controls and spaces", () => {
+  // All three engines render ` data:image/png;...` and decode these.
+  assert.ok(isDataUri(" data:text/plain,abc"));
+  assert.ok(isDataUri("\u0000data:text/plain,abc"));
+  assert.ok(isDataUri("  DATA:text/plain,abc"));
+  for (const uri of [
+    " data:text/plain,abc",
+    "  data:text/plain,abc",
+    "\u0000data:text/plain,abc",
+    "\u001fdata:text/plain,abc",
+    "data:text/plain,abc ",
+  ]) {
+    assert.deepEqual(Array.from(decodeDataUri(uri).bytes), [97, 98, 99], uri);
+  }
+  // A space inside the payload is content, not URL whitespace.
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain,a bc").bytes),
+    [97, 32, 98, 99],
+  );
+});
