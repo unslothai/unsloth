@@ -1979,6 +1979,49 @@ def _metal_device_is_paravirtual() -> bool:
     return False
 
 
+def _paravirtual_split_mode_pin(extra_args: Optional[Iterable[str]]) -> List[str]:
+    """Flags that neutralise a pass-through ``--split-mode`` on a virtualised Mac.
+
+    A user ``--split-mode`` in extras is deliberately allowed (the Tensor
+    Parallelism toggle cannot express row/none), but it is a GPU placement flag
+    and the paravirtual fallback has already pinned this load to CPU. It is NOT
+    inert at ``--gpu-layers 0``: llama.cpp builds a buffer-type list for every
+    device in ``model->devices`` before any layer is assigned, and n_gpu_layers
+    never reaches that step. So ``-sm row`` throws "device <X> does not support
+    split buffers" on every backend except SYCL (``make_gpu_buft_list``,
+    llama-model.cpp, since ggml-org/llama.cpp#24216 removed CUDA's split
+    buffers), and ``-sm tensor`` throws "LLAMA_SPLIT_MODE_TENSOR not implemented
+    for architecture" for every arch ``llm_arch_supports_sm_tensor`` excludes.
+    Either one turns the CPU rescue into a server that refuses to start, and the
+    zero-offload mask cannot save it: that mask only writes CUDA/HIP visibility
+    vars, so the Metal device stays in the list on the one platform this fallback
+    fires on.
+
+    Overridden rather than stripped: llama.cpp is last-wins, so ``layer`` (the
+    default, and a provable no-op at ``--gpu-layers 0`` -- llama-model.cpp
+    computes the split points but never indexes them once ``act_gpu_layers`` is
+    0) neutralises the mode without rewriting ``extra_args``. The route's
+    duplicate-load comparator compares the stored extras verbatim against the
+    request, and the UI does not round-trip the extras box, so stripping would
+    leave the two permanently unequal and turn every later Apply into a real
+    model swap. ``--tensor-split`` needs neither treatment for the same
+    never-indexed reason.
+
+    Returns [] when extras set no mode, or already set ``layer``, so the flag is
+    added only where it changes something.
+    """
+    mode = (parse_split_mode_override(extra_args) or "").strip().lower()
+    if not mode or mode == "layer":
+        return []
+    logger.warning(
+        "Overriding --split-mode %s with the default layer split: this Mac's "
+        "Metal device is virtualised, so the model runs on CPU and a GPU split "
+        "mode would only fail the load.",
+        mode,
+    )
+    return ["--split-mode", "layer"]
+
+
 def _extra_args_requests_separate_draft(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -9085,6 +9128,7 @@ class LlamaCppBackend:
                 # flags, so a user -ngld/--spec-draft-ngl would otherwise undo this.
                 _pv_draft_cpu_pin: List[str] = []
                 _pv_mmproj_cpu_pin: List[str] = []
+                _pv_split_mode_pin: List[str] = []
                 if (
                     _paravirtual_cpu_forced
                     and _extra_args_mtp_draft_path([*spec_flags, *(extra_args or [])]) is not None
@@ -9095,6 +9139,11 @@ class LlamaCppBackend:
                         "Pinning the speculative drafter to CPU: this Mac's Metal "
                         "device is virtualised."
                     )
+
+                # Emitted after the pass-through extras too, and for the same
+                # last-wins reason as the two pins above.
+                if _paravirtual_cpu_forced:
+                    _pv_split_mode_pin = _paravirtual_split_mode_pin(extra_args)
 
                 # Backstop for the MTP clamp above, which only sees an explicit
                 # --spec-type in extra_args; speculative_type="auto"/"mtp" is not
@@ -9304,6 +9353,11 @@ class LlamaCppBackend:
                     cmd.extend(_pv_draft_cpu_pin)
                 if _pv_mmproj_cpu_pin:
                     cmd.extend(_pv_mmproj_cpu_pin)
+                # Also last, and for the same reason: _zero_offload_keeps_gpu_visible
+                # reads the finished cmd, so the override has to be in it before the
+                # env block below decides whether this really is a zero-VRAM server.
+                if _pv_split_mode_pin:
+                    cmd.extend(_pv_split_mode_pin)
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
 

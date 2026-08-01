@@ -342,6 +342,104 @@ def test_the_drafter_cpu_pin_outlives_the_pass_through_extras():
     assert pin_at > extras_at, "the drafter CPU pin is emitted before the user extras"
 
 
+# ── a pass-through GPU split mode must not fail the CPU-only load ────
+
+
+@pytest.mark.parametrize(
+    "extra_args, expected",
+    [
+        # `-sm row` throws "device <X> does not support split buffers" in
+        # make_gpu_buft_list for every backend except SYCL, and that runs over
+        # model->devices before any layer is assigned, so --gpu-layers 0 does not
+        # save it. Metal is always in that list here: the zero-offload mask only
+        # writes CUDA/HIP visibility vars.
+        (["-sm", "row"], ["--split-mode", "layer"]),
+        (["--split-mode", "row"], ["--split-mode", "layer"]),
+        # `-sm tensor` throws "not implemented for architecture" for every arch
+        # llm_arch_supports_sm_tensor excludes, also independently of ngl.
+        (["--top-k", "40", "-sm", "tensor"], ["--split-mode", "layer"]),
+        (["-sm", "none"], ["--split-mode", "layer"]),
+        (["-sm=row"], ["--split-mode", "layer"]),
+        # The negatives: nothing to neutralise means no flag, so a CPU-only launch
+        # is not handed a redundant duplicate argument.
+        (None, []),
+        ([], []),
+        (["--top-k", "40"], []),
+        (["-sm", "layer"], []),
+        (["--split-mode", "LAYER"], []),
+        # Last-wins, like the parser: a user who already ends on layer is fine.
+        (["-sm", "row", "--split-mode", "layer"], []),
+        # ...and one who ends on row is not, however it started.
+        (["--split-mode", "layer", "-sm", "row"], ["--split-mode", "layer"]),
+        # --tensor-split is genuinely inert at --gpu-layers 0: llama-model.cpp
+        # computes the split points but never indexes them once act_gpu_layers is
+        # 0, so it must not drag the override in on its own.
+        (["-ts", "3,1"], []),
+        (["--tensor-split", "3,1"], []),
+    ],
+)
+def test_a_pass_through_split_mode_cannot_fail_the_cpu_only_load(extra_args, expected):
+    assert llama_cpp._paravirtual_split_mode_pin(extra_args) == expected
+
+
+def test_the_split_mode_override_is_scoped_to_the_virtualised_mac():
+    """The strongest negative: a real Mac (or any non-Mac) must keep the user's
+    row/none split, so the call site has to be gated on the detector, not on the
+    zero-layer placement that a plain Manual load also has."""
+    tree = _load_model_tree()
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_paravirtual_split_mode_pin"
+    ]
+    assert len(calls) == 1, "expected exactly one split-mode override call site"
+    guarded = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        # Direct body only: an unrelated enclosing `if` must not read as the guard.
+        if not any(calls[0] in ast.walk(stmt) for stmt in node.body):
+            continue
+        assert {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)} == {
+            "_paravirtual_cpu_forced"
+        }, "the split-mode override is no longer gated on the hardware alone"
+        guarded = True
+    assert guarded, "the split-mode override lost its _paravirtual_cpu_forced guard"
+
+
+def test_the_split_mode_override_outlives_the_pass_through_extras():
+    """llama.cpp is last-wins, so an override emitted before the user's extras
+    would be undone by the very flag it exists to neutralise."""
+    # Overridden, not stripped: the route's duplicate-load comparator compares the
+    # stored extras verbatim against the request and the UI does not round-trip the
+    # extras box, so a strip here would make every later Apply a real model swap.
+    assert "-sm" not in llama_server_args._OFFLOAD_SHADOWING_FLAGS
+    assert "--split-mode" not in llama_server_args._OFFLOAD_SHADOWING_FLAGS
+    # The parser behaviour being relied on.
+    assert llama_server_args.resolve_tensor_parallel(["-sm", "tensor"], False) is True
+    assert (
+        llama_server_args.resolve_tensor_parallel(["-sm", "tensor", "--split-mode", "layer"], False)
+        is False
+    ), "the override must also clear the tensor state the zero-VRAM mask reads"
+
+    tree = _load_model_tree()
+    extras_at = pin_at = None
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr != "extend":
+            continue
+        names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+        if "_emit_extra_args" in names:
+            extras_at = node.lineno
+        if "_pv_split_mode_pin" in names:
+            pin_at = node.lineno
+    assert extras_at is not None and pin_at is not None
+    assert pin_at > extras_at, "the split-mode override is emitted before the user extras"
+
+
 # ── the MTP slot clamp must follow the flags that actually launch ─────
 
 
