@@ -1254,13 +1254,11 @@ def _overlay_transformers_dir(tier: str) -> str | None:
                     _latest_repair_failed_at = 0.0
                     repaired = True
                 else:
+                    # The failed attempt left the marker, so the backoff suppresses pip
+                    # retries without also declaring the sidecar usable: without it the
+                    # cheap predicate would find nothing broken on the next routing call
+                    # and hand the damaged sidecar back for the whole window.
                     _latest_repair_failed_at = time.time()
-                    # Record the damage, or the backoff turns into an availability
-                    # hole: the cheap predicate cannot see a truncated file, so the
-                    # next routing call would find broken False and hand the known
-                    # damaged sidecar back for the whole window. The marker keeps it
-                    # withheld through a check no more expensive than one is_file.
-                    _request_latest_repair()
             if broken and not repaired:
                 # Still broken: treat the overlay as unavailable rather than route
                 # models to a tier whose worker activation is known to fail. Models
@@ -1598,7 +1596,12 @@ def _probe_tier(
     if key in _probe_tier_cache:
         cached = _probe_tier_cache[key]
         # Kill switch beats the cache (like _config_model_types): a stale 'latest' probe must not keep activating it.
-        if cached != "latest" or not _latest_tier_disabled():
+        # A scan that found the sidecar damaged beats it too, or a probe cached while it
+        # was healthy keeps spawning workers into a tier whose activation is known to
+        # fail, and a model that reaches latest this way never touches the config-mapping
+        # path that would repair it. Falling through re-probes, which runs the ensure and
+        # repair path instead.
+        if cached != "latest" or not (_latest_tier_disabled() or _latest_repair_requested()):
             return cached
 
     def _cache(tier: str, *, skipped: bool) -> str:
@@ -2704,6 +2707,13 @@ def _ensure_venv_t5_latest_exists() -> bool:
         # branch forever.
         _clear_latest_repair_request()
         return True
+    # Broken, and every path below can still fail to fix it (offline, a child, a swap
+    # already running, pip). Flag it here rather than per bailout, so the routing
+    # predicate withholds the sidecar no matter which one we take: it cannot see
+    # sub-file damage itself, and a mapping cached before the damage keeps it off the
+    # scanning path entirely. A repair that does succeed swaps the dir and takes the
+    # marker with it.
+    _request_latest_repair()
     if _env_offline():
         logger.warning(
             ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "
@@ -2718,12 +2728,6 @@ def _ensure_venv_t5_latest_exists() -> bool:
     try:
         import multiprocessing as _mp
         if _mp.parent_process() is not None:
-            # Flag it, or the handoff never completes: the parent's routing self-heal
-            # is gated on a package-level predicate that cannot see sub-file damage,
-            # and a mapping cached before the damage keeps it off the scanning path
-            # entirely, so every worker retry would fail forever waiting for a repair
-            # nothing triggers.
-            _request_latest_repair()
             logger.warning(
                 ".venv_t5_latest is incomplete; repairs run in the parent process. "
                 "Retry after the parent repairs the sidecar."

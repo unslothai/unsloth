@@ -3779,6 +3779,48 @@ class TestDamagedLatestSidecarRepairHandoff:
             assert tv._overlay_transformers_dir("latest") is None
         assert tv._tier_from_config_mapping({"model_type": "brandnew"}) != "latest"
 
+    def test_every_unrepaired_exit_flags_the_damage(self, monkeypatch, tmp_path):
+        """Offline, a child, and a swap already running each return before any repair.
+        Whichever one is taken, the damage has to be recorded, or the cheap predicate
+        keeps reporting the sidecar healthy and nothing ever revisits it."""
+        import multiprocessing
+
+        bailouts = {
+            "offline": lambda tv: monkeypatch.setattr(tv, "_env_offline", lambda: True),
+            "child": lambda tv: monkeypatch.setattr(
+                multiprocessing, "parent_process", lambda: object()
+            ),
+            "swap_running": lambda tv: monkeypatch.setattr(
+                tv, "try_begin_sidecar_swap", lambda kind = None: False
+            ),
+        }
+        for name, arrange in bailouts.items():
+            live = self._sidecar(tmp_path / f"venv_t5_latest_{name}")
+            tv, _ = self._patch(monkeypatch, live)
+            arrange(tv)
+            self._damage(live)
+
+            assert tv._ensure_venv_t5_latest_exists() is False, name
+            assert tv._latest_repair_requested(), f"{name} exited without recording the damage"
+            assert not tv._latest_sidecar_intact(), name
+
+    def test_cached_probe_result_does_not_survive_a_flagged_sidecar(self, monkeypatch, tmp_path):
+        """_probe_tier caches per process. A result cached while the sidecar was healthy
+        must not keep sending workers into it once damage is known, the way the
+        config-mapping cache already refuses to."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+        key = f"{tv._probe_cache_key('some/model')}\0floor=default:def=1"
+        monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
+
+        self._damage(live)
+        tv._request_latest_repair()
+
+        assert tv._probe_tier(
+            "some/model", None, "test", include_default = True, floor = "default"
+        ) != "latest"
+
     def test_file_check_kill_switch_suppresses_the_whole_handoff(self, monkeypatch, tmp_path):
         """UNSLOTH_SKIP_SIDECAR_FILE_CHECK is the escape hatch for a false positive; it
         must leave no path that still wipes the sidecar."""
