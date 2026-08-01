@@ -17,6 +17,15 @@ Usage:
   curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh
   sh scripts/uninstall.sh
 
+To read this help from the piped form, sh needs -s so the arguments reach the
+script instead of the shell. Spelled out, with the same URL as above:
+  curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh -s -- --help
+
+Never pipe to `sh -h` expecting help. Neither form prints this message: where
+-h is accepted (bash, zsh, macOS /bin/sh) it is the shell's own hashall option,
+so the shell consumes it and the script uninstalls with no arguments; where it
+is not (dash, busybox sh) the shell exits with "Illegal option -h".
+
 Stops running Unsloth Studio servers, then removes the install dir, launcher
 data dir, CLI shim, desktop shortcut, macOS .app bundle and Launch Services
 entry. The Hugging Face cache at ~/.cache/huggingface is left in place.
