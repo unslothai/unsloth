@@ -3574,7 +3574,11 @@ class TestDamagedLatestSidecarRepairHandoff:
     truncated file, so without a handoff every worker retry fails forever waiting for a
     repair nothing ever triggers."""
 
-    def _sidecar(self, root: Path, model_types = ("brandnew",)) -> Path:
+    def _sidecar(
+        self,
+        root: Path,
+        model_types = ("brandnew",),
+    ) -> Path:
         """A pinned latest sidecar whose RECORD matches what it wrote."""
         import utils.transformers_version as tv
 
@@ -3584,8 +3588,8 @@ class TestDamagedLatestSidecarRepairHandoff:
         mapping = ", ".join(f'"{t}": "C"' for t in model_types)
         files = {
             "transformers/__init__.py": "x" * 40,
-            "transformers/models/auto/configuration_auto.py":
-                "CONFIG_MAPPING_NAMES = {%s}\n" % mapping,
+            "transformers/models/auto/configuration_auto.py": "CONFIG_MAPPING_NAMES = {%s}\n"
+            % mapping,
         }
         rows = []
         for rel, body in files.items():
@@ -3600,7 +3604,12 @@ class TestDamagedLatestSidecarRepairHandoff:
         )
         return root
 
-    def _patch(self, monkeypatch, live: Path, is_child: bool = False):
+    def _patch(
+        self,
+        monkeypatch,
+        live: Path,
+        is_child: bool = False,
+    ):
         """Point the module at *live* and make a repair succeed without pip."""
         import multiprocessing
         import utils.transformers_version as tv
@@ -3639,9 +3648,9 @@ class TestDamagedLatestSidecarRepairHandoff:
         live = self._sidecar(tmp_path / "venv_t5_latest")
         tv, installs = self._patch(monkeypatch, live)
         self._damage(live)
-        assert tv._venv_dir_is_valid(str(live), ("transformers==5.99.0",)), (
-            "precondition: the package-level predicate cannot see this damage"
-        )
+        assert tv._venv_dir_is_valid(
+            str(live), ("transformers==5.99.0",)
+        ), "precondition: the package-level predicate cannot see this damage"
 
         assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
 
