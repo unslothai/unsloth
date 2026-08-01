@@ -1437,10 +1437,7 @@ def test_studio_local_dataset_inventory_refreshes_when_uploads_may_change():
     assert "!wasUploadSource.current" in inventory
     assert inventory.count("refresh().catch(() => undefined)") == 2
     assert 'window.addEventListener("focus", refreshWhenVisible)' in inventory
-    assert (
-        'document.addEventListener("visibilitychange", refreshWhenVisible)'
-        in inventory
-    )
+    assert 'document.addEventListener("visibilitychange", refreshWhenVisible)' in inventory
 
 
 def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
@@ -1918,9 +1915,7 @@ def test_training_persistence_excludes_actions_and_sanitizes_method():
 
     assert 'typeof value === "function"' in partialize
     assert "isTrainingMethod(persistedState.trainingMethod)" in source
-    assert (
-        "TRAINING_METHOD_META[trainingMethod] ?? TRAINING_METHOD_META.qlora" in preview
-    )
+    assert "TRAINING_METHOD_META[trainingMethod] ?? TRAINING_METHOD_META.qlora" in preview
 
 
 def test_training_setup_changed_error_uses_localization():
@@ -2136,9 +2131,7 @@ def test_pinned_training_model_retains_size_and_vram_metadata():
     helper = selector.split("function buildTrainModelVramViews", 1)[1].split(
         "export function TrainModelSelector", 1
     )[0]
-    vram_map = selector.split("const vramMap = useMemo", 1)[1].split(
-        "const hubPagination", 1
-    )[0]
+    vram_map = selector.split("const vramMap = useMemo", 1)[1].split("const hubPagination", 1)[0]
 
     assert "ids.map((id)" in helper
     assert "parseParamCountB(id)" in helper
@@ -2198,9 +2191,7 @@ def test_picker_capabilities_survive_model_config_probe_failures():
 
 def test_model_format_follows_the_selected_cache_reference():
     store = _read("features/training/stores/training-config-store.ts")
-    selection = store.split("const selectModelInternal = (", 1)[1].split(
-        "return {", 1
-    )[0]
+    selection = store.split("const selectModelInternal = (", 1)[1].split("return {", 1)[0]
 
     adapter_preservation = selection.split("const previousAdapterFormat =", 1)[1].split(
         "const patch:", 1
@@ -2418,7 +2409,7 @@ def test_training_transport_failures_reconcile_with_the_backend_before_failing()
     assert "retryNetworkErrors: false" in api
     assert "start_request_id: Optional[str]" in backend_models
     assert 'state: Literal["pending", "accepted", "rejected"]' in backend_models
-    start_route = backend_route.split('async def start_training(', 1)[1]
+    start_route = backend_route.split("async def start_training(", 1)[1]
     assert start_route.index("backend.reserve_start_request(") < start_route.index(
         "_reject_untrainable_model_request,"
     )
@@ -2427,9 +2418,7 @@ def test_training_transport_failures_reconcile_with_the_backend_before_failing()
     backend_start = start_route.split("def _run_backend_start()", 1)[1].split(
         "start_task = asyncio.create_task", 1
     )[0]
-    failed_backend_start = backend_start.split("if success:", 1)[1].split(
-        "return success", 1
-    )[0]
+    failed_backend_start = backend_start.split("if success:", 1)[1].split("return success", 1)[0]
     assert failed_backend_start.count("_reject_start_request(") == 1
     failed_response = start_route.split("if not success:", 1)[1].split(
         "return TrainingJobResponse", 1

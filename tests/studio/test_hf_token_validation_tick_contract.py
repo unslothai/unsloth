@@ -101,7 +101,9 @@ def test_training_start_prepares_token_once_before_transport():
 
     start_transport = api.split("export async function startTraining", 1)[1]
     start_transport = start_transport.split("export async function stopTraining", 1)[0]
-    assert "body: JSON.stringify({ ...payload, start_request_id: startRequestId })" in start_transport
+    assert (
+        "body: JSON.stringify({ ...payload, start_request_id: startRequestId })" in start_transport
+    )
     assert "hf_token: preparedToken.token" not in start_transport
 
     resume_entrypoint = resume_start.split("export async function resumeTrainingRun", 1)[1].split(

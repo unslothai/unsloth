@@ -1135,9 +1135,7 @@ class TrainingBackend:
                 self._pending_start_request_id = None
             return record
 
-    def get_start_request(
-        self, start_request_id: str
-    ) -> Optional[TrainingStartRequestRecord]:
+    def get_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
         with self._lock:
             return self._start_requests.get(start_request_id)
 
