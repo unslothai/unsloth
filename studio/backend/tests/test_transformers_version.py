@@ -1862,6 +1862,22 @@ class TestVenvDirIsValidRecordIntegrity:
         (venv_dir / "transformers" / "models.py").write_bytes(b"y = 2\n")
         assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is False
 
+    def test_out_of_tree_script_entry_is_skipped(self, tmp_path: Path):
+        # ``--target`` installs record console scripts with escaping paths like
+        # ``../../bin/hf`` (huggingface_hub ships one). The script lives outside
+        # the sidecar, so its RECORD row must not be read as a missing file and
+        # wipe an otherwise-intact install on every spawn.
+        venv_dir = tmp_path / "venv"
+        self._make_venv(
+            venv_dir,
+            "transformers",
+            "5.3.0",
+            {"transformers/__init__.py": b"x = 1\n"},
+        )
+        record = venv_dir / "transformers-5.3.0.dist-info" / "RECORD"
+        record.write_text(record.read_text() + "../../bin/hf,sha256=deadbeef,42\n")
+        assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is True
+
     def test_larger_file_is_not_damage(self, tmp_path: Path):
         venv_dir = tmp_path / "venv"
         self._make_venv(

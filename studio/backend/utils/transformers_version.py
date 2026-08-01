@@ -1927,7 +1927,8 @@ def _dist_record_intact(venv_dir: str, dist_info: Path) -> bool:
     an otherwise-intact sidecar) that the directory + METADATA checks miss.
 
     A file *larger* than recorded is a packaging collision, not damage, so it passes.
-    ``.pyc`` and ``.dist-info`` entries and rows without a recorded size are skipped.
+    ``.pyc``, ``.dist-info`` and out-of-tree entries (``../../bin/hf`` console
+    scripts from ``--target`` installs) and rows without a recorded size are skipped.
     A missing or unreadable RECORD leaves the existing METADATA gate in charge
     (returns True), so installers that omit RECORD are unaffected."""
     record = dist_info / "RECORD"
@@ -1944,6 +1945,12 @@ def _dist_record_intact(venv_dir: str, dist_info: Path) -> bool:
         rel = row[0]
         norm = rel.replace("\\", "/")
         if norm.endswith(".pyc") or ".dist-info/" in norm:
+            continue
+        # Console scripts and other out-of-tree files from ``--target`` installs
+        # are recorded with paths like ``../../bin/hf`` that resolve outside the
+        # sidecar. Joining them to venv_dir points at an unrelated location, so a
+        # miss there is not sidecar damage -- skip these instead of wiping.
+        if ".." in norm.split("/"):
             continue
         try:
             recorded = int(row[2])
