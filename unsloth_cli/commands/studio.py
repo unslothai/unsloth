@@ -2939,8 +2939,18 @@ def _fail_if_install_damaged() -> None:
     # rather than scoping the scan, which would risk passing over real damage.
     typer.echo("If a package above is still listed after that, the installer does not", err = True)
     typer.echo("manage it. Repair it directly, or remove it if nothing needs it:", err = True)
-    _py = Path(sys.executable)
-    typer.echo(f"  {_py} -m pip install --force-reinstall <package>", err = True)
+    # --no-deps: without it pip resolves the damaged package's dependency graph
+    # and --force-reinstall would replace pinned runtime packages too, which can
+    # swap the installed CUDA/ROCm torch build for a default one while repairing
+    # an unrelated orphan. The installer's own targeted repairs pair the two for
+    # the same reason. The interpreter path is quoted because a custom root may
+    # contain spaces, and on Windows a quoted command needs the call operator.
+    if platform.system() == "Windows":
+        _py = str(Path(sys.executable)).replace("'", "''")
+        typer.echo(f"  & '{_py}' -m pip install --force-reinstall --no-deps <package>", err = True)
+    else:
+        _py = shlex.quote(str(Path(sys.executable)))
+        typer.echo(f"  {_py} -m pip install --force-reinstall --no-deps <package>", err = True)
     typer.echo("", err = True)
     typer.echo("To update anyway without this check: unsloth studio update --no-verify", err = True)
     raise typer.Exit(code = 1)

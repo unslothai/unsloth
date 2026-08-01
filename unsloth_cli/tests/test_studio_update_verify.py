@@ -390,4 +390,32 @@ def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, 
     err = capsys.readouterr().err
     assert "still listed after that" in err
     assert "--force-reinstall" in err
+    # Without --no-deps, pip resolves the damaged package's graph and
+    # --force-reinstall can swap the pinned CUDA/ROCm torch build.
+    assert "--no-deps" in err
     assert "--no-verify" in err
+
+
+@pytest.mark.parametrize(
+    "system, exe, expected",
+    [
+        ("Linux", "/srv/my studios/a/bin/python", "'/srv/my studios/a/bin/python' -m pip"),
+        ("Windows", r"C:\my studios\a\python.exe", "& 'C:\\my studios\\a\\python.exe' -m pip"),
+    ],
+)
+def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, exe, expected):
+    # Custom roots with spaces are supported, so an unquoted sys.executable
+    # would split into several shell tokens and the command would not run.
+    import platform as _platform
+    import typer
+
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+    monkeypatch.setattr(
+        studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["orphan: o/x.py is missing"]
+    )
+    monkeypatch.setattr(_platform, "system", lambda: system)
+    monkeypatch.setattr(sys, "executable", exe)
+    with pytest.raises(typer.Exit):
+        studio._fail_if_install_damaged()
+    assert expected in capsys.readouterr().err
