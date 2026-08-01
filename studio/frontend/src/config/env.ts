@@ -109,6 +109,7 @@ export async function fetchDeviceType(options?: {
     // a window nobody has finished.
     const spendWait = Boolean(token) && !hardwareWaitSpent;
     const deadline = spendWait ? Date.now() + HARDWARE_DETECT_WAIT_MS : 0;
+    let tokenRejected = false;
     let res = await fetch(apiUrl("/api/health"), { headers });
     while (res.ok && Date.now() < deadline) {
       const peek = (await res.clone().json()) as {
@@ -122,11 +123,16 @@ export async function fetchDeviceType(options?: {
       // carries device_type however long we poll. `version` is authed-only, so its
       // absence means this wait can only ever time out, holding /login for the full
       // window on a cold boot.
-      if (peek.version === undefined) break;
+      if (peek.version === undefined) {
+        tokenRejected = true;
+        break;
+      }
       await new Promise((resolve) => setTimeout(resolve, HARDWARE_DETECT_POLL_MS));
       res = await fetch(apiUrl("/api/health"), { headers });
     }
-    if (spendWait) hardwareWaitSpent = true;
+    // Not spent when the backend rejected the token: no window was actually waited
+    // out, and signing in later in this same page load must still get one.
+    if (spendWait && !tokenRejected) hardwareWaitSpent = true;
     if (res.ok) {
       const data = (await res.json()) as {
         device_type?: string;

@@ -191,7 +191,8 @@ test("the latch is claimed after the wait, not during it", async () => {
     "utf8",
   );
   const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
-  const loopEnd = src.indexOf("if (spendWait) hardwareWaitSpent = true;");
+  // Located by pattern: the claim carries guards, so a literal anchor goes stale.
+  const loopEnd = src.search(/if \(spendWait[^)]*\) hardwareWaitSpent = true;/);
   assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop or the latch moved");
   assert.ok(
     !src.slice(loopStart, loopEnd).includes("hardwareWaitSpent = true"),
@@ -257,12 +258,12 @@ test("a rejected token stops the wait instead of polling it out", async () => {
     "utf8",
   );
   const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
-  const loopEnd = src.indexOf("if (spendWait) hardwareWaitSpent = true;");
+  // Located by pattern: the claim carries guards, so a literal anchor goes stale.
+  const loopEnd = src.search(/if \(spendWait[^)]*\) hardwareWaitSpent = true;/);
   assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop or the latch moved");
   const loop = src.slice(loopStart, loopEnd);
   assert.ok(
-    /peek\.version === undefined\)?\s*\)?\s*break;/.test(loop) ||
-      loop.includes("if (peek.version === undefined) break;"),
+    /if \(peek\.version === undefined\)\s*\{?[^}]*break;/.test(loop),
     "the loop keeps polling a reply with no authed-only field, so an expired token " +
       "waits out the full window on /login",
   );
@@ -270,5 +271,28 @@ test("a rejected token stops the wait instead of polling it out", async () => {
     loop,
     /version\?: string;/,
     "the peek type no longer reads the authed-only field it breaks on",
+  );
+});
+
+// Breaking early on a rejected token must not consume the once-per-page-load window.
+// A user who signs in before detection settles gets the first authenticated read of
+// that page load; spending the latch on a token the backend refused leaves the route
+// guard and sidebar on provisional local defaults until a navigation or refresh.
+test("a rejected token does not consume the once-per-load window", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/config/env.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /if \(spendWait && !tokenRejected\) hardwareWaitSpent = true;/,
+    "the latch is claimed even when the break came from a rejected token, so the " +
+      "first accepted token in this page load skips its window",
+  );
+  assert.match(
+    src,
+    /tokenRejected = true;/,
+    "nothing records that the break was caused by a rejected token",
   );
 });
