@@ -2711,7 +2711,11 @@ def test_an_interrupted_purge_reports_only_what_it_removed():
     class _RacingModules(dict):
         """sys.modules where another importer republishes the parent after one pop."""
 
-        def pop(self, key, default = None):
+        def pop(
+            self,
+            key,
+            default = None,
+        ):
             result = super().pop(key, default)
             self.setdefault(package, types.ModuleType(package))
             return result

@@ -327,6 +327,7 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
         return
     try:
         from utils.hardware import hardware as hw
+
         # The repair is a pip install, so shutdown can land anywhere inside it. Scoped
         # to the epoch read before start(), the re-detect below is discarded when that
         # happens instead of republishing a verdict for the lifespan that ended.
@@ -366,6 +367,7 @@ def start_mlx_autorepair_if_needed() -> bool:
     # Read before start(): start() releases the GIL and this thread may not run for a
     # while, so reading the epoch inside it would bind the pass to a later shutdown.
     from utils.hardware import hardware as _hw
+
     threading.Thread(
         target = _run_repair_and_redetect,
         args = (_hw.current_detection_epoch(),),
