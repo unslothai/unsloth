@@ -72,7 +72,10 @@ def test_the_offload_is_actually_present():
             and node.func.attr == "to_thread"
             and any(isinstance(a, ast.Name) and a.id == "get_inference_backend" for a in node.args)
         )
-    assert total >= 14, f"expected the offloaded call sites to survive, found {total}"
+    # 13, not 14: the status poll's site became a non-constructing peek, which needs no
+    # offload at all. Lower the floor only when a site is removed that way, never when
+    # one goes back on the loop.
+    assert total >= 13, f"expected the offloaded call sites to survive, found {total}"
 
 
 def _sync_helpers_that_build_the_singleton(rel: str) -> set[str]:
@@ -81,6 +84,12 @@ def _sync_helpers_that_build_the_singleton(rel: str) -> set[str]:
     names = set()
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.FunctionDef):  # sync only
+            continue
+        # The peek helper is the module's injection seam: it invokes the getter only
+        # when that global has been patched, which is a test double, and otherwise
+        # returns orchestrator.peek_inference_backend(). Reading it as a builder would
+        # report every caller that deliberately stopped constructing.
+        if fn.name == "_peek_inference_backend":
             continue
         for sub in ast.walk(fn):
             if (
@@ -118,14 +127,11 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
                 ):
                     offenders.append(f"{rel}:{sub.lineno} async {fn.name} -> {sub.func.id}()")
 
-    # These reach the singleton through a sync helper and are NOT individually
-    # offloaded. A known gap, not an endorsement: the warm's hardware stage is the
-    # multi-second torch import, so during exactly the window this path exists to fix,
-    # these block. Do not grow the set without an offload or a justification here.
-    known = {
-        "_monitor_active_model",
-        "_monitor_context_length",
-    }
+    # Empty on purpose. Both monitor helpers used to sit here as a known gap: they
+    # reached the singleton through a sync helper and were not individually offloaded,
+    # so they blocked during exactly the window this path exists to fix. Both now peek
+    # instead. Do not add a name back without an offload or a justification here.
+    known: set[str] = set()
 
     # _resolves_to_resident is offloaded at its two singleton-reading call sites. The
     # third, in _openai_catalog_objects, passes llama_only = True, under which the
@@ -169,4 +175,42 @@ def test_the_offload_stays_at_the_call_site():
     assert "async def get_inference_backend_async" not in orch, (
         "an async accessor in orchestrator.py bypasses callers that patch the "
         "route module's get_inference_backend"
+    )
+
+
+# The read-only surface: these answer "what is loaded" and must never be the reason a
+# host imports torch. Each is polled from first paint or fired by a metadata-only
+# action, so building the singleton here defeats UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1
+# until a genuinely hardware-dependent operation runs.
+_READ_ONLY_SITES = (
+    ("routes/inference.py", "_monitor_active_model"),
+    ("routes/inference.py", "get_status"),
+    ("routes/models.py", "delete_finetuned_model"),
+)
+
+
+def test_read_only_endpoints_never_construct_the_singleton():
+    """Peek, not build. A peek is a plain global read, so it needs no offload either."""
+    offenders = []
+    for rel, name in _READ_ONLY_SITES:
+        tree = ast.parse((_BACKEND / rel).read_text(encoding = "utf-8"))
+        fn = next(
+            (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == name
+            ),
+            None,
+        )
+        assert fn is not None, f"{rel}:{name} moved; update this guard"
+        for sub in ast.walk(fn):
+            # Both shapes: a bare call on the loop, and the name handed to to_thread,
+            # which still constructs and still imports torch.
+            if isinstance(sub, ast.Name) and sub.id == "get_inference_backend":
+                offenders.append(f"{rel}:{sub.lineno} {name}")
+    assert not offenders, (
+        "read-only paths construct the inference singleton, so a status poll or a "
+        "metadata-only delete imports torch on a warm-disabled host:\n  "
+        + "\n  ".join(offenders)
     )

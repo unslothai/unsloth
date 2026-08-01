@@ -58,7 +58,15 @@ def test_the_budget_stays_under_the_desktop_probe_timeout():
     assert _PROBE_RS.is_file(), f"{_PROBE_RS} moved; update this guard"
     rust = _PROBE_RS.read_text(encoding = "utf-8")
     probe = rust[rust.index("fn probe_ownerless_spawned_backend") :]
-    match = re.search(r"\.timeout\(Duration::from_secs\((\d+)\)\)", probe)
+    # Bound to this function; a later one must not be the source of the number.
+    end = probe.find("\n}\n")
+    if end != -1:
+        probe = probe[: end + 3]
+    # The builder's .timeout() and the shared loopback_http::client() constructor both
+    # take the client timeout as a whole-seconds Duration, and the probe sets exactly
+    # one. Matching the Duration rather than either call site keeps this guard working
+    # across that refactor while still failing if the unit stops being seconds.
+    match = re.search(r"Duration::from_secs\((\d+)\)", probe)
     assert match, (
         "probe_ownerless_spawned_backend no longer sets a whole-seconds client "
         "timeout; re-derive the health budget from whatever replaced it"

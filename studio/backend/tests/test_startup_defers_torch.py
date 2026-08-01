@@ -308,7 +308,11 @@ _OFFLOAD_REQUIRED = [
     ("routes/training.py", "start_training", "ensure_hardware_detected"),
     ("routes/export.py", "_ensure_export_supported", "export_capability"),
     ("routes/models.py", "list_models", "get_inference_backend"),
-    ("routes/inference.py", "get_status", "get_inference_backend"),
+    # get_status is deliberately absent. It used to offload get_inference_backend; it
+    # now peeks, which constructs nothing and so needs no offload at all. The stronger
+    # invariant lives in test_async_singleton_access.py::
+    # test_read_only_endpoints_never_construct_the_singleton, which fails if it goes
+    # back to building. Listing it here would require the offload it no longer needs.
     ("routes/inference.py", "get_api_monitor", "_monitor_active_model"),
     ("routes/inference.py", "get_api_monitor", "_monitor_context_length"),
     # Also not first-paint, but a load or validate carrying gpu_ids lands in the warm

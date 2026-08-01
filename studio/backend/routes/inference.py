@@ -3315,7 +3315,11 @@ def _monitor_active_model() -> Optional[str]:
         if model_id and variant and ":" not in model_id:
             return f"{model_id}:{variant}"
         return model_id
-    backend = get_inference_backend()
+    # Peek: the monitor overlay is on by default and polls this read-only, so building
+    # the singleton to answer "nothing loaded" would import torch on a warm-disabled host.
+    backend = _peek_inference_backend()
+    if backend is None:
+        return None
     return public_model_id(backend.active_model_name) or backend.active_model_name
 
 
@@ -7888,10 +7892,17 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_latest_tag = _latest_tag,
             )
 
-        # Otherwise report Unsloth backend status. Off-loop: the first call builds the
-        # singleton, which waits on detection, and the chat UI polls this from first
-        # paint.
-        backend = await asyncio.to_thread(get_inference_backend)
+        # Otherwise report Unsloth backend status. Peek rather than build: the chat UI
+        # polls this from first paint, and no singleton means nothing is loaded, so
+        # constructing one to say so would import torch on a warm-disabled host.
+        backend = _peek_inference_backend()
+        if backend is None:
+            return InferenceStatusResponse(
+                llama_cpp_supports_mtp = _supports_mtp,
+                llama_cpp_prebuilt_stale = _stale,
+                llama_cpp_installed_tag = _installed_tag,
+                llama_cpp_latest_tag = _latest_tag,
+            )
 
         is_vision = False
         is_audio = False

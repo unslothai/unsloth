@@ -246,3 +246,29 @@ test("a deferred verdict is recorded so the sidebar can poll out of it", async (
     "the recovery poll still ignores a deferred verdict, so it never recovers",
   );
 });
+
+// A token in localStorage is not proof of an accepted one. /api/health catches the auth
+// failure and answers with the unauthenticated body, which never carries device_type, so
+// a stale token spends the whole window and holds /login on a cold boot.
+test("a rejected token stops the wait instead of polling it out", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/config/env.ts", import.meta.url),
+    "utf8",
+  );
+  const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
+  const loopEnd = src.indexOf("if (spendWait) hardwareWaitSpent = true;");
+  assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop or the latch moved");
+  const loop = src.slice(loopStart, loopEnd);
+  assert.ok(
+    /peek\.version === undefined\)?\s*\)?\s*break;/.test(loop) ||
+      loop.includes("if (peek.version === undefined) break;"),
+    "the loop keeps polling a reply with no authed-only field, so an expired token " +
+      "waits out the full window on /login",
+  );
+  assert.match(
+    loop,
+    /version\?: string;/,
+    "the peek type no longer reads the authed-only field it breaks on",
+  );
+});

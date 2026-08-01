@@ -114,9 +114,15 @@ export async function fetchDeviceType(options?: {
       const peek = (await res.clone().json()) as {
         hardware_detecting?: boolean;
         hardware_detection_deferred?: boolean;
+        version?: string;
       };
       // Deferred is not "in progress": nothing will settle, so do not wait.
       if (!isProvisionalVerdict(peek) || isDetectionDeferred(peek)) break;
+      // A stored token the backend rejects gets the unauthenticated body, which never
+      // carries device_type however long we poll. `version` is authed-only, so its
+      // absence means this wait can only ever time out, holding /login for the full
+      // window on a cold boot.
+      if (peek.version === undefined) break;
       await new Promise((resolve) => setTimeout(resolve, HARDWARE_DETECT_POLL_MS));
       res = await fetch(apiUrl("/api/health"), { headers });
     }

@@ -2482,25 +2482,31 @@ async def delete_finetuned_model(
         ) from e
 
     try:
-        inference_backend = await asyncio.to_thread(get_inference_backend)
-        loading_models = getattr(inference_backend, "loading_models", set())
-        if any(
-            _loading_model_matches_deleted_path(loading_model, target_path)
-            for loading_model in loading_models
-        ):
-            raise HTTPException(
-                status_code = 409,
-                detail = "Cannot delete a model while it is loading",
-            )
-        if inference_backend.active_model_name:
-            if _loaded_model_matches_deleted_path(
-                inference_backend.active_model_name,
-                target_path,
+        # Peek: no orchestrator means no standard model is loading or active, so nothing
+        # below can block this delete. Building one to learn that reaches
+        # get_default_models() -> get_device() and imports torch for a metadata-only op.
+        from core.inference.orchestrator import peek_inference_backend
+
+        inference_backend = peek_inference_backend()
+        if inference_backend is not None:
+            loading_models = getattr(inference_backend, "loading_models", set())
+            if any(
+                _loading_model_matches_deleted_path(loading_model, target_path)
+                for loading_model in loading_models
             ):
                 raise HTTPException(
-                    status_code = 400,
-                    detail = "Unload the model before deleting",
+                    status_code = 409,
+                    detail = "Cannot delete a model while it is loading",
                 )
+            if inference_backend.active_model_name:
+                if _loaded_model_matches_deleted_path(
+                    inference_backend.active_model_name,
+                    target_path,
+                ):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Unload the model before deleting",
+                    )
     except HTTPException:
         raise
     except Exception as e:
