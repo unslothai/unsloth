@@ -146,8 +146,12 @@ def test_a_shared_file_shorter_than_recorded_is_not_damage(site):
     # size says nothing about either RECORD -- in either direction. Only the
     # larger direction was excluded, so a collision that overwrote with a
     # shorter file was reported as corruption and blocked every update.
-    _make_dist(site, "iota", {"shared/__init__.py": b"short\n"}, record_sizes = {"shared/__init__.py": 900})
-    _make_dist(site, "kappa", {"shared/__init__.py": b"short\n"}, record_sizes = {"shared/__init__.py": 5})
+    _make_dist(
+        site, "iota", {"shared/__init__.py": b"short\n"}, record_sizes = {"shared/__init__.py": 900}
+    )
+    _make_dist(
+        site, "kappa", {"shared/__init__.py": b"short\n"}, record_sizes = {"shared/__init__.py": 5}
+    )
     assert _deps().damaged_installed_files() == []
 
 
