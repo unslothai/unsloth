@@ -1869,8 +1869,13 @@ def test_every_public_hardware_wrapper_accepts_what_it_delegates_to():
     import utils.hardware as pkg
     from utils.hardware import hardware as hw_mod
 
-    for name in ("ensure_hardware_detected", "detect_hardware", "start_background_detection",
-                 "export_capability", "get_device"):
+    for name in (
+        "ensure_hardware_detected",
+        "detect_hardware",
+        "start_background_detection",
+        "export_capability",
+        "get_device",
+    ):
         wrapper = getattr(pkg, name, None)
         target = getattr(hw_mod, name, None)
         if wrapper is None or target is None or wrapper is target:
@@ -1974,10 +1979,12 @@ def test_the_post_warm_worker_is_retired_before_any_shutdown_await():
     """
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
     )
     body = fn.body
+
     # The lifespan body is linear: find the yield, then the first Await after it, and
     # the _stop_post_warm_thread() call.
     def _lineno(pred):
@@ -1990,8 +1997,7 @@ def test_the_post_warm_worker_is_retired_before_any_shutdown_await():
         and n.func.id == "_stop_post_warm_thread"
     )
     awaits_after_yield = sorted(
-        sub.lineno for sub in ast.walk(fn)
-        if isinstance(sub, ast.Await) and sub.lineno > yield_line
+        sub.lineno for sub in ast.walk(fn) if isinstance(sub, ast.Await) and sub.lineno > yield_line
     )
     assert stop_line > yield_line, "_stop_post_warm_thread must run on shutdown"
     assert awaits_after_yield, "the shutdown path no longer awaits anything; re-derive this"
