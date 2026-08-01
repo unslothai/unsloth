@@ -104,6 +104,7 @@ import {
   PLUS_MENU_ORDER,
   composerDraftKey,
   dictationFailed,
+  dictationProducedTranscript,
   readComposerDraft,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
@@ -1869,16 +1870,17 @@ const Composer: FC<{
     // A partial transcript (a failed chunk, or an engine error after one
     // landed) belongs in the composer, but must not send half a message.
     if (dictationFailed()) return;
-    // Silence, a failed transcription, or a thread switch mid-transcription:
-    // keep the draft, submit nothing.
+    // Silence, a thread switch mid-transcription, or a plus-menu insertion
+    // with no speech: keep the draft, submit nothing.
     const { text } = aui.composer().getState();
     if (
-      !shouldSubmitDictation(
-        dictationComposerRef.current,
-        composerIdentity,
-        dictationBaseTextRef.current,
+      !shouldSubmitDictation({
+        originComposer: dictationComposerRef.current,
+        currentComposer: composerIdentity,
+        producedTranscript: dictationProducedTranscript(),
+        baseText: dictationBaseTextRef.current,
         text,
-      )
+      })
     ) {
       return;
     }

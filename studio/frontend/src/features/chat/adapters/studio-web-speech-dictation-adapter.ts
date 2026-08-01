@@ -13,8 +13,9 @@ import { toast } from "sonner";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { startDictationLevelMeter } from "./dictation-level";
 import {
+  beginDictationSession,
   markDictationFailed,
-  resetDictationFailure,
+  markDictationTranscript,
 } from "./dictation-outcome";
 
 /** Chat open while dictating, so the saved dictation can link back to it. */
@@ -143,7 +144,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       throw new Error("Speech recognition is not supported in this browser.");
     }
 
-    resetDictationFailure();
+    beginDictationSession();
     const recognition = new SpeechRecognitionAPI();
     recognition.lang = this.language ?? resolveDictationLanguage();
     recognition.continuous = this.continuous;
@@ -279,6 +280,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       stream = null;
       const transcript = reason === "cancelled" ? "" : finalTranscript;
       if (transcript) {
+        markDictationTranscript();
         for (const callback of speechCallbacks) {
           callback({ transcript, isFinal: true });
         }

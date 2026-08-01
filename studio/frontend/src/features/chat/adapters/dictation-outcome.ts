@@ -2,24 +2,36 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Whether the dictation that just ended lost transcript to an error.
+ * What the dictation that just ended actually produced.
  *
- * Both engines can end holding a partial transcript: the browser one keeps
- * finalized chunks through a recognition error, the local model one keeps the
- * segments that did transcribe. That text still belongs in the composer, but
- * the recording bar's send must not submit it on its own.
- *
- * Module state, not session state, because the recording bar reads it after
- * the session object is gone.
+ * The recording bar's send needs both answers, and cannot get them from the
+ * composer: text can change while recording (the plus menu can insert a saved
+ * prompt), and a partial transcript still lands there. Module state, not
+ * session state, because the bar reads it once the session is gone.
  */
+let producedTranscript = false;
 let failed = false;
 
 /** Start a session. Clears the previous session's result. */
-export function resetDictationFailure(): void {
+export function beginDictationSession(): void {
+  producedTranscript = false;
   failed = false;
 }
 
-/** A transcript chunk, or the session itself, failed. */
+/** A final transcript was published to the composer. */
+export function markDictationTranscript(): void {
+  producedTranscript = true;
+}
+
+/** Whether the last dictation published any transcript. */
+export function dictationProducedTranscript(): boolean {
+  return producedTranscript;
+}
+
+/**
+ * A transcript chunk, or the session itself, failed. Both engines can still
+ * publish what did transcribe, so the text is partial rather than absent.
+ */
 export function markDictationFailed(): void {
   failed = true;
 }

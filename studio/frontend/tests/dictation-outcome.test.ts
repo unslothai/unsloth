@@ -5,35 +5,57 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  beginDictationSession,
   dictationFailed,
+  dictationProducedTranscript,
   markDictationFailed,
-  resetDictationFailure,
+  markDictationTranscript,
 } from "../src/features/chat/adapters/dictation-outcome.ts";
 
-test("a fresh session reports no failure", () => {
-  resetDictationFailure();
+test("a fresh session has produced nothing and failed at nothing", () => {
+  beginDictationSession();
+  assert.equal(dictationProducedTranscript(), false);
   assert.equal(dictationFailed(), false);
+});
+
+test("a published transcript is visible after the session ends", () => {
+  beginDictationSession();
+  markDictationTranscript();
+  assert.equal(dictationProducedTranscript(), true);
 });
 
 test("a reported failure is visible after the session ends", () => {
-  resetDictationFailure();
+  beginDictationSession();
   markDictationFailed();
   assert.equal(dictationFailed(), true);
 });
 
-// The recording bar reads the flag once the session is gone, so it has to
-// survive until the next session starts rather than clearing on end.
-test("the failure survives until the next session starts", () => {
-  resetDictationFailure();
+// A partial transcript is both: text was published, and some was lost.
+test("a partial transcript reports both", () => {
+  beginDictationSession();
+  markDictationTranscript();
   markDictationFailed();
+  assert.equal(dictationProducedTranscript(), true);
   assert.equal(dictationFailed(), true);
-  resetDictationFailure();
+});
+
+// The recording bar reads these once the session is gone, so they have to
+// survive until the next one starts rather than clearing on end.
+test("both survive until the next session starts", () => {
+  beginDictationSession();
+  markDictationTranscript();
+  markDictationFailed();
+  beginDictationSession();
+  assert.equal(dictationProducedTranscript(), false);
   assert.equal(dictationFailed(), false);
 });
 
-test("repeated failures in one session stay set", () => {
-  resetDictationFailure();
+test("repeated marks in one session stay set", () => {
+  beginDictationSession();
+  markDictationTranscript();
+  markDictationTranscript();
   markDictationFailed();
   markDictationFailed();
+  assert.equal(dictationProducedTranscript(), true);
   assert.equal(dictationFailed(), true);
 });

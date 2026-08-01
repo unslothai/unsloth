@@ -37,32 +37,27 @@ test("a whitespace-only transcript does not count as text", () => {
   assert.equal(dictationProducedText("", "   "), false);
 });
 
+const base = {
+  originComposer: "item-1",
+  currentComposer: "item-1",
+  producedTranscript: true,
+  baseText: "",
+  text: "hello there",
+};
+
 test("a transcript submits in the composer the send started in", () => {
-  assert.equal(
-    shouldSubmitDictation("t1:t1", "t1:t1", "", "hello there"),
-    true,
-  );
+  assert.equal(shouldSubmitDictation(base), true);
 });
 
 // The composer is reused across thread switches, so a send that lands after
 // the move would otherwise submit the destination thread's draft.
 test("a thread switch during transcription drops the send", () => {
   assert.equal(
-    shouldSubmitDictation("t1:t1", "t2:t2", "", "someone else's draft"),
-    false,
-  );
-});
-
-test("a thread switch drops the send even with a real transcript", () => {
-  assert.equal(
-    shouldSubmitDictation("t1:t1", "t2:t2", "", "hello there"),
-    false,
-  );
-});
-
-test("silence in the original composer still sends nothing", () => {
-  assert.equal(
-    shouldSubmitDictation("t1:t1", "t1:t1", "draft", "draft"),
+    shouldSubmitDictation({
+      ...base,
+      currentComposer: "item-2",
+      text: "someone else's draft",
+    }),
     false,
   );
 });
@@ -70,8 +65,37 @@ test("silence in the original composer still sends nothing", () => {
 // The identity has to survive a new chat's first persist, which moves
 // activeThreadId from null to the remote id without changing the composer.
 test("hydrating a new chat keeps the pending send alive", () => {
+  assert.equal(shouldSubmitDictation(base), true);
+});
+
+test("silence in the original composer sends nothing", () => {
   assert.equal(
-    shouldSubmitDictation("item-1", "item-1", "", "hello there"),
+    shouldSubmitDictation({
+      ...base,
+      producedTranscript: false,
+      baseText: "draft",
+      text: "draft",
+    }),
+    false,
+  );
+});
+
+// The plus menu stays open while recording: inserting a saved prompt changes
+// the composer without any speech, which text alone cannot tell apart.
+test("a menu insertion with no transcript sends nothing", () => {
+  assert.equal(
+    shouldSubmitDictation({
+      ...base,
+      producedTranscript: false,
+      text: "an inserted saved prompt",
+    }),
+    false,
+  );
+});
+
+test("a menu insertion alongside a real transcript still sends", () => {
+  assert.equal(
+    shouldSubmitDictation({ ...base, text: "an inserted prompt hello there" }),
     true,
   );
 });

@@ -19,19 +19,25 @@ export function dictationProducedText(before: string, after: string): boolean {
 /**
  * Whether a pending dictation send may submit now.
  *
- * The composer is reused across thread switches, so a send pressed in one
- * thread can land after the user has moved to another. Submitting there would
- * send that thread's draft, so the intent is dropped instead.
- *
- * @param originComposer composer identity when send was pressed
- * @param currentComposer composer identity now that the session has ended
+ * Three ways it must not. The composer is reused across thread switches, so a
+ * send pressed in one thread can land after a move to another, where it would
+ * submit that thread's draft. The plus menu stays open to the user while
+ * recording and can insert a saved prompt, which changes the text without any
+ * speech. And silence leaves whatever was already there.
  */
-export function shouldSubmitDictation(
-  originComposer: string,
-  currentComposer: string,
-  baseText: string,
-  text: string,
-): boolean {
-  if (originComposer !== currentComposer) return false;
-  return dictationProducedText(baseText, text);
+export function shouldSubmitDictation(input: {
+  /** Composer identity when send was pressed. */
+  originComposer: string;
+  /** Composer identity now that the session has ended. */
+  currentComposer: string;
+  /** The engine published a final transcript. */
+  producedTranscript: boolean;
+  /** Composer text at session start. */
+  baseText: string;
+  /** Composer text now. */
+  text: string;
+}): boolean {
+  if (input.originComposer !== input.currentComposer) return false;
+  if (!input.producedTranscript) return false;
+  return dictationProducedText(input.baseText, input.text);
 }
