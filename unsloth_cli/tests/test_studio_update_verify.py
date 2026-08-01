@@ -381,7 +381,9 @@ def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, 
     studio = _studio()
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
     monkeypatch.setattr(
-        studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["orphan: o/x.py is missing"]
+        studio._studio_deps,
+        "damaged_installed_files",
+        lambda *a, **k: ["orphan: o/x.py is missing"],
     )
     with pytest.raises(typer.Exit):
         studio._fail_if_install_damaged()
