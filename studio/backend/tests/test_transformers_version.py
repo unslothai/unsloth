@@ -3911,7 +3911,7 @@ class TestDamagedLatestSidecarRepairHandoff:
 
         monkeypatch.setattr(Path, "stat", _flaky)
         assert tv._sidecar_damaged_files(str(live)) == []  # the scan sees nothing
-        assert tv._sidecar_scan(str(live)) == ([], True)   # but knows it is blind
+        assert tv._sidecar_scan(str(live)) == ([], True)  # but knows it is blind
 
         assert tv._ensure_venv_t5_latest_exists() is False
         assert tv._latest_repair_requested(), "an unreadable scan cannot disprove damage"
@@ -3938,6 +3938,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
         shutil.rmtree(live)
 
-        assert tv._probe_tier(
-            "some/model", None, "test", include_default = True, floor = "default"
-        ) != "latest"
+        assert (
+            tv._probe_tier("some/model", None, "test", include_default = True, floor = "default")
+            != "latest"
+        )
