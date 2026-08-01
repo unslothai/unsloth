@@ -191,30 +191,52 @@ export async function getActiveGenerations(): Promise<ActiveGenerationsResponse>
 
 export async function loadModel(
   payload: LoadModelRequest,
+  options?: {
+    signal?: AbortSignal;
+    onRequestStart?: () => void;
+    onAuthenticationRequired?: () => void;
+  },
 ): Promise<LoadModelResponse> {
+  options?.signal?.throwIfAborted();
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+  options?.signal?.throwIfAborted();
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
-  const response = await authFetch("/api/inference/load", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...payload,
-      hf_token: preparedToken.token,
-      native_path_lease: payload.nativePathLease ?? null,
-      nativePathLease: undefined,
-    }),
-  });
+  const response = await authFetch(
+    "/api/inference/load",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: options?.signal,
+      body: JSON.stringify({
+        ...payload,
+        hf_token: preparedToken.token,
+        native_path_lease: payload.nativePathLease ?? null,
+        nativePathLease: undefined,
+      }),
+    },
+    {
+      // authFetch replays these boundaries around a 401 refresh/retry, letting
+      // callers hide the cancellation target while no authenticated load is
+      // actually in flight.
+      onRequestStart: options?.onRequestStart,
+      onAuthenticationRequired: options?.onAuthenticationRequired,
+    },
+  );
   return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
 }
 
 export async function validateModel(
   payload: LoadModelRequest,
+  options?: { signal?: AbortSignal },
 ): Promise<ValidateModelResponse> {
+  options?.signal?.throwIfAborted();
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+  options?.signal?.throwIfAborted();
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: options?.signal,
     body: JSON.stringify({
       model_path: payload.model_path,
       native_path_lease: payload.nativePathLease ?? null,
@@ -293,10 +315,14 @@ export async function fetchGgufStagedMetadata(payload: {
   };
 }
 
-export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
+export async function unloadModel(
+  payload: UnloadModelRequest,
+  options?: { signal?: AbortSignal },
+): Promise<void> {
   const response = await authFetch("/api/inference/unload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: options?.signal,
     body: JSON.stringify(payload),
   });
   await parseJsonOrThrow<unknown>(response, "Model unload");

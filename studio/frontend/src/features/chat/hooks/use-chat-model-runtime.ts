@@ -271,6 +271,41 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
   return `${modelName} was not loaded because it needs a newer transformers release that was not installed. Load it again to install it.`;
 }
 
+let fullInventoryRefreshesInFlight = 0;
+let fullInventoryHydrationBaseline = false;
+let fullInventoryRefreshSucceeded = false;
+
+function beginFullInventoryRefresh(): void {
+  const store = useChatRuntimeStore.getState();
+  if (fullInventoryRefreshesInFlight === 0) {
+    fullInventoryHydrationBaseline = store.modelRuntimeHydrated;
+    fullInventoryRefreshSucceeded = false;
+  }
+  fullInventoryRefreshesInFlight += 1;
+  store.setModelRuntimeHydrated(false);
+}
+
+function finishFullInventoryRefresh(succeeded: boolean): void {
+  fullInventoryRefreshSucceeded =
+    fullInventoryRefreshSucceeded || succeeded;
+  fullInventoryRefreshesInFlight = Math.max(
+    0,
+    fullInventoryRefreshesInFlight - 1,
+  );
+  if (fullInventoryRefreshesInFlight === 0) {
+    const store = useChatRuntimeStore.getState();
+    if (fullInventoryRefreshSucceeded) {
+      // A failed sibling may have published an error before this overlapping
+      // refresh group settled. Any success published a current inventory, so
+      // the completed group must not leave that stale error behind.
+      store.setModelsError(null);
+    }
+    store.setModelRuntimeHydrated(
+      fullInventoryRefreshSucceeded || fullInventoryHydrationBaseline,
+    );
+  }
+}
+
 /**
  * Reconcile the chat runtime store against `/api/inference/status`: refresh the
  * models/loras catalogs and either re-pin the active checkpoint or clear the
@@ -288,6 +323,12 @@ async function syncInferenceStatusToStore(options?: {
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
+  if (includeLoras) {
+    // A prior successful refresh is not proof that the catalog behind a later
+    // compare mount is current. Keep new compare layouts unfrozen until this
+    // inventory request has published its LoRAs.
+    beginFullInventoryRefresh();
+  }
   try {
     const [listRes, statusRes, lorasRes] = await Promise.all([
       listModels(),
@@ -297,7 +338,12 @@ async function syncInferenceStatusToStore(options?: {
 
     // Cancellation can land while the requests above are in flight. Bail
     // before writing backend state back -- cancelLoading already cleared it.
-    if (signal?.aborted) return;
+    if (signal?.aborted) {
+      if (includeLoras) {
+        finishFullInventoryRefresh(false);
+      }
+      return;
+    }
 
     setModels(listRes.models.map(toChatModelSummary));
     if (lorasRes) {
@@ -330,14 +376,31 @@ async function syncInferenceStatusToStore(options?: {
         loadedIsDiffusion: false,
       });
     }
+    // Compare mode may now safely freeze its base/LoRA layout only when this
+    // refresh actually included the LoRA catalog. Keep false on the fast
+    // status-only refresh, failures, and cancellation so the deferred full
+    // inventory refresh can still recover a direct LoRA deep link.
+    if (includeLoras) {
+      finishFullInventoryRefresh(true);
+    }
   } catch (error) {
-    if (signal?.aborted) return;
+    if (signal?.aborted) {
+      if (includeLoras) {
+        finishFullInventoryRefresh(false);
+      }
+      return;
+    }
     const message =
       error instanceof Error ? error.message : "Failed to load models";
     setModelsError(message);
     toast.error("Failed to refresh models", {
       description: message,
     });
+    // Finish after publishing the failure. If an overlapping sibling already
+    // succeeded, group completion clears this stale error atomically.
+    if (includeLoras) {
+      finishFullInventoryRefresh(false);
+    }
   }
 }
 

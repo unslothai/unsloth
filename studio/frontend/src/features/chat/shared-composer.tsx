@@ -35,6 +35,7 @@ import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { isExternalModelId } from "./external-providers";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { useAui } from "@assistant-ui/react";
 import {
@@ -72,7 +73,10 @@ import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
 import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "./permission-mode-select";
-import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
+import {
+  reasoningCapsFromLoad,
+  resolveInferenceCheckpointId,
+} from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
@@ -90,9 +94,16 @@ import {
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   fetchGgufStagedMetadata,
+  getInferenceStatus,
   loadModel,
+  unloadModel,
   validateModel,
 } from "./api/chat-api";
+import {
+  CompareRunOwnership,
+  isCompareCancellation,
+  throwIfCompareCancelled,
+} from "./compare-run-ownership";
 import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
@@ -185,6 +196,50 @@ function isNativeComposing(event: Event) {
 // never fires `compositionend` after IME commit, so the compose flag would
 // otherwise stay true forever.
 const IME_STUCK_TIMEOUT_MS = 2500;
+const COMPARE_CANCEL_STATUS_POLL_MS = 750;
+const COMPARE_CANCEL_SETTLED_OBSERVATIONS = 3;
+
+async function cancelCompareBackendLoad(modelId: string): Promise<void> {
+  try {
+    await unloadModel({ model_path: modelId });
+    return;
+  } catch (unloadError) {
+    // The browser-side load request was already aborted. Until the backend
+    // proves its corresponding job ended, expose no checkpoint and keep the
+    // compare run busy so an orphaned load cannot silently replace the model
+    // behind a later prompt.
+    useChatRuntimeStore.getState().clearCheckpoint();
+    let settledObservations = 0;
+    while (
+      settledObservations < COMPARE_CANCEL_SETTLED_OBSERVATIONS
+    ) {
+      try {
+        const status = await getInferenceStatus();
+        const targetStillLoading = status.loading.some(
+          (loadingId) =>
+            loadingId.toLowerCase() === modelId.toLowerCase(),
+        );
+        settledObservations = targetStillLoading
+          ? 0
+          : settledObservations + 1;
+      } catch {
+        settledObservations = 0;
+      }
+      if (
+        settledObservations < COMPARE_CANCEL_SETTLED_OBSERVATIONS
+      ) {
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, COMPARE_CANCEL_STATUS_POLL_MS);
+        });
+      }
+    }
+    const detail =
+      unloadError instanceof Error
+        ? unloadError.message
+        : "The backend rejected the cancellation request.";
+    throw new Error(`Could not cancel the backend model load: ${detail}`);
+  }
+}
 
 function fileToBase64DataURL(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -375,14 +430,43 @@ export function RegisterCompareHandle({
       waitForRunEnd: () =>
         new Promise<void>((resolve) => {
           let wasRunning = false;
-          const unsub = useChatRuntimeStore.subscribe((state) => {
-            const anyRunning = Object.keys(state.runningByThreadId).length > 0;
-            if (anyRunning) wasRunning = true;
-            if (wasRunning && !anyRunning) {
-              unsub();
+          let settled = false;
+          let unsubs: Array<() => void> = [];
+          const check = () => {
+            const state = useChatRuntimeStore.getState();
+            // A fresh assistant-ui pane begins with __LOCALID..., then storage
+            // initialization assigns its persisted remote id before the adapter
+            // marks the run active. Refresh both identities on every update so
+            // the waiter follows that handoff instead of watching a stale id.
+            const remoteId = aui.threadListItem().getState().remoteId;
+            const ids = [
+              aui.threads().getState().mainThreadId,
+              remoteId,
+              // Before assistant-ui exposes the persisted ID, the adapter files
+              // first-turn run state under this transient key. Stop watching it
+              // once the handoff is observable so unrelated first turns cannot
+              // keep this pane's waiter alive.
+              ...(remoteId ? [] : ["__default"]),
+            ].filter((id): id is string => Boolean(id));
+            // When multiple first turns share __default, ownership cannot be
+            // migrated. The pane-local assistant state remains authoritative
+            // after remoteId appears, while the transient store pulse still
+            // covers pre-stream gates that never start assistant generation.
+            const isRunning =
+              aui.thread().getState().isRunning ||
+              ids.some((id) => Boolean(state.runningByThreadId[id]));
+            if (isRunning) wasRunning = true;
+            if (wasRunning && !isRunning && !settled) {
+              settled = true;
+              for (const unsubscribe of unsubs) unsubscribe();
               resolve();
             }
-          });
+          };
+          unsubs = [
+            useChatRuntimeStore.subscribe(check),
+            aui.subscribe(check),
+          ];
+          check();
         }),
     };
     return () => {
@@ -463,15 +547,19 @@ export function SharedComposer({
   model1,
   model2,
   onExitCompare,
+  onComparingChange,
   model1ThreadId,
   model2ThreadId,
+  submissionReady = true,
 }: {
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
   onExitCompare?: () => void;
+  onComparingChange?: (comparing: boolean) => void;
   model1ThreadId?: string;
   model2ThreadId?: string;
+  submissionReady?: boolean;
 }): ReactElement {
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
@@ -516,12 +604,32 @@ export function SharedComposer({
   const prevRunningRef = useRef(false);
   const prevComparingRef = useRef(false);
   const compareStepSucceededRef = useRef(false);
+  const compareRunsRef = useRef(
+    new CompareRunOwnership<CompareModelSelection>(),
+  );
   const sendRef = useRef<(() => void) | null>(null);
+  const sendInProgressRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
+
+  async function waitForCompareHandle(
+    signal: AbortSignal,
+    ...names: string[]
+  ): Promise<CompareHandle | undefined> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      throwIfCompareCancelled(signal);
+      for (const name of names) {
+        const handle = handlesRef.current[name];
+        if (handle) return handle;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+    throwIfCompareCancelled(signal);
+    return undefined;
+  }
 
   const activeModel = useChatRuntimeStore((s) => {
     const checkpoint = s.params.checkpoint;
@@ -938,6 +1046,21 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
+    // File conversion happens before compare ownership begins. Claim this
+    // synchronous guard first so two attachment submissions cannot both pass
+    // the idle render and later supersede an in-flight backend model load.
+    if (!submissionReady || sendInProgressRef.current) return;
+    sendInProgressRef.current = true;
+    onComparingChange?.(true);
+    try {
+      await sendImpl();
+    } finally {
+      onComparingChange?.(false);
+      sendInProgressRef.current = false;
+    }
+  }
+
+  async function sendImpl() {
     if (composingRef.current) return;
     const msg = text.trim();
     if (!msg && pendingImages.length === 0 && !pendingAudio) return;
@@ -1035,13 +1158,41 @@ export function SharedComposer({
         selectedGpuIds: store.selectedGpuIds,
         selectedGpuIndexKind: store.selectedGpuIndexKind,
       };
+      const run = compareRunsRef.current.begin();
+      const compareSignal = run.controller.signal;
+      // These are per-turn choices, not model capabilities. If a switch fails
+      // after unloading the active model, clearing the stale checkpoint must
+      // not silently change the second pane's prompt semantics.
+      const compareTurnOptions = {
+        reasoningEnabled: store.reasoningEnabled,
+        reasoningEffort: store.reasoningEffort,
+        preserveThinking: store.preserveThinking,
+        toolsEnabled: store.toolsEnabled,
+        codeToolsEnabled: store.codeToolsEnabled,
+        imageToolsEnabled: store.imageToolsEnabled,
+        artifactsEnabled: store.artifactsEnabled,
+        mcpEnabledForChat: store.mcpEnabledForChat,
+        webFetchToolsEnabled: store.webFetchToolsEnabled,
+        ragEnabled: store.ragEnabled,
+      };
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
       let upgradeUnloadedActive = false;
+      // Once /load starts, the backend may replace the active model after its
+      // prechecks. Remember the origin so failures can preserve it when status
+      // proves the backend never reached the unload step.
+      const modelSwitchState: {
+        originCheckpoint: string | null;
+        originGgufVariant: string | null;
+      } = {
+        originCheckpoint: null,
+        originGgufVariant: null,
+      };
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
       ): Promise<string> {
+        throwIfCompareCancelled(compareSignal);
         const currentStore = useChatRuntimeStore.getState();
         const config = sel.config ?? null;
         // This pane's effective config: an explicit selection config, else the
@@ -1139,6 +1290,8 @@ export function SharedComposer({
         const effectiveCustomContextLength = ownConfig.customContextLength;
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
+        throwIfCompareCancelled(compareSignal);
+        useChatRuntimeStore.getState().setModelLoading(true);
         // Size validation exactly as the load below, so the training-guard
         // preflight checks the footprint that actually loads (under Manual + Auto
         // layers the load sends 0 / the pinned context, not raw maxSeqLength).
@@ -1152,28 +1305,32 @@ export function SharedComposer({
           effectiveCustomContextLength,
           effectiveMaxSeqLength,
         );
-        const validation = await validateModel({
-          model_path: sel.id,
-          hf_token: currentStore.hfToken || null,
-          max_seq_length: compareMaxSeqLength,
-          load_in_4bit: true,
-          is_lora: sel.isLora,
-          gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: loadTrustRemoteCode,
-          chat_template_override: effectiveChatTemplateOverride,
-          cache_type_kv: ownConfig.kvCacheDtype ?? null,
-          tensor_parallel: effectiveTensorParallel,
-          // Scope the validate to the picked GPUs. GGUF-only, like the load
-          // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
-          ...(targetIsGguf
-            ? {
-                gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                gpu_memory_mode: effectiveGpuMemoryMode,
-                // Slots scale the KV estimate; keep validate sized like the load.
-                n_parallel: ownConfig.nParallel ?? null,
-              }
-            : {}),
-        });
+        const validation = await validateModel(
+          {
+            model_path: sel.id,
+            hf_token: currentStore.hfToken || null,
+            max_seq_length: compareMaxSeqLength,
+            load_in_4bit: true,
+            is_lora: sel.isLora,
+            gguf_variant: sel.ggufVariant ?? null,
+            trust_remote_code: loadTrustRemoteCode,
+            chat_template_override: effectiveChatTemplateOverride,
+            cache_type_kv: ownConfig.kvCacheDtype ?? null,
+            tensor_parallel: effectiveTensorParallel,
+            // Scope the validate to the picked GPUs. GGUF-only, like the load
+            // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
+            ...(targetIsGguf
+              ? {
+                  gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                  gpu_memory_mode: effectiveGpuMemoryMode,
+                  // Slots scale the KV estimate; keep validate sized like the load.
+                  n_parallel: ownConfig.nParallel ?? null,
+                }
+              : {}),
+          },
+          { signal: compareSignal },
+        );
+        throwIfCompareCancelled(compareSignal);
         // Upgrade dialog first (mirrors the primary load path).
         if (validation.requires_transformers_upgrade) {
           const upgraded = await confirmTransformersUpgradeIfNeeded({
@@ -1198,6 +1355,7 @@ export function SharedComposer({
               `${modelDisplayName(sel.id)} needs a newer transformers release to load.`,
             );
           }
+          throwIfCompareCancelled(compareSignal);
         }
         if (
           validation.requires_trust_remote_code ||
@@ -1217,32 +1375,58 @@ export function SharedComposer({
               `${modelDisplayName(sel.id)} needs custom code approval to load.`,
             );
           }
+          throwIfCompareCancelled(compareSignal);
         }
-        const resp = await loadModel({
-          model_path: sel.id,
-          hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: compareMaxSeqLength,
-          load_in_4bit: true,
-          is_lora: sel.isLora,
-          gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: loadTrustRemoteCode,
-          approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
-          chat_template_override: effectiveChatTemplateOverride,
-          cache_type_kv: ownConfig.kvCacheDtype ?? null,
-          speculative_type: effectiveSpeculativeType,
-          spec_draft_n_max: effectiveSpecDraftNMax,
-          tensor_parallel: effectiveTensorParallel,
-          ...(targetIsGguf
-            ? {
-                gpu_memory_mode: effectiveGpuMemoryMode,
-                gpu_layers: effectiveGpuLayers,
-                n_cpu_moe: effectiveNCpuMoe,
-                tensor_split: compareLoadKnobs.splitRatio ?? undefined,
-                gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                n_parallel: ownConfig.nParallel ?? null,
-              }
-            : {}),
-        });
+        const resp = await loadModel(
+          {
+            model_path: sel.id,
+            hf_token: useChatRuntimeStore.getState().hfToken || null,
+            max_seq_length: compareMaxSeqLength,
+            load_in_4bit: true,
+            is_lora: sel.isLora,
+            gguf_variant: sel.ggufVariant ?? null,
+            trust_remote_code: loadTrustRemoteCode,
+            approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
+            chat_template_override: effectiveChatTemplateOverride,
+            cache_type_kv: ownConfig.kvCacheDtype ?? null,
+            speculative_type: effectiveSpeculativeType,
+            spec_draft_n_max: effectiveSpecDraftNMax,
+            tensor_parallel: effectiveTensorParallel,
+            ...(targetIsGguf
+              ? {
+                  gpu_memory_mode: effectiveGpuMemoryMode,
+                  gpu_layers: effectiveGpuLayers,
+                  n_cpu_moe: effectiveNCpuMoe,
+                  tensor_split: compareLoadKnobs.splitRatio ?? undefined,
+                  gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                  n_parallel: ownConfig.nParallel ?? null,
+                }
+              : {}),
+          },
+          {
+            signal: compareSignal,
+            // Token validation and its dialog happen inside loadModel. Expose
+            // the backend cancellation target only at the actual request
+            // boundary so Stop cannot evict a resident same-ID model earlier.
+            // Preserve the origin for a same-model reload because once the
+            // request starts, Stop can unload that active same-ID model.
+            onRequestStart: () => {
+              const preLoadStore = useChatRuntimeStore.getState();
+              const previousCheckpoint = preLoadStore.params.checkpoint;
+              compareRunsRef.current.setLoadingModel(run, sel);
+              modelSwitchState.originCheckpoint = previousCheckpoint || null;
+              modelSwitchState.originGgufVariant = previousCheckpoint
+                ? (preLoadStore.activeGgufVariant ?? null)
+                : null;
+            },
+            onAuthenticationRequired: () => {
+              compareRunsRef.current.setLoadingModel(run, null);
+              modelSwitchState.originCheckpoint = null;
+              modelSwitchState.originGgufVariant = null;
+            },
+          },
+        );
+        throwIfCompareCancelled(compareSignal);
         // Keep a compare pane's per-model speculative choice load-local: persist
         // the global preference only when it came from global settings.
         if (ownConfig.speculativeType == null) {
@@ -1252,6 +1436,8 @@ export function SharedComposer({
         // so an applied manual choice survives a restart.
         persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
         upgradeUnloadedActive = false;
+        modelSwitchState.originCheckpoint = null;
+        modelSwitchState.originGgufVariant = null;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -1360,42 +1546,54 @@ export function SharedComposer({
           next[idx] = { ...next[idx], ...synced };
           store.setModels(next);
         }
+        if (compareRunsRef.current.setLoadingModel(run, null)) {
+          useChatRuntimeStore.getState().setModelLoading(false);
+        }
         return resp.status;
       }
-
-      const handle1 = handlesRef.current["model1"];
-      const handle2 = handlesRef.current["model2"];
-
-      // Show user messages immediately on both sides
-      if (handle1) handle1.appendMessage(content);
-      if (handle2) handle2.appendMessage(content);
 
       const name1 = model1?.id ? modelDisplayName(model1.id) : "";
       const name2 = model2?.id ? modelDisplayName(model2.id) : "";
       const toastId = toast("Comparing models…", { duration: Infinity });
 
       setComparing(true);
+      compareStepSucceededRef.current = false;
       try {
+        // Require both append targets before starting either generation. A
+        // remount timeout must fail the compare, not run against stale history.
+        const [handle1, handle2] = await Promise.all([
+          waitForCompareHandle(compareSignal, "model1"),
+          waitForCompareHandle(compareSignal, "model2"),
+        ]);
+        if (!handle1) throw new Error("Model 1 chat pane is not ready.");
+        if (!handle2) throw new Error("Model 2 chat pane is not ready.");
+        handle1.appendMessage(content);
+        handle2.appendMessage(content);
+        throwIfCompareCancelled(compareSignal);
+
         // Side 1: load → generate → wait
-        if (handle1 && model1?.id) {
+        if (model1?.id) {
           toast("Loading Model 1…", {
             id: toastId,
             description: name1,
             duration: Infinity,
           });
           const status1 = await ensureModelLoaded(model1);
+          throwIfCompareCancelled(compareSignal);
           toast("Generating with Model 1…", {
             id: toastId,
             description: `${name1} (${status1})`,
             duration: Infinity,
           });
           const done = handle1.waitForRunEnd();
+          throwIfCompareCancelled(compareSignal);
           handle1.startRun();
           await done;
+          throwIfCompareCancelled(compareSignal);
         }
 
         // Side 2: load → generate → wait
-        if (handle2 && model2?.id) {
+        if (model2?.id) {
           const needsLoad =
             model2.id.toLowerCase() !== (model1?.id || "").toLowerCase() ||
             (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
@@ -1407,32 +1605,94 @@ export function SharedComposer({
             });
           }
           const status2 = await ensureModelLoaded(model2);
+          throwIfCompareCancelled(compareSignal);
           toast("Generating with Model 2…", {
             id: toastId,
             description: `${name2} (${status2})`,
             duration: Infinity,
           });
           const done = handle2.waitForRunEnd();
+          throwIfCompareCancelled(compareSignal);
           handle2.startRun();
           await done;
+          throwIfCompareCancelled(compareSignal);
         }
 
-        compareStepSucceededRef.current = true;
-        toast.success("Compare complete", { id: toastId, duration: 2000 });
-      } catch (err) {
-        compareStepSucceededRef.current = false;
-        // The install already unloaded the previously active model; drop the
-        // checkpoint so the UI does not keep pointing at an unloaded model.
-        if (upgradeUnloadedActive) {
-          useChatRuntimeStore.getState().clearCheckpoint();
+        if (compareRunsRef.current.owns(run)) {
+          compareStepSucceededRef.current = true;
+          toast.success("Compare complete", { id: toastId, duration: 2000 });
         }
-        toast.error("Compare failed", {
-          id: toastId,
-          description: err instanceof Error ? err.message : "Unknown error",
-          duration: 4000,
-        });
+      } catch (err) {
+        let cleanupError: unknown = null;
+        if (run.cleanup) {
+          try {
+            await run.cleanup;
+          } catch (error) {
+            cleanupError = error;
+          }
+        }
+        if (compareRunsRef.current.owns(run)) {
+          compareStepSucceededRef.current = false;
+          const originIsExternal = isExternalModelId(
+            modelSwitchState.originCheckpoint,
+          );
+          let originalModelStillActive = originIsExternal;
+          if (
+            modelSwitchState.originCheckpoint &&
+            !originIsExternal
+          ) {
+            try {
+              const status = await getInferenceStatus();
+              originalModelStillActive =
+                resolveInferenceCheckpointId(status)?.toLowerCase() ===
+                  modelSwitchState.originCheckpoint.toLowerCase() &&
+                (status.gguf_variant ?? null) ===
+                  modelSwitchState.originGgufVariant;
+            } catch {
+              // If status cannot prove the old model survived, clear the stale
+              // client checkpoint below.
+            }
+          }
+          // A server-side install or explicit switch may have unloaded the
+          // checkpoint even when cancellation hid the response. Fail closed,
+          // while restoring the prompt's per-turn tool/reasoning choices.
+          if (
+            (!originIsExternal && upgradeUnloadedActive) ||
+            (modelSwitchState.originCheckpoint && !originalModelStillActive)
+          ) {
+            useChatRuntimeStore.getState().clearCheckpoint();
+            useChatRuntimeStore.setState(compareTurnOptions);
+          }
+          if (isCompareCancellation(err, compareSignal)) {
+            if (cleanupError) {
+              toast.error("Compare stopped after cancellation failed", {
+                id: toastId,
+                description:
+                  cleanupError instanceof Error
+                    ? cleanupError.message
+                    : "The model load ended, but the backend cancellation failed.",
+                duration: 5000,
+              });
+            } else {
+              toast.info("Compare stopped", { id: toastId, duration: 2000 });
+            }
+          } else {
+            toast.error("Compare failed", {
+              id: toastId,
+              description: err instanceof Error ? err.message : "Unknown error",
+              duration: 4000,
+            });
+          }
+        }
       } finally {
-        setComparing(false);
+        // The catch path above reports a cleanup failure after the backend load
+        // is confirmed settled. The finally path only shares that same promise
+        // so ownership is not released before reconciliation completes.
+        if (run.cleanup) await run.cleanup.catch(() => undefined);
+        if (compareRunsRef.current.release(run)) {
+          useChatRuntimeStore.getState().setModelLoading(false);
+          setComparing(false);
+        }
       }
     } else {
       // Original behavior: fire all handles simultaneously
@@ -1445,6 +1705,19 @@ export function SharedComposer({
 
   function stop() {
     if (isDictating) stopDictation();
+    const run = compareRunsRef.current.cancelCurrent();
+    if (run) {
+      compareStepSucceededRef.current = false;
+      const loadingModel = run.loadingModel;
+      if (loadingModel && !run.cleanup) {
+        useChatRuntimeStore.getState().setModelLoading(true);
+        // The fetch abort only releases the browser. /unload is the backend
+        // cancellation path for an in-flight download/load and is intentionally
+        // not tied to the aborted compare signal.
+        const cleanup = cancelCompareBackendLoad(loadingModel.id);
+        compareRunsRef.current.setCleanup(run, cleanup);
+      }
+    }
     for (const handle of Object.values(handlesRef.current)) {
       handle.cancel();
     }
@@ -1490,6 +1763,7 @@ export function SharedComposer({
     (text.trim().length > 0 ||
       pendingImages.length > 0 ||
       pendingAudio !== null) &&
+    submissionReady &&
     !busy &&
     !isComposing &&
     !isDictating;
@@ -1679,6 +1953,12 @@ export function SharedComposer({
         onRunList={(items) => {
           const filtered = items.filter((p) => p.trim());
           if (!filtered.length) return;
+          if (!submissionReady) {
+            toast.info("Restoring compare conversations…", {
+              description: "Run the prompt list once your conversations load.",
+            });
+            return;
+          }
           const hasCompareHandles = Boolean(
             handlesRef.current["model1"] || handlesRef.current["model2"],
           );

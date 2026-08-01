@@ -840,6 +840,8 @@ type ChatRuntimeStore = {
   activePresetSource: ChatPresetSource;
   models: ChatModelSummary[];
   loras: ChatLoraSummary[];
+  /** True only after inference status and the LoRA catalog refresh successfully. */
+  modelRuntimeHydrated: boolean;
   runningByThreadId: Record<string, boolean>;
   /**
      * The subset of `runningByThreadId` decoding on the local llama-server. Swapping the local
@@ -1121,6 +1123,7 @@ type ChatRuntimeStore = {
   setActivePresetSource: (source: ChatPresetSource) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
+  setModelRuntimeHydrated: (hydrated: boolean) => void;
   /**
      * `local` defaults to true, so an unqualified caller still counts for the model-swap gate.
      * `owner` narrows the clear to the run that set the flag: unresolved thread ids share the
@@ -1468,6 +1471,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activePresetSource: getPresetSource("Default"),
   models: [],
   loras: [],
+  modelRuntimeHydrated: false,
   runningByThreadId: {},
   localRunByThreadId: {},
   runOwnerByThreadId: {},
@@ -1688,6 +1692,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
+  setModelRuntimeHydrated: (modelRuntimeHydrated) =>
+    set({ modelRuntimeHydrated }),
   setThreadRunning: (threadId, running, options) =>
     set((state) => {
       const next = { ...state.runningByThreadId };
