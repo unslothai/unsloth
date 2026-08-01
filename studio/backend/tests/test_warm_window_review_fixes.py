@@ -1376,8 +1376,7 @@ def test_the_metadata_cleanup_does_not_construct_the_backend():
     fn = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "discard_remote_code_download"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "discard_remote_code_download"
     )
     constructing = [
         sub
@@ -1387,8 +1386,7 @@ def test_the_metadata_cleanup_does_not_construct_the_backend():
         and sub.func.id == "get_inference_backend"
     ]
     assert not constructing, (
-        "the cleanup path constructs the ML backend again for a metadata-only "
-        "decision"
+        "the cleanup path constructs the ML backend again for a metadata-only decision"
     )
     assert any(
         isinstance(sub, ast.Call)
