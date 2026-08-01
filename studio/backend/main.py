@@ -1385,6 +1385,12 @@ async def health_check(request: Request):
         # base predates the bearer await, so its marker can describe a snapshot
         # detection has since replaced. Do not ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
+    else:
+        # A re-detect started during the bearer await, so base's fields describe a
+        # verdict being replaced -- and base carries no chat_only_reason, so a client
+        # reading this as measured would store chat_only with reason null and stop the
+        # sidebar's mlx_unavailable recovery poll for good. Mark it provisional.
+        authed["hardware_detecting"] = True
     # Otherwise leave both out. The frontend treats a present device_type as "this
     # response is authoritative" (config/env.ts) and caches fetched=true, which would
     # pin a GPU host to chat-only for the rest of the SPA session. Omitting it keeps

@@ -105,7 +105,7 @@ def test_a_second_lifespan_warms_again_however_the_first_ended(monkeypatch):
     """
     _restore(monkeypatch)
     runs: list[int] = []
-    monkeypatch.setattr(warmup, "_warm", lambda: runs.append(1))
+    monkeypatch.setattr(warmup, "_warm", lambda *_: runs.append(1))
 
     assert warmup.start_background_warm() is True
     assert warmup.join_background_warm(30) is True
@@ -132,7 +132,7 @@ def test_a_live_warm_still_holds_the_latch(monkeypatch):
     release = threading.Event()
     entered = threading.Event()
 
-    def _slow_warm() -> None:
+    def _slow_warm(*_) -> None:
         entered.set()
         release.wait(30)
 
@@ -149,7 +149,9 @@ def test_a_live_warm_still_holds_the_latch(monkeypatch):
 
 def test_reset_clears_the_reported_warm_status(monkeypatch):
     _restore(monkeypatch)
-    monkeypatch.setattr(warmup, "_warm", lambda: warmup._run_stage("hardware", lambda: None))
+    monkeypatch.setattr(
+        warmup, "_warm", lambda *_: warmup._run_stage("hardware", lambda: None)
+    )
 
     warmup.start_background_warm()
     warmup.join_background_warm(30)
@@ -169,7 +171,7 @@ def test_reset_declines_while_the_warm_is_still_running(monkeypatch):
     release = threading.Event()
     entered = threading.Event()
 
-    def _slow() -> None:
+    def _slow(*_) -> None:
         entered.set()
         release.wait(30)
 

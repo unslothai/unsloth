@@ -7447,7 +7447,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         # anything yet, so neither can interrupt a chat, and refusing them counted a teardown that
         # cannot happen (unretryably -- the frontend's Cancel sends this unload unforced and drops
         # the error). Any other name still falls through here.
-        if _unload_may_evict(request.model_path):
+        if await asyncio.to_thread(_unload_may_evict, request.model_path):
             _raise_or_cancel_active_generations(
                 force = request.force_cancel_active,
                 action = "Unloading the model",
@@ -7462,7 +7462,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # Rechecked under the gate, like /load: a chat can register while this one queues here (the
             # middleware takes and releases the same gate). Still refusal only, and re-read rather
             # than carried down, since a load may have finished meanwhile.
-            if _unload_may_evict(request.model_path):
+            if await asyncio.to_thread(_unload_may_evict, request.model_path):
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active,
                     action = "Unloading the model",

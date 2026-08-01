@@ -155,8 +155,11 @@ def start_background_detection() -> None:
             return
         if _DETECT_THREAD is not None and _DETECT_THREAD.is_alive():
             return
+        # Read before start(): the thread can be scheduled after a shutdown that
+        # retires this epoch, and it must lose to that, not adopt it.
         _DETECT_THREAD = threading.Thread(
             target = ensure_hardware_detected,
+            args = (current_detection_epoch(),),
             daemon = True,
             name = "hardware-detect",
         )
@@ -182,6 +185,12 @@ def is_apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
+# Set by _has_torch() when torch is installed but its import blew up (a wheel whose
+# CUDA libs do not resolve raises OSError). Read by the CPU fallback: such a host is a
+# detection failure to report, not a machine that simply has no GPU.
+TORCH_IMPORT_ERROR: Optional[str] = None
+
+
 def _has_torch() -> bool:
     """True if PyTorch is importable.
 
@@ -190,12 +199,21 @@ def _has_torch() -> bool:
     detect_hardware(). That mattered less when detection ran once in the
     lifespan; ensure_hardware_detected() re-runs while DEVICE is None, so an
     escaping error would make every request retry the import. Treat a broken
-    torch like an absent one and take the CPU path.
+    torch like an absent one and take the CPU path -- but record the error, or
+    the host is reported as GPU-less and told to install the torch it has.
     """
+    global TORCH_IMPORT_ERROR
     try:
         import torch
+        TORCH_IMPORT_ERROR = None
         return True
-    except Exception:
+    except Exception as exc:
+        # ImportError is a plain "not installed"; anything else is an installed torch
+        # whose import blew up, and the CPU fallback reports that as a detection
+        # failure rather than as a host that has no GPU. Both still purge.
+        TORCH_IMPORT_ERROR = None if isinstance(exc, ImportError) else repr(exc)
+        if TORCH_IMPORT_ERROR is not None:
+            logger.error("torch is installed but failed to import: %r", exc)
         # A part-way failure leaves torch submodules in sys.modules with the parent
         # evicted, so the next importer re-runs __init__ against those cache hits and
         # gets a torch missing pieces. purge_partial_import() clears that (and declines
@@ -306,6 +324,12 @@ def detect_hardware() -> DeviceType:
         try:
             device = _detect_hardware_locked()
         except BaseException:
+            if current_detection_epoch() != epoch:
+                # Shutdown ran mid-pass. Restoring would put back the verdict it just
+                # cleared, and the next lifespan would treat that as measured and skip
+                # its own detection.
+                _discard_detection_locked()
+                raise
             DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM = published
             # Restore rather than leave it clear: start_background_detection()
             # declines once DEVICE is set, so a permanently unset event would keep
@@ -322,7 +346,7 @@ def detect_hardware() -> DeviceType:
         return device
 
 
-def ensure_hardware_detected() -> DeviceType:
+def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
     """Detect once, from any thread. Use this rather than detect_hardware()
     unless you want a forced re-detect: it collapses the startup warm thread and
     an early request into one detection, and a caller arriving mid-detection
@@ -333,10 +357,17 @@ def ensure_hardware_detected() -> DeviceType:
     None, so every later request would retry the same failing import and
     /api/health, which waits on this, would 500. Record CPU + chat-only with a
     reason instead: the UI can explain the greyed-out Train/Export and the retry
-    never happens."""
+    never happens.
+
+    ``epoch`` is the detection epoch this pass belongs to. A spawner passes the epoch
+    it read before Thread.start(): the thread can be scheduled after a shutdown that
+    retired that epoch, and reading it here would bind the pass to the retirement it
+    was supposed to lose to, letting it publish DEVICE after teardown cleared it.
+    Direct callers pass nothing and own the current epoch."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, DETECTION_GENERATION
     with _DETECT_LOCK:
-        epoch = current_detection_epoch()
+        if epoch is None:
+            epoch = current_detection_epoch()
         if DEVICE is None:
             try:
                 _detect_hardware_locked()
@@ -477,6 +508,11 @@ def _detect_hardware_locked() -> DeviceType:
             "Train/Export disabled (chat-only). Run `unsloth studio update` to "
             "restore MLX training."
         )
+    elif TORCH_IMPORT_ERROR is not None:
+        # torch is installed and broken, so this host was never measured. "no_gpu" would
+        # tell a GPU box it has no GPU; export_capability already routes this reason to
+        # "detection failed, see the log".
+        CHAT_ONLY_REASON = "detection_failed"
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:

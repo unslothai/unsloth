@@ -154,13 +154,16 @@ class InferenceOrchestrator:
         self.loading_models: set = set()
         from core.inference.defaults import get_default_models
 
-        self._static_models = get_default_models()
         # The list depends on detection (chat-only hosts get the GGUF set), and the MLX
         # self-heal re-detects after a repair the warm ran before. Without a staleness
         # check a repaired Mac would serve the chat-only list for the whole process.
+        # Stamp read BEFORE the list: a re-detection landing between the two would
+        # otherwise tag the old list with the new generation, and it would then look
+        # current forever.
         import utils.hardware.hardware as _hw_mod
 
         self._static_models_generation = _hw_mod.DETECTION_GENERATION
+        self._static_models = get_default_models()
         self._top_gguf_cache: Optional[list[str]] = None
         self._top_hub_cache: Optional[list[str]] = None
         self._top_models_ready = threading.Event()
@@ -185,8 +188,10 @@ class InferenceOrchestrator:
             return
         from core.inference.defaults import get_default_models
 
-        self._static_models = get_default_models()
+        # Stamp first, as in __init__: a re-detection racing this refresh must leave
+        # the generation behind, so the next read refreshes again.
         self._static_models_generation = _hw_mod.DETECTION_GENERATION
+        self._static_models = get_default_models()
         logger.info("hardware was re-detected; curated default models refreshed")
 
     def _start_top_models_fetch(self) -> None:

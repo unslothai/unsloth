@@ -24,8 +24,10 @@ each is cheap to assert once it is named:
 from __future__ import annotations
 
 import ast
+import builtins
 import sys
 import threading
+from unittest import mock
 from pathlib import Path
 
 import pytest
@@ -1441,3 +1443,342 @@ def test_the_research_peek_answers_cold_without_constructing():
         assert orch._inference_backend is None, "a probe constructed an orchestrator"
     finally:
         orch._inference_backend = before
+
+
+class _DeferredThread:
+    """A Thread whose start() only schedules: run() is called by the test, later.
+
+    That gap is the race. The spawner has returned, shutdown has retired the epoch,
+    and only then does the worker body run.
+    """
+
+    instances: list = []
+
+    def __init__(self, target = None, args = (), **_kw):
+        self._target, self._args = target, args
+        self._started = False
+        _DeferredThread.instances.append(self)
+
+    def start(self):
+        self._started = True
+
+    def is_alive(self):
+        return self._started
+
+    def run_now(self):
+        self._target(*self._args)
+
+
+def test_a_warm_delayed_past_shutdown_is_already_retired(monkeypatch):
+    """The epoch must be bound at spawn, not by the thread itself.
+
+    Thread.start() releases the GIL and the child may not run for a while. A shutdown
+    in that gap retires the lifespan; a thread that read the epoch itself would read
+    the post-shutdown value, match it against itself forever, and warm on -- rebuilding
+    DEVICE and the orchestrator after teardown cleared them.
+    """
+    import utils.torch_warmup as warm
+    from utils.hardware import hardware as hw
+
+    ran: list = []
+    stages = tuple((name, lambda name = name: ran.append(name)) for name in ("hardware", "later"))
+    monkeypatch.setattr(warm, "_STAGES", stages)
+    monkeypatch.setattr(warm.threading, "Thread", _DeferredThread)
+    monkeypatch.setattr(warm, "_thread", None)
+    # Own the latch and the reported status: both are module state a real start
+    # mutates, and leaving them set makes the next test see a warm already running.
+    monkeypatch.setattr(warm, "_status", {"started": False, "finished": False, "stages": {}})
+    monkeypatch.delenv(warm.DISABLE_ENV_VAR, raising = False)
+    _DeferredThread.instances.clear()
+
+    assert warm.start_background_warm() is True
+    hw.invalidate_detection()          # the shutdown that lands before the thread runs
+    _DeferredThread.instances[-1].run_now()
+
+    assert ran == [], f"a warm retired before it ran did its stages anyway: {ran}"
+
+
+def test_a_warm_that_owns_its_epoch_still_runs(monkeypatch):
+    """Negative control: the guard must not stop an ordinary warm."""
+    import utils.torch_warmup as warm
+
+    ran: list = []
+    stages = tuple((name, lambda name = name: ran.append(name)) for name in ("hardware", "later"))
+    monkeypatch.setattr(warm, "_STAGES", stages)
+    monkeypatch.setattr(warm.threading, "Thread", _DeferredThread)
+    monkeypatch.setattr(warm, "_thread", None)
+    # Own the latch and the reported status: both are module state a real start
+    # mutates, and leaving them set makes the next test see a warm already running.
+    monkeypatch.setattr(warm, "_status", {"started": False, "finished": False, "stages": {}})
+    monkeypatch.delenv(warm.DISABLE_ENV_VAR, raising = False)
+    _DeferredThread.instances.clear()
+
+    assert warm.start_background_warm() is True
+    _DeferredThread.instances[-1].run_now()
+
+    assert ran == ["hardware", "later"], f"a live warm was stopped: {ran}"
+
+
+def test_a_detection_delayed_past_shutdown_does_not_publish(monkeypatch):
+    """Same race on the other spawner: start_background_detection()'s worker."""
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", None)
+    monkeypatch.setattr(hw, "_DETECT_THREAD", None)
+    monkeypatch.setattr(hw.threading, "Thread", _DeferredThread)
+    monkeypatch.setattr(hw, "_detect_hardware_locked", lambda: setattr(hw, "DEVICE", "cuda"))
+    # A fresh Event, so clearing it cannot leak the "not detected yet" state into a
+    # later test that reads the real one.
+    monkeypatch.setattr(hw, "DETECTION_COMPLETE", threading.Event())
+    _DeferredThread.instances.clear()
+
+    hw.start_background_detection()
+    hw.invalidate_detection()
+    _DeferredThread.instances[-1].run_now()
+
+    assert hw.DEVICE is None, "a retired detection published a verdict after teardown"
+    assert not hw.DETECTION_COMPLETE.is_set(), "a retired detection announced itself as settled"
+
+
+def test_both_spawners_read_the_epoch_before_start():
+    """AST: the epoch has to be an argument to the thread, not read inside the target."""
+    for rel, spawner, target in (
+        (("utils", "torch_warmup.py"), "start_background_warm", "_warm"),
+        (("utils", "hardware", "hardware.py"), "start_background_detection",
+         "ensure_hardware_detected"),
+    ):
+        tree = ast.parse(_BACKEND.joinpath(*rel).read_text(encoding = "utf-8"))
+        fn = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == spawner
+        )
+        call = next(
+            sub for sub in ast.walk(fn)
+            if isinstance(sub, ast.Call)
+            and any(
+                kw.arg == "target"
+                and isinstance(kw.value, ast.Name)
+                and kw.value.id == target
+                for kw in sub.keywords
+            )
+        )
+        args_kw = next((kw for kw in call.keywords if kw.arg == "args"), None)
+        assert args_kw is not None and isinstance(args_kw.value, ast.Tuple), (
+            f"{spawner} starts {target} with no epoch bound at spawn time"
+        )
+        assert any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id in {"_detection_epoch", "current_detection_epoch"}
+            for sub in ast.walk(args_kw.value)
+        ), f"{spawner} passes args to {target} but not the detection epoch"
+
+
+def test_a_failed_forced_redetect_does_not_restore_a_retired_verdict():
+    """detect_hardware()'s except path must honour the epoch too.
+
+    It saves the published verdict, clears DETECTION_COMPLETE, then re-detects. If
+    shutdown retires the pass and the probe then raises, restoring puts back exactly
+    what shutdown cleared, and the next lifespan reads a non-None DEVICE and skips its
+    own detection. The success path checks; the failure path did not.
+    """
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        hw.DEVICE = hw.DeviceType.MLX
+        hw.CHAT_ONLY = True
+        hw.CHAT_ONLY_REASON = "mlx_unavailable"
+        hw.DETECTION_COMPLETE.set()
+
+        def _shutdown_then_fail():
+            hw.invalidate_detection()          # the shutdown, mid-pass
+            raise RuntimeError("probe blew up")
+
+        with mock.patch.object(hw, "_detect_hardware_locked", _shutdown_then_fail):
+            with pytest.raises(RuntimeError):
+                hw.detect_hardware()
+
+        assert hw.DEVICE is None, "a retired pass restored the verdict shutdown cleared"
+        assert hw.CHAT_ONLY_REASON is None
+        assert not hw.DETECTION_COMPLETE.is_set(), "a retired pass re-announced itself as settled"
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_a_failed_redetect_inside_its_own_lifespan_still_restores():
+    """Negative control: without a shutdown, the rollback must still happen."""
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        hw.DEVICE = hw.DeviceType.MLX
+        hw.CHAT_ONLY = True
+        hw.CHAT_ONLY_REASON = "mlx_unavailable"
+        hw.DETECTION_COMPLETE.set()
+
+        def _just_fail():
+            raise RuntimeError("probe blew up")
+
+        with mock.patch.object(hw, "_detect_hardware_locked", _just_fail):
+            with pytest.raises(RuntimeError):
+                hw.detect_hardware()
+
+        assert hw.DEVICE is hw.DeviceType.MLX, "a live lifespan lost its verdict to a failed probe"
+        assert hw.CHAT_ONLY_REASON == "mlx_unavailable", (
+            "losing the reason stops the sidebar's MLX recovery poll for good"
+        )
+        assert hw.DETECTION_COMPLETE.is_set()
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_a_broken_torch_install_is_not_reported_as_a_host_without_a_gpu():
+    """An installed torch whose import raises is a detection failure, not "no GPU".
+
+    Widening _has_torch() to swallow every exception is what keeps the warm thread
+    from making each later request retry the same failing import. Reporting it as
+    no_gpu, though, tells a GPU box it has no GPU and sends export_capability down
+    the "install PyTorch" branch for a PyTorch that is installed.
+    """
+    from utils.hardware import hardware as hw
+
+    saved_error = hw.TORCH_IMPORT_ERROR
+    real_import = builtins.__import__
+
+    def _broken(name, *a, **k):
+        if name == "torch" or name.startswith("torch."):
+            raise OSError("libcudart.so.13: cannot open shared object file")
+        return real_import(name, *a, **k)
+
+    try:
+        with mock.patch.object(builtins, "__import__", _broken):
+            assert hw._has_torch() is False, "a broken torch must not count as importable"
+        assert hw.TORCH_IMPORT_ERROR is not None, "the import failure was not recorded"
+        assert "libcudart" in hw.TORCH_IMPORT_ERROR
+    finally:
+        hw.TORCH_IMPORT_ERROR = saved_error
+
+
+def test_an_absent_torch_is_still_just_absent():
+    """Negative control: ImportError is "not installed", not a broken install."""
+    from utils.hardware import hardware as hw
+
+    saved_error = hw.TORCH_IMPORT_ERROR
+    real_import = builtins.__import__
+
+    def _missing(name, *a, **k):
+        if name == "torch" or name.startswith("torch."):
+            raise ImportError("No module named 'torch'")
+        return real_import(name, *a, **k)
+
+    try:
+        hw.TORCH_IMPORT_ERROR = "stale"
+        with mock.patch.object(builtins, "__import__", _missing):
+            assert hw._has_torch() is False
+        assert hw.TORCH_IMPORT_ERROR is None, (
+            "a --no-torch install would be reported as a detection failure"
+        )
+    finally:
+        hw.TORCH_IMPORT_ERROR = saved_error
+
+
+def test_the_default_model_list_is_stamped_before_it_is_built():
+    """AST: read the generation first, or a stale list is tagged current forever.
+
+    get_default_models() settles detection and reads CHAT_ONLY. A re-detection landing
+    between that and the stamp would mark the pre-repair list as belonging to the
+    post-repair generation, and _refresh_static_models_if_stale would never fire again.
+    """
+    tree = ast.parse((_BACKEND / "core" / "inference" / "orchestrator.py").read_text(
+        encoding = "utf-8"))
+
+    def _line_of(fn, predicate):
+        return next(
+            sub.lineno for sub in ast.walk(fn)
+            if isinstance(sub, ast.Assign) and predicate(sub)
+        )
+
+    cls = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "InferenceOrchestrator"
+    )
+    for name in ("__init__", "_refresh_static_models_if_stale"):
+        fn = next(
+            node for node in cls.body
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+        stamp = _line_of(fn, lambda a: any(
+            isinstance(t, ast.Attribute) and t.attr == "_static_models_generation"
+            for t in a.targets
+        ))
+        build = _line_of(fn, lambda a: any(
+            isinstance(t, ast.Attribute) and t.attr == "_static_models" for t in a.targets
+        ))
+        assert stamp < build, (
+            f"InferenceOrchestrator.{name} stamps the generation after building the "
+            "list, so a "
+            "re-detection in between makes the stale list look current forever"
+        )
+
+
+def test_a_redetect_during_the_bearer_await_leaves_the_reply_provisional():
+    """AST: the authed branch must mark the reply when the second snapshot is None.
+
+    base carries no chat_only_reason, so an unmarked reply is read as measured and
+    stores chat_only with reason null, which stops the sidebar's mlx_unavailable poll.
+    """
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
+    )
+    branch = next(
+        node for node in ast.walk(fn)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(sub, ast.Subscript)
+            and isinstance(sub.value, ast.Name)
+            and sub.value.id == "authed"
+            and getattr(sub.slice, "value", None) == "device_type"
+            for sub in ast.walk(node)
+        )
+    )
+    assert branch.orelse, "no else branch: a mid-await re-detect ships an unmarked reply"
+    assert any(
+        isinstance(sub, ast.Subscript)
+        and isinstance(sub.value, ast.Name)
+        and sub.value.id == "authed"
+        and getattr(sub.slice, "value", None) == "hardware_detecting"
+        for node in branch.orelse
+        for sub in ast.walk(node)
+    ), "the else branch does not mark the reply provisional"
+
+
+def test_the_unload_eviction_checks_are_offloaded():
+    """AST: both _unload_may_evict() calls reach the singleton, so neither runs inline."""
+    tree = ast.parse((_BACKEND / "routes" / "inference.py").read_text(encoding = "utf-8"))
+    inline = [
+        sub.lineno
+        for sub in ast.walk(tree)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "_unload_may_evict"
+    ]
+    assert not inline, (
+        f"_unload_may_evict is called inline at {inline}; it reaches "
+        "get_inference_backend(), so an unload during the warm stalls the loop"
+    )
+    offloaded = [
+        sub.lineno
+        for sub in ast.walk(tree)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr == "to_thread"
+        and any(isinstance(a, ast.Name) and a.id == "_unload_may_evict" for a in sub.args)
+    ]
+    assert len(offloaded) == 2, f"expected both eviction checks offloaded, found {offloaded}"

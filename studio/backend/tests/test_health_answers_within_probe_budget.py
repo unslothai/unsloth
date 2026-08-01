@@ -116,7 +116,7 @@ hw.CHAT_ONLY_REASON = None
 # DETECTION_COMPLETE instead. Start it clear to model "detection has not run".
 hw.DETECTION_COMPLETE.clear()
 
-def slow_detect():
+def slow_detect(*_):  # start_background_detection binds the spawn-time epoch
     # Stands in for the torch import the warm thread is running.
     time.sleep(DETECT_SECONDS)
     hw.DEVICE = hw.DeviceType.CUDA

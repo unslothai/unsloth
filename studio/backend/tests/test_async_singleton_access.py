@@ -129,7 +129,6 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
     # the getter is cold and these do block. The set must not grow without an
     # offload or a justification here.
     known = {
-        "_unload_may_evict",
         "_monitor_active_model",
         "_monitor_context_length",
     }

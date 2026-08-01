@@ -252,10 +252,17 @@ _STAGES = (
 )
 
 
-def _warm() -> None:
+def _warm(epoch: Optional[int] = None) -> None:
     started = time.perf_counter()
-    epoch = _detection_epoch()
+    if epoch is None:
+        epoch = _detection_epoch()
     for name, fn in _STAGES:
+        if epoch is not None and _detection_epoch() != epoch:
+            # Checked before the first stage too: start_background_warm() reads the
+            # epoch before start(), so a shutdown landing between the two leaves this
+            # thread scheduled but already retired, with nothing yet run.
+            logger.info("torch warm stopped before %s: its lifespan ended", name)
+            return
         _run_stage(name, fn)
         if epoch is not None and _detection_epoch() != epoch:
             # Shutdown retired this lifespan's detection. The later stages build
@@ -300,7 +307,15 @@ def start_background_warm() -> bool:
             if _thread.is_alive():
                 return False
             _clear_finished_warm_locked()
-        _thread = threading.Thread(target = _warm, daemon = True, name = "torch-warm")
+        # Read before start(): start() releases the GIL and the child may not run for
+        # a while. A shutdown in that gap retires this lifespan, and a thread reading
+        # the epoch itself would adopt the post-shutdown one and warm on regardless.
+        _thread = threading.Thread(
+            target = _warm,
+            args = (_detection_epoch(),),
+            daemon = True,
+            name = "torch-warm",
+        )
         _status["started"] = True
         _thread.start()
         return True
