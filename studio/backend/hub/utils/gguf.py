@@ -518,10 +518,22 @@ def _resolve_gguf_dir(path: Path) -> Optional[Path]:
     return None
 
 
-def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], bool]:
+def list_local_gguf_variants(
+    directory: str, model_root: Optional[str] = None
+) -> tuple[list[GgufVariantInfo], bool]:
     root = _resolve_gguf_dir(Path(directory))
     if root is None:
         return [], False
+    from utils.models.model_config import (
+        _is_local_mtp_drafter,
+        _registered_custom_model_root,
+    )
+
+    custom_root = (
+        Path(os.path.abspath(Path(model_root).expanduser()))
+        if model_root is not None
+        else _registered_custom_model_root(directory)
+    )
 
     quant_totals: dict[str, int] = {}
     quant_first_file: dict[str, str] = {}
@@ -536,7 +548,7 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
         except OSError:
             size = 0
         rel = file.relative_to(root).as_posix()
-        if is_mtp_drafter_path(rel):
+        if _is_local_mtp_drafter(file, custom_root, rel):
             continue
         quant = extract_quant_label(rel)
         if is_big_endian_gguf_path(rel, quant):

@@ -126,6 +126,56 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
     assert row.active_cache is False
 
 
+def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypatch):
+    root = tmp_path / "MTP"
+    root.mkdir()
+    main = root / "Qwen3.6-27B-MTP-Q6_K.gguf"
+    companion = root / "gemma-4-12b-it-Q8_0-MTP.gguf"
+    model_dir = root / "model"
+    model_dir.mkdir()
+    main.write_bytes(b"x")
+    companion.write_bytes(b"x")
+    model_main = model_dir / "Qwen3.6-27B-MTP-Q8_0.gguf"
+    model_main.write_bytes(b"x")
+    real_is_dir = Path.is_dir
+
+    def locked_is_dir(path):
+        if path == model_main:
+            raise OSError("locked")
+        return real_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", locked_is_dir)
+    companion_dir = root / "companion-only"
+    (companion_dir / "other").mkdir(parents = True)
+    (companion_dir / "mtp-gemma-4-12b-it-Q8_0.gguf").write_bytes(b"x")
+    (companion_dir / "other" / "Qwen3.6-27B-Q8_0.gguf").write_bytes(b"x")
+    snapshot = root / "models--Org--Nested" / "snapshots" / "revision"
+    quant_dir = snapshot / "BF16"
+    quant_dir.mkdir(parents = True)
+    (quant_dir / "Qwen3.6-27B-MTP-BF16.gguf").write_bytes(b"x")
+
+    def fail_recursive_variant_scan(*_args, **_kwargs):
+        raise AssertionError("unexpected recursive variant scan")
+
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_gguf_files",
+        fail_recursive_variant_scan,
+    )
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(root)}])
+    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
+
+    rows = models_route.collect_local_models(tmp_path / "models")
+    paths = {row.path for row in rows}
+
+    assert {str(main), str(model_dir), str(snapshot.resolve())} <= paths
+    assert str(companion_dir) not in paths
+    assert str(companion) not in paths
+
+
 def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatch, tmp_path):
     """Only a repo outside the active cache needs a snapshot load_id."""
     active = tmp_path / "active"
