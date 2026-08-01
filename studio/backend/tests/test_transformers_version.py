@@ -1828,7 +1828,9 @@ class TestVenvDirIsValidRecordIntegrity:
     def test_intact_record_passes(self, tmp_path: Path):
         venv_dir = tmp_path / "venv"
         self._make_venv(
-            venv_dir, "transformers", "5.3.0",
+            venv_dir,
+            "transformers",
+            "5.3.0",
             {"transformers/__init__.py": b"x = 1\n", "transformers/models.py": b"y = 2\n"},
         )
         assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is True
@@ -1836,20 +1838,24 @@ class TestVenvDirIsValidRecordIntegrity:
     def test_missing_file_is_detected(self, tmp_path: Path, caplog):
         venv_dir = tmp_path / "venv"
         self._make_venv(
-            venv_dir, "transformers", "5.3.0",
+            venv_dir,
+            "transformers",
+            "5.3.0",
             {"transformers/__init__.py": b"x = 1\n", "transformers/models.py": b"y = 2\n"},
         )
         (venv_dir / "transformers" / "models.py").unlink()  # RECORD still lists it
         caplog.set_level(logging.INFO)
         assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is False
-        assert [r for r in caplog.records if r.levelno >= logging.WARNING], (
-            "a missing RECORD file must be logged at WARNING"
-        )
+        assert [
+            r for r in caplog.records if r.levelno >= logging.WARNING
+        ], "a missing RECORD file must be logged at WARNING"
 
     def test_truncated_file_is_detected(self, tmp_path: Path):
         venv_dir = tmp_path / "venv"
         self._make_venv(
-            venv_dir, "transformers", "5.3.0",
+            venv_dir,
+            "transformers",
+            "5.3.0",
             {"transformers/__init__.py": b"x = 1\n", "transformers/models.py": b"y = 2\n" * 20},
         )
         # Overwrite shorter than the size RECORD captured.
@@ -1859,7 +1865,9 @@ class TestVenvDirIsValidRecordIntegrity:
     def test_larger_file_is_not_damage(self, tmp_path: Path):
         venv_dir = tmp_path / "venv"
         self._make_venv(
-            venv_dir, "transformers", "5.3.0",
+            venv_dir,
+            "transformers",
+            "5.3.0",
             {"transformers/__init__.py": b"x = 1\n"},
         )
         # A file larger than recorded is a packaging collision, not damage.
