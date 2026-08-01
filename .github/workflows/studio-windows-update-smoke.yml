@@ -25,6 +25,7 @@ on:
       - 'install.ps1'
       - 'scripts/uninstall.ps1'
       - 'tests/studio/test_uninstall_*.ps1'
+      - 'tests/studio/test_psmodulepath_normalization.ps1'
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
       - 'studio/install_python_stack.py'
@@ -72,6 +73,12 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_uninstall_dual_install_icon.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # Both entry points prepend the 5.1 system module dir, and Refresh-Environment
+      # must not reload PSModulePath back over it before the uv installer runs.
+      - name: PSModulePath normalization unit tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_psmodulepath_normalization.ps1
 
       # The guard is self-hosting, so launching it from powershell.exe covers
       # Windows PowerShell 5.1: the shell the README one-liner lands in, handled
@@ -313,12 +320,26 @@ jobs:
           foreach ($p in @(
             "$env:USERPROFILE\.unsloth\studio",
             "$env:USERPROFILE\.unsloth\studio\unsloth_studio",
-            "$env:USERPROFILE\.unsloth\studio\bin\unsloth.exe"
+            "$env:USERPROFILE\.unsloth\studio\bin\unsloth.exe",
+            "$env:USERPROFILE\.unsloth\whisper.cpp",
+            "$env:USERPROFILE\.unsloth\.llama.cpp.install.lock",
+            "$env:USERPROFILE\.unsloth\.node.install.lock",
+            "$env:USERPROFILE\.unsloth\.whisper.cpp.install.lock"
           )) {
             if (Test-Path -LiteralPath $p) {
               Write-Host "::error::leak: $p"
               $leak++
             }
+          }
+          # Catch-all that does not need updating when a new artifact is added:
+          # nothing but Unsloth writes under ~/.unsloth on a runner, so a
+          # surviving directory means the uninstaller missed something. Mirrors
+          # the POSIX check in studio-update-smoke.yml.
+          if (Test-Path -LiteralPath "$env:USERPROFILE\.unsloth") {
+            Write-Host "::error::leak: ~/.unsloth survived the uninstall"
+            Get-ChildItem -LiteralPath "$env:USERPROFILE\.unsloth" -Force -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 40 -ExpandProperty FullName
+            $leak++
           }
           if ($leak -gt 0) { exit 1 }
           # Idempotency.
