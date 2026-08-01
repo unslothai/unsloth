@@ -31,9 +31,8 @@ from utils.hardware import get_device, prepare_gpu_selection
 from utils.utils import hf_env_offline
 
 # Re-exported from the shared helper so GGUF, training and inference share one type.
-# Resolved through PEP 562, not a module-level import: the shim resolves the name by
-# importing unsloth_zoo, hence torch, and routes/inference.py imports this module at
-# startup only for the two GenStream* classes below.
+# Via PEP 562, not a module-level import: resolving the name imports unsloth_zoo, hence
+# torch, and routes/inference.py imports this module at startup only for GenStream*.
 DownloadStallError: type
 
 
@@ -155,11 +154,9 @@ class InferenceOrchestrator:
         from core.inference.defaults import get_default_models
 
         # The list depends on detection (chat-only hosts get the GGUF set), and the MLX
-        # self-heal re-detects after a repair the warm ran before. Without a staleness
-        # check a repaired Mac would serve the chat-only list for the whole process.
-        # Stamp read BEFORE the list: a re-detection landing between the two would
-        # otherwise tag the old list with the new generation, and it would then look
-        # current forever.
+        # self-heal re-detects, so without a staleness check a repaired Mac serves the
+        # chat-only list forever. Stamp read BEFORE the list: a re-detection between the
+        # two would otherwise tag the old list with the new generation.
         import utils.hardware.hardware as _hw_mod
 
         self._static_models_generation = _hw_mod.DETECTION_GENERATION
@@ -172,7 +169,7 @@ class InferenceOrchestrator:
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
 
         # Deliberately NOT started here: construction now runs on the startup warm
-        # thread, so fetching from __init__ would mean an unprompted call to
+        # thread, so fetching from __init__ would be an unprompted call to
         # huggingface.co on every boot. The first reader of the ranking starts it.
         self._top_models_started = False
 
@@ -188,8 +185,8 @@ class InferenceOrchestrator:
             return
         from core.inference.defaults import get_default_models
 
-        # Stamp first, as in __init__: a re-detection racing this refresh must leave
-        # the generation behind, so the next read refreshes again.
+        # Stamp first, as in __init__: a re-detection racing this refresh must leave the
+        # generation behind, so the next read refreshes again.
         self._static_models_generation = _hw_mod.DETECTION_GENERATION
         self._static_models = get_default_models()
         logger.info("hardware was re-detected; curated default models refreshed")
@@ -197,15 +194,11 @@ class InferenceOrchestrator:
     def _start_top_models_fetch(self) -> None:
         """Kick the remote ranking fetch once, on first read of the model list.
 
-        Guarded by the same lock that guards construction, so two concurrent
-        first-readers cannot each put up a thread. Skipped entirely when the host
-        has asked for no outbound calls: the fetch is a raw httpx.get, so
-        HF_HUB_OFFLINE does not reach it on its own.
-
-        Offline is read through hf_env_offline(), the same helper the rest of the
-        backend uses, not a literal "1" test. HF_HUB_OFFLINE=true/yes/on and
-        TRANSFORMERS_OFFLINE are offline everywhere else here, and a boot that
-        honours those still has to be network-silent.
+        Guarded by the construction lock, so two concurrent first-readers cannot each
+        put up a thread. Skipped when the host asked for no outbound calls: the fetch
+        is a raw httpx.get, so HF_HUB_OFFLINE does not reach it on its own. Read via
+        hf_env_offline() rather than a literal "1" test, since HF_HUB_OFFLINE=true/on
+        and TRANSFORMERS_OFFLINE mean offline everywhere else here.
         """
         if self._top_models_started:
             return
@@ -501,9 +494,9 @@ class InferenceOrchestrator:
         message, so long-running operations (large downloads, slow loads)
         survive as long as the subprocess keeps reporting progress.
         """
-        # Local: resolving this name runs the shim's lazy unsloth_zoo load,
-        # which pulls torch. The shim caches the class it picked, so this site
-        # and the `except` in load_model() see the same object.
+        # Local: resolving this name runs the shim's lazy unsloth_zoo load, which pulls
+        # torch. The shim caches its pick, so this site and the `except` in load_model()
+        # see the same class.
         from utils.hf_xet_fallback import DownloadStallError
 
         deadline = time.monotonic() + timeout
@@ -2166,9 +2159,9 @@ class InferenceOrchestrator:
 # ========== GLOBAL INSTANCE ==========
 _inference_backend = None
 # Guards the lazy construction below. The first build runs hardware detection, which
-# takes seconds cold, and first-paint routes call this getter from executor threads --
-# without the lock several would see None and each build their own orchestrator, leaving
-# all but the last one orphaned along with any load started on them.
+# takes seconds cold, and first-paint routes call this getter from executor threads.
+# Unlocked, several would see None and each build their own orchestrator, leaving all
+# but the last orphaned along with any load started on them.
 _inference_backend_lock = threading.Lock()
 
 
@@ -2176,9 +2169,8 @@ def peek_inference_backend() -> Optional["InferenceOrchestrator"]:
     """The orchestrator if one exists, else None. Never constructs one.
 
     For callers that only describe what is already loaded. Constructing reaches
-    get_default_models() -> get_device(), so during the startup warm the getter
-    blocks on the torch import; a caller that would answer "nothing is loaded"
-    anyway has no reason to pay that.
+    get_default_models() -> get_device(), which blocks on the torch import during the
+    startup warm; a caller that would answer "nothing is loaded" need not pay that.
     """
     return _inference_backend
 
@@ -2186,8 +2178,8 @@ def peek_inference_backend() -> Optional["InferenceOrchestrator"]:
 def get_inference_backend() -> InferenceOrchestrator:
     """Global inference backend instance (orchestrator)."""
     global _inference_backend
-    # Double-checked: the cheap read keeps the warm path lock-free; the recheck under
-    # the lock decides who constructs.
+    # Double-checked: the cheap read keeps the hot path lock-free, the recheck under the
+    # lock decides who constructs.
     if _inference_backend is None:
         with _inference_backend_lock:
             if _inference_backend is None:

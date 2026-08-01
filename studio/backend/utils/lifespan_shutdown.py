@@ -52,18 +52,15 @@ async def run_lifespan_shutdown(
         if invalidate is not None:
             invalidate()
         hw_module.DEVICE = None
-        # The completion signal goes with it: /api/health reads a set event as
-        # "DEVICE is authoritative", so leaving it set over a cleared DEVICE would
-        # make a second lifespan publish a device that is gone. getattr: tests
-        # inject a stub.
+        # /api/health reads a set event as "DEVICE is authoritative", so a set event
+        # over a cleared DEVICE would make the next lifespan publish a device that is
+        # gone. getattr: tests inject a stub.
         detection_complete = getattr(hw_module, "DETECTION_COMPLETE", None)
         if detection_complete is not None:
             detection_complete.clear()
-        # Reset the verdict those two describe as well. Health falls back to a bare
-        # CHAT_ONLY read while the event is clear, so a GPU run leaving CHAT_ONLY
-        # False would let the next lifespan publish chat_only: false before anything
-        # re-measured it, showing Train and Export on an unknown host. True is the
-        # conservative direction: hidden until detection says otherwise.
+        # Health falls back to a bare CHAT_ONLY read while the event is clear, so a GPU
+        # run leaving it False would show Train and Export on an unknown host. True is
+        # the conservative direction: hidden until detection says otherwise.
         hw_module.CHAT_ONLY = True
         hw_module.CHAT_ONLY_REASON = None
         hw_module.IS_ROCM = False

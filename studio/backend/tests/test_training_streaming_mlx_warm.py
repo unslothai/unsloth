@@ -3,26 +3,19 @@
 
 """Invariant: /training/start's MLX streaming rejection must survive the warm window.
 
-Detection used to run inline in the lifespan, so ``hardware.DEVICE`` was set
-before uvicorn bound the socket and a route could compare against it directly.
-It is filled in by the background warm thread now, so for the first moment of
-serving the module global still holds its pre-detection default (``None``).
+``hardware.DEVICE`` used to be set before uvicorn bound the socket. The warm thread
+fills it in now, so for the first moment of serving it still holds ``None``.
 
 ``start_training`` rejects ``dataset_streaming`` on Apple Silicon by comparing
-``DEVICE == DeviceType.MLX``. Read against the default that comparison is False,
-the rejection is skipped, and the request runs on to
-``_build_training_worker_config`` -- which detects MLX only *after* validation
-has passed, handing a streaming dataset to a loader that materializes the whole
-thing. The guard must force detection first.
+``DEVICE == DeviceType.MLX``. Against the default that is False, the rejection is
+skipped, and the request runs on to ``_build_training_worker_config``, which detects
+MLX only after validation and hands a streaming dataset to a loader that materializes
+the whole thing. The guard must force detection first, and off the event loop, since
+detection imports torch.
 
-It must also do that off the event loop: detection imports torch (~1.5s), and
-blocking uvicorn's loop for that is the exact stall the deferred startup exists
-to remove. The lexical half of this invariant lives in
-``test_startup_defers_torch.py::test_first_paint_routes_do_not_block_the_event_loop``
-(``routes/training.py``/``start_training``/``ensure_hardware_detected``); this
-file covers the behaviour.
-
-CPU-only, no network, no GPU, no weights.
+The lexical half of this invariant is in
+``test_startup_defers_torch.py::test_first_paint_routes_do_not_block_the_event_loop``;
+this file covers the behaviour. CPU-only, no network, no GPU, no weights.
 """
 
 from __future__ import annotations
@@ -38,9 +31,8 @@ import routes.training as training_routes
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from utils.hardware import hardware as hw
 
-# A minimal streaming start clearing every other streaming precondition, so only the
-# MLX guard can reject it: HF text dataset, max_steps > 0, no train_on_completions, no
-# eval split. load_in_4bit is off so the latest-sidecar probe stays offline.
+# Clears every streaming precondition but the MLX guard, so only that can reject it.
+# load_in_4bit is off so the latest-sidecar probe stays offline.
 _STREAMING_START = {
     "model_name": "unsloth/Llama-3.2-1B-Instruct",
     "training_type": "LoRA/QLoRA",
@@ -73,8 +65,7 @@ def hardware_globals():
 
 @pytest.fixture
 def spawn_calls(monkeypatch):
-    """Stub the training backend so a start that gets past validation is
-    observable without spawning a worker."""
+    """Stub the backend so a start past validation is observable without a worker."""
     backend = MagicMock()
     backend.is_training_active.return_value = False
     backend.current_job_id = ""
@@ -129,8 +120,8 @@ def test_streaming_is_rejected_on_mlx_before_detection_has_run(
 def test_the_guard_detects_rather_than_reading_the_default(
     monkeypatch, hardware_globals, spawn_calls, client
 ):
-    """The guard is what forces detection, not some later step: DEVICE goes from
-    None to MLX across a request that never reaches the worker config builder."""
+    """The guard forces detection, not some later step: DEVICE goes None -> MLX across
+    a request that never reaches the worker config builder."""
     _pretend_apple_silicon(monkeypatch)
     hardware_globals.DEVICE = None
 
@@ -172,9 +163,8 @@ def test_rejection_still_fires_once_detection_has_already_run(
 def test_non_streaming_start_detects_before_entering_the_sync_backend(
     monkeypatch, hardware_globals, spawn_calls, client
 ):
-    """An ordinary start reaches a synchronous worker-config build that reads
-    the device, so it must also finish detection through the route's off-loop
-    handoff."""
+    """An ordinary start reaches a synchronous worker-config build that reads the
+    device, so it must also detect through the route's off-loop handoff."""
     _pretend_cpu_linux(monkeypatch)
     hardware_globals.DEVICE = None
 

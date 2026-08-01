@@ -3,15 +3,11 @@
 
 """The curated default models must survive a re-detection.
 
-Detection is not once-per-process. On Apple Silicon with a missing or too-old
-MLX stack the initial detection is chat-only, the background autorepair then
-installs MLX and re-detects, and CHAT_ONLY flips. get_default_models() reads
-that state, so a snapshot taken before the repair is wrong afterwards.
-
-The warm builds the orchestrator in its own stage, which runs before the
-post-warm thread starts the repair, so the snapshot is guaranteed to be the
-pre-repair one. Without a staleness check the host serves the chat-only list for
-the rest of the process, including after the reload the repair log asks for.
+Detection is not once-per-process: on Apple Silicon with a missing MLX stack the first
+pass is chat-only, then the autorepair installs MLX, re-detects, and CHAT_ONLY flips.
+get_default_models() reads that state, and the warm snapshots it before the repair
+runs, so without a staleness check the host serves the chat-only list for the rest of
+the process.
 """
 
 from __future__ import annotations
@@ -79,10 +75,9 @@ def test_detection_generation_advances_on_every_settled_detection():
 def test_a_forced_redetect_unpublishes_while_it_runs(monkeypatch):
     """Health must not read a forced pass's intermediate globals as settled.
 
-    _detect_hardware_locked() resets CHAT_ONLY and CHAT_ONLY_REASON before
-    re-probing. With DETECTION_COMPLETE left set from the first pass, a health
-    request landing mid-repair reports that as authoritative, and the sidebar's
-    MLX recovery poll stops because the reason is no longer "mlx_unavailable".
+    The pass resets CHAT_ONLY and CHAT_ONLY_REASON before re-probing. With the event
+    left set, a health request landing mid-repair reports that as authoritative and the
+    sidebar's MLX recovery poll stops, the reason no longer being "mlx_unavailable".
     """
     seen = []
 
@@ -103,9 +98,9 @@ def test_a_failed_forced_redetect_does_not_leave_detection_unpublished(monkeypat
     """Clearing the event must not be able to strand health forever.
 
     start_background_detection() declines once DEVICE is set, so nothing would
-    republish: /api/health would answer provisionally for the life of the
-    process. That is worse than the intermediate state the clear protects
-    against, so a raising pass restores what was published before it.
+    republish and health would answer provisionally for the life of the process. Worse
+    than the intermediate state the clear protects against, so a raising pass restores
+    what was published before it.
     """
 
     def _boom():

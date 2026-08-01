@@ -15,20 +15,18 @@ serving window, not the boot.
 
 Contract:
   * idempotent -- one thread per process, repeat calls are no-ops
-  * never fatal -- each stage is isolated; a failure is logged and leaves the
-    stage cold, to be retried by whoever needs it
+  * never fatal -- a failed stage is logged and left cold, retried by whoever
+    needs it
   * no half-initialised state -- stages delegate to the module owning the cache
-    (utils.hardware, model_config, hf_xet_fallback), each of which caches under
-    a lock and only on success, so a racing request waits instead of seeing a
-    partial result
+    (utils.hardware, model_config, hf_xet_fallback), which caches under a lock
+    and only on success, so a racing request waits rather than see a partial
   * same end state -- same imports, same order, same call sites as `import
     main`. A stage shortcutting to a bare `import x` can behave differently
     from the edge it replaced; see _warm_unsloth_zoo.
 
-What this does NOT do: make torch-dependent endpoints cheap while it runs.
-Anything reaching get_device() blocks until the hardware stage finishes, so
-`async def` handlers on that path must use asyncio.to_thread or they stall the
-event loop for the whole import (see main.py's /api/health).
+This does NOT make torch-dependent endpoints cheap while it runs: anything
+reaching get_device() blocks until the hardware stage finishes, so `async def`
+handlers on that path must use asyncio.to_thread (see main.py's /api/health).
 """
 
 from __future__ import annotations
@@ -54,12 +52,10 @@ _status: dict = {"started": False, "finished": False, "stages": {}}
 
 
 def _torch_installed() -> bool:
-    """True if torch is importable, without importing it.
+    """True if torch is importable, without importing it (find_spec never runs it).
 
-    find_spec resolves the module but never runs it, so this stays free. Lets
-    the torch-requiring stages be skipped on a --no-torch install (install.sh
-    --no-torch, the api-smoke CI job) instead of logging an import error for a
-    dependency that host deliberately lacks.
+    Lets torch-requiring stages be skipped on a --no-torch install instead of
+    logging an import error for a dependency that host deliberately lacks.
     """
     try:
         return importlib.util.find_spec("torch") is not None
@@ -92,20 +88,19 @@ def purge_partial_import(package: str) -> list:
     Acts only on that exact signature (parent gone, submodules present), so a
     concurrent, still-running import is left alone. Returns what it removed.
 
-    Declines when any submodule is a loaded C extension: evicting one makes the
-    next import re-run its module init, and pybind11 answers a duplicate type
-    registration with std::terminate -- purging and re-importing torch.* on this
-    box died with 'generic_type: type "GradBucket" is already registered!'. A
+    Declines when any submodule is a loaded C extension: evicting one re-runs its
+    module init, and pybind11 answers a duplicate type registration with
+    std::terminate ('generic_type: type "GradBucket" is already registered!'). A
     torch missing attributes is bad; SIGABRT mid-serve is worse.
     """
     if package in sys.modules:
         return []
     prefix = package + "."
     stale = [name for name in list(sys.modules) if name.startswith(prefix)]
-    # Re-check immediately before touching anything: a retrying importer publishes the
-    # parent as soon as its __init__ begins, and popping submodules from under it would
-    # produce the very half-initialised package this function prevents. Narrows the
-    # window rather than closing it -- CPython's per-module import lock is private.
+    # Re-check before touching anything: a retrying importer publishes the parent as
+    # soon as its __init__ begins, and popping submodules from under it produces the
+    # very half-initialised package this prevents. Narrows the window, does not close
+    # it -- CPython's per-module import lock is private.
     if package in sys.modules:
         logger.info(
             "not purging %s: another importer republished it while collecting its "
@@ -144,10 +139,8 @@ def purge_partial_import(package: str) -> list:
     return stale
 
 
-# Stage name -> the package it imports, for the failure purge below. Every importing
-# stage needs it: a partial import leaves submodules cached under an evicted parent, and
-# the retry yields a package missing attributes until restart. inference_backend is
-# absent on purpose -- it builds an object and imports nothing.
+# Stage name -> the package it imports, for the failure purge above. inference_backend
+# is absent on purpose: it builds an object and imports nothing.
 _STAGE_PACKAGE = {
     "hardware": "torch",
     "transformers": "transformers",
@@ -166,7 +159,6 @@ def _run_stage(name: str, fn) -> None:
         logger.warning("torch warm stage %r failed: %r", name, exc)
         package = _STAGE_PACKAGE.get(name)
         if package:
-            # Declines by itself when a loaded C extension is among the leftovers.
             purge_partial_import(package)
     else:
         _status["stages"][name] = {
@@ -176,38 +168,35 @@ def _run_stage(name: str, fn) -> None:
 
 
 def _warm_hardware() -> None:
-    # Imports torch and enumerates devices. Requests wait on this same call, so they
-    # hit the cache or block on this thread's lock -- never a second, racing detection.
+    # Requests wait on this same call, so they hit the cache or block on this thread's
+    # lock -- never a second, racing detection.
     from utils.hardware import ensure_hardware_detected
     ensure_hardware_detected()
 
 
 def _warm_transformers() -> None:
-    # The registry read `import main` used to do. Kept ahead of unsloth_zoo:
-    # that is the eager order, and unsloth_zoo patches transformers on import.
+    # Ahead of unsloth_zoo: that is the eager order, and unsloth_zoo patches
+    # transformers on import.
     from utils.models.model_config import _detection_sets
     _detection_sets()
 
 
 def _warm_datasets() -> None:
-    # Nothing needs datasets early, but `import main` pulled it in, so warm it and keep
-    # the first dataset operation as cheap as before. 0.3s once transformers is loaded.
-    # Ungated: datasets imports without torch.
+    # `import main` pulled it in, so keep the first dataset operation as cheap as
+    # before. Ungated: datasets imports without torch.
     importlib.import_module("datasets")
 
 
 def _warm_unsloth_zoo() -> None:
     """Prime the download stall watchdog, the way the eager import primed it.
 
-    Through utils.hf_xet_fallback, not a bare ``import unsloth_zoo``: the edge
-    this replaces was orchestrator.py's ``from utils.hf_xet_fallback import
-    DownloadStallError``, and the shim does more than import. When unsloth_zoo's
-    GPU init raises it retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, which skips
-    that init and injects the triton/bitsandbytes stubs. A bare import skips the
-    retry, so on a host whose bitsandbytes wheel cannot find libcudart --
-    unsloth_zoo raising "CUDA Setup failed despite GPU being available" -- the
-    warm failed a stage that startup used to complete. Measured on this box: the
-    bare import fails, the shim succeeds.
+    Through utils.hf_xet_fallback, not a bare ``import unsloth_zoo``: the edge this
+    replaces was orchestrator.py's ``from utils.hf_xet_fallback import
+    DownloadStallError``, and the shim does more than import. When unsloth_zoo's GPU
+    init raises, the shim retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, skipping that
+    init and injecting the triton/bitsandbytes stubs. A bare import skips the retry,
+    so on a host whose bitsandbytes wheel cannot find libcudart the warm would fail a
+    stage that startup used to complete.
 
     Skipped without torch: unsloth_zoo hard-requires it, and the shim already
     degrades to its own stubs there.
@@ -221,24 +210,22 @@ def _warm_unsloth_zoo() -> None:
 
     if not _load_shared():
         # Downloads still work on the shim's degraded stubs, but the stage is cold and
-        # warm_status() must say so. Purge first so the next direct importer of
-        # unsloth_zoo re-runs __init__ against an empty cache. The shim's own negative
-        # cache stays pinned on purpose: raise site and `except` must keep resolving to
-        # one DownloadStallError class, or the stall handler is bypassed.
+        # warm_status() must say so. Purge so the next direct importer re-runs
+        # __init__ clean. The shim's own negative cache stays pinned on purpose: raise
+        # site and `except` must resolve to one DownloadStallError class, or the stall
+        # handler is bypassed.
         purge_partial_import("unsloth_zoo")
         raise RuntimeError("unsloth_zoo unavailable; the download stall watchdog stays degraded")
 
 
-# Order matters -- it is the eager import order: transformers before unsloth_zoo
-# (which patches transformers on import), datasets between them because that is
-# where `import main` reached it.
+# _STAGES order is the eager import order: transformers before unsloth_zoo (which
+# patches transformers on import), datasets between them because that is where
+# `import main` reached it.
 def _warm_inference_backend() -> None:
-    # Build the orchestrator singleton here, off the loop, right after detection. Its
-    # constructor reaches hw.get_device(), so whoever builds it first pays for detection
-    # -- lazily that is some request, and many sync helpers call the getter inline from
-    # async handlers. Building it once here makes the getter a plain dict read. Ordered
-    # after hardware so it reuses this thread's detection and keeps _run_stage's
-    # failure handling.
+    # Its constructor reaches hw.get_device(), so whoever builds it first pays for
+    # detection -- lazily that is some request, and many sync helpers call the getter
+    # inline from async handlers. Building it here makes the getter a plain dict read.
+    # After hardware so it reuses this thread's detection.
     from core.inference import get_inference_backend
     get_inference_backend()
 
@@ -265,9 +252,9 @@ def _warm(epoch: Optional[int] = None) -> None:
             return
         _run_stage(name, fn)
         if epoch is not None and _detection_epoch() != epoch:
-            # Shutdown retired this lifespan's detection. The later stages build
-            # the orchestrator, which reaches get_device() and would start a
-            # fresh one, republishing DEVICE after teardown cleared it.
+            # Shutdown retired this lifespan's detection. Later stages build the
+            # orchestrator, which reaches get_device() and would start a fresh one,
+            # republishing DEVICE after teardown cleared it.
             logger.info("torch warm stopped after %s: its lifespan ended", name)
             return
     _status["finished"] = True
@@ -287,17 +274,14 @@ def _detection_epoch() -> Optional[int]:
 def start_background_warm() -> bool:
     """Start the warm thread once. Returns True iff this call started it.
 
-    Runs on every host, torch or not: stage one is hardware detection, which the
-    lifespan used to do inline and which must still happen without waiting for a
-    request (it prints "Hardware detected: ..." and feeds /api/health's
-    chat_only).
+    Runs on every host, torch or not: stage one is hardware detection, which must
+    still happen without waiting for a request (it feeds /api/health's chat_only).
 
     A finished thread left over from an earlier lifespan does not count as one
-    already running. reset_background_warm() declines while a warm is alive, so
-    a shutdown that lands mid-warm leaves the object in place; if that warm then
-    finishes before the next lifespan gets here, treating it as "already started"
-    would skip the warm entirely -- over hardware state the same shutdown just
-    cleared, leaving the restart cold until some request kicks detection.
+    already running. reset_background_warm() declines while a warm is alive, so a
+    shutdown landing mid-warm leaves the object in place; treating that as "already
+    started" would skip the warm entirely, over hardware state the same shutdown just
+    cleared.
     """
     global _thread
     if os.environ.get(DISABLE_ENV_VAR) == "1":
@@ -307,9 +291,9 @@ def start_background_warm() -> bool:
             if _thread.is_alive():
                 return False
             _clear_finished_warm_locked()
-        # Read before start(): start() releases the GIL and the child may not run for
-        # a while. A shutdown in that gap retires this lifespan, and a thread reading
-        # the epoch itself would adopt the post-shutdown one and warm on regardless.
+        # Epoch read before start(): the child may not run for a while, and a shutdown
+        # in that gap retires this lifespan. A thread reading the epoch itself would
+        # adopt the post-shutdown one and warm on regardless.
         _thread = threading.Thread(
             target = _warm,
             args = (_detection_epoch(),),
@@ -324,17 +308,14 @@ def start_background_warm() -> bool:
 def reset_background_warm() -> bool:
     """Let a later lifespan in this process start a fresh warm. True iff reset.
 
-    One warm per process is right while the process serves, but the same app can
-    be started twice -- repeated ASGI lifespan contexts, an embedded restart --
-    and shutdown clears the hardware state the first warm produced. A finished
-    thread left in place would make the second lifespan skip the warm entirely
-    and hand detection back to whichever request arrives first, which is the
-    stall this module exists to remove.
+    The same app can be started twice (repeated ASGI lifespan contexts, an embedded
+    restart), and shutdown clears the hardware state the first warm produced. A
+    finished thread left in place would make the second lifespan skip the warm and
+    hand detection back to the first request, which is the stall this module removes.
 
-    Declines while the previous warm is still running, so it can never put two
-    warms on the same imports. Detection still self-heals in that case:
-    shutdown clears DETECTION_COMPLETE and /api/health kicks
-    start_background_detection().
+    Declines while the previous warm is still running, so it can never put two warms
+    on the same imports. Detection self-heals in that case: shutdown clears
+    DETECTION_COMPLETE and /api/health kicks start_background_detection().
     """
     with _start_lock:
         thread = _thread

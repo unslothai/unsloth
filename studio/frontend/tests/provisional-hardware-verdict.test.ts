@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// /api/health answers before the backend has measured the host: startup hands
-// the torch import to a background thread, and until it lands health reports its
-// conservative pre-detection default, chat_only: true, with hardware_detecting
-// set and no device_type. Measured on a 4-GPU host with a cold launch: the first
-// reply is chat_only: true, settling to false about a second later.
+// /api/health answers before the backend has measured the host: until the background
+// torch import lands, health reports its conservative pre-detection default,
+// chat_only: true, with hardware_detecting set and no device_type.
 //
-// __root.tsx's beforeLoad awaits fetchDeviceType and then redirects on
-// isChatOnly(), so storing that provisional reply sends the first load to /chat
-// with Train hidden on a machine that has GPUs.
+// __root.tsx's beforeLoad awaits fetchDeviceType then redirects on isChatOnly(), so
+// storing that provisional reply sends the first load to /chat with Train hidden on a
+// machine that has GPUs.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -100,8 +98,8 @@ test("a deferred verdict is provisional but must not be waited on", () => {
 
 test("a deferred verdict falls back to the backend's conservative default", () => {
   // Nothing settles while the kill switch is on, so keeping the previous value would
-  // leave the browser-platform default (chatOnly false off macOS) in place for the
-  // whole session and offer Train on a CPU-only Linux host.
+  // leave the browser-platform default (chatOnly false off macOS) in place all session
+  // and offer Train on a CPU-only Linux host.
   const deferred = {
     chat_only: true,
     hardware_detecting: true,
@@ -129,8 +127,8 @@ test("a deferred verdict does not clear a reason the UI is explaining", () => {
 });
 
 test("an ordinary provisional reply is still not treated as deferred", () => {
-  // The conservative fallback must stay scoped to the kill switch: a warm-window
-  // reply settles in ~1-2s, and taking its chat_only would send a GPU host to /chat.
+  // The conservative fallback stays scoped to the kill switch: a warm-window reply
+  // settles in ~1-2s, and taking its chat_only would send a GPU host to /chat.
   assert.equal(
     resolveVerdict({ chat_only: true, hardware_detecting: true }, GPU_HOST).chatOnly,
     false,

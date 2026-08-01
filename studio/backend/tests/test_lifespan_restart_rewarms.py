@@ -3,22 +3,19 @@
 
 """A second lifespan in one process must re-detect and re-warm, not inherit.
 
-Shutdown clears hardware.DEVICE, so after it the process holds no measured
-device. Two pieces of bookkeeping have to be cleared with it or the next
-lifespan disagrees with reality:
+Shutdown clears hardware.DEVICE, so after it the process holds no measured device. Two
+pieces of bookkeeping have to be cleared with it or the next lifespan disagrees with
+reality:
 
-  * DETECTION_COMPLETE. /api/health takes a set event as "detection finished,
-    DEVICE is authoritative" (that is exactly why it stopped polling DEVICE --
-    the detection branches assign DEVICE and keep probing). Left set over a
-    cleared DEVICE, health publishes a device that is gone instead of kicking a
-    new detection.
-  * the one-warm-per-process latch in torch_warmup. A finished thread left in
-    place makes the second lifespan's start_background_warm() a no-op, so the
-    stack stays cold and the first request pays for the import again -- the
-    stall this module exists to remove.
+  * DETECTION_COMPLETE. /api/health takes a set event as "DEVICE is authoritative", so
+    left set over a cleared DEVICE it publishes a device that is gone instead of
+    kicking a new detection.
+  * torch_warmup's one-warm-per-process latch. A finished thread left in place makes
+    the second lifespan's start_background_warm() a no-op, so the stack stays cold and
+    the first request pays for the import again.
 
-Reachable through repeated ASGI lifespan contexts and an embedded restart, both
-of which reuse the app object in one interpreter.
+Reachable through repeated ASGI lifespan contexts and an embedded restart, both of
+which reuse the app object in one interpreter.
 """
 
 from __future__ import annotations
@@ -63,8 +60,8 @@ def test_shutdown_still_clears_device_without_the_event():
 
 
 def test_shutdown_runs_the_later_steps_even_if_clearing_raises():
-    """The clear is guarded: a hardware module that rejects the write must not
-    skip clear_compiled_cache, which is what frees the on-disk cache."""
+    """A hardware module that rejects the write must not skip clear_compiled_cache,
+    which is what frees the on-disk cache."""
 
     class Hostile:
         DEVICE = "cuda:0"
@@ -97,11 +94,10 @@ def _restore(monkeypatch) -> None:
 def test_a_second_lifespan_warms_again_however_the_first_ended(monkeypatch):
     """Both restart paths must re-warm, not just the one that got a clean reset.
 
-    reset_background_warm() declines while a warm is still alive, which is the
-    normal case for a shutdown that lands mid-warm. If that warm then finishes,
-    the thread object is left behind, and treating it as "already started" would
-    skip the second lifespan's warm entirely -- over hardware state the same
-    shutdown just cleared.
+    reset_background_warm() declines while a warm is alive, the normal case for a
+    shutdown landing mid-warm. If that warm then finishes, its thread object is left
+    behind, and treating it as "already started" would skip the second lifespan's warm
+    entirely, over hardware state the same shutdown just cleared.
     """
     _restore(monkeypatch)
     runs: list[int] = []

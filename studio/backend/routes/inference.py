@@ -3249,10 +3249,10 @@ def _monitor_anthropic_response(
 def _peek_inference_backend() -> Any:
     """The orchestrator if one already exists, else None. Never constructs one.
 
-    Constructing reaches get_default_models() -> get_device(), so during the warm
-    a caller that only describes what is loaded would block uvicorn on the torch
-    import to answer "nothing". A patched module getter still wins: injecting a
-    backend that way is this module's seam, relied on by the monitor tests.
+    Constructing reaches get_default_models() -> get_device(), so during the warm a
+    caller that only describes what is loaded would block uvicorn on the torch import
+    to answer "nothing". A patched module getter still wins: that is this module's
+    injection seam, relied on by the monitor tests.
     """
     from core.inference import orchestrator as _orch
 
@@ -3267,10 +3267,8 @@ def _monitor_context_length() -> Optional[int]:
         context_length = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if context_length is not None:
             return context_length
-    # Peek, not the constructing getter: this only reports what is loaded, and it
-    # is called inline from the OpenAI, Responses and Anthropic monitor paths. No
-    # orchestrator means nothing is loaded, so building one during the warm would
-    # block uvicorn on the torch import to answer "none".
+    # Peek, not the constructing getter: called inline from the OpenAI, Responses and
+    # Anthropic monitor paths, and no orchestrator already means nothing is loaded.
     backend = _peek_inference_backend()
     if backend is None or not backend.active_model_name:
         return None
@@ -4424,9 +4422,9 @@ async def _reject_unservable_model(
         # so match on the path too. Quants of one repo share a directory, so the path
         # alone cannot tell them apart: without the variant check an explicit :Q8_0
         # would be answered by a resident Q4_K_M.
-        # Off the loop: this reads the Transformers singleton, and the llama.cpp
-        # short-circuits above skip the two offloaded reads before it, so on a
-        # restart it was what built the singleton on the event-loop thread.
+        # Off-loop: reads the Transformers singleton, and the llama.cpp short-circuits
+        # above skip the two offloaded reads before it, so on a restart this was what
+        # built the singleton on the event-loop thread.
         if (
             resolved is not None
             and await asyncio.to_thread(_resolves_to_resident, resolved[0], llama_only = quantified)
@@ -5027,9 +5025,8 @@ async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
         from utils.hardware.hardware import resolve_requested_gpu_ids
 
         # One hop for the whole device-dependent block: resolve_requested_gpu_ids()
-        # reaches get_device() itself, so both wait on the detection lock while the
-        # warm imports torch. Inline, an early request with a stored pin held the
-        # event loop for that whole import.
+        # reaches get_device() itself, so both wait on the detection lock while the warm
+        # imports torch.
         def _device_and_resolution() -> tuple[object, bool, list]:
             is_vulkan = LlamaCppBackend._is_vulkan_backend()
             return (
@@ -5101,8 +5098,8 @@ async def _resolve_gguf_gpu_ids_for_request(
         diffusion_kind = _classify_diffusion_gguf(config)
     confirmed_diffusion = diffusion_kind is True
     definitively_non_diffusion = diffusion_kind is False
-    # Off-loop: get_device() waits on the detection lock, so a load or validate
-    # carrying gpu_ids in the warm window would block on the cold torch import.
+    # Off-loop: get_device() waits on the detection lock, so a load or validate in the
+    # warm window would block on the cold torch import.
     device = await asyncio.to_thread(get_device)
     lacks_gpu_lib = getattr(llama_backend, "_backend_lacks_gpu_lib", None)
 
@@ -6096,7 +6093,7 @@ async def _load_model_impl(
 
         # Guard and call go to the worker together: from_identifier can import
         # transformers to build the detection registry, and the guard's probe is a
-        # network round trip. Neither belongs on the event loop.
+        # network round trip.
         config = await asyncio.to_thread(_resolve_config)
 
         if not config:
@@ -6842,7 +6839,7 @@ async def validate_model(
 
         # The frontend validates before it loads, so this needs the same guard as
         # /load; otherwise the stall just moves here and /load is never reached.
-        # Off-loop for both reasons: the guard is a network round trip, and the first
+        # Off-loop twice over: the guard is a network round trip, and the first
         # from_identifier builds the detection registry, which imports transformers or
         # blocks on _DETECTION_SETS_LOCK while the warm holds it.
         def _resolve_config():
@@ -7593,8 +7590,8 @@ async def confirm_tool_call(
 @studio_router.get("/monitor")
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Unsloth."""
-    # Both helpers reach get_inference_backend(), whose first call waits on hardware
-    # detection, and this is polled from first paint. Keep it off the event loop.
+    # Off-loop: both helpers reach get_inference_backend(), whose first call waits on
+    # hardware detection, and this is polled from first paint.
     active_model, context_length = await asyncio.to_thread(
         lambda: (_monitor_active_model(), _monitor_context_length())
     )
@@ -7892,8 +7889,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             )
 
         # Otherwise report Unsloth backend status. Off-loop: the first call builds the
-        # orchestrator singleton, which waits on hardware detection, and the chat UI
-        # polls this from first paint.
+        # singleton, which waits on detection, and the chat UI polls this from first
+        # paint.
         backend = await asyncio.to_thread(get_inference_backend)
 
         is_vision = False
@@ -12686,9 +12683,9 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
-    # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(),
-    # whose cold build waits on hardware detection. Inline, an early GET /v1/models
-    # held the event-loop thread for the rest of the torch import.
+    # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose
+    # cold build waits on hardware detection. Inline, an early GET /v1/models held the
+    # event-loop thread for the rest of the torch import.
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
 
@@ -12763,8 +12760,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # Loaded models resolve without a catalog scan (the common case); only build
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
-    # Off-loop like the catalog helper: reaches the inference singleton, whose cold
-    # build waits on hardware detection.
+    # Off-loop like the catalog helper: the singleton's cold build waits on detection.
     _loaded = await asyncio.to_thread(_openai_model_objects)
     for entry in _loaded:
         eid = entry["id"]

@@ -70,9 +70,8 @@ function shouldKeepAuthoritativePlatform(force?: boolean): boolean {
   return !force && usePlatformStore.getState().fetched;
 }
 
-// How long fetchDeviceType waits out a backend that is still detecting hardware,
-// and how often it re-reads while it does. Sized from the startup warm's torch
-// import (~1-2s measured on a cold launch), with headroom for a slower host.
+// How long fetchDeviceType waits out a backend that is still detecting, and how often
+// it re-reads. Sized from the warm's torch import (~1-2s cold), plus headroom.
 const HARDWARE_DETECT_WAIT_MS = 5000;
 const HARDWARE_DETECT_POLL_MS = 200;
 
@@ -91,11 +90,10 @@ export async function fetchDeviceType(options?: {
       typeof window === "undefined"
         ? null
         : localStorage.getItem("unsloth_auth_token");
-    // Re-read while the backend is still measuring: chat_only is its
-    // pre-detection default until then, and __root.tsx's beforeLoad acts on what
-    // this returns, sending a GPU host to /chat with Train hidden. The window is
-    // the warm's torch import, ~1-2s measured, so a bounded re-read lands the
-    // measurement without stalling boot.
+    // Re-read while the backend is still measuring: chat_only is its pre-detection
+    // default until then, and __root.tsx's beforeLoad acts on what this returns,
+    // sending a GPU host to /chat with Train hidden. The window is only the torch
+    // import, so a bounded re-read lands the measurement without stalling boot.
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
     const deadline = Date.now() + HARDWARE_DETECT_WAIT_MS;
     let res = await fetch(apiUrl("/api/health"), { headers });

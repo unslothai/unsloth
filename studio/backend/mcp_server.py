@@ -112,8 +112,7 @@ def create_studio_mcp() -> FastMCP:
             "training": _dump(training),
             "export": _dump(export),
             "inference": _dump(inference),
-            # Off the loop: reaches hardware detection, which blocks on the warm's
-            # torch import. The only synchronous read left here.
+            # Off-loop: reaches hardware detection, which blocks on the warm's torch import.
             "hardware": await asyncio.to_thread(get_gpu_utilization),
         }
 

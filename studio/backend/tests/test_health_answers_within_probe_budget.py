@@ -4,27 +4,17 @@
 """Invariant: /api/health answers inside the desktop launcher's probe timeout,
 detected hardware or not.
 
-studio/src-tauri/src/preflight/backend.rs builds its probe client with a 2s
-timeout and calls backend_health() from probe_ownerless_spawned_backend(), which
-runs immediately after TAURI_PORT is emitted. A timeout is not a retry:
-probe_ownerless_spawned_backend() returns Missing,
-choose_ownerless_spawned_preflight() falls through to
-ExternalConflict/"desktop_owned_backend_starting", and use-tauri-backend.ts maps
-that to setBackendError("The desktop-owned Unsloth backend is still starting.
-Wait a moment, then try again.") -- a dead end the user has to retry by hand.
+studio/src-tauri/src/preflight/backend.rs probes with a 2s client timeout right after
+TAURI_PORT is emitted, and a timeout is not retried: it falls through to
+"desktop_owned_backend_starting", a dead end the user has to clear by hand.
 
-That was safe while the lifespan detected hardware inline: TAURI_PORT came after
-detection, so health answered instantly. Detection runs on the warm thread now
-and TAURI_PORT is emitted before it finishes, so an unbounded wait on detection
-inside health puts a cold `import torch` (1.5s here, longer on a cold page
-cache) directly in front of that 2s deadline.
+That was safe while the lifespan detected inline, since TAURI_PORT came after
+detection. Detection runs on the warm thread now and TAURI_PORT precedes it, so an
+unbounded wait inside health puts a cold `import torch` in front of that deadline.
 
-Nothing the launcher reads from health depends on detection -- status, service,
-the protocol and manageability versions, the auth and ownership bits,
-studio_root_id, desktop_owner, version. Only chat_only does.
+Nothing the launcher reads from health depends on detection; only chat_only does.
 
-CPU-only, no network, no GPU, no weights. The subprocess tests stub detection;
-they never import torch.
+CPU-only, no network, no GPU, no weights: the subprocess tests stub detection.
 """
 
 from __future__ import annotations
@@ -63,10 +53,8 @@ def _main_constant(name: str) -> float:
 
 
 def test_the_budget_stays_under_the_desktop_probe_timeout():
-    """Cross-language guard: the budget is only correct relative to the Rust one.
-
-    Either side can be changed without the other; this fails when they drift.
-    """
+    """Cross-language guard: the budget is only correct relative to the Rust one, and
+    either side can be changed without the other."""
     assert _PROBE_RS.is_file(), f"{_PROBE_RS} moved; update this guard"
     rust = _PROBE_RS.read_text(encoding = "utf-8")
     probe = rust[rust.index("fn probe_ownerless_spawned_backend") :]
@@ -82,8 +70,8 @@ def test_the_budget_stays_under_the_desktop_probe_timeout():
         f"gives up at {probe_timeout}s"
     )
     # Connect, routing and JSON share the same 2s, and the budget overruns whenever a
-    # C-extension import holds the GIL past it (0.24s measured at a 1.5s budget). A
-    # budget that only just fits is one slow host away from the dead end.
+    # C-extension import holds the GIL past it (0.24s measured at 1.5s). A budget that
+    # only just fits is one slow host away from the dead end.
     assert probe_timeout - budget >= 0.9, (
         f"only {probe_timeout - budget}s of headroom between the health budget "
         f"and the {probe_timeout}s probe timeout"
@@ -172,8 +160,8 @@ def _probe(detect_seconds: float) -> dict:
 def test_health_answers_within_the_budget_while_detection_is_slow():
     """The regression: detection outlasts the probe, health must not.
 
-    Against an unbounded `await asyncio.to_thread(ensure_hardware_detected)`
-    this returns in ~10s and the desktop launch dead-ends.
+    Against an unbounded `await asyncio.to_thread(ensure_hardware_detected)` this
+    returns in ~10s and the desktop launch dead-ends.
     """
     budget = _main_constant("_HEALTH_DETECT_BUDGET_S")
     result = _probe(10.0)
@@ -187,17 +175,14 @@ def test_health_answers_within_the_budget_while_detection_is_slow():
         "health returned a provisional chat_only without saying so; a client "
         "cannot tell it apart from a measured one"
     )
-    # Provisional, and in the conservative direction: never offer Train/Export
-    # on a host that turns out not to support them.
+    # Conservative direction: never offer Train/Export on a host that may not have it.
     assert result["chat_only"] is True
 
 
 def test_health_still_waits_when_detection_finishes_inside_the_budget():
-    """The budget is a ceiling, not a floor.
-
-    The wait exists so a GPU host is not published as chat-only for a second;
-    bounding it must not turn every early health call into a provisional one.
-    """
+    """The budget is a ceiling, not a floor. The wait exists so a GPU host is not
+    published as chat-only for a second; bounding it must not make every early health
+    call provisional."""
     result = _probe(0.3)
 
     assert result["status"] == 200
@@ -210,9 +195,8 @@ def test_health_still_waits_when_detection_finishes_inside_the_budget():
 def test_health_does_not_await_detection_unbounded():
     """Static guard: health_check must go through the bounded helper.
 
-    `await asyncio.to_thread(ensure_hardware_detected)` reads like the obvious
-    fix and passes every test that pins DEVICE first, because then it returns
-    immediately. It only fails on a cold desktop launch.
+    `await asyncio.to_thread(ensure_hardware_detected)` reads like the obvious fix and
+    passes every test that pins DEVICE first. It only fails on a cold desktop launch.
     """
     tree = ast.parse(_MAIN_SRC.read_text(encoding = "utf-8"))
     health = next(
@@ -239,14 +223,11 @@ def test_health_does_not_await_detection_unbounded():
 def test_a_provisional_reply_is_not_cacheable_by_the_frontend():
     """The provisional reply must not look authoritative to config/env.ts.
 
-    fetchDeviceType() sets ``fetched = data.device_type !== undefined`` and every
-    later non-forced call short-circuits on ``fetched``. So an authenticated
-    health request answered inside the warm window with device_type present
-    pins the provisional chat_only=true for the rest of the SPA session: Train
-    hidden, /studio redirected to /chat, on a GPU host, until a reload. The
-    sidebar's recovery poll does not save it either -- that only runs for
-    chat_only_reason === "mlx_unavailable", and a provisional reply has no
-    reason.
+    fetchDeviceType() sets ``fetched = data.device_type !== undefined`` and every later
+    non-forced call short-circuits on ``fetched``, so a provisional authed reply
+    carrying device_type pins chat_only=true for the rest of the SPA session: Train
+    hidden, /studio redirected to /chat, on a GPU host. The sidebar's recovery poll
+    does not save it either, running only for chat_only_reason === "mlx_unavailable".
     """
     result = _probe(10.0)
 
@@ -274,12 +255,10 @@ def test_a_measured_reply_still_carries_the_authoritative_fields():
 def test_a_mid_detection_assignment_is_not_treated_as_finished():
     """DEVICE goes non-None before detection has settled.
 
-    The XPU branch assigns DEVICE and CHAT_ONLY=False and only then calls
-    torch.xpu.get_device_name(0); if that raises, ensure_hardware_detected's
-    handler degrades the host to CPU/chat-only. A waiter keyed on "DEVICE is not
-    None" would have already published the intermediate value, so health could
-    report training as available on a host that ends up chat-only, and
-    config/env.ts would cache that for the SPA session.
+    The XPU branch assigns DEVICE and CHAT_ONLY=False, then calls
+    torch.xpu.get_device_name(0); if that raises, the host degrades to CPU/chat-only. A
+    waiter keyed on "DEVICE is not None" would have published the intermediate value, so
+    health could report training available on a host that ends up chat-only.
     """
     import importlib
     import threading

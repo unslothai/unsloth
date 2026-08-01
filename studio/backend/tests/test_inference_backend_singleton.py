@@ -4,23 +4,19 @@
 """Invariant: ``get_inference_backend()`` builds exactly one orchestrator, even
 when several threads reach it at once.
 
-The first call is expensive: ``InferenceOrchestrator.__init__`` runs
-``get_default_models()``, which calls ``hw.get_device()`` and so blocks on the
-torch warm -- measured at ~2.9s on a cold GPU host. That is why the first-paint
-routes (``routes/models.py:list_models``, ``routes/inference.py:get_status``
-and ``get_api_monitor``) call it through ``asyncio.to_thread``; see
-``test_startup_defers_torch.py``.
+The first call is expensive: ``__init__`` runs ``get_default_models()``, which calls
+``hw.get_device()`` and so blocks on the torch warm, ~2.9s on a cold GPU host. That is
+why the first-paint routes call it through ``asyncio.to_thread``.
 
 Off-loop means genuinely parallel, though, and the getter used to be a plain
-check-then-set on a module global. Three concurrent first-paint requests all
-observed ``None`` inside that multi-second window, each built an orchestrator,
-and the last assignment won. Orchestrator state is per-instance -- its own
-subprocess handle, ``loading_models``, ``active_model_name`` -- so a load that
-started on a loser became invisible to every later status or generation call,
-which read the survivor.
+check-then-set on a module global. Concurrent first-paint requests all observed
+``None`` inside that window, each built an orchestrator, and the last assignment won.
+Orchestrator state is per-instance (subprocess handle, ``loading_models``,
+``active_model_name``), so a load started on a loser became invisible to every later
+call, which read the survivor.
 
-CPU-only, no network, no GPU, no weights: the orchestrator is stubbed out, and
-these tests exercise the getter's locking, not the constructor.
+The orchestrator is stubbed out here: these exercise the getter's locking, not the
+constructor.
 """
 
 from __future__ import annotations
@@ -35,18 +31,18 @@ import core.inference.orchestrator as orch
 
 _ORCHESTRATOR_SRC = Path(orch.__file__)
 
-# Wide enough that every thread is inside the window before the first leaves
-# it, small enough to stay a unit test. The real window is ~2.9s.
+# Wide enough that every thread is inside the window before the first leaves it, small
+# enough to stay a unit test. The real window is ~2.9s.
 _BUILD_SECONDS = 0.20
 _THREADS = 8
 
 
 @pytest.fixture
 def fresh_singleton(monkeypatch):
-    """Reset the module global for the test and restore it afterwards.
+    """Reset the module global and restore it afterwards.
 
-    Set directly rather than via monkeypatch.setattr alone so the getter's
-    ``global`` write is what the test observes.
+    Set directly, not via monkeypatch.setattr, so the getter's ``global`` write is what
+    the test observes.
     """
     saved = orch._inference_backend
     orch._inference_backend = None
@@ -57,8 +53,7 @@ def fresh_singleton(monkeypatch):
 
 
 class _StubOrchestrator:
-    """Stands in for InferenceOrchestrator: records every construction and
-    holds the window open the way hardware detection does."""
+    """Records every construction and holds the window open the way detection does."""
 
     built: list["_StubOrchestrator"] = []
     _record_lock = threading.Lock()
@@ -80,10 +75,9 @@ def stub_orchestrator(monkeypatch):
 def test_concurrent_first_calls_build_exactly_one_orchestrator(fresh_singleton, stub_orchestrator):
     """The regression: N threads entering a cold getter together.
 
-    Without the lock every thread observes None inside the construction window
-    and builds its own, so this asserts both that only one is built and that
-    every caller is handed that same one -- an orphaned instance handed to even
-    one caller is the bug.
+    Unlocked, every thread observes None inside the construction window and builds its
+    own. Asserts both that one is built and that every caller gets that same one: an
+    orphan handed to even one caller is the bug.
     """
     handed_out: list[object] = []
     handed_lock = threading.Lock()
@@ -127,9 +121,8 @@ def test_concurrent_first_calls_build_exactly_one_orchestrator(fresh_singleton, 
 def test_warm_path_does_not_take_the_lock(fresh_singleton, stub_orchestrator):
     """Once built, the getter must not serialize on the lock.
 
-    Every request path reaches this getter, so the double-check has to keep the
-    warm path lock-free; a single ``with`` around the whole body would funnel
-    all of them through one mutex.
+    Every request path reaches it, so a single ``with`` around the whole body would
+    funnel all of them through one mutex.
     """
     first = orch.get_inference_backend()
     assert len(stub_orchestrator.built) == 1
@@ -148,10 +141,10 @@ def test_warm_path_does_not_take_the_lock(fresh_singleton, stub_orchestrator):
 
 
 def test_getter_constructs_under_a_module_level_lock():
-    """Static guard: the construction must stay inside a ``with`` on the lock.
+    """Static guard: construction must stay inside a ``with`` on the lock.
 
-    A refactor that restores the bare ``if _inference_backend is None: ...``
-    reads fine and passes every single-threaded test, so pin the shape.
+    A refactor back to the bare ``if _inference_backend is None: ...`` reads fine and
+    passes every single-threaded test, so pin the shape.
     """
     tree = ast.parse(_ORCHESTRATOR_SRC.read_text(encoding = "utf-8"))
 

@@ -612,9 +612,9 @@ def _build_detection_sets():
         )
 
 
-# Reading the registry imports transformers, hence torch -- most of `import main`
-# on a GPU host, spent before the port can bind. Only the capability checks need
-# the sets, so build on first use, double-checked because requests race here.
+# Reading the registry imports transformers, hence torch: most of `import main` on a
+# GPU host, spent before the port can bind. Only the capability checks need the sets, so
+# build on first use, double-checked because requests race here.
 # _build_detection_sets() never raises; it caches the curated fallback instead.
 _DETECTION_SETS: Optional[Tuple[frozenset, frozenset, frozenset]] = None
 _DETECTION_SETS_LOCK = threading.Lock()
@@ -706,8 +706,8 @@ def _raw_config_has_vision_config(
 
 # why: inline _is_vlm and constants are prepended so the subprocess stays
 # self-contained and does not import the parent backend module graph.
-# Built on demand and memoised: interpolating the sets would force the eager
-# registry read this module now defers.
+# Built on demand: interpolating the sets eagerly would force the registry read this
+# module now defers.
 def _build_vision_check_inline_helpers() -> str:
     vlm_types, vlm_classes, audio_types = _detection_sets()
     return (
@@ -797,9 +797,9 @@ except Exception as exc:
     )
 
 
-# PEP 562 keeps the two script strings and three detection sets reachable under
-# their original module-level names, including `from ... import _VLM_...`.
-# Memoised so repeated access does not rebuild the ~40 KB script.
+# PEP 562 keeps the two script strings and three detection sets reachable under their
+# original module-level names, including `from ... import _VLM_...`. Memoised so
+# repeated access does not rebuild the ~40 KB script.
 _LAZY_MODULE_ATTRS = {
     "_VLM_MODEL_TYPES": lambda: _detection_sets()[0],
     "_VLM_CLASS_NAMES": lambda: _detection_sets()[1],
@@ -812,8 +812,8 @@ _LAZY_MODULE_LOCK = threading.Lock()
 
 
 def _lazy_module_attr(name: str) -> Any:
-    """Build-once accessor. Used by __getattr__ and by in-module callers, where
-    a bare global read would not reach PEP 562."""
+    """Build-once accessor. Also for in-module callers, where a bare global read would
+    not reach PEP 562."""
     with _LAZY_MODULE_LOCK:
         if name not in _LAZY_MODULE_CACHE:
             _LAZY_MODULE_CACHE[name] = _LAZY_MODULE_ATTRS[name]()

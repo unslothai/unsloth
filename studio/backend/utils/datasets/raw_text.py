@@ -3,9 +3,8 @@
 
 """Shared helpers for raw-text dataset preparation."""
 
-# `Dataset` is only an annotation, and importing `datasets` at module scope drags
-# torch in via datasets.formatting.torch_formatter. Deferred annotations keep the
-# names for type checkers without evaluating them at import.
+# `Dataset` is annotation-only, and importing `datasets` at module scope drags torch
+# in via datasets.formatting.torch_formatter.
 from __future__ import annotations
 
 from dataclasses import dataclass

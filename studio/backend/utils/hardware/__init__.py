@@ -49,9 +49,8 @@ from .vram_estimation import (
 def ensure_hardware_detected() -> DeviceType:
     """Detect once, from any thread; delegate so the live function always runs.
 
-    A delegating wrapper rather than a re-export, matching export_capability()
-    below: the re-export form is a module-level import that nothing in this file
-    loads, which scripts/verify_import_hoist.py reads as a botched hoist.
+    Wrapper rather than re-export, like export_capability() below: a re-export is an
+    unused module-level import, which scripts/verify_import_hoist.py flags.
     """
     return _hardware.ensure_hardware_detected()
 

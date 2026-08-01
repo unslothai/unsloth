@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Whether a /api/health reply carries a measured hardware verdict or the
-// backend's pre-detection default. Its own module, no imports, so it is testable:
-// env.ts reaches import.meta.env through api-base.ts, which only vite can load.
+// Whether a /api/health reply carries a measured hardware verdict or the backend's
+// pre-detection default. Its own import-free module so it is testable: env.ts reaches
+// import.meta.env through api-base.ts, which only vite can load.
 
 export type HealthVerdict = {
   chat_only?: boolean;
@@ -23,12 +23,11 @@ export function isProvisionalVerdict(data: HealthVerdict): boolean {
   return data.hardware_detecting === true;
 }
 
-/** True when the backend has deferred detection rather than started it.
-
+/** True when the backend deferred detection rather than started it.
+ *
  * UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 stops health kicking detection at all, so
  * nothing settles until a hardware-dependent operation runs. Waiting for a
- * measurement that is not coming would stall every load, including /login, for
- * the whole retry window.
+ * measurement that is not coming would stall every load, /login included.
  */
 export function isDetectionDeferred(data: HealthVerdict): boolean {
   return data.hardware_detection_deferred === true;
@@ -43,9 +42,9 @@ export function resolveVerdict(
 ): ResolvedVerdict {
   if (isDetectionDeferred(data)) {
     // Nothing will settle, so keeping `previous` would leave the browser-platform
-    // default (chatOnly false off macOS) in place for the session and offer Train on
-    // a CPU-only host. Take the backend's conservative pre-detection chat_only
-    // instead, and keep any reason already being explained.
+    // default (chatOnly false off macOS) in place all session and offer Train on a
+    // CPU-only host. Take the backend's conservative pre-detection chat_only instead,
+    // and keep any reason already being explained.
     return {
       chatOnly: data.chat_only ?? true,
       chatOnlyReason: data.chat_only_reason ?? previous.chatOnlyReason,

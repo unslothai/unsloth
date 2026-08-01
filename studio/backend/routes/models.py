@@ -1766,9 +1766,8 @@ def _looks_like_mlx_repo(model_id: str) -> bool:
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
     try:
-        # Off-loop: building the orchestrator singleton reads the default model
-        # list, which calls get_device(). The frontend fetches this on load, so
-        # inline it would freeze the server for the whole torch import.
+        # Off-loop: building the singleton calls get_device(), and the frontend
+        # fetches this on load, so inline it would freeze the whole torch import.
         inference_backend = await asyncio.to_thread(get_inference_backend)
 
         default_models = inference_backend.default_models
@@ -2140,9 +2139,8 @@ async def discard_remote_code_download(
     except Exception:
         pass
     try:
-        # Peek rather than construct: no orchestrator means no active model to
-        # protect, and building one for a metadata-only cleanup reaches
-        # get_device() and waits on the warm's torch import.
+        # Peek, not construct: no orchestrator means no active model to protect, and
+        # building one here would reach get_device() and wait on the torch import.
         from core.inference.orchestrator import peek_inference_backend
         inference_backend = peek_inference_backend()
         if inference_backend is not None and inference_backend.active_model_name:
@@ -2630,9 +2628,8 @@ async def check_vision_model(
         # A local path resolves from disk, so it skips the probe.
         from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
-        # Off-loop: the guard's probes are blocking, and the sets behind
-        # is_vision_model() are built lazily, so the first call also imports
-        # transformers or waits on _DETECTION_SETS_LOCK while the warm holds it.
+        # Off-loop: the probes block, and is_vision_model()'s lazy sets make the first
+        # call import transformers or wait on _DETECTION_SETS_LOCK behind the warm.
         def _check():
             with _hf_offline_if_unreachable_for(model_name):
                 return is_vision_model(model_name, hf_token = hf_token)

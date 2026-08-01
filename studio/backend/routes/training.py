@@ -104,8 +104,8 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
     """
     from utils.hardware import get_gpu_utilization
 
-    # Off-loop like /hardware/visible below; the first call also blocks on
-    # hardware detection while the warm is importing torch.
+    # Off-loop like /hardware/visible below; the first call blocks on detection while
+    # the warm is importing torch.
     return await asyncio.to_thread(get_gpu_utilization)
 
 
@@ -245,10 +245,10 @@ async def start_training(
                     status_code = 400,
                     detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
                 )
-            # The warm thread fills DEVICE shortly after the socket binds, so a
-            # start landing in that window would read None, skip the MLX rejection,
-            # and hand a streaming dataset to the MLX loader (which materializes it
-            # whole). Force detection first, off-loop because it imports torch.
+            # The warm fills DEVICE shortly after the socket binds, so a start landing
+            # in that window would read None, skip the MLX rejection, and hand a
+            # streaming dataset to the MLX loader (which materializes it whole). Detect
+            # first, off-loop because it imports torch.
             await asyncio.to_thread(ensure_hardware_detected)
             if _hw.DEVICE == _hw.DeviceType.MLX:
                 raise HTTPException(
@@ -292,9 +292,8 @@ async def start_training(
                     ),
                 )
         else:
-            # The synchronous backend start builds its worker config with
-            # get_device(). Detect off-loop first so an early start cannot stall
-            # login or health.
+            # The synchronous backend start builds its worker config with get_device().
+            # Detect off-loop first so an early start cannot stall login or health.
             await asyncio.to_thread(ensure_hardware_detected)
 
         # Convert request to backend kwargs.
