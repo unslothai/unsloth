@@ -20,7 +20,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TrainModelSelector } from "@/features/train-model-picker";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  TRAINING_METHOD_META,
+  TRAINING_METHOD_ORDER,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { useT } from "@/i18n";
 import type { TrainingMethod } from "@/types/training";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
@@ -113,20 +117,19 @@ export function ModelSelectionStep() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="qlora">
-                  {t("studio.methods.qlora.label")} (
-                  {t("studio.methods.qlora.note")})
-                </SelectItem>
-                <SelectItem value="lora">
-                  {t("studio.methods.lora.label")} (
-                  {t("studio.methods.lora.note")})
-                </SelectItem>
-                <SelectItem value="full">
-                  {t("studio.methods.full.label")}
-                </SelectItem>
-                <SelectItem value="cpt">
-                  {t("studio.methods.cpt.label")}
-                </SelectItem>
+                {TRAINING_METHOD_ORDER.map((method) => {
+                  const meta = TRAINING_METHOD_META[method];
+                  const note =
+                    method === "qlora" || method === "lora"
+                      ? t(meta.noteKey)
+                      : null;
+                  return (
+                    <SelectItem key={method} value={method}>
+                      {t(meta.labelKey)}
+                      {note ? ` (${note})` : null}
+                    </SelectItem>
+                  );
+                })}
               </SelectContent>
             </Select>
           </div>

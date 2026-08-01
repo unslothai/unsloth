@@ -1275,6 +1275,10 @@ def test_onboarding_constrains_model_type_and_recovers_default_loading():
     assert "ensureModelDefaultsLoaded();" in src
     assert "[ensureModelDefaultsLoaded, selectedModel]" in src
     assert "requiredModelType={modelType ?? undefined}" in src
+    assert "TRAINING_METHOD_ORDER.map((method) =>" in src
+    assert "TRAINING_METHOD_META[method]" in src
+    for method in ("qlora", "lora", "full", "cpt"):
+        assert f'<SelectItem value="{method}">' not in src
 
 
 def test_picker_tabs_reset_the_shared_scroll_container():
@@ -2234,8 +2238,15 @@ def test_streaming_dataset_preflight_does_not_read_local_cache():
     assert "isDatasetImage: isImage" in modality
     assert "isDatasetAudio: isAudio" in modality
     assert "disabledForDetectedModality" in modality
-    assert "return attempt.cancel(message);" in modality
+    assert "return true;" in modality
+    assert "attempt.cancel(" not in modality
     assert "TRAINING_SETUP_CHANGED_ERROR" not in modality
+    assert "recheckCachedDataset" in source
+    assert "return prepareSelectedDataset(attempt, hfToken);" in source
+    assert "current.datasetStreaming && (isImage || isAudio)" in background_check
+    assert "datasetStreaming: false" in background_check
+    assert "disabledForDetectedModality" in background_check
+    assert "recheckSelectedDatasetForStreamingMode(false)" in background_check
     cache_setter = store.split("setSelectedDatasetCacheReference: (dataset, localPath) =>", 1)[
         1
     ].split("ensureModelDefaultsLoaded:", 1)[0]

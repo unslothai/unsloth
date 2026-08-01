@@ -530,14 +530,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (controller.signal.aborted) return;
             const isImage = !!res.is_image;
             const isAudio = !!res.is_audio;
-            const updates: Record<string, unknown> = {
+            const current = get();
+            const streamingDisabled =
+              current.datasetStreaming && (isImage || isAudio);
+            const updates: Partial<TrainingConfigState> = {
               isDatasetImage: isImage,
               isDatasetAudio: isAudio,
               isCheckingDataset: false,
               datasetCheckFailed: false,
+              ...(streamingDisabled ? { datasetStreaming: false } : {}),
             };
             if (!_trainOnCompletionsManuallySet) {
-              const { isVisionModel, isAudioModel } = get();
+              const { isVisionModel, isAudioModel } = current;
               if (isVisionModel && isImage) {
                 updates.trainOnCompletions = false;
               }
@@ -551,6 +555,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               }
             }
             set(updates);
+            if (streamingDisabled) {
+              toast.info(
+                translate(
+                  "studio.dataset.streaming.notifications.disabledForDetectedModality",
+                ),
+              );
+              recheckSelectedDatasetForStreamingMode(false);
+            }
           })
           .catch((error) => {
             if (controller.signal.aborted) return;

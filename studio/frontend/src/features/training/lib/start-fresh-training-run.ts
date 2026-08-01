@@ -343,11 +343,19 @@ async function prepareSelectedDataset(
 
   const isAudio = check.is_audio === true;
   const isImage = check.is_image === true;
+  const recheckCachedDataset =
+    attempt.config.datasetStreaming &&
+    (isImage || isAudio) &&
+    attempt.config.datasetSource === "huggingface" &&
+    attempt.config.datasetKnownCached;
   if (isImage && attempt.config.isVisionModel) {
     isVlm = true;
   }
   if (!applyDetectedDatasetModality(attempt, isImage, isAudio)) {
     return false;
+  }
+  if (recheckCachedDataset) {
+    return prepareSelectedDataset(attempt, hfToken);
   }
   if (hasIncompatibleTrainingModalities(attempt.config)) {
     return attempt.cancel();
@@ -373,11 +381,12 @@ function applyDetectedDatasetModality(
     ) {
       return false;
     }
-    const message = translate(
-      "studio.dataset.streaming.notifications.disabledForDetectedModality",
+    toast.info(
+      translate(
+        "studio.dataset.streaming.notifications.disabledForDetectedModality",
+      ),
     );
-    toast.info(message);
-    return attempt.cancel(message);
+    return true;
   }
   if (
     isImage === attempt.config.isDatasetImage &&
