@@ -166,18 +166,16 @@ export const ChatDictationBar: FC<{
     };
   }, [isDictating]);
 
-  // No discard button, so Escape drops a recording without transcribing.
+  // No discard button, so Escape drops a recording without transcribing. It
+  // stays live while transcribing: cancel aborts the request, and both buttons
+  // are disabled, so it is the only way out of a stalled one.
   useEffect(() => {
     if (!isDictating) {
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
       // defaultPrevented: an open dialog or menu already claimed this Escape.
-      if (
-        event.key !== "Escape" ||
-        event.defaultPrevented ||
-        transcribingRef.current
-      ) {
+      if (event.key !== "Escape" || event.defaultPrevented) {
         return;
       }
       cancelActiveStudioDictation();

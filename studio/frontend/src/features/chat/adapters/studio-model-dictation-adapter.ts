@@ -334,8 +334,6 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const reportTranscriptionError = (error: unknown) => {
       if (reportedTranscriptionError || cancelled || ended) return;
       reportedTranscriptionError = true;
-      // Transcribed segments are kept, so the send must not fire on them.
-      markDictationFailed();
       const message =
         error instanceof Error && error.message
           ? error.message
@@ -410,6 +408,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         } catch (error) {
           if (!cancelled && !abortController.signal.aborted) {
             // Keep transcribed segments, but never hide that part was lost.
+            // Only a lost segment is partial: the model preload shares this
+            // reporter and can fail without costing any audio.
+            markDictationFailed();
             reportTranscriptionError(error);
           }
         } finally {

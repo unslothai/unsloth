@@ -15,3 +15,23 @@ export function dictationProducedText(before: string, after: string): boolean {
   const trimmed = after.trim();
   return trimmed.length > 0 && trimmed !== before.trim();
 }
+
+/**
+ * Whether a pending dictation send may submit now.
+ *
+ * The composer is reused across thread switches, so a send pressed in one
+ * thread can land after the user has moved to another. Submitting there would
+ * send that thread's draft, so the intent is dropped instead.
+ *
+ * @param originComposer composer identity when send was pressed
+ * @param currentComposer composer identity now that the session has ended
+ */
+export function shouldSubmitDictation(
+  originComposer: string,
+  currentComposer: string,
+  baseText: string,
+  text: string,
+): boolean {
+  if (originComposer !== currentComposer) return false;
+  return dictationProducedText(baseText, text);
+}

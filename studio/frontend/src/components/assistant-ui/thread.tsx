@@ -110,7 +110,7 @@ import {
   writeComposerDraft,
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
-import { dictationProducedText } from "@/features/chat/utils/dictation-send";
+import { shouldSubmitDictation } from "@/features/chat/utils/dictation-send";
 import { listThreadDocuments } from "@/features/rag/api/rag-api";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -1844,10 +1844,15 @@ const Composer: FC<{
   const formRef = useRef<HTMLFormElement | null>(null);
   const sendAfterDictationRef = useRef(false);
   const dictationBaseTextRef = useRef("");
+  const dictationComposerRef = useRef("");
+  // Thread switches reuse this composer, so the send has to know where it
+  // started to avoid submitting the destination thread's draft.
+  const composerIdentity = `${threadListItemId ?? ""}:${referenceThreadId ?? ""}`;
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
+    dictationComposerRef.current = composerIdentity;
     aui.composer().stopDictation();
-  }, [aui]);
+  }, [aui, composerIdentity]);
 
   useEffect(() => {
     if (isDictating) {
@@ -1862,11 +1867,21 @@ const Composer: FC<{
     // A partial transcript (a failed chunk, or an engine error after one
     // landed) belongs in the composer, but must not send half a message.
     if (dictationFailed()) return;
-    // Silence or a failed transcription: keep the draft, submit nothing.
+    // Silence, a failed transcription, or a thread switch mid-transcription:
+    // keep the draft, submit nothing.
     const { text } = aui.composer().getState();
-    if (!dictationProducedText(dictationBaseTextRef.current, text)) return;
+    if (
+      !shouldSubmitDictation(
+        dictationComposerRef.current,
+        composerIdentity,
+        dictationBaseTextRef.current,
+        text,
+      )
+    ) {
+      return;
+    }
     formRef.current?.requestSubmit();
-  }, [isDictating, aui]);
+  }, [isDictating, aui, composerIdentity]);
 
   const handleSubmit = useCallback(
     (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {

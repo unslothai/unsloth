@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { dictationProducedText } from "../src/features/chat/utils/dictation-send.ts";
+import {
+  dictationProducedText,
+  shouldSubmitDictation,
+} from "../src/features/chat/utils/dictation-send.ts";
 
 test("a transcript into an empty composer sends", () => {
   assert.equal(dictationProducedText("", "hello there"), true);
@@ -32,4 +35,34 @@ test("a final transcript matching its interim still sends", () => {
 test("a whitespace-only transcript does not count as text", () => {
   assert.equal(dictationProducedText("draft", "draft  "), false);
   assert.equal(dictationProducedText("", "   "), false);
+});
+
+test("a transcript submits in the composer the send started in", () => {
+  assert.equal(
+    shouldSubmitDictation("t1:t1", "t1:t1", "", "hello there"),
+    true,
+  );
+});
+
+// The composer is reused across thread switches, so a send that lands after
+// the move would otherwise submit the destination thread's draft.
+test("a thread switch during transcription drops the send", () => {
+  assert.equal(
+    shouldSubmitDictation("t1:t1", "t2:t2", "", "someone else's draft"),
+    false,
+  );
+});
+
+test("a thread switch drops the send even with a real transcript", () => {
+  assert.equal(
+    shouldSubmitDictation("t1:t1", "t2:t2", "", "hello there"),
+    false,
+  );
+});
+
+test("silence in the original composer still sends nothing", () => {
+  assert.equal(
+    shouldSubmitDictation("t1:t1", "t1:t1", "draft", "draft"),
+    false,
+  );
 });
