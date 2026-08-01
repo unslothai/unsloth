@@ -82,6 +82,7 @@ jobs:
           pwsh -NoProfile -File tests/studio/test_torch_flavor.ps1
           pwsh -NoProfile -File tests/studio/test_node_decision.ps1
           pwsh -NoProfile -File tests/studio/test_node_probe_guard.ps1
+          pwsh -NoProfile -File tests/studio/test_path_probe_access_denied.ps1
 
       # uninstall.ps1: native uninstall must keep the shared unsloth.ico while a
       # WSL shortcut still references it (dual install), else that shortcut blanks.

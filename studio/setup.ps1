@@ -289,11 +289,75 @@ function Remove-AgentInstructionFiles {
     }
 }
 
+# ERROR_ACCESS_DENIED in any of its disguises. PowerShell wraps .NET exceptions
+# in MethodInvocationException, so walk the chain instead of catching by type.
+function Test-AccessDeniedError {
+    param($ErrorRecord)
+
+    $ex = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
+    while ($ex) {
+        if ($ex -is [System.UnauthorizedAccessException]) { return $true }
+        # IOException/Win32Exception carry the HRESULT for ERROR_ACCESS_DENIED (5).
+        if ($ex.HResult -eq -2147024891) { return $true }
+        $ex = $ex.InnerException
+    }
+    if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) {
+        return ($ErrorRecord.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::PermissionDenied)
+    }
+    return $false
+}
+
+# Test-Path throws UnauthorizedAccessException (it does not return $false) when
+# an ACL denies the probe, and this script runs under "Stop", so a denied path
+# aborted setup with a raw error. "Denied" is kept distinct from "Absent"
+# because a denial needs reporting, not a silent retry.
+function Get-PathState {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+        [ValidateSet("Any", "Leaf", "Container")][string]$PathType = "Any"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "Absent" }
+    try {
+        if (Test-Path -LiteralPath $Path -PathType $PathType -ErrorAction Stop) { return "Present" }
+        return "Absent"
+    } catch {
+        if (Test-AccessDeniedError $_) { return "Denied" }
+        # Malformed path, offline drive, dangling link: nothing usable there.
+        return "Absent"
+    }
+}
+
+# Non-throwing Test-Path for paths inside install trees we do not control.
+# Callers that must react to a denial use Get-PathState instead.
+function Test-PathQuiet {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+        [ValidateSet("Any", "Leaf", "Container")][string]$PathType = "Any"
+    )
+
+    return ((Get-PathState -Path $Path -PathType $PathType) -eq "Present")
+}
+
+# Names the link target of a denied dir, since that is where the user must look.
+function Get-PathDenialDetail {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $item) { return "" }
+    if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
+    $target = $null
+    try { $target = $item.Target } catch { }
+    # PS 5.1 exposes .Target as a collection; PS 7 as a string.
+    if ($target) { return " (it is a link to $(@($target) -join ', '))" }
+    return " (it is a link)"
+}
+
 function Get-InstalledLlamaPrebuiltRelease {
     param([string]$InstallDir)
 
     $metadataPath = Join-Path $InstallDir "UNSLOTH_PREBUILT_INFO.json"
-    if (-not (Test-Path $metadataPath)) {
+    if (-not (Test-PathQuiet $metadataPath)) {
         return $null
     }
 
@@ -2810,10 +2874,11 @@ $StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
 # llama.cpp or whisper.cpp predating the .unsloth-studio-owned marker (see
 # setup.sh). Only Unsloth prebuilt markers count; source builds are
 # indistinguishable from a user clone on Windows and stay under the strict guard.
+# Test-PathQuiet: an unreadable tree must reach the errors below, not throw here.
 function Test-StudioOwnedAdoptable {
     param([Parameter(Mandatory = $true)][string]$Path)
-    if (Test-Path -LiteralPath (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) { return $true }
-    if (Test-Path -LiteralPath (Join-Path $Path "UNSLOTH_WHISPER_PREBUILT_INFO.json") -PathType Leaf) { return $true }
+    if (Test-PathQuiet (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") "Leaf") { return $true }
+    if (Test-PathQuiet (Join-Path $Path "UNSLOTH_WHISPER_PREBUILT_INFO.json") "Leaf") { return $true }
     return $false
 }
 function Assert-StudioOwnedOrAbsent {
@@ -2821,8 +2886,18 @@ function Assert-StudioOwnedOrAbsent {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Label
     )
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
-    if ($StudioHomeIsCustom -and -not (Test-Path -LiteralPath (Join-Path $Path $StudioOwnedMarker) -PathType Leaf)) {
+    if (-not (Test-PathQuiet $Path "Container")) { return }
+    # Both branches stay gated on $StudioHomeIsCustom, as before: a default-home
+    # denial is reported by the prebuilt phase instead.
+    $markerState = Get-PathState -Path (Join-Path $Path $StudioOwnedMarker) -PathType Leaf
+    if ($StudioHomeIsCustom -and $markerState -eq "Denied") {
+        # Ownership is unknowable while the tree is unreadable, so report the
+        # denial rather than claiming the path is not ours.
+        Write-Host "[ERROR] $Path exists but cannot be read: access is denied$(Get-PathDenialDetail -Path $Path)." -ForegroundColor Red
+        Write-Host "        Delete or rename it (Unsloth reinstalls this $Label), or restore access with takeown/icacls, then re-run." -ForegroundColor Yellow
+        Exit-SetupFailure "Access denied reading the existing $Label at $Path. Delete or rename that folder, or restore access with takeown/icacls, then re-run setup."
+    }
+    if ($StudioHomeIsCustom -and $markerState -ne "Present") {
         if (Test-StudioOwnedAdoptable $Path) {
             Mark-StudioOwned $Path
             return
@@ -3861,7 +3936,7 @@ if ($LocalLlamaCppSrc) {
             (Join-Path $ResolvedLocal "llama-server.exe"),
             (Join-Path $ResolvedLocal "build\bin\llama-server.exe"),
             (Join-Path $ResolvedLocal "build\bin\Release\llama-server.exe"))) {
-        if (Test-Path -LiteralPath $_cand) { $LocalLlamaServerFound = $true; break }
+        if (Test-PathQuiet $_cand) { $LocalLlamaServerFound = $true; break }
     }
     if ($ResolvedLocal -eq $LlamaCppDir) {
         # Points at the canonical install location itself: never delete-then-link
@@ -3944,7 +4019,20 @@ if ($LocalLlamaCppLinked) {
         # machine that should have windows-rocm), remove it so the installer is
         # forced to download the correct variant rather than skipping on tag match.
         $existingMetaPath = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
-        if (Test-Path $existingMetaPath) {
+        # An unreadable tree cannot be validated, replaced or built over, and it
+        # outlives an app reinstall, so retrying cannot help. Say so instead of
+        # dying on the bare probe with "Test-Path : Access is denied" and exit 1.
+        $existingMetaState = Get-PathState -Path $existingMetaPath -PathType Leaf
+        if ($existingMetaState -eq "Denied") {
+            $denialDetail = Get-PathDenialDetail -Path $LlamaCppDir
+            step "llama.cpp" "existing install cannot be read: access to $LlamaCppDir is denied$denialDetail" "Red"
+            substep "This folder lives outside the app, so reinstalling Unsloth Studio -- to any drive -- reuses it and fails the same way" "Yellow"
+            substep "Simplest fix: close Unsloth, delete or rename $LlamaCppDir, then re-run setup (it is a managed cache and gets reinstalled)" "Yellow"
+            substep "If deleting is also denied, restore access from an elevated PowerShell: takeown /F `"$LlamaCppDir`" /R /D Y then icacls `"$LlamaCppDir`" /reset /T" "Yellow"
+            substep "Antivirus or Controlled folder access can deny this path too -- allow or exclude it, then retry" "Yellow"
+            Exit-SetupFailure "Access denied reading the existing llama.cpp install at $LlamaCppDir. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
+        }
+        if ($existingMetaState -eq "Present") {
             try {
                 $existingMeta = Get-Content $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
@@ -4092,7 +4180,7 @@ if ($LocalLlamaCppLinked) {
                     (Join-Path $LlamaCppDir "llama-server.exe"),
                     (Join-Path $LlamaCppDir "build\bin\llama-server.exe"),
                     (Join-Path $LlamaCppDir "build\bin\Release\llama-server.exe"))) {
-                if (Test-Path -LiteralPath $_cand) { $PreservedLlamaServerFound = $true; break }
+                if (Test-PathQuiet $_cand) { $PreservedLlamaServerFound = $true; break }
             }
             if (-not $PreservedLlamaServerFound) { $script:LlamaCppDegraded = $true }
             # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
@@ -4192,7 +4280,7 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
         }
         $installedWhisperLlamaTag = "unknown"
         $llamaMarker = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
-        if (Test-Path -LiteralPath $llamaMarker -PathType Leaf) {
+        if (Test-PathQuiet $llamaMarker "Leaf") {
             try {
                 $markerPayload = Get-Content -LiteralPath $llamaMarker -Raw | ConvertFrom-Json
                 if ($markerPayload.release_tag) { $installedWhisperLlamaTag = $markerPayload.release_tag }
@@ -4501,7 +4589,7 @@ if ($LocalLlamaCppLinked) {
 
     $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
 
-    if (Test-Path -LiteralPath (Join-Path $LlamaCppDir ".git")) {
+    if (Test-PathQuiet (Join-Path $LlamaCppDir ".git")) {
         # why: in-place git mutation (remote set-url, checkout -B, clean -fdx)
         # rewrites $LlamaCppDir; mirror the prebuilt and temp-dir-swap guards
         # so an unrelated workspace .git tree is never silently overwritten.
@@ -4865,7 +4953,7 @@ $llamaCppItem = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyC
 $llamaCppIsLink = $llamaCppItem -and ($llamaCppItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
 if (-not $llamaCppIsLink -and (
         -not $StudioHomeIsCustom -or
-        (Test-Path -LiteralPath (Join-Path $LlamaCppDir $StudioOwnedMarker) -PathType Leaf) -or
+        (Test-PathQuiet (Join-Path $LlamaCppDir $StudioOwnedMarker) "Leaf") -or
         (Test-StudioOwnedAdoptable $LlamaCppDir)
     )) {
     Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
