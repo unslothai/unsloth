@@ -1846,8 +1846,10 @@ const Composer: FC<{
   const dictationBaseTextRef = useRef("");
   const dictationComposerRef = useRef("");
   // Thread switches reuse this composer, so the send has to know where it
-  // started to avoid submitting the destination thread's draft.
-  const composerIdentity = `${threadListItemId ?? ""}:${referenceThreadId ?? ""}`;
+  // started to avoid submitting the destination thread's draft. The list item
+  // id, not referenceThreadId: that one moves from null to the remote id when
+  // a new chat first persists, which is the same composer.
+  const composerIdentity = threadListItemId ?? "";
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     dictationComposerRef.current = composerIdentity;

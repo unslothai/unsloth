@@ -66,3 +66,12 @@ test("silence in the original composer still sends nothing", () => {
     false,
   );
 });
+
+// The identity has to survive a new chat's first persist, which moves
+// activeThreadId from null to the remote id without changing the composer.
+test("hydrating a new chat keeps the pending send alive", () => {
+  assert.equal(
+    shouldSubmitDictation("item-1", "item-1", "", "hello there"),
+    true,
+  );
+});
