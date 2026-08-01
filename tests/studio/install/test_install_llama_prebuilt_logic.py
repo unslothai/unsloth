@@ -3784,8 +3784,17 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
 
 @pytest.mark.parametrize(
     "error",
-    [TypeError("bug"), AttributeError("bug"), NameError("bug")],
-    ids = ["typeerror", "attributeerror", "nameerror"],
+    [
+        TypeError("bug"),
+        AttributeError("bug"),
+        NameError("bug"),
+        # Local host-resource failures, not transport: a source build needs more
+        # file descriptors and more memory, so it cannot repair either.
+        OSError(errno.EMFILE, "Too many open files"),
+        OSError(errno.ENOMEM, "Cannot allocate memory"),
+        PermissionError(errno.EACCES, "Permission denied"),
+    ],
+    ids = ["typeerror", "attributeerror", "nameerror", "emfile", "enomem", "eacces"],
 )
 def test_release_listing_code_defect_stays_exit_error(tmp_path, monkeypatch, error):
     """A defect in the resolver is an installer bug, not a transient condition.
@@ -3810,7 +3819,12 @@ def test_release_listing_code_defect_stays_exit_error(tmp_path, monkeypatch, err
 
 
 def test_release_listing_enospc_still_exits_no_space(tmp_path, monkeypatch):
-    """Wrapping the listing must not hide a full disk behind a source build."""
+    """A full disk must reach EXIT_NO_SPACE, never a source build.
+
+    ENOSPC is a plain OSError, which the transport catch deliberately does not
+    claim, so it escapes install_prebuilt and __main__ classifies it. Assert the
+    same way __main__ does, so this stays a real end-to-end guarantee.
+    """
 
     def boom(*args, **kwargs):
         raise OSError(errno.ENOSPC, "No space left on device")
@@ -3821,10 +3835,12 @@ def test_release_listing_enospc_still_exits_no_space(tmp_path, monkeypatch):
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
 
-    with pytest.raises(SystemExit) as caught:
+    with pytest.raises(OSError) as caught:
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
-    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_NO_SPACE
+    assert caught.value.errno == errno.ENOSPC
+    # __main__ turns exactly this into EXIT_NO_SPACE via _fail_no_space.
+    assert INSTALL_LLAMA_PREBUILT._environment_fatal_reason(caught.value)
 
 
 def test_fallback_survives_a_failing_system_report(tmp_path, monkeypatch):
@@ -3848,6 +3864,50 @@ def test_fallback_survives_a_failing_system_report(tmp_path, monkeypatch):
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+
+
+def test_marker_sync_strands_no_temp_file_when_the_first_write_fails(tmp_path, monkeypatch):
+    """ENOSPC during write/flush/fsync must not leave a partial .tmp- behind.
+
+    A full volume would otherwise accumulate one stranded temp file per setup
+    attempt, right next to the marker they are named after.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    original = json.dumps({"force_cpu": False}) + "\n"
+    marker.write_text(original, encoding = "utf-8")
+
+    real_write = INSTALL_LLAMA_PREBUILT.tempfile.NamedTemporaryFile
+
+    class _FullDisk:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+        def write(self, *args, **kwargs):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    class _Ctx:
+        def __enter__(self):
+            self._cm = real_write(
+                prefix = marker.name + ".tmp-", dir = install_dir, delete = False
+            )
+            return _FullDisk(self._cm.__enter__())
+
+        def __exit__(self, *exc):
+            return self._cm.__exit__(*exc)
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT.tempfile, "NamedTemporaryFile", lambda **kw: _Ctx()
+    )
+
+    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+
+    assert marker.read_text(encoding = "utf-8") == original
+    assert [q.name for q in install_dir.iterdir() if ".tmp-" in q.name] == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")

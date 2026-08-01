@@ -20,6 +20,7 @@ import re
 import shutil
 import site
 import socket
+import ssl
 import stat
 import struct
 import subprocess
@@ -5711,10 +5712,15 @@ def _write_marker(marker_path: Path, marker: dict) -> bool:
     """
     data = (json.dumps(marker, indent = 2) + "\n").encode("utf-8")
     try:
-        try:
-            mode = stat.S_IMODE(marker_path.stat().st_mode)
-        except OSError:
-            mode = None
+        original = marker_path.stat()
+    except OSError:
+        original = None
+    # One tmp_path for every failure path: a write/flush/fsync that raises (the
+    # ENOSPC this is built to tolerate) must not strand a partial
+    # UNSLOTH_PREBUILT_INFO.json.tmp-* beside the valid marker, and a full volume
+    # would accumulate one per setup attempt.
+    tmp_path: Path | None = None
+    try:
         # Own temp file rather than atomic_write_bytes so the mode is restored
         # BEFORE the swap: os.replace keeps the source file's mode, and
         # NamedTemporaryFile is 0600, which would leave a shared install's
@@ -5729,15 +5735,26 @@ def _write_marker(marker_path: Path, marker: dict) -> bool:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        try:
-            if mode is not None:
-                os.chmod(tmp_path, mode)
-            atomic_replace_from_tempfile(tmp_path, marker_path)
-        except OSError:
-            tmp_path.unlink(missing_ok = True)
-            raise
+        if original is not None:
+            os.chmod(tmp_path, stat.S_IMODE(original.st_mode))
+            # Best effort: os.replace installs the temp file's ownership, so a
+            # shared marker would otherwise pick up the invoking user's group.
+            # Only root can hand a file to another owner, so this is a no-op for
+            # an ordinary user -- the mode above is what actually keeps the
+            # marker readable, and declining the refresh instead would leave a
+            # deliberate --force-cpu unrecorded, which is the #7213 crash.
+            try:
+                os.chown(tmp_path, original.st_uid, original.st_gid)
+            except (OSError, AttributeError):
+                pass
+        atomic_replace_from_tempfile(tmp_path, marker_path)
         return True
     except OSError:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
         return False
 
 
@@ -6823,13 +6840,14 @@ def install_prebuilt(
             # UNSLOTH_LLAMA_RELEASE_TAG, a non-latest tag, a non-default
             # --published-repo, and any CDN outage.
             #
-            # The catch is deliberately narrow. Every transient shape lands in
-            # it -- URLError/HTTPError/SSLError/TimeoutError are OSError,
-            # JSONDecodeError is a ValueError, and fetch_json's 403 is a bare
-            # RuntimeError -- while a TypeError or AttributeError from a bug in
-            # host-conditional resolver code stays EXIT_ERROR. Catching those
-            # too would buy a 20 minute source build and log a network cause for
-            # a local defect.
+            # The catch names transport shapes only. URLError covers HTTPError
+            # and the socket/DNS errors urllib wraps, JSONDecodeError is a
+            # ValueError, and fetch_json's 403 is a bare RuntimeError. A plain
+            # OSError is NOT included: EMFILE, ENOMEM or a local EACCES is a
+            # host resource problem, and a source build makes it worse, so those
+            # stay EXIT_ERROR alongside a TypeError from a bug in
+            # host-conditional resolver code. ENOSPC still reaches EXIT_NO_SPACE
+            # either way, via _environment_fatal_reason in __main__.
             try:
                 requested_tag, release_plans = resolve_simple_install_release_plans(
                     llama_tag,
@@ -6839,7 +6857,14 @@ def install_prebuilt(
                 )
             except (BusyInstallConflict, PrebuiltFallback):
                 raise
-            except (OSError, RuntimeError, ValueError) as exc:
+            except (
+                urllib.error.URLError,
+                ssl.SSLError,
+                ConnectionError,
+                TimeoutError,
+                RuntimeError,
+                ValueError,
+            ) as exc:
                 raise PrebuiltFallback(
                     f"failed to inspect published releases in "
                     f"{published_repo or DEFAULT_PUBLISHED_REPO}: {exc}"
