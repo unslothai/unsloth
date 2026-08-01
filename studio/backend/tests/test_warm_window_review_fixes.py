@@ -1541,8 +1541,7 @@ def test_both_spawners_read_the_epoch_before_start():
             (
                 sub
                 for sub in ast.walk(fn)
-                if isinstance(sub, ast.Call)
-                and any(kw.arg == "target" for kw in sub.keywords)
+                if isinstance(sub, ast.Call) and any(kw.arg == "target" for kw in sub.keywords)
             ),
             None,
         )
@@ -1581,9 +1580,9 @@ def test_both_spawners_read_the_epoch_before_start():
             )
             for node in ast.walk(fn)
         )
-        assert inline or bound, (
-            f"{spawner} hands its worker args that never carry the detection epoch"
-        )
+        assert (
+            inline or bound
+        ), f"{spawner} hands its worker args that never carry the detection epoch"
 
 
 def test_a_new_lifespan_warms_even_when_the_retired_one_is_still_running():
@@ -1613,7 +1612,7 @@ def test_a_new_lifespan_warms_even_when_the_retired_one_is_still_running():
         with mock.patch.object(warm, "_STAGES", (("slow", _slow),)):
             assert warm.start_background_warm() is True
             assert entered.wait(30), "the first warm never started"
-            hw.invalidate_detection()          # shutdown, with the warm still inside a stage
+            hw.invalidate_detection()  # shutdown, with the warm still inside a stage
             # reset_background_warm() declines here, exactly as it does in the lifespan.
             assert warm.reset_background_warm() is False
             with mock.patch.object(warm, "_STAGES", (("fresh", lambda: ran.append("fresh")),)):
@@ -1623,9 +1622,10 @@ def test_a_new_lifespan_warms_even_when_the_retired_one_is_still_running():
                 )
                 release.set()
                 assert warm.join_background_warm(60) is True
-        assert ran == ["stale", "fresh"], (
-            f"expected the successor to wait out the retired warm, got {ran}"
-        )
+        assert ran == [
+            "stale",
+            "fresh",
+        ], f"expected the successor to wait out the retired warm, got {ran}"
     finally:
         release.set()
         warm.join_background_warm(30)
