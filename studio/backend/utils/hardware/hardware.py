@@ -338,7 +338,13 @@ def detect_hardware() -> DeviceType:
         # half-written answer that the autorepair path swallows, and losing
         # "mlx_unavailable" stops the sidebar poll for good.
         published = (DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM)
-        epoch = current_detection_epoch()
+        # The owning epoch first, current only as a fallback. The MLX self-heal calls
+        # this after a pip install that can outlast the lifespan; reading current here
+        # would adopt the epoch shutdown moved to and publish into the stopped one, so
+        # the next lifespan finds DEVICE set and skips its own detection.
+        epoch = getattr(_OWNING_EPOCH, "value", None)
+        if epoch is None:
+            epoch = current_detection_epoch()
         DETECTION_COMPLETE.clear()
         try:
             device = _detect_hardware_locked()

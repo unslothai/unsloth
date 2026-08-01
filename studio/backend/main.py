@@ -1307,7 +1307,9 @@ async def health_check(request: Request):
     """
     # Wait for detection rather than grey out Train/Export on a GPU host for a second,
     # but only up to a budget: this endpoint has a hard deadline.
-    detected = await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
+    # Called for the wait, not the answer: _hardware_snapshot() below decides what this
+    # reply says, and a True here can still be stale by the time it is read.
+    await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()
     base = {

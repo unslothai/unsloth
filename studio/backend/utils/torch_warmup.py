@@ -124,6 +124,9 @@ def purge_partial_import(package: str) -> list:
             ", ".join(compiled[:4]),
         )
         return []
+    # What actually went, not what was planned: a bail partway used to log and return
+    # the whole list, so the warm reported a clean slate the next import will not get.
+    removed = []
     for name in stale:
         # Same race, per pop: bail the moment the parent is back.
         if package in sys.modules:
@@ -133,15 +136,16 @@ def purge_partial_import(package: str) -> list:
                 package,
             )
             break
-        sys.modules.pop(name, None)
-    if stale:
+        if sys.modules.pop(name, None) is not None:
+            removed.append(name)
+    if removed:
         logger.warning(
             "purged %d half-imported %s submodule(s) so the next import re-runs clean: %s",
-            len(stale),
+            len(removed),
             package,
-            ", ".join(sorted(stale)[:8]),
+            ", ".join(sorted(removed)[:8]),
         )
-    return stale
+    return removed
 
 
 # Stage name -> the package it imports, for the failure purge above. inference_backend

@@ -26,6 +26,7 @@ import ast
 import builtins
 import os
 import sys
+import types
 import threading
 from unittest import mock
 from pathlib import Path
@@ -2601,3 +2602,129 @@ def test_the_warm_runs_its_stages_inside_an_owning_scope():
     assert any(
         isinstance(node, ast.For) for node in scoped[0].body
     ), "the stage loop moved out of the owning scope"
+
+
+# ------------------------------- the MLX self-heal is a background worker too
+def test_the_mlx_self_heal_cannot_republish_into_a_stopped_lifespan():
+    """attempt_mlx_repair() is a pip install; shutdown can land anywhere inside it.
+
+    detect_hardware() guards a shutdown that lands mid-pass, but read current itself,
+    so a repair finishing after teardown adopted the epoch shutdown moved to and
+    published a verdict for a lifespan that had already ended. The next lifespan then
+    found DEVICE set and skipped its own detection.
+    """
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        hw.DEVICE = None
+        hw.DETECTION_COMPLETE.clear()
+        spawn_epoch = hw.current_detection_epoch()
+
+        def _probe():
+            hw.DEVICE = hw.DeviceType.MLX
+            hw.CHAT_ONLY = False
+            return hw.DEVICE
+
+        hw.invalidate_detection()  # shutdown, while the pip install was running
+        with hw.owning_detection_epoch(spawn_epoch):
+            with mock.patch.object(hw, "_detect_hardware_locked", _probe):
+                hw.detect_hardware()
+
+        assert hw.DEVICE is None, (
+            "the MLX self-heal republished a verdict after teardown; the next "
+            "lifespan skips detection and inherits it"
+        )
+        assert not hw.DETECTION_COMPLETE.is_set()
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_a_forced_redetect_with_no_shutdown_still_publishes():
+    """Negative control: detect_hardware keeps working outside a retired scope."""
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        hw.DEVICE = None
+        hw.DETECTION_COMPLETE.clear()
+
+        def _probe():
+            hw.DEVICE = hw.DeviceType.MLX
+            return hw.DEVICE
+
+        with hw.owning_detection_epoch(hw.current_detection_epoch()):
+            with mock.patch.object(hw, "_detect_hardware_locked", _probe):
+                hw.detect_hardware()
+
+        assert hw.DEVICE is hw.DeviceType.MLX, "a live self-heal was discarded"
+        assert hw.DETECTION_COMPLETE.is_set()
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_the_mlx_worker_reads_its_epoch_before_start():
+    """Same spawn-time rule as the other workers: start() may not run for a while."""
+    import utils.mlx_repair as repair
+
+    captured: dict = {}
+
+    class _Recorder:
+        def __init__(self, *args, **kwargs):
+            captured["args"] = kwargs.get("args", ())
+            captured["target"] = kwargs.get("target")
+
+        def start(self):
+            captured["started"] = True
+
+    with mock.patch.object(repair.threading, "Thread", _Recorder):
+        with mock.patch.object(repair, "is_apple_silicon", lambda: True):
+            with mock.patch.object(repair, "mlx_stack_available", lambda: False):
+                with mock.patch.dict(os.environ, {}, clear = False):
+                    os.environ.pop(repair.DISABLE_ENV_VAR, None)
+                    repair._attempted = False
+                    repair.start_mlx_autorepair_if_needed()
+
+    assert captured.get("started"), "the self-heal never spawned"
+    assert captured["args"], (
+        "the MLX worker is spawned with no epoch, so it reads one after start() and "
+        "binds itself to whatever shutdown moved to"
+    )
+
+
+# ------------------------------------------- the purge reports what it actually did
+def test_an_interrupted_purge_reports_only_what_it_removed():
+    """Returning the whole plan makes the warm claim a clean slate it did not deliver.
+
+    The loop bails correctly when another importer republishes the parent, but the log
+    and the return value used to describe every submodule it had intended to drop.
+    """
+    from utils import torch_warmup
+
+    package = "unsloth_purge_probe"
+    names = [f"{package}.{leaf}" for leaf in ("a", "b", "c")]
+
+    class _RacingModules(dict):
+        """sys.modules where another importer republishes the parent after one pop."""
+
+        def pop(self, key, default = None):
+            result = super().pop(key, default)
+            self.setdefault(package, types.ModuleType(package))
+            return result
+
+    fake = _RacingModules({name: types.ModuleType(name) for name in names})
+
+    with mock.patch.object(torch_warmup, "sys", types.SimpleNamespace(modules = fake)):
+        removed = torch_warmup.purge_partial_import(package)
+
+    assert len(removed) < len(names), (
+        f"an interrupted purge reported {len(removed)} of {len(names)} submodules as "
+        "removed; the warm claims the next import will be clean when it will not"
+    )
+    for name in removed:
+        assert name not in fake, f"{name} was reported removed but is still present"
+    assert [name for name in names if name in fake], "the purge did not actually stop"

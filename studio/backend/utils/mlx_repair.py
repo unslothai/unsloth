@@ -33,6 +33,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from typing import Optional
 
 import structlog
 
@@ -321,12 +322,16 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     return True
 
 
-def _run_repair_and_redetect() -> None:
+def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
     if not attempt_mlx_repair():
         return
     try:
         from utils.hardware import hardware as hw
-        hw.detect_hardware()  # flips CHAT_ONLY / DEVICE now that mlx imports
+        # The repair is a pip install, so shutdown can land anywhere inside it. Scoped
+        # to the epoch read before start(), the re-detect below is discarded when that
+        # happens instead of republishing a verdict for the lifespan that ended.
+        with hw.owning_detection_epoch(epoch):
+            hw.detect_hardware()  # flips CHAT_ONLY / DEVICE now that mlx imports
         logger.info(
             "MLX self-heal succeeded; Train/Export enabled (reload the page). chat_only=%s",
             hw.CHAT_ONLY,
@@ -358,8 +363,12 @@ def start_mlx_autorepair_if_needed() -> bool:
         "Set %s=1 to disable.",
         DISABLE_ENV_VAR,
     )
+    # Read before start(): start() releases the GIL and this thread may not run for a
+    # while, so reading the epoch inside it would bind the pass to a later shutdown.
+    from utils.hardware import hardware as _hw
     threading.Thread(
         target = _run_repair_and_redetect,
+        args = (_hw.current_detection_epoch(),),
         daemon = True,
         name = "mlx-autorepair",
     ).start()
