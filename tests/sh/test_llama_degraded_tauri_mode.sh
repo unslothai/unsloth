@@ -44,7 +44,7 @@ run_case() {
 
 echo "=== llama.cpp degraded verdict ==="
 # The fix: a transient prebuilt failure must not abort the desktop first-launch install.
-run_case "tauri mode reports instead of aborting" true 1 1 0 "[TAURI:STEP]"
+run_case "tauri mode reports instead of aborting" true 1 1 0 "[TAURI:PROGRESS]"
 run_case "tauri mode names the recovery command" true 1 true 0 "unsloth studio update"
 # The half that must not regress: install.sh still needs the non-zero exit.
 run_case "shell install still fails"             true 1 0 1 "SETUP_FAIL"
@@ -52,6 +52,38 @@ run_case "unset tauri mode still fails"          true 1 "" 1 "SETUP_FAIL"
 # Untouched paths.
 run_case "direct 'studio update' stays silent"   true 0 1 0 ""
 run_case "a healthy llama.cpp says nothing"      false 1 1 0 ""
+
+# [TAURI:STEP] would be counted by use-tauri-backend.ts against the seven-entry
+# INSTALL_STEPS list install.sh already fills, rendering "Step 8 of 7" and throwing
+# the text away. The notice has to ride the progress-detail channel instead.
+_step_out=$(
+    _LLAMA_CPP_DEGRADED=true SKIP_STUDIO_BASE=1 UNSLOTH_TAURI_MODE=1 \
+    bash -c 'setup_fail() { exit "$1"; }; . "$1"' _ "$_BLOCK" 2>&1
+)
+case "$_step_out" in
+    *"[TAURI:STEP]"*)
+        echo "  FAIL: notice must not use [TAURI:STEP] (got: $_step_out)"; FAIL=$((FAIL + 1)) ;;
+    *)
+        echo "  PASS: notice does not consume an install step"; PASS=$((PASS + 1)) ;;
+esac
+
+# ── Windows parity: setup.ps1 must degrade the same way (static check) ──
+# install.ps1 turns any non-zero setup.ps1 status into Exit-InstallFailure, which
+# install.rs reports as "Installation failed", so an unconditional
+# Exit-SetupFailure here aborts the Windows first-launch install for the same
+# transient download failure this test pins as survivable on Unix.
+SETUP_PS1="$SCRIPT_DIR/../../studio/setup.ps1"
+_PS_BLOCK=$(sed -n '/^if (\$script:LlamaCppDegraded -and \$env:SKIP_STUDIO_BASE -eq "1") {/,/^}$/p' "$SETUP_PS1")
+if [ -z "$_PS_BLOCK" ]; then
+    echo "  FAIL: could not find the llama.cpp degraded block in setup.ps1"; FAIL=$((FAIL + 1))
+else
+    case "$_PS_BLOCK" in
+        *'UNSLOTH_TAURI_MODE'*'[TAURI:PROGRESS]'*'Exit-SetupFailure'*)
+            echo "  PASS: setup.ps1 degrades in Tauri mode and still fails elsewhere"; PASS=$((PASS + 1)) ;;
+        *)
+            echo "  FAIL: setup.ps1 does not mirror the Tauri degraded handling"; FAIL=$((FAIL + 1)) ;;
+    esac
+fi
 
 rm -f "$_BLOCK"
 echo ""

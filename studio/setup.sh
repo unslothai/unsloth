@@ -2341,9 +2341,15 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
     # app whose own footer just said Installed. Everything except GGUF inference works,
     # and whisper.cpp in this same script already degrades rather than failing for
     # exactly this case. Match it, and say what is missing and how to get it back.
+    #
+    # PROGRESS, not STEP: install.rs maps [TAURI:STEP] to the install-step event, and
+    # use-tauri-backend.ts counts those against the seven-entry INSTALL_STEPS list that
+    # install.sh already emits in full, so an eighth marker renders "Step 8 of 7" and
+    # discards the payload. [TAURI:PROGRESS] becomes install-progress-detail, which
+    # InstallingContent renders verbatim, so the user actually reads the limitation.
     case "${UNSLOTH_TAURI_MODE:-0}" in
         1|true)
-            printf '[TAURI:STEP] %s\n' \
+            printf '[TAURI:PROGRESS] %s\n' \
                 "llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds"
             ;;
         *)
