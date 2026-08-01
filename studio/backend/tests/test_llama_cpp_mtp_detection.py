@@ -15,6 +15,7 @@ import os
 import struct
 import sys
 import types as _types
+from importlib.util import find_spec as _find_spec
 from pathlib import Path
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -33,10 +34,9 @@ sys.modules.setdefault("structlog", _structlog_stub)
 # already imported, not whether it exists, so the stub used to shadow the real
 # module for the rest of the session. Files importing later then found a working
 # httpx and kept it, and this stub is a subset (no Response), so routes/inference
-# blew up in any combined run. Same guard the sibling test files already use.
-try:  # noqa: SIM105
-    import httpx  # noqa: F401
-except ImportError:
+# blew up in any combined run. find_spec rather than an import, so installing the
+# stub stays this module's only side effect on sys.modules.
+if _find_spec("httpx") is None:
     _httpx_stub = _types.ModuleType("httpx")
     for _exc in (
         "ConnectError",
