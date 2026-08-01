@@ -1865,6 +1865,47 @@ class TestVenvDirFileIntegrity:
         (venv_dir / "regex" / "__init__.py").write_text("")
         assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
+    def test_console_script_rows_are_ignored(self, tmp_path: Path):
+        """pip --target records scripts at a path that cannot resolve.
+
+        pip installs through a temporary normal-scheme prefix and writes RECORD
+        before flattening, so a healthy sidecar records ../../bin/hf while the
+        file lands in <target>/bin. Believing those rows fails CLOSED on a
+        healthy install, and since the repair reinstalls with the same pip it
+        would wipe and re-download several hundred MB on every activation,
+        forever.
+        """
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = [
+                "../../bin/hf,sha256=deadbeef,343",
+                "../../Scripts/hf.exe,sha256=deadbeef,343",
+            ],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_in_target_script_rows_are_ignored(self, tmp_path: Path):
+        """uv records bin/hf, which does resolve -- but pip --upgrade rmtree's a
+        colliding directory in the target, so a later install into the same
+        sidecar deletes an earlier package's scripts. Nothing imports from
+        there, so the row carries no signal either way."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = [
+                "bin/hf,sha256=deadbeef,343",
+                "Scripts/hf.exe,sha256=deadbeef,343",
+            ],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_skipping_scripts_does_not_mask_real_damage(self, tmp_path: Path):
+        """The skip must be scoped to script rows, not a blanket exemption."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv", record_extra = ["../../bin/hf,sha256=deadbeef,343"]
+        )
+        (venv_dir / "transformers" / "__init__.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
     def test_larger_than_recorded_is_not_damage(self, tmp_path: Path):
         """A packaging collision leaves a bigger file, not a broken one."""
         venv_dir = self._make_venv(tmp_path / "venv")

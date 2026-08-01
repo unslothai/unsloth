@@ -2000,6 +2000,25 @@ def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
             # size recorded inside itself; .pyc is regenerated from source.
             if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
                 continue
+            # Console scripts are not checkable in a flat --target tree, and
+            # believing them fails CLOSED on a healthy sidecar, which is the
+            # worst outcome here. pip installs through a temporary normal-scheme
+            # prefix and writes RECORD before flattening, so it records
+            # ../../bin/hf (../../Scripts/hf.exe on Windows) while the file
+            # lands in <target>/bin. uv records bin/hf, which does resolve, but
+            # pip's --upgrade rmtree's a colliding directory in the target, so a
+            # later install into the same sidecar deletes an earlier package's
+            # scripts. Either way the sidecar is only ever prepended to
+            # sys.path, never put on PATH, so nothing here is imported and
+            # nothing is lost by skipping it.
+            parts = tuple(p for p in rel.replace("\\", "/").split("/") if p)
+            if (
+                rel.startswith("/")
+                or (len(rel) > 1 and rel[1] == ":")
+                or ".." in parts
+                or (parts and parts[0] in ("bin", "Scripts"))
+            ):
+                continue
             # The size field is optional and real wheels do leave it blank. Keep
             # the row anyway with an unknown size: existence is still checkable,
             # and dropping the row means a deletion goes unreported.
