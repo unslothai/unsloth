@@ -1520,14 +1520,16 @@ def test_a_detection_delayed_past_shutdown_does_not_publish(monkeypatch):
 
 
 def test_both_spawners_read_the_epoch_before_start():
-    """AST: the epoch has to be an argument to the thread, not read inside the target."""
-    for rel, spawner, target in (
-        (("utils", "torch_warmup.py"), "start_background_warm", "_warm"),
-        (
-            ("utils", "hardware", "hardware.py"),
-            "start_background_detection",
-            "ensure_hardware_detected",
-        ),
+    """AST: the epoch is read by the spawner and handed over, never read in the thread.
+
+    The target may be chosen indirectly (start_background_warm picks a successor when a
+    retired warm is still running), so match the Thread call by the spawner it lives in
+    rather than by a literal target name.
+    """
+    readers = {"_detection_epoch", "current_detection_epoch"}
+    for rel, spawner in (
+        (("utils", "torch_warmup.py"), "start_background_warm"),
+        (("utils", "hardware", "hardware.py"), "start_background_detection"),
     ):
         tree = ast.parse(_BACKEND.joinpath(*rel).read_text(encoding = "utf-8"))
         fn = next(
@@ -1536,29 +1538,41 @@ def test_both_spawners_read_the_epoch_before_start():
             if isinstance(node, ast.FunctionDef) and node.name == spawner
         )
         call = next(
-            sub
-            for sub in ast.walk(fn)
-            if isinstance(sub, ast.Call)
-            and any(
-                kw.arg == "target" and isinstance(kw.value, ast.Name) and kw.value.id == target
-                for kw in sub.keywords
-            )
+            (
+                sub
+                for sub in ast.walk(fn)
+                if isinstance(sub, ast.Call)
+                and any(kw.arg == "target" for kw in sub.keywords)
+            ),
+            None,
         )
+        assert call is not None, f"{spawner} no longer starts a thread"
         args_kw = next((kw for kw in call.keywords if kw.arg == "args"), None)
-        assert args_kw is not None and isinstance(
-            args_kw.value, ast.Tuple
-        ), f"{spawner} starts {target} with no epoch bound at spawn time"
-        readers = {"_detection_epoch", "current_detection_epoch"}
-        # Inline in args, or bound from a reader first: both are read before start(),
-        # unlike a thread reading the epoch itself.
+        assert args_kw is not None, f"{spawner} starts its worker with no epoch handed over"
+
+        # Every name the args expression can carry, following one level of indirection
+        # through a local assignment (args = (thread, epoch) bound to a name).
+        def _names(node):
+            out = {sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name)}
+            for assign in ast.walk(fn):
+                if isinstance(assign, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id in out for t in assign.targets
+                ):
+                    out |= {s.id for s in ast.walk(assign.value) if isinstance(s, ast.Name)}
+                if isinstance(assign, ast.Assign) and isinstance(assign.targets[0], ast.Tuple):
+                    tgt = {t.id for t in assign.targets[0].elts if isinstance(t, ast.Name)}
+                    if tgt & out:
+                        out |= {s.id for s in ast.walk(assign.value) if isinstance(s, ast.Name)}
+            return out
+
         inline = any(
             isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id in readers
             for sub in ast.walk(args_kw.value)
         )
-        names = {sub.id for sub in ast.walk(args_kw.value) if isinstance(sub, ast.Name)}
+        carried = _names(args_kw.value)
         bound = any(
             isinstance(node, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id in names for t in node.targets)
+            and any(isinstance(t, ast.Name) and t.id in carried for t in node.targets)
             and any(
                 isinstance(sub, ast.Call)
                 and isinstance(sub.func, ast.Name)
@@ -1567,7 +1581,59 @@ def test_both_spawners_read_the_epoch_before_start():
             )
             for node in ast.walk(fn)
         )
-        assert inline or bound, f"{spawner} passes args to {target} but not the detection epoch"
+        assert inline or bound, (
+            f"{spawner} hands its worker args that never carry the detection epoch"
+        )
+
+
+def test_a_new_lifespan_warms_even_when_the_retired_one_is_still_running():
+    """Declining to a stale live warm leaves the new lifespan with no warm at all.
+
+    A shutdown landing mid-warm cannot reset the latch, and the stale worker stops at
+    its next stage boundary. Nothing retries, so without a hand-off the restart serves
+    with the inference backend and the remaining imports cold, which is the stall this
+    module exists to remove.
+    """
+    import utils.torch_warmup as warm
+    from utils.hardware import hardware as hw
+
+    saved_thread, saved_epoch = warm._thread, warm._thread_epoch
+    saved_status = dict(warm._status)
+    disable = os.environ.pop(warm.DISABLE_ENV_VAR, None)
+    release, entered, ran = threading.Event(), threading.Event(), []
+    try:
+        warm._thread, warm._thread_epoch = None, None
+        warm._status.update({"started": False, "finished": False, "stages": {}})
+
+        def _slow():
+            entered.set()
+            release.wait(30)
+            ran.append("stale")
+
+        with mock.patch.object(warm, "_STAGES", (("slow", _slow),)):
+            assert warm.start_background_warm() is True
+            assert entered.wait(30), "the first warm never started"
+            hw.invalidate_detection()          # shutdown, with the warm still inside a stage
+            # reset_background_warm() declines here, exactly as it does in the lifespan.
+            assert warm.reset_background_warm() is False
+            with mock.patch.object(warm, "_STAGES", (("fresh", lambda: ran.append("fresh")),)):
+                assert warm.start_background_warm() is True, (
+                    "the new lifespan was refused a warm because the retired one was "
+                    "still running"
+                )
+                release.set()
+                assert warm.join_background_warm(60) is True
+        assert ran == ["stale", "fresh"], (
+            f"expected the successor to wait out the retired warm, got {ran}"
+        )
+    finally:
+        release.set()
+        warm.join_background_warm(30)
+        if disable is not None:
+            os.environ[warm.DISABLE_ENV_VAR] = disable
+        warm._thread, warm._thread_epoch = saved_thread, saved_epoch
+        warm._status.clear()
+        warm._status.update(saved_status)
 
 
 def test_a_failed_forced_redetect_does_not_restore_a_retired_verdict():

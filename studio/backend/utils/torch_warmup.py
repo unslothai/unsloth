@@ -278,6 +278,12 @@ def _detection_epoch() -> Optional[int]:
         return None
 
 
+def _warm_after(previous: threading.Thread, epoch: Optional[int]) -> None:
+    """Wait out a retired warm, then warm for ``epoch``. One importer at a time."""
+    previous.join()
+    _warm(epoch)
+
+
 def start_background_warm() -> bool:
     """Start the warm thread once. Returns True iff this call started it.
 
@@ -299,18 +305,24 @@ def start_background_warm() -> bool:
     # epoch and warm on regardless.
     epoch = _detection_epoch()
     with _start_lock:
+        target, args = _warm, (epoch,)
         if _thread is not None:
-            if _thread.is_alive():
-                return False
-            # A finished warm keeps the latch while its own lifespan is current, so repeat
-            # calls stay no-ops however fast it ran. Once shutdown retires that epoch it is
+            # A warm keeps the latch while its own lifespan is current, so repeat calls
+            # stay no-ops however fast it ran. Once shutdown retires that epoch it is
             # stale, and the next lifespan warms again over the state shutdown cleared.
             if _thread_epoch is not None and epoch == _thread_epoch:
                 return False
-            _clear_finished_warm_locked()
+            if _thread.is_alive():
+                # Stale but still inside a stage. It stops at the next boundary, and
+                # nothing else would ever retry, so this lifespan would serve cold.
+                # Hand off instead of declining: the successor joins it first, so only
+                # one thread is ever importing.
+                target, args = _warm_after, (_thread, epoch)
+            else:
+                _clear_finished_warm_locked()
         _thread = threading.Thread(
-            target = _warm,
-            args = (epoch,),
+            target = target,
+            args = args,
             daemon = True,
             name = "torch-warm",
         )
