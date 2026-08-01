@@ -207,3 +207,28 @@ def test_windows_is_shown_a_powershell_assignment(monkeypatch, tmp_path):
     assert "$env:STUDIO_LOCAL_REPO=" in out
     # The POSIX prefix form must not be the one Windows is told to run.
     assert "    STUDIO_LOCAL_REPO=/path/to/unsloth" not in out
+
+
+def test_a_checkout_without_a_setup_script_is_refused(monkeypatch, tmp_path):
+    """No silent fallback to the installed copy's script.
+
+    Falling back is the behaviour the override exists to prevent: the installed
+    script builds its own frontend, the editable install then removes that tree,
+    and the selected checkout is left without one. A sparse checkout is an
+    unusable local source, not a reason to run somebody else's script.
+    """
+    checkout = tmp_path / "unsloth"
+    checkout.mkdir()
+    (checkout / "pyproject.toml").write_text("[project]\nname = 'unsloth'\n")
+
+    studio = _studio()
+    assert studio._find_setup_script(checkout) is None
+
+    # Keep the real _run_setup_script: the refusal happens inside it.
+    real_runner = studio._run_setup_script
+    studio, _ = _neutered(monkeypatch)
+    monkeypatch.setattr(studio, "_run_setup_script", real_runner)
+    monkeypatch.setenv("STUDIO_LOCAL_REPO", str(checkout))
+    result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
+    assert result.exit_code == 1, result.output
+    assert "has no studio/setup" in result.output

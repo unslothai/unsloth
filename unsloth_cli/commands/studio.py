@@ -292,11 +292,13 @@ def _find_setup_script(repo_root: Optional[Path] = None) -> Optional[Path]:
     /dist is gitignored, so a fresh checkout would then have no frontend at all.
     """
     name = "setup.ps1" if platform.system() == "Windows" else "setup.sh"
-    # 0. The checkout the caller actually asked to install from.
+    # 0. The checkout the caller actually asked to install from. No fallback:
+    #    dropping back to the installed copy's script is the exact behaviour
+    #    this branch exists to stop, so a checkout without one is unusable
+    #    rather than a reason to use somebody else's.
     if repo_root is not None:
         s = repo_root / "studio" / name
-        if s.is_file():
-            return s
+        return s if s.is_file() else None
     # 1. Relative to __file__ (site-packages or editable repo root)
     s = _PACKAGE_ROOT / "studio" / name
     if s.is_file():
@@ -2691,7 +2693,13 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     """Find and run the studio setup/update script."""
     script = _find_setup_script(repo_root)
     if not script:
-        typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")
+        if repo_root is not None:
+            name = "setup.ps1" if platform.system() == "Windows" else "setup.sh"
+            typer.echo(f"Error: {repo_root} has no studio/{name}.", err = True)
+            typer.echo("  --local needs a complete checkout: the setup script builds", err = True)
+            typer.echo("  the frontend into the tree that is installed editable.", err = True)
+        else:
+            typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")
         raise typer.Exit(1)
 
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
