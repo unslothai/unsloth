@@ -1857,15 +1857,25 @@ const Composer: FC<{
     aui.composer().stopDictation();
   }, [aui, composerIdentity]);
 
+  const wasDictatingRef = useRef(false);
   useEffect(() => {
     if (isDictating) {
+      if (wasDictatingRef.current) return;
+      wasDictatingRef.current = true;
+      // A new recording supersedes a send still held for an upload.
+      sendAfterDictationRef.current = false;
       // Text at session start is the dictation base. Anchor on it, not on the
       // text when send was pressed: the browser engine streams interim results
       // into the composer, so a final matching its interim would look unchanged.
       dictationBaseTextRef.current = aui.composer().getState().text;
       return;
     }
+    wasDictatingRef.current = false;
     if (!sendAfterDictationRef.current) return;
+    // The plus stays live while transcribing, so an upload can start after
+    // send was pressed. handleSubmit would reject it, so hold the intent
+    // (still set) until the upload lands and this effect runs again.
+    if (hasPendingAttachments) return;
     sendAfterDictationRef.current = false;
     // A partial transcript (a failed chunk, or an engine error after one
     // landed) belongs in the composer, but must not send half a message.
@@ -1885,7 +1895,7 @@ const Composer: FC<{
       return;
     }
     formRef.current?.requestSubmit();
-  }, [isDictating, aui, composerIdentity]);
+  }, [isDictating, aui, composerIdentity, hasPendingAttachments]);
 
   const handleSubmit = useCallback(
     (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
