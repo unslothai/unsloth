@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import os
 import sys
 import threading
 from unittest import mock
@@ -1547,12 +1548,30 @@ def test_both_spawners_read_the_epoch_before_start():
         assert args_kw is not None and isinstance(
             args_kw.value, ast.Tuple
         ), f"{spawner} starts {target} with no epoch bound at spawn time"
-        assert any(
+        readers = {"_detection_epoch", "current_detection_epoch"}
+        # Read inline in args, or bound to a name the spawner assigns from a reader.
+        # Both are "read before start()"; a thread reading it itself is not.
+        inline = any(
             isinstance(sub, ast.Call)
             and isinstance(sub.func, ast.Name)
-            and sub.func.id in {"_detection_epoch", "current_detection_epoch"}
+            and sub.func.id in readers
             for sub in ast.walk(args_kw.value)
-        ), f"{spawner} passes args to {target} but not the detection epoch"
+        )
+        names = {sub.id for sub in ast.walk(args_kw.value) if isinstance(sub, ast.Name)}
+        bound = any(
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id in names for t in node.targets)
+            and any(
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Name)
+                and sub.func.id in readers
+                for sub in ast.walk(node.value)
+            )
+            for node in ast.walk(fn)
+        )
+        assert inline or bound, (
+            f"{spawner} passes args to {target} but not the detection epoch"
+        )
 
 
 def test_a_failed_forced_redetect_does_not_restore_a_retired_verdict():
@@ -2007,3 +2026,41 @@ def test_the_post_warm_worker_is_retired_before_any_shutdown_await():
         "post-warm work on a lifespan that is already shutting down"
     )
     assert body  # the walk above only makes sense on a non-empty body
+
+
+def test_a_finished_warm_still_holds_the_latch_inside_its_own_lifespan():
+    """Repeat calls stay no-ops however fast the warm ran.
+
+    Treating any finished thread as absent makes this timing-dependent: with a trivial
+    stage the warm can finish between two calls, and the second starts a whole second
+    warm. It went green on Linux and red on a macOS runner for exactly that reason.
+    Only a warm whose epoch shutdown has retired is stale.
+    """
+    import utils.torch_warmup as warm
+
+    saved_thread, saved_epoch = warm._thread, warm._thread_epoch
+    saved_status = dict(warm._status)
+    disable = os.environ.pop(warm.DISABLE_ENV_VAR, None)
+    try:
+        warm._thread, warm._thread_epoch = None, None
+        warm._status.update({"started": False, "finished": False, "stages": {}})
+        with mock.patch.object(warm, "_STAGES", (("noop", lambda: None),)):
+            assert warm.start_background_warm() is True
+            assert warm.join_background_warm(60) is True
+            # Finished, same lifespan: still latched.
+            assert warm.start_background_warm() is False, (
+                "a second warm started beside a completed one in the same lifespan"
+            )
+            # Shutdown retires the epoch, as run_lifespan_shutdown does.
+            from utils.hardware import hardware as hw
+            hw.invalidate_detection()
+            assert warm.start_background_warm() is True, (
+                "the next lifespan skipped its warm over hardware state shutdown cleared"
+            )
+            assert warm.join_background_warm(60) is True
+    finally:
+        if disable is not None:
+            os.environ[warm.DISABLE_ENV_VAR] = disable
+        warm._thread, warm._thread_epoch = saved_thread, saved_epoch
+        warm._status.clear()
+        warm._status.update(saved_status)

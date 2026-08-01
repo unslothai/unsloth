@@ -49,6 +49,9 @@ DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_TORCH_WARM"
 
 _start_lock = threading.Lock()
 _thread: Optional[threading.Thread] = None
+# Detection epoch the live warm belongs to: tells "already warmed this lifespan" apart
+# from "warmed for a lifespan that has since shut down". See start_background_warm.
+_thread_epoch: Optional[int] = None
 _status: dict = {"started": False, "finished": False, "stages": {}}
 
 
@@ -291,20 +294,29 @@ def start_background_warm() -> bool:
     global _thread
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
+    global _thread_epoch
+    # Epoch read before start(): the child may not run for a while, and a shutdown in
+    # that gap retires this lifespan. A thread reading the epoch itself would adopt the
+    # post-shutdown one and warm on regardless.
+    epoch = _detection_epoch()
     with _start_lock:
         if _thread is not None:
             if _thread.is_alive():
                 return False
+            # A finished warm still holds the latch while its own lifespan is current,
+            # so repeat calls inside one lifespan stay no-ops however fast it ran.
+            # Once shutdown retires that epoch it is stale, and the next lifespan has
+            # to warm again over the hardware state that same shutdown cleared.
+            if _thread_epoch is not None and epoch == _thread_epoch:
+                return False
             _clear_finished_warm_locked()
-        # Epoch read before start(): the child may not run for a while, and a shutdown
-        # in that gap retires this lifespan. A thread reading the epoch itself would
-        # adopt the post-shutdown one and warm on regardless.
         _thread = threading.Thread(
             target = _warm,
-            args = (_detection_epoch(),),
+            args = (epoch,),
             daemon = True,
             name = "torch-warm",
         )
+        _thread_epoch = epoch
         _status["started"] = True
         _thread.start()
         return True
@@ -332,8 +344,9 @@ def reset_background_warm() -> bool:
 
 def _clear_finished_warm_locked() -> None:
     """Drop the finished warm and its status. Caller holds ``_start_lock``."""
-    global _thread
+    global _thread, _thread_epoch
     _thread = None
+    _thread_epoch = None
     _status["started"] = False
     _status["finished"] = False
     _status["stages"] = {}
