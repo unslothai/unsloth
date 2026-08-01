@@ -33,6 +33,10 @@ interface PlatformState {
   serverUrl: string | null;
   secure: boolean;
   fetched: boolean;
+  // The last verdict came from a deferred reply (torch-warm kill switch), so nothing
+  // will settle until a first-use operation detects. The sidebar polls on this, or a
+  // GPU host stays chat-only until a hard refresh.
+  detectionDeferred: boolean;
   isChatOnly: () => boolean;
 }
 
@@ -56,6 +60,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   serverUrl: null,
   secure: false,
   fetched: false,
+  detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
 }));
 
@@ -157,6 +162,7 @@ export async function fetchDeviceType(options?: {
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
         fetched: data.device_type !== undefined || keepPlatform,
+        detectionDeferred: isDetectionDeferred(data),
       });
       return deviceType;
     }

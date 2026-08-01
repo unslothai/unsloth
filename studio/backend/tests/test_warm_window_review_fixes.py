@@ -2455,3 +2455,43 @@ def test_a_live_worker_still_probes():
     finally:
         hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
         hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_a_measured_authed_reply_drops_both_provisional_markers():
+    """AST: publishing a measurement must clear the deferred marker too.
+
+    With the kill switch on, base carries both markers. A first-use detection or an
+    MLX repair finishing during the bearer await makes the second snapshot measured,
+    and leaving hardware_detection_deferred set pairs an accelerator verdict with a
+    stale reason, because the client reads the deferred marker first.
+    """
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
+    )
+    branch = next(
+        node for node in ast.walk(fn)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(sub, ast.Subscript)
+            and isinstance(sub.value, ast.Name)
+            and sub.value.id == "authed"
+            and getattr(sub.slice, "value", None) == "device_type"
+            for sub in ast.walk(node)
+        )
+    )
+    popped = {
+        sub.args[0].value
+        for sub in ast.walk(branch)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Attribute)
+        and sub.func.attr == "pop"
+        and isinstance(sub.func.value, ast.Name)
+        and sub.func.value.id == "authed"
+        and sub.args
+        and isinstance(sub.args[0], ast.Constant)
+    }
+    assert {"hardware_detecting", "hardware_detection_deferred"} <= popped, (
+        f"the measured reply still carries a provisional marker; popped {sorted(popped)}"
+    )

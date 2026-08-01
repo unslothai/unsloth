@@ -1375,6 +1375,10 @@ async def health_check(request: Request):
         # base predates the bearer await, so its marker can describe a snapshot
         # detection has since replaced. Never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
+        # And the deferred marker: shipping it beside a measurement is self
+        # contradictory, and the client reads it first, keeping the previous reason
+        # against a verdict that now has one.
+        authed.pop("hardware_detection_deferred", None)
     else:
         # A re-detect started during the bearer await, and base carries no
         # chat_only_reason, so a client reading this as measured would store chat_only

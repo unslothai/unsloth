@@ -225,3 +225,26 @@ test("a provisional forced refresh keeps the server-reported platform", async ()
     "fetched drops to false, so the authoritative platform is not treated as held",
   );
 });
+
+// With the kill switch on nothing settles through health, so a first-use operation
+// (the Chat page's model list) is what detects. The sidebar's recovery poll was gated
+// only on mlx_unavailable, so a GPU host stored the conservative deferred verdict and
+// stayed chat-only, with Train disabled, until a hard refresh.
+test("a deferred verdict is recorded so the sidebar can poll out of it", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const env = await readFile(new URL("../src/config/env.ts", import.meta.url), "utf8");
+  const sidebar = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    env,
+    /detectionDeferred: isDetectionDeferred\(data\)/,
+    "the store never records that the verdict came from a deferred reply",
+  );
+  assert.match(
+    sidebar,
+    /chatOnlyReason !== "mlx_unavailable" && !detectionDeferred/,
+    "the recovery poll still ignores a deferred verdict, so it never recovers",
+  );
+});
