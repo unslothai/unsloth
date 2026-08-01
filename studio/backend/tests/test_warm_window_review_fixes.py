@@ -1680,9 +1680,9 @@ def test_an_absent_torch_is_still_just_absent():
         hw.TORCH_IMPORT_ERROR = "stale"
         with mock.patch.object(builtins, "__import__", _missing):
             assert hw._has_torch() is False
-        assert hw.TORCH_IMPORT_ERROR is None, (
-            "a --no-torch install would be reported as a detection failure"
-        )
+        assert (
+            hw.TORCH_IMPORT_ERROR is None
+        ), "a --no-torch install would be reported as a detection failure"
     finally:
         hw.TORCH_IMPORT_ERROR = saved_error
 
@@ -1721,9 +1721,9 @@ def test_a_broken_torch_is_never_mistaken_for_an_absent_one(exc):
         hw.TORCH_IMPORT_ERROR = None
         with mock.patch.object(builtins, "__import__", _broken):
             assert hw._has_torch() is False
-        assert hw.TORCH_IMPORT_ERROR is not None, (
-            f"{type(exc).__name__} from an installed torch was read as absent"
-        )
+        assert (
+            hw.TORCH_IMPORT_ERROR is not None
+        ), f"{type(exc).__name__} from an installed torch was read as absent"
     finally:
         hw.TORCH_IMPORT_ERROR = saved_error
 
