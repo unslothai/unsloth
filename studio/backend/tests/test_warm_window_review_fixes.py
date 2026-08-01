@@ -1815,7 +1815,7 @@ def test_a_stale_waiter_does_not_discard_the_new_lifespan_verdict():
     was_complete = hw.DETECTION_COMPLETE.is_set()
     try:
         stale_epoch = hw.current_detection_epoch()
-        hw.invalidate_detection()                     # the shutdown the worker lost to
+        hw.invalidate_detection()  # the shutdown the worker lost to
         # The new lifespan's verdict, already published while the stale worker waited.
         hw.DEVICE = hw.DeviceType.CUDA
         hw.CHAT_ONLY = False
@@ -1828,9 +1828,9 @@ def test_a_stale_waiter_does_not_discard_the_new_lifespan_verdict():
         with mock.patch.object(hw, "_detect_hardware_locked", _must_not_run):
             hw.ensure_hardware_detected(stale_epoch)
 
-        assert hw.DEVICE is hw.DeviceType.CUDA, (
-            "a stale waiter discarded the new lifespan's verdict"
-        )
+        assert (
+            hw.DEVICE is hw.DeviceType.CUDA
+        ), "a stale waiter discarded the new lifespan's verdict"
         assert hw.CHAT_ONLY is False
         assert hw.DETECTION_COMPLETE.is_set(), "the restart was left reporting as unsettled"
     finally:
@@ -1852,7 +1852,7 @@ def test_a_retired_pass_that_did_detect_still_discards():
         def _detect_then_shutdown():
             hw.DEVICE = hw.DeviceType.CUDA
             hw.CHAT_ONLY = False
-            hw.invalidate_detection()                 # shutdown lands inside the pass
+            hw.invalidate_detection()  # shutdown lands inside the pass
 
         with mock.patch.object(hw, "_detect_hardware_locked", _detect_then_shutdown):
             hw.ensure_hardware_detected(epoch)
