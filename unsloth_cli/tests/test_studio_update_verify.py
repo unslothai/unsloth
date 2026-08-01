@@ -412,7 +412,9 @@ def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, 
     studio = _studio()
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
     monkeypatch.setattr(
-        studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["orphan: o/x.py is missing"]
+        studio._studio_deps,
+        "damaged_installed_files",
+        lambda *a, **k: ["orphan: o/x.py is missing"],
     )
     monkeypatch.setattr(_platform, "system", lambda: system)
     monkeypatch.setattr(sys, "executable", exe)
