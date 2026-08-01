@@ -193,7 +193,11 @@ export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
+  // Tagged so auto-load can tell a user cancellation from a backend rejection.
+  if (!preparedToken.proceed)
+    throw Object.assign(new Error("Model load cancelled."), {
+      unslothUserCancelled: true,
+    });
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -211,7 +215,10 @@ export async function validateModel(
   payload: LoadModelRequest,
 ): Promise<ValidateModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
+  if (!preparedToken.proceed)
+    throw Object.assign(new Error("Model load cancelled."), {
+      unslothUserCancelled: true,
+    });
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -338,6 +345,13 @@ export interface CachedGgufRepo {
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
   has_vision?: boolean;
+  partial?: boolean;
+  capabilities?: CachedRepoCapabilities | null;
+}
+
+/** The subset of a row's capabilities auto-load acts on; Hub view models have a wider type. */
+export interface CachedRepoCapabilities {
+  can_chat?: boolean;
 }
 
 export async function getGgufDownloadProgress(
@@ -457,6 +471,8 @@ export interface CachedModelRepo {
   /** Owning cache dir; sent so a delete targets this copy, not the active
    * cache. Optional for older-backend compatibility. */
   cache_path?: string | null;
+  partial?: boolean;
+  capabilities?: CachedRepoCapabilities | null;
 }
 
 export async function listCachedModels(
