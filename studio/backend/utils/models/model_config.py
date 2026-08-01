@@ -1696,7 +1696,54 @@ def detect_mtp_file(
     return None
 
 
-def detect_gguf_model(path: str) -> Optional[str]:
+def _registered_custom_model_root(path: str) -> Optional[Path]:
+    try:
+        from storage.studio_db import list_scan_folders
+        folders = list_scan_folders()
+    except Exception:
+        return None
+    candidate = Path(os.path.abspath(Path(path).expanduser()))
+    matches = []
+    for folder in folders:
+        raw = folder.get("path")
+        if not isinstance(raw, str) or not raw:
+            continue
+        root = Path(os.path.abspath(Path(normalize_path(raw)).expanduser()))
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        matches.append(root)
+    return max(matches, key = lambda root: len(root.parts), default = None)
+
+
+def _local_mtp_context(path: Path, model_root: Optional[Path], fallback: str) -> str:
+    if model_root is not None:
+        try:
+            return Path(os.path.abspath(path)).relative_to(model_root).as_posix()
+        except ValueError:
+            pass
+    return fallback
+
+
+def _is_terminal_gemma_mtp(name: str) -> bool:
+    stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", Path(name).stem.lower())
+    return stem.endswith("-mtp") and bool(re.search(r"(?:^|[-_])gemma[-_]?4(?:[-_]|$)", stem))
+
+
+def _is_local_mtp_drafter(path: Path, model_root: Optional[Path], fallback: str) -> bool:
+    context = _local_mtp_context(path, model_root, fallback)
+    if _is_mtp_drafter(context):
+        return True
+    return (
+        model_root is not None
+        and model_root.name.lower() == "mtp"
+        and "/" not in context
+        and _is_terminal_gemma_mtp(path.name)
+    )
+
+
+def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[str]:
     """Check if a local path is or contains a GGUF model file.
 
     Handles a direct .gguf path or a directory of .gguf files. Skips mmproj
@@ -1704,6 +1751,11 @@ def detect_gguf_model(path: str) -> Optional[str]:
     the .gguf path or None. For HF repos, use detect_gguf_model_remote().
     """
     p = Path(path)
+    root = (
+        Path(os.path.abspath(Path(model_root).expanduser()))
+        if model_root is not None
+        else _registered_custom_model_root(path)
+    )
 
     # Case 1: direct .gguf file
     if p.suffix.lower() == ".gguf":
@@ -1714,7 +1766,11 @@ def detect_gguf_model(path: str) -> Optional[str]:
         # (...-MTP.gguf) doesn't match the predicate's mtp- prefix.
         rel = f"{p.parent.name}/{p.name}"
         quant = _extract_quant_label(rel)
-        if _is_mmproj(p.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
+        if (
+            _is_mmproj(p.name)
+            or _is_local_mtp_drafter(p, root, rel)
+            or _is_big_endian_gguf_path(rel, quant)
+        ):
             return None
         # Extension is authoritative: don't gate on is_file()/exists(), which
         # can fail in the Windows lock window after llama-server is killed.
@@ -1734,7 +1790,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
             quant = _extract_quant_label(context_rel)
             if (
                 _is_mmproj(f.name)
-                or _is_mtp_drafter(context_rel)
+                or _is_local_mtp_drafter(f, root, context_rel)
                 or _is_big_endian_gguf_path(context_rel, quant)
             ):
                 continue
@@ -2098,7 +2154,9 @@ def _resolve_gguf_dir(p: Path) -> Optional[Path]:
     return None
 
 
-def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], bool]:
+def list_local_gguf_variants(
+    directory: str, model_root: Optional[str] = None
+) -> tuple[list[GgufVariantInfo], bool]:
     """List GGUF quant variants in a local directory.
 
     Like :func:`list_gguf_variants` but reads the filesystem. Aggregates shard
@@ -2110,6 +2168,11 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
         return [], False
+    root = (
+        Path(os.path.abspath(Path(model_root).expanduser()))
+        if model_root is not None
+        else _registered_custom_model_root(directory)
+    )
 
     quant_totals: dict[str, int] = {}
     quant_first_file: dict[str, str] = {}
@@ -2130,7 +2193,7 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
         # Use the relative path so ``BF16/foo.gguf`` and ``Q4_K_M/foo.gguf``
         # get distinct quant labels instead of collapsing on basename.
         rel = f.relative_to(p).as_posix()
-        if _is_mtp_drafter(rel):
+        if _is_local_mtp_drafter(f, root, rel):
             continue
         quant = _extract_quant_label(rel)
         if _is_big_endian_gguf_path(rel, quant):
@@ -2151,7 +2214,11 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
     return variants, has_vision
 
 
-def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
+def _find_local_gguf_by_variant(
+    directory: str,
+    variant: str,
+    model_root: Optional[str] = None,
+) -> Optional[str]:
     """Find the GGUF file in *directory* matching a quantization *variant*.
 
     For sharded GGUFs (multiple files sharing a quant label), returns the
@@ -2162,6 +2229,11 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
         return None
+    root = (
+        Path(os.path.abspath(Path(model_root).expanduser()))
+        if model_root is not None
+        else _registered_custom_model_root(directory)
+    )
 
     # Recurse so variants under a quant-named subdir (e.g.
     # ``BF16/foo-BF16-00001-of-00002.gguf``) are found. Match the relative
@@ -2170,10 +2242,11 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     matches = []
     for f in _iter_gguf_files(p, recursive = True):
         rel = f.relative_to(p).as_posix()
-        if _is_mmproj(f.name) or _is_mtp_drafter(rel):
+        if _is_mmproj(f.name) or _is_local_mtp_drafter(f, root, rel):
             continue
         quant = _extract_quant_label(rel)
-        if quant != variant or _is_big_endian_gguf_path(rel, quant):
+        fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
+        if variant not in (quant, fallback_variant) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)
     matches.sort()
