@@ -3755,6 +3755,30 @@ class TestDamagedLatestSidecarRepairHandoff:
         for _ in range(5):
             tv._overlay_transformers_dir("latest")
 
+    def test_backoff_window_keeps_the_damaged_sidecar_withheld(self, monkeypatch, tmp_path):
+        """Backing off from pip must not double as declaring the sidecar usable: the
+        cheap predicate cannot see a truncated file, so without the marker every
+        routing call in the window routes latest-only models straight back into a
+        sidecar whose worker activation is known to fail."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+        self._damage(live)
+
+        assert tv._overlay_transformers_dir("latest") is None  # scans, tries, fails
+        assert tv._venv_dir_is_valid(str(live), ("transformers==5.99.0",)), (
+            "precondition: only the scan can see this damage, not the cheap predicate"
+        )
+
+        monkeypatch.setattr(
+            tv,
+            "_sidecar_damaged_files",
+            lambda d, limit = 3: pytest.fail("the backoff window must not re-scan"),
+        )
+        for _ in range(5):
+            assert tv._overlay_transformers_dir("latest") is None
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) != "latest"
+
     def test_file_check_kill_switch_suppresses_the_whole_handoff(self, monkeypatch, tmp_path):
         """UNSLOTH_SKIP_SIDECAR_FILE_CHECK is the escape hatch for a false positive; it
         must leave no path that still wipes the sidecar."""

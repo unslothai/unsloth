@@ -1136,10 +1136,13 @@ _latest_repair_failed_at: float = 0.0
 _LATEST_REPAIR_BACKOFF_SECS = 5 * 60
 
 
-# A worker child that finds the sidecar damaged cannot repair it (repairs are a
-# parent action), so it leaves this flag inside the sidecar dir for the parent's
-# routing self-heal to pick up. Inside, so the stage-and-swap that repairs the
-# sidecar removes it by construction.
+# Remembers that a RECORD scan found the sidecar damaged, so the cheap predicate
+# can act on damage it cannot itself see. Written by a worker child, which cannot
+# repair (repairs are a parent action) and needs the parent's routing self-heal to
+# pick the damage up, and by the parent when a repair attempt fails, so the backoff
+# window suppresses pip retries without handing the damaged sidecar back. Lives
+# inside the sidecar dir, so the stage-and-swap that repairs it clears the marker by
+# construction.
 _LATEST_REPAIR_MARKER = ".unsloth_sidecar_repair_needed"
 
 
@@ -1148,7 +1151,7 @@ def _latest_repair_marker_path() -> Path:
 
 
 def _latest_repair_requested() -> bool:
-    """True while a worker child has asked the parent to repair the sidecar.
+    """True while a scan has found the sidecar damaged and no repair has succeeded.
 
     One os.path.isfile, so the routing predicate below can carry it; the RECORD
     scan that produced the request costs ~25 ms and cannot.
@@ -1160,7 +1163,7 @@ def _latest_repair_requested() -> bool:
 
 
 def _request_latest_repair() -> None:
-    """Ask the parent to repair the sidecar on its next routing call."""
+    """Record that the sidecar needs a repair the caller could not perform."""
     try:
         _latest_repair_marker_path().write_text(
             json.dumps({"pid": os.getpid(), "at": time.time()}), encoding = "utf-8"
@@ -1252,6 +1255,12 @@ def _overlay_transformers_dir(tier: str) -> str | None:
                     repaired = True
                 else:
                     _latest_repair_failed_at = time.time()
+                    # Record the damage, or the backoff turns into an availability
+                    # hole: the cheap predicate cannot see a truncated file, so the
+                    # next routing call would find broken False and hand the known
+                    # damaged sidecar back for the whole window. The marker keeps it
+                    # withheld through a check no more expensive than one is_file.
+                    _request_latest_repair()
             if broken and not repaired:
                 # Still broken: treat the overlay as unavailable rather than route
                 # models to a tier whose worker activation is known to fail. Models
