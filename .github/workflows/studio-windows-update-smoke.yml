@@ -313,12 +313,26 @@ jobs:
           foreach ($p in @(
             "$env:USERPROFILE\.unsloth\studio",
             "$env:USERPROFILE\.unsloth\studio\unsloth_studio",
-            "$env:USERPROFILE\.unsloth\studio\bin\unsloth.exe"
+            "$env:USERPROFILE\.unsloth\studio\bin\unsloth.exe",
+            "$env:USERPROFILE\.unsloth\whisper.cpp",
+            "$env:USERPROFILE\.unsloth\.llama.cpp.install.lock",
+            "$env:USERPROFILE\.unsloth\.node.install.lock",
+            "$env:USERPROFILE\.unsloth\.whisper.cpp.install.lock"
           )) {
             if (Test-Path -LiteralPath $p) {
               Write-Host "::error::leak: $p"
               $leak++
             }
+          }
+          # Catch-all that does not need updating when a new artifact is added:
+          # nothing but Unsloth writes under ~/.unsloth on a runner, so a
+          # surviving directory means the uninstaller missed something. Mirrors
+          # the POSIX check in studio-update-smoke.yml.
+          if (Test-Path -LiteralPath "$env:USERPROFILE\.unsloth") {
+            Write-Host "::error::leak: ~/.unsloth survived the uninstall"
+            Get-ChildItem -LiteralPath "$env:USERPROFILE\.unsloth" -Force -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 40 -ExpandProperty FullName
+            $leak++
           }
           if ($leak -gt 0) { exit 1 }
           # Idempotency.
