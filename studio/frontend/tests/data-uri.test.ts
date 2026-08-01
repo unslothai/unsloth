@@ -35,3 +35,37 @@ test("rejects data URIs without a payload separator", () => {
     INVALID_DATA_URI_RE,
   );
 });
+
+// The expectations below were taken from Chromium, Firefox and WebKit, which
+// all agree: percent-decoding a data URI is byte-oriented, not UTF-8 text.
+
+test("decodes percent escapes that are not valid UTF-8", () => {
+  // decodeURIComponent() throws URIError on these; a browser returns the octets.
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:audio/wav,%FF%00%80").bytes),
+    [255, 0, 128],
+  );
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:application/octet-stream,%FF").bytes),
+    [255],
+  );
+});
+
+test("leaves malformed percent escapes as literal characters", () => {
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain,%G0").bytes),
+    [37, 71, 48],
+  );
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain,abc%").bytes),
+    [97, 98, 99, 37],
+  );
+});
+
+test("does not treat a base64x parameter as base64", () => {
+  // The old `/;base64/i` matched inside `;base64x`; the anchored form must not.
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain;base64x,QUJD").bytes),
+    [81, 85, 74, 68],
+  );
+});
