@@ -12,6 +12,10 @@ import {
   type PickerExactQueryCommitResult,
   PickerShell,
 } from "@/components/resource-picker/picker-shell";
+import {
+  PICKER_TAB,
+  type PickerTab,
+} from "@/components/resource-picker/picker-tab-state";
 import { useHfErrorToast } from "@/components/resource-picker/use-hf-error-toast";
 import { usePickerHubPagination } from "@/components/resource-picker/use-picker-hub-pagination";
 import { usePickerState } from "@/components/resource-picker/use-picker-state";
@@ -63,14 +67,14 @@ function resolveExactDatasetDeviceItem(
 
 function hasExactDatasetMatch(
   query: string,
-  tab: "device" | "hub",
+  tab: PickerTab,
   hubItems: readonly { id: string }[],
   deviceItems: readonly DatasetDeviceItem[],
 ): boolean {
   if (!query) {
     return false;
   }
-  if (tab === "hub") {
+  if (tab === PICKER_TAB.hub) {
     return hubItems.some((item) => hubResourceIdsEqual(item.id, query));
   }
   return resolveExactDatasetDeviceItem(query, deviceItems).kind !== "none";
@@ -102,7 +106,7 @@ export function DatasetSelector() {
     inventoryError,
     inventoryWarning,
     refreshInventory,
-  } = useHubInventory({ kind: "datasets", enabled: picker.open });
+  } = useHubInventory({ kind: "datasets" });
   const localError =
     inventoryError && localRows.length === 0 && cachedRows.length === 0
       ? t("studio.datasetPicker.couldntScan")
@@ -194,11 +198,11 @@ export function DatasetSelector() {
     hasMore: hasMoreHf,
   } = useHubDatasetSearch(picker.debouncedHubQuery, {
     modelType,
-    enabled: online && picker.open && tab === "hub",
+    enabled: online && picker.open && tab === PICKER_TAB.hub,
     accessToken: hfApiToken(picker.debouncedHfToken),
   });
 
-  const hubSearchActive = online && picker.open && tab === "hub";
+  const hubSearchActive = online && picker.open && tab === PICKER_TAB.hub;
   useHfErrorToast(hubSearchActive ? hfError : null, "datasets");
 
   const hubItems = useMemo(() => {
@@ -252,7 +256,7 @@ export function DatasetSelector() {
     deviceItems,
   );
   const showUseThis =
-    tab === "hub" &&
+    tab === PICKER_TAB.hub &&
     activeQuery.trim().length > 0 &&
     !hasExactMatch &&
     isValidHubResourceId(activeQuery);
@@ -270,7 +274,7 @@ export function DatasetSelector() {
 
   const commitExactQuery = useCallback(
     (query: string): PickerExactQueryCommitResult => {
-      if (tab === "hub") {
+      if (tab === PICKER_TAB.hub) {
         const item = hubItems.find((candidate) =>
           hubResourceIdsEqual(candidate.id, query),
         );

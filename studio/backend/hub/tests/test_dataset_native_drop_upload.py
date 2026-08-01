@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -73,6 +74,24 @@ def test_signed_dataset_drop_is_copied_to_upload_storage(monkeypatch, tmp_path):
     assert stored_path.parent == upload_root
     assert stored_path.read_bytes() == source.read_bytes()
     assert stored_path.resolve() != source.resolve()
+
+
+def test_async_dataset_drop_offloads_native_copy(monkeypatch, tmp_path):
+    source = tmp_path / "train.jsonl"
+    source.write_text('{"text":"hello"}\n', encoding = "utf-8")
+    monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path / "uploads")
+    offloaded = []
+
+    async def run_offloaded(function, *args):
+        offloaded.append(function)
+        return function(*args)
+
+    monkeypatch.setattr(local.asyncio, "to_thread", run_offloaded)
+
+    response = asyncio.run(local.upload_dataset_response(None, _sign(source)))
+
+    assert Path(response.stored_path).read_bytes() == source.read_bytes()
+    assert offloaded == [local._native_upload_dataset_response]
 
 
 @pytest.mark.parametrize(

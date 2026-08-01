@@ -1444,7 +1444,7 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
 
     exact_commit = selector.split("const commitExactQuery = useCallback", 1)[1]
     exact_commit = exact_commit.split("const display =", 1)[0]
-    assert 'if (tab === "hub")' in exact_commit
+    assert "if (tab === PICKER_TAB.hub)" in exact_commit
     assert "hubResourceIdsEqual(candidate.id, query)" in exact_commit
     assert "resolveExactDatasetDeviceItem(query, deviceItems)" in exact_commit
     assert 'resolution.kind === "ambiguous"' in exact_commit
@@ -1456,7 +1456,7 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
 
     model_exact_commit = model_selector.split("function commitExactQuery", 1)[1]
     model_exact_commit = model_exact_commit.split("const display = selectedModel", 1)[0]
-    assert 'if (tab === "hub")' in model_exact_commit
+    assert "if (tab === PICKER_TAB.hub)" in model_exact_commit
     assert "findCanonicalHubResourceId(query, hubResultIds)" in model_exact_commit
     assert "resolveExactTrainModelDeviceItem(" in model_exact_commit
     assert 'resolution.kind === "ambiguous"' in model_exact_commit
@@ -2212,6 +2212,18 @@ def test_picker_shell_handles_ime_focus_and_short_viewports():
     assert "function switchToDevice()" in shell
     assert "window.requestAnimationFrame" in shell
     assert "onSwitchDevice={switchToDevice}" in shell
+
+
+def test_train_pickers_prewarm_inventory_and_use_shared_tab_constants():
+    model_picker = _read("features/model-picker/components/train-model-selector.tsx")
+    dataset_picker = _read("features/dataset-picker/components/dataset-selector.tsx")
+
+    assert 'useHubInventory({ kind: "models" })' in model_picker
+    assert 'useHubInventory({ kind: "datasets" })' in dataset_picker
+    for picker in (model_picker, dataset_picker):
+        assert 'from "@/components/resource-picker/picker-tab-state"' in picker
+        assert 'tab === "hub"' not in picker
+        assert 'tab === "device"' not in picker
 
 
 def test_training_controls_expose_context_without_overriding_history_metadata():

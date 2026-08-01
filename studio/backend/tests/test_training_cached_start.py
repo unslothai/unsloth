@@ -1431,6 +1431,34 @@ def test_apply_cache_pins_fresh_start_resolves_snapshots(tmp_path):
     assert config["cache_pin_warnings"] == []
 
 
+def test_resolve_model_snapshot_keeps_selected_cache_path_strict(monkeypatch):
+    from core.training.training import _resolve_model_snapshot
+    from hub.utils import hf_cache_state
+
+    selected_path = "/cache-a/models--unsloth--test"
+    fallback_path = Path("/cache-b/models--unsloth--test")
+    fallback_snapshot = "/cache-b/models--unsloth--test/snapshots/rev"
+    resolved_paths = []
+
+    def resolve_snapshot(local_path, *_args):
+        resolved_paths.append(local_path)
+        return fallback_snapshot if local_path == str(fallback_path) else None
+
+    monkeypatch.setattr(hf_cache_state, "latest_snapshot_from_cache_path", resolve_snapshot)
+    monkeypatch.setattr(
+        hf_cache_state,
+        "iter_repo_cache_dirs",
+        lambda *_args: iter([fallback_path]),
+    )
+
+    assert _resolve_model_snapshot("unsloth/test", selected_path) is None
+    assert resolved_paths == [selected_path]
+
+    resolved_paths.clear()
+    assert _resolve_model_snapshot("unsloth/test", None) == fallback_snapshot
+    assert resolved_paths == [str(fallback_path)]
+
+
 @pytest.mark.parametrize(
     "resume_from_checkpoint",
     [None, "/outputs/run/checkpoint-5"],

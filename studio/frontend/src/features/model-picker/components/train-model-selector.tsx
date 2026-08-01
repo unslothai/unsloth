@@ -11,6 +11,7 @@ import {
   type PickerExactQueryCommitResult,
   PickerShell,
 } from "@/components/resource-picker/picker-shell";
+import { PICKER_TAB } from "@/components/resource-picker/picker-tab-state";
 import { useHfErrorToast } from "@/components/resource-picker/use-hf-error-toast";
 import { usePickerHubPagination } from "@/components/resource-picker/use-picker-hub-pagination";
 import { usePickerState } from "@/components/resource-picker/use-picker-state";
@@ -220,7 +221,7 @@ export function TrainModelSelector() {
     inventoryError,
     inventoryWarning,
     refreshInventory,
-  } = useHubInventory({ kind: "models", enabled: picker.open });
+  } = useHubInventory({ kind: "models" });
   const localModelsError =
     inventoryError && cachedRows.length === 0 && localRows.length === 0
       ? t("studio.modelPicker.couldntScan")
@@ -391,10 +392,10 @@ export function TrainModelSelector() {
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
     ownerScope: picker.debouncedHubQuery.trim() ? "all" : "unsloth",
-    enabled: online && picker.open && tab === "hub",
+    enabled: online && picker.open && tab === PICKER_TAB.hub,
   });
 
-  const hubSearchActive = online && picker.open && tab === "hub";
+  const hubSearchActive = online && picker.open && tab === PICKER_TAB.hub;
   useHfErrorToast(hubSearchActive ? hfError : null, "models");
 
   const hubResultIds = useMemo(() => {
@@ -510,7 +511,7 @@ export function TrainModelSelector() {
   }
 
   function pickFreeformModel(id: string) {
-    if (tab === "hub") {
+    if (tab === PICKER_TAB.hub) {
       pickHubModel(id);
       return;
     }
@@ -570,7 +571,7 @@ export function TrainModelSelector() {
   }
 
   function commitExactQuery(query: string): PickerExactQueryCommitResult {
-    if (tab === "hub") {
+    if (tab === PICKER_TAB.hub) {
       const canonicalId = findCanonicalHubResourceId(query, hubResultIds);
       if (!canonicalId) {
         return { kind: "unhandled" };
@@ -621,11 +622,11 @@ export function TrainModelSelector() {
   const showUseThis =
     activeQuery.trim().length > 0 &&
     !hasExactMatch &&
-    (tab === "device"
+    (tab === PICKER_TAB.device
       ? !isLoadingLocalModels
       : isValidHubResourceId(activeQuery));
   const useThisLabel =
-    tab === "hub"
+    tab === PICKER_TAB.hub
       ? t("studio.modelPicker.useAsHubModel")
       : t("studio.modelPicker.useAsLocalPath");
 

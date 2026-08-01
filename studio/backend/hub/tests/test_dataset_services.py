@@ -741,7 +741,14 @@ def test_dataset_cancel_pending_spawn_arms_pending_cancel(monkeypatch):
 
 def test_upload_dataset_response_writes_non_empty_file(monkeypatch, tmp_path):
     payload = b'{"text":"hello"}\n'
+    offloaded = []
+
+    async def run_offloaded(function, *args):
+        offloaded.append(function)
+        return function(*args)
+
     monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(local.asyncio, "to_thread", run_offloaded)
 
     response = asyncio.run(local.upload_dataset_response(_Upload("../train.jsonl", payload)))
 
@@ -750,6 +757,7 @@ def test_upload_dataset_response_writes_non_empty_file(monkeypatch, tmp_path):
     assert stored_path.parent == tmp_path
     assert stored_path.name.endswith("_train.jsonl")
     assert stored_path.read_bytes() == payload
+    assert any(getattr(function, "__name__", "") == "write" for function in offloaded)
 
 
 def test_local_dataset_items_expose_recipe_and_upload_source(monkeypatch, tmp_path):

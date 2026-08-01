@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from contextlib import suppress
@@ -360,7 +361,10 @@ async def upload_dataset_response(
     native_path_lease: str | None = None,
 ) -> UploadDatasetResponse:
     if native_path_lease:
-        return _native_upload_dataset_response(native_path_lease)
+        return await asyncio.to_thread(
+            _native_upload_dataset_response,
+            native_path_lease,
+        )
     if file is None:
         raise HTTPException(status_code = 400, detail = "No dataset file was provided")
 
@@ -379,7 +383,7 @@ async def upload_dataset_response(
                 written += len(chunk)
                 if written > max_bytes:
                     raise _upload_too_large(max_label)
-                f.write(chunk)
+                await asyncio.to_thread(f.write, chunk)
         upload_complete = True
     finally:
         if not upload_complete:

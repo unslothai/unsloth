@@ -299,11 +299,10 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
     )
 
     repo_id = canonical_model_repo_id(model_name)
-    snapshot = latest_snapshot_from_cache_path(
-        local_path, "model", repo_id, _MODEL_SNAPSHOT_METADATA
-    )
-    if snapshot:
-        return snapshot
+    if local_path:
+        return latest_snapshot_from_cache_path(
+            local_path, "model", repo_id, _MODEL_SNAPSHOT_METADATA
+        )
     for repo_dir in iter_repo_cache_dirs("model", repo_id):
         snapshot = latest_snapshot_from_cache_path(
             str(repo_dir),
