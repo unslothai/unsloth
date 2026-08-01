@@ -4326,7 +4326,11 @@ def test_clean_arguments_stay_byte_identical():
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                {"id": "c1", "type": "function", "function": {"name": "f", "arguments": '{"a":"b"}'}}
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": '{"a":"b"}'},
+                }
             ],
         }
     ]
@@ -4342,7 +4346,9 @@ def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
     source = (_REPO_ROOT / "studio" / "backend" / "routes" / "inference.py").read_text(
         encoding = "utf-8"
     )
-    assert "heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)" not in source
+    assert (
+        "heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)" not in source
+    )
     assert "_sf_healing_tools = _sf_neutralize_tools(payload.tools)" in source
     for call in (
         "StreamToolCallHealer(_sf_heal, _sf_healing_tools)",
