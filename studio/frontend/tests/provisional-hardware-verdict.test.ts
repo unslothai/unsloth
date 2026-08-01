@@ -170,3 +170,30 @@ test("the bounded hardware wait is spent at most once per page load", async () =
     "the latch is never set, so it can never take effect",
   );
 });
+
+// A provisional reply omits device_type by design. A forced refresh landing in that
+// window must not fall back to the browser platform: on WSL, SSH or any remote session
+// that relabels the host as the machine holding the keyboard, which changes model
+// filtering, paths and install commands until a measured fetch happens to succeed.
+test("a provisional forced refresh keeps the server-reported platform", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/config/env.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /const keepPlatform =\s*\n?\s*data\.device_type === undefined && previous\.fetched/,
+    "no guard: a provisional forced refresh overwrites the authoritative platform",
+  );
+  assert.match(
+    src,
+    /keepPlatform \? previous\.deviceType : detectLocalPlatform\(\)/,
+    "the guard does not actually keep the stored platform",
+  );
+  assert.match(
+    src,
+    /fetched: data\.device_type !== undefined \|\| keepPlatform/,
+    "fetched drops to false, so the authoritative platform is not treated as held",
+  );
+});

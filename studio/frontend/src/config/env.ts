@@ -134,12 +134,16 @@ export async function fetchDeviceType(options?: {
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;
       }
-      const deviceType = data.device_type ?? detectLocalPlatform();
+      const previous = usePlatformStore.getState();
+      // A provisional reply omits device_type by design, so a forced refresh during
+      // the warm would fall back to the browser platform and relabel a WSL, SSH or
+      // remote host as the machine holding the keyboard, changing model filtering,
+      // paths and install commands. Keep what the server already told us.
+      const keepPlatform = data.device_type === undefined && previous.fetched;
+      const deviceType =
+        data.device_type ?? (keepPlatform ? previous.deviceType : detectLocalPlatform());
       // A still-provisional reply keeps the stored verdict: see resolveVerdict.
-      const { chatOnly, chatOnlyReason } = resolveVerdict(
-        data,
-        usePlatformStore.getState(),
-      );
+      const { chatOnly, chatOnlyReason } = resolveVerdict(data, previous);
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
       // SSH); keeping fetched=false retries once a token exists.
@@ -150,7 +154,7 @@ export async function fetchDeviceType(options?: {
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
-        fetched: data.device_type !== undefined,
+        fetched: data.device_type !== undefined || keepPlatform,
       });
       return deviceType;
     }

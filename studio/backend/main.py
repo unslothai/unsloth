@@ -721,6 +721,12 @@ async def lifespan(app: FastAPI):
     )
     yield
 
+    # First thing after the yield, before any shutdown await: that worker is usually
+    # parked in the warm join, and everything it does next imports or loads part of the
+    # ML stack. A warm finishing during one of the awaits below would otherwise still
+    # read the lifespan as current and start MLX autorepair or the RAG embedder.
+    _stop_post_warm_thread()
+
     _idle_task = getattr(app.state, "idle_unload_task", None)
     if _idle_task is not None:
         _idle_task.cancel()
@@ -736,10 +742,6 @@ async def lifespan(app: FastAPI):
     from core.inference.llama_http import aclose as _close_llama_http
 
     await _close_llama_http()
-
-    # Before the rest of teardown: that worker is usually parked in the warm join, and
-    # everything it does afterwards imports or loads part of the ML stack.
-    _stop_post_warm_thread()
 
     await run_lifespan_shutdown(
         terminate_hub_downloads,

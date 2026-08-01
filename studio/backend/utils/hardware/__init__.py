@@ -3,6 +3,8 @@
 
 """Hardware detection and GPU utilities."""
 
+from typing import Optional
+
 from . import hardware as _hardware
 from .hardware import (
     DeviceType,
@@ -46,13 +48,15 @@ from .vram_estimation import (
 )
 
 
-def ensure_hardware_detected() -> DeviceType:
+def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
     """Detect once, from any thread; delegate so the live function always runs.
 
     Wrapper rather than re-export, like export_capability() below: a re-export is an
-    unused module-level import, which scripts/verify_import_hoist.py flags.
+    unused module-level import, which scripts/verify_import_hoist.py flags. It has to
+    carry the epoch: the warm calls this name, and a wrapper that dropped the argument
+    would raise into _run_stage, which logs and moves on, leaving detection undone.
     """
-    return _hardware.ensure_hardware_detected()
+    return _hardware.ensure_hardware_detected(epoch)
 
 
 def start_background_detection() -> None:

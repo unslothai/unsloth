@@ -1845,12 +1845,42 @@ def test_the_warm_hands_its_epoch_to_detection():
     retirement it was meant to lose to and publish for the lifespan that ended.
     """
     import utils.torch_warmup as warm
+    from utils.hardware import hardware as hw_mod
 
+    # Patch the MODULE function, not the utils.hardware name the stage imports: the
+    # package exposes a hand-written wrapper rather than a re-export, and patching the
+    # name the stage binds would hop straight over it. That is how a wrapper which
+    # dropped the argument, and so raised into _run_stage on every real boot, went
+    # unnoticed by the first version of this test.
     seen: list = []
-    with mock.patch.object(warm, "_warm_hardware", warm._warm_hardware):
-        with mock.patch("utils.hardware.ensure_hardware_detected", lambda e = None: seen.append(e)):
-            warm._warm_hardware(41)
+    with mock.patch.object(hw_mod, "ensure_hardware_detected", lambda e = None: seen.append(e)):
+        warm._warm_hardware(41)
     assert seen == [41], f"the hardware stage dropped its epoch: {seen}"
+
+
+def test_every_public_hardware_wrapper_accepts_what_it_delegates_to():
+    """utils.hardware wraps rather than re-exports, so signatures can drift apart.
+
+    A wrapper narrower than the function it calls raises TypeError at the call site.
+    On the warm thread _run_stage catches that, logs a warning and carries on, so the
+    stage is simply skipped and nothing detects the hardware.
+    """
+    import inspect
+    import utils.hardware as pkg
+    from utils.hardware import hardware as hw_mod
+
+    for name in ("ensure_hardware_detected", "detect_hardware", "start_background_detection",
+                 "export_capability", "get_device"):
+        wrapper = getattr(pkg, name, None)
+        target = getattr(hw_mod, name, None)
+        if wrapper is None or target is None or wrapper is target:
+            continue  # a genuine re-export cannot drift
+        w = inspect.signature(wrapper).parameters
+        t = inspect.signature(target).parameters
+        assert set(t) <= set(w), (
+            f"utils.hardware.{name} accepts {sorted(w)} but delegates to one taking "
+            f"{sorted(t)}; a caller passing the extra argument raises TypeError"
+        )
 
 
 def test_the_warm_loop_passes_the_epoch_to_the_real_stage_only():
@@ -1932,3 +1962,42 @@ def test_the_delete_guard_lets_a_delete_through_when_nothing_is_loaded():
         assert orch._inference_backend is None, "the delete guard constructed an orchestrator"
     finally:
         orch._inference_backend = before
+
+
+def test_the_post_warm_worker_is_retired_before_any_shutdown_await():
+    """It has to stop first, not merely early.
+
+    Everything the post-warm worker does next imports or loads part of the ML stack,
+    including starting a llama-server. A warm finishing during the idle-task cancel,
+    the supervisor stop or the llama HTTP close would still read the lifespan as
+    current and go ahead, on a lifespan that is already tearing down.
+    """
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
+    )
+    body = fn.body
+    # The lifespan body is linear: find the yield, then the first Await after it, and
+    # the _stop_post_warm_thread() call.
+    def _lineno(pred):
+        return next(sub.lineno for sub in ast.walk(fn) if pred(sub))
+
+    yield_line = _lineno(lambda n: isinstance(n, ast.Yield))
+    stop_line = _lineno(
+        lambda n: isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_stop_post_warm_thread"
+    )
+    awaits_after_yield = sorted(
+        sub.lineno for sub in ast.walk(fn)
+        if isinstance(sub, ast.Await) and sub.lineno > yield_line
+    )
+    assert stop_line > yield_line, "_stop_post_warm_thread must run on shutdown"
+    assert awaits_after_yield, "the shutdown path no longer awaits anything; re-derive this"
+    assert stop_line < awaits_after_yield[0], (
+        f"_stop_post_warm_thread runs at line {stop_line}, after the first shutdown "
+        f"await at {awaits_after_yield[0]}; a warm finishing in that gap starts "
+        "post-warm work on a lifespan that is already shutting down"
+    )
+    assert body  # the walk above only makes sense on a non-empty body
