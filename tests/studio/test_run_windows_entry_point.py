@@ -27,7 +27,11 @@ def _studio_bin_value() -> ast.expr:
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == "studio_bin" and node.value is not None:
+            if (
+                isinstance(target, ast.Name)
+                and target.id == "studio_bin"
+                and node.value is not None
+            ):
                 if not (isinstance(node.value, ast.Constant) and node.value.value is None):
                     return node.value
     raise AssertionError("`run` never assigns a studio_bin path")
@@ -44,9 +48,10 @@ def test_the_entry_point_name_is_chosen_per_platform():
         for node in ast.walk(value.right)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
-    assert {"unsloth", "unsloth.exe"} <= names, (
-        f"studio_bin must pick between 'unsloth' and 'unsloth.exe'; got {sorted(names)}"
-    )
+    assert {
+        "unsloth",
+        "unsloth.exe",
+    } <= names, f"studio_bin must pick between 'unsloth' and 'unsloth.exe'; got {sorted(names)}"
 
 
 def test_the_windows_branch_is_the_exe():
