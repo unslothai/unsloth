@@ -2418,7 +2418,7 @@ def test_a_retired_worker_does_not_probe_before_being_discarded():
         hw.DEVICE = None
         hw.DETECTION_COMPLETE.clear()
         stale_epoch = hw.current_detection_epoch()
-        hw.invalidate_detection()          # shutdown, before the worker gets the lock
+        hw.invalidate_detection()  # shutdown, before the worker gets the lock
 
         probed = []
         with mock.patch.object(hw, "_detect_hardware_locked", lambda: probed.append(1)):
