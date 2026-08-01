@@ -115,10 +115,10 @@ function nextPickerNavigationTarget(
   const options = pickerOptions(container);
   if (isTab) {
     return (
-      options[0] ??
       container.querySelector<HTMLInputElement>(
         '[data-picker-search="true"]',
       ) ??
+      options[0] ??
       undefined
     );
   }
@@ -243,6 +243,47 @@ export function PickerShell({
     onTabChange(nextTab);
   }
 
+  function findMatchingOption(query: string) {
+    return scrollRef.current
+      ? pickerOptions(scrollRef.current).find((option) =>
+          optionMatchesQuery(option, query),
+        )
+      : undefined;
+  }
+
+  function handleSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (
+      isImeCompositionKey(event, isComposingRef.current) ||
+      event.key !== "Enter"
+    ) {
+      return;
+    }
+    event.preventDefault();
+    if (!canCommitQuery) {
+      return;
+    }
+
+    const commitResult = onExactQueryCommit?.(activeQuery);
+    if (commitResult?.kind === "handled") {
+      setQueryStatus("");
+      return;
+    }
+    if (commitResult?.kind === "ambiguous") {
+      setQueryStatus(t("picker.multipleMatches", { noun }));
+      const matchingOption = findMatchingOption(commitResult.focusValue);
+      matchingOption?.focus();
+      matchingOption?.scrollIntoView({ block: "nearest" });
+      return;
+    }
+
+    setQueryStatus("");
+    if (canUseThis) {
+      onUseThis();
+      return;
+    }
+    findMatchingOption(activeQuery)?.click();
+  }
+
   return (
     <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild={true}>{trigger}</PopoverTrigger>
@@ -299,45 +340,7 @@ export function PickerShell({
               onBlur={() => {
                 isComposingRef.current = false;
               }}
-              onKeyDown={(e) => {
-                if (isImeCompositionKey(e, isComposingRef.current)) {
-                  return;
-                }
-                if (e.key !== "Enter") {
-                  return;
-                }
-                e.preventDefault();
-                if (!canCommitQuery) {
-                  return;
-                }
-                const commitResult = onExactQueryCommit?.(activeQuery);
-                if (commitResult?.kind === "handled") {
-                  setQueryStatus("");
-                  return;
-                }
-                if (commitResult?.kind === "ambiguous") {
-                  setQueryStatus(t("picker.multipleMatches", { noun }));
-                  const matchingOption = scrollRef.current
-                    ? pickerOptions(scrollRef.current).find((option) =>
-                        optionMatchesQuery(option, commitResult.focusValue),
-                      )
-                    : undefined;
-                  matchingOption?.focus();
-                  matchingOption?.scrollIntoView({ block: "nearest" });
-                  return;
-                }
-                setQueryStatus("");
-                if (canUseThis) {
-                  onUseThis();
-                  return;
-                }
-                const exactMatch = scrollRef.current
-                  ? pickerOptions(scrollRef.current).find((option) =>
-                      optionMatchesQuery(option, activeQuery),
-                    )
-                  : undefined;
-                exactMatch?.click();
-              }}
+              onKeyDown={handleSearchKeyDown}
               placeholder={
                 tab === PICKER_TAB.hub ? placeholder.hub : placeholder.device
               }

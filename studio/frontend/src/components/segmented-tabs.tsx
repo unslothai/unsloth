@@ -3,6 +3,7 @@
 
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
+import { SegmentedControlIndicator } from "./segmented-control";
 import { TabsList, TabsTrigger } from "./ui/tabs";
 
 export interface SegmentedTabOption<T extends string> {
@@ -43,13 +44,10 @@ export function SegmentedTabsList<T extends string>({
         className,
       )}
     >
-      <span
-        aria-hidden="true"
-        className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
-        style={{
-          width: `${100 / options.length}%`,
-          transform: `translateX(${activeIndex * 100}%)`,
-        }}
+      <SegmentedControlIndicator
+        activeIndex={activeIndex}
+        optionCount={options.length}
+        className="inset-y-0"
       />
       {options.map((option) => {
         const active = option.value === value;

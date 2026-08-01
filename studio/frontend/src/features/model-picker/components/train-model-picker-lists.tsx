@@ -3,11 +3,11 @@
 
 import { isHfAuthError } from "@/components/resource-picker/hf-error";
 import { hubResourceIdsEqual } from "@/components/resource-picker/hub-resource-id";
+import { PickerHubPaginationFooter } from "@/components/resource-picker/picker-pagination";
 import {
-  PickerHubPaginationFooter,
   PickerSearchError,
   RetryButton,
-} from "@/components/resource-picker/picker-tab-toggle";
+} from "@/components/resource-picker/picker-states";
 import { SelectablePickerItem } from "@/components/resource-picker/selectable-picker-item";
 import { Spinner } from "@/components/ui/spinner";
 import {
