@@ -1156,6 +1156,12 @@ def _latest_repair_requested() -> bool:
     One os.path.isfile, so the routing predicate below can carry it; the RECORD
     scan that produced the request costs ~25 ms and cannot.
     """
+    if _sidecar_file_check_disabled():
+        # The marker only ever records a file-level finding, which is precisely what
+        # the switch turns off. Ignoring it here is what makes the hatch immediate:
+        # otherwise a marker left by a false positive keeps the sidecar withheld for
+        # the rest of the backoff, since the disabled scan is never reached to clear it.
+        return False
     try:
         return _latest_repair_marker_path().is_file()
     except OSError:
@@ -2008,6 +2014,16 @@ _VENV_T5_PACKAGES = _VENV_T5_550_PACKAGES
 _SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
 
 
+def _sidecar_file_check_disabled() -> bool:
+    """Escape hatch: a false positive costs a several-hundred-MB reinstall, so a user
+    hitting one must be able to turn the scan off without waiting for a release. It has
+    to reach everything the scan produced, the repair marker included, or the hatch only
+    takes effect a backoff window later."""
+    return os.environ.get(_SIDECAR_FILE_CHECK_ENV, "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
     """RECORD entries under *venv_dir* that are gone, or shorter than pip recorded.
 
@@ -2044,10 +2060,7 @@ def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
     import csv
     import io
 
-    if os.environ.get(_SIDECAR_FILE_CHECK_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
-        # Escape hatch: a false positive costs a several-hundred-MB reinstall,
-        # so a user hitting one must be able to turn the scan off without
-        # waiting for a release.
+    if _sidecar_file_check_disabled():
         return []
     root = Path(venv_dir)
     entries: list[tuple] = []
@@ -2114,11 +2127,18 @@ def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
     for name, rel, recorded, target, key in entries:
         try:
             info = target.stat()
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             # Multiple ownership makes the recorded SIZES ambiguous; it cannot
             # explain the file being gone, so this branch runs for shared paths
-            # too.
+            # too. NotADirectoryError means a parent component is a file, which
+            # is the same tree damage seen one level up.
             found.append(f"{name}: {rel} is missing")
+        except OSError:
+            # Inconclusive, not damage. EIO, ESTALE on an NFS mount, or EACCES
+            # says the file could not be read, never that it is gone, and the
+            # answer here costs a several-hundred-MB wipe and re-download. Skip
+            # the row: a scan that cannot see the disk must not condemn it.
+            continue
         else:
             if not stat.S_ISREG(info.st_mode):
                 # A directory standing in for a recorded module still imports as

@@ -3835,3 +3835,52 @@ class TestDamagedLatestSidecarRepairHandoff:
         monkeypatch.setattr("multiprocessing.parent_process", lambda: object())
         assert tv._ensure_venv_t5_latest_exists() is True
         assert not tv._latest_repair_requested()
+
+    def test_kill_switch_frees_the_sidecar_mid_backoff(self, monkeypatch, tmp_path):
+        """The hatch exists for a false positive, so it has to work at the moment one is
+        being hit: with a marker already written and a repair already failed, it must
+        restore routing now rather than one backoff window later."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+        self._damage(live)
+
+        assert tv._overlay_transformers_dir("latest") is None  # arms marker + backoff
+        assert tv._latest_repair_requested(), "precondition: the marker is armed"
+
+        monkeypatch.setenv("UNSLOTH_SKIP_SIDECAR_FILE_CHECK", "1")
+
+        assert tv._overlay_transformers_dir("latest") is not None
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+
+    def test_an_unreadable_file_is_not_reported_as_damage(self, monkeypatch, tmp_path):
+        """A wipe costs a several-hundred-MB re-download, so the scan may only condemn
+        what it can prove: EIO or ESTALE on a flaky mount says the file could not be
+        read, never that it is gone."""
+        import errno
+
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        real_stat = Path.stat
+
+        def _flaky(self, *a, **k):
+            if self.name == "__init__.py":
+                raise OSError(errno.EIO, "Input/output error")
+            return real_stat(self, *a, **k)
+
+        monkeypatch.setattr(Path, "stat", _flaky)
+
+        assert tv._sidecar_damaged_files(str(live)) == []
+        assert tv._latest_sidecar_undamaged() is True
+        assert tv._overlay_transformers_dir("latest") is not None
+
+    def test_a_deleted_file_is_still_reported_as_damage(self, monkeypatch, tmp_path):
+        """The counterpart: narrowing the caught errors must not blind the scan to a
+        genuinely missing file."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        (live / "transformers" / "__init__.py").unlink()
+
+        assert tv._sidecar_damaged_files(str(live)) == [
+            "transformers: transformers/__init__.py is missing"
+        ]
