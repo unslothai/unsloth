@@ -19,6 +19,38 @@ type CheckDatasetFormatArgs = {
   localPath?: string | null;
 };
 
+class DatasetFormatError extends Error {
+  readonly errorCode: string | null;
+
+  constructor(message: string, errorCode: string | null = null) {
+    super(message);
+    this.name = "DatasetFormatError";
+    this.errorCode = errorCode;
+  }
+}
+
+async function readDatasetFormatError(
+  response: Response,
+): Promise<DatasetFormatError> {
+  const fallbackResponse = response.clone();
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    const detail = payload.detail;
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+      const structured = detail as { code?: unknown; message?: unknown };
+      if (typeof structured.message === "string" && structured.message) {
+        return new DatasetFormatError(
+          structured.message,
+          typeof structured.code === "string" ? structured.code : null,
+        );
+      }
+    }
+  } catch {
+    return new DatasetFormatError(await readFastApiError(fallbackResponse));
+  }
+  return new DatasetFormatError(await readFastApiError(fallbackResponse));
+}
+
 export async function checkDatasetFormat({
   datasetName,
   hfToken,
@@ -37,7 +69,7 @@ export async function checkDatasetFormat({
     body: JSON.stringify({
       dataset_name: datasetName,
       subset: subset || undefined,
-      split: split || "train",
+      train_split: split || "train",
       is_vlm: !!isVlm,
       prefer_local_cache: !!preferLocalCache,
       local_path: localPath || undefined,
@@ -45,7 +77,7 @@ export async function checkDatasetFormat({
   });
 
   if (!res.ok) {
-    throw new Error(await readFastApiError(res));
+    throw await readDatasetFormatError(res);
   }
 
   return res.json();

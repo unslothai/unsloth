@@ -21,11 +21,11 @@ import {
 } from "../lib/train-model-selection-display";
 
 export interface TrainModelDeviceItem extends TrainModelDisplayCandidate {
-  key: string;
-  path: string;
-  sourceLabel: string;
-  knownCached: boolean;
-  modelTypeFlags: ModelTypeCapabilityFlags;
+  readonly key: string;
+  readonly path: string;
+  readonly sourceLabel: string;
+  readonly knownCached: boolean;
+  readonly modelTypeFlags: ModelTypeCapabilityFlags;
 }
 
 function trainModelSourceWeight(source: LocalSource): number {

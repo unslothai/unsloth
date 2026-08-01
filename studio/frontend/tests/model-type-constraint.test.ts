@@ -16,6 +16,24 @@ test("enforces optional onboarding model-type constraints", () => {
   );
   assert.equal(trainingModelMatchesTypeConstraint("text", "vision"), false);
   assert.equal(trainingModelMatchesTypeConstraint("vision", "audio"), false);
-  assert.equal(trainingModelMatchesTypeConstraint("audio", "embeddings"), false);
+  assert.equal(
+    trainingModelMatchesTypeConstraint("audio", "embeddings"),
+    false,
+  );
   assert.equal(trainingModelMatchesTypeConstraint("embeddings", "text"), false);
+});
+
+test("allows an unclassified local model through an onboarding constraint", () => {
+  assert.equal(
+    trainingModelMatchesTypeConstraint("text", "vision", false),
+    true,
+  );
+  assert.equal(
+    trainingModelMatchesTypeConstraint("text", "audio", false),
+    true,
+  );
+  assert.equal(
+    trainingModelMatchesTypeConstraint("text", "embeddings", false),
+    true,
+  );
 });

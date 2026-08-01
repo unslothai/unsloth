@@ -6,6 +6,11 @@ import type { ModelType } from "@/types/training";
 export function trainingModelMatchesTypeConstraint(
   modelType: ModelType,
   requiredType: ModelType | undefined,
+  hasModelTypeSignal = true,
 ): boolean {
-  return requiredType === undefined || modelType === requiredType;
+  return (
+    requiredType === undefined ||
+    !hasModelTypeSignal ||
+    modelType === requiredType
+  );
 }

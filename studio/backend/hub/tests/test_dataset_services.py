@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -555,6 +556,41 @@ def test_check_format_rejects_invalid_path_as_400():
         formatting.check_format_response(CheckFormatRequest(dataset_name = "../../etc/passwd"))
 
     assert exc_info.value.status_code == 400
+
+
+def test_check_format_returns_stable_code_for_missing_selected_cache(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        formatting,
+        "resolve_dataset_path",
+        lambda _dataset_name: tmp_path / "missing",
+    )
+    monkeypatch.setattr(
+        formatting,
+        "_load_any_cached_hf_preview_slice",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        SimpleNamespace(Dataset = object, load_dataset = object),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        formatting.check_format_response(
+            CheckFormatRequest(
+                dataset_name = "Org/Data",
+                prefer_local_cache = True,
+            )
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == {
+        "code": "dataset_local_cache_miss",
+        "message": "Dataset is not available in the local cache.",
+    }
 
 
 def test_cached_preview_does_not_fallback_from_selected_path(monkeypatch):

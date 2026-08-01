@@ -16,11 +16,11 @@ import {
 } from "@/features/training";
 
 export interface TrainModelDisplayCandidate {
-  id: string;
-  title: string;
-  source: LocalSource;
-  localPath: string | null;
-  modelFormat: ModelInventoryFormat | null;
+  readonly id: string;
+  readonly title: string;
+  readonly source: LocalSource;
+  readonly localPath: string | null;
+  readonly modelFormat: ModelInventoryFormat | null;
 }
 
 export function trainModelDisplayCandidateMatchesSelection({

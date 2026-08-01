@@ -30,7 +30,7 @@ export interface TrainModelVramView {
 }
 
 export interface TrainModelDeviceListProps {
-  items: TrainModelDeviceItem[];
+  items: readonly TrainModelDeviceItem[];
   isLoading: boolean;
   error: string | null;
   warning: boolean;

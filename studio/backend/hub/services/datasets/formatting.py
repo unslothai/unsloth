@@ -48,6 +48,7 @@ logger = get_logger(__name__)
 _BINARY_IMAGE_PREVIEW_MAX_BYTES = 10 * 1024 * 1024
 _IMAGE_PREVIEW_MAX_PIXELS = 16_000_000
 _IMAGE_PREVIEW_THUMBNAIL_SIZE = (512, 512)
+_LOCAL_CACHE_MISS_ERROR_CODE = "dataset_local_cache_miss"
 
 
 def _image_pixel_count(image) -> int:
@@ -311,7 +312,10 @@ def check_format_response(
             elif request.prefer_local_cache:
                 raise HTTPException(
                     status_code = 404,
-                    detail = "Dataset is not available in the local cache.",
+                    detail = {
+                        "code": _LOCAL_CACHE_MISS_ERROR_CODE,
+                        "message": "Dataset is not available in the local cache.",
+                    },
                 )
             else:
                 preview_slice = None

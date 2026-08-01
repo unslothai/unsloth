@@ -12,7 +12,10 @@ export interface ModelTypeCapabilityFlags {
   isEmbedding?: boolean | null;
   isAudio?: boolean | null;
   isVision?: boolean | null;
+  hasModelTypeSignal?: boolean;
 }
+
+const TEXT_MODEL_TAGS = new Set(["text-generation"]);
 
 export function inferTrainingModelTypeFromFlags({
   isEmbedding,
@@ -43,13 +46,30 @@ function hasEmbeddingHint({
   return (tags ?? []).some((tag) => EMBEDDING_TAGS.has(tag.toLowerCase()));
 }
 
+function hasTextModelHint({
+  tags,
+  pipelineTag,
+}: TrainingModelTypeMetadata): boolean {
+  if (pipelineTag && TEXT_MODEL_TAGS.has(pipelineTag.toLowerCase())) {
+    return true;
+  }
+  return (tags ?? []).some((tag) => TEXT_MODEL_TAGS.has(tag.toLowerCase()));
+}
+
 export function trainingModelTypeFlagsFromMetadata(
   metadata: TrainingModelTypeMetadata,
 ): ModelTypeCapabilityFlags {
   const capabilities = inferTrainingModelModalityFlags(metadata);
+  const isEmbedding = hasEmbeddingHint(metadata);
+  const hasModelTypeSignal =
+    isEmbedding ||
+    capabilities.isAudio ||
+    capabilities.isVision ||
+    hasTextModelHint(metadata);
   return {
-    isEmbedding: hasEmbeddingHint(metadata),
-    isAudio: capabilities.isAudio,
-    isVision: capabilities.isVision,
+    isEmbedding: hasModelTypeSignal ? isEmbedding : undefined,
+    isAudio: hasModelTypeSignal ? capabilities.isAudio : undefined,
+    isVision: hasModelTypeSignal ? capabilities.isVision : undefined,
+    hasModelTypeSignal,
   };
 }

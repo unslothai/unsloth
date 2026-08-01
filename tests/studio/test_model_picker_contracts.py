@@ -1223,7 +1223,7 @@ def test_training_picker_pagination_preserves_scanned_progress():
         assert needle in adapter
 
     for rel in (
-        "features/model-picker/components/train-model-selector.tsx",
+        "features/train-model-picker/components/train-model-selector.tsx",
         "features/dataset-picker/components/dataset-selector.tsx",
     ):
         src = _read(rel)
@@ -1242,7 +1242,7 @@ def test_training_picker_pagination_preserves_scanned_progress():
         assert "useLatestRef" not in src
 
     for rel in (
-        "features/model-picker/components/train-model-picker-lists.tsx",
+        "features/train-model-picker/components/train-model-picker-lists.tsx",
         "features/dataset-picker/components/dataset-selector-lists.tsx",
     ):
         src = _read(rel)
@@ -1252,7 +1252,7 @@ def test_training_picker_pagination_preserves_scanned_progress():
 
 
 def test_training_model_picker_only_filters_tasks_for_an_explicit_constraint():
-    src = _read("features/model-picker/components/train-model-selector.tsx")
+    src = _read("features/train-model-picker/components/train-model-selector.tsx")
     search_options = src.split("useHubModelSearch(", 1)[1].split("});", 1)[0]
     assert "requiredModelType?: ModelType" in src
     assert "task: trainingModelTaskFilter(requiredModelType)" in search_options
@@ -1292,7 +1292,7 @@ def test_picker_tabs_reset_the_shared_scroll_container():
 
 
 def test_cached_training_rows_select_canonical_repo_identity():
-    src = _read("features/model-picker/components/train-model-picker-view-model.ts")
+    src = _read("features/train-model-picker/components/train-model-picker-view-model.ts")
     cached = src.split("function toCachedTrainModelDeviceItem", 1)[1]
     cached = cached.split("function toLocalTrainModelDeviceItem", 1)[0]
     assert "id: row.repoId" in cached
@@ -1300,7 +1300,7 @@ def test_cached_training_rows_select_canonical_repo_identity():
 
     local = src.split("function toLocalTrainModelDeviceItem", 1)[1]
     local = local.split("function hubTrainingModelCandidate", 1)[0]
-    display = _read("features/model-picker/lib/train-model-selection-display.ts")
+    display = _read("features/train-model-picker/lib/train-model-selection-display.ts")
     candidate = display.split("function toTrainModelDisplayCandidate", 1)[1]
     assert 'row.source === "hf_cache" ? row.repoId?.trim() : null' in candidate
     assert "id: cachedRepoId || row.loadId" in candidate
@@ -1308,15 +1308,15 @@ def test_cached_training_rows_select_canonical_repo_identity():
     assert "...toTrainModelDisplayCandidate(row)" in local
     assert "localPath: row.path" in candidate
 
-    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    selector = _read("features/train-model-picker/components/train-model-selector.tsx")
     assert "toCachedTrainModelDeviceItem(" in selector
     assert "toLocalTrainModelDeviceItem(" in selector
     assert "localModelSourceLabelKey(row.source)" in selector
 
 
 def test_cached_training_rows_remain_display_candidates_after_inventory_dedupe():
-    display = _read("features/model-picker/lib/train-model-selection-display.ts")
-    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    display = _read("features/train-model-picker/lib/train-model-selection-display.ts")
+    selector = _read("features/train-model-picker/components/train-model-selector.tsx")
     assert "function toCachedTrainModelDisplayCandidate" in display
     assert "id: row.repoId" in display
     assert "title: row.repoId" in display
@@ -1334,7 +1334,7 @@ def test_training_picker_controls_keep_visible_keyboard_focus():
     assert "focus-visible:ring-offset-background" in focus
     assert "focus-visible:ring-inset" in focus
 
-    model = _read("features/model-picker/components/train-model-selector.tsx")
+    model = _read("features/train-model-picker/components/train-model-selector.tsx")
     dataset = _read("features/dataset-picker/components/dataset-selector.tsx")
     options = _read("components/resource-picker/selectable-picker-item.tsx")
     token = _read("features/hub/components/hf-token-indicator.tsx")
@@ -1447,8 +1447,8 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
     shell = _read("components/resource-picker/picker-shell.tsx")
     matcher = _read("components/resource-picker/device-item-match.ts")
     selector = _read("features/dataset-picker/components/dataset-selector.tsx")
-    model_selector = _read("features/model-picker/components/train-model-selector.tsx")
-    model_view_model = _read("features/model-picker/components/train-model-picker-view-model.ts")
+    model_selector = _read("features/train-model-picker/components/train-model-selector.tsx")
+    model_view_model = _read("features/train-model-picker/components/train-model-picker-view-model.ts")
 
     assert "export type PickerExactQueryCommitResult" in shell
     assert "onExactQueryCommit?: (query: string) => PickerExactQueryCommitResult;" in shell
@@ -1574,7 +1574,7 @@ def test_device_picker_title_resolution_preserves_ambiguity():
 
 def test_run_preview_reuses_local_inventory_display_names():
     display_names = _read("features/studio/hooks/use-training-resource-display-names.ts")
-    model_display = _read("features/model-picker/lib/train-model-selection-display.ts")
+    model_display = _read("features/train-model-picker/lib/train-model-selection-display.ts")
     dataset_display = _read("features/dataset-picker/lib/display.ts")
     preview = _read("features/studio/wizard/run-preview-card.tsx")
 
@@ -1597,7 +1597,7 @@ def test_training_model_lookups_preserve_platform_path_identity():
     assert "map.set(normalizeModelIdentity(value), row);" in lookup
     assert "value.toLowerCase()" not in lookup
 
-    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    selector = _read("features/train-model-picker/components/train-model-selector.tsx")
     hub_pick = selector.split("function pickHubModel", 1)[1]
     hub_pick = hub_pick.split("function pickFreeformModel", 1)[0]
     device_pick = selector.split("function pickFreeformModel", 1)[1]
@@ -1691,9 +1691,9 @@ def test_dataset_display_name_handles_cross_platform_trailing_separators():
 
 
 def test_local_model_trigger_uses_cross_platform_device_display_name():
-    selector = _read("features/model-picker/components/train-model-selector.tsx")
-    view_model = _read("features/model-picker/components/train-model-picker-view-model.ts")
-    display_source = _read("features/model-picker/lib/train-model-selection-display.ts")
+    selector = _read("features/train-model-picker/components/train-model-selector.tsx")
+    view_model = _read("features/train-model-picker/components/train-model-picker-view-model.ts")
+    display_source = _read("features/train-model-picker/lib/train-model-selection-display.ts")
     display = display_source.split("export function trainModelSelectionDisplayName", 1)[1].split(
         "export function toTrainModelDisplayCandidate", 1
     )[0]
@@ -1790,8 +1790,8 @@ def test_training_picker_localizes_semantic_inventory_sources():
     inventory_types = _read("features/hub/inventory/types.ts")
     inventory = _read("features/hub/inventory/use-hub-inventory.ts")
     dataset_selector = _read("features/dataset-picker/components/dataset-selector.tsx")
-    model_selector = _read("features/model-picker/components/train-model-selector.tsx")
-    model_view = _read("features/model-picker/components/train-model-picker-view-model.ts")
+    model_selector = _read("features/train-model-picker/components/train-model-selector.tsx")
+    model_view = _read("features/train-model-picker/components/train-model-picker-view-model.ts")
 
     assert 'datasetSource?: "recipe" | "upload";' in inventory_types
     assert "datasetSource:" in inventory
@@ -1994,7 +1994,7 @@ def test_run_preview_uses_the_app_locale_for_numbers_and_plural_rules():
 
 
 def test_freeform_device_model_keeps_local_path_intent():
-    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    selector = _read("features/train-model-picker/components/train-model-selector.tsx")
     assert "return looksLikeLocalPath(trimmed) ? trimmed : `./${trimmed}`;" in selector
     resolver = selector.split("function resolveFreeformTrainingModelPick", 1)[1]
     resolver = resolver.split("export function TrainModelSelector", 1)[0]
@@ -2054,7 +2054,7 @@ def test_filtered_hub_pages_render_empty_state_and_keep_pagination_sentinel():
             't("studio.datasetPicker.noDatasetsFound")',
         ),
         (
-            "features/model-picker/components/train-model-picker-lists.tsx",
+            "features/train-model-picker/components/train-model-picker-lists.tsx",
             "TrainModelHubList",
             "ids",
             't("studio.modelPicker.noModelsFound")',
@@ -2091,8 +2091,8 @@ def test_infinite_scroll_observes_a_late_mounted_sentinel():
 
 def test_train_hub_selections_preserve_canonical_identity():
     helper = _read("components/resource-picker/hub-resource-id.ts")
-    model_selector = _read("features/model-picker/components/train-model-selector.tsx")
-    model_view = _read("features/model-picker/components/train-model-picker-view-model.ts")
+    model_selector = _read("features/train-model-picker/components/train-model-selector.tsx")
+    model_view = _read("features/train-model-picker/components/train-model-picker-view-model.ts")
     dataset_selector = _read("features/dataset-picker/components/dataset-selector.tsx")
 
     assert "first?.trim().toLowerCase()" in helper
@@ -2109,7 +2109,7 @@ def test_train_hub_selections_preserve_canonical_identity():
 
 
 def test_train_hub_search_queries_are_not_gated_by_repo_id_validation():
-    model_selector = _read("features/model-picker/components/train-model-selector.tsx")
+    model_selector = _read("features/train-model-picker/components/train-model-selector.tsx")
     dataset_selector = _read("features/dataset-picker/components/dataset-selector.tsx")
     model_search = _read("features/hub/hooks/use-hub-model-search.ts")
     dataset_search = _read("features/hub/hooks/use-hub-dataset-search.ts")
@@ -2132,7 +2132,7 @@ def test_training_dataset_client_uses_the_canonical_hub_router():
 
 
 def test_pinned_training_model_retains_size_and_vram_metadata():
-    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    selector = _read("features/train-model-picker/components/train-model-selector.tsx")
     helper = selector.split("function buildTrainModelVramViews", 1)[1].split(
         "export function TrainModelSelector", 1
     )[0]
@@ -2159,7 +2159,7 @@ def test_persisted_invalid_hub_selections_are_blocked_with_picker_errors():
 
 def test_new_model_selection_replaces_the_previous_model_type():
     inference = _read("features/training/lib/model-type-inference.ts")
-    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    selector = _read("features/train-model-picker/components/train-model-selector.tsx")
 
     assert "export function inferTrainingModelTypeFromFlags" in inference
     assert "resolvePickerInferredModelType" not in inference
@@ -2168,7 +2168,7 @@ def test_new_model_selection_replaces_the_previous_model_type():
 
 
 def test_picker_capabilities_survive_model_config_probe_failures():
-    selector = _read("features/model-picker/components/train-model-selector.tsx")
+    selector = _read("features/train-model-picker/components/train-model-selector.tsx")
     store = _read("features/training/stores/training-config-store.ts")
     persistence = _read("features/training/stores/training-config-persistence.ts")
     api = _read("features/training/api/models-api.ts")
@@ -2305,7 +2305,7 @@ def test_picker_shell_handles_ime_focus_and_short_viewports():
 
 
 def test_train_pickers_prewarm_inventory_and_use_shared_tab_constants():
-    model_picker = _read("features/model-picker/components/train-model-selector.tsx")
+    model_picker = _read("features/train-model-picker/components/train-model-selector.tsx")
     dataset_picker = _read("features/dataset-picker/components/dataset-selector.tsx")
 
     assert 'useHubInventory({ kind: "models" })' in model_picker
@@ -2317,7 +2317,7 @@ def test_train_pickers_prewarm_inventory_and_use_shared_tab_constants():
 
 
 def test_training_controls_expose_context_without_overriding_history_metadata():
-    model_picker = _read("features/model-picker/components/train-model-selector.tsx")
+    model_picker = _read("features/train-model-picker/components/train-model-selector.tsx")
     dataset_picker = _read("features/dataset-picker/components/dataset-selector.tsx")
     wizard = _read("features/studio/wizard/training-wizard.tsx")
     history = _read("features/studio/history-card-grid.tsx")

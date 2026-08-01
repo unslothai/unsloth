@@ -187,12 +187,20 @@ function commitTrainingModelPick({
   }
   const inferredModelType = inferTrainingModelTypeFromFlags(inferredFlags);
   if (
-    !trainingModelMatchesTypeConstraint(inferredModelType, requiredModelType)
+    !trainingModelMatchesTypeConstraint(
+      inferredModelType,
+      requiredModelType,
+      inferredFlags.hasModelTypeSignal === true,
+    )
   ) {
     toast.error(mismatchTitle, { description: mismatchDescription });
     return;
   }
-  selectTrainingModel(next, inferredModelType, {
+  const selectedModelType =
+    requiredModelType && !inferredFlags.hasModelTypeSignal
+      ? requiredModelType
+      : inferredModelType;
+  selectTrainingModel(next, selectedModelType, {
     ...options,
     ...inferredFlags,
   });
@@ -423,6 +431,7 @@ export function TrainModelSelector({
         trainingModelMatchesTypeConstraint(
           inferTrainingModelTypeFromFlags(model.modelTypeFlags),
           requiredModelType,
+          model.modelTypeFlags.hasModelTypeSignal === true,
         ),
       ),
     [requiredModelType, trainableLocalModels],

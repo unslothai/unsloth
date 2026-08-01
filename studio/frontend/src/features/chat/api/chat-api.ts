@@ -383,7 +383,9 @@ export async function getDatasetDownloadProgress(
   repoId: string,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/datasets/download-progress?${params}`);
+  const response = await authFetch(
+    `/api/hub/datasets/download-progress?${params}`,
+  );
   return parseJsonOrThrow(response);
 }
 
