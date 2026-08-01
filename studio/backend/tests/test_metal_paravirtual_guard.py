@@ -356,7 +356,13 @@ class _FakeLogger:
         pass
 
 
-def _mmproj_gate(*, paravirtual: bool, caps: dict, is_vision: bool = True, mmproj = "/p.gguf"):
+def _mmproj_gate(
+    *,
+    paravirtual: bool,
+    caps: dict,
+    is_vision: bool = True,
+    mmproj = "/p.gguf",
+):
     """Execute load_model's real projector-resolution statements and report what
     the launch would see: (mmproj path, vision flag, warnings)."""
     body = None
