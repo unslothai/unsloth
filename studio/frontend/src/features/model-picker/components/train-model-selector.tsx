@@ -52,10 +52,8 @@ import { type TranslationKey, useT } from "@/i18n";
 import { extractParamLabel, parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
-import {
-  type TrainingMethod as VramTrainingMethod,
-  buildModelVramMap,
-} from "@/lib/vram";
+import { buildModelVramMap } from "@/lib/vram";
+import type { TrainingMethod } from "@/types/training";
 import { ArrowDown01Icon, ChipIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
@@ -109,7 +107,7 @@ function localModelSourceLabelKey(source: LocalSource): TranslationKey {
 function buildTrainModelVramViews(
   ids: readonly string[],
   resultsById: ReadonlyMap<string, HfModelResult>,
-  trainingMethod: VramTrainingMethod,
+  trainingMethod: TrainingMethod,
   gpu: { available: boolean; memoryTotalGb: number },
 ): Map<string, TrainModelVramView> {
   const models = ids.map((id) => {
@@ -429,12 +427,7 @@ export function TrainModelSelector() {
 
   const vramMap = useMemo(
     () =>
-      buildTrainModelVramViews(
-        hubResultIds,
-        hfResultById,
-        trainingMethod as VramTrainingMethod,
-        gpu,
-      ),
+      buildTrainModelVramViews(hubResultIds, hfResultById, trainingMethod, gpu),
     [gpu, hfResultById, hubResultIds, trainingMethod],
   );
 

@@ -1305,7 +1305,7 @@ def test_training_picker_controls_keep_visible_keyboard_focus():
     options = _read("components/resource-picker/selectable-picker-item.tsx")
     token = _read("features/hub/components/hf-token-indicator.tsx")
     dataset_controls = _read("features/studio/sections/dataset-panel-controls.tsx")
-    dataset_section = _read("features/studio/sections/dataset-section.tsx")
+    dataset_upload = _read("features/studio/sections/dataset-upload.tsx")
     assert "export const PICKER_TRIGGER_CLASS" in focus
     assert "PICKER_FOCUS_VISIBLE_CLASS" in focus
     assert "PICKER_TRIGGER_CLASS" in model
@@ -1313,7 +1313,7 @@ def test_training_picker_controls_keep_visible_keyboard_focus():
     assert "PICKER_OPTION_FOCUS_VISIBLE_CLASS" in options
     assert "PICKER_FOCUS_VISIBLE_CLASS" in token
     assert "PICKER_FOCUS_VISIBLE_CLASS" in dataset_controls
-    assert "PICKER_FOCUS_VISIBLE_CLASS" in dataset_section
+    assert "PICKER_FOCUS_VISIBLE_CLASS" in dataset_upload
     assert dataset_controls.count("aria-label={t(") >= 4
     assert 't("studio.dataset.streamingInfoAriaLabel")' in dataset_controls
     assert "focus-visible:ring-0" not in model
@@ -1362,14 +1362,25 @@ def test_local_dataset_picker_uses_cross_platform_path_identity():
     assert "function DeviceList" not in selector
     assert "function HubList" not in selector
 
-    section = _read("features/studio/sections/dataset-section.tsx")
-    assert "cacheLocalPathMatchesSelection(item.path, uploadedFile)" in section
-    assert "item.path === uploadedFile" not in section
-    assert 'useDeviceInventorySources(["localDatasets"]' in section
-    assert "listLocalDatasets" not in section
-    assert "localDatasetInventory.ready" in section
-    assert "!wasUploadSource.current" in section
-    assert "void refreshLocalDatasets()" in section
+    selection = _read("features/studio/sections/dataset-selection.tsx")
+    assert "cacheLocalPathMatchesSelection(item.path, uploadedFile)" in selection
+    assert "item.path === uploadedFile" not in selection
+
+
+def test_studio_local_dataset_inventory_refreshes_when_uploads_may_change():
+    inventory = _read("features/studio/sections/use-local-dataset-inventory.ts")
+    assert "useDeviceInventorySources(" in inventory
+    assert '["localDatasets"]' in inventory
+    assert "listLocalDatasets" not in inventory
+    assert 'enabled: datasetSource === "upload"' in inventory
+    assert "localDatasets.ready" in inventory
+    assert "!wasUploadSource.current" in inventory
+    assert inventory.count("refresh().catch(() => undefined)") == 2
+    assert 'window.addEventListener("focus", refreshWhenVisible)' in inventory
+    assert (
+        'document.addEventListener("visibilitychange", refreshWhenVisible)'
+        in inventory
+    )
 
 
 def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
@@ -2214,7 +2225,7 @@ def test_partial_local_datasets_are_not_selectable():
 
 def test_dataset_panel_requires_a_valid_hub_id_without_filename_heuristics():
     selection = _read("features/training/lib/dataset-selection.ts")
-    panel = _read("features/studio/sections/dataset-section.tsx")
+    panel = _read("features/studio/sections/dataset-selection.tsx")
     helpers = _read("features/studio/sections/dataset-panel-helpers.ts")
 
     assert 'source !== "huggingface"' in selection

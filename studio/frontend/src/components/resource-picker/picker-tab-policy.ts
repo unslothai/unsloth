@@ -39,7 +39,7 @@ export function resolvePickerTab({
 export function resolveInferredPickerTabLock(
   input: Omit<PickerTabResolutionInput, "lockedInferredTab">,
 ): PickerTab | null {
-  if (input.hasExplicitTabPreference || !input.isDeviceInventorySettled) {
+  if (input.hasExplicitTabPreference) {
     return null;
   }
   return resolvePickerTab({ ...input, lockedInferredTab: null });

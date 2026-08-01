@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { TrainingMethod } from "@/types/training";
+
 /**
  * VRAM estimation for model loading (4-bit quantization via bitsandbytes).
  *
@@ -43,9 +45,10 @@ export type VramFitStatus = "fits" | "tight" | "exceeds";
  */
 export const FP16_LOADING_BYTES = 2.0;
 
-export type TrainingMethod = "qlora" | "lora" | "full" | "cpt";
-
-function usesQuantizedLoading(method: TrainingMethod, modelId?: string): boolean {
+function usesQuantizedLoading(
+  method: TrainingMethod,
+  modelId?: string,
+): boolean {
   if (method === "qlora") return true;
   return method === "cpt" && (modelId ?? "").toLowerCase().includes("4bit");
 }

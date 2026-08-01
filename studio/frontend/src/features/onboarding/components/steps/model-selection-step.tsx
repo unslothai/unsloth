@@ -48,11 +48,7 @@ import { useTrainingConfigStore } from "@/features/training";
 import { useDebouncedValue, useGpuInfo, useHfTokenValidation } from "@/hooks";
 import { extractParamLabel } from "@/lib/model-size";
 import { formatCompact } from "@/lib/utils";
-import {
-  type VramFitStatus,
-  type TrainingMethod as VramTrainingMethod,
-  buildModelVramMap,
-} from "@/lib/vram";
+import { type VramFitStatus, buildModelVramMap } from "@/lib/vram";
 import type { TrainingMethod } from "@/types/training";
 import {
   InformationCircleIcon,
@@ -117,11 +113,7 @@ export function ModelSelectionStep() {
 
   // Match Unsloth: only show exception signals (OOM/TIGHT) in training flows.
   const vramMap = useMemo(() => {
-    const fitMap = buildModelVramMap(
-      hfResults,
-      trainingMethod as VramTrainingMethod,
-      gpu,
-    );
+    const fitMap = buildModelVramMap(hfResults, trainingMethod, gpu);
     const map = new Map<
       string,
       { status: VramFitStatus | null; detail: string | null }
