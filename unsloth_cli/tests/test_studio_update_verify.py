@@ -366,3 +366,26 @@ def test_the_default_root_keeps_the_plain_command(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "curl -fsSL https://unsloth.ai/install.sh | sh" in err
     assert "UNSLOTH_STUDIO_HOME" not in err
+
+
+def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, capsys):
+    # install_python_stack installs the current requirement sets and prunes
+    # nothing, and the installer never recreates the venv, so damage in an
+    # orphan from an older release survives the reinstall it recommends and
+    # would report the same failure forever. The scan is deliberately not
+    # scoped to Studio's dependency closure: under-including there would let
+    # real damage through, which is the failure this whole check exists to
+    # catch. So the message has to carry the fallback instead.
+    import typer
+
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+    monkeypatch.setattr(
+        studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["orphan: o/x.py is missing"]
+    )
+    with pytest.raises(typer.Exit):
+        studio._fail_if_install_damaged()
+    err = capsys.readouterr().err
+    assert "still listed after that" in err
+    assert "--force-reinstall" in err
+    assert "--no-verify" in err

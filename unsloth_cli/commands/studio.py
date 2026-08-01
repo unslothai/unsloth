@@ -2932,6 +2932,16 @@ def _fail_if_install_damaged() -> None:
             env = f"UNSLOTH_STUDIO_HOME={shlex.quote(str(STUDIO_HOME))} "
         typer.echo(f"  curl -fsSL https://unsloth.ai/install.sh | {env}sh", err = True)
     typer.echo("", err = True)
+    # The installer installs the current requirement sets; it does not prune or
+    # reinstall anything outside them. So a package left over from an older
+    # release, or added by hand, is not repaired by the command above and would
+    # otherwise report the same damage forever. Say what to do in that case
+    # rather than scoping the scan, which would risk passing over real damage.
+    typer.echo("If a package above is still listed after that, the installer does not", err = True)
+    typer.echo("manage it. Repair it directly, or remove it if nothing needs it:", err = True)
+    _py = Path(sys.executable)
+    typer.echo(f"  {_py} -m pip install --force-reinstall <package>", err = True)
+    typer.echo("", err = True)
     typer.echo("To update anyway without this check: unsloth studio update --no-verify", err = True)
     raise typer.Exit(code = 1)
 
