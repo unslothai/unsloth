@@ -1848,9 +1848,7 @@ class TestVenvDirFileIntegrity:
         result = _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
         assert result is False, "a truncated file must force the wipe-and-reinstall"
-        joined = " ".join(
-            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
-        )
+        joined = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
         assert "transformers/__init__.py" in joined, f"damage not named in the log: {joined!r}"
 
     def test_deleted_file_is_detected(self, tmp_path: Path):
