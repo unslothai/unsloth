@@ -161,6 +161,9 @@ class InferenceOrchestrator:
 
         self._static_models_generation = _hw_mod.DETECTION_GENERATION
         self._static_models = get_default_models()
+        # Guards the stamp/value pair only. Its own lock, not the construction lock:
+        # that one is held across a build that waits on hardware detection.
+        self._static_models_lock = threading.Lock()
         self._top_gguf_cache: Optional[list[str]] = None
         self._top_hub_cache: Optional[list[str]] = None
         self._top_models_ready = threading.Event()
@@ -181,14 +184,25 @@ class InferenceOrchestrator:
         """Recompute the curated defaults if hardware was re-detected since."""
         import utils.hardware.hardware as _hw_mod
 
-        if _hw_mod.DETECTION_GENERATION == self._static_models_generation:
+        generation = _hw_mod.DETECTION_GENERATION
+        if generation == self._static_models_generation:
             return
         from core.inference.defaults import get_default_models
 
-        # Stamp first, as in __init__: a re-detection racing this refresh must leave the
-        # generation behind, so the next read refreshes again.
-        self._static_models_generation = _hw_mod.DETECTION_GENERATION
-        self._static_models = get_default_models()
+        # Built outside the lock: it settles detection, which can take the whole torch
+        # import, and no reader should queue behind that.
+        models = get_default_models()
+        with self._static_models_lock:
+            # Commit only while this list is still the newest anyone has. Concurrent
+            # readers can be mid-refresh on different generations, and a slow one
+            # storing its older list under a newer stamp would leave that stale list
+            # looking current for the life of the process.
+            if generation != _hw_mod.DETECTION_GENERATION:
+                return
+            if generation <= self._static_models_generation:
+                return
+            self._static_models = models
+            self._static_models_generation = generation
         logger.info("hardware was re-detected; curated default models refreshed")
 
     def _start_top_models_fetch(self) -> None:

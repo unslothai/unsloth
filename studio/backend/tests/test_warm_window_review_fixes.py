@@ -1814,28 +1814,79 @@ def test_the_default_model_list_is_stamped_before_it_is_built():
         for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef) and node.name == "InferenceOrchestrator"
     )
-    for name in ("__init__", "_refresh_static_models_if_stale"):
-        fn = next(
-            node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == name
-        )
-        stamp = _line_of(
-            fn,
-            lambda a: any(
-                isinstance(t, ast.Attribute) and t.attr == "_static_models_generation"
-                for t in a.targets
+    # __init__ is single-threaded, so ordering is enough there: stamping first leaves a
+    # racing re-detection ahead of the stamp, which is the safe direction.
+    init = next(
+        node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+    )
+    stamp = _line_of(
+        init,
+        lambda a: any(
+            isinstance(t, ast.Attribute) and t.attr == "_static_models_generation"
+            for t in a.targets
+        ),
+    )
+    build = _line_of(
+        init,
+        lambda a: any(
+            isinstance(t, ast.Attribute) and t.attr == "_static_models" for t in a.targets
+        ),
+    )
+    assert stamp < build, (
+        "InferenceOrchestrator.__init__ stamps the generation after building the list, "
+        "so a re-detection in between makes the stale list look current forever"
+    )
+
+    # The refresh path has concurrent readers, where ordering alone is not enough: two
+    # of them on different generations can commit out of order. It must capture the
+    # generation before building and commit only while that is still the newest.
+    fn = next(
+        node
+        for node in cls.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_refresh_static_models_if_stale"
+    )
+    capture = _line_of(
+        fn,
+        lambda a: any(isinstance(t, ast.Name) and t.id == "generation" for t in a.targets),
+    )
+    build_call = next(
+        sub.lineno
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "get_default_models"
+    )
+    assert capture < build_call, (
+        "_refresh_static_models_if_stale reads the generation after building the list"
+    )
+    guarded = next(
+        (
+            node
+            for node in ast.walk(fn)
+            if isinstance(node, ast.With)
+            and any(
+                isinstance(sub, ast.Attribute) and sub.attr == "_static_models_lock"
+                for item in node.items
+                for sub in ast.walk(item.context_expr)
+            )
+        ),
+        None,
+    )
+    assert guarded is not None, "the commit is not serialized against concurrent refreshes"
+    assert any(
+        isinstance(sub, ast.Compare)
+        and any(isinstance(n, ast.Name) and n.id == "generation" for n in ast.walk(sub))
+        for sub in ast.walk(guarded)
+    ), "the commit does not re-check the generation it built against"
+    assert all(
+        _line_of(
+            guarded,
+            lambda a, attr = attr: any(
+                isinstance(t, ast.Attribute) and t.attr == attr for t in a.targets
             ),
         )
-        build = _line_of(
-            fn,
-            lambda a: any(
-                isinstance(t, ast.Attribute) and t.attr == "_static_models" for t in a.targets
-            ),
-        )
-        assert stamp < build, (
-            f"InferenceOrchestrator.{name} stamps the generation after building the "
-            "list, so a "
-            "re-detection in between makes the stale list look current forever"
-        )
+        for attr in ("_static_models", "_static_models_generation")
+    ), "the stamp and the value are not committed together under the lock"
 
 
 def test_a_redetect_during_the_bearer_await_leaves_the_reply_provisional():
@@ -2263,3 +2314,89 @@ def test_an_offline_read_leaves_the_fetch_available():
     assert (
         backend._top_models_started is True and started
     ), "coming back online did not start the fetch"
+
+
+def test_a_slow_refresh_cannot_overwrite_a_newer_default_list():
+    """Two readers refreshing different generations must not commit out of order.
+
+    An MLX repair followed by a repeated lifespan gives several generations. A reader
+    that started earlier can finish later, and storing its older list under the newer
+    stamp leaves that stale GGUF-only list looking current for the rest of the process.
+    """
+    import core.inference.orchestrator as orch
+    import utils.hardware.hardware as hw_mod
+
+    backend = orch.InferenceOrchestrator.__new__(orch.InferenceOrchestrator)
+    backend._static_models_lock = threading.Lock()
+    backend._static_models = ["gen0"]
+    backend._static_models_generation = 0
+
+    saved_generation = hw_mod.DETECTION_GENERATION
+    try:
+        # The newer reader has already committed generation 2.
+        hw_mod.DETECTION_GENERATION = 2
+        with mock.patch("core.inference.defaults.get_default_models", lambda: ["gen2"]):
+            backend._refresh_static_models_if_stale()
+        assert backend._static_models == ["gen2"]
+        assert backend._static_models_generation == 2
+
+        # Now the slow reader from generation 1 finishes and tries to commit.
+        hw_mod.DETECTION_GENERATION = 1
+        backend._static_models_generation_before = backend._static_models_generation
+        with mock.patch("core.inference.defaults.get_default_models", lambda: ["gen1"]):
+            backend._refresh_static_models_if_stale()
+        assert backend._static_models == ["gen2"], (
+            "an older reader overwrote the newer default list"
+        )
+        assert backend._static_models_generation == 2
+    finally:
+        hw_mod.DETECTION_GENERATION = saved_generation
+
+
+def test_a_refresh_whose_generation_moved_mid_build_does_not_commit():
+    """A list built against a generation that has since advanced is already stale."""
+    import core.inference.orchestrator as orch
+    import utils.hardware.hardware as hw_mod
+
+    backend = orch.InferenceOrchestrator.__new__(orch.InferenceOrchestrator)
+    backend._static_models_lock = threading.Lock()
+    backend._static_models = ["old"]
+    backend._static_models_generation = 1
+
+    saved_generation = hw_mod.DETECTION_GENERATION
+    try:
+        hw_mod.DETECTION_GENERATION = 2
+
+        def _slow_build():
+            hw_mod.DETECTION_GENERATION = 3   # a re-detection lands mid-build
+            return ["built-against-2"]
+
+        with mock.patch("core.inference.defaults.get_default_models", _slow_build):
+            backend._refresh_static_models_if_stale()
+        assert backend._static_models == ["old"], "a list built against a retired generation landed"
+        assert backend._static_models_generation == 1, (
+            "the stamp moved without the value, so the next read would not refresh"
+        )
+    finally:
+        hw_mod.DETECTION_GENERATION = saved_generation
+
+
+def test_an_ordinary_refresh_still_happens():
+    """Negative control: a single reader on a newer generation must still refresh."""
+    import core.inference.orchestrator as orch
+    import utils.hardware.hardware as hw_mod
+
+    backend = orch.InferenceOrchestrator.__new__(orch.InferenceOrchestrator)
+    backend._static_models_lock = threading.Lock()
+    backend._static_models = ["old"]
+    backend._static_models_generation = 1
+
+    saved_generation = hw_mod.DETECTION_GENERATION
+    try:
+        hw_mod.DETECTION_GENERATION = 2
+        with mock.patch("core.inference.defaults.get_default_models", lambda: ["new"]):
+            backend._refresh_static_models_if_stale()
+        assert backend._static_models == ["new"]
+        assert backend._static_models_generation == 2
+    finally:
+        hw_mod.DETECTION_GENERATION = saved_generation
