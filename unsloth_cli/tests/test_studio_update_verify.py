@@ -159,6 +159,21 @@ def test_findings_are_capped(site):
     assert len(_deps().damaged_installed_files(limit = 3)) == 3
 
 
+def test_findings_are_capped_when_the_files_are_deleted(site):
+    # Truncation and deletion take different branches, and only truncation was
+    # covered. A wiped package -- `rm -rf` on a venv's torch, the shape a user
+    # actually hits -- takes the deletion branch, so an uncapped one floods the
+    # caller with a line per RECORD entry (~11.8k for torch), each of which the
+    # desktop updater turns into its own IPC event.
+    files = {f"theta/m{i}.py": b"x" * 500 for i in range(40)}
+    _make_dist(site, "theta", files)
+    for rel in files:
+        (site / rel).unlink()
+    found = _deps().damaged_installed_files(limit = 3)
+    assert len(found) == 3
+    assert all("is missing" in line for line in found)
+
+
 # ── the failure path ─────────────────────────────────────────────────
 
 
@@ -200,6 +215,24 @@ def test_a_foreign_cli_stays_quiet(monkeypatch):
 
     monkeypatch.setattr(studio._studio_deps, "damaged_installed_files", _never)
     studio._fail_if_install_damaged()  # must not raise
+
+
+def test_a_system_python_is_not_treated_as_the_managed_venv(monkeypatch, tmp_path):
+    # Colab has no Unsloth venv: studio/setup.sh installs the backend into the
+    # system Python on purpose. Distro-packaged RECORDs there list files the
+    # distro never installed (PEP 627), so running the file check would accuse
+    # the distro of damaging Studio. Reproduced on Ubuntu system Python, which
+    # reports an apt-owned `markdown-it-py: ../scripts/markdown-it is missing`.
+    prefix = tmp_path / "usr"
+    prefix.mkdir()
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    assert _deps().running_outside_managed_venv() is True
+
+    (prefix / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    # With a real venv the answer goes back to the managed-root question.
+    assert _deps().running_outside_managed_venv() is (
+        _deps()._managed_root(()) is not None
+    )
 
 
 def test_windows_is_told_the_powershell_installer(monkeypatch, capsys):

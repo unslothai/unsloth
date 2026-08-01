@@ -249,9 +249,9 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
                 actual = dist.locate_file(rel).stat().st_size
             except OSError:
                 found.append(f"{name}: {rel} is missing")
-                continue
-            if actual < recorded:
-                found.append(f"{name}: {rel} is {actual} bytes, expected {recorded}")
+            else:
+                if actual < recorded:
+                    found.append(f"{name}: {rel} is {actual} bytes, expected {recorded}")
             if len(found) >= limit:
                 return found
     return found
@@ -263,6 +263,12 @@ def running_outside_managed_venv(extra_roots: Sequence[Path] = ()) -> bool:
     A pip-installed CLI can drive an update into a venv it does not live in, and
     anything answered from this interpreter would then describe the wrong tree.
     """
+    if not (Path(sys.prefix) / "pyvenv.cfg").is_file():
+        # Not a venv at all. On Colab setup.sh deliberately installs the backend
+        # into the system Python, whose distro-packaged RECORDs legitimately list
+        # files the distro never installed (PEP 627), so a file check here
+        # describes the distro rather than Studio.
+        return True
     return _managed_root(extra_roots) is not None
 
 
