@@ -111,7 +111,10 @@ import {
   writeComposerDraft,
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
-import { shouldSubmitDictation } from "@/features/chat/utils/dictation-send";
+import {
+  dictationSendBlocked,
+  shouldSubmitDictation,
+} from "@/features/chat/utils/dictation-send";
 import { listThreadDocuments } from "@/features/rag/api/rag-api";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -1857,6 +1860,18 @@ const Composer: FC<{
     aui.composer().stopDictation();
   }, [aui, composerIdentity]);
 
+  // One gate for the recording bar's send: it greys the button out, and holds
+  // a pending send when the composer changes under it after the press.
+  const dictationBlocked = dictationSendBlocked({
+    composerDisabled: Boolean(disabled),
+    uploading: hasPendingAttachments,
+    researchActive: isResearchActive,
+    runActive: threadIsRunning || promptQueueActive,
+    queueDisabled: Boolean(disableQueue),
+    hasOverlay: Boolean(overlay),
+    hasAttachments,
+    hasPendingAudio,
+  });
   const wasDictatingRef = useRef(false);
   useEffect(() => {
     if (isDictating) {
@@ -1872,30 +1887,32 @@ const Composer: FC<{
     }
     wasDictatingRef.current = false;
     if (!sendAfterDictationRef.current) return;
-    // The plus stays live while transcribing, so an upload can start after
-    // send was pressed. handleSubmit would reject it, so hold the intent
-    // (still set) until the upload lands and this effect runs again.
-    if (hasPendingAttachments) return;
-    sendAfterDictationRef.current = false;
     // A partial transcript (a failed chunk, or an engine error after one
     // landed) belongs in the composer, but must not send half a message.
-    if (dictationFailed()) return;
     // Silence, a thread switch mid-transcription, or a plus-menu insertion
-    // with no speech: keep the draft, submit nothing.
+    // with no speech: keep the draft, submit nothing. Settled before the hold
+    // below, so nothing to send never leaves an intent pending.
     const { text } = aui.composer().getState();
-    if (
-      !shouldSubmitDictation({
+    const sendable =
+      !dictationFailed() &&
+      shouldSubmitDictation({
         originComposer: dictationComposerRef.current,
         currentComposer: composerIdentity,
         producedTranscript: dictationProducedTranscript(),
         baseText: dictationBaseTextRef.current,
         text,
-      })
-    ) {
+      });
+    if (!sendable) {
+      sendAfterDictationRef.current = false;
       return;
     }
+    // The plus stays live while transcribing, so an upload or an attachment
+    // can appear after the press. Keep the intent until the composer accepts
+    // a submit again, rather than spending it on one that would bounce.
+    if (dictationBlocked) return;
+    sendAfterDictationRef.current = false;
     formRef.current?.requestSubmit();
-  }, [isDictating, aui, composerIdentity, hasPendingAttachments]);
+  }, [isDictating, aui, composerIdentity, dictationBlocked]);
 
   const handleSubmit = useCallback(
     (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
@@ -2091,16 +2108,7 @@ const Composer: FC<{
             // Every state handleSubmit rejects, since it would reject after
             // transcription with the send intent already spent. Text presence
             // is left out: the transcript supplies it.
-            sendDisabled={
-              disabled ||
-              hasPendingAttachments ||
-              isResearchActive ||
-              ((threadIsRunning || promptQueueActive) &&
-                (disableQueue ||
-                  Boolean(overlay) ||
-                  hasAttachments ||
-                  hasPendingAudio))
-            }
+            sendDisabled={dictationBlocked}
           />
         ) : (
           <>

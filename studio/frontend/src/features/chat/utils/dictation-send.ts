@@ -17,6 +17,43 @@ export function dictationProducedText(before: string, after: string): boolean {
 }
 
 /**
+ * Every state the composer's submit rejects.
+ *
+ * One definition for both jobs: greying out the recording bar's send, and
+ * deciding whether a pending send waits rather than being spent on a submit
+ * that would bounce. Text presence is not here, since the transcript supplies
+ * it after the button is pressed.
+ */
+export function dictationSendBlocked(state: {
+  /** The composer itself is unavailable. */
+  composerDisabled: boolean;
+  /** An attachment is still uploading. */
+  uploading: boolean;
+  /** A deep research run owns the composer. */
+  researchActive: boolean;
+  /** A response is streaming or the prompt queue is going. */
+  runActive: boolean;
+  /** This composer never queues, it asks the user to wait. */
+  queueDisabled: boolean;
+  /** An image edit overlay is open. */
+  hasOverlay: boolean;
+  /** Only text can be queued, so these block while a run is active. */
+  hasAttachments: boolean;
+  hasPendingAudio: boolean;
+}): boolean {
+  if (state.composerDisabled || state.uploading || state.researchActive) {
+    return true;
+  }
+  if (!state.runActive) return false;
+  return (
+    state.queueDisabled ||
+    state.hasOverlay ||
+    state.hasAttachments ||
+    state.hasPendingAudio
+  );
+}
+
+/**
  * Whether a pending dictation send may submit now.
  *
  * Three ways it must not. The composer is reused across thread switches, so a

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   dictationProducedText,
+  dictationSendBlocked,
   shouldSubmitDictation,
 } from "../src/features/chat/utils/dictation-send.ts";
 
@@ -96,6 +97,62 @@ test("a menu insertion with no transcript sends nothing", () => {
 test("a menu insertion alongside a real transcript still sends", () => {
   assert.equal(
     shouldSubmitDictation({ ...base, text: "an inserted prompt hello there" }),
+    true,
+  );
+});
+
+const open = {
+  composerDisabled: false,
+  uploading: false,
+  researchActive: false,
+  runActive: false,
+  queueDisabled: false,
+  hasOverlay: false,
+  hasAttachments: false,
+  hasPendingAudio: false,
+};
+
+test("an idle composer accepts the dictation send", () => {
+  assert.equal(dictationSendBlocked(open), false);
+});
+
+test("the composer's own unavailable states block regardless of a run", () => {
+  assert.equal(dictationSendBlocked({ ...open, composerDisabled: true }), true);
+  assert.equal(dictationSendBlocked({ ...open, uploading: true }), true);
+  assert.equal(dictationSendBlocked({ ...open, researchActive: true }), true);
+});
+
+// Plain text queues while a response runs, which is what the bar exists for.
+test("a running response alone does not block", () => {
+  assert.equal(dictationSendBlocked({ ...open, runActive: true }), false);
+});
+
+// Only text can be queued, so these block a send that would have to queue.
+test("non-queueable content blocks only while a run is active", () => {
+  for (const key of [
+    "queueDisabled",
+    "hasOverlay",
+    "hasAttachments",
+    "hasPendingAudio",
+  ] as const) {
+    assert.equal(dictationSendBlocked({ ...open, [key]: true }), false);
+    assert.equal(
+      dictationSendBlocked({ ...open, runActive: true, [key]: true }),
+      true,
+    );
+  }
+});
+
+// The case the button gate cannot cover: an attachment added after the press,
+// whose upload finishes before transcription does.
+test("an attachment completing mid-transcription blocks a queued send", () => {
+  assert.equal(
+    dictationSendBlocked({
+      ...open,
+      runActive: true,
+      uploading: false,
+      hasAttachments: true,
+    }),
     true,
   );
 });

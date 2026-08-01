@@ -37,7 +37,8 @@ function formatElapsed(ms: number): string {
 /**
  * Recording UI shown in place of the composer input: a live waveform with stop
  * and send on the right. Stop transcribes into the composer for editing; send
- * transcribes and submits. Escape discards without transcribing.
+ * transcribes and submits. Escape discards without transcribing, as does a
+ * second press of stop once transcription is under way.
  */
 export const ChatDictationBar: FC<{
   /** Transcribe, then submit the composer. Falls back to stop when absent. */
@@ -167,8 +168,7 @@ export const ChatDictationBar: FC<{
   }, [isDictating]);
 
   // No discard button, so Escape drops a recording without transcribing. It
-  // stays live while transcribing: cancel aborts the request, and both buttons
-  // are disabled, so it is the only way out of a stalled one.
+  // stays live while transcribing too, where cancel aborts the request.
   useEffect(() => {
     if (!isDictating) {
       return;
@@ -194,8 +194,14 @@ export const ChatDictationBar: FC<{
     setTranscribing(source);
   };
 
-  // Transcript lands in the composer, ready to edit.
+  // Transcript lands in the composer, ready to edit. A second press while
+  // transcribing discards it instead, as Compare's does: Escape is otherwise
+  // the only way out, which touch has no way to press.
   const stop = () => {
+    if (transcribing !== null) {
+      cancelActiveStudioDictation();
+      return;
+    }
     freeze("stop");
     aui.composer().stopDictation();
   };
@@ -240,11 +246,14 @@ export const ChatDictationBar: FC<{
       <div className="flex shrink-0 items-center gap-2.5">
         <TooltipIconButton
           type="button"
-          tooltip={transcribing === "stop" ? "Transcribing…" : "Stop recording"}
-          aria-label="Stop recording"
+          tooltip={
+            transcribing !== null ? "Cancel transcription" : "Stop recording"
+          }
+          aria-label={
+            transcribing !== null ? "Cancel transcription" : "Stop recording"
+          }
           variant="ghost"
           onClick={stop}
-          disabled={transcribing !== null}
           // Neutral grey in both themes: --secondary is brand green on the
           // default light palette, and too close to --card on dark.
           className="size-9 rounded-full bg-accent text-foreground hover:bg-accent/70 dark:bg-white/10 dark:hover:bg-white/[0.16]"
