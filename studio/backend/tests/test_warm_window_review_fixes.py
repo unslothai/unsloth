@@ -1994,13 +1994,13 @@ def test_the_warm_epoch_is_retired_before_any_shutdown_await():
     """
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
     )
     yield_line = next(sub.lineno for sub in ast.walk(fn) if isinstance(sub, ast.Yield))
     awaits_after = sorted(
-        sub.lineno for sub in ast.walk(fn)
-        if isinstance(sub, ast.Await) and sub.lineno > yield_line
+        sub.lineno for sub in ast.walk(fn) if isinstance(sub, ast.Await) and sub.lineno > yield_line
     )
     assert awaits_after, "the shutdown path no longer awaits anything; re-derive this"
     # The call is made through a getattr-bound name, as the helper does, so match the
@@ -2014,8 +2014,7 @@ def test_the_warm_epoch_is_retired_before_any_shutdown_await():
             and isinstance(sub.func, ast.Name)
             and sub.func.id == "getattr"
             and any(
-                isinstance(a, ast.Constant) and a.value == "invalidate_detection"
-                for a in sub.args
+                isinstance(a, ast.Constant) and a.value == "invalidate_detection" for a in sub.args
             )
             for sub in ast.walk(node.value)
         )
