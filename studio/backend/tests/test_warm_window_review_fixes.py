@@ -2467,11 +2467,13 @@ def test_a_measured_authed_reply_drops_both_provisional_markers():
     """
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
     )
     branch = next(
-        node for node in ast.walk(fn)
+        node
+        for node in ast.walk(fn)
         if isinstance(node, ast.If)
         and any(
             isinstance(sub, ast.Subscript)
@@ -2492,6 +2494,7 @@ def test_a_measured_authed_reply_drops_both_provisional_markers():
         and sub.args
         and isinstance(sub.args[0], ast.Constant)
     }
-    assert {"hardware_detecting", "hardware_detection_deferred"} <= popped, (
-        f"the measured reply still carries a provisional marker; popped {sorted(popped)}"
-    )
+    assert {
+        "hardware_detecting",
+        "hardware_detection_deferred",
+    } <= popped, f"the measured reply still carries a provisional marker; popped {sorted(popped)}"
