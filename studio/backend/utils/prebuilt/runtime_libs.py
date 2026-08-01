@@ -52,11 +52,9 @@ def python_runtime_dirs() -> list[str]:
         pass
 
     for root in search_roots:
-        # A sys.path entry this user cannot stat (denied network share,
-        # redirected per-machine site-packages) makes is_dir() raise, and the
-        # sidecar's caller turns that into an empty dir list -- dropping every
-        # CUDA wheel dir, so the server cannot resolve libcudart. Kept in sync
-        # with install_llama_prebuilt.py's python_runtime_dirs.
+        # A sys.path entry this user cannot stat makes is_dir() raise, and the
+        # caller turns that into an empty dir list, dropping every CUDA wheel dir.
+        # Kept in sync with install_llama_prebuilt.py's python_runtime_dirs.
         try:
             if not root.is_dir():
                 continue

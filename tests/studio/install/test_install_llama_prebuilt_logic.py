@@ -273,8 +273,8 @@ def test_install_prebuilt_uses_explicit_instruction_cleanup_root(
     )
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
 
-    # Resolver failures are classified as a source-build fallback, so the abort
-    # sentinel surfaces as EXIT_FALLBACK with the original message on the chain.
+    # Resolver failures are reclassified as a fallback, so the abort sentinel
+    # surfaces as EXIT_FALLBACK with the original message on the chain.
     with pytest.raises(SystemExit) as caught:
         install_prebuilt(
             install_dir.resolve(),
@@ -3602,7 +3602,7 @@ def test_windows_runtime_dirs_marks_path_candidates_as_optional(monkeypatch, tmp
 _SETUP_SH_ROUTING_START = 'if [ "$_PREBUILT_STATUS" -eq 0 ]; then'
 _SETUP_PS1_ROUTING_START = "if ($prebuiltExit -eq 0) {"
 
-# Stand-ins for the setup.sh helpers the routing block calls. Each records what
+# Stand-ins for the setup.sh helpers the routing block calls; each records what
 # it was asked to do so the assertions can read the decision back out.
 _SETUP_SH_HARNESS = """
 set -u
@@ -3744,8 +3744,8 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
 @pytest.mark.parametrize(
     "error",
     [
-        # api.github.com rate limiting. fetch_json raises this as a bare
-        # RuntimeError, so it is not caught by any urllib/OSError handler.
+        # Rate limiting: fetch_json raises a bare RuntimeError, so no
+        # urllib/OSError handler catches it.
         RuntimeError(
             "GitHub API returned 403 for "
             "https://api.github.com/repos/unslothai/llama.cpp/releases?per_page=100&page=1"
@@ -3788,8 +3788,8 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
         TypeError("bug"),
         AttributeError("bug"),
         NameError("bug"),
-        # Local host-resource failures, not transport: a source build needs more
-        # file descriptors and more memory, so it cannot repair either.
+        # Host-resource failures, not transport: a source build needs more file
+        # descriptors and memory, so it cannot repair either.
         OSError(errno.EMFILE, "Too many open files"),
         OSError(errno.ENOMEM, "Cannot allocate memory"),
         PermissionError(errno.EACCES, "Permission denied"),
@@ -4104,10 +4104,10 @@ def test_marker_sync_survives_a_read_only_marker(tmp_path, sync, kwargs):
         if marker.exists():
             os.chmod(marker, 0o644)
 
-    # Either the atomic swap landed the value (POSIX, writable dir) or we said
-    # so loudly. Silently losing force_cpu would let a later update re-route a
-    # deliberate CPU user onto a GPU bundle (#7213). os.replace onto a
-    # read-only destination is refused on Windows, hence the two-way assert.
+    # Either the atomic swap landed the value (POSIX, writable dir) or we warned.
+    # Silently losing force_cpu would let a later update re-route a deliberate CPU
+    # user onto a GPU bundle (#7213). Windows refuses os.replace onto a read-only
+    # destination, hence the two-way assert.
     field = list(kwargs)[0].replace("persist_", "")
     expected = list(kwargs.values())[0]
     persisted = json.loads(marker.read_text(encoding = "utf-8")).get(field) == expected

@@ -4463,10 +4463,9 @@ def python_runtime_dirs() -> list[str]:
         pass
 
     for root in search_roots:
-        # sys.path / PYTHONPATH can name a directory this user cannot stat (a
-        # denied network share, a redirected per-machine site-packages), and
-        # is_dir() re-raises PermissionError. That would escape
-        # windows_runtime_dirs() and defeat its skip_unusable discovery.
+        # sys.path / PYTHONPATH can name a directory this user cannot stat, and
+        # is_dir() re-raises PermissionError, escaping windows_runtime_dirs() and
+        # defeating its skip_unusable discovery.
         try:
             if not root.is_dir():
                 continue
@@ -4494,12 +4493,10 @@ def python_runtime_dirs() -> list[str]:
         candidates.extend(root.glob("nvidia/*/Library/bin/x86_64"))
         candidates.extend(root.glob("nvidia/*/Library/bin/x64"))
         candidates.extend(root.glob("torch/lib"))
-    # Every candidate here is an optional CUDA wheel dir found by globbing, so a
-    # child with a restrictive ACL under a readable root (the shape that started
-    # this) must not abort discovery -- that would defeat the guard above and
-    # windows_runtime_dirs' own skip_unusable. A dir that cannot be stat'd could
-    # not have served DLLs to the loader anyway. Matches the serve-time copy in
-    # backend/utils/prebuilt/runtime_libs.py, which is always lenient.
+    # These are optional globbed CUDA wheel dirs, so a denied child under a
+    # readable root must not abort discovery; it could not have served DLLs to
+    # the loader anyway. Matches the always-lenient serve-time copy in
+    # backend/utils/prebuilt/runtime_libs.py.
     return dedupe_existing_dirs(candidates, skip_unusable = True)
 
 
@@ -4750,8 +4747,7 @@ def windows_runtime_dirs() -> list[str]:
     program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
     toolkit_base = Path(program_files) / "NVIDIA GPU Computing Toolkit" / "CUDA"
     # %ProgramFiles% is user-controllable, so this stat is as deniable as the
-    # PATH entries below it. glob() itself swallows OSError, so only the guard
-    # needs protecting.
+    # PATH entries below. glob() already swallows OSError.
     try:
         toolkit_is_dir = toolkit_base.is_dir()
     except (OSError, ValueError):
@@ -5038,9 +5034,8 @@ def binary_env(
         if _native_rocm:
             ld_dirs = [*_native_rocm, *ld_dirs]
         existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
-        # An inherited entry under a mode-000 parent or a stale NFS mount raises
-        # the same way a denied %PATH% entry does on Windows; it is not ours to
-        # require. The bundle's own dirs stay strict.
+        # An inherited entry under a mode-000 parent or a stale NFS mount is not
+        # ours to require. The bundle's own dirs stay strict.
         required = dedupe_existing_dirs(ld_dirs)
         inherited = dedupe_existing_dirs(existing, skip_unusable = True)
         env["LD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
@@ -5715,17 +5710,15 @@ def _write_marker(marker_path: Path, marker: dict) -> bool:
         original = marker_path.stat()
     except OSError:
         original = None
-    # One tmp_path for every failure path: a write/flush/fsync that raises (the
-    # ENOSPC this is built to tolerate) must not strand a partial
-    # UNSLOTH_PREBUILT_INFO.json.tmp-* beside the valid marker, and a full volume
-    # would accumulate one per setup attempt.
+    # Tracked outside the try so a raising write/flush/fsync (the ENOSPC this is
+    # built to tolerate) cannot strand a partial .tmp-* beside the valid marker.
     tmp_path: Path | None = None
     try:
         # Own temp file rather than atomic_write_bytes so the mode is restored
         # BEFORE the swap: os.replace keeps the source file's mode, and
-        # NamedTemporaryFile is 0600, which would leave a shared install's
-        # marker readable only by whoever ran setup -- the very case the atomic
-        # path exists to serve. chmod after the swap would leave a window.
+        # NamedTemporaryFile is 0600, which would leave a shared install's marker
+        # readable only by whoever ran setup. chmod after the swap would leave a
+        # window.
         with tempfile.NamedTemporaryFile(
             prefix = marker_path.name + ".tmp-",
             dir = marker_path.parent,
@@ -5739,8 +5732,7 @@ def _write_marker(marker_path: Path, marker: dict) -> bool:
             os.chmod(tmp_path, stat.S_IMODE(original.st_mode))
             # Best effort: os.replace installs the temp file's ownership, so a
             # shared marker would otherwise pick up the invoking user's group.
-            # Only root can hand a file to another owner, so this is a no-op for
-            # an ordinary user -- the mode above is what actually keeps the
+            # A no-op for a non-root user; the mode above is what keeps the
             # marker readable, and declining the refresh instead would leave a
             # deliberate --force-cpu unrecorded, which is the #7213 crash.
             try:
@@ -5773,9 +5765,9 @@ def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
         return
     marker["force_cpu"] = persist_force_cpu
     if not _write_marker(marker_path, marker):
-        # Losing this leaves the updater free to re-route a deliberate CPU user
-        # onto a GPU/Vulkan bundle (#7213), so say so loudly -- but do not fail
-        # setup over it, now that an unexpected exit no longer source builds.
+        # Losing this lets the updater re-route a deliberate CPU user onto a
+        # GPU/Vulkan bundle (#7213), so warn loudly; do not fail setup over it,
+        # now that an unexpected exit no longer source builds.
         log(
             f"WARNING: could not record force_cpu={persist_force_cpu} in {marker_path}; "
             "a later update may not re-assert this choice"
@@ -6822,32 +6814,28 @@ def install_prebuilt(
             # asset branch.
             #
             # Listing releases is a network call, and only the ggml-org branch
-            # wraps its own failures. A rate limited api.github.com (fetch_json
-            # turns HTTP 403 into a bare RuntimeError) or a dropped connection
-            # therefore escapes as EXIT_ERROR, which the setup scripts refuse to
-            # source build on -- yet a source build clones over git rather than
-            # the API and is exactly the recovery these failures want. Wrapped
+            # wraps its own failures, so a rate limited api.github.com or a
+            # dropped connection escapes as EXIT_ERROR, which the setup scripts
+            # refuse to source build on -- yet a source build clones over git
+            # rather than the API and is exactly the recovery these want. Wrapped
             # here rather than inside the resolver because --resolve-prebuilt
-            # turns PrebuiltFallback into a successful {"prebuilt_available":
-            # false} payload, and update_flow caches any exit-0 answer for
-            # RESOLVE_TTL_SECONDS -- so a resolver-side wrapper would pin a
-            # transient 403 as "no prebuilt" for 24h. A nonzero exit is never
+            # turns PrebuiltFallback into an exit-0 {"prebuilt_available": false}
+            # payload that update_flow caches for RESOLVE_TTL_SECONDS, pinning a
+            # transient 403 as "no prebuilt" for 24h; nonzero exits are never
             # cached, so the resolver must keep failing hard.
             #
-            # Not dead code even though the download-host fast path hides most
-            # API 403s: macOS skips that path entirely (see
-            # allow_download_host_fast_path below), as does a pinned
-            # UNSLOTH_LLAMA_RELEASE_TAG, a non-latest tag, a non-default
+            # Not dead code despite the download-host fast path: macOS skips it
+            # entirely (see allow_download_host_fast_path below), as does a
+            # pinned UNSLOTH_LLAMA_RELEASE_TAG, a non-latest tag, a non-default
             # --published-repo, and any CDN outage.
             #
-            # The catch names transport shapes only. URLError covers HTTPError
-            # and the socket/DNS errors urllib wraps, JSONDecodeError is a
-            # ValueError, and fetch_json's 403 is a bare RuntimeError. A plain
-            # OSError is NOT included: EMFILE, ENOMEM or a local EACCES is a
-            # host resource problem, and a source build makes it worse, so those
-            # stay EXIT_ERROR alongside a TypeError from a bug in
-            # host-conditional resolver code. ENOSPC still reaches EXIT_NO_SPACE
-            # either way, via _environment_fatal_reason in __main__.
+            # Transport shapes only: URLError covers HTTPError and the socket/DNS
+            # errors urllib wraps, JSONDecodeError is a ValueError, and
+            # fetch_json's 403 is a bare RuntimeError. Plain OSError is excluded
+            # on purpose -- EMFILE, ENOMEM or a local EACCES is a host resource
+            # problem a source build only makes worse, so those stay EXIT_ERROR
+            # alongside resolver bugs. ENOSPC still reaches EXIT_NO_SPACE via
+            # _environment_fatal_reason in __main__.
             try:
                 requested_tag, release_plans = resolve_simple_install_release_plans(
                     llama_tag,
@@ -6986,8 +6974,7 @@ def install_prebuilt(
         log("prebuilt install path failed; falling back to source build")
         log(f"prebuilt fallback reason: {exc}")
         # Diagnostics must never change the verdict: a probe that raises here
-        # would replace the in-flight fallback and exit EXIT_ERROR, which the
-        # setup scripts refuse to source build on.
+        # would replace the fallback with EXIT_ERROR, which never source builds.
         try:
             print(collect_system_report(host, choice, install_dir))
         except Exception as report_exc:
