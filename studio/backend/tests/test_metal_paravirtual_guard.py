@@ -10,13 +10,16 @@ pin the discrimination and not just the fallback.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import sys
+import textwrap
 import types
 
 import pytest
 
 import core.inference.llama_cpp as llama_cpp
+import core.inference.llama_server_args as llama_server_args
 from core.inference.llama_cpp import _metal_device_is_paravirtual
 
 
@@ -223,7 +226,124 @@ def test_gpu_companions_are_pinned_to_cpu_too():
     gets params.speculative.draft.n_gpu_layers, default -1 = auto."""
     src = _load_model_source()
     assert '"--no-mmproj-offload"' in src
-    assert '"--spec-draft-ngl", "0"' in src
+    # The drafter flag name comes from the probe, never a literal: --spec-draft-ngl
+    # only exists from llama.cpp b8955, and an older build exposing only -ngld would
+    # refuse to start on the newer name, which is exactly what the gate prevents.
+    assert '"--spec-draft-ngl", "0"' not in src, (
+        "hardcoding the flag defeats the capability probe on builds that only have -ngld"
+    )
+    assert 'server_caps["spec_draft_ngl_flag"]' in src
+
+
+def _load_model_tree() -> ast.AST:
+    return ast.parse(textwrap.dedent(_load_model_source()))
+
+
+def test_the_companion_pins_are_keyed_on_the_hardware_not_the_request():
+    """A caller that already asks for Manual + 0 layers is on the same corrupt
+    device, but the main model's placement needs no rewrite -- so skipping the
+    whole block for it left _paravirtual_cpu_forced False and silently dropped the
+    mmproj / drafter pins, which do not read --gpu-layers at all."""
+    tree = _load_model_tree()
+    assigns = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "_paravirtual_cpu_forced" for t in node.targets
+        )
+    ]
+    assert len(assigns) == 1, "the flag must have exactly one source of truth"
+    (assign,) = assigns
+    assert isinstance(assign.value, ast.Call)
+    assert assign.value.func.id == "_metal_device_is_paravirtual"
+
+    # The negative: it must NOT be nested under a test of the requested placement,
+    # which is what made a manual CPU load lose the companion pins.
+    def _mentions(node, names):
+        found = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+        return names <= found
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if not _mentions(node.test, {"gpu_memory_mode", "gpu_layers"}):
+            continue
+        nested = [n for stmt in node.body for n in ast.walk(stmt)]
+        assert assign not in nested, (
+            "_paravirtual_cpu_forced is gated on the requested placement again"
+        )
+
+
+def test_a_user_owned_drafter_is_pinned_to_cpu_too():
+    """A user --spec-type makes _build_speculative_flags emit nothing, so their
+    --model-draft never appeared in spec_flags and the drafter kept running on the
+    corrupt Metal path."""
+    user_extras = ["--spec-type", "draft-simple", "--model-draft", "/models/d.gguf"]
+    # Studio emits no spec block at all here, which is why spec_flags alone is blind.
+    backend = llama_cpp.LlamaCppBackend()
+    assert (
+        backend._build_speculative_flags(
+            speculative_type = "auto",
+            spec_draft_n_max = None,
+            extra_args = user_extras,
+            model_identifier = "owner/repo",
+            model_path = None,
+            gpus = False,
+            binary = None,
+        )
+        == []
+    )
+    assert llama_cpp._extra_args_mtp_draft_path([*[], *user_extras]) == "/models/d.gguf"
+    # The negative: no drafter anywhere means no pin, so an embedded MTP head (which
+    # follows the main --gpu-layers) is not handed a flag it does not need.
+    assert llama_cpp._extra_args_mtp_draft_path(["--spec-type", "draft-mtp"], {}) is None
+
+    tree = _load_model_tree()
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_extra_args_mtp_draft_path"
+    ]
+    assert calls, "the drafter CPU pin no longer resolves a drafter path"
+    assert any(
+        {n.id for n in ast.walk(call) if isinstance(n, ast.Name)} >= {"spec_flags", "extra_args"}
+        for call in calls
+    ), "the pin still looks at spec_flags only, so a user-owned drafter is missed"
+
+
+def test_the_drafter_cpu_pin_outlives_the_pass_through_extras():
+    """llama.cpp is last-wins and the paravirtual strip only covers the main offload
+    flags, so a user -ngld 99 appended after a managed --spec-draft-ngl 0 would put
+    the drafter straight back on the corrupt device."""
+    assert "-ngld" not in llama_server_args._OFFLOAD_SHADOWING_FLAGS
+    assert "--spec-draft-ngl" not in llama_server_args._OFFLOAD_SHADOWING_FLAGS
+    # ...and it is not stripped as a spec flag either (the budget parses it).
+    assert "-ngld" not in llama_server_args._SPEC_FLAGS
+    # A trailing value is what wins, which is the parser behaviour being defended.
+    assert (
+        llama_cpp._extra_args_draft_offloaded_to_cpu(
+            ["--spec-draft-ngl", "0", "-ngld", "99"], {}
+        )
+        is False
+    )
+
+    tree = _load_model_tree()
+    extras_at = pin_at = None
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr != "extend":
+            continue
+        names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+        if "_emit_extra_args" in names:
+            extras_at = node.lineno
+        if "_pv_draft_cpu_pin" in names:
+            pin_at = node.lineno
+    assert extras_at is not None and pin_at is not None
+    assert pin_at > extras_at, "the drafter CPU pin is emitted before the user extras"
 
 
 # ── the MTP slot clamp must follow the flags that actually launch ─────

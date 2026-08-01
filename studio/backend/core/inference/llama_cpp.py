@@ -3275,7 +3275,7 @@ class LlamaCppBackend:
                 "supports_metrics": False,
                 "supports_slot_save": False,
                 "supports_no_mmproj_offload": False,
-                "supports_spec_draft_ngl": False,
+                "spec_draft_ngl_flag": None,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -3298,7 +3298,7 @@ class LlamaCppBackend:
         supports_metrics = False
         supports_slot_save = False
         supports_no_mmproj_offload = False
-        supports_spec_draft_ngl = False
+        spec_draft_ngl_flag = None
         saw_spec_type = False
         probe_ok = False
         help_text = ""
@@ -3406,7 +3406,16 @@ class LlamaCppBackend:
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
-            supports_spec_draft_ngl = _is_real("--spec-draft-ngl") or _is_real("-ngld")
+            # Record WHICH alias this build has, not just that one exists:
+            # --spec-draft-ngl only landed in llama.cpp b8955, and an older build
+            # exposing only --gpu-layers-draft would refuse to start on the newer
+            # name. Long forms only, since the block parser above skips short
+            # aliases, so probing "-ngld" could never have matched. Same
+            # prefer-new-fall-back-to-legacy shape as spec_draft_n_max_flag.
+            for _alias in ("--spec-draft-ngl", "--gpu-layers-draft", "--n-gpu-layers-draft"):
+                if _is_real(_alias):
+                    spec_draft_ngl_flag = _alias
+                    break
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
             saw_spec_type = False
@@ -3444,7 +3453,7 @@ class LlamaCppBackend:
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
-            "supports_spec_draft_ngl": supports_spec_draft_ngl,
+            "spec_draft_ngl_flag": spec_draft_ngl_flag,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -7278,9 +7287,14 @@ class LlamaCppBackend:
             # placement is the one that launches: the launch records the normalized
             # values, so comparing the raw request would miss the fast path and tear
             # down a healthy CPU server on every repeat Auto /load.
-            _paravirtual_cpu_forced = False
-            if not (gpu_memory_mode == "manual" and gpu_layers == 0):
-                if _metal_device_is_paravirtual():
+            # Keyed on the hardware, not on the request: Manual + 0 layers already
+            # places the main model on CPU, but the companions below (mmproj, a
+            # separate drafter) do not read --gpu-layers, so a manual CPU load on
+            # this hardware still needs their pins. Only the placement rewrite is
+            # skipped for it, since there is nothing left to rewrite.
+            _paravirtual_cpu_forced = _metal_device_is_paravirtual()
+            if _paravirtual_cpu_forced:
+                if not (gpu_memory_mode == "manual" and gpu_layers == 0):
                     logger.warning(
                         "Forcing gpu_layers=0 for %s: this Mac's Metal device is "
                         "virtualised and offloaded layers produce corrupt output.",
@@ -7288,7 +7302,6 @@ class LlamaCppBackend:
                     )
                     gpu_memory_mode = "manual"
                     gpu_layers = 0
-                    _paravirtual_cpu_forced = True
                     # Nothing is left on the GPU to split or keep on CPU, and the
                     # launch drops these anyway; normalize them here too so the
                     # recorded state and the next identical request agree.
@@ -9064,12 +9077,21 @@ class LlamaCppBackend:
                 # Probe-gated like the other optional flags in this file: an older
                 # build would reject the unknown argument and refuse to start, which
                 # is worse than the corrupt drafter it prevents.
+                # extra_args is inspected alongside spec_flags because a user-owned
+                # --spec-type makes _build_speculative_flags return nothing, so the
+                # drafter is theirs (--model-draft in extras) and would go unpinned.
+                # Emitted after the pass-through extras below, not here: the parser is
+                # last-wins and the paravirtual strip only covers the *main* offload
+                # flags, so a user -ngld/--spec-draft-ngl would otherwise undo this.
+                _pv_draft_cpu_pin: List[str] = []
+                _pv_mmproj_cpu_pin: List[str] = []
                 if (
                     _paravirtual_cpu_forced
-                    and _extra_args_mtp_draft_path(spec_flags) is not None
-                    and server_caps.get("supports_spec_draft_ngl")
+                    and _extra_args_mtp_draft_path([*spec_flags, *(extra_args or [])])
+                    is not None
+                    and server_caps.get("spec_draft_ngl_flag")
                 ):
-                    cmd.extend(["--spec-draft-ngl", "0"])
+                    _pv_draft_cpu_pin = [str(server_caps["spec_draft_ngl_flag"]), "0"]
                     logger.warning(
                         "Pinning the speculative drafter to CPU: this Mac's Metal "
                         "device is virtualised."
@@ -9184,9 +9206,12 @@ class LlamaCppBackend:
                     # would keep running the corrupt path the CPU pin above exists
                     # to avoid, and every image would be encoded from garbage.
                     # Probe-gated: a build without the flag would refuse to start,
-                    # which is worse than the corrupt encoder it prevents.
+                    # which is worse than the corrupt encoder it prevents. Deferred
+                    # past the pass-through extras like the drafter pin, since
+                    # --mmproj-offload is a real positive flag a user can pass and
+                    # llama.cpp is last-wins.
                     if _paravirtual_cpu_forced and server_caps.get("supports_no_mmproj_offload"):
-                        cmd.append("--no-mmproj-offload")
+                        _pv_mmproj_cpu_pin = ["--no-mmproj-offload"]
                         logger.warning(
                             "Disabling mmproj GPU offload: this Mac's Metal device "
                             "is virtualised."
@@ -9273,6 +9298,13 @@ class LlamaCppBackend:
                     logger.info(
                         f"Appending user extra args to llama-server: {list(_emit_extra_args)}"
                     )
+
+                # Last so it wins: the drafter CPU pin on a virtualised Metal device
+                # is a correctness fix, not a preference, and llama.cpp is last-wins.
+                if _pv_draft_cpu_pin:
+                    cmd.extend(_pv_draft_cpu_pin)
+                if _pv_mmproj_cpu_pin:
+                    cmd.extend(_pv_mmproj_cpu_pin)
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
