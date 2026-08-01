@@ -51,12 +51,27 @@ export async function checkDatasetFormat({
   return res.json();
 }
 
-export async function uploadTrainingDataset(
+export function uploadTrainingDataset(
   file: File,
 ): Promise<UploadDatasetResponse> {
   const form = new FormData();
   form.append("file", file);
 
+  return uploadTrainingDatasetForm(form);
+}
+
+export function uploadNativeTrainingDataset(
+  nativePathLease: string,
+): Promise<UploadDatasetResponse> {
+  const form = new FormData();
+  form.append("nativePathLease", nativePathLease);
+
+  return uploadTrainingDatasetForm(form);
+}
+
+async function uploadTrainingDatasetForm(
+  form: FormData,
+): Promise<UploadDatasetResponse> {
   const res = await authFetch("/api/hub/datasets/upload", {
     method: "POST",
     body: form,

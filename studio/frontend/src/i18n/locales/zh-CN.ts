@@ -1024,6 +1024,8 @@ export const zhCN = {
       optimizer: "优化器",
       optimizerTooltip:
         "优化算法。8 位变体可降低内存占用。对视觉模型推荐 Fused。",
+      optimizerTooltipMlx:
+        "优化算法。AdamW 是默认选项。Lion 占用的内存更少，但通常需要更低的学习率。",
       lrScheduler: "LR 调度器",
       lrSchedulerTooltip:
         "学习率随训练变化的方式。Linear 平稳衰减；Cosine 曲线衰减。",
@@ -1099,6 +1101,7 @@ export const zhCN = {
         s3BucketRequired: "请先输入 S3 存储桶名称。",
         s3CredentialsRequired: "请提供 S3 访问密钥或启用 IAM 角色。",
         modelRequired: "请先选择基础模型。",
+        learningRatePositive: "请输入大于零的学习率。",
         hfDatasetRequired: "请先选择 Hugging Face 数据集。",
         localDatasetRequired: "请先选择本地数据集。",
         unsupportedDatasetSource: "不支持此数据集来源。",

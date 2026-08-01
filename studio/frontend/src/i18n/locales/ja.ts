@@ -1000,6 +1000,7 @@ export const ja = {
       memory: "メモリ",
       optimizer: "オプティマイザー",
       optimizerTooltip: "最適化アルゴリズム。8-bit 版はメモリ使用量を削減します。ビジョンモデルには Fused が推奨されます。",
+      optimizerTooltipMlx: "最適化アルゴリズム。デフォルトは AdamW です。Lion はメモリ使用量を抑えられますが、通常はより低い学習率が必要です。",
       lrScheduler: "学習率スケジューラー",
       lrSchedulerTooltip: "トレーニング中に学習率をどのように変化させるか。Linear は一定の割合で減少させ、Cosine は緩やかな曲線を描いて減少させます。",
       optimizerOptions: {
@@ -1077,6 +1078,7 @@ export const ja = {
         s3CredentialsRequired:
           "S3 アクセスキーを指定するか、IAM ロールを有効にしてください。",
         modelRequired: "先にベースモデルを選択してください。",
+        learningRatePositive: "0 より大きい学習率を入力してください。",
         hfDatasetRequired:
           "先に Hugging Face データセットを選択してください。",
         localDatasetRequired: "先にローカルデータセットを選択してください。",

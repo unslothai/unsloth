@@ -72,6 +72,14 @@ export function ParamsSection({
   };
   const contextAnchorRef = useRef<HTMLDivElement>(null);
   const contextItems = CONTEXT_LENGTHS.map(String);
+  const [learningRateDraft, setLearningRateDraft] = useState(() => ({
+    learningRate: store.learningRate,
+    value: String(store.learningRate),
+  }));
+  const learningRateInput =
+    learningRateDraft.learningRate === store.learningRate
+      ? learningRateDraft.value
+      : String(store.learningRate);
 
   const trySetContextLength = (input: string): number | null => {
     const value = Number(input);
@@ -93,6 +101,18 @@ export function ParamsSection({
 
   const maxStepsSliderMax = Math.max(500, store.maxSteps, 30);
   const epochsSliderMax = Math.max(20, store.epochs, 1);
+  const durationKey = useEpochs ? "epochs" : "steps";
+  const durationValue = useEpochs ? store.epochs : store.maxSteps;
+  const [durationDraft, setDurationDraft] = useState(() => ({
+    key: durationKey,
+    committedValue: durationValue,
+    value: String(durationValue),
+  }));
+  const durationInput =
+    durationDraft.key === durationKey &&
+    durationDraft.committedValue === durationValue
+      ? durationDraft.value
+      : String(durationValue);
 
   return (
     <div className="min-w-0">
@@ -164,20 +184,41 @@ export function ParamsSection({
                 </button>
                 <input
                   type="number"
-                  value={useEpochs ? store.epochs : store.maxSteps}
+                  value={durationInput}
                   onChange={(event) => {
                     const raw = event.target.value;
-                    if (raw === "") {
-                      return;
-                    }
+                    setDurationDraft({
+                      key: durationKey,
+                      committedValue: durationValue,
+                      value: raw,
+                    });
                     const value = Number(raw);
-                    if (!Number.isFinite(value) || value < 1) {
+                    if (raw === "" || !Number.isFinite(value) || value < 1) {
                       return;
                     }
                     if (useEpochs) {
                       store.setEpochs(value);
                     } else {
                       store.setMaxSteps(value);
+                    }
+                    setDurationDraft({
+                      key: durationKey,
+                      committedValue: value,
+                      value: raw,
+                    });
+                  }}
+                  onBlur={() => {
+                    const value = Number(durationInput);
+                    if (
+                      durationInput === "" ||
+                      !Number.isFinite(value) ||
+                      value < 1
+                    ) {
+                      setDurationDraft({
+                        key: durationKey,
+                        committedValue: durationValue,
+                        value: String(durationValue),
+                      });
                     }
                   }}
                   min={1}
@@ -323,10 +364,36 @@ export function ParamsSection({
           <Input
             type="number"
             step="0.00001"
-            value={store.learningRate}
-            onChange={(event) =>
-              store.setLearningRate(Number(event.target.value))
-            }
+            min="0"
+            value={learningRateInput}
+            onChange={(event) => {
+              const input = event.target.value;
+              setLearningRateDraft({
+                learningRate: store.learningRate,
+                value: input,
+              });
+              const learningRate = Number(input);
+              if (
+                input !== "" &&
+                Number.isFinite(learningRate)
+              ) {
+                store.setLearningRate(learningRate);
+                setLearningRateDraft({ learningRate, value: input });
+              }
+            }}
+            onBlur={() => {
+              const learningRate = Number(learningRateInput);
+              if (
+                learningRateInput === "" ||
+                !Number.isFinite(learningRate) ||
+                learningRate <= 0
+              ) {
+                setLearningRateDraft({
+                  learningRate: store.learningRate,
+                  value: String(store.learningRate),
+                });
+              }
+            }}
             className="w-full font-mono"
           />
           <p className="text-ui-10 text-muted-foreground">

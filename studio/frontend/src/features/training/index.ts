@@ -34,6 +34,7 @@ export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-st
 export {
   aiAssistMapping,
   checkDatasetFormat,
+  uploadNativeTrainingDataset,
   uploadTrainingDataset,
 } from "./api/datasets-api";
 export type { CheckFormatResponse } from "./types/datasets";

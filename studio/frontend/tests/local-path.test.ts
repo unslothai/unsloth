@@ -14,10 +14,16 @@ test("recognizes local paths across supported operating systems", () => {
     "~user/datasets/train",
     "C:/datasets/train",
     String.raw`C:\datasets\train`,
+    String.raw`C:datasets\train`,
+    String.raw`\datasets\train`,
     String.raw`\\server\datasets\train`,
   ]) {
     assert.equal(looksLikeLocalPath(path), true, path);
   }
+});
+
+test("preserves repository identifiers that contain no local path syntax", () => {
+  assert.equal(looksLikeLocalPath("model:variant"), false);
 });
 
 test("does not classify Hugging Face repository identifiers as paths", () => {

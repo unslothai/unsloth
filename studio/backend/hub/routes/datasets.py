@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
 
 from auth.authentication import get_current_subject
 from hub.dependencies import get_hf_token
@@ -38,9 +38,11 @@ router = APIRouter()
 
 @router.post("/upload", response_model = UploadDatasetResponse)
 async def upload_dataset(
-    file: UploadFile, current_subject: str = Depends(get_current_subject)
+    file: UploadFile | None = File(None),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    current_subject: str = Depends(get_current_subject),
 ) -> UploadDatasetResponse:
-    return await local.upload_dataset_response(file)
+    return await local.upload_dataset_response(file, native_path_lease)
 
 
 @router.get("/local", response_model = LocalDatasetsResponse)

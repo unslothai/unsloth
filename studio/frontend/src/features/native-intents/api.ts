@@ -36,6 +36,10 @@ export async function registerNativeAttachmentPath(path: string): Promise<Native
   return invokeNative<NativeIntent>("register_native_attachment_path", { path });
 }
 
+export async function registerNativeDatasetPath(path: string): Promise<NativeIntent> {
+  return invokeNative<NativeIntent>("register_native_dataset_path", { path });
+}
+
 export async function consumeNativePathToken(
   token: string,
   operation: NativePathOperation,

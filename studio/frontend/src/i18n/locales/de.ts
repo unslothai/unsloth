@@ -1006,6 +1006,8 @@ export const de = {
       optimizer: "Optimierer",
       optimizerTooltip:
         "Optimierungsalgorithmus. 8-Bit-Varianten reduzieren den Speicherbedarf. Fused wird für Vision-Modelle empfohlen.",
+      optimizerTooltipMlx:
+        "Optimierungsalgorithmus. AdamW ist die Standardeinstellung. Lion benötigt weniger Speicher, braucht aber normalerweise eine niedrigere Lernrate.",
       lrScheduler: "LR-Scheduler",
       lrSchedulerTooltip:
         "Wie sich die Lernrate über das Training verändert. Linear fällt gleichmäßig; Cosine fällt in einer Kurve.",
@@ -1082,6 +1084,7 @@ export const de = {
         s3CredentialsRequired:
           "Geben Sie S3-Zugriffsschlüssel an oder aktivieren Sie die IAM-Rolle.",
         modelRequired: "Wählen Sie zuerst ein Basismodell aus.",
+        learningRatePositive: "Geben Sie eine Lernrate größer als null ein.",
         hfDatasetRequired:
           "Wählen Sie zuerst einen Hugging Face-Datensatz aus.",
         localDatasetRequired: "Wählen Sie zuerst einen lokalen Datensatz aus.",

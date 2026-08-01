@@ -961,6 +961,8 @@ export const ar = {
       optimizer: "المُحسِّن",
       optimizerTooltip:
         "خوارزمية التحسين. تقلّل متغيرات 8 بت استخدام الذاكرة. يوصى بـ Fused لنماذج الرؤية.",
+      optimizerTooltipMlx:
+        "خوارزمية التحسين. AdamW هو الخيار الافتراضي. يستخدم Lion ذاكرة أقل، لكنه يحتاج عادةً إلى معدل تعلم أقل.",
       lrScheduler: "مُجدوِل معدل التعلم",
       lrSchedulerTooltip:
         "كيفية تغيّر معدل التعلم خلال التدريب. Linear يتناقص بثبات؛ Cosine يتناقص في منحنى.",
@@ -1033,6 +1035,7 @@ export const ar = {
         s3BucketRequired: "أدخل اسم حاوية S3 أولًا.",
         s3CredentialsRequired: "أدخل مفاتيح الوصول إلى S3 أو فعّل دور IAM.",
         modelRequired: "اختر نموذجًا أساسيًا أولًا.",
+        learningRatePositive: "أدخل معدل تعلم أكبر من صفر.",
         hfDatasetRequired: "اختر مجموعة بيانات Hugging Face أولًا.",
         localDatasetRequired: "اختر مجموعة بيانات محلية أولًا.",
         unsupportedDatasetSource: "مصدر مجموعة البيانات غير مدعوم.",

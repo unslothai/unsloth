@@ -253,9 +253,9 @@ export function DatasetSelectionSection({
 
   return (
     <>
+      <SelectedDatasetCard selectedLocalDataset={selectedLocalDataset} />
       <DatasetConfiguration selectedLocalDataset={selectedLocalDataset} />
       <EvaluationDatasetUpload uploads={uploads} />
-      <SelectedDatasetCard selectedLocalDataset={selectedLocalDataset} />
     </>
   );
 }

@@ -7,6 +7,7 @@ import {
   type LocalModelInfo,
   type ModelInventoryFormat,
   fetchInventorySource,
+  normalizeModelIdentity,
   useHfTokenStore,
   useInventoryVersion,
 } from "@/features/hub";
@@ -39,10 +40,12 @@ function modelIdentityMatches(
   key: string,
 ): boolean {
   return (
-    ("repo_id" in row && row.repo_id.toLowerCase() === key) ||
-    ("model_id" in row && row.model_id?.toLowerCase() === key) ||
-    row.load_id?.toLowerCase() === key ||
-    ("id" in row && row.id.toLowerCase() === key)
+    ("repo_id" in row && normalizeModelIdentity(row.repo_id) === key) ||
+    ("model_id" in row &&
+      row.model_id != null &&
+      normalizeModelIdentity(row.model_id) === key) ||
+    (row.load_id != null && normalizeModelIdentity(row.load_id) === key) ||
+    ("id" in row && normalizeModelIdentity(row.id) === key)
   );
 }
 
@@ -51,7 +54,7 @@ function findModelReference(
   localRows: readonly LocalModelInfo[],
   model: string,
 ): ModelCacheReference | null {
-  const key = model.toLowerCase();
+  const key = normalizeModelIdentity(model);
   const cachedMatch = cachedRows.find(
     (row) =>
       !row.partial &&

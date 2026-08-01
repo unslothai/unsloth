@@ -21,9 +21,9 @@ import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 import type { CheckFormatResponse } from "../types/datasets";
 import { cacheLocalPathMatchesSelection } from "./cache-reference";
 import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
-import { isUntrainableModelFormat } from "./model-support";
 import { isRawTextDatasetFormat } from "./training-methods";
 import { normalizeTrainingStartError } from "./training-start-errors";
+import { normalizeTrainingStartPayloadForComparison } from "./training-start-inputs";
 import {
   TRAINING_SETUP_CHANGED_ERROR,
   type TrainingStartLease,
@@ -46,10 +46,9 @@ const ROLE_REMAP: Record<string, Record<string, string>> = {
 type AttemptPhase = "preflight" | "transport" | "finished";
 
 function captureTrainingStartInputs(config: TrainingConfigState) {
-  const payload = buildTrainingStartPayload(config, null);
-  payload.model_format = isUntrainableModelFormat(config.modelFormat)
-    ? config.modelFormat
-    : null;
+  const payload = normalizeTrainingStartPayloadForComparison(
+    buildTrainingStartPayload(config, null),
+  );
   return {
     payload,
     modelType: config.modelType,

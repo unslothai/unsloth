@@ -961,6 +961,8 @@ export const ko = {
       optimizer: "옵티마이저",
       optimizerTooltip:
         "최적화 알고리즘입니다. 8비트 변형은 메모리 사용량을 줄입니다. 비전 모델에는 Fused가 권장됩니다.",
+      optimizerTooltipMlx:
+        "최적화 알고리즘입니다. 기본값은 AdamW입니다. Lion은 메모리를 적게 사용하지만 일반적으로 더 낮은 학습률이 필요합니다.",
       lrScheduler: "LR 스케줄러",
       lrSchedulerTooltip:
         "학습 중 학습률이 변하는 방식입니다. Linear는 꾸준히 감소하고, Cosine은 곡선으로 감소합니다.",
@@ -1043,6 +1045,7 @@ export const ko = {
         s3CredentialsRequired:
           "S3 액세스 키를 입력하거나 IAM 역할을 활성화하세요.",
         modelRequired: "기본 모델을 먼저 선택하세요.",
+        learningRatePositive: "0보다 큰 학습률을 입력하세요.",
         hfDatasetRequired: "Hugging Face 데이터셋을 먼저 선택하세요.",
         localDatasetRequired: "로컬 데이터셋을 먼저 선택하세요.",
         unsupportedDatasetSource: "지원되지 않는 데이터셋 소스입니다.",

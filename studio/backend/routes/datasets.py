@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
@@ -34,9 +34,11 @@ router = APIRouter()
 
 @router.post("/upload", response_model = UploadDatasetResponse, deprecated = True)
 async def upload_dataset(
-    file: UploadFile, current_subject: str = Depends(get_current_subject)
+    file: UploadFile | None = File(None),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    current_subject: str = Depends(get_current_subject),
 ) -> UploadDatasetResponse:
-    return await local.upload_dataset_response(file)
+    return await local.upload_dataset_response(file, native_path_lease)
 
 
 @router.get("/local", response_model = LocalDatasetsResponse, deprecated = True)

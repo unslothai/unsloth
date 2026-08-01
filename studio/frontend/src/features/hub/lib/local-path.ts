@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 const LOCAL_PATH_PREFIX_RE =
-  /^(?:\/|\.{1,2}(?:$|[\\/])|~(?:$|[\\/])|~[^\\/]+[\\/]|[A-Za-z]:[\\/]|\\\\)/;
+  /^(?:[\\/]|\.{1,2}(?:$|[\\/])|~(?:$|[\\/])|~[^\\/]+[\\/]|[A-Za-z]:)/;
 const WINDOWS_PATH_SEPARATOR_RE = /\\/g;
 const TRAILING_PATH_SEPARATOR_RE = /\/+$/;
 

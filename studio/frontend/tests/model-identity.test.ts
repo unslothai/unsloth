@@ -381,6 +381,14 @@ test("preserves existing platform and Hub identity rules", () => {
     "c:/models/demo",
   );
   assert.equal(
+    normalizeModelIdentity(String.raw`C:Models\Demo\\`),
+    "c:models/demo",
+  );
+  assert.equal(
+    normalizeModelIdentity(String.raw`\Models\Demo\\`),
+    "/models/demo",
+  );
+  assert.equal(
     normalizeModelIdentity(String.raw`\\Server\Share\Models\Demo\\`),
     "//server/share/models/demo",
   );

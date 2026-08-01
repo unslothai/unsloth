@@ -3,7 +3,8 @@
 
 import { looksLikeLocalPath } from "./local-path.ts";
 
-const WINDOWS_DRIVE_PATH_RE = /^[A-Za-z]:[\\/]/;
+const WINDOWS_DRIVE_PATH_RE = /^[A-Za-z]:/;
+const WINDOWS_ROOTED_PATH_RE = /^\\/;
 const WSL_DRIVE_PATH_RE = /^\/mnt\/[A-Za-z](?:\/|$)/;
 
 function trimTrailingSeparators(path: string, minLength: number): string {
@@ -28,10 +29,13 @@ export function normalizeModelIdentity(modelId: string): string {
   }
   const slashPath = trimmed.replace(/\\/g, "/");
   if (WINDOWS_DRIVE_PATH_RE.test(trimmed)) {
-    return normalizeCaseInsensitivePath(trimmed, 3);
+    return normalizeCaseInsensitivePath(trimmed, 2);
   }
   if (slashPath.startsWith("//")) {
     return normalizeCaseInsensitivePath(trimmed, 2);
+  }
+  if (WINDOWS_ROOTED_PATH_RE.test(trimmed)) {
+    return normalizeCaseInsensitivePath(trimmed, 1);
   }
   if (WSL_DRIVE_PATH_RE.test(slashPath)) {
     return normalizeCaseInsensitivePath(trimmed, 6);

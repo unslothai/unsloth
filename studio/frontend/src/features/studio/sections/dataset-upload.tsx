@@ -30,6 +30,7 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
         {t("studio.wizard.uploadLocalLabel")}
       </span>
       <button
+        ref={uploads.datasetDropTargetRef}
         type="button"
         disabled={uploads.isUploading}
         onClick={() => fileInputRef.current?.click()}

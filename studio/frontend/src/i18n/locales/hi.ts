@@ -963,6 +963,8 @@ export const hi = {
       optimizer: "ऑप्टिमाइज़र",
       optimizerTooltip:
         "ऑप्टिमाइज़ेशन एल्गोरिदम। 8-बिट वेरिएंट मेमोरी उपयोग कम करते हैं। विज़न मॉडल के लिए Fused अनुशंसित है।",
+      optimizerTooltipMlx:
+        "ऑप्टिमाइज़ेशन एल्गोरिदम। AdamW डिफ़ॉल्ट है। Lion कम मेमोरी उपयोग करता है, लेकिन आम तौर पर कम लर्निंग रेट की आवश्यकता होती है।",
       lrScheduler: "LR शेड्यूलर",
       lrSchedulerTooltip:
         "ट्रेनिंग के दौरान लर्निंग रेट कैसे बदलता है। Linear स्थिर रूप से घटता है; cosine एक वक्र में घटता है।",
@@ -1035,6 +1037,7 @@ export const hi = {
         s3BucketRequired: "पहले S3 बकेट का नाम दर्ज करें।",
         s3CredentialsRequired: "S3 एक्सेस कुंजियाँ दें या IAM रोल सक्षम करें।",
         modelRequired: "पहले बेस मॉडल चुनें।",
+        learningRatePositive: "शून्य से अधिक लर्निंग रेट दर्ज करें।",
         hfDatasetRequired: "पहले Hugging Face डेटासेट चुनें।",
         localDatasetRequired: "पहले स्थानीय डेटासेट चुनें।",
         unsupportedDatasetSource: "असमर्थित डेटासेट स्रोत।",

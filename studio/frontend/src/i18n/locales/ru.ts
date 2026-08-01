@@ -967,6 +967,8 @@ export const ru = {
       optimizer: "Оптимизатор",
       optimizerTooltip:
         "Алгоритм оптимизации. 8-битные варианты снижают потребление памяти. Fused рекомендуется для моделей зрения.",
+      optimizerTooltipMlx:
+        "Алгоритм оптимизации. По умолчанию используется AdamW. Lion потребляет меньше памяти, но обычно требует меньшей скорости обучения.",
       lrScheduler: "Планировщик LR",
       lrSchedulerTooltip:
         "Как скорость обучения меняется в процессе обучения. Linear убывает равномерно; cosine убывает по кривой.",
@@ -1049,6 +1051,7 @@ export const ru = {
         s3CredentialsRequired:
           "Укажите ключи доступа S3 или включите роль IAM.",
         modelRequired: "Сначала выберите базовую модель.",
+        learningRatePositive: "Введите скорость обучения больше нуля.",
         hfDatasetRequired: "Сначала выберите датасет Hugging Face.",
         localDatasetRequired: "Сначала выберите локальный датасет.",
         unsupportedDatasetSource: "Источник датасета не поддерживается.",

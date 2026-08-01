@@ -992,6 +992,8 @@ export const es = {
       optimizer: "Optimizador",
       optimizerTooltip:
         "Algoritmo de optimización. Las variantes de 8 bits reducen el uso de memoria. Se recomienda Fused para modelos de visión.",
+      optimizerTooltipMlx:
+        "Algoritmo de optimización. AdamW es la opción predeterminada. Lion usa menos memoria, pero normalmente requiere una tasa de aprendizaje menor.",
       lrScheduler: "Planificador de LR",
       lrSchedulerTooltip:
         "Cómo cambia la tasa de aprendizaje durante el entrenamiento. Linear decae de forma constante; cosine decae en una curva.",
@@ -1067,6 +1069,7 @@ export const es = {
         s3CredentialsRequired:
           "Proporciona las claves de acceso de S3 o activa el rol de IAM.",
         modelRequired: "Selecciona primero un modelo base.",
+        learningRatePositive: "Introduce una tasa de aprendizaje mayor que cero.",
         hfDatasetRequired:
           "Selecciona primero un conjunto de datos de Hugging Face.",
         localDatasetRequired: "Selecciona primero un conjunto de datos local.",

@@ -289,8 +289,8 @@ def _upload_too_large(limit_label: str) -> HTTPException:
     )
 
 
-async def upload_dataset_response(file: UploadFile) -> UploadDatasetResponse:
-    filename = _sanitize_filename(file.filename or "dataset_upload")
+def _upload_destination(filename: str) -> tuple[str, Path, int, str]:
+    filename = _sanitize_filename(filename)
     ext = Path(filename).suffix.lower()
     if ext not in LOCAL_UPLOAD_EXTS:
         allowed = ", ".join(sorted(LOCAL_UPLOAD_EXTS))
@@ -302,14 +302,74 @@ async def upload_dataset_response(file: UploadFile) -> UploadDatasetResponse:
     limit_mb = get_upload_limit_mb()
     max_bytes = upload_limit_bytes(limit_mb)
     max_label = upload_limit_label(limit_mb)
-    declared_size = getattr(file, "size", None)
-    if isinstance(declared_size, int) and declared_size > max_bytes:
-        raise _upload_too_large(max_label)
-
     ensure_dir(DATASET_UPLOAD_DIR)
     stem = Path(filename).stem
     stored_name = f"{uuid.uuid4().hex}_{stem}{ext}"
-    stored_path = DATASET_UPLOAD_DIR / stored_name
+    return filename, DATASET_UPLOAD_DIR / stored_name, max_bytes, max_label
+
+
+def _native_upload_dataset_response(native_path_lease: str) -> UploadDatasetResponse:
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+
+    try:
+        grant = verify_native_path_lease(
+            native_path_lease,
+            operation = "dataset-import",
+            expected_kind = "dataset",
+            expected_path_type = "file",
+            allowed_suffixes = sorted(LOCAL_UPLOAD_EXTS),
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+    filename, stored_path, max_bytes, max_label = _upload_destination(
+        grant.canonical_path.name
+    )
+    if grant.size_bytes is not None and grant.size_bytes > max_bytes:
+        raise _upload_too_large(max_label)
+
+    written = 0
+    upload_complete = False
+    try:
+        with open(grant.canonical_path, "rb") as source, open(stored_path, "wb") as target:
+            while chunk := source.read(LOCAL_UPLOAD_CHUNK_BYTES):
+                written += len(chunk)
+                if written > max_bytes:
+                    raise _upload_too_large(max_label)
+                target.write(chunk)
+        upload_complete = True
+    except OSError as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Dropped dataset could not be read.",
+        ) from exc
+    finally:
+        if not upload_complete:
+            with suppress(OSError):
+                stored_path.unlink(missing_ok = True)
+
+    if written == 0:
+        stored_path.unlink(missing_ok = True)
+        raise HTTPException(status_code = 400, detail = "Dropped dataset is empty")
+
+    return UploadDatasetResponse(filename = filename, stored_path = str(stored_path))
+
+
+async def upload_dataset_response(
+    file: UploadFile | None,
+    native_path_lease: str | None = None,
+) -> UploadDatasetResponse:
+    if native_path_lease:
+        return _native_upload_dataset_response(native_path_lease)
+    if file is None:
+        raise HTTPException(status_code = 400, detail = "No dataset file was provided")
+
+    filename, stored_path, max_bytes, max_label = _upload_destination(
+        file.filename or "dataset_upload"
+    )
+    declared_size = getattr(file, "size", None)
+    if isinstance(declared_size, int) and declared_size > max_bytes:
+        raise _upload_too_large(max_label)
 
     written = 0
     upload_complete = False

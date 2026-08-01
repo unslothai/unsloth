@@ -1467,6 +1467,7 @@ export const en = {
         s3BucketRequired: "Enter an S3 bucket name first.",
         s3CredentialsRequired: "Provide S3 access keys or enable IAM role.",
         modelRequired: "Select a base model first.",
+        learningRatePositive: "Enter a learning rate greater than zero.",
         hfDatasetRequired: "Select a Hugging Face dataset first.",
         localDatasetRequired: "Select a local dataset first.",
         unsupportedDatasetSource: "Unsupported dataset source.",

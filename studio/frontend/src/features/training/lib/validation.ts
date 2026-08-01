@@ -51,6 +51,41 @@ export function validateS3Source(
   return { ok: true, errorKey: null };
 }
 
+function validateDatasetSelection(
+  config: TrainingConfigState,
+): StartValidationResult {
+  if (config.datasetSource === "huggingface") {
+    if (!config.dataset) {
+      return {
+        ok: false,
+        errorKey: "studio.training.validation.hfDatasetRequired",
+      };
+    }
+    if (!validateHubResourceId(config.dataset).ok) {
+      return {
+        ok: false,
+        errorKey: "studio.datasetPicker.reasonInvalidHubId",
+      };
+    }
+  } else if (config.datasetSource === "upload") {
+    if (!config.uploadedFile) {
+      return {
+        ok: false,
+        errorKey: "studio.training.validation.localDatasetRequired",
+      };
+    }
+  } else if (config.datasetSource === "s3") {
+    return validateS3Source(config);
+  } else {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.unsupportedDatasetSource",
+    };
+  }
+
+  return { ok: true, errorKey: null };
+}
+
 export function validateTrainingConfig(
   config: TrainingConfigState,
 ): StartValidationResult {
@@ -83,34 +118,12 @@ export function validateTrainingConfig(
     };
   }
 
-  if (config.datasetSource === "huggingface") {
-    if (!config.dataset) {
-      return {
-        ok: false,
-        errorKey: "studio.training.validation.hfDatasetRequired",
-      };
-    }
-    if (!validateHubResourceId(config.dataset).ok) {
-      return {
-        ok: false,
-        errorKey: "studio.datasetPicker.reasonInvalidHubId",
-      };
-    }
-  } else if (config.datasetSource === "upload") {
-    if (!config.uploadedFile) {
-      return {
-        ok: false,
-        errorKey: "studio.training.validation.localDatasetRequired",
-      };
-    }
-  } else if (config.datasetSource === "s3") {
-    return validateS3Source(config);
-  } else {
+  if (!Number.isFinite(config.learningRate) || config.learningRate <= 0) {
     return {
       ok: false,
-      errorKey: "studio.training.validation.unsupportedDatasetSource",
+      errorKey: "studio.training.validation.learningRatePositive",
     };
   }
 
-  return { ok: true, errorKey: null };
+  return validateDatasetSelection(config);
 }

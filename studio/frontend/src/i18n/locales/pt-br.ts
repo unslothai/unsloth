@@ -1066,6 +1066,8 @@ export const ptBR = {
       optimizer: "Otimizador",
       optimizerTooltip:
         "Algoritmo de otimização. Variantes de 8 bits reduzem o uso de memória. Fused é recomendado para modelos de visão.",
+      optimizerTooltipMlx:
+        "Algoritmo de otimização. AdamW é o padrão. Lion usa menos memória, mas normalmente requer uma taxa de aprendizado menor.",
       lrScheduler: "Agendador de LR",
       lrSchedulerTooltip:
         "Como a taxa de aprendizado muda ao longo do treino. Linear decai de forma constante; cosine decai em curva.",
@@ -1139,6 +1141,7 @@ export const ptBR = {
         s3CredentialsRequired:
           "Forneça as chaves de acesso do S3 ou ative a função do IAM.",
         modelRequired: "Selecione primeiro um modelo base.",
+        learningRatePositive: "Insira uma taxa de aprendizado maior que zero.",
         hfDatasetRequired: "Selecione primeiro um dataset do Hugging Face.",
         localDatasetRequired: "Selecione primeiro um dataset local.",
         unsupportedDatasetSource: "Fonte de dataset não compatível.",
