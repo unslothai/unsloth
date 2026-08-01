@@ -296,3 +296,66 @@ def test_a_tauri_update_is_verified_too(monkeypatch):
     result = _run_update(monkeypatch, [], verified)
     assert result.exit_code == 0, result.output
     assert verified == [True]
+
+
+@pytest.mark.parametrize(
+    "system, expected",
+    [
+        ("Linux", "| UNSLOTH_STUDIO_HOME=/srv/studios/a sh"),
+        ("Windows", "$env:UNSLOTH_STUDIO_HOME = '/srv/studios/a'; irm"),
+    ],
+)
+def test_a_custom_root_is_carried_into_the_reinstall_command(monkeypatch, capsys, system, expected):
+    # The CLI shim is a bare symlink and _ensure_studio_env_exported only sets
+    # os.environ for this process, so the shell that runs the printed command
+    # has no UNSLOTH_STUDIO_HOME. Unqualified, it would build a fresh
+    # ~/.unsloth/studio and leave the damaged custom root broken.
+    import platform as _platform
+    import typer
+
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+    monkeypatch.setattr(
+        studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
+    )
+    monkeypatch.setattr(studio, "STUDIO_HOME", Path("/srv/studios/a"))
+    monkeypatch.setattr(studio, "_STUDIO_HOME_IS_CUSTOM", True)
+    monkeypatch.setattr(_platform, "system", lambda: system)
+    with pytest.raises(typer.Exit):
+        studio._fail_if_install_damaged()
+    assert expected in capsys.readouterr().err
+
+
+def test_a_root_with_spaces_is_quoted(monkeypatch, capsys):
+    import platform as _platform
+    import typer
+
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+    monkeypatch.setattr(
+        studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
+    )
+    monkeypatch.setattr(studio, "STUDIO_HOME", Path("/srv/my studios/a"))
+    monkeypatch.setattr(studio, "_STUDIO_HOME_IS_CUSTOM", True)
+    monkeypatch.setattr(_platform, "system", lambda: "Linux")
+    with pytest.raises(typer.Exit):
+        studio._fail_if_install_damaged()
+    assert "UNSLOTH_STUDIO_HOME='/srv/my studios/a' sh" in capsys.readouterr().err
+
+
+def test_the_default_root_keeps_the_plain_command(monkeypatch, capsys):
+    import platform as _platform
+    import typer
+
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+    monkeypatch.setattr(
+        studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
+    )
+    monkeypatch.setattr(studio, "_STUDIO_HOME_IS_CUSTOM", False)
+    monkeypatch.setattr(_platform, "system", lambda: "Linux")
+    with pytest.raises(typer.Exit):
+        studio._fail_if_install_damaged()
+    err = capsys.readouterr().err
+    assert "curl -fsSL https://unsloth.ai/install.sh | sh" in err
+    assert "UNSLOTH_STUDIO_HOME" not in err

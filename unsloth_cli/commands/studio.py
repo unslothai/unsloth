@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -2913,10 +2914,23 @@ def _fail_if_install_damaged() -> None:
     typer.echo("An update cannot repair these. pip sees intact package metadata and", err = True)
     typer.echo("reinstalls nothing, so Studio will keep failing to start. Reinstall", err = True)
     typer.echo("over the top:", err = True)
+    # Carry a custom root into the command. The shim is a bare symlink and
+    # _ensure_studio_env_exported only sets os.environ for this process, so the
+    # shell that runs this line has no UNSLOTH_STUDIO_HOME: an unqualified
+    # reinstall would build a fresh ~/.unsloth/studio and leave the damaged
+    # install exactly as broken as it was.
     if platform.system() == "Windows":
-        typer.echo("  irm https://unsloth.ai/install.ps1 | iex", err = True)
+        prefix = ""
+        if _STUDIO_HOME_IS_CUSTOM:
+            prefix = "$env:UNSLOTH_STUDIO_HOME = '{}'; ".format(str(STUDIO_HOME).replace("'", "''"))
+        typer.echo(f"  {prefix}irm https://unsloth.ai/install.ps1 | iex", err = True)
     else:
-        typer.echo("  curl -fsSL https://unsloth.ai/install.sh | sh", err = True)
+        # The assignment goes before `sh`, not before `curl`: that is the form
+        # install.sh documents, and it is sh that reads the variable.
+        env = ""
+        if _STUDIO_HOME_IS_CUSTOM:
+            env = f"UNSLOTH_STUDIO_HOME={shlex.quote(str(STUDIO_HOME))} "
+        typer.echo(f"  curl -fsSL https://unsloth.ai/install.sh | {env}sh", err = True)
     typer.echo("", err = True)
     typer.echo("To update anyway without this check: unsloth studio update --no-verify", err = True)
     raise typer.Exit(code = 1)
