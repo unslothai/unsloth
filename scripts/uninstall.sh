@@ -18,8 +18,8 @@ Usage:
   sh scripts/uninstall.sh
 
 To read this help from the piped form, sh needs -s so the arguments reach the
-script instead of the shell:
-  curl -fsSL .../uninstall.sh | sh -s -- --help
+script instead of the shell. Spelled out, with the same URL as above:
+  curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh -s -- --help
 
 Never pipe to `sh -h` expecting help. Neither form prints this message: where
 -h is accepted (bash, zsh, macOS /bin/sh) it is the shell's own hashall option,
