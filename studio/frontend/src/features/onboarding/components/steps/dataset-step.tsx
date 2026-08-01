@@ -116,11 +116,15 @@ export function DatasetStep() {
       const uploaded = await uploadTrainingDataset(file);
       bumpInventoryVersion();
       selectLocalDataset(uploaded.stored_path);
-      toast.success("Dataset uploaded", { description: uploaded.filename });
+      toast.success(t("studio.dataset.datasetUploaded"), {
+        description: uploaded.filename,
+      });
     } catch (error) {
-      toast.error("Upload failed", {
+      toast.error(t("studio.dataset.uploadFailed"), {
         description:
-          error instanceof Error ? error.message : "Unknown upload error",
+          error instanceof Error
+            ? error.message
+            : t("studio.dataset.unknownError"),
       });
     } finally {
       setIsUploading(false);
@@ -132,9 +136,9 @@ export function DatasetStep() {
       <HfTokenField />
 
       <Field>
-        <FieldLabel>Choose a dataset</FieldLabel>
+        <FieldLabel>{t("studio.training.chooseDataset")}</FieldLabel>
         <FieldDescription>
-          Search Hugging Face or choose a dataset already on this device.
+          {t("studio.wizard.datasetPickerDescription")}
         </FieldDescription>
         <DatasetSelector />
       </Field>
@@ -155,9 +159,9 @@ export function DatasetStep() {
       )}
 
       <Field>
-        <FieldLabel>Upload a dataset</FieldLabel>
+        <FieldLabel>{t("studio.wizard.uploadDataset")}</FieldLabel>
         <FieldDescription>
-          Supports CSV, JSONL, JSON, and Parquet.
+          {t("studio.wizard.uploadDatasetDescription")}
         </FieldDescription>
         <input
           ref={fileInputRef}
@@ -184,7 +188,9 @@ export function DatasetStep() {
           ) : (
             <HugeiconsIcon icon={Upload04Icon} data-icon="inline-start" />
           )}
-          {isUploading ? "Uploading..." : "Choose a file"}
+          {isUploading
+            ? t("studio.dataset.uploading")
+            : t("studio.wizard.chooseFile")}
         </Button>
         {datasetSource === "upload" && uploadedFile && (
           <Badge variant="secondary" className="w-fit max-w-full truncate">
@@ -196,11 +202,12 @@ export function DatasetStep() {
       <Field>
         <div className="flex items-center justify-between gap-4">
           <FieldLabel className="flex items-center gap-1.5">
-            Format
+            {t("studio.wizard.format")}
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <button
                   type="button"
+                  aria-label={t("studio.wizard.format")}
                   className="text-muted-foreground/50 hover:text-muted-foreground"
                 >
                   <HugeiconsIcon
@@ -210,14 +217,14 @@ export function DatasetStep() {
                 </button>
               </TooltipTrigger>
               <TooltipContent className="max-w-xs">
-                Auto detects and converts common dataset formats.{" "}
+                {t("studio.dataset.targetFormatTooltip")}{" "}
                 <a
                   href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-primary underline"
                 >
-                  Read more
+                  {t("studio.params.readMore")}
                 </a>
               </TooltipContent>
             </Tooltip>
@@ -238,7 +245,11 @@ export function DatasetStep() {
                       className="mr-1.5 inline size-3.5 align-text-bottom"
                     />
                   )}
-                  {option.label}
+                  {option.value === "auto"
+                    ? t("studio.wizard.autoDetect")
+                    : option.value === "raw"
+                      ? t("studio.dataset.rawText")
+                      : option.label}
                 </SelectItem>
               ))}
             </SelectContent>

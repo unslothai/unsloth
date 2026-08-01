@@ -330,7 +330,7 @@ def test_accepted_training_start_survives_runtime_resync_failure():
     settle = runtime.split("export async function settleAcceptedTrainingStart", 1)[1]
     assert "if (!isTrainingStartLeaseActive(lease))" in settle
     assert "await cancelSupersededTrainingStart(jobId)" in settle
-    assert settle.index(".setStartQueued(") < settle.index("await Promise.allSettled([")
+    assert settle.index(".setStartPending(") < settle.index("await Promise.allSettled([")
     assert "Promise.resolve().then(emitTrainingRunsChanged)" in settle
     assert "syncTrainingRuntimeFromBackend()" in settle
 

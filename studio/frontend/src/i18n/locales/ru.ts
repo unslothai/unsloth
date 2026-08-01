@@ -1066,6 +1066,20 @@ export const ru = {
       modelLabel: "Модель",
       methodLabel: "Метод",
       datasetLabel: "Датасет",
+      modelPickerDescription:
+        "Найдите модель на Hugging Face или выберите доступную для обучения модель на этом устройстве.",
+      trainingMethod: "Метод обучения",
+      trainingMethodDescription: "Выберите способ дообучения {model}",
+      trainingMethodTooltip:
+        "QLoRA использует 4-битное квантование для минимального расхода VRAM. LoRA использует 16-битные веса, а полное дообучение обновляет все веса.",
+      datasetPickerDescription:
+        "Найдите датасет на Hugging Face или выберите датасет на этом устройстве.",
+      uploadDataset: "Загрузить датасет",
+      uploadDatasetDescription:
+        "Поддерживаются CSV, JSONL, JSON и Parquet.",
+      chooseFile: "Выбрать файл",
+      format: "Формат",
+      autoDetect: "Автоопределение",
       uploadLocalLabel: "Или загрузите локальный файл",
       sourceBrowse: "Обзор",
       releaseToUpload: "Отпустите для загрузки",

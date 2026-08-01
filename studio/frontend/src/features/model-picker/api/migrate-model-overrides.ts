@@ -46,7 +46,8 @@ function markRan(): void {
 /**
  * A server key under the same identity this browser stores. `app_settings` has no schema
  * version, so an old install holds keys the backend resolves to this model while an exact lookup
- * calls them missing and overwrites them. The split folds repo ids and leaves POSIX paths alone.
+ * calls them missing and overwrites them. The split folds repo ids while preserving POSIX path
+ * identity.
  */
 function normalizedOverrideKey(key: string): string {
   const split = splitQuantSuffix(key);

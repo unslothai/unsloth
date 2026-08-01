@@ -1026,6 +1026,19 @@ export const zhCN = {
       modelLabel: "模型",
       methodLabel: "方法",
       datasetLabel: "数据集",
+      modelPickerDescription:
+        "搜索 Hugging Face，或选择此设备上已有的可训练模型。",
+      trainingMethod: "训练方法",
+      trainingMethodDescription: "选择如何微调 {model}",
+      trainingMethodTooltip:
+        "QLoRA 使用 4 位量化以最大限度降低显存占用。LoRA 使用 16 位权重，而全量微调会更新所有权重。",
+      datasetPickerDescription:
+        "搜索 Hugging Face，或选择此设备上已有的数据集。",
+      uploadDataset: "上传数据集",
+      uploadDatasetDescription: "支持 CSV、JSONL、JSON 和 Parquet。",
+      chooseFile: "选择文件",
+      format: "格式",
+      autoDetect: "自动检测",
       uploadLocalLabel: "或上传本地文件",
       sourceBrowse: "浏览",
       releaseToUpload: "松开以上传",

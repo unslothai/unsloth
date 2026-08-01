@@ -1063,6 +1063,19 @@ export const hi = {
       modelLabel: "मॉडल",
       methodLabel: "विधि",
       datasetLabel: "डेटासेट",
+      modelPickerDescription:
+        "Hugging Face पर खोजें या इस डिवाइस पर पहले से मौजूद ट्रेनिंग योग्य मॉडल चुनें।",
+      trainingMethod: "ट्रेनिंग विधि",
+      trainingMethodDescription: "{model} को फ़ाइन-ट्यून करने का तरीका चुनें",
+      trainingMethodTooltip:
+        "QLoRA न्यूनतम VRAM उपयोग के लिए 4-बिट क्वांटाइज़ेशन का उपयोग करता है। LoRA 16-बिट वेट का उपयोग करता है, जबकि पूर्ण फ़ाइन-ट्यूनिंग हर वेट को अपडेट करती है।",
+      datasetPickerDescription:
+        "Hugging Face पर खोजें या इस डिवाइस पर पहले से मौजूद डेटासेट चुनें।",
+      uploadDataset: "डेटासेट अपलोड करें",
+      uploadDatasetDescription: "CSV, JSONL, JSON और Parquet समर्थित हैं।",
+      chooseFile: "फ़ाइल चुनें",
+      format: "फ़ॉर्मैट",
+      autoDetect: "स्वतः पहचान",
       uploadLocalLabel: "या कोई स्थानीय फ़ाइल अपलोड करें",
       sourceBrowse: "ब्राउज़ करें",
       releaseToUpload: "अपलोड करने के लिए छोड़ें",

@@ -1096,6 +1096,20 @@ export const de = {
       modelLabel: "Modell",
       methodLabel: "Methode",
       datasetLabel: "Datensatz",
+      modelPickerDescription:
+        "Durchsuche Hugging Face oder wähle ein trainierbares Modell aus, das bereits auf diesem Gerät vorhanden ist.",
+      trainingMethod: "Trainingsmethode",
+      trainingMethodDescription: "Wähle aus, wie {model} feinabgestimmt wird",
+      trainingMethodTooltip:
+        "QLoRA verwendet 4-Bit-Quantisierung für den niedrigsten VRAM-Verbrauch. LoRA verwendet 16-Bit-Gewichte, während beim vollständigen Fine-Tuning alle Gewichte aktualisiert werden.",
+      datasetPickerDescription:
+        "Durchsuche Hugging Face oder wähle einen Datensatz aus, der bereits auf diesem Gerät vorhanden ist.",
+      uploadDataset: "Datensatz hochladen",
+      uploadDatasetDescription:
+        "Unterstützt CSV, JSONL, JSON und Parquet.",
+      chooseFile: "Datei auswählen",
+      format: "Format",
+      autoDetect: "Automatisch erkennen",
       uploadLocalLabel: "Oder eine lokale Datei hochladen",
       sourceBrowse: "Durchsuchen",
       releaseToUpload: "Zum Hochladen loslassen",

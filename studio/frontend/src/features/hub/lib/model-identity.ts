@@ -4,6 +4,7 @@
 import { looksLikeLocalPath } from "./local-path.ts";
 
 const WINDOWS_DRIVE_PATH_RE = /^[A-Za-z]:/;
+const WINDOWS_RELATIVE_PATH_RE = /^\.{1,2}\\/;
 const WINDOWS_ROOTED_PATH_RE = /^\\/;
 const WSL_DRIVE_PATH_RE = /^\/mnt\/[A-Za-z](?:\/|$)/;
 
@@ -40,7 +41,10 @@ export function normalizeModelIdentity(modelId: string): string {
   if (WSL_DRIVE_PATH_RE.test(slashPath)) {
     return normalizeCaseInsensitivePath(trimmed, 6);
   }
-  return trimTrailingSeparators(slashPath, 1);
+  if (WINDOWS_RELATIVE_PATH_RE.test(trimmed)) {
+    return trimTrailingSeparators(slashPath, 1);
+  }
+  return trimTrailingSeparators(trimmed, 1);
 }
 
 export function normalizeGgufVariantIdentity(

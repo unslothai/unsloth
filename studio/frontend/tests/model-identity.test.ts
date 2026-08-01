@@ -380,6 +380,17 @@ test("normalizes relative Windows separators without changing path case", () => 
   );
 });
 
+test("keeps backslashes in POSIX-shaped paths as filename characters", () => {
+  assert.notEqual(
+    normalizeModelIdentity(String.raw`./models/foo\bar`),
+    normalizeModelIdentity("./models/foo/bar"),
+  );
+  assert.notEqual(
+    normalizeModelIdentity(String.raw`/models/foo\bar`),
+    normalizeModelIdentity("/models/foo/bar"),
+  );
+});
+
 test("preserves existing platform and Hub identity rules", () => {
   assert.equal(
     normalizeModelIdentity(String.raw`C:\Models\Demo\\`),

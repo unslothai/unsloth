@@ -1018,6 +1018,20 @@ export const ja = {
       modelLabel: "モデル",
       methodLabel: "手法",
       datasetLabel: "データセット",
+      modelPickerDescription:
+        "Hugging Face を検索するか、このデバイス上のトレーニング可能なモデルを選択します。",
+      trainingMethod: "トレーニング方法",
+      trainingMethodDescription: "{model} のファインチューニング方法を選択",
+      trainingMethodTooltip:
+        "QLoRA は 4 ビット量子化により VRAM 使用量を最小限に抑えます。LoRA は 16 ビットの重みを使用し、フルファインチューニングはすべての重みを更新します。",
+      datasetPickerDescription:
+        "Hugging Face を検索するか、このデバイス上のデータセットを選択します。",
+      uploadDataset: "データセットをアップロード",
+      uploadDatasetDescription:
+        "CSV、JSONL、JSON、Parquet に対応しています。",
+      chooseFile: "ファイルを選択",
+      format: "形式",
+      autoDetect: "自動検出",
       uploadLocalLabel: "またはローカルファイルをアップロード",
       sourceBrowse: "参照",
       releaseToUpload: "ドロップしてアップロード",

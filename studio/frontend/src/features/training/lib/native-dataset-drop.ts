@@ -43,9 +43,10 @@ export function nativePathFilename(path: string): string {
     const code = character.charCodeAt(0);
     return code <= 31 || code === 127 ? " " : character;
   })
+    .slice(0, 160)
     .join("")
     .trim();
-  return sanitized.slice(0, 160) || "dataset";
+  return sanitized || "dataset";
 }
 
 export function classifyNativeTrainingDatasetDrop(

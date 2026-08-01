@@ -10,6 +10,7 @@ import {
   classifyNativeTrainingDatasetDrop,
   isTrainingDatasetUploadPath,
   nativeDropPositionHitsBounds,
+  nativePathFilename,
 } from "../src/features/training/lib/native-dataset-drop.ts";
 
 test("classifies supported desktop training drops", () => {
@@ -48,6 +49,12 @@ test("distinguishes uploaded files from recipe output directories", () => {
   ]) {
     assert.equal(isTrainingDatasetUploadPath(path), false, path);
   }
+});
+
+test("truncates native dataset filenames without splitting Unicode characters", () => {
+  const filename = nativePathFilename(`/data/${"a".repeat(159)}💡.jsonl`);
+  assert.equal(Array.from(filename).length, 160);
+  assert.equal(filename.endsWith("💡"), true);
 });
 
 test("hit testing converts native physical coordinates to CSS pixels", () => {

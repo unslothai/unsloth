@@ -1087,6 +1087,20 @@ export const es = {
       modelLabel: "Modelo",
       methodLabel: "Método",
       datasetLabel: "Conjunto de datos",
+      modelPickerDescription:
+        "Busca en Hugging Face o elige un modelo entrenable que ya esté en este dispositivo.",
+      trainingMethod: "Método de entrenamiento",
+      trainingMethodDescription: "Elige cómo ajustar {model}",
+      trainingMethodTooltip:
+        "QLoRA utiliza cuantización de 4 bits para minimizar el uso de VRAM. LoRA utiliza pesos de 16 bits, mientras que el ajuste completo actualiza todos los pesos.",
+      datasetPickerDescription:
+        "Busca en Hugging Face o elige un conjunto de datos que ya esté en este dispositivo.",
+      uploadDataset: "Subir un conjunto de datos",
+      uploadDatasetDescription:
+        "Compatible con CSV, JSONL, JSON y Parquet.",
+      chooseFile: "Elegir un archivo",
+      format: "Formato",
+      autoDetect: "Detección automática",
       uploadLocalLabel: "O sube un archivo local",
       sourceBrowse: "Explorar",
       releaseToUpload: "Suelta para subir",

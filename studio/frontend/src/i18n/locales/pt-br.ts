@@ -1068,6 +1068,19 @@ export const ptBR = {
       modelLabel: "Modelo",
       methodLabel: "Método",
       datasetLabel: "Dataset",
+      modelPickerDescription:
+        "Pesquise no Hugging Face ou escolha um modelo treinável já disponível neste dispositivo.",
+      trainingMethod: "Método de treinamento",
+      trainingMethodDescription: "Escolha como fazer o fine-tuning de {model}",
+      trainingMethodTooltip:
+        "O QLoRA usa quantização de 4 bits para reduzir ao mínimo o uso de VRAM. O LoRA usa pesos de 16 bits, enquanto o fine-tuning completo atualiza todos os pesos.",
+      datasetPickerDescription:
+        "Pesquise no Hugging Face ou escolha um dataset já disponível neste dispositivo.",
+      uploadDataset: "Enviar um dataset",
+      uploadDatasetDescription: "Compatível com CSV, JSONL, JSON e Parquet.",
+      chooseFile: "Escolher um arquivo",
+      format: "Formato",
+      autoDetect: "Detecção automática",
       uploadLocalLabel: "Ou envie um arquivo local",
       sourceBrowse: "Procurar",
       releaseToUpload: "Solte para enviar",

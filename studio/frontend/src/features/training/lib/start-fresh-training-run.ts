@@ -377,7 +377,7 @@ function applyDetectedDatasetModality(
       "studio.dataset.streaming.notifications.disabledForDetectedModality",
     );
     toast.info(message);
-    return true;
+    return attempt.cancel(message);
   }
   if (
     isImage === attempt.config.isDatasetImage &&

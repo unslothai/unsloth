@@ -1055,6 +1055,20 @@ export const ko = {
       modelLabel: "모델",
       methodLabel: "방법",
       datasetLabel: "데이터셋",
+      modelPickerDescription:
+        "Hugging Face를 검색하거나 이 기기에 이미 있는 학습 가능한 모델을 선택하세요.",
+      trainingMethod: "학습 방법",
+      trainingMethodDescription: "{model}을 미세 조정할 방법을 선택하세요",
+      trainingMethodTooltip:
+        "QLoRA는 VRAM 사용량을 최소화하기 위해 4비트 양자화를 사용합니다. LoRA는 16비트 가중치를 사용하며, 전체 미세 조정은 모든 가중치를 업데이트합니다.",
+      datasetPickerDescription:
+        "Hugging Face를 검색하거나 이 기기에 이미 있는 데이터셋을 선택하세요.",
+      uploadDataset: "데이터셋 업로드",
+      uploadDatasetDescription:
+        "CSV, JSONL, JSON 및 Parquet를 지원합니다.",
+      chooseFile: "파일 선택",
+      format: "형식",
+      autoDetect: "자동 감지",
       uploadLocalLabel: "또는 로컬 파일 업로드",
       sourceBrowse: "찾아보기",
       releaseToUpload: "놓으면 업로드됩니다",

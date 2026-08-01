@@ -1056,6 +1056,19 @@ export const ar = {
       modelLabel: "النموذج",
       methodLabel: "الطريقة",
       datasetLabel: "مجموعة البيانات",
+      modelPickerDescription:
+        "ابحث في Hugging Face أو اختر نموذجًا قابلًا للتدريب موجودًا على هذا الجهاز.",
+      trainingMethod: "طريقة التدريب",
+      trainingMethodDescription: "اختر كيفية الضبط الدقيق لـ {model}",
+      trainingMethodTooltip:
+        "يستخدم QLoRA تكميم 4 بت لتقليل استخدام VRAM إلى الحد الأدنى. يستخدم LoRA أوزان 16 بت، بينما يحدّث الضبط الدقيق الكامل جميع الأوزان.",
+      datasetPickerDescription:
+        "ابحث في Hugging Face أو اختر مجموعة بيانات موجودة على هذا الجهاز.",
+      uploadDataset: "تحميل مجموعة بيانات",
+      uploadDatasetDescription: "يدعم CSV وJSONL وJSON وParquet.",
+      chooseFile: "اختيار ملف",
+      format: "التنسيق",
+      autoDetect: "اكتشاف تلقائي",
       uploadLocalLabel: "أو حمّل ملفًا محليًا",
       sourceBrowse: "استعراض",
       releaseToUpload: "أفلت للتحميل",

@@ -2342,7 +2342,7 @@ def test_training_transport_failures_reconcile_with_the_backend_before_failing()
     assert "getTrainingStartRequestStatus(" in runtime
     assert "START_RECONCILIATION_DELAYS_MS" in runtime
     assert "resolveTrainingStartRequestOutcome(" in runtime
-    assert ".setStartQueued(outcome.jobId, outcome.message)" in runtime
+    assert ".setStartPending(outcome.jobId, outcome.message)" in runtime
     assert "acknowledgeTrainingStartRequest(lease.startRequestId)" in runtime
     assert "isTrainingStartOutcomeUnknownError(error)" in fresh
     assert "await attempt.recoverTransportFailure()" in fresh
