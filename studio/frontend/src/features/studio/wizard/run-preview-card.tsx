@@ -381,7 +381,7 @@ export function RunPreviewCard({
   return (
     <aside
       className={cn(
-        "elevated-card flex flex-col gap-7 bg-foreground/[0.012] p-6 dark:!border-border/70",
+        "elevated-card elevated-card-dark-border flex flex-col gap-7 bg-foreground/[0.012] p-6",
         "dark:bg-white/[0.018]",
       )}
     >

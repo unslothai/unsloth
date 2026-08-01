@@ -46,6 +46,20 @@ test("hit testing converts native physical coordinates to CSS pixels", () => {
   );
 });
 
+test("native dataset drops track runtime window scale changes", () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/studio/sections/use-dataset-uploads.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+
+  assert.equal(source.includes("currentWindow.onScaleChanged("), true);
+  assert.equal(source.includes("scaleFactor = payload.scaleFactor"), true);
+  assert.equal(source.includes("stopScaleChanged?.()"), true);
+});
+
 test("frontend, backend, and Rust accept the same native dataset extensions", () => {
   const backendSource = readFileSync(
     new URL("../../backend/hub/services/datasets/local.py", import.meta.url),

@@ -286,9 +286,19 @@ export function useDatasetUploads() {
       return;
     }
     let disposed = false;
-    let unlisten: (() => void) | undefined;
+    let unlistenDragDrop: (() => void) | undefined;
+    let unlistenScaleChanged: (() => void) | undefined;
     let scaleFactor = window.devicePixelRatio || 1;
+    let scaleFactorRevision = 0;
     let eligible = false;
+    const stopListening = () => {
+      const stopDragDrop = unlistenDragDrop;
+      const stopScaleChanged = unlistenScaleChanged;
+      unlistenDragDrop = undefined;
+      unlistenScaleChanged = undefined;
+      stopDragDrop?.();
+      stopScaleChanged?.();
+    };
     const hitsTarget = (position: { x: number; y: number }) => {
       const target = document.getElementById(datasetDropTargetId);
       return (
@@ -304,8 +314,31 @@ export function useDatasetUploads() {
     void import("@tauri-apps/api/window")
       .then(async ({ getCurrentWindow }) => {
         const currentWindow = getCurrentWindow();
-        scaleFactor = await currentWindow.scaleFactor();
-        return currentWindow.onDragDropEvent((event) => {
+        const stopScaleChanged = await currentWindow.onScaleChanged(
+          ({ payload }) => {
+            if (disposed) {
+              return;
+            }
+            scaleFactor = payload.scaleFactor;
+            scaleFactorRevision += 1;
+          },
+        );
+        if (disposed) {
+          stopScaleChanged();
+          return;
+        }
+        unlistenScaleChanged = stopScaleChanged;
+
+        const revisionBeforeRead = scaleFactorRevision;
+        const currentScaleFactor = await currentWindow.scaleFactor();
+        if (disposed) {
+          return;
+        }
+        if (scaleFactorRevision === revisionBeforeRead) {
+          scaleFactor = currentScaleFactor;
+        }
+
+        const stopDragDrop = await currentWindow.onDragDropEvent((event) => {
           if (disposed) {
             return;
           }
@@ -340,19 +373,17 @@ export function useDatasetUploads() {
             handleNativeDrop(event.payload.paths);
           }
         });
-      })
-      .then((cleanup) => {
         if (disposed) {
-          cleanup();
+          stopDragDrop();
         } else {
-          unlisten = cleanup;
+          unlistenDragDrop = stopDragDrop;
         }
       })
-      .catch(() => undefined);
+      .catch(stopListening);
 
     return () => {
       disposed = true;
-      unlisten?.();
+      stopListening();
     };
   }, [datasetDropTargetId, isUploading]);
 

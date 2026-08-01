@@ -2932,6 +2932,10 @@ html[data-chat-font] .aui-root {
 		box-shadow: none;
 	}
 
+	.dark .elevated-card.elevated-card-dark-border {
+		border-color: color-mix(in srgb, var(--border) 70%, transparent);
+	}
+
 	.page-title-halo {
 		text-shadow:
 			0 0 24px color-mix(in srgb, var(--primary) 18%, transparent),
