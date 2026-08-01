@@ -108,15 +108,22 @@ def test_a_deleted_file_is_reported(site):
     assert "starlette/routing.py is missing" in found[0]
 
 
-def test_deletion_is_seen_even_though_Distribution_files_hides_it(site):
-    # Distribution.files drops entries whose file no longer exists, so a check
-    # built on it can never report a deletion. This asserts RECORD is the source.
+def test_deletion_is_seen_whatever_Distribution_files_does(site):
+    # Distribution.files is not a usable basis for this check, and it is not
+    # consistent either: newer CPython filters out entries whose file is gone
+    # (so a deletion becomes invisible), older CPython lists them but with a
+    # path that does not exist. Which one you get depends on the interpreter,
+    # and this project supports >= 3.9, so pinning one behaviour would make the
+    # test fail on the other. RECORD is parsed directly instead, which reports
+    # the deletion on every version.
     import importlib.metadata as md
 
     _make_dist(site, "gamma", {"gamma/a.py": b"a\n", "gamma/b.py": b"bb\n"})
     (site / "gamma" / "b.py").unlink()
-    listed = [str(f) for f in (md.distribution("gamma").files or [])]
-    assert "gamma/b.py" not in listed, "Distribution.files started reporting missing files"
+    stale = [f for f in (md.distribution("gamma").files or []) if str(f) == "gamma/b.py"]
+    # Either it was dropped, or it is listed and locate() does not resolve.
+    # Both mean files() cannot tell you the file is gone.
+    assert not stale or not stale[0].locate().exists()
     assert any("gamma/b.py is missing" in f for f in _deps().damaged_installed_files())
 
 
