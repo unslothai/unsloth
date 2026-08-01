@@ -3817,9 +3817,10 @@ class TestDamagedLatestSidecarRepairHandoff:
         self._damage(live)
         tv._request_latest_repair()
 
-        assert tv._probe_tier(
-            "some/model", None, "test", include_default = True, floor = "default"
-        ) != "latest"
+        assert (
+            tv._probe_tier("some/model", None, "test", include_default = True, floor = "default")
+            != "latest"
+        )
 
     def test_file_check_kill_switch_suppresses_the_whole_handoff(self, monkeypatch, tmp_path):
         """UNSLOTH_SKIP_SIDECAR_FILE_CHECK is the escape hatch for a false positive; it
