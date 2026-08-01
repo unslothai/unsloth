@@ -556,6 +556,13 @@ export function useTauriBackend() {
         setBackendError("Server stopped unexpectedly");
       });
 
+      // A backend that hangs never closes stdout, so server-crashed never fires and the
+      // startup screen would otherwise spin forever. Payload carries the backend's tail.
+      register<string>("server-start-timeout", (e) => {
+        startingRef.current = false;
+        setBackendError(e.payload || "The Unsloth backend did not start in time");
+      });
+
       register<string>("server-log", (e) => {
         setLogs((prev) => [...prev.slice(-499), e.payload]);
       });
