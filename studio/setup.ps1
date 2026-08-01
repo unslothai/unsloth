@@ -4894,5 +4894,17 @@ Write-Host ""
 # failure. Direct 'unsloth studio update' does not set SKIP_STUDIO_BASE,
 # so it keeps degraded installs successful.
 if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
-    Exit-SetupFailure "llama.cpp setup did not produce a usable server"
+    # Tauri mode reports instead of aborting, exactly as setup.sh does. install.ps1
+    # turns any non-zero status from here into Exit-InstallFailure, and install.rs
+    # turns that into "Installation failed", so on Windows too a single transient
+    # prebuilt download failure would throw away a first-launch install whose own
+    # footer just said complete. [TAURI:PROGRESS] (not [TAURI:STEP], which would
+    # push the frontend step counter past the seven INSTALL_STEPS entries) reaches
+    # the user as install-progress-detail text.
+    if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
+        [Console]::Out.WriteLine("[TAURI:PROGRESS] llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds")
+        [Console]::Out.Flush()
+    } else {
+        Exit-SetupFailure "llama.cpp setup did not produce a usable server"
+    }
 }
