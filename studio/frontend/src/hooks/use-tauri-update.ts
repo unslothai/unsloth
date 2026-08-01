@@ -7,6 +7,7 @@ import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
 } from "@/lib/tauri-diagnostics";
+import { checkDesktopUpdate } from "@/lib/tauri-updater";
 import { toast } from "@/lib/toast";
 
 export type UpdateStatus =
@@ -98,9 +99,7 @@ export function useTauriUpdate(isExternalServer = false) {
   const [error, setError] = useState<string | null>(null);
   const [lastFailure, setLastFailure] = useState<RetainedUpdateFailure | null>(null);
   const [updatePolicy, setUpdatePolicy] = useState<DesktopUpdatePolicy>(DEFAULT_UPDATE_POLICY);
-  const updateRef = useRef<Awaited<
-    ReturnType<typeof import("@tauri-apps/plugin-updater").check>
-  > | null>(null);
+  const updateRef = useRef<Awaited<ReturnType<typeof checkDesktopUpdate>>>(null);
   const checkedRef = useRef(false);
   const updatingRef = useRef(false);
 
@@ -200,8 +199,7 @@ export function useTauriUpdate(isExternalServer = false) {
       setStatus("checking");
       const policy = await resolveUpdatePolicy();
       try {
-        const { check } = await import("@tauri-apps/plugin-updater");
-        const update = await check();
+        const update = await checkDesktopUpdate();
         if (update) {
           updateRef.current = update;
           setInfo({
@@ -322,7 +320,7 @@ export function useTauriUpdate(isExternalServer = false) {
       console.error("Update failed:", e);
       const msg = String(e);
 
-      // Shell update failed — restart backend on updated code
+      // Shell update failed, so restart the backend on the updated code.
       if (phaseRef.current === "shell_download" || phaseRef.current === "shell_install") {
         try {
           const { invoke } = await import("@tauri-apps/api/core");
