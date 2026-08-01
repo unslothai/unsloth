@@ -2485,7 +2485,9 @@ extra_eos_tokens = None,
         final_combined_check = left if final_combined_check else chat_template
 
         # Isolate input
-        extra_eos_tokens_regex = "|".join(f"(?:{re.escape(x)})" for x in extra_eos_tokens)
+        # Regex alternations prefer the first match, so match prefix tokens last.
+        eos_tokens_for_matching = sorted(extra_eos_tokens, key = len, reverse = True)
+        extra_eos_tokens_regex = "|".join(f"(?:{re.escape(x)})" for x in eos_tokens_for_matching)
         if len(extra_eos_tokens_regex) != 0:
             find_end = f"(?:{extra_eos_tokens_regex})?"
         else:
