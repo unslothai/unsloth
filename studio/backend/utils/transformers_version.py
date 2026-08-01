@@ -2020,7 +2020,10 @@ def _sidecar_file_check_disabled() -> bool:
     to reach everything the scan produced, the repair marker included, or the hatch only
     takes effect a backoff window later."""
     return os.environ.get(_SIDECAR_FILE_CHECK_ENV, "").strip().lower() in (
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     )
 
 
