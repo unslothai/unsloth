@@ -48,10 +48,19 @@ export function decodeDataUri(dataUri: string): DecodedDataUri {
   const metadata = dataUri.slice(5, separator);
   const data = dataUri.slice(separator + 1);
   const mimeType = metadata.split(";", 1)[0] || "text/plain;charset=US-ASCII";
+  // Percent-decoding comes first either way: a base64 payload may itself carry
+  // escapes, so `data:audio/wav;base64,SGVsbG8%3D` has to become `SGVsbG8=`
+  // before atob() sees it. Browsers decode that URI; passing the raw string
+  // through would throw InvalidCharacterError on the %.
+  const decoded = percentDecodeOctets(data);
   if (!DATA_URI_BASE64_RE.test(metadata)) {
-    return { bytes: percentDecodeOctets(data), mimeType };
+    return { bytes: decoded, mimeType };
   }
-  const binary = atob(data);
+  let payload = "";
+  for (const byte of decoded) {
+    payload += String.fromCharCode(byte);
+  }
+  const binary = atob(payload);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) {
     bytes[index] = binary.charCodeAt(index);

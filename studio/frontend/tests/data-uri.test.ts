@@ -69,3 +69,19 @@ test("does not treat a base64x parameter as base64", () => {
     [81, 85, 74, 68],
   );
 });
+
+test("percent-decodes a base64 payload before decoding it", () => {
+  // atob() would throw InvalidCharacterError on the escapes.
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:audio/wav;base64,SGVsbG8%3D").bytes),
+    [72, 101, 108, 108, 111],
+  );
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:audio/wav;base64,AAH6%2Fw%3D%3D").bytes),
+    [0, 1, 250, 255],
+  );
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain;base64,QUJ%44").bytes),
+    [65, 66, 67],
+  );
+});
