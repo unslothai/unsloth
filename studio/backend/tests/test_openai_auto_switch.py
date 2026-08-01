@@ -3785,13 +3785,17 @@ def test_strict_count_refuses_a_text_only_template_fallback(monkeypatch, failure
     assert _CountBackend().count_chat_tokens(messages, None, tools) > 0
 
 
-def test_an_empty_chat_still_renders_a_template(monkeypatch):
-    """A fresh New Chat has no messages and, by default, no system prompt, so the count would
-    send messages: [] to /apply-template. Most real templates index messages[0] and raise on
-    that, and a strict count turns the error into a 503 the recount swallows, which is #7450's
-    own case reporting a blank bar. Verified against the shipped templates for
-    Llama-3.2-1B-Instruct, Qwen3-8B, gemma-3-270m-it and mistral-7b-instruct-v0.3: all four
-    raise on [] and all four render one empty system turn."""
+def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
+    """A fresh New Chat has no messages and, by default, no system prompt. The count must
+    forward that empty list as-is rather than inventing a turn to make the template happy.
+
+    Templates that index ``messages[0]`` look like they must reject an empty list, and under
+    python jinja2 they do. llama-server renders through minja, where that yields undefined
+    instead of raising, so the real engine returns the bare preamble. Checked against the
+    shipped templates for Llama-3.2-1B-Instruct, Qwen3-8B, Phi-4, gemma-3-270m-it and
+    mistral-7b-instruct-v0.3 driven through llama-server with --jinja: all five render.
+    Injecting a placeholder system turn would add a system block to the count for Qwen3
+    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show."""
     from core.inference import llama_cpp as llama_cpp_mod
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -3827,10 +3831,8 @@ def test_an_empty_chat_still_renders_a_template(monkeypatch):
             body = json or {}
             if url.endswith("/apply-template"):
                 seen["messages"] = body.get("messages")
-                # Stand in for the real templates: indexing [0] of an empty list raises.
-                if not body.get("messages"):
-                    return _FakeResponse({"error": "template error"}, status_code = 500)
-                return _FakeResponse({"prompt": "<bos>"})
+                # What minja does: no messages renders the preamble, it does not raise.
+                return _FakeResponse({"prompt": "<start_of_turn>model\n"})
             return _FakeResponse({"tokens": str(body.get("content", "")).split()})
 
     class _CountBackend(LlamaCppBackend):
@@ -3843,8 +3845,8 @@ def test_an_empty_chat_still_renders_a_template(monkeypatch):
 
     monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
     count = _CountBackend().count_chat_tokens([], None, None, strict = True)
-    assert seen["messages"], "an empty list reaches the template and it rejects it"
-    assert count > 0, "a fresh chat must still price the template preamble"
+    assert seen["messages"] == [], "the count must not invent a turn the caller never sent"
+    assert count > 0, "a fresh chat still prices the template preamble"
 
 
 def test_audio_generate_is_reload_only(monkeypatch):

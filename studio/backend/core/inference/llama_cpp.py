@@ -13658,12 +13658,11 @@ class LlamaCppBackend:
                     template_messages = [
                         {"role": "system", "content": system_text}
                     ] + template_messages
-                if not template_messages:
-                    # Most chat templates index messages[0], so an empty list is a render
-                    # ERROR, not an empty render, and a fresh chat would count nothing at
-                    # all. One empty system turn is the smallest shape they all accept and
-                    # renders the fixed preamble the next request pays anyway.
-                    template_messages = [{"role": "system", "content": ""}]
+                # An empty list is passed through as-is. Templates that index messages[0]
+                # look like they should reject it, but llama-server renders through minja,
+                # which yields undefined there rather than raising, so every template tried
+                # returns the bare preamble. Injecting a placeholder turn instead would add
+                # a system block to the empty-chat count for the templates that emit one.
                 apply_template_failed = False
                 try:
                     # llama-server's /apply-template renders tool declarations
