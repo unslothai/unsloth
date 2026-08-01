@@ -38,6 +38,7 @@ import os
 import sys
 import threading
 import time
+from functools import partial
 from typing import Optional
 
 from loggers import get_logger
@@ -167,11 +168,13 @@ def _run_stage(name: str, fn) -> None:
         }
 
 
-def _warm_hardware() -> None:
+def _warm_hardware(epoch: Optional[int] = None) -> None:
     # Requests wait on this same call, so they hit the cache or block on this thread's
-    # lock -- never a second, racing detection.
+    # lock -- never a second, racing detection. The warm's epoch goes with it: shutdown
+    # can land between _warm()'s pre-stage check and _DETECT_LOCK, and detection reading
+    # the epoch itself would then publish for the lifespan that just ended.
     from utils.hardware import ensure_hardware_detected
-    ensure_hardware_detected()
+    ensure_hardware_detected(epoch)
 
 
 def _warm_transformers() -> None:
@@ -250,7 +253,9 @@ def _warm(epoch: Optional[int] = None) -> None:
             # thread scheduled but already retired, with nothing yet run.
             logger.info("torch warm stopped before %s: its lifespan ended", name)
             return
-        _run_stage(name, fn)
+        # Only the real stage takes the epoch; a patched _STAGES entry is a different
+        # object and is still called with no arguments.
+        _run_stage(name, partial(fn, epoch) if fn is _warm_hardware else fn)
         if epoch is not None and _detection_epoch() != epoch:
             # Shutdown retired this lifespan's detection. Later stages build the
             # orchestrator, which reaches get_device() and would start a fresh one,

@@ -1835,3 +1835,97 @@ def test_a_retired_pass_that_did_detect_still_discards():
     finally:
         hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
         hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_the_warm_hands_its_epoch_to_detection():
+    """The pre-stage check is not enough on its own.
+
+    Shutdown can land between that check and _DETECT_LOCK, inside the torch import the
+    hardware stage is running. Detection reading the epoch itself would then bind to the
+    retirement it was meant to lose to and publish for the lifespan that ended.
+    """
+    import utils.torch_warmup as warm
+
+    seen: list = []
+    with mock.patch.object(warm, "_warm_hardware", warm._warm_hardware):
+        with mock.patch("utils.hardware.ensure_hardware_detected", lambda e = None: seen.append(e)):
+            warm._warm_hardware(41)
+    assert seen == [41], f"the hardware stage dropped its epoch: {seen}"
+
+
+def test_the_warm_loop_passes_the_epoch_to_the_real_stage_only():
+    """_warm() must bind the epoch onto the real hardware stage, and only that one.
+
+    A patched _STAGES entry is a different object, so it keeps the zero-argument
+    contract every other stage and every test stub relies on.
+    """
+    import utils.torch_warmup as warm
+    from utils.hardware import hardware as hw
+
+    got: list = []
+
+    def _hardware(epoch = None):
+        got.append(("hardware", epoch))
+
+    zero_arg_calls: list = []
+    stages = (("hardware", _hardware), ("later", lambda: zero_arg_calls.append("later")))
+    with mock.patch.object(warm, "_STAGES", stages):
+        warm._warm(hw.current_detection_epoch())
+    # _hardware is not warm._warm_hardware, so it is called with no arguments.
+    assert got == [("hardware", None)], got
+    assert zero_arg_calls == ["later"]
+
+    # The real stage does get it: assert on the call the loop builds.
+    tree = ast.parse((_BACKEND / "utils" / "torch_warmup.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_warm"
+    )
+    assert any(
+        isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "partial"
+        and any(isinstance(a, ast.Name) and a.id == "epoch" for a in sub.args)
+        for sub in ast.walk(fn)
+    ), "_warm no longer binds the epoch onto the hardware stage"
+
+
+def test_deleting_a_cached_model_does_not_construct_the_backend():
+    """A metadata-only delete has no reason to import torch.
+
+    The guard is already off-loop, so this is not a stall; it is the kill switch being
+    defeated, and the warm window paying for a torch import to answer "nothing loaded".
+    """
+    tree = ast.parse(
+        (_BACKEND / "hub" / "services" / "models" / "deletion.py").read_text(encoding = "utf-8")
+    )
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_inference_backend_blocks_delete"
+    )
+    assert not [
+        sub for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "get_inference_backend"
+    ], "the delete guard constructs the ML backend to learn that nothing is loaded"
+    assert any(
+        isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "peek_inference_backend"
+        for sub in ast.walk(fn)
+    ), "the delete guard no longer checks the loaded model at all"
+
+
+def test_the_delete_guard_lets_a_delete_through_when_nothing_is_loaded():
+    """Behavioural: no orchestrator means no standard model, so nothing blocks."""
+    import core.inference.orchestrator as orch
+    from hub.services.models import deletion
+
+    before = orch._inference_backend
+    try:
+        orch._inference_backend = None
+        assert deletion._inference_backend_blocks_delete("unsloth/Qwen3.5-2B") is False
+        assert orch._inference_backend is None, "the delete guard constructed an orchestrator"
+    finally:
+        orch._inference_backend = before

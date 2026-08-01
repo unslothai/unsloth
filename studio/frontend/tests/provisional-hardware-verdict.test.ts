@@ -142,3 +142,31 @@ test("an actively detecting reply is not deferred", () => {
     "an ordinary warm-window reply must still be waited on",
   );
 });
+
+// The bounded re-read in config/env.ts is spent at most once per page load. A host
+// slower than the window leaves the reply provisional, and a reply with no device_type
+// leaves `fetched` false, so an unguarded loop would spend the whole window again on
+// every route navigation. Asserted on the source, since env.ts reaches import.meta.env
+// through api-base.ts and cannot be imported outside vite.
+test("the bounded hardware wait is spent at most once per page load", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/config/env.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /let hardwareWaitSpent = false/,
+    "no once-per-load latch: every navigation can repeat the full wait",
+  );
+  assert.match(
+    src,
+    /hardwareWaitSpent\s*\n?\s*\?\s*0/,
+    "the latch does not zero the deadline, so the wait is not actually skipped",
+  );
+  assert.match(
+    src,
+    /hardwareWaitSpent = true/,
+    "the latch is never set, so it can never take effect",
+  );
+});

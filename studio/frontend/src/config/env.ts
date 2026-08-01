@@ -74,6 +74,8 @@ function shouldKeepAuthoritativePlatform(force?: boolean): boolean {
 // it re-reads. Sized from the warm's torch import (~1-2s cold), plus headroom.
 const HARDWARE_DETECT_WAIT_MS = 5000;
 const HARDWARE_DETECT_POLL_MS = 200;
+// The bounded wait above is spent at most once per page load: see fetchDeviceType.
+let hardwareWaitSpent = false;
 
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
@@ -95,9 +97,15 @@ export async function fetchDeviceType(options?: {
     // sending a GPU host to /chat with Train hidden. The window is only the torch
     // import, so a bounded re-read lands the measurement without stalling boot.
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-    const deadline = Date.now() + HARDWARE_DETECT_WAIT_MS;
+    // Once per session. A host slower than the window leaves the reply provisional, and
+    // `fetched` stays false on a reply with no device_type, so without this every later
+    // route navigation would spend the whole window again waiting on the same answer.
+    const deadline = hardwareWaitSpent
+      ? 0
+      : Date.now() + HARDWARE_DETECT_WAIT_MS;
     let res = await fetch(apiUrl("/api/health"), { headers });
     while (res.ok && Date.now() < deadline) {
+      hardwareWaitSpent = true;
       const peek = (await res.clone().json()) as {
         hardware_detecting?: boolean;
         hardware_detection_deferred?: boolean;
