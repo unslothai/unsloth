@@ -401,6 +401,7 @@ def test_load_from_files_all_empty_raises():
     print("test_load_from_files_all_empty_raises passed")
     return True
 
+
 def test_validate_dataset_handles_tokenized_and_text_columns():
     """validate_dataset() must work for both dataset shapes:
     - text-column datasets (return_tokenized=False), no tokenizer needed
@@ -409,47 +410,61 @@ def test_validate_dataset_handles_tokenized_and_text_columns():
     Also asserts the clear ValueError when input_ids is present but no
     tokenizer was passed, and when neither column exists.
     """
- 
+
     class MockTokenizer:
         def __init__(self):
             self.eos_token = "</s>"
             self.eos_token_id = 2
- 
-        def __call__(self, text, return_tensors = None, add_special_tokens = False):
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
             words = text.split()
             token_ids = list(range(len(words)))
- 
+
             if return_tensors == "pt":
+
                 class MockTensor:
                     def __init__(self, data):
                         self.data = data
+
                     def __getitem__(self, idx):
                         return self.data
+
                     def __len__(self):
                         return len(self.data)
+
                     def tolist(self):
                         return self.data
+
                 return {"input_ids": [MockTensor(token_ids)]}
             return {"input_ids": token_ids}
- 
-        def decode(self, token_ids, skip_special_tokens = False):
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
             return " ".join(f"word_{i}" for i in token_ids)
- 
+
     tokenizer = MockTokenizer()
     loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 2)
     preprocessor = TextPreprocessor()
- 
+
     test_content = "This is a test file for raw text training. " * 10
     with tempfile.NamedTemporaryFile(mode = "w", suffix = ".txt", delete = False) as f:
         f.write(test_content)
         test_file = f.name
- 
+
     try:
         text_dataset = loader.load_from_file(test_file, return_tokenized = False)
         stats = preprocessor.validate_dataset(text_dataset)
         assert stats["total_samples"] > 0, "Should count samples from text column"
         assert "warnings" in stats
- 
+
         tokenized_dataset = loader.load_from_file(test_file, return_tokenized = True)
         stats = preprocessor.validate_dataset(tokenized_dataset, tokenizer = tokenizer)
         assert stats["total_samples"] > 0, "Should count samples decoded from input_ids"
@@ -464,18 +479,19 @@ def test_validate_dataset_handles_tokenized_and_text_columns():
 
         class FakeEmptyDataset:
             column_names = ["some_other_column"]
+
             def __len__(self):
                 return 0
- 
+
         try:
             preprocessor.validate_dataset(FakeEmptyDataset())
             assert False, "Should raise ValueError when neither text nor input_ids column exists"
         except ValueError as e:
             assert "text" in str(e).lower() and "input_ids" in str(e).lower(), str(e)
- 
+
         print("test_validate_dataset_handles_tokenized_and_text_columns passed")
         return True
- 
+
     finally:
         os.unlink(test_file)
 
