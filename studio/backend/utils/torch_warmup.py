@@ -308,15 +308,14 @@ def start_background_warm() -> bool:
         target, args = _warm, (epoch,)
         if _thread is not None:
             # A warm keeps the latch while its own lifespan is current, so repeat calls
-            # stay no-ops however fast it ran. Once shutdown retires that epoch it is
-            # stale, and the next lifespan warms again over the state shutdown cleared.
+            # stay no-ops. Once shutdown retires that epoch the next lifespan warms
+            # again, over the state shutdown cleared.
             if _thread_epoch is not None and epoch == _thread_epoch:
                 return False
             if _thread.is_alive():
-                # Stale but still inside a stage. It stops at the next boundary, and
-                # nothing else would ever retry, so this lifespan would serve cold.
-                # Hand off instead of declining: the successor joins it first, so only
-                # one thread is ever importing.
+                # Stale but mid-stage: it stops at the next boundary and nothing would
+                # retry, so this lifespan would serve cold. Hand off instead of
+                # declining; the successor joins it first, so only one thread imports.
                 target, args = _warm_after, (_thread, epoch)
             else:
                 _clear_finished_warm_locked()

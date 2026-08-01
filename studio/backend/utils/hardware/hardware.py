@@ -357,10 +357,9 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
         if epoch is None:
             epoch = current_detection_epoch()
         elif DEVICE is None and current_detection_epoch() != epoch:
-            # Retired before this worker reached the lock, and nothing newer has been
-            # published. Probing would import torch for a lifespan that has stopped,
-            # and the next lifespan's warm would queue on this lock behind it only to
-            # detect all over again. A shutdown landing mid-probe is still caught below.
+            # Retired before this worker reached the lock, nothing newer published.
+            # Probing would import torch for a stopped lifespan, and the next lifespan's
+            # warm would queue behind it only to re-detect. Mid-probe shutdown: below.
             return DEVICE
         produced_here = DEVICE is None
         if produced_here:

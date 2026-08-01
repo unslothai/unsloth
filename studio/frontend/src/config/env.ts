@@ -33,9 +33,8 @@ interface PlatformState {
   serverUrl: string | null;
   secure: boolean;
   fetched: boolean;
-  // The last verdict came from a deferred reply (torch-warm kill switch), so nothing
-  // will settle until a first-use operation detects. The sidebar polls on this, or a
-  // GPU host stays chat-only until a hard refresh.
+  // Last verdict came from a deferred reply (torch-warm kill switch): nothing settles
+  // until a first-use operation detects, so the sidebar polls on this.
   detectionDeferred: boolean;
   isChatOnly: () => boolean;
 }
@@ -103,12 +102,11 @@ export async function fetchDeviceType(options?: {
     // import, so a bounded re-read lands the measurement without stalling boot.
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
     // Wait only when a measurement can arrive, and only once. /api/health reports
-    // device_type to authed callers only, so an unauthenticated read stays provisional
-    // however long we poll, and beforeLoad awaits this: /login would sit behind the
-    // torch import for the whole window. `fetched` also stays false on a reply with no
-    // device_type, so without the latch every later navigation would spend the window
-    // again. Claim the latch after the wait, not during it, or a concurrent caller
-    // skips a window nobody has finished.
+    // device_type to authed callers only, so an unauthenticated poll stays provisional
+    // and only holds /login (beforeLoad awaits this) behind the torch import. `fetched`
+    // stays false without device_type, so the latch stops every later navigation
+    // spending the window again; claim it after the wait, or a concurrent caller skips
+    // a window nobody has finished.
     const spendWait = Boolean(token) && !hardwareWaitSpent;
     const deadline = spendWait ? Date.now() + HARDWARE_DETECT_WAIT_MS : 0;
     let res = await fetch(apiUrl("/api/health"), { headers });

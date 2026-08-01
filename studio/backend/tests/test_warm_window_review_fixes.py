@@ -1522,9 +1522,8 @@ def test_a_detection_delayed_past_shutdown_does_not_publish(monkeypatch):
 def test_both_spawners_read_the_epoch_before_start():
     """AST: the epoch is read by the spawner and handed over, never read in the thread.
 
-    The target may be chosen indirectly (start_background_warm picks a successor when a
-    retired warm is still running), so match the Thread call by the spawner it lives in
-    rather than by a literal target name.
+    The target may be indirect (a successor when a retired warm is still running), so
+    match the Thread call by the spawner it lives in, not by a literal target name.
     """
     readers = {"_detection_epoch", "current_detection_epoch"}
     for rel, spawner in (
@@ -1549,8 +1548,7 @@ def test_both_spawners_read_the_epoch_before_start():
         args_kw = next((kw for kw in call.keywords if kw.arg == "args"), None)
         assert args_kw is not None, f"{spawner} starts its worker with no epoch handed over"
 
-        # Every name the args expression can carry, following one level of indirection
-        # through a local assignment (args = (thread, epoch) bound to a name).
+        # Every name args can carry, through one level of local-assignment indirection.
         def _names(node):
             out = {sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name)}
             for assign in ast.walk(fn):
@@ -1588,10 +1586,8 @@ def test_both_spawners_read_the_epoch_before_start():
 def test_a_new_lifespan_warms_even_when_the_retired_one_is_still_running():
     """Declining to a stale live warm leaves the new lifespan with no warm at all.
 
-    A shutdown landing mid-warm cannot reset the latch, and the stale worker stops at
-    its next stage boundary. Nothing retries, so without a hand-off the restart serves
-    with the inference backend and the remaining imports cold, which is the stall this
-    module exists to remove.
+    A shutdown landing mid-warm cannot reset the latch, and the stale worker stops at its
+    next stage boundary. Nothing retries, so without a hand-off the restart serves cold.
     """
     import utils.torch_warmup as warm
     from utils.hardware import hardware as hw
@@ -1814,8 +1810,8 @@ def test_the_default_model_list_is_stamped_before_it_is_built():
         for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef) and node.name == "InferenceOrchestrator"
     )
-    # __init__ is single-threaded, so ordering is enough there: stamping first leaves a
-    # racing re-detection ahead of the stamp, which is the safe direction.
+    # __init__ is single-threaded, so ordering suffices: stamping first leaves a racing
+    # re-detection ahead of the stamp, the safe direction.
     init = next(
         node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "__init__"
     )
@@ -1837,9 +1833,8 @@ def test_the_default_model_list_is_stamped_before_it_is_built():
         "so a re-detection in between makes the stale list look current forever"
     )
 
-    # The refresh path has concurrent readers, where ordering alone is not enough: two
-    # of them on different generations can commit out of order. It must capture the
-    # generation before building and commit only while that is still the newest.
+    # The refresh path has concurrent readers, which can commit out of order, so ordering
+    # is not enough: capture the generation before building, commit only while newest.
     fn = next(
         node
         for node in cls.body
@@ -2261,8 +2256,7 @@ def test_a_finished_warm_still_holds_the_latch_inside_its_own_lifespan():
 def test_an_offline_first_read_does_not_retire_the_ranking_fetch():
     """Claiming the latch before the offline check disables the fetch for the process.
 
-    A boot that happened to be offline, or a temporary force_hf_offline() scope, would
-    then never pick the remote ranking up again however long the host stays online.
+    An offline boot or a force_hf_offline() scope then never picks the ranking up again.
     """
     tree = ast.parse(
         (_BACKEND / "core" / "inference" / "orchestrator.py").read_text(encoding = "utf-8")
@@ -2319,9 +2313,8 @@ def test_an_offline_read_leaves_the_fetch_available():
 def test_a_slow_refresh_cannot_overwrite_a_newer_default_list():
     """Two readers refreshing different generations must not commit out of order.
 
-    An MLX repair followed by a repeated lifespan gives several generations. A reader
-    that started earlier can finish later, and storing its older list under the newer
-    stamp leaves that stale GGUF-only list looking current for the rest of the process.
+    An MLX repair plus a repeated lifespan gives several generations, and a reader that
+    started earlier can finish later, leaving its stale list looking current for good.
     """
     import core.inference.orchestrator as orch
     import utils.hardware.hardware as hw_mod
@@ -2405,10 +2398,9 @@ def test_an_ordinary_refresh_still_happens():
 def test_a_retired_worker_does_not_probe_before_being_discarded():
     """Discarding after the probe still pays for the probe.
 
-    A health-triggered detection thread can reach _DETECT_LOCK after shutdown retired
-    its epoch. Running the full torch probe there imports the ML stack for a lifespan
-    that has stopped, and the next lifespan's warm queues on the same lock behind it
-    only to detect again, delaying the verdict this PR exists to deliver sooner.
+    A health-triggered thread can reach _DETECT_LOCK after shutdown retired its epoch.
+    Probing there imports the ML stack for a stopped lifespan, and the next lifespan's
+    warm queues on the same lock behind it only to detect again.
     """
     from utils.hardware import hardware as hw
 
@@ -2460,10 +2452,9 @@ def test_a_live_worker_still_probes():
 def test_a_measured_authed_reply_drops_both_provisional_markers():
     """AST: publishing a measurement must clear the deferred marker too.
 
-    With the kill switch on, base carries both markers. A first-use detection or an
-    MLX repair finishing during the bearer await makes the second snapshot measured,
-    and leaving hardware_detection_deferred set pairs an accelerator verdict with a
-    stale reason, because the client reads the deferred marker first.
+    With the kill switch on, base carries both markers. When a detection finishing during
+    the bearer await makes the snapshot measured, a left-over hardware_detection_deferred
+    pairs an accelerator verdict with a stale reason: the client reads that marker first.
     """
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(

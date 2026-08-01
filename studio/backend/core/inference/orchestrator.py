@@ -161,8 +161,8 @@ class InferenceOrchestrator:
 
         self._static_models_generation = _hw_mod.DETECTION_GENERATION
         self._static_models = get_default_models()
-        # Guards the stamp/value pair only. Its own lock, not the construction lock:
-        # that one is held across a build that waits on hardware detection.
+        # Own lock for the stamp/value pair; the construction lock is held across a
+        # build that waits on hardware detection.
         self._static_models_lock = threading.Lock()
         self._top_gguf_cache: Optional[list[str]] = None
         self._top_hub_cache: Optional[list[str]] = None
@@ -189,14 +189,11 @@ class InferenceOrchestrator:
             return
         from core.inference.defaults import get_default_models
 
-        # Built outside the lock: it settles detection, which can take the whole torch
-        # import, and no reader should queue behind that.
+        # Built outside the lock so readers do not queue behind the torch import.
         models = get_default_models()
         with self._static_models_lock:
-            # Commit only while this list is still the newest anyone has. Concurrent
-            # readers can be mid-refresh on different generations, and a slow one
-            # storing its older list under a newer stamp would leave that stale list
-            # looking current for the life of the process.
+            # Commit only while still the newest: a slow reader storing its older list
+            # under a newer stamp would look current for the life of the process.
             if generation != _hw_mod.DETECTION_GENERATION:
                 return
             if generation <= self._static_models_generation:
@@ -216,9 +213,9 @@ class InferenceOrchestrator:
         """
         if self._top_models_started:
             return
-        # Checked before the latch is taken: claiming it while offline would retire the
-        # fetch for the life of the process, so a boot that happened to be offline, or
-        # a temporary force_hf_offline() scope, could never pick the ranking up later.
+        # Checked before the latch: claiming it while offline would retire the fetch for
+        # the life of the process, so an offline boot or a temporary force_hf_offline()
+        # scope could never pick the ranking up later.
         if hf_env_offline():
             logger.info("offline mode requested; skipping the remote top-models ranking")
             return

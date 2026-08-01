@@ -389,9 +389,8 @@ export function AppSidebar() {
   // recoverable mlx_unavailable case; the effect stops once Train/Export become
   // available (chatOnly flips false and this effect's guard returns early).
   useEffect(() => {
-    // Also while detection is deferred: the kill switch means health settles nothing,
-    // so a first-use operation (the Chat page's model list) is what detects, and
-    // without this a GPU host stays chat-only until a hard refresh.
+    // Also while deferred: under the kill switch health settles nothing, so only a
+    // first-use operation detects and a GPU host would stay chat-only until a refresh.
     if (!chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred)) return;
     const id = window.setInterval(() => {
       void fetchDeviceType({ force: true }).catch(() => undefined);

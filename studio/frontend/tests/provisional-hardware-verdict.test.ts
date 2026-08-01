@@ -165,10 +165,9 @@ test("the bounded hardware wait is spent at most once per page load", async () =
   );
 });
 
-// __root.tsx's beforeLoad awaits fetchDeviceType on every route, /login included, and
-// /api/health reports device_type to authed callers only. Polling without a token can
-// therefore never turn provisional into measured, so it only holds the login form
-// behind the torch import for the whole window, which is what this PR exists to avoid.
+// beforeLoad awaits fetchDeviceType on every route, /login included, and /api/health
+// reports device_type to authed callers only. An unauthenticated poll can never turn
+// provisional into measured, so it only holds the login form behind the torch import.
 test("an unauthenticated read never spends the detection window", async () => {
   const { readFile } = await import("node:fs/promises");
   const src = await readFile(
@@ -226,10 +225,9 @@ test("a provisional forced refresh keeps the server-reported platform", async ()
   );
 });
 
-// With the kill switch on nothing settles through health, so a first-use operation
-// (the Chat page's model list) is what detects. The sidebar's recovery poll was gated
-// only on mlx_unavailable, so a GPU host stored the conservative deferred verdict and
-// stayed chat-only, with Train disabled, until a hard refresh.
+// With the kill switch on nothing settles through health, so only a first-use operation
+// detects. The sidebar's recovery poll was gated on mlx_unavailable alone, so a GPU host
+// kept the conservative deferred verdict and stayed chat-only until a hard refresh.
 test("a deferred verdict is recorded so the sidebar can poll out of it", async () => {
   const { readFile } = await import("node:fs/promises");
   const env = await readFile(new URL("../src/config/env.ts", import.meta.url), "utf8");
