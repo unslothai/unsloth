@@ -20,6 +20,26 @@ function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
 
+    # Same fix as studio/setup.ps1, for the same reason. This script also runs
+    # astral's uv installer in-process (Invoke-Expression, below), and that
+    # installer calls Get-ExecutionPolicy out of Microsoft.PowerShell.Security.
+    # The desktop app reaches here as Tauri -> Rust -> powershell.exe
+    # (studio/src-tauri/src/install.rs), and PowerShell only rewrites
+    # PSModulePath for a direct pwsh -> powershell.exe hop, so the Rust process
+    # in between leaves Windows PowerShell 5.1 leading with PowerShell 7's
+    # module directories and unable to load its own copy of that module.
+    if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {
+        $_UnslothSystemModules = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
+        if (Test-Path $_UnslothSystemModules) {
+            # Prepended: the problem is precedence, not absence.
+            $_UnslothKept = @(
+                $env:PSModulePath -split ';' |
+                    Where-Object { $_ -and ($_ -ne $_UnslothSystemModules) }
+            )
+            $env:PSModulePath = (@($_UnslothSystemModules) + $_UnslothKept) -join ';'
+        }
+    }
+
     # ── Tauri structured output ──
     function Write-TauriLog {
         param([string]$Tag, [string]$Message)

@@ -31,13 +31,19 @@ $PackageDir = Split-Path -Parent $ScriptDir
 #   The 'Get-ExecutionPolicy' command was found in the module
 #   'Microsoft.PowerShell.Security', but the module could not be loaded.
 #
-# astral's uv installer calls Get-ExecutionPolicy, and Invoke-SetupCommand makes
-# a failure there fatal, so the update stopped with exit 1 and no further output.
+# astral's uv installer calls Get-ExecutionPolicy, and the run ends there with
+# exit 1 and no further output. The try/catch around that call does not help,
+# because Invoke-Expression runs the installer in this process.
 #
 # Prepended, not appended: the problem is precedence, not absence. Clearing the
 # variable so 5.1 rebuilds its default does not help either, because the
 # machine-level value on the windows-latest image also leads with PS7.
-if ($PSVersionTable.PSEdition -ne 'Core') {
+#
+# PowerShell rewrites PSModulePath only for a direct pwsh -> powershell.exe hop,
+# so any intermediate process defeats it (PowerShell/PowerShell#18681 is this
+# exact chain through Python). install.ps1 carries the same block for the same
+# reason; scripts/uninstall.ps1 needs none, as it loads no Security cmdlet.
+if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {
     $_UnslothSystemModules = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
     if (Test-Path $_UnslothSystemModules) {
         $_UnslothKept = @(
