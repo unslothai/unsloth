@@ -182,8 +182,6 @@ def test_cancelled_dataset_upload_removes_partial_file(isolate_upload_dir):
 def test_hub_upload_path_has_multipart_streaming_headroom():
     source = (_BACKEND_ROOT / "main.py").read_text(encoding = "utf-8")
 
-    prefixes = source.split("_DATASET_UPLOAD_PASSTHROUGH_PREFIXES =", 1)[1].split(
-        ")", 1
-    )[0]
+    prefixes = source.split("_DATASET_UPLOAD_PASSTHROUGH_PREFIXES =", 1)[1].split(")", 1)[0]
     assert '"/api/datasets/upload"' in prefixes
     assert '"/api/hub/datasets/upload"' in prefixes

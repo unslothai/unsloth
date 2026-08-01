@@ -75,9 +75,7 @@ def check_format(
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> CheckFormatResponse:
-    hub_request = HubCheckFormatRequest.model_validate(
-        request.model_dump(exclude = {"hf_token"})
-    )
+    hub_request = HubCheckFormatRequest.model_validate(request.model_dump(exclude = {"hf_token"}))
     return formatting.check_format_response(
         hub_request,
         request.hf_token or hf_token,
@@ -94,9 +92,7 @@ def ai_assist_mapping(
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> AiAssistMappingResponse:
-    hub_request = HubAiAssistMappingRequest.model_validate(
-        request.model_dump(exclude = {"hf_token"})
-    )
+    hub_request = HubAiAssistMappingRequest.model_validate(request.model_dump(exclude = {"hf_token"}))
     return formatting.ai_assist_mapping_response(
         hub_request,
         request.hf_token or hf_token,

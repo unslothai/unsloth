@@ -493,9 +493,7 @@ def test_training_status_exposes_the_current_start_request_id():
     )
 
     with patch.object(training_route, "get_training_backend", return_value = backend):
-        status = asyncio.run(
-            training_route.get_training_status(current_subject = "test-user")
-        )
+        status = asyncio.run(training_route.get_training_status(current_subject = "test-user"))
 
     assert status.job_id == "job_test"
     assert status.start_request_id == "start-request-123"

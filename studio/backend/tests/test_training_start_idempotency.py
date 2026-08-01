@@ -151,9 +151,7 @@ def test_cancelled_route_during_spawn_keeps_the_worker_result_authoritative():
                 break
             await asyncio.sleep(0.01)
         current_task = asyncio.current_task()
-        background_tasks = [
-            task for task in asyncio.all_tasks() if task is not current_task
-        ]
+        background_tasks = [task for task in asyncio.all_tasks() if task is not current_task]
         if background_tasks:
             await asyncio.wait_for(
                 asyncio.gather(*background_tasks, return_exceptions = True),

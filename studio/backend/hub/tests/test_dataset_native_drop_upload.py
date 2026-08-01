@@ -33,7 +33,12 @@ def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _sign(path: Path, *, operation = "dataset-import", path_kind = "dataset") -> str:
+def _sign(
+    path: Path,
+    *,
+    operation = "dataset-import",
+    path_kind = "dataset",
+) -> str:
     stat = path.stat()
     now_ms = int(time.time() * 1000)
     payload = {
@@ -80,10 +85,7 @@ def test_signed_dataset_drop_is_copied_to_upload_storage(monkeypatch, tmp_path):
     [("attach", "dataset"), ("dataset-import", "attachment")],
 )
 def test_dataset_drop_rejects_grants_for_other_purposes(
-    monkeypatch,
-    tmp_path,
-    operation,
-    path_kind,
+    monkeypatch, tmp_path, operation, path_kind
 ):
     source = tmp_path / "train.csv"
     source.write_text("text\nhello\n", encoding = "utf-8")

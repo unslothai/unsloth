@@ -699,8 +699,7 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
 
 @router.get("/start-requests/{start_request_id}", response_model = TrainingStartRequestStatus)
 async def get_training_start_request(
-    start_request_id: str,
-    current_subject: str = Depends(get_current_subject),
+    start_request_id: str, current_subject: str = Depends(get_current_subject)
 ):
     backend = get_training_backend()
     record = backend.get_start_request(start_request_id)
@@ -718,8 +717,7 @@ async def get_training_start_request(
 
 @router.post("/start-requests/{start_request_id}/acknowledge")
 async def acknowledge_training_start_request(
-    start_request_id: str,
-    current_subject: str = Depends(get_current_subject),
+    start_request_id: str, current_subject: str = Depends(get_current_subject)
 ):
     backend = get_training_backend()
     if not backend.acknowledge_start_request(start_request_id):
