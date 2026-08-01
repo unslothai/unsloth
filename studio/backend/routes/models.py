@@ -2486,7 +2486,6 @@ async def delete_finetuned_model(
         # below can block this delete. Building one to learn that reaches
         # get_default_models() -> get_device() and imports torch for a metadata-only op.
         from core.inference.orchestrator import peek_inference_backend
-
         inference_backend = peek_inference_backend()
         if inference_backend is not None:
             loading_models = getattr(inference_backend, "loading_models", set())

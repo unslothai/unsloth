@@ -198,8 +198,7 @@ def test_read_only_endpoints_never_construct_the_singleton():
             (
                 node
                 for node in ast.walk(tree)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and node.name == name
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
             ),
             None,
         )
@@ -211,6 +210,5 @@ def test_read_only_endpoints_never_construct_the_singleton():
                 offenders.append(f"{rel}:{sub.lineno} {name}")
     assert not offenders, (
         "read-only paths construct the inference singleton, so a status poll or a "
-        "metadata-only delete imports torch on a warm-disabled host:\n  "
-        + "\n  ".join(offenders)
+        "metadata-only delete imports torch on a warm-disabled host:\n  " + "\n  ".join(offenders)
     )
