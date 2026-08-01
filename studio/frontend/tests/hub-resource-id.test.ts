@@ -17,6 +17,10 @@ test("accepts canonical Hugging Face resource ids", () => {
     ok: true,
     id: "owner/repo_1.0",
   });
+  assert.deepEqual(validateHubResourceId("_owner/_repo_"), {
+    ok: true,
+    id: "_owner/_repo_",
+  });
   assert.equal(
     validateHubResourceId(`${"a".repeat(96)}/${"b".repeat(96)}`).ok,
     true,
@@ -29,9 +33,6 @@ test("rejects malformed or unsafe Hugging Face resource ids", () => {
     "my dataset!",
     "datasets/foo/bar",
     ".repo",
-    "_owner/repo",
-    "owner/_repo",
-    "owner/repo_",
     "repo.git",
     "foo..bar",
     "foo--bar",

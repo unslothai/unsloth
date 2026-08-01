@@ -2024,6 +2024,20 @@ def test_train_hub_selections_preserve_canonical_identity():
     assert "hubResourceIdsEqual(candidate.id, query)" in dataset_selector
 
 
+def test_train_hub_search_queries_are_not_gated_by_repo_id_validation():
+    model_selector = _read("features/model-picker/components/train-model-selector.tsx")
+    dataset_selector = _read("features/dataset-picker/components/dataset-selector.tsx")
+    model_search = _read("features/hub/hooks/use-hub-model-search.ts")
+    dataset_search = _read("features/hub/hooks/use-hub-dataset-search.ts")
+
+    assert "useHubModelSearch(picker.debouncedHubQuery," in model_selector
+    assert "useHubDatasetSearch(picker.debouncedHubQuery," in dataset_selector
+    assert "validateHubResourceId(picker.debouncedHubQuery)" not in model_selector
+    assert "validateHubResourceId(picker.debouncedHubQuery)" not in dataset_selector
+    assert "validateHubResourceId" not in model_search
+    assert "validateHubResourceId" not in dataset_search
+
+
 def test_pinned_training_model_retains_size_and_vram_metadata():
     selector = _read("features/model-picker/components/train-model-selector.tsx")
     helper = selector.split("function buildTrainModelVramViews", 1)[1].split(

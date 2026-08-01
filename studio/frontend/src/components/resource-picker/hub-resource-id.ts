@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 const HUB_RESOURCE_ID_SEGMENT_RE =
-  /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+  /^[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?$/;
 const MAX_HUB_RESOURCE_ID_SEGMENT_LENGTH = 96;
 
 export type HubResourceIdValidationResult =
