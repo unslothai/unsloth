@@ -57,6 +57,7 @@ export {
   reconcilePersistedGpuSelection,
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
+export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
   toolOutputKey,
