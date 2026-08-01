@@ -1878,7 +1878,8 @@ def test_the_warm_loop_passes_the_epoch_to_the_real_stage_only():
     # The real stage does get it: assert on the call the loop builds.
     tree = ast.parse((_BACKEND / "utils" / "torch_warmup.py").read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_warm"
     )
     assert any(
@@ -1900,11 +1901,13 @@ def test_deleting_a_cached_model_does_not_construct_the_backend():
         (_BACKEND / "hub" / "services" / "models" / "deletion.py").read_text(encoding = "utf-8")
     )
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_inference_backend_blocks_delete"
     )
     assert not [
-        sub for sub in ast.walk(fn)
+        sub
+        for sub in ast.walk(fn)
         if isinstance(sub, ast.Call)
         and isinstance(sub.func, ast.Name)
         and sub.func.id == "get_inference_backend"

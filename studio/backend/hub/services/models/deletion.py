@@ -578,6 +578,7 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     """Whether the subprocess inference backend holds *repo_id*; same fail-open-on-acquire / surface-on-query contract as :func:`_llama_cpp_blocks_delete`."""
     try:
         from core.inference.orchestrator import peek_inference_backend
+
         # Peek: no orchestrator means nothing is loaded through it, so there is nothing
         # to protect. Constructing one to learn that reaches get_default_models() ->
         # get_device() and imports torch for a metadata-only delete.
