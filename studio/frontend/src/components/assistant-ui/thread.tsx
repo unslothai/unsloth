@@ -1873,12 +1873,15 @@ const Composer: FC<{
     hasPendingAudio,
   });
   const wasDictatingRef = useRef(false);
+  // Composer text while a send waits on dictationBlocked, so an edit can drop it.
+  const heldTextRef = useRef<string | null>(null);
   useEffect(() => {
     if (isDictating) {
       if (wasDictatingRef.current) return;
       wasDictatingRef.current = true;
       // A new recording supersedes a send still held for an upload.
       sendAfterDictationRef.current = false;
+      heldTextRef.current = null;
       // Text at session start is the dictation base. Anchor on it, not on the
       // text when send was pressed: the browser engine streams interim results
       // into the composer, so a final matching its interim would look unchanged.
@@ -1904,15 +1907,28 @@ const Composer: FC<{
       });
     if (!sendable) {
       sendAfterDictationRef.current = false;
+      heldTextRef.current = null;
       return;
     }
     // The plus stays live while transcribing, so an upload or an attachment
     // can appear after the press. Keep the intent until the composer accepts
     // a submit again, rather than spending it on one that would bounce.
-    if (dictationBlocked) return;
+    if (dictationBlocked) {
+      // The bar is gone by now, so the hold is invisible. It lasts only as
+      // long as the transcript it was pressed for: editing hands control
+      // back, rather than sending that edit when the block clears.
+      if (heldTextRef.current === null) {
+        heldTextRef.current = text;
+      } else if (heldTextRef.current !== text) {
+        sendAfterDictationRef.current = false;
+        heldTextRef.current = null;
+      }
+      return;
+    }
     sendAfterDictationRef.current = false;
+    heldTextRef.current = null;
     formRef.current?.requestSubmit();
-  }, [isDictating, aui, composerIdentity, dictationBlocked]);
+  }, [isDictating, aui, composerIdentity, dictationBlocked, composerText]);
 
   const handleSubmit = useCallback(
     (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
