@@ -13,7 +13,7 @@ import {
 import {
   cachedInventoryPathMatchesSelection,
   isLocalTrainingModelSelection,
-  isUntrainableModelFormat,
+  isTrainableModelFormat,
   useTrainingConfigStore,
 } from "@/features/training";
 import { translate } from "@/i18n";
@@ -54,7 +54,8 @@ function findModelReference(
   const key = model.toLowerCase();
   const cachedMatch = cachedRows.find(
     (row) =>
-      !(row.partial || isUntrainableModelFormat(row.model_format)) &&
+      !row.partial &&
+      isTrainableModelFormat(row.model_format) &&
       modelIdentityMatches(row, key),
   );
   if (cachedMatch) {
@@ -67,7 +68,7 @@ function findModelReference(
     (row) =>
       row.source === "hf_cache" &&
       !row.partial &&
-      !isUntrainableModelFormat(row.model_format) &&
+      isTrainableModelFormat(row.model_format) &&
       modelIdentityMatches(row, key),
   );
   if (!localMatch) {

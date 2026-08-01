@@ -523,7 +523,10 @@ def _reject_untrainable_model_request(
         )
     if metadata_error is not None:
         raise metadata_error
-    return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
+    raise HTTPException(
+        status_code = 400,
+        detail = "The selected local model does not contain trainable weights.",
+    )
 
 
 _RESUME_DATASET_DEFAULTS = {

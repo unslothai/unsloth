@@ -426,6 +426,32 @@ def close_picker(page, search) -> None:
     expect(search).to_be_hidden(timeout = TIMEOUT_MS)
 
 
+def test_training_method_select(page) -> None:
+    info("training method: touch selection and keyboard typeahead")
+    trigger = page.locator('[data-tour="studio-method"]').first
+    expect(trigger).to_be_visible(timeout = TIMEOUT_MS)
+    trigger.click()
+    lora = page.get_by_role("option", name = "LoRA", exact = True)
+    expect(lora).to_be_visible(timeout = TIMEOUT_MS)
+    lora.evaluate(
+        """element => {
+            const pointer = { bubbles: true, cancelable: true, pointerType: "touch" };
+            element.dispatchEvent(new PointerEvent("pointerdown", pointer));
+            element.dispatchEvent(new PointerEvent("pointerup", pointer));
+            element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        }""",
+    )
+    wait_for_training_value(page, "trainingMethod", "lora")
+    expect(trigger).to_contain_text("LoRA")
+
+    trigger.focus()
+    trigger.press("ArrowDown")
+    page.keyboard.press("q")
+    page.keyboard.press("Enter")
+    wait_for_training_value(page, "trainingMethod", "qlora")
+    expect(trigger).to_contain_text("QLoRA")
+
+
 def assert_picker_tab_persists(page, tour: str, noun: str, tab_name: str) -> None:
     _, search = open_picker(page, tour, noun)
     tab = page.get_by_role(
@@ -738,6 +764,7 @@ def run_browser(playwright, browser_name: str, token: str) -> None:
         expect(page.get_by_role("tab", name = "Configure").first).to_be_visible(
             timeout = TIMEOUT_MS,
         )
+        test_training_method_select(page)
         test_model_picker(page)
         test_dataset_picker(page)
         assert_reload_persistence(page)

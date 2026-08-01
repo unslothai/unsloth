@@ -42,6 +42,11 @@ def _request(**overrides) -> TrainingStartRequest:
     return TrainingStartRequest(**payload)
 
 
+@pytest.mark.parametrize("repo_id", ["_team/dataset_", "dataset_"])
+def test_training_request_accepts_hugging_face_underscore_boundaries(repo_id):
+    assert _request(hf_dataset = repo_id).hf_dataset == repo_id
+
+
 def _refusing_backend() -> SimpleNamespace:
     return SimpleNamespace(
         current_job_id = None,
@@ -101,6 +106,32 @@ def test_start_rejects_missing_local_model(tmp_path):
 
     assert exc_info.value.status_code == 400
     assert "Local model path was not found" in exc_info.value.detail
+
+
+def test_start_rejects_local_dir_without_trainable_weights(tmp_path):
+    route = _load_route_module("training_route_reject_weightless_local_model")
+    (tmp_path / "config.json").write_text("{}")
+    request = _request(model_name = str(tmp_path))
+
+    with pytest.raises(HTTPException) as exc_info:
+        route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 400
+    assert "does not contain trainable weights" in exc_info.value.detail
+
+
+def test_start_rejects_claimed_cache_without_trainable_weights(tmp_path):
+    route = _load_route_module("training_route_reject_weightless_cache")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    request = _request(model_known_cached = True, model_format = "unknown")
+
+    with pytest.raises(HTTPException) as exc_info:
+        route._reject_untrainable_model_request(request)
+
+    assert exc_info.value.status_code == 400
+    assert "does not contain trainable weights" in exc_info.value.detail
 
 
 def test_start_rejects_partial_adapter_local_dir(tmp_path):

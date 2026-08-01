@@ -61,8 +61,11 @@ function Tooltip({
 
 function TooltipTrigger({
   onClick,
+  disableClickToggle = false,
   ...props
-}: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
+}: React.ComponentProps<typeof TooltipPrimitive.Trigger> & {
+  disableClickToggle?: boolean;
+}) {
   const toggle = useContext(TooltipToggleCtx);
 
   const handleClick = useCallback(
@@ -71,12 +74,13 @@ function TooltipTrigger({
       // trigger (e.g. DialogTrigger around an attachment tile), that trigger's
       // action is skipped if the event is already default-prevented.
       onClick?.(e);
+      if (disableClickToggle) return;
       // preventDefault keeps Radix Tooltip's internal close-on-click from
       // undoing the tap-toggle below (its composed handler checks it).
       e.preventDefault();
       toggle?.();
     },
-    [toggle, onClick],
+    [disableClickToggle, toggle, onClick],
   );
 
   return (

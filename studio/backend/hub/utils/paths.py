@@ -173,7 +173,7 @@ def is_local_path(path: str) -> bool:
     return has_local_syntax
 
 
-_VALID_REPO_ID_SEGMENT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
+_VALID_REPO_ID_SEGMENT = re.compile(r"^[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?$")
 _MAX_REPO_ID_LENGTH = 96
 
 

@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  type CachedInventoryRow,
-  type LocalInventoryRow,
-  useHubInventory,
-} from "@/features/hub";
+import { type InventoryRow, useHubInventory } from "@/features/hub";
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { isLocalTrainingModelSelection } from "../lib/model-selection";
-import { isUntrainableModelFormat } from "../lib/model-support";
 import {
   type TrainingResourceNotice,
   completeResourceSet,
@@ -17,10 +12,8 @@ import {
 } from "../lib/resource-availability";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 
-type ModelInventoryRow = CachedInventoryRow | LocalInventoryRow;
-
-function usableModelRow(row: ModelInventoryRow): boolean {
-  if (isUntrainableModelFormat(row.modelFormat)) {
+function usableModelRow(row: InventoryRow): boolean {
+  if (!row.capabilities.canTrain) {
     return false;
   }
   if (row.kind !== "cache" && row.source !== "hf_cache") {
@@ -41,7 +34,7 @@ function resolveModelNotice({
   isLocal: boolean;
   knownCached: boolean;
   localPath: string | null;
-  rows: readonly ModelInventoryRow[];
+  rows: readonly InventoryRow[];
   partialSet: ReadonlySet<string>;
 }): TrainingResourceNotice | null {
   const usableRows = rows.filter(usableModelRow);
@@ -70,7 +63,7 @@ function resolveDatasetNotice({
   knownCached: boolean;
   localPath: string | null;
   streaming: boolean;
-  rows: readonly ModelInventoryRow[];
+  rows: readonly InventoryRow[];
   partialSet: ReadonlySet<string>;
 }): TrainingResourceNotice | null {
   if (streaming) {

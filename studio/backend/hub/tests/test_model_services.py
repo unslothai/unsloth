@@ -345,7 +345,10 @@ def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     ]
 
 
-@pytest.mark.parametrize("repo_id", ["bert-base-uncased", "owner/repo"])
+@pytest.mark.parametrize(
+    "repo_id",
+    ["bert-base-uncased", "owner/repo", "_owner/_repo_", "repo_"],
+)
 def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
     assert paths.is_valid_repo_id(repo_id)
 

@@ -816,12 +816,15 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/export",
     "/mcp",
 )
-_DATASET_UPLOAD_PASSTHROUGH_PREFIX = "/api/datasets/upload"
+_DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
+    "/api/datasets/upload",
+    "/api/hub/datasets/upload",
+)
 _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
     "/api/data-recipe/seed/upload-unstructured-file"
 )
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
-    _DATASET_UPLOAD_PASSTHROUGH_PREFIX,
+    *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
 )
 
@@ -829,7 +832,7 @@ _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
-    if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIX):
+    if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIXES):
         return upload_request_limit_bytes()
     return default_request_body_limit_bytes()
 

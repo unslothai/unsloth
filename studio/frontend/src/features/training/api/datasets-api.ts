@@ -57,7 +57,7 @@ export async function uploadTrainingDataset(
   const form = new FormData();
   form.append("file", file);
 
-  const res = await authFetch("/api/datasets/upload", {
+  const res = await authFetch("/api/hub/datasets/upload", {
     method: "POST",
     body: form,
   });
@@ -78,6 +78,7 @@ type AiAssistMappingArgs = {
   hfToken?: string | null;
   modelName?: string | null;
   modelType?: "text" | "vision" | "audio" | "embeddings" | null;
+  signal?: AbortSignal;
 };
 
 export type AiAssistMappingResponse = {
@@ -99,9 +100,11 @@ export async function aiAssistMapping({
   hfToken,
   modelName,
   modelType,
+  signal,
 }: AiAssistMappingArgs): Promise<AiAssistMappingResponse> {
   const res = await authFetch("/api/hub/datasets/ai-assist-mapping", {
     method: "POST",
+    signal,
     headers: {
       "Content-Type": "application/json",
       ...hubTokenHeader(hfToken),

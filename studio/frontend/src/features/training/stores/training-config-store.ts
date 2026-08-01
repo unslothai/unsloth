@@ -661,8 +661,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           currentState.modelKnownCached !== nextKnownCached ||
           currentState.modelLocalPath !== nextLocalPath;
         const previousAdapterFormat =
-          selectedModel === previousModel &&
-          currentState.modelFormat === "adapter"
+          !selectionChanged && currentState.modelFormat === "adapter"
             ? currentState.modelFormat
             : null;
         const patch: {
@@ -685,7 +684,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           modelKnownCached: nextKnownCached,
           modelLocalPath: nextLocalPath,
           modelFormat: selectedModel
-            ? (previousAdapterFormat ?? options?.modelFormat ?? null)
+            ? (options?.modelFormat ?? previousAdapterFormat)
             : null,
         };
         if (effectiveModelType) {

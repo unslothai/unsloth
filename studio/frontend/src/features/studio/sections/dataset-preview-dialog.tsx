@@ -159,16 +159,6 @@ export function DatasetPreviewDialog({
   const error = matchingResult?.error ?? null;
   const loading = requestKey !== null && matchingResult === null;
 
-  const handleOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (!nextOpen) {
-        setPreviewResult(null);
-      }
-      onOpenChange(nextOpen);
-    },
-    [onOpenChange],
-  );
-
   const {
     manualMapping,
     setManualMapping,
@@ -231,9 +221,31 @@ export function DatasetPreviewDialog({
   // ── AI Assist ──────────────────────────────────────────────────────
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const aiAssistControllerRef = useRef<AbortController | null>(null);
+
+  const cancelAiAssist = useCallback(() => {
+    aiAssistControllerRef.current?.abort();
+    aiAssistControllerRef.current = null;
+    setIsAiLoading(false);
+    setAiError(null);
+  }, []);
+
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        setPreviewResult(null);
+        cancelAiAssist();
+      }
+      onOpenChange(nextOpen);
+    },
+    [cancelAiAssist, onOpenChange],
+  );
 
   const handleAiAssist = useCallback(async () => {
     if (!data?.columns || !data?.preview_samples) return;
+    aiAssistControllerRef.current?.abort();
+    const controller = new AbortController();
+    aiAssistControllerRef.current = controller;
     setIsAiLoading(true);
     setAiError(null);
 
@@ -245,7 +257,15 @@ export function DatasetPreviewDialog({
         hfToken: hfToken,
         modelName: selectedModel,
         modelType: modelType,
+        signal: controller.signal,
       });
+
+      if (
+        controller.signal.aborted ||
+        aiAssistControllerRef.current !== controller
+      ) {
+        return;
+      }
 
       if (result.success && result.suggested_mapping) {
         // Remap chatml roles to format-specific roles
@@ -272,9 +292,15 @@ export function DatasetPreviewDialog({
         setAiError(result.warning || "AI could not determine column roles.");
       }
     } catch (err) {
+      if (controller.signal.aborted) {
+        return;
+      }
       setAiError(err instanceof Error ? err.message : "AI assist failed.");
     } finally {
-      setIsAiLoading(false);
+      if (aiAssistControllerRef.current === controller) {
+        aiAssistControllerRef.current = null;
+        setIsAiLoading(false);
+      }
     }
   }, [
     data,
@@ -286,6 +312,17 @@ export function DatasetPreviewDialog({
     selectedModel,
     modelType,
   ]);
+
+  useEffect(() => {
+    aiAssistControllerRef.current?.abort();
+  }, [data, datasetFormat, datasetName, hfToken, modelType, selectedModel]);
+
+  useEffect(
+    () => () => {
+      aiAssistControllerRef.current?.abort();
+    },
+    [],
+  );
 
   // When format changes, remap existing mapping roles to the new format's role names
   const prevFormatRef = useRef(datasetFormat);

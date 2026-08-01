@@ -81,7 +81,10 @@ export {
 export { validateTrainingModelCandidate } from "./lib/freeform-model-validation";
 export { isLocalTrainingModelSelection } from "./lib/model-selection";
 export { isHuggingFaceDatasetSelected } from "./lib/dataset-selection";
-export { isUntrainableModelFormat } from "./lib/model-support";
+export {
+  isTrainableModelFormat,
+  isUntrainableModelFormat,
+} from "./lib/model-support";
 export {
   inferTrainingModelTypeFromFlags,
   type ModelTypeCapabilityFlags,

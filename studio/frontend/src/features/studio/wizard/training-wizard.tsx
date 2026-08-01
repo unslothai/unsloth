@@ -193,7 +193,7 @@ function TrainingMethodSelect() {
           const meta = TRAINING_METHOD_META[method];
           return (
             <Tooltip key={method} delayDuration={300}>
-              <TooltipTrigger asChild={true}>
+              <TooltipTrigger asChild={true} disableClickToggle={true}>
                 <SelectItem value={method}>
                   <span className="flex items-center gap-2">
                     <span

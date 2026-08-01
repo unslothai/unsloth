@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
+from contextlib import suppress
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
@@ -18,6 +18,7 @@ from hub.schemas.datasets import (
     UploadDatasetResponse,
 )
 from hub.utils.paths import dataset_uploads_root, ensure_dir, recipe_datasets_root
+from utils.upload_limits import get_upload_limit_mb, upload_limit_bytes, upload_limit_label
 
 # Tabular formats are preferred over archives for Tier 1 preview: archives
 # (e.g. images.zip) load as ImageFolder with synthetic columns that don't
@@ -28,7 +29,6 @@ DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
 LOCAL_FILE_EXTS = (".json", ".jsonl", ".csv", ".parquet")
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 LOCAL_UPLOAD_CHUNK_BYTES = 1024 * 1024
-LOCAL_UPLOAD_MAX_BYTES = 500 * 1024 * 1024
 LOCAL_DATASETS_ROOT = recipe_datasets_root()
 DATASET_UPLOAD_DIR = dataset_uploads_root()
 
@@ -282,10 +282,10 @@ def _sanitize_filename(filename: str) -> str:
     return name
 
 
-def _upload_too_large(size_bytes: int) -> HTTPException:
+def _upload_too_large(limit_label: str) -> HTTPException:
     return HTTPException(
         status_code = 413,
-        detail = (f"Upload is too large " f"({size_bytes:,} bytes; max {LOCAL_UPLOAD_MAX_BYTES:,})."),
+        detail = f"Training dataset upload too large. Maximum is {limit_label}.",
     )
 
 
@@ -299,9 +299,12 @@ async def upload_dataset_response(file: UploadFile) -> UploadDatasetResponse:
             detail = f"Unsupported file type: {ext}. Allowed: {allowed}",
         )
 
+    limit_mb = get_upload_limit_mb()
+    max_bytes = upload_limit_bytes(limit_mb)
+    max_label = upload_limit_label(limit_mb)
     declared_size = getattr(file, "size", None)
-    if isinstance(declared_size, int) and declared_size > LOCAL_UPLOAD_MAX_BYTES:
-        raise _upload_too_large(declared_size)
+    if isinstance(declared_size, int) and declared_size > max_bytes:
+        raise _upload_too_large(max_label)
 
     ensure_dir(DATASET_UPLOAD_DIR)
     stem = Path(filename).stem
@@ -309,16 +312,19 @@ async def upload_dataset_response(file: UploadFile) -> UploadDatasetResponse:
     stored_path = DATASET_UPLOAD_DIR / stored_name
 
     written = 0
+    upload_complete = False
     try:
         with open(stored_path, "wb") as f:
             while chunk := await file.read(LOCAL_UPLOAD_CHUNK_BYTES):
                 written += len(chunk)
-                if written > LOCAL_UPLOAD_MAX_BYTES:
-                    raise _upload_too_large(written)
-                await asyncio.to_thread(f.write, chunk)
-    except Exception:
-        stored_path.unlink(missing_ok = True)
-        raise
+                if written > max_bytes:
+                    raise _upload_too_large(max_label)
+                f.write(chunk)
+        upload_complete = True
+    finally:
+        if not upload_complete:
+            with suppress(OSError):
+                stored_path.unlink(missing_ok = True)
 
     if written == 0:
         stored_path.unlink(missing_ok = True)

@@ -1345,6 +1345,23 @@ def test_full_precision_cached_models_do_not_warn_about_a_qlora_download():
     assert "localPath," in resolver
 
 
+def test_training_cache_reconciliation_requires_runnable_weights():
+    reconciliation = _read("features/studio/hooks/use-training-cache-reconciliation.ts")
+    notices = _read("features/training/hooks/use-training-resource-notices.ts")
+    assert reconciliation.count("isTrainableModelFormat(row.model_format)") == 2
+    assert "!row.capabilities.canTrain" in notices
+
+
+def test_dataset_ai_assist_cannot_apply_a_stale_dialog_request():
+    dialog = _read("features/studio/sections/dataset-preview-dialog.tsx")
+    api = _read("features/training/api/datasets-api.ts")
+    assert "aiAssistControllerRef.current?.abort()" in dialog
+    assert "aiAssistControllerRef.current !== controller" in dialog
+    assert "signal: controller.signal" in dialog
+    assert "signal?: AbortSignal" in api
+    assert "signal," in api
+
+
 def test_local_dataset_picker_uses_cross_platform_path_identity():
     selector = _read("features/dataset-picker/components/dataset-selector.tsx")
     display = _read("features/dataset-picker/lib/display.ts")
@@ -2038,6 +2055,15 @@ def test_train_hub_search_queries_are_not_gated_by_repo_id_validation():
     assert "validateHubResourceId" not in dataset_search
 
 
+def test_training_dataset_client_uses_the_canonical_hub_router():
+    api = _read("features/training/api/datasets-api.ts")
+
+    assert 'authFetch("/api/hub/datasets/check-format"' in api
+    assert 'authFetch("/api/hub/datasets/upload"' in api
+    assert 'authFetch("/api/hub/datasets/ai-assist-mapping"' in api
+    assert 'authFetch("/api/datasets/' not in api
+
+
 def test_pinned_training_model_retains_size_and_vram_metadata():
     selector = _read("features/model-picker/components/train-model-selector.tsx")
     helper = selector.split("function buildTrainModelVramViews", 1)[1].split(
@@ -2101,6 +2127,21 @@ def test_picker_capabilities_survive_model_config_probe_failures():
     assert "isEmbeddingModel: false" not in failure
     assert "throw new Error(" in vision_probe
     assert "return false;" not in vision_probe
+
+
+def test_model_format_follows_the_selected_cache_reference():
+    store = _read("features/training/stores/training-config-store.ts")
+    selection = store.split("const selectModelInternal = (", 1)[1].split(
+        "return {", 1
+    )[0]
+
+    adapter_preservation = selection.split("const previousAdapterFormat =", 1)[1].split(
+        "const patch:", 1
+    )[0]
+    assert "!selectionChanged" in adapter_preservation
+    assert "selectedModel === previousModel" not in adapter_preservation
+    assert "options?.modelFormat ?? previousAdapterFormat" in selection
+    assert "previousAdapterFormat ?? options?.modelFormat" not in selection
 
 
 def test_streaming_dataset_preflight_does_not_read_local_cache():

@@ -19,7 +19,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 
 def _stub_if_missing(name, attrs):
