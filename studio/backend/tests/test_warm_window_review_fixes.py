@@ -2217,21 +2217,23 @@ def test_an_offline_first_read_does_not_retire_the_ranking_fetch():
         (_BACKEND / "core" / "inference" / "orchestrator.py").read_text(encoding = "utf-8")
     )
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "_start_top_models_fetch"
     )
     offline_line = next(
-        sub.lineno for sub in ast.walk(fn)
+        sub.lineno
+        for sub in ast.walk(fn)
         if isinstance(sub, ast.Call)
         and isinstance(sub.func, ast.Name)
         and sub.func.id == "hf_env_offline"
     )
     claim_line = next(
-        node.lineno for node in ast.walk(fn)
+        node.lineno
+        for node in ast.walk(fn)
         if isinstance(node, ast.Assign)
         and any(
-            isinstance(t, ast.Attribute) and t.attr == "_top_models_started"
-            for t in node.targets
+            isinstance(t, ast.Attribute) and t.attr == "_top_models_started" for t in node.targets
         )
         and isinstance(node.value, ast.Constant)
         and node.value.value is True
@@ -2251,13 +2253,13 @@ def test_an_offline_read_leaves_the_fetch_available():
     backend._top_models_started = False
     with mock.patch.object(orch, "hf_env_offline", lambda: True):
         backend._start_top_models_fetch()
-    assert backend._top_models_started is False, (
-        "an offline read consumed the latch, so the ranking can never be fetched again"
-    )
+    assert (
+        backend._top_models_started is False
+    ), "an offline read consumed the latch, so the ranking can never be fetched again"
     with mock.patch.object(orch, "hf_env_offline", lambda: False):
         with mock.patch.object(orch.threading, "Thread") as thread:
             thread.side_effect = lambda **kw: started.append(kw) or mock.MagicMock()
             backend._start_top_models_fetch()
-    assert backend._top_models_started is True and started, (
-        "coming back online did not start the fetch"
-    )
+    assert (
+        backend._top_models_started is True and started
+    ), "coming back online did not start the fetch"
