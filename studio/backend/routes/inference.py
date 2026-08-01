@@ -3246,14 +3246,33 @@ def _monitor_anthropic_response(
     return response
 
 
+def _peek_inference_backend() -> Any:
+    """The orchestrator if one already exists, else None. Never constructs one.
+
+    Constructing reaches get_default_models() -> get_device(), so during the warm
+    a caller that only describes what is loaded would block uvicorn on the torch
+    import to answer "nothing". A patched module getter still wins: injecting a
+    backend that way is this module's seam, relied on by the monitor tests.
+    """
+    from core.inference import orchestrator as _orch
+
+    if get_inference_backend is not _orch.get_inference_backend:
+        return get_inference_backend()
+    return _orch.peek_inference_backend()
+
+
 def _monitor_context_length() -> Optional[int]:
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
         context_length = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if context_length is not None:
             return context_length
-    backend = get_inference_backend()
-    if not backend.active_model_name:
+    # Peek, not the constructing getter: this only reports what is loaded, and it
+    # is called inline from the OpenAI, Responses and Anthropic monitor paths. No
+    # orchestrator means nothing is loaded, so building one during the warm would
+    # block uvicorn on the torch import to answer "none".
+    backend = _peek_inference_backend()
+    if backend is None or not backend.active_model_name:
         return None
     models = getattr(backend, "models", {}) or {}
     model_info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}

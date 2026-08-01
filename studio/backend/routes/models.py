@@ -2140,8 +2140,13 @@ async def discard_remote_code_download(
     except Exception:
         pass
     try:
-        inference_backend = await asyncio.to_thread(get_inference_backend)
-        if inference_backend.active_model_name:
+        # Peek rather than construct: no orchestrator means no active model to
+        # protect, and building one for a metadata-only cleanup reaches
+        # get_device() and waits on the warm's torch import.
+        from core.inference.orchestrator import peek_inference_backend
+
+        inference_backend = peek_inference_backend()
+        if inference_backend is not None and inference_backend.active_model_name:
             if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
                 return {"deleted": False, "reason": "loaded"}
     except Exception:

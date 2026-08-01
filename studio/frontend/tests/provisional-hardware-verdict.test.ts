@@ -18,7 +18,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { isProvisionalVerdict, resolveVerdict } = await import(
+const { isDetectionDeferred, isProvisionalVerdict, resolveVerdict } = await import(
   "../src/config/hardware-verdict.ts"
 );
 
@@ -82,4 +82,31 @@ test("a measured GPU verdict clears a chat-only default", () => {
 
 test("a measured reply with no chat_only field is not chat-only", () => {
   assert.equal(resolveVerdict({}, MAC_DEFAULT).chatOnly, false);
+});
+
+test("a deferred verdict is provisional but must not be waited on", () => {
+  const deferred = { chat_only: true, hardware_detecting: true, hardware_detection_deferred: true };
+  assert.equal(
+    isProvisionalVerdict(deferred),
+    true,
+    "a deferred reply is still not a measurement, so it must not be stored",
+  );
+  assert.equal(
+    isDetectionDeferred(deferred),
+    true,
+    "the kill switch stops anything settling, so the re-read loop must give up",
+  );
+  assert.equal(
+    resolveVerdict(deferred, GPU_HOST).chatOnly,
+    false,
+    "a deferred reply still must not send a GPU host to chat-only",
+  );
+});
+
+test("an actively detecting reply is not deferred", () => {
+  assert.equal(
+    isDetectionDeferred({ chat_only: true, hardware_detecting: true }),
+    false,
+    "an ordinary warm-window reply must still be waited on",
+  );
 });

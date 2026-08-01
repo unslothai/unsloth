@@ -2167,6 +2167,17 @@ _inference_backend = None
 _inference_backend_lock = threading.Lock()
 
 
+def peek_inference_backend() -> Optional["InferenceOrchestrator"]:
+    """The orchestrator if one exists, else None. Never constructs one.
+
+    For callers that only describe what is already loaded. Constructing reaches
+    get_default_models() -> get_device(), so during the startup warm the getter
+    blocks on the torch import; a caller that would answer "nothing is loaded"
+    anyway has no reason to pay that.
+    """
+    return _inference_backend
+
+
 def get_inference_backend() -> InferenceOrchestrator:
     """Global inference backend instance (orchestrator)."""
     global _inference_backend

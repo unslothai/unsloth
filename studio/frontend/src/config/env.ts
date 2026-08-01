@@ -3,6 +3,7 @@
 
 import { apiUrl } from "@/lib/api-base";
 import {
+  isDetectionDeferred,
   isProvisionalVerdict,
   resolveVerdict,
 } from "@/config/hardware-verdict";
@@ -99,8 +100,12 @@ export async function fetchDeviceType(options?: {
     const deadline = Date.now() + HARDWARE_DETECT_WAIT_MS;
     let res = await fetch(apiUrl("/api/health"), { headers });
     while (res.ok && Date.now() < deadline) {
-      const peek = (await res.clone().json()) as { hardware_detecting?: boolean };
-      if (!isProvisionalVerdict(peek)) break;
+      const peek = (await res.clone().json()) as {
+        hardware_detecting?: boolean;
+        hardware_detection_deferred?: boolean;
+      };
+      // Deferred is not "in progress": nothing will settle, so do not wait.
+      if (!isProvisionalVerdict(peek) || isDetectionDeferred(peek)) break;
       await new Promise((resolve) => setTimeout(resolve, HARDWARE_DETECT_POLL_MS));
       res = await fetch(apiUrl("/api/health"), { headers });
     }

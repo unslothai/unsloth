@@ -1272,3 +1272,127 @@ def test_an_authed_reply_drops_the_provisional_marker():
         "an authed reply can still carry hardware_detecting beside the measured "
         "verdict it qualifies; a client may believe either one"
     )
+
+
+# ----------------------------------------- deferred detection is not "in progress"
+def test_health_marks_a_deferred_detection_as_deferred(monkeypatch):
+    """With the warm off nothing settles, so a poller must be told to stop."""
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
+    )
+    keys = {
+        sub.slice.value
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Subscript)
+        and isinstance(sub.slice, ast.Constant)
+        and isinstance(sub.slice.value, str)
+    }
+    assert "hardware_detection_deferred" in keys, (
+        "health does not distinguish a deferred detection from one in flight; a "
+        "client waiting for a measured verdict stalls every load for its whole "
+        "budget, including /login"
+    )
+
+
+# ------------------------------------ the warm stops once its lifespan is retired
+def test_the_warm_stops_after_a_stage_its_lifespan_no_longer_owns():
+    """Later stages build the orchestrator, which starts a fresh detection.
+
+    Discarding the hardware stage's verdict is not enough on its own: the
+    inference_backend stage reaches get_device() and would republish DEVICE
+    after teardown cleared it.
+    """
+    tree = ast.parse((_BACKEND / "utils" / "torch_warmup.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_warm"
+    )
+    loops = [sub for sub in ast.walk(fn) if isinstance(sub, ast.For)]
+    assert loops, "the warm no longer iterates its stages"
+    checks = [
+        sub
+        for sub in ast.walk(loops[0])
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "_detection_epoch"
+    ]
+    assert checks, (
+        "the stage loop does not re-check the detection epoch; a warm whose "
+        "lifespan ended still runs the stages that rebuild the verdict"
+    )
+
+
+# -------------------------------- describing what is loaded must not build it
+def test_the_monitor_context_read_does_not_construct_the_backend():
+    """It is called inline from the OpenAI, Responses and Anthropic paths."""
+    tree = ast.parse((_BACKEND / "routes" / "inference.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_monitor_context_length"
+    )
+    constructing = [
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "get_inference_backend"
+    ]
+    assert not constructing, (
+        "_monitor_context_length constructs the singleton again; the first API "
+        "request during the warm then waits on the torch import on the loop"
+    )
+    peeking = [
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "_peek_inference_backend"
+    ]
+    assert peeking, "the helper no longer reads the backend at all"
+
+
+def test_the_peek_never_constructs():
+    """Behavioural: the peek must return None rather than build one."""
+    from core.inference.orchestrator import peek_inference_backend
+    import core.inference.orchestrator as orch
+
+    before = orch._inference_backend
+    try:
+        orch._inference_backend = None
+        assert peek_inference_backend() is None
+        assert orch._inference_backend is None, "the peek constructed an orchestrator"
+    finally:
+        orch._inference_backend = before
+
+
+def test_the_metadata_cleanup_does_not_construct_the_backend():
+    """A metadata-only cleanup has no reason to import torch."""
+    tree = ast.parse((_BACKEND / "routes" / "models.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "discard_remote_code_download"
+    )
+    constructing = [
+        sub
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "get_inference_backend"
+    ]
+    assert not constructing, (
+        "the cleanup path constructs the ML backend again for a metadata-only "
+        "decision"
+    )
+    assert any(
+        isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "peek_inference_backend"
+        for sub in ast.walk(fn)
+    ), "the cleanup path no longer checks the loaded model at all"

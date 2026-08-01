@@ -9,6 +9,7 @@ export type HealthVerdict = {
   chat_only?: boolean;
   chat_only_reason?: string | null;
   hardware_detecting?: boolean;
+  hardware_detection_deferred?: boolean;
 };
 
 export type ResolvedVerdict = {
@@ -33,4 +34,16 @@ export function resolveVerdict(
     chatOnly: data.chat_only ?? false,
     chatOnlyReason: data.chat_only_reason ?? null,
   };
+}
+
+
+/** True when the backend has deferred detection rather than started it.
+
+ * UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 stops health kicking detection at all, so
+ * nothing settles until a hardware-dependent operation runs. Waiting for a
+ * measurement that is not coming would stall every load, including /login, for
+ * the whole retry window.
+ */
+export function isDetectionDeferred(data: HealthVerdict): boolean {
+  return data.hardware_detection_deferred === true;
 }

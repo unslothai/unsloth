@@ -1339,6 +1339,11 @@ async def health_check(request: Request):
         # measurement, so a client that caches it should re-read. Additive field:
         # older launchers ignore it and only need the capability bits.
         base["hardware_detecting"] = True
+        if os.environ.get(DISABLE_ENV_VAR) == "1":
+            # Nothing is detecting and nothing will until a hardware-dependent
+            # operation runs, so a client polling for a measured verdict would
+            # wait out its whole budget on every load. Say so instead.
+            base["hardware_detection_deferred"] = True
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
         return base

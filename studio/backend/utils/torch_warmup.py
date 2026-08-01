@@ -254,11 +254,27 @@ _STAGES = (
 
 def _warm() -> None:
     started = time.perf_counter()
+    epoch = _detection_epoch()
     for name, fn in _STAGES:
         _run_stage(name, fn)
+        if epoch is not None and _detection_epoch() != epoch:
+            # Shutdown retired this lifespan's detection. The later stages build
+            # the orchestrator, which reaches get_device() and would start a
+            # fresh one, republishing DEVICE after teardown cleared it.
+            logger.info("torch warm stopped after %s: its lifespan ended", name)
+            return
     _status["finished"] = True
     _status["seconds"] = round(time.perf_counter() - started, 3)
     logger.info("torch warm finished in %.1fms", (time.perf_counter() - started) * 1000)
+
+
+def _detection_epoch() -> Optional[int]:
+    """The current detection epoch, or None if hardware is not importable."""
+    try:
+        from utils.hardware import hardware as _hw
+        return _hw.current_detection_epoch()
+    except Exception:
+        return None
 
 
 def start_background_warm() -> bool:
