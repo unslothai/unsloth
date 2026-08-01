@@ -869,7 +869,7 @@ def neutralize_tool_descriptions(tools, cache: dict = None):
     key = None
     if cache is not None:
         try:
-            key = ("catalog", json.dumps(tools, sort_keys=True, default=str))
+            key = ("catalog", json.dumps(tools, sort_keys = True, default = str))
         except (TypeError, ValueError):
             key = None
         if key is not None and key in cache:
