@@ -3474,6 +3474,10 @@ class TestKillSwitchBeatsMappingCache:
 
         key = tv._probe_cache_key("some/model")
         monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
+        # A cached 'latest' only ever arises while the tier is pinned, since an unpinned
+        # one is not in the probe order at all, and an unpinned cache entry is now
+        # re-probed in its own right. Hold the pin so this stays a test of the switch.
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.99.0")
         monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
         # With the switch set, the cached latest entry must not short-circuit;
         # the probe re-resolves against the non-latest order (stub it to 530).
@@ -3884,3 +3888,56 @@ class TestDamagedLatestSidecarRepairHandoff:
         assert tv._sidecar_damaged_files(str(live)) == [
             "transformers: transformers/__init__.py is missing"
         ]
+
+    def test_an_inconclusive_scan_does_not_retire_proven_damage(self, monkeypatch, tmp_path):
+        """Skipping unreadable rows means an empty result can mean 'nothing proven', not
+        'proven healthy'. A worker already proved this sidecar damaged, and a scan that
+        could not read the file must not erase that and hand it back to routing."""
+        import errno
+
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        # A repair that cannot complete, so what is observed is the decision itself and
+        # not a rebuild papering over it.
+        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+        self._damage(live)
+        tv._request_latest_repair()
+        real_stat = Path.stat
+
+        def _flaky(self, *a, **k):
+            if self.name == "__init__.py":
+                raise OSError(errno.EIO, "Input/output error")
+            return real_stat(self, *a, **k)
+
+        monkeypatch.setattr(Path, "stat", _flaky)
+        assert tv._sidecar_damaged_files(str(live)) == []  # the scan sees nothing
+        assert tv._sidecar_scan(str(live)) == ([], True)   # but knows it is blind
+
+        assert tv._ensure_venv_t5_latest_exists() is False
+        assert tv._latest_repair_requested(), "an unreadable scan cannot disprove damage"
+
+    def test_a_clean_scan_still_retires_a_stale_marker(self, monkeypatch, tmp_path):
+        """The counterpart: a scan that really did read every row must still clear the
+        marker, or a request left by a lost race loops forever."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        tv._request_latest_repair()
+
+        assert tv._ensure_venv_t5_latest_exists() is True
+        assert not tv._latest_repair_requested()
+
+    def test_a_cached_probe_does_not_survive_the_pin_being_deleted(self, monkeypatch, tmp_path):
+        """Deleting the pin takes the repair marker with it, so the marker cannot carry
+        this case. Activation short-circuits on a missing pin before it can signal
+        anything, so a cached latest would fail every retry until the process restarts."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        import shutil
+
+        key = f"{tv._probe_cache_key('some/model')}\0floor=default:def=1"
+        monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
+        shutil.rmtree(live)
+
+        assert tv._probe_tier(
+            "some/model", None, "test", include_default = True, floor = "default"
+        ) != "latest"

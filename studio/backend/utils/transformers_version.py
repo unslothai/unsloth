@@ -1602,12 +1602,18 @@ def _probe_tier(
     if key in _probe_tier_cache:
         cached = _probe_tier_cache[key]
         # Kill switch beats the cache (like _config_model_types): a stale 'latest' probe must not keep activating it.
-        # A scan that found the sidecar damaged beats it too, or a probe cached while it
-        # was healthy keeps spawning workers into a tier whose activation is known to
-        # fail, and a model that reaches latest this way never touches the config-mapping
-        # path that would repair it. Falling through re-probes, which runs the ensure and
-        # repair path instead.
-        if cached != "latest" or not (_latest_tier_disabled() or _latest_repair_requested()):
+        # A sidecar since found damaged beats it too, or a probe cached while it was
+        # healthy keeps spawning workers into a tier whose activation is known to fail,
+        # and a model that reaches latest this way never touches the config-mapping path
+        # that would repair it. So does an unpinned tier: deleting the pin takes the
+        # repair marker with it, and activation then short-circuits on a missing pin
+        # before anything can signal, so the cached answer would fail every retry.
+        # Falling through re-probes, which runs the ensure and repair path instead.
+        if cached != "latest" or not (
+            _latest_tier_disabled()
+            or _latest_repair_requested()
+            or latest_venv_pinned_version() is None
+        ):
             return cached
 
     def _cache(tier: str, *, skipped: bool) -> str:
@@ -2027,8 +2033,28 @@ def _sidecar_file_check_disabled() -> bool:
     )
 
 
+def _sidecar_scan(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
+    """``(findings, inconclusive)``. See _sidecar_damaged_files.
+
+    *inconclusive* is True when some row could not be read at all, so an empty
+    findings list means "nothing proven" rather than "proven healthy". Callers that
+    retire a record of damage need that difference; callers that only decide whether
+    to repair do not.
+    """
+    return _sidecar_scan_impl(venv_dir, limit)
+
+
 def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
     """RECORD entries under *venv_dir* that are gone, or shorter than pip recorded.
+
+    Findings only. Use _sidecar_scan when an empty result has to be told apart from a
+    scan that could not read the disk.
+    """
+    return _sidecar_scan_impl(venv_dir, limit)[0]
+
+
+def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
+    """Body of the two above.
 
     A sidecar whose METADATA survived a disk-full or an interrupted pip still
     passes every version check above, so the wipe-and-reinstall in
@@ -2063,26 +2089,32 @@ def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
     import csv
     import io
 
+    inconclusive = False
     if _sidecar_file_check_disabled():
-        return []
+        return [], False
     root = Path(venv_dir)
     entries: list[tuple] = []
     owners: dict[str, int] = {}
     try:
         dist_infos = sorted(root.glob("*.dist-info"))
     except OSError:
-        return []
+        return [], True
     for di in dist_infos:
         name = di.name.split("-")[0]
         try:
             record = (di / "RECORD").read_text(encoding = "utf-8", errors = "replace")
-        except OSError:
+        except FileNotFoundError:
             # No RECORD says nothing about damage; some installs legitimately
-            # have none.
+            # have none, so this is not a gap in what the scan could see.
+            continue
+        except OSError:
+            # Present but unreadable: a real gap, so the result cannot be called clean.
+            inconclusive = True
             continue
         try:
             rows = list(csv.reader(io.StringIO(record)))
         except csv.Error:
+            inconclusive = True
             continue
         for row in rows:
             rel = row[0] if row else ""
@@ -2140,7 +2172,9 @@ def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
             # Inconclusive, not damage. EIO, ESTALE on an NFS mount, or EACCES
             # says the file could not be read, never that it is gone, and the
             # answer here costs a several-hundred-MB wipe and re-download. Skip
-            # the row: a scan that cannot see the disk must not condemn it.
+            # the row, but remember the gap: a scan that cannot see the disk must
+            # neither condemn it nor certify it.
+            inconclusive = True
             continue
         else:
             if not stat.S_ISREG(info.st_mode):
@@ -2151,8 +2185,8 @@ def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
             elif owners[key] == 1 and recorded is not None and info.st_size < recorded:
                 found.append(f"{name}: {rel} is {info.st_size} bytes, expected {recorded}")
         if len(found) >= limit:
-            return found
-    return found
+            return found, inconclusive
+    return found, inconclusive
 
 
 def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
@@ -2217,17 +2251,26 @@ def _venv_dir_is_valid_and_undamaged(venv_dir: str, packages: tuple[str, ...]) -
     The package checks run first, so a wrong version is rejected without paying
     for the scan.
     """
+    return _venv_dir_health(venv_dir, packages)[0]
+
+
+def _venv_dir_health(venv_dir: str, packages: tuple[str, ...]) -> tuple[bool, bool]:
+    """``(undamaged, conclusive)`` for _venv_dir_is_valid_and_undamaged.
+
+    *conclusive* is False when the scan hit a row it could not read, so *undamaged*
+    means "nothing proven against it" rather than "proven healthy".
+    """
     if not _venv_dir_is_valid(venv_dir, packages):
-        return False
-    damaged = _sidecar_damaged_files(venv_dir)
+        return False, True
+    damaged, inconclusive = _sidecar_scan(venv_dir)
     if damaged:
         logger.warning(
             "%s has damaged files -- venv will be wiped and reinstalled: %s",
             venv_dir,
             "; ".join(damaged),
         )
-        return False
-    return True
+        return False, True
+    return True, not inconclusive
 
 
 def _venv_t5_is_valid() -> bool:
@@ -2723,12 +2766,15 @@ def _ensure_venv_t5_latest_exists() -> bool:
         return False
     version = pin["version"]
     packages = tuple(pin["packages"])
-    if _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages):
+    undamaged, conclusive = _venv_dir_health(_VENV_T5_LATEST_DIR, packages)
+    if undamaged and (conclusive or not _latest_repair_requested()):
         # A repair request that a clean scan contradicts (another process already
         # repaired it, or a child lost the race with a swap and flagged the fresh
         # dir) must not survive, or every routing call re-enters the self-heal
-        # branch forever.
-        _clear_latest_repair_request()
+        # branch forever. Only a scan that actually read the files may retire it:
+        # a worker proved the damage, and a scan that hit EIO has not disproved it.
+        if conclusive:
+            _clear_latest_repair_request()
         return True
     # Broken, and every path below can still fail to fix it (offline, a child, a swap
     # already running, pip). Flag it here rather than per bailout, so the routing
