@@ -50,6 +50,7 @@ export const de = {
       compare: "Vergleichen",
       search: "Suchen",
       hub: "Modell-Hub",
+      projects: "Projekte",
       train: "Trainieren",
       recipes: "Rezepte",
       export: "Exportieren",
@@ -102,6 +103,8 @@ export const de = {
       title: "Einstellungen",
       description: "Verwalten Sie Ihre Unsloth-Einstellungen.",
       closeAriaLabel: "Einstellungen schließen",
+      searchPlaceholder: "Einstellungen durchsuchen…",
+      searchNoResults: "Keine Einstellungen gefunden.",
     },
     tabs: {
       general: "Allgemein",
@@ -112,6 +115,147 @@ export const de = {
       connections: "Verbindungen",
       apiKeys: "API",
       about: "Über",
+      data: "Daten",
+      agents: "Agenten",
+      voice: "Sprachfunktionen",
+    },
+    voice: {
+      title: "Sprachfunktionen",
+      description: "Mikrofon, Diktat, Spracherkennung und Vorlesen",
+      dictation: {
+        sectionTitle: "Diktat",
+        engineLabel: "Diktat-Engine",
+        engineBrowser: "Browser",
+        engineBrowserDescription:
+          "Transkribiert Audio über den Sprachdienst Ihres Browsers. Wählen Sie „Lokale Transkription“, um ein STT-Modell zu verwenden.",
+        engineModel: "Lokale Transkription",
+        engineModelDescription:
+          "Führt ein Spracherkennungsmodell (STT) lokal aus und funktioniert offline. Zuerst herunterladen und laden; nach einer Zeit ohne Nutzung wird es automatisch wieder entladen.",
+        sttModelLabel: "Spracherkennungsmodell",
+        sttModelDescription:
+          "Wählen oder suchen Sie ein STT-Modell für die lokale Ausführung.",
+        sttModelSearchPlaceholder: "Modell suchen",
+        sttModelSearching: "Hugging Face wird durchsucht…",
+        sttModelValidating: "Whisper-Kompatibilität wird geprüft…",
+        sttModelNoResults: "Keine Whisper-Modelle gefunden",
+        sttModelInvalid:
+          "Dieses Repository kann nicht für das Diktat verwendet werden",
+        sttModelFailed: "Das STT-Modell konnte nicht geladen werden",
+        sttModelUnsupported:
+          "Aufnahme wird in diesem Browser nicht unterstützt",
+        sttChecking: "Wird geprüft…",
+        sttOnDemand: "Heruntergeladen",
+        sttLoadingModel: "Modell wird geladen…",
+        sttReady: "Auf {device} geladen",
+        sttLoaded: "Geladen",
+        sttUnavailable:
+          "Auf diesem Server nicht installiert. Führen Sie `unsloth studio update` aus, um das lokale Diktat zu aktivieren.",
+        sttRetry: "Erneut versuchen",
+        sttDownloadChecking: "Download-Status wird geprüft…",
+        sttNotDownloaded: "Nicht heruntergeladen",
+        sttDownloadStatusFailed:
+          "Der Download-Status konnte nicht geprüft werden",
+        sttDownload: "Herunterladen",
+        sttDownloading: "Wird heruntergeladen… {progress} %",
+        sttCancelDownload: "Abbrechen",
+        sttCancellingDownload: "Wird abgebrochen…",
+        sttDownloadComplete: "Spracherkennungsmodell heruntergeladen",
+        sttDownloadFailed:
+          "Das Spracherkennungsmodell konnte nicht heruntergeladen werden",
+        sttLoad: "Laden",
+        sttUnload: "Entladen",
+        sttUnloading: "Wird entladen…",
+        microphoneLabel: "Mikrofon",
+        microphoneDescription: "Wird für das Diktat verwendet",
+        microphoneFallbackHint:
+          "Wird für das Diktat verwendet. Greift auf den Systemstandard zurück, wenn die Sprach-Engine des Browsers dieses Gerät nicht nutzen kann",
+        microphoneGrantDescription:
+          "Erlauben Sie den Mikrofonzugriff, um Gerätenamen anzuzeigen",
+        allowMicrophone: "Mikrofonzugriff erlauben",
+        micAccessBlocked:
+          "Der Mikrofonzugriff wurde blockiert. Erlauben Sie den Mikrofonzugriff für diese Unsloth-Seite und versuchen Sie es erneut.",
+        micAccessUnsupported:
+          "Der Mikrofonzugriff wird in diesem Browser oder Kontext nicht unterstützt.",
+        systemDefault: "Systemstandard",
+        savedMicDisconnected: "Gespeichertes Mikrofon (nicht verbunden)",
+        languageLabel: "Diktatsprache",
+        languageDescription: "Zu erkennende Sprache",
+        languageAuto: "Automatisch (Browsersprache)",
+      },
+      dictionary: {
+        sectionTitle: "Diktatwörterbuch",
+        sectionDescription:
+          "Legen Sie fest, wie das Diktat bestimmte Wörter oder Wendungen schreibt",
+        manageLabel: "Eigene Schreibweisen",
+        manage: "Verwalten",
+        backToVoice: "Zurück zu den Sprachfunktionen",
+        addEntry: "Eintrag hinzufügen",
+      },
+      recents: {
+        sectionTitle: "Diktatverlauf",
+        sectionDescription:
+          "Jedes Diktat wird hier gespeichert, damit Sie den Text wiederherstellen können",
+        manageLabel: "Diktatverlauf",
+        manage: "Verwalten",
+        pageDescription:
+          "Jedes Diktat wird gespeichert. Sie können Diktate ansehen, kopieren oder löschen oder den Chat öffnen, in dem ein Diktat verwendet wurde.",
+        searchPlaceholder: "Diktate durchsuchen",
+        sortLabel: "Diktate sortieren",
+        sortNewest: "Neueste",
+        sortOldest: "Älteste",
+        sortAlpha: "A bis Z",
+        noMatches: "Keine Diktate entsprechen Ihrer Suche",
+        detailTitle: "Gespeichertes Diktat",
+        backToVoice: "Zurück zu den Sprachfunktionen",
+        backToRecents: "Zurück zu den letzten Diktaten",
+        view: "Vollständiges Diktat ansehen",
+        empty: "Noch keine Diktate",
+        dictationColumn: "Diktat",
+        dateColumn: "Erstellungsdatum",
+        copy: "Diktat kopieren",
+        copied: "In die Zwischenablage kopiert",
+        copyFailed: "Kopieren in die Zwischenablage nicht möglich",
+        delete: "Diktat löschen",
+        deleteTitle: "Diktat löschen",
+        deleteDescription:
+          "Dieses gespeicherte Diktat löschen? Das lässt sich nicht rückgängig machen.",
+        deleteLinkedDescription:
+          "Dieses gespeicherte Diktat löschen? Sie können auch den Chat löschen, in dem es verwendet wurde. Das lässt sich nicht rückgängig machen.",
+        deleteWithChat: "Chat und Diktat löschen",
+        deleteWithChatFailed: "Der Chat konnte nicht gelöscht werden",
+        clear: "Verlauf löschen",
+        clearTitle: "Diktatverlauf löschen",
+        clearDescription:
+          "Alle gespeicherten Diktate löschen? Das lässt sich nicht rückgängig machen.",
+        clearConfirm: "Alle löschen",
+        showMore: "Mehr anzeigen ({count})",
+        openChat: "Chat öffnen",
+      },
+      readAloud: {
+        sectionTitle: "Vorlesen",
+        buttonLabel: "Vorlesen-Schaltfläche",
+        buttonDescription: "Bei Assistentenantworten anzeigen",
+        engineLabel: "TTS-Engine",
+        engineSystemDescription: "Integrierte Gerätestimmen",
+        engineStudioDescription:
+          "Verwendet das geladene Audiomodell (z. B. Orpheus)",
+        engineSystem: "Systemstimmen",
+        engineStudio: "TTS-Modell laden",
+        modelLabel: "TTS-Modell",
+        modelDescription:
+          "Laden Sie ein Audiomodell über die Modellauswahl (z. B. Orpheus TTS)",
+        voiceLabel: "Stimme",
+        voiceDescription: "Beste Stimmen auf diesem Gerät",
+        speedLabel: "Geschwindigkeit",
+        pitchLabel: "Tonhöhe",
+        volumeLabel: "Lautstärke",
+        previewLabel: "Stimme anhören",
+        previewDescription: "Eine kurze Probe abspielen",
+        previewAction: "Anhören",
+        stopAction: "Stopp",
+        ttsLabel: "Sprachausgabe",
+        notSupported: "In diesem Browser nicht unterstützt",
+      },
     },
     general: {
       title: "Allgemein",
@@ -145,6 +289,7 @@ export const de = {
         updating: "Wird aktualisiert...",
         updated: "Passwort aktualisiert.",
         updateFailed: "Passwortaktualisierung fehlgeschlagen.",
+        newHasSpaces: "Das neue Passwort darf keine Leerzeichen enthalten.",
       },
       chatDefaults: "Chat-Standardeinstellungen",
       autoTitleNewChats: "Neue Chats automatisch benennen",
@@ -178,6 +323,12 @@ export const de = {
         saveError:
           "Einstellungen für automatischen Modellwechsel konnten nicht gespeichert werden.",
         idleError: "Geben Sie 0 ein, um das Modell geladen zu halten, oder mindestens 60 Sekunden.",
+        autoDownload: "Fehlende Modelle herunterladen",
+        autoDownloadDescription:
+          "Lädt ein in einer API-Anfrage genanntes GGUF herunter, das noch nicht vorhanden ist. Wer einen API-Schlüssel hat, kann dann Speicherplatz und Bandbreite verbrauchen.",
+        keepKv: "Chat-Kontext beim automatischen Entladen behalten",
+        keepKvDescription:
+          "Speichert den KV-Cache vor dem Entladen bei Inaktivität, damit fortgesetzte Chats den Verlauf nicht erneut einlesen. Bis zu 10 GB auf der Festplatte.",
       },
       previewSharing: {
         sectionTitle: "Vorschau-Freigabe",
@@ -254,6 +405,12 @@ export const de = {
           "Löscht nur lokal gespeicherte Einstellungen und lädt Unsloth neu. Chats, API-Zugriff und in der DB gespeicherte Einstellungen bleiben erhalten.",
         confirmAction: "Zurücksetzen und neu laden",
       },
+      permissions: {
+        sectionTitle: "Berechtigungen",
+        bypassLabel: "Tool-Berechtigungen",
+        bypassDescription:
+          "Wie Unsloth Tool-Aufrufe im Chat (Terminal, Python, Web, MCP) vor der Ausführung freigibt. „Full access“ deaktiviert die Freigaben und die Code-Sandbox.",
+      },
     },
     profile: {
       title: "Profil",
@@ -277,6 +434,69 @@ export const de = {
         "Das Foto wurde für diese Sitzung aktualisiert, bleibt nach dem Neuladen aber möglicherweise nicht erhalten.",
       photoUpdateErrorTitle: "Profilbild konnte nicht aktualisiert werden",
       imageUseError: "Dieses Bild konnte nicht verwendet werden.",
+      uploadPhoto: "Foto hochladen",
+      removePhoto: "Entfernen",
+      pictureOptions: "Optionen für das Profilbild",
+      greetingSloth: "Faultier in der Begrüßung",
+      greetingSlothDescription: "Das Faultier in der Chat-Begrüßung anzeigen.",
+      noPicture: "Kein Profilbild",
+      noneLabel: "Keines",
+      stats: {
+        title: "Ihre Statistiken",
+        subtitle:
+          "Alles Folgende wird aus Ihrem eigenen Verlauf berechnet. Es wird nichts erfasst oder an Unsloth gesendet.",
+        retry: "Erneut versuchen",
+        privacyNote:
+          "Die Statistiken werden aus dem Chat- und Trainingsverlauf berechnet, der in Ihrer Unsloth-Installation gespeichert ist. Es wird nichts erfasst und nichts an Unsloth oder Dritte gesendet.",
+        emptyChats:
+          "Noch keine Chats. Starten Sie ein Gespräch, dann erscheinen hier Ihre Statistiken.",
+        lifetimeTokens: "Tokens insgesamt",
+        peakTokens: "Aktivster Tag",
+        longestChat: "Längster Chat",
+        currentStreak: "Aktuelle Serie",
+        longestStreak: "Längste Serie",
+        activityTitle: "Token-Aktivität",
+        activityDescription: "Zeitraum: {weeks} · {total}",
+        mode: {
+          daily: "Täglich",
+          weekly: "Wöchentlich",
+          cumulative: "Kumuliert",
+        },
+        cellTooltip: "{date} · {tokens}, {messages}",
+        weekTooltip: "Woche vom {date} · {tokens}",
+        less: "Weniger",
+        more: "Mehr",
+        insightsTitle: "Aktivitätsauswertung",
+        totalChats: "Chats insgesamt",
+        totalMessages: "Nachrichten insgesamt",
+        tokensIn: "Gesendete Tokens",
+        tokensOut: "Erzeugte Tokens",
+        cachedTokens: "Zwischengespeicherte Tokens",
+        cachedValue: "{tokens} ({percent} % der Eingabe)",
+        avgTokensPerChat: "Durchschnittliche Tokens pro Chat",
+        timeInChat: "Zeit im Chat",
+        activeDays: "Aktive Tage",
+        toolCalls: "Tool-Aufrufe",
+        attachments: "Angehängte Dateien",
+        avgSpeed: "Durchschnittliche Geschwindigkeit",
+        bestSpeed: "Schnellste Antwort",
+        firstToken: "Durchschnittliche Zeit bis zum ersten Token",
+        tokensPerSecond: "{value} Tok/s",
+        topModelsTitle: "Meistgenutzte Modelle",
+        topModelsDescription: "Nach ausgetauschten Tokens sortiert",
+        modelSummary: "{tokens} · {messages}",
+        noModels: "Noch keine Modellnutzung vorhanden.",
+        trainingTitle: "Training",
+        trainingDescription: "Fine-Tuning-Läufe aus diesem Arbeitsbereich",
+        trainingRuns: "Läufe",
+        trainingCompleted: "Abgeschlossen",
+        trainingSteps: "Schritte",
+        trainingTokens: "Trainierte Tokens",
+        trainingTime: "Trainingszeit",
+        bestLoss: "Bester Loss",
+        runSteps: "{steps}",
+        runLoss: "Loss {loss}",
+      },
     },
     appearance: {
       title: "Darstellung",
@@ -289,6 +509,93 @@ export const de = {
         light: "Hell",
         dark: "Dunkel",
       },
+      palette: {
+        label: "Farbpalette",
+        description: "Farben, die in Unsloth im hellen und dunklen Modus verwendet werden.",
+        standard: "Standard",
+        classic: "Klassisch",
+        minimal: "Minimal",
+      },
+      custom: {
+        reset: "Zurücksetzen",
+        resetAll: "Anpassungen zurücksetzen",
+        preferencesTitle: "Weitere Optionen",
+        colors: {
+          lightGroup: "Helles Design",
+          darkGroup: "Dunkles Design",
+          accent: "Akzentfarbe",
+          background: "Hintergrund",
+          foreground: "Vordergrund",
+        },
+        fontDefault: "Standard",
+        fontBundledGroup: "Integriert",
+        fontImportedGroup: "Importiert",
+        fontDeviceGroup: "Auf diesem Gerät",
+        fontFolderGroup: "Aus einem Ordner",
+        fontDeviceLoading: "Geräteschriften werden gesucht…",
+        fontSearch: "Schriften suchen…",
+        fontNoResults: "Keine Schriften gefunden.",
+        colorPicker: {
+          hue: "Farbton",
+          hex: "Hex-Farbe",
+          eyedropper: "Eine Farbe vom Bildschirm auswählen",
+        },
+        uiFont: {
+          label: "Schrift der Oberfläche",
+        },
+        headingFont: {
+          label: "Schrift für Überschriften",
+        },
+        chatFont: {
+          label: "Schrift im Chat",
+        },
+        codeFont: {
+          label: "Schrift für Code",
+        },
+        importFont: {
+          upload: "Hochladen",
+          scanFolder: "Ordner auswählen",
+          alreadyAvailable:
+            "Diese Schrift ist bereits verfügbar, daher wird die vorhandene Kopie verwendet.",
+          folderNoFonts: "In diesem Ordner wurden keine Schriftdateien gefunden.",
+          remove: "Entfernen",
+          errorInvalidType:
+            "Nicht unterstützter Dateityp. Verwenden Sie .woff2, .woff, .ttf oder .otf.",
+          errorTooLarge: "Die Schriftdatei ist zu groß (max. 1,5 MB).",
+          errorLimit: "Sie können bis zu 3 Schriften importieren.",
+          errorStorageFull:
+            "Nicht genug lokaler Speicher für diese Schrift. Entfernen Sie zuerst eine importierte Schrift.",
+          errorFailed: "Diese Schriftdatei konnte nicht geladen werden.",
+        },
+        uiFontSize: {
+          label: "Schriftgröße der Oberfläche",
+          description: "Passen Sie die Grundgröße der Unsloth-Oberfläche an.",
+        },
+        codeFontSize: {
+          label: "Schriftgröße für Code",
+          description: "Passen Sie die Grundgröße für Code an.",
+        },
+        fontSmoothing: {
+          label: "Schriftglättung",
+          description: "Kantenglättung für Schriften verwenden.",
+        },
+        contrast: {
+          label: "Kontrast",
+          description: "Intensität von Rahmen und sekundärem Text.",
+        },
+        reduceMotion: {
+          label: "Bewegung reduzieren",
+          description: "Animationen reduzieren oder Systemeinstellung übernehmen.",
+          system: "System",
+          on: "Ein",
+          off: "Aus",
+        },
+        pointerCursors: {
+          label: "Hand-Cursor verwenden",
+          description:
+            "Über interaktiven Elementen einen Hand-Cursor anzeigen.",
+        },
+      },
       language: {
         title: "Sprache",
         label: "Anzeigesprache",
@@ -300,6 +607,13 @@ export const de = {
         compactSidebar: "Seitenleiste standardmäßig anheften",
         compactSidebarDescription:
           "Hält die Seitenleiste ausgeklappt, statt sie zu Symbolen einzuklappen.",
+      },
+      sidebarMenu: {
+        title: "Seitenleistenmenü",
+        description:
+          "Elemente im Profilmenü der Seitenleiste anzeigen, ausblenden und neu anordnen. Einstellungen, Hilfe, Abmelden und Herunterfahren bleiben an ihrem Platz.",
+        darkModeToggle: "Umschalter für den dunklen Modus",
+        dragToReorder: "Zum Neuanordnen ziehen",
       },
     },
     resources: {
@@ -369,6 +683,108 @@ export const de = {
         processMemory: "Prozessspeicher",
         notInstalled: "Nicht installiert",
         unknown: "Unbekannt",
+      },
+    },
+    agents: {
+      title: "Agenten",
+      description:
+        "Verbinden Sie Coding-Agents wie Claude Code und Codex über unsloth start mit einem lokalen Modell.",
+      intro:
+        "verbindet Claude Code, Codex, Hermes, OpenClaw, OpenCode und weitere Agenten mit einem lokal von Unsloth bereitgestellten Modell, vollständig offline. Es startet einen OpenAI-kompatiblen Server und verändert nie die Konfigurationsdateien Ihres Agenten.",
+      readDocs: "Dokumentation lesen",
+      copy: "Kopieren",
+      copied: "Kopiert",
+      commandBuilder: "Befehlsgenerator",
+      agent: "Coding-Agent",
+      model: "Modell",
+      searchModels: "GGUF-Modelle suchen...",
+      noModels: "Keine passenden GGUF-Modelle.",
+      showingModels:
+        "{shown} von {total} Treffern werden angezeigt. Tippen Sie weiter, um die Liste einzugrenzen.",
+      quantization: "Quantisierung",
+      loadingQuantizations: "Quantisierungen werden geladen...",
+      noQuantizations: "Keine separate Quantisierung",
+      recommended: "Empfohlen",
+      downloaded: "Heruntergeladen",
+      quantizationLoadError:
+        "Es konnten nicht alle Quantisierungen geladen werden. Der Befehl verwendet den verfügbaren Modellwert.",
+      generatedCommand: "Generierter Befehl",
+      docs: "Dokumentation",
+      agentDocs: "Einrichtungsdokumentation zu {agent} öffnen",
+      copyGeneratedCommand: "Generierten Befehl kopieren",
+      modelNote:
+        "Codex benötigt ein GGUF-Modell, das von llama-server bereitgestellt wird. Andere Agents können auch Transformer-basierte Modelle verwenden; lassen Sie --model weg, um das bereits in Unsloth Studio geladene Modell zu nutzen.",
+      subagent: {
+        title: "Ein lokales Modell als Subagent verwenden",
+        description:
+          "Belassen Sie {agent} bei seinem aktuellen Modell und delegieren Sie ausgewählte Aufgaben an dieses lokale Unsloth-Modell.",
+        setupCommand: "Einrichtungsbefehl",
+        copySetupCommand: "Einrichtungsbefehl für den Subagenten kopieren",
+        usagePrompt: "Geben Sie dann in {agent} Folgendes ein:",
+        copyUsagePrompt: "Nutzungs-Prompt für den Subagenten kopieren",
+        defaultPrompt:
+          "Starte einen lokalen Agenten, um diese Funktion zu implementieren.",
+        opencodePrompt: "@unsloth finde die Ursache dieses Testfehlers",
+      },
+      quickstart: {
+        title: "Befehl zusammenstellen",
+        description:
+          "Starten Sie einen Agenten mit dem aktuell in Studio geladenen Modell. Laden Sie zuerst ein Modell und ersetzen Sie dann claude durch einen der unten aufgeführten Agenten.",
+        noneDetected:
+          "In Ihrem PATH wurden keine unterstützten Agent-CLIs gefunden.",
+        installed: "Installiert",
+      },
+      supportedAgents: {
+        title: "Unterstützte Agenten",
+        description: "Jeder Agent startet mit seinem eigenen Befehl:",
+        requiresGguf: "Benötigt ein GGUF-Modell",
+      },
+      models: {
+        title: "Ein Modell auswählen",
+        description:
+          "Mit --model wählen Sie Modell und Quantisierung, mit --context-length das Kontextfenster. Verwenden Sie ein Quantisierungssuffix oder die explizite Option --gguf-variant.",
+        suffixLabel: "Mit Quantisierungssuffix",
+        variantLabel: "Mit expliziter Variantenoption",
+      },
+      options: {
+        title: "Gängige Optionen",
+        description:
+          "Unsloth-Optionen werden zuerst ausgewertet; alles Unbekannte wird unverändert an den Agenten weitergereicht.",
+        model:
+          "Wählt ein Modell aus. Ohne --model verwendet unsloth start das aktuell in Studio geladene Modell und bricht mit einem Fehler ab, wenn keines geladen ist.",
+        contextLength:
+          "Legt die gewünschte Kontextlänge fest (Alias: --max-seq-length).",
+        ggufVariant: "Wählt die GGUF-Quantisierungsvariante.",
+        loadIn4bit:
+          "Schaltet das 4-Bit-Laden für Hugging Face Modelle ein oder aus.",
+        tensorParallel:
+          "Schaltet Tensor-Parallelität über mehrere GPUs ein oder aus.",
+        serve: "Aktiviert oder deaktiviert den automatischen lokalen Server.",
+        launch:
+          "Startet den Agenten oder gibt nur Befehl und Umgebung aus.",
+        persist:
+          "Behält die von Unsloth verwalteten Agent-Daten über Läufe hinweg bei.",
+        asSubagent:
+          "Belässt den übergeordneten Agenten bei seinem aktuellen Modell und registriert Unsloth als lokalen Subagenten (Claude Code, Codex und OpenCode).",
+        apiKey:
+          "Übergibt Ihren Unsloth-API-Schlüssel (alternativ UNSLOTH_API_KEY setzen).",
+        yolo:
+          "Überspringt Bestätigungsabfragen. Nur in vertrauenswürdigen Umgebungen verwenden.",
+      },
+      remote: {
+        title: "Mit einem entfernten Studio verbinden",
+        description:
+          "Richten Sie unsloth start auf ein anderswo laufendes Studio aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
+      },
+      passthrough: {
+        title: "Argumente an den Agenten übergeben",
+        description:
+          "Argumente nach den Unsloth-Optionen werden an den Agenten selbst weitergereicht, sodass native Befehle wie resume weiterhin funktionieren:",
+      },
+      dryRun: {
+        title: "Vorschau ohne Start",
+        description:
+          "Fügen Sie --no-launch hinzu, um Umgebung und Befehl auszugeben, statt den Agenten zu starten. Ist --model gesetzt, kann das Modell trotzdem aufgelöst und geladen werden.",
       },
     },
     chat: {
@@ -447,6 +863,56 @@ export const de = {
         "Ein Speichervorgang ist fehlgeschlagen; {count} Chats verbleiben möglicherweise. Bitte erneut versuchen.",
       failedToClearChats: "Chats konnten nicht gelöscht werden",
     },
+    data: {
+      title: "Daten",
+      description:
+        "Verwalten Sie Chatverlauf und hochgeladene Dateien, die auf diesem Gerät gespeichert sind.",
+      archivedChats: "Archivierte Chats",
+      archivedChatsDescription:
+        "Zeigen Sie die von Ihnen archivierten Chats an und verwalten Sie sie.",
+      manageAction: "Verwalten",
+      exportArchivedChats: "Exportieren",
+      exportingArchivedChats: "Wird exportiert...",
+      exportedOneArchivedChat: "1 archivierter Chat exportiert",
+      exportedArchivedChatCount: "{count} archivierte Chats exportiert",
+      noArchivedChatsToExport: "Keine archivierten Chats zum Exportieren.",
+      failedToExportArchivedChats:
+        "Archivierte Chats konnten nicht exportiert werden",
+      archiveAllChats: "Alle Chats archivieren",
+      archiveAllChatsDescription:
+        "Verschiebt alle Chats aus „Zuletzt verwendet“ und „Projekte“ ins Archiv.",
+      noChatsToArchive: "Keine Chats zum Archivieren.",
+      archiveAllAction: "Alle archivieren",
+      archivingAction: "Wird archiviert...",
+      archiveAllChatsTitle: "Alle Chats archivieren?",
+      archiveAllChatsConfirmDescription:
+        "Verschiebt alle Chats auf diesem Gerät ins Archiv. Archivierte Chats bleiben verfügbar und können jederzeit wieder aus dem Archiv geholt werden.",
+      archivedAllChats: "Alle Chats archiviert",
+      archivedOneChat: "1 Chat archiviert",
+      archivedChatCount: "{count} Chats archiviert",
+      failedToArchiveChats: "Chats konnten nicht archiviert werden",
+      confirmBeforeDeleting: "Vor dem Löschen bestätigen",
+      confirmBeforeDeletingDescription:
+        "Fragt vor dem Löschen eines Chats nach einer Bestätigung. Deaktivieren, um sofort zu löschen.",
+      filesSection: "Dateien",
+      uploadedFiles: "Hochgeladene Dateien",
+      uploadedFilesDescription:
+        "Zeigen Sie Dateien an, die in Chats, Projekte und Wissensdatenbanken hochgeladen wurden, und verwalten Sie sie.",
+      fineTuneExport: "Chats als Trainingsdaten verwenden",
+      fineTuneExportDescription:
+        "Erstellen Sie aus Ihren Chats einen JSONL-Datensatz für das Fine-Tuning. Laden Sie ihn in „Trainieren“, verfeinern Sie ihn in „Rezepte“ oder exportieren Sie ihn.",
+      fineTuneExportAction: "JSONL exportieren",
+      fineTuneRunAction: "Ausführen",
+      fineTuneExportingAction: "Wird exportiert...",
+      fineTuneOpenRecipesAction: "In „Rezepte“ öffnen",
+      fineTuneOpeningRecipesAction: "Wird geöffnet...",
+      fineTuneTrainAction: "In den Tab „Trainieren“ laden",
+      fineTuneTrainingAction: "Wird geladen...",
+      fineTuneExportFailed: "Trainingsdaten konnten nicht exportiert werden",
+      fineTuneRecipeFailed: "Chats konnten nicht in „Rezepte“ geöffnet werden",
+      fineTuneTrainFailed:
+        "Datensatz konnte nicht in den Tab „Trainieren“ geladen werden",
+    },
     connections: {
       title: "Verbindungen",
       description: "Verwalten Sie Anbieter und externe Verbindungen.",
@@ -514,6 +980,8 @@ export const de = {
         "Apps, die dieses Token verwenden, verlieren sofort den Zugriff. Dies kann nicht rückgängig gemacht werden.",
       revokeAction: '"{name}" widerrufen',
       revoking: "Wird widerrufen...",
+      usageNoModel:
+        "Laden Sie ein Modell oder laden Sie eines herunter, um ausführbare Beispiele zu sehen. Dieser Server kennt noch kein Modell, das in den Beispielen verwendet werden könnte.",
     },
     about: {
       title: "Über",
@@ -856,6 +1324,8 @@ export const de = {
       enablePacking: "Packing aktivieren",
       assistantCompletionsOnly: "Nur Assistenten-Antworten",
       readMore: "Mehr erfahren",
+      optimizerTooltipMlx:
+        "Optimierungsalgorithmus. AdamW ist die Voreinstellung. Lion braucht weniger Speicher, aber meist eine niedrigere Lernrate.",
     },
     training: {
       title: "Training",
