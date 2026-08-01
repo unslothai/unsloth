@@ -136,3 +136,74 @@ def test_a_blank_override_falls_back_to_the_derived_root(monkeypatch):
     result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
     assert result.exit_code == 0, result.output
     assert Path(seen["STUDIO_LOCAL_REPO"]) == _REPO_ROOT
+
+
+def test_the_override_runs_that_checkouts_setup_script(monkeypatch, tmp_path):
+    """The --local checkout's own setup script must win.
+
+    setup.sh/setup.ps1 build the frontend under their own $SCRIPT_DIR, and the
+    editable install of the checkout removes the installed tree the installed
+    copy's script would have built into. studio/frontend/dist is gitignored, so
+    running the installed script against a fresh checkout leaves Studio with no
+    frontend at all.
+    """
+    import platform as _platform
+
+    checkout = tmp_path / "unsloth"
+    (checkout / "studio").mkdir(parents = True)
+    (checkout / "pyproject.toml").write_text("[project]\nname = 'unsloth'\n")
+    name = "setup.ps1" if _platform.system() == "Windows" else "setup.sh"
+    script = checkout / "studio" / name
+    script.write_text("#!/bin/sh\n")
+
+    studio = _studio()
+    assert studio._find_setup_script(checkout) == script
+    # No override: unchanged, still resolved from the installed package root.
+    assert studio._find_setup_script(None) != script
+
+
+def test_the_override_reaches_the_setup_runner(monkeypatch, tmp_path):
+    checkout = tmp_path / "unsloth"
+    checkout.mkdir()
+    (checkout / "pyproject.toml").write_text("[project]\nname = 'unsloth'\n")
+    studio, seen = _neutered(monkeypatch)
+
+    def _setup(*a, **k):
+        seen["repo_root"] = k.get("repo_root")
+
+    monkeypatch.setattr(studio, "_run_setup_script", _setup)
+    monkeypatch.setenv("STUDIO_LOCAL_REPO", str(checkout))
+    result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
+    assert result.exit_code == 0, result.output
+    assert seen["repo_root"] == checkout.resolve()
+
+
+def test_a_pypi_update_passes_no_checkout(monkeypatch):
+    studio, seen = _neutered(monkeypatch)
+
+    def _setup(*a, **k):
+        seen["repo_root"] = k.get("repo_root")
+
+    monkeypatch.setattr(studio, "_run_setup_script", _setup)
+    result = CliRunner().invoke(studio.studio_app, ["update"])
+    assert result.exit_code == 0, result.output
+    assert seen["repo_root"] is None
+
+
+def test_windows_is_shown_a_powershell_assignment(monkeypatch, tmp_path):
+    # `VAR=value command` is POSIX shell syntax. PowerShell parses the
+    # assignment as a command name, so the only recovery instruction the guard
+    # prints was unusable on the platform the guard exists for.
+    import platform as _platform
+
+    site = tmp_path / "Lib" / "site-packages"
+    site.mkdir(parents = True)
+    studio, _ = _neutered(monkeypatch)
+    monkeypatch.setattr(_platform, "system", lambda: "Windows")
+    monkeypatch.setenv("STUDIO_LOCAL_REPO", str(site))
+    result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
+    assert result.exit_code == 2, result.output
+    out = result.output
+    assert "$env:STUDIO_LOCAL_REPO=" in out
+    # The POSIX prefix form must not be the one Windows is told to run.
+    assert "    STUDIO_LOCAL_REPO=/path/to/unsloth" not in out
