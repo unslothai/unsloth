@@ -35,7 +35,7 @@ def test_setup_defines_non_throwing_path_probes():
 
 def test_prebuilt_metadata_probe_cannot_terminate_setup():
     assert "if (Test-Path $existingMetaPath)" not in SETUP_PS1
-    assert '$existingMetaState = Get-PathState -Path $existingMetaPath -PathType Leaf' in SETUP_PS1
+    assert "$existingMetaState = Get-PathState -Path $existingMetaPath -PathType Leaf" in SETUP_PS1
     assert '$existingMetaState -eq "Denied"' in SETUP_PS1
     assert '$existingMetaState -eq "Present"' in SETUP_PS1
 
@@ -49,7 +49,7 @@ def test_denied_install_reports_an_actionable_failure():
     assert "takeown /F" in SETUP_PS1
     assert "icacls" in SETUP_PS1
     assert "Controlled folder access" in SETUP_PS1
-    assert "Exit-SetupFailure \"Access denied reading the existing llama.cpp install" in SETUP_PS1
+    assert 'Exit-SetupFailure "Access denied reading the existing llama.cpp install' in SETUP_PS1
     assert "Reinstalling the app does not reset it." in SETUP_PS1
 
 
@@ -63,7 +63,10 @@ def test_failure_reaches_the_desktop_ui():
 
 def test_ownership_guard_distinguishes_denied_from_unowned():
     guard = SETUP_PS1.split("function Assert-StudioOwnedOrAbsent", 1)[1].split("\nfunction ", 1)[0]
-    assert '$markerState = Get-PathState -Path (Join-Path $Path $StudioOwnedMarker) -PathType Leaf' in guard
+    assert (
+        "$markerState = Get-PathState -Path (Join-Path $Path $StudioOwnedMarker) -PathType Leaf"
+        in guard
+    )
     assert '$markerState -eq "Denied"' in guard
     assert "cannot be read: access is denied" in guard
     # The old wording blamed ownership, which is unknowable while the tree is
