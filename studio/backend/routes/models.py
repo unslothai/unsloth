@@ -285,6 +285,25 @@ def _has_non_gguf_weights(path: Path) -> bool:
         return False
 
 
+def _is_gguf_companion_only_dir(path: Path) -> bool:
+    """True for a folder whose entire content is GGUF companions -- a lone mmproj adapter, an
+    MTP drafter, or both -- with nothing servable beside them.
+
+    The scanners report ``model_format = None`` for such a folder, because neither companion is a
+    primary weight, and that is also what a plain checkpoint reports. The custom-folder scan below
+    validates GGUF rows through ``detect_gguf_model`` and waves the rest through, so without this
+    the folder is published as a model that no loader can start.
+    """
+    try:
+        if not path.is_dir():
+            return False
+        if (path / "config.json").exists() or (path / "adapter_config.json").exists():
+            return False
+        return any(path.glob("*.gguf")) and not _has_non_gguf_weights(path)
+    except OSError:
+        return False
+
+
 def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
@@ -874,10 +893,11 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
             ]
             custom_models = []
             for model in _generic:
-                if model.model_format != "gguf" or model.partial:
+                path = Path(model.path)
+                is_gguf_row = model.model_format == "gguf" or _is_gguf_companion_only_dir(path)
+                if not is_gguf_row or model.partial:
                     custom_models.append(model)
                     continue
-                path = Path(model.path)
                 if path.is_dir():
                     patterns = ("*", "*/*") if model.source == "hf_cache" else ("*",)
                     if any(
