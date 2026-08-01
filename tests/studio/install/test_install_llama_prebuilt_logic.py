@@ -3659,9 +3659,7 @@ def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) 
             _SETUP_SH_HARNESS_TAIL,
         ]
     )
-    completed = subprocess.run(
-        ["bash", "-c", script], capture_output = True, text = True, timeout = 60
-    )
+    completed = subprocess.run(["bash", "-c", script], capture_output = True, text = True, timeout = 60)
     return {
         "returncode": completed.returncode,
         "stdout": completed.stdout,
@@ -3715,7 +3713,7 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     assert sh_block.count("_NEED_LLAMA_SOURCE_BUILD=true") == 1
     assert 'elif [ "$_PREBUILT_STATUS" -eq 2 ]; then' in sh_block
 
-    ps_block = _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, "retry setup.\"\n        }")
+    ps_block = _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, 'retry setup."\n        }')
     ps_else = ps_block[ps_block.rindex("} else {") :]
     assert "$NeedLlamaSourceBuild = $true" not in ps_else
     assert "Exit-SetupFailure" in ps_else
@@ -3887,9 +3885,7 @@ def test_binary_env_linux_skips_inaccessible_inherited_ld_library_path(monkeypat
     monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda *a, **k: [])
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_wsl_system_rocm_lib_dirs", lambda: [])
-    monkeypatch.setattr(
-        INSTALL_LLAMA_PREBUILT, "_native_linux_system_rocm_lib_dirs", lambda *a: []
-    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_native_linux_system_rocm_lib_dirs", lambda *a: [])
     monkeypatch.setenv("LD_LIBRARY_PATH", os.pathsep.join([str(denied), str(usable)]))
 
     env = binary_env(binary_path, binary_dir, linux_host())

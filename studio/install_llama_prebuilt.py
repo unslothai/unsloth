@@ -5729,7 +5729,9 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
     try:
         marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
     except OSError as exc:
-        log(f"could not record llama_backend={llama_backend!r} in the existing install marker: {exc}")
+        log(
+            f"could not record llama_backend={llama_backend!r} in the existing install marker: {exc}"
+        )
         return
     log(f"existing install reused; recorded llama_backend={llama_backend!r} from this run")
 
