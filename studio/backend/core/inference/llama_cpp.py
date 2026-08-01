@@ -1951,7 +1951,6 @@ def _metal_device_is_paravirtual() -> bool:
     name = ""
     try:
         import mlx.core as mx
-
         name = str(mx.device_info().get("device_name") or "")
     except Exception:
         name = ""
@@ -1960,8 +1959,11 @@ def _metal_device_is_paravirtual() -> bool:
         try:
             probe = subprocess.run(
                 ["system_profiler", "SPDisplaysDataType"],
-                capture_output = True, text = True, timeout = 30,
-                encoding = "utf-8", errors = "replace",
+                capture_output = True,
+                text = True,
+                timeout = 30,
+                encoding = "utf-8",
+                errors = "replace",
             )
             name = f"{name} {probe.stdout}"
         except Exception:

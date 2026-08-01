@@ -18,7 +18,7 @@ import pytest
 from core.inference.llama_cpp import _metal_device_is_paravirtual
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _clear_cache():
     """The detector is lru_cached so a real machine only pays for the probe once."""
     _metal_device_is_paravirtual.cache_clear()
@@ -38,7 +38,7 @@ def _fake_mlx(device_name: str):
     "device_name, expected",
     [
         ("Apple Paravirtual device", True),
-        ("apple paravirtual device", True),   # matching must not be case-sensitive
+        ("apple paravirtual device", True),  # matching must not be case-sensitive
         ("Apple M1", False),
         ("Apple M3 Max", False),
         ("Apple M4 Pro", False),
@@ -52,7 +52,7 @@ def test_only_virtualised_apple_gpus_fall_back(monkeypatch, device_name, expecte
     # Inert probe output so this measures the name matching, not system_profiler.
     monkeypatch.setattr(
         "core.inference.llama_cpp.subprocess.run",
-        lambda *a, **k: types.SimpleNamespace(stdout="Chipset Model: Apple M3 Max"),
+        lambda *a, **k: types.SimpleNamespace(stdout = "Chipset Model: Apple M3 Max"),
     )
     assert _metal_device_is_paravirtual() is expected
 
@@ -76,7 +76,7 @@ def test_system_profiler_catches_it_when_mlx_is_absent(monkeypatch):
     monkeypatch.setattr(
         "core.inference.llama_cpp.subprocess.run",
         lambda *a, **k: types.SimpleNamespace(
-            stdout="Graphics/Displays:\n  Apple Paravirtual device:\n    Vendor: Apple"
+            stdout = "Graphics/Displays:\n  Apple Paravirtual device:\n    Vendor: Apple"
         ),
     )
     assert _metal_device_is_paravirtual() is True
