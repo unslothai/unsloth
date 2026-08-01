@@ -1798,3 +1798,67 @@ def test_the_unload_eviction_checks_are_offloaded():
         and any(isinstance(a, ast.Name) and a.id == "_unload_may_evict" for a in sub.args)
     ]
     assert len(offloaded) == 2, f"expected both eviction checks offloaded, found {offloaded}"
+
+
+def test_a_stale_waiter_does_not_discard_the_new_lifespan_verdict():
+    """Only discard what this call produced.
+
+    A detection worker spawned by the previous lifespan can still be blocked on
+    _DETECT_LOCK when shutdown retires its epoch. The new lifespan's warm takes the
+    lock first and publishes. The stale worker then enters, finds DEVICE already set
+    so runs no detection, and must not wipe the verdict it did not produce: doing so
+    leaves the restarted app provisional until some request kicks detection again.
+    """
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        stale_epoch = hw.current_detection_epoch()
+        hw.invalidate_detection()                     # the shutdown the worker lost to
+        # The new lifespan's verdict, already published while the stale worker waited.
+        hw.DEVICE = hw.DeviceType.CUDA
+        hw.CHAT_ONLY = False
+        hw.CHAT_ONLY_REASON = None
+        hw.DETECTION_COMPLETE.set()
+
+        def _must_not_run():
+            raise AssertionError("the stale waiter re-ran detection over a live verdict")
+
+        with mock.patch.object(hw, "_detect_hardware_locked", _must_not_run):
+            hw.ensure_hardware_detected(stale_epoch)
+
+        assert hw.DEVICE is hw.DeviceType.CUDA, (
+            "a stale waiter discarded the new lifespan's verdict"
+        )
+        assert hw.CHAT_ONLY is False
+        assert hw.DETECTION_COMPLETE.is_set(), "the restart was left reporting as unsettled"
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_a_retired_pass_that_did_detect_still_discards():
+    """Negative control: the discard must still fire for a verdict this call produced."""
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        hw.DEVICE = None
+        hw.DETECTION_COMPLETE.clear()
+        epoch = hw.current_detection_epoch()
+
+        def _detect_then_shutdown():
+            hw.DEVICE = hw.DeviceType.CUDA
+            hw.CHAT_ONLY = False
+            hw.invalidate_detection()                 # shutdown lands inside the pass
+
+        with mock.patch.object(hw, "_detect_hardware_locked", _detect_then_shutdown):
+            hw.ensure_hardware_detected(epoch)
+
+        assert hw.DEVICE is None, "a retired pass published its own verdict anyway"
+        assert not hw.DETECTION_COMPLETE.is_set()
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()

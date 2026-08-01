@@ -23,20 +23,6 @@ export function isProvisionalVerdict(data: HealthVerdict): boolean {
   return data.hardware_detecting === true;
 }
 
-/** The verdict to store. A provisional reply keeps the previous values: storing
- * its chat_only tells a GPU host it has no GPU, and beforeLoad redirects on that. */
-export function resolveVerdict(
-  data: HealthVerdict,
-  previous: ResolvedVerdict,
-): ResolvedVerdict {
-  if (isProvisionalVerdict(data)) return previous;
-  return {
-    chatOnly: data.chat_only ?? false,
-    chatOnlyReason: data.chat_only_reason ?? null,
-  };
-}
-
-
 /** True when the backend has deferred detection rather than started it.
 
  * UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 stops health kicking detection at all, so
@@ -46,4 +32,28 @@ export function resolveVerdict(
  */
 export function isDetectionDeferred(data: HealthVerdict): boolean {
   return data.hardware_detection_deferred === true;
+}
+
+
+/** The verdict to store. A provisional reply keeps the previous values: storing
+ * its chat_only tells a GPU host it has no GPU, and beforeLoad redirects on that. */
+export function resolveVerdict(
+  data: HealthVerdict,
+  previous: ResolvedVerdict,
+): ResolvedVerdict {
+  if (isDetectionDeferred(data)) {
+    // Nothing will settle, so keeping `previous` would leave the browser-platform
+    // default (chatOnly false off macOS) in place for the session and offer Train on
+    // a CPU-only host. Take the backend's conservative pre-detection chat_only
+    // instead, and keep any reason already being explained.
+    return {
+      chatOnly: data.chat_only ?? true,
+      chatOnlyReason: data.chat_only_reason ?? previous.chatOnlyReason,
+    };
+  }
+  if (isProvisionalVerdict(data)) return previous;
+  return {
+    chatOnly: data.chat_only ?? false,
+    chatOnlyReason: data.chat_only_reason ?? null,
+  };
 }

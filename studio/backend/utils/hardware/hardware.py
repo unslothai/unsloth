@@ -368,7 +368,8 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
     with _DETECT_LOCK:
         if epoch is None:
             epoch = current_detection_epoch()
-        if DEVICE is None:
+        produced_here = DEVICE is None
+        if produced_here:
             try:
                 _detect_hardware_locked()
             except BaseException as exc:  # noqa: BLE001 - degrade, never 500 the health check
@@ -380,8 +381,12 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
             # rebuilds its curated defaults whenever this counter moves, so bumping it
             # per call caused needless rebuilds. Forced detect_hardware() bumps it too.
             DETECTION_GENERATION += 1
-        if current_detection_epoch() != epoch:
-            # See detect_hardware(): a retired pass must not publish.
+        if produced_here and current_detection_epoch() != epoch:
+            # See detect_hardware(): a retired pass must not publish. Only what this
+            # call produced, though: a retired worker that waited out the lock and
+            # found DEVICE already set is looking at the new lifespan's verdict, and
+            # discarding that would leave the restart provisional until some request
+            # kicked detection again.
             _discard_detection_locked()
             return DEVICE
         # Set only here, where a final value is guaranteed: a non-None DEVICE only means

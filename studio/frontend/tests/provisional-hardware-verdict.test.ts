@@ -96,10 +96,44 @@ test("a deferred verdict is provisional but must not be waited on", () => {
     true,
     "the kill switch stops anything settling, so the re-read loop must give up",
   );
+});
+
+test("a deferred verdict falls back to the backend's conservative default", () => {
+  // Nothing settles while the kill switch is on, so keeping the previous value would
+  // leave the browser-platform default (chatOnly false off macOS) in place for the
+  // whole session and offer Train on a CPU-only Linux host.
+  const deferred = {
+    chat_only: true,
+    hardware_detecting: true,
+    hardware_detection_deferred: true,
+  };
   assert.equal(
-    resolveVerdict(deferred, GPU_HOST).chatOnly,
+    resolveVerdict(deferred, { chatOnly: false, chatOnlyReason: null }).chatOnly,
+    true,
+    "a never-settling reply left the optimistic platform default in place",
+  );
+});
+
+test("a deferred verdict does not clear a reason the UI is explaining", () => {
+  const deferred = {
+    chat_only: true,
+    hardware_detecting: true,
+    hardware_detection_deferred: true,
+  };
+  assert.equal(
+    resolveVerdict(deferred, { chatOnly: true, chatOnlyReason: "mlx_unavailable" })
+      .chatOnlyReason,
+    "mlx_unavailable",
+    "the sidebar recovery poll only runs while it reads mlx_unavailable",
+  );
+});
+
+test("an ordinary provisional reply is still not treated as deferred", () => {
+  // The conservative fallback must stay scoped to the kill switch: a warm-window
+  // reply settles in ~1-2s, and taking its chat_only would send a GPU host to /chat.
+  assert.equal(
+    resolveVerdict({ chat_only: true, hardware_detecting: true }, GPU_HOST).chatOnly,
     false,
-    "a deferred reply still must not send a GPU host to chat-only",
   );
 });
 
