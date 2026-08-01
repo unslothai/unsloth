@@ -4642,7 +4642,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Previous"
           className="aui-branch-chevron-btn"
         >
-          <ChevronLeftIcon strokeWidth={1.25} className="size-9" />
+          <ChevronLeftIcon strokeWidth={1.25} className="size-[36px]" />
         </button>
       </BranchPickerPrimitive.Previous>
       <span className="aui-branch-picker-state font-mono text-ui-13 tabular-nums">
@@ -4654,7 +4654,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Next"
           className="aui-branch-chevron-btn"
         >
-          <ChevronRightIcon strokeWidth={1.25} className="size-9" />
+          <ChevronRightIcon strokeWidth={1.25} className="size-[36px]" />
         </button>
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
