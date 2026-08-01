@@ -1136,6 +1136,48 @@ _latest_repair_failed_at: float = 0.0
 _LATEST_REPAIR_BACKOFF_SECS = 5 * 60
 
 
+# A worker child that finds the sidecar damaged cannot repair it (repairs are a
+# parent action), so it leaves this flag inside the sidecar dir for the parent's
+# routing self-heal to pick up. Inside, so the stage-and-swap that repairs the
+# sidecar removes it by construction.
+_LATEST_REPAIR_MARKER = ".unsloth_sidecar_repair_needed"
+
+
+def _latest_repair_marker_path() -> Path:
+    return Path(_VENV_T5_LATEST_DIR) / _LATEST_REPAIR_MARKER
+
+
+def _latest_repair_requested() -> bool:
+    """True while a worker child has asked the parent to repair the sidecar.
+
+    One os.path.isfile, so the routing predicate below can carry it; the RECORD
+    scan that produced the request costs ~25 ms and cannot.
+    """
+    try:
+        return _latest_repair_marker_path().is_file()
+    except OSError:
+        return False
+
+
+def _request_latest_repair() -> None:
+    """Ask the parent to repair the sidecar on its next routing call."""
+    try:
+        _latest_repair_marker_path().write_text(
+            json.dumps({"pid": os.getpid(), "at": time.time()}), encoding = "utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _clear_latest_repair_request() -> None:
+    """Drop the flag once a scan finds the sidecar healthy, so a request left by a
+    lost race costs one extra scan instead of looping forever."""
+    try:
+        _latest_repair_marker_path().unlink()
+    except OSError:
+        pass
+
+
 def _latest_sidecar_intact() -> bool:
     """The pinned latest sidecar exists with its transformers dir and every pinned
     package. False when the pin itself is gone: a cached 'latest' mapping must then be
@@ -1152,11 +1194,27 @@ def _latest_sidecar_intact() -> bool:
     well as misses, with no cache in front of it, and a False here only
     re-routes a model. Sub-file damage is caught one step later instead, by
     _ensure_venv_t5_latest_exists at worker activation, which repairs in a
-    parent and refuses with a named reason in a child."""
+    parent and refuses with a named reason in a child, after flagging the sidecar
+    for repair here."""
     pin = _latest_pin_data()
     if pin is None:
         return False
+    if _latest_repair_requested():
+        return False
     return _venv_dir_is_valid(_VENV_T5_LATEST_DIR, tuple(pin["packages"]))
+
+
+def _latest_sidecar_undamaged() -> bool:
+    """_latest_sidecar_intact plus the RECORD-vs-filesystem scan.
+
+    Only for the self-heal decision in _overlay_transformers_dir, which runs on a
+    _config_mapping_cache MISS -- measured once per process while the sidecar is
+    healthy, and never on the cached hot path _latest_sidecar_intact serves.
+    """
+    pin = _latest_pin_data()
+    if pin is None:
+        return False
+    return _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, tuple(pin["packages"]))
 
 
 def _overlay_transformers_dir(tier: str) -> str | None:
@@ -1173,21 +1231,28 @@ def _overlay_transformers_dir(tier: str) -> str | None:
             "latest": _VENV_T5_LATEST_DIR,
         }.get(tier)
         src = os.path.join(root, "transformers") if root else None
-        if src and tier == "latest" and not _latest_sidecar_intact():
-            # A valid pin whose sidecar vanished or lost a pinned package (partial
-            # deletion, disk issue, interrupted external edits) must self-heal, or
-            # latest-only models either silently route to older tiers or reach a
-            # worker that cannot repair, failing every load until a manual
-            # reinstall. Repair under the swap reservation; back off after a
-            # failure so routing calls don't hammer pip.
+        if src and tier == "latest":
+            # A valid pin whose sidecar vanished, lost a pinned package or had a
+            # recorded file truncated/deleted (partial deletion, disk issue,
+            # interrupted external edits) must self-heal, or latest-only models
+            # either silently route to older tiers or reach a worker that cannot
+            # repair, failing every load until a manual reinstall. Repair under the
+            # swap reservation; back off after a failure so routing calls don't
+            # hammer pip.
+            heal_due = time.time() - _latest_repair_failed_at >= _LATEST_REPAIR_BACKOFF_SECS
+            # The ~25 ms RECORD scan runs only when a repair could actually follow it,
+            # and only on a _config_mapping_cache miss (once per process while the
+            # sidecar is healthy) -- never during the backoff window, where every
+            # routing call would otherwise re-pay it for an answer it cannot act on.
+            broken = not _latest_sidecar_intact() or (heal_due and not _latest_sidecar_undamaged())
             repaired = False
-            if time.time() - _latest_repair_failed_at >= _LATEST_REPAIR_BACKOFF_SECS:
+            if broken and heal_due:
                 if _ensure_venv_t5_latest_exists():
                     _latest_repair_failed_at = 0.0
                     repaired = True
                 else:
                     _latest_repair_failed_at = time.time()
-            if not repaired:
+            if broken and not repaired:
                 # Still broken: treat the overlay as unavailable rather than route
                 # models to a tier whose worker activation is known to fail. Models
                 # an older tier supports keep loading there until a repair succeeds,
@@ -2624,6 +2689,11 @@ def _ensure_venv_t5_latest_exists() -> bool:
     version = pin["version"]
     packages = tuple(pin["packages"])
     if _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages):
+        # A repair request that a clean scan contradicts (another process already
+        # repaired it, or a child lost the race with a swap and flagged the fresh
+        # dir) must not survive, or every routing call re-enters the self-heal
+        # branch forever.
+        _clear_latest_repair_request()
         return True
     if _env_offline():
         logger.warning(
@@ -2639,6 +2709,12 @@ def _ensure_venv_t5_latest_exists() -> bool:
     try:
         import multiprocessing as _mp
         if _mp.parent_process() is not None:
+            # Flag it, or the handoff never completes: the parent's routing self-heal
+            # is gated on a package-level predicate that cannot see sub-file damage,
+            # and a mapping cached before the damage keeps it off the scanning path
+            # entirely, so every worker retry would fail forever waiting for a repair
+            # nothing triggers.
+            _request_latest_repair()
             logger.warning(
                 ".venv_t5_latest is incomplete; repairs run in the parent process. "
                 "Retry after the parent repairs the sidecar."
