@@ -786,6 +786,7 @@ def test_the_delete_guard_keeps_its_short_circuit_and_fail_closed():
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "delete_cached_model_response"
     )
+
     # Bind to the specific Try, not any Try whose dump mentions to_thread: a
     # decoy try/to_thread/raise elsewhere in the handler satisfied that, so this
     # passed with the real fail-closed guard deleted.
@@ -795,8 +796,7 @@ def test_the_delete_guard_keeps_its_short_circuit_and_fail_closed():
             and isinstance(call.func, ast.Attribute)
             and call.func.attr == "to_thread"
             and any(
-                isinstance(a, ast.Name) and a.id == "_load_state_blocks_delete"
-                for a in call.args
+                isinstance(a, ast.Name) and a.id == "_load_state_blocks_delete" for a in call.args
             )
             for stmt in node.body
             for call in ast.walk(stmt)
@@ -1246,9 +1246,7 @@ def test_the_mcp_status_tool_reads_hardware_off_the_event_loop():
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "to_thread"
-        and any(
-            isinstance(a, ast.Name) and a.id == "get_gpu_utilization" for a in node.args
-        )
+        and any(isinstance(a, ast.Name) and a.id == "get_gpu_utilization" for a in node.args)
     ]
     assert offloaded, "the hardware read is no longer handed to a worker thread"
 
@@ -1268,10 +1266,7 @@ def test_an_authed_reply_drops_the_provisional_marker():
         if isinstance(sub, ast.Call)
         and isinstance(sub.func, ast.Attribute)
         and sub.func.attr == "pop"
-        and any(
-            isinstance(a, ast.Constant) and a.value == "hardware_detecting"
-            for a in sub.args
-        )
+        and any(isinstance(a, ast.Constant) and a.value == "hardware_detecting" for a in sub.args)
     ]
     assert pops, (
         "an authed reply can still carry hardware_detecting beside the measured "

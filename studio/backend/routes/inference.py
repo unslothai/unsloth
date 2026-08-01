@@ -4410,9 +4410,7 @@ async def _reject_unservable_model(
         # restart it was what built the singleton on the event-loop thread.
         if (
             resolved is not None
-            and await asyncio.to_thread(
-                _resolves_to_resident, resolved[0], llama_only = quantified
-            )
+            and await asyncio.to_thread(_resolves_to_resident, resolved[0], llama_only = quantified)
             and (not quantified or _resident_quant_is(variant))
         ):
             return
@@ -4421,9 +4419,7 @@ async def _reject_unservable_model(
         advertised = _advertised_local_path(base)
         if (
             advertised is not None
-            and await asyncio.to_thread(
-                _resolves_to_resident, advertised, llama_only = quantified
-            )
+            and await asyncio.to_thread(_resolves_to_resident, advertised, llama_only = quantified)
             and (not quantified or _resident_quant_is(variant))
         ):
             return

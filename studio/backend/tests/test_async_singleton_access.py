@@ -73,10 +73,7 @@ def test_the_offload_is_actually_present():
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "to_thread"
-            and any(
-                isinstance(a, ast.Name) and a.id == "get_inference_backend"
-                for a in node.args
-            )
+            and any(isinstance(a, ast.Name) and a.id == "get_inference_backend" for a in node.args)
         )
     assert total >= 14, f"expected the offloaded call sites to survive, found {total}"
 
@@ -136,6 +133,7 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
         "_monitor_active_model",
         "_monitor_context_length",
     }
+
     # _resolves_to_resident is offloaded at its two singleton-reading call sites.
     # The third, in _openai_catalog_objects, passes llama_only = True, and the
     # helper's candidate list spells that "None if llama_only else

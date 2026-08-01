@@ -114,6 +114,8 @@ def _discard_detection_locked() -> None:
     CHAT_ONLY_REASON = None
     IS_ROCM = False
     DETECTION_COMPLETE.clear()
+
+
 # Set once ensure_hardware_detected() has a settled answer, including its CPU/chat-only
 # fallback. Poll this, not DEVICE: DEVICE is assigned mid-detection and can be revised.
 DETECTION_COMPLETE = threading.Event()
