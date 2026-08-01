@@ -8,6 +8,18 @@ const DATA_URI_BASE64_RE = /;[ \t]*base64[ \t]*$/i;
 const PERCENT_ESCAPE_RE = /%([0-9a-f]{2})/gi;
 const DEFAULT_MIME_TYPE = "text/plain;charset=US-ASCII";
 const PERCENT = 0x25;
+// The URL parser removes every ASCII tab and newline from the input before it
+// parses anything, so `data:text/plain;base64\n,...` really is base64. Only raw
+// characters go; an escaped %0A is payload.
+const URL_WHITESPACE_RE = /[\t\n\r]/g;
+const HAS_URL_WHITESPACE_RE = /[\t\n\r]/;
+
+function stripUrlWhitespace(url: string): string {
+  // Testing first keeps the common case from copying a multi-megabyte string.
+  return HAS_URL_WHITESPACE_RE.test(url)
+    ? url.replace(URL_WHITESPACE_RE, "")
+    : url;
+}
 
 export interface DecodedDataUri {
   bytes: Uint8Array;
@@ -16,7 +28,10 @@ export interface DecodedDataUri {
 
 /** URL schemes are case-insensitive, so `DATA:image/png;...` is a data URI. */
 export function isDataUri(url: string): boolean {
-  return url.slice(0, 5).toLowerCase() === "data:";
+  // Only the scheme is needed, so this stays O(1) on a huge payload.
+  return (
+    stripUrlWhitespace(url.slice(0, 16)).slice(0, 5).toLowerCase() === "data:"
+  );
 }
 
 /** Hex digit value, or -1. Avoids allocating a substring per character. */
@@ -121,7 +136,8 @@ function base64ToBytes(payload: string): Uint8Array {
   return bytes;
 }
 
-export function decodeDataUri(dataUri: string): DecodedDataUri {
+export function decodeDataUri(rawDataUri: string): DecodedDataUri {
+  const dataUri = stripUrlWhitespace(rawDataUri);
   const separator = dataUri.indexOf(",");
   if (!isDataUri(dataUri) || separator < 0) {
     throw new Error("Invalid data URI.");

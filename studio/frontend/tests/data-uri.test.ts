@@ -170,3 +170,30 @@ test("decodes an escape-heavy payload without stalling", () => {
     `decoding took ${Date.now() - started}ms`,
   );
 });
+
+test("removes URL tabs and newlines the way the URL parser does", () => {
+  // Firefox and WebKit strip these before parsing, per the URL standard.
+  // Chromium keeps them for a data: URL passed to fetch, so this follows the
+  // standard and the majority.
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain;base64\n,SGVsbG8=").bytes),
+    [72, 101, 108, 108, 111],
+  );
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain;base64\t,SGVsbG8=").bytes),
+    [72, 101, 108, 108, 111],
+  );
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain;bas\ne64,SGVsbG8=").bytes),
+    [72, 101, 108, 108, 111],
+  );
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain,ab\ncd").bytes),
+    [97, 98, 99, 100],
+  );
+  // An escaped newline is payload, not URL whitespace.
+  assert.deepEqual(
+    Array.from(decodeDataUri("data:text/plain,ab%0Acd").bytes),
+    [97, 98, 10, 99, 100],
+  );
+});
