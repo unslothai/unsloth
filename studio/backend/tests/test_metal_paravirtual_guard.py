@@ -490,7 +490,14 @@ def _is_slot_restore(test) -> bool:
     return "_mtp_clamped_slots" in _names(test)
 
 
-def _run_clamp_then_fallback(*, n_parallel, extra_args, spec_flags, cmd, asked_for = None):
+def _run_clamp_then_fallback(
+    *,
+    n_parallel,
+    extra_args,
+    spec_flags,
+    cmd,
+    asked_for = None,
+):
     """Execute the real clamp block, rebuild fallback_cmd the way the MTP retry
     does, then execute the real restore block. Returns the two argvs and the
     slot count that _commit_effective_parallel_slots would receive."""

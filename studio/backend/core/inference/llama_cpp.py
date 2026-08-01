@@ -9803,9 +9803,7 @@ class LlamaCppBackend:
                     # the requested-vs-requested dedupe makes that stick). Every
                     # later retry derives from this argv, so rebind n_parallel now.
                     if _mtp_clamped_slots > 1 and "--parallel" in fallback_cmd:
-                        fallback_cmd[fallback_cmd.index("--parallel") + 1] = str(
-                            _mtp_clamped_slots
-                        )
+                        fallback_cmd[fallback_cmd.index("--parallel") + 1] = str(_mtp_clamped_slots)
                         n_parallel = _mtp_clamped_slots
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:
