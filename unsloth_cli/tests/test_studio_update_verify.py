@@ -230,9 +230,7 @@ def test_a_system_python_is_not_treated_as_the_managed_venv(monkeypatch, tmp_pat
 
     (prefix / "pyvenv.cfg").write_text("home = /usr/bin\n")
     # With a real venv the answer goes back to the managed-root question.
-    assert _deps().running_outside_managed_venv() is (
-        _deps()._managed_root(()) is not None
-    )
+    assert _deps().running_outside_managed_venv() is (_deps()._managed_root(()) is not None)
 
 
 def test_windows_is_told_the_powershell_installer(monkeypatch, capsys):
