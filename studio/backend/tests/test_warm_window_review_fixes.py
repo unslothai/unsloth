@@ -2400,3 +2400,58 @@ def test_an_ordinary_refresh_still_happens():
         assert backend._static_models_generation == 2
     finally:
         hw_mod.DETECTION_GENERATION = saved_generation
+
+
+def test_a_retired_worker_does_not_probe_before_being_discarded():
+    """Discarding after the probe still pays for the probe.
+
+    A health-triggered detection thread can reach _DETECT_LOCK after shutdown retired
+    its epoch. Running the full torch probe there imports the ML stack for a lifespan
+    that has stopped, and the next lifespan's warm queues on the same lock behind it
+    only to detect again, delaying the verdict this PR exists to deliver sooner.
+    """
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        hw.DEVICE = None
+        hw.DETECTION_COMPLETE.clear()
+        stale_epoch = hw.current_detection_epoch()
+        hw.invalidate_detection()          # shutdown, before the worker gets the lock
+
+        probed = []
+        with mock.patch.object(hw, "_detect_hardware_locked", lambda: probed.append(1)):
+            hw.ensure_hardware_detected(stale_epoch)
+
+        assert probed == [], "a retired worker imported the ML stack anyway"
+        assert hw.DEVICE is None
+        assert not hw.DETECTION_COMPLETE.is_set()
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_a_live_worker_still_probes():
+    """Negative control: an owner of the current epoch must detect as before."""
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        hw.DEVICE = None
+        hw.DETECTION_COMPLETE.clear()
+        probed = []
+
+        def _probe():
+            probed.append(1)
+            hw.DEVICE = hw.DeviceType.CUDA
+
+        with mock.patch.object(hw, "_detect_hardware_locked", _probe):
+            hw.ensure_hardware_detected(hw.current_detection_epoch())
+
+        assert probed == [1], "a live worker was refused its probe"
+        assert hw.DETECTION_COMPLETE.is_set()
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
