@@ -171,6 +171,19 @@ def test_native_clipboard_bridge_is_bounded_and_registered():
     assert "native_clipboard::read_native_clipboard_png" in tauri_main
 
 
+def test_mac_dock_reopens_hidden_main_window():
+    source = TAURI_MAIN.read_text(encoding = "utf-8")
+    show_helper = source.split("fn show_main_window", 1)[1].split("\n}\n", 1)[0]
+    run_handler = source.split(".run(|app, event|", 1)[1]
+
+    for action in ("window.show()", "window.unminimize()", "window.set_focus()"):
+        assert action in show_helper
+    assert "tauri::RunEvent::Reopen" in run_handler
+    assert "has_visible_windows: false" in run_handler
+    reopen_handler = run_handler.split("tauri::RunEvent::Reopen", 1)[1].split("=>", 1)[1]
+    assert "show_main_window(app)" in reopen_handler
+
+
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
