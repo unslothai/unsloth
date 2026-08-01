@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -444,6 +445,70 @@ def test_a_root_with_spaces_is_quoted(monkeypatch, capsys):
     with pytest.raises(typer.Exit):
         studio._fail_if_install_damaged()
     assert "UNSLOTH_STUDIO_HOME='/srv/my studios/a' sh" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "system, expected",
+    [
+        ("Linux", "| UNSLOTH_NO_TORCH=1 sh"),
+        ("Windows", "$env:UNSLOTH_NO_TORCH = '1'; irm"),
+    ],
+)
+def test_a_no_torch_install_keeps_that_mode_in_the_reinstall(monkeypatch, capsys, system, expected):
+    # install.sh derives SKIP_TORCH from its flag or UNSLOTH_NO_TORCH only, so
+    # following the plain command on a GGUF-only install pulls the whole PyTorch
+    # stack -- multiple GB the user deliberately opted out of.
+    import platform as _platform
+    import typer
+
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+    monkeypatch.setattr(
+        studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
+    )
+    # The stub records what root it was asked for: the manifest and marker live
+    # in the venv, and an earlier attempt at this passed STUDIO_HOME, which is
+    # one directory too high, so it read None and never fired in production.
+    seen = {}
+
+    def _module(*a, **k):
+        def _recorded(root = None):
+            seen["root"] = root
+            return True
+
+        return SimpleNamespace(recorded_no_torch = _recorded)
+
+    monkeypatch.setattr(studio._studio_deps, "load_install_manifest_module", _module)
+    monkeypatch.setattr(_platform, "system", lambda: system)
+    with pytest.raises(typer.Exit):
+        studio._fail_if_install_damaged()
+    assert expected in capsys.readouterr().err
+    # Default root, i.e. sys.prefix, which the early return guarantees is the venv.
+    assert seen["root"] is None
+
+
+@pytest.mark.parametrize("recorded", [False, None])
+def test_an_unrecorded_or_torch_install_does_not_gain_the_flag(monkeypatch, capsys, recorded):
+    # recorded_no_torch() returns None when nothing recorded the mode, and its
+    # contract is that None is not False. Adding the flag on a guess would leave
+    # a torch install without torch, so the flag is added only on an explicit True.
+    import platform as _platform
+    import typer
+
+    studio = _studio()
+    monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
+    monkeypatch.setattr(
+        studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
+    )
+    monkeypatch.setattr(
+        studio._studio_deps,
+        "load_install_manifest_module",
+        lambda *a, **k: SimpleNamespace(recorded_no_torch = lambda **kw: recorded),
+    )
+    monkeypatch.setattr(_platform, "system", lambda: "Linux")
+    with pytest.raises(typer.Exit):
+        studio._fail_if_install_damaged()
+    assert "UNSLOTH_NO_TORCH" not in capsys.readouterr().err
 
 
 def test_the_default_root_keeps_the_plain_command(monkeypatch, capsys):

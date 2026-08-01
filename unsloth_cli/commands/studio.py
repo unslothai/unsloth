@@ -2919,17 +2919,37 @@ def _fail_if_install_damaged() -> None:
     # shell that runs this line has no UNSLOTH_STUDIO_HOME: an unqualified
     # reinstall would build a fresh ~/.unsloth/studio and leave the damaged
     # install exactly as broken as it was.
+    # And carry the recorded install mode. install.sh derives SKIP_TORCH only
+    # from its own flag or UNSLOTH_NO_TORCH and passes that value into setup, so
+    # a plain reinstall over a GGUF-only install downloads the whole PyTorch
+    # stack. Only added when the record says True: recorded_no_torch() returns
+    # None when nothing recorded the mode, and None must never be read as False.
+    #
+    # No root argument: the manifest and marker live in the VENV, not the
+    # install root, and recorded_no_torch defaults to Path(sys.prefix). Passing
+    # STUDIO_HOME would look one directory too high, find nothing, and silently
+    # never fire. The early return above guarantees sys.prefix is that venv.
+    no_torch = False
+    try:
+        _manifest = _studio_deps.load_install_manifest_module()
+        no_torch = _manifest is not None and _manifest.recorded_no_torch() is True
+    except Exception:
+        no_torch = False
     if platform.system() == "Windows":
         prefix = ""
         if _STUDIO_HOME_IS_CUSTOM:
             prefix = "$env:UNSLOTH_STUDIO_HOME = '{}'; ".format(str(STUDIO_HOME).replace("'", "''"))
+        if no_torch:
+            prefix += "$env:UNSLOTH_NO_TORCH = '1'; "
         typer.echo(f"  {prefix}irm https://unsloth.ai/install.ps1 | iex", err = True)
     else:
-        # The assignment goes before `sh`, not before `curl`: that is the form
-        # install.sh documents, and it is sh that reads the variable.
+        # The assignments go before `sh`, not before `curl`: that is the form
+        # install.sh documents, and it is sh that reads them.
         env = ""
         if _STUDIO_HOME_IS_CUSTOM:
             env = f"UNSLOTH_STUDIO_HOME={shlex.quote(str(STUDIO_HOME))} "
+        if no_torch:
+            env += "UNSLOTH_NO_TORCH=1 "
         typer.echo(f"  curl -fsSL https://unsloth.ai/install.sh | {env}sh", err = True)
     typer.echo("", err = True)
     # The installer installs the current requirement sets; it does not prune or
