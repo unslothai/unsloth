@@ -1454,7 +1454,12 @@ class _DeferredThread:
 
     instances: list = []
 
-    def __init__(self, target = None, args = (), **_kw):
+    def __init__(
+        self,
+        target = None,
+        args = (),
+        **_kw,
+    ):
         self._target, self._args = target, args
         self._started = False
         _DeferredThread.instances.append(self)
@@ -1492,7 +1497,7 @@ def test_a_warm_delayed_past_shutdown_is_already_retired(monkeypatch):
     _DeferredThread.instances.clear()
 
     assert warm.start_background_warm() is True
-    hw.invalidate_detection()          # the shutdown that lands before the thread runs
+    hw.invalidate_detection()  # the shutdown that lands before the thread runs
     _DeferredThread.instances[-1].run_now()
 
     assert ran == [], f"a warm retired before it ran did its stages anyway: {ran}"
@@ -1544,28 +1549,31 @@ def test_both_spawners_read_the_epoch_before_start():
     """AST: the epoch has to be an argument to the thread, not read inside the target."""
     for rel, spawner, target in (
         (("utils", "torch_warmup.py"), "start_background_warm", "_warm"),
-        (("utils", "hardware", "hardware.py"), "start_background_detection",
-         "ensure_hardware_detected"),
+        (
+            ("utils", "hardware", "hardware.py"),
+            "start_background_detection",
+            "ensure_hardware_detected",
+        ),
     ):
         tree = ast.parse(_BACKEND.joinpath(*rel).read_text(encoding = "utf-8"))
         fn = next(
-            node for node in ast.walk(tree)
+            node
+            for node in ast.walk(tree)
             if isinstance(node, ast.FunctionDef) and node.name == spawner
         )
         call = next(
-            sub for sub in ast.walk(fn)
+            sub
+            for sub in ast.walk(fn)
             if isinstance(sub, ast.Call)
             and any(
-                kw.arg == "target"
-                and isinstance(kw.value, ast.Name)
-                and kw.value.id == target
+                kw.arg == "target" and isinstance(kw.value, ast.Name) and kw.value.id == target
                 for kw in sub.keywords
             )
         )
         args_kw = next((kw for kw in call.keywords if kw.arg == "args"), None)
-        assert args_kw is not None and isinstance(args_kw.value, ast.Tuple), (
-            f"{spawner} starts {target} with no epoch bound at spawn time"
-        )
+        assert args_kw is not None and isinstance(
+            args_kw.value, ast.Tuple
+        ), f"{spawner} starts {target} with no epoch bound at spawn time"
         assert any(
             isinstance(sub, ast.Call)
             and isinstance(sub.func, ast.Name)
@@ -1593,7 +1601,7 @@ def test_a_failed_forced_redetect_does_not_restore_a_retired_verdict():
         hw.DETECTION_COMPLETE.set()
 
         def _shutdown_then_fail():
-            hw.invalidate_detection()          # the shutdown, mid-pass
+            hw.invalidate_detection()  # the shutdown, mid-pass
             raise RuntimeError("probe blew up")
 
         with mock.patch.object(hw, "_detect_hardware_locked", _shutdown_then_fail):
@@ -1628,9 +1636,9 @@ def test_a_failed_redetect_inside_its_own_lifespan_still_restores():
                 hw.detect_hardware()
 
         assert hw.DEVICE is hw.DeviceType.MLX, "a live lifespan lost its verdict to a failed probe"
-        assert hw.CHAT_ONLY_REASON == "mlx_unavailable", (
-            "losing the reason stops the sidebar's MLX recovery poll for good"
-        )
+        assert (
+            hw.CHAT_ONLY_REASON == "mlx_unavailable"
+        ), "losing the reason stops the sidebar's MLX recovery poll for good"
         assert hw.DETECTION_COMPLETE.is_set()
     finally:
         hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
@@ -1680,9 +1688,9 @@ def test_an_absent_torch_is_still_just_absent():
         hw.TORCH_IMPORT_ERROR = "stale"
         with mock.patch.object(builtins, "__import__", _missing):
             assert hw._has_torch() is False
-        assert hw.TORCH_IMPORT_ERROR is None, (
-            "a --no-torch install would be reported as a detection failure"
-        )
+        assert (
+            hw.TORCH_IMPORT_ERROR is None
+        ), "a --no-torch install would be reported as a detection failure"
     finally:
         hw.TORCH_IMPORT_ERROR = saved_error
 
@@ -1694,31 +1702,37 @@ def test_the_default_model_list_is_stamped_before_it_is_built():
     between that and the stamp would mark the pre-repair list as belonging to the
     post-repair generation, and _refresh_static_models_if_stale would never fire again.
     """
-    tree = ast.parse((_BACKEND / "core" / "inference" / "orchestrator.py").read_text(
-        encoding = "utf-8"))
+    tree = ast.parse(
+        (_BACKEND / "core" / "inference" / "orchestrator.py").read_text(encoding = "utf-8")
+    )
 
     def _line_of(fn, predicate):
         return next(
-            sub.lineno for sub in ast.walk(fn)
-            if isinstance(sub, ast.Assign) and predicate(sub)
+            sub.lineno for sub in ast.walk(fn) if isinstance(sub, ast.Assign) and predicate(sub)
         )
 
     cls = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef) and node.name == "InferenceOrchestrator"
     )
     for name in ("__init__", "_refresh_static_models_if_stale"):
         fn = next(
-            node for node in cls.body
-            if isinstance(node, ast.FunctionDef) and node.name == name
+            node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == name
         )
-        stamp = _line_of(fn, lambda a: any(
-            isinstance(t, ast.Attribute) and t.attr == "_static_models_generation"
-            for t in a.targets
-        ))
-        build = _line_of(fn, lambda a: any(
-            isinstance(t, ast.Attribute) and t.attr == "_static_models" for t in a.targets
-        ))
+        stamp = _line_of(
+            fn,
+            lambda a: any(
+                isinstance(t, ast.Attribute) and t.attr == "_static_models_generation"
+                for t in a.targets
+            ),
+        )
+        build = _line_of(
+            fn,
+            lambda a: any(
+                isinstance(t, ast.Attribute) and t.attr == "_static_models" for t in a.targets
+            ),
+        )
         assert stamp < build, (
             f"InferenceOrchestrator.{name} stamps the generation after building the "
             "list, so a "
@@ -1734,11 +1748,13 @@ def test_a_redetect_during_the_bearer_await_leaves_the_reply_provisional():
     """
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_check"
     )
     branch = next(
-        node for node in ast.walk(fn)
+        node
+        for node in ast.walk(fn)
         if isinstance(node, ast.If)
         and any(
             isinstance(sub, ast.Subscript)

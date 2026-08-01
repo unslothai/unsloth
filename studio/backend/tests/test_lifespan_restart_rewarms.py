@@ -149,9 +149,7 @@ def test_a_live_warm_still_holds_the_latch(monkeypatch):
 
 def test_reset_clears_the_reported_warm_status(monkeypatch):
     _restore(monkeypatch)
-    monkeypatch.setattr(
-        warmup, "_warm", lambda *_: warmup._run_stage("hardware", lambda: None)
-    )
+    monkeypatch.setattr(warmup, "_warm", lambda *_: warmup._run_stage("hardware", lambda: None))
 
     warmup.start_background_warm()
     warmup.join_background_warm(30)
