@@ -97,9 +97,8 @@ export async function fetchDeviceType(options?: {
     // sending a GPU host to /chat with Train hidden. The window is only the torch
     // import, so a bounded re-read lands the measurement without stalling boot.
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-    // Once per session. A host slower than the window leaves the reply provisional, and
-    // `fetched` stays false on a reply with no device_type, so without this every later
-    // route navigation would spend the whole window again waiting on the same answer.
+    // Once per load: a slow host leaves the reply provisional and `fetched` false, so
+    // without this every later navigation would spend the whole window on the same answer.
     const deadline = hardwareWaitSpent
       ? 0
       : Date.now() + HARDWARE_DETECT_WAIT_MS;
@@ -135,10 +134,9 @@ export async function fetchDeviceType(options?: {
         return usePlatformStore.getState().deviceType;
       }
       const previous = usePlatformStore.getState();
-      // A provisional reply omits device_type by design, so a forced refresh during
-      // the warm would fall back to the browser platform and relabel a WSL, SSH or
-      // remote host as the machine holding the keyboard, changing model filtering,
-      // paths and install commands. Keep what the server already told us.
+      // A provisional reply omits device_type, so a forced refresh during the warm would
+      // fall back to the browser platform and relabel a WSL, SSH or remote host as local,
+      // changing model filtering, paths and install commands. Keep the server's answer.
       const keepPlatform = data.device_type === undefined && previous.fetched;
       const deviceType =
         data.device_type ?? (keepPlatform ? previous.deviceType : detectLocalPlatform());

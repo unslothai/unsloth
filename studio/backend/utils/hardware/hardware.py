@@ -203,11 +203,10 @@ def _has_torch() -> bool:
         TORCH_IMPORT_ERROR = None
         return True
     except Exception as exc:
-        # ImportError does NOT mean "not installed": a wheel whose native libraries do
-        # not resolve raises ImportError from inside torch's own __init__ (the common
-        # "libcudart.so.N: cannot open shared object file"), and OSError on Windows.
-        # Absent is the narrower case Python names exactly. A submodule failure carries
-        # its own name and stays a broken install. Both still purge.
+        # ImportError does NOT mean "not installed": a wheel with unresolved native libraries
+        # raises it from inside torch's own __init__ ("libcudart.so.N: cannot open shared
+        # object file"), OSError on Windows. Only ModuleNotFoundError naming torch itself is
+        # absent; a failed submodule is still a broken install. Both still purge.
         absent = isinstance(exc, ModuleNotFoundError) and exc.name == "torch"
         TORCH_IMPORT_ERROR = None if absent else repr(exc)
         if TORCH_IMPORT_ERROR is not None:

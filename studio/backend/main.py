@@ -721,18 +721,16 @@ async def lifespan(app: FastAPI):
     )
     yield
 
-    # First thing after the yield, before any shutdown await: that worker is usually
-    # parked in the warm join, and everything it does next imports or loads part of the
-    # ML stack. A warm finishing during one of the awaits below would otherwise still
-    # read the lifespan as current and start MLX autorepair or the RAG embedder.
+    # Before any shutdown await: that worker is parked in the warm join, and everything it
+    # does next loads part of the ML stack. A warm finishing during an await below would
+    # still read the lifespan as current and start MLX autorepair or the RAG embedder.
     _stop_post_warm_thread()
 
-    # Same reason, for the coordinated warm: retiring its epoch here stops it at the
-    # next stage boundary. run_lifespan_shutdown() invalidates too, but only after
-    # several awaits, and through those the warm would keep building the inference
-    # backend and importing transformers, datasets and unsloth_zoo for a lifespan that
-    # has stopped. Invalidating twice is harmless, the counter only moves forward.
-    # getattr for parity with the helper: tests inject a stub hardware module.
+    # Same reason for the coordinated warm: retiring its epoch here stops it at the next
+    # stage boundary. run_lifespan_shutdown() also invalidates, but only after several
+    # awaits, through which the warm keeps building the inference backend and importing
+    # transformers, datasets and unsloth_zoo for a lifespan that has stopped. Retiring
+    # twice is harmless. getattr for parity with the helper: tests stub the hardware module.
     _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
     if _invalidate_detection is not None:
         _invalidate_detection()

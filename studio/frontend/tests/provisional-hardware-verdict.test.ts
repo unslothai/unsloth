@@ -143,10 +143,9 @@ test("an actively detecting reply is not deferred", () => {
   );
 });
 
-// The bounded re-read in config/env.ts is spent at most once per page load. A host
-// slower than the window leaves the reply provisional, and a reply with no device_type
-// leaves `fetched` false, so an unguarded loop would spend the whole window again on
-// every route navigation. Asserted on the source, since env.ts reaches import.meta.env
+// The bounded re-read in config/env.ts is spent at most once per page load: a slow host
+// leaves the reply provisional and `fetched` false, so an unguarded loop would repeat the
+// full wait on every navigation. Asserted on source, since env.ts reaches import.meta.env
 // through api-base.ts and cannot be imported outside vite.
 test("the bounded hardware wait is spent at most once per page load", async () => {
   const { readFile } = await import("node:fs/promises");
@@ -171,10 +170,9 @@ test("the bounded hardware wait is spent at most once per page load", async () =
   );
 });
 
-// A provisional reply omits device_type by design. A forced refresh landing in that
-// window must not fall back to the browser platform: on WSL, SSH or any remote session
-// that relabels the host as the machine holding the keyboard, which changes model
-// filtering, paths and install commands until a measured fetch happens to succeed.
+// A provisional reply omits device_type. A forced refresh in that window must not fall
+// back to the browser platform: on WSL, SSH or any remote session that relabels the host
+// as local, changing model filtering, paths and install commands.
 test("a provisional forced refresh keeps the server-reported platform", async () => {
   const { readFile } = await import("node:fs/promises");
   const src = await readFile(

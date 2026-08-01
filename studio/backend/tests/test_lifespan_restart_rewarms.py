@@ -114,8 +114,7 @@ def test_a_second_lifespan_warms_again_however_the_first_ended(monkeypatch):
 
     # Path two: no reset ran, because the warm outlived the shutdown that tried.
     # The finished thread must not still hold the latch. Retire the epoch first, as
-    # run_lifespan_shutdown does: that is what makes the leftover thread stale rather
-    # than this lifespan's own completed warm.
+    # run_lifespan_shutdown does: that is what makes the leftover thread stale.
     from utils.hardware import hardware as hw
 
     hw.invalidate_detection()

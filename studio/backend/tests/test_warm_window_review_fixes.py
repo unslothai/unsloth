@@ -1549,8 +1549,8 @@ def test_both_spawners_read_the_epoch_before_start():
             args_kw.value, ast.Tuple
         ), f"{spawner} starts {target} with no epoch bound at spawn time"
         readers = {"_detection_epoch", "current_detection_epoch"}
-        # Read inline in args, or bound to a name the spawner assigns from a reader.
-        # Both are "read before start()"; a thread reading it itself is not.
+        # Inline in args, or bound from a reader first: both are read before start(),
+        # unlike a thread reading the epoch itself.
         inline = any(
             isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id in readers
             for sub in ast.walk(args_kw.value)
@@ -1663,8 +1663,8 @@ def test_a_broken_torch_install_is_not_reported_as_a_host_without_a_gpu():
 def test_an_absent_torch_is_still_just_absent():
     """Negative control: a genuinely missing package is not a broken install.
 
-    Python raises ModuleNotFoundError with name "torch" for that, which is the only
-    signal narrow enough to trust: plain ImportError is what a broken wheel raises.
+    Only ModuleNotFoundError named "torch" is narrow enough to trust; plain ImportError is
+    what a broken wheel raises.
     """
     from utils.hardware import hardware as hw
 
@@ -1690,8 +1690,7 @@ def test_an_absent_torch_is_still_just_absent():
 @pytest.mark.parametrize(
     "exc",
     [
-        # The common Linux shape: raised from inside torch's own __init__ by
-        # `from torch._C import *` when a native dependency does not resolve.
+        # Linux: raised inside torch's own __init__ when a native dependency does not resolve.
         ImportError("libcudart.so.12: cannot open shared object file"),
         # Windows.
         OSError("[WinError 126] The specified module could not be found"),
@@ -1703,9 +1702,9 @@ def test_an_absent_torch_is_still_just_absent():
 def test_a_broken_torch_is_never_mistaken_for_an_absent_one(exc):
     """ImportError is not a synonym for "not installed".
 
-    Keying on the exception class reports a wheel with unresolved CUDA libraries as a
-    host with no GPU, and sends export_capability() down the "install PyTorch" branch
-    for a PyTorch that is installed, re-running the failing import on every check.
+    Keying on the class reports a wheel with unresolved CUDA libraries as a host with no
+    GPU, and sends export_capability() down the "install PyTorch" branch for one already
+    installed, re-running the failing import on every check.
     """
     from utils.hardware import hardware as hw
 
@@ -1901,17 +1900,15 @@ def test_the_warm_hands_its_epoch_to_detection():
     """The pre-stage check is not enough on its own.
 
     Shutdown can land between that check and _DETECT_LOCK, inside the torch import the
-    hardware stage is running. Detection reading the epoch itself would then bind to the
-    retirement it was meant to lose to and publish for the lifespan that ended.
+    hardware stage is running, so detection reading the epoch itself would bind to the
+    retirement it should lose to and publish for the lifespan that ended.
     """
     import utils.torch_warmup as warm
     from utils.hardware import hardware as hw_mod
 
-    # Patch the MODULE function, not the utils.hardware name the stage imports: the
-    # package exposes a hand-written wrapper rather than a re-export, and patching the
-    # name the stage binds would hop straight over it. That is how a wrapper which
-    # dropped the argument, and so raised into _run_stage on every real boot, went
-    # unnoticed by the first version of this test.
+    # Patch the MODULE function, not the name the stage imports: utils.hardware exposes a
+    # hand-written wrapper, and patching the bound name hops over it. That is how a wrapper
+    # dropping the argument, and so raising into _run_stage on every boot, went unnoticed.
     seen: list = []
     with mock.patch.object(hw_mod, "ensure_hardware_detected", lambda e = None: seen.append(e)):
         warm._warm_hardware(41)
@@ -1921,9 +1918,8 @@ def test_the_warm_hands_its_epoch_to_detection():
 def test_every_public_hardware_wrapper_accepts_what_it_delegates_to():
     """utils.hardware wraps rather than re-exports, so signatures can drift apart.
 
-    A wrapper narrower than the function it calls raises TypeError at the call site.
-    On the warm thread _run_stage catches that, logs a warning and carries on, so the
-    stage is simply skipped and nothing detects the hardware.
+    A wrapper narrower than its target raises TypeError at the call site, which _run_stage
+    catches and logs, so the stage is skipped and nothing detects the hardware.
     """
     import inspect
     import utils.hardware as pkg
@@ -1951,8 +1947,8 @@ def test_every_public_hardware_wrapper_accepts_what_it_delegates_to():
 def test_the_warm_loop_passes_the_epoch_to_the_real_stage_only():
     """_warm() must bind the epoch onto the real hardware stage, and only that one.
 
-    A patched _STAGES entry is a different object, so it keeps the zero-argument
-    contract every other stage and every test stub relies on.
+    A patched _STAGES entry is a different object, so it keeps the zero-argument contract
+    every other stage and every test stub relies on.
     """
     import utils.torch_warmup as warm
     from utils.hardware import hardware as hw
@@ -1989,8 +1985,8 @@ def test_the_warm_loop_passes_the_epoch_to_the_real_stage_only():
 def test_deleting_a_cached_model_does_not_construct_the_backend():
     """A metadata-only delete has no reason to import torch.
 
-    The guard is already off-loop, so this is not a stall; it is the kill switch being
-    defeated, and the warm window paying for a torch import to answer "nothing loaded".
+    Off-loop already, so this is not a stall; it is the kill switch defeated, and the warm
+    window paying a torch import to answer "nothing loaded".
     """
     tree = ast.parse(
         (_BACKEND / "hub" / "services" / "models" / "deletion.py").read_text(encoding = "utf-8")
@@ -2032,10 +2028,9 @@ def test_the_delete_guard_lets_a_delete_through_when_nothing_is_loaded():
 def test_the_warm_epoch_is_retired_before_any_shutdown_await():
     """The coordinated warm has to be stopped at shutdown entry too.
 
-    run_lifespan_shutdown() invalidates, but only after the idle-task cancel, the
-    supervisor stop, the llama HTTP close and its own download-termination await. A warm
-    running through those keeps building the inference backend and importing
-    transformers, datasets and unsloth_zoo for a lifespan that has stopped.
+    run_lifespan_shutdown() invalidates, but only after several awaits. A warm running
+    through those keeps building the inference backend and importing transformers,
+    datasets and unsloth_zoo for a lifespan that has stopped.
     """
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
@@ -2048,8 +2043,7 @@ def test_the_warm_epoch_is_retired_before_any_shutdown_await():
         sub.lineno for sub in ast.walk(fn) if isinstance(sub, ast.Await) and sub.lineno > yield_line
     )
     assert awaits_after, "the shutdown path no longer awaits anything; re-derive this"
-    # The call is made through a getattr-bound name, as the helper does, so match the
-    # binding rather than a literal attribute call.
+    # The call goes through a getattr-bound name, so match the binding, not an attribute call.
     retire_lines = [
         node.lineno
         for node in ast.walk(fn)
@@ -2075,10 +2069,9 @@ def test_the_warm_epoch_is_retired_before_any_shutdown_await():
 def test_the_post_warm_worker_is_retired_before_any_shutdown_await():
     """It has to stop first, not merely early.
 
-    Everything the post-warm worker does next imports or loads part of the ML stack,
-    including starting a llama-server. A warm finishing during the idle-task cancel,
-    the supervisor stop or the llama HTTP close would still read the lifespan as
-    current and go ahead, on a lifespan that is already tearing down.
+    Everything the post-warm worker does next loads part of the ML stack, including starting
+    a llama-server. A warm finishing during a later shutdown await would still read the
+    lifespan as current and go ahead, on one that is already tearing down.
     """
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
@@ -2088,8 +2081,6 @@ def test_the_post_warm_worker_is_retired_before_any_shutdown_await():
     )
     body = fn.body
 
-    # The lifespan body is linear: find the yield, then the first Await after it, and
-    # the _stop_post_warm_thread() call.
     def _lineno(pred):
         return next(sub.lineno for sub in ast.walk(fn) if pred(sub))
 
@@ -2115,10 +2106,9 @@ def test_the_post_warm_worker_is_retired_before_any_shutdown_await():
 def test_a_finished_warm_still_holds_the_latch_inside_its_own_lifespan():
     """Repeat calls stay no-ops however fast the warm ran.
 
-    Treating any finished thread as absent makes this timing-dependent: with a trivial
-    stage the warm can finish between two calls, and the second starts a whole second
-    warm. It went green on Linux and red on a macOS runner for exactly that reason.
-    Only a warm whose epoch shutdown has retired is stale.
+    Treating any finished thread as absent is timing-dependent: with a trivial stage the
+    warm can finish between two calls and the second starts a whole second warm (green on
+    Linux, red on macOS). Only a warm whose epoch shutdown has retired is stale.
     """
     import utils.torch_warmup as warm
 

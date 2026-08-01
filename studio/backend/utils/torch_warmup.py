@@ -49,8 +49,8 @@ DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_TORCH_WARM"
 
 _start_lock = threading.Lock()
 _thread: Optional[threading.Thread] = None
-# Detection epoch the live warm belongs to: tells "already warmed this lifespan" apart
-# from "warmed for a lifespan that has since shut down". See start_background_warm.
+# Detection epoch the live warm belongs to: tells "already warmed this lifespan" apart from
+# a warm whose lifespan has since shut down. See start_background_warm.
 _thread_epoch: Optional[int] = None
 _status: dict = {"started": False, "finished": False, "stages": {}}
 
@@ -173,9 +173,9 @@ def _run_stage(name: str, fn) -> None:
 
 def _warm_hardware(epoch: Optional[int] = None) -> None:
     # Requests wait on this same call, so they hit the cache or block on this thread's
-    # lock -- never a second, racing detection. The warm's epoch goes with it: shutdown
-    # can land between _warm()'s pre-stage check and _DETECT_LOCK, and detection reading
-    # the epoch itself would then publish for the lifespan that just ended.
+    # lock -- never a second, racing detection. The epoch goes with it: shutdown landing
+    # between _warm()'s pre-stage check and _DETECT_LOCK would otherwise let detection read
+    # the new epoch and publish for the lifespan that just ended.
     from utils.hardware import ensure_hardware_detected
     ensure_hardware_detected(epoch)
 
@@ -256,8 +256,7 @@ def _warm(epoch: Optional[int] = None) -> None:
             # thread scheduled but already retired, with nothing yet run.
             logger.info("torch warm stopped before %s: its lifespan ended", name)
             return
-        # Only the real stage takes the epoch; a patched _STAGES entry is a different
-        # object and is still called with no arguments.
+        # Only the real stage takes the epoch; a patched _STAGES entry is called bare.
         _run_stage(name, partial(fn, epoch) if fn is _warm_hardware else fn)
         if epoch is not None and _detection_epoch() != epoch:
             # Shutdown retired this lifespan's detection. Later stages build the
@@ -295,18 +294,17 @@ def start_background_warm() -> bool:
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
     global _thread_epoch
-    # Epoch read before start(): the child may not run for a while, and a shutdown in
-    # that gap retires this lifespan. A thread reading the epoch itself would adopt the
-    # post-shutdown one and warm on regardless.
+    # Epoch read before start(): the child may not run for a while, and a shutdown in that
+    # gap retires this lifespan. A thread reading it itself would adopt the post-shutdown
+    # epoch and warm on regardless.
     epoch = _detection_epoch()
     with _start_lock:
         if _thread is not None:
             if _thread.is_alive():
                 return False
-            # A finished warm still holds the latch while its own lifespan is current,
-            # so repeat calls inside one lifespan stay no-ops however fast it ran.
-            # Once shutdown retires that epoch it is stale, and the next lifespan has
-            # to warm again over the hardware state that same shutdown cleared.
+            # A finished warm keeps the latch while its own lifespan is current, so repeat
+            # calls stay no-ops however fast it ran. Once shutdown retires that epoch it is
+            # stale, and the next lifespan warms again over the state shutdown cleared.
             if _thread_epoch is not None and epoch == _thread_epoch:
                 return False
             _clear_finished_warm_locked()
