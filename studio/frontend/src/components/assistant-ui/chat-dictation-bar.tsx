@@ -249,7 +249,7 @@ export const ChatDictationBar: FC<{
           disabled={transcribing !== null}
           // Neutral grey in both themes: --secondary is brand green on the
           // default light palette, and too close to --card on dark.
-          className="size-8 rounded-full bg-accent text-foreground hover:bg-accent/70 dark:bg-white/10 dark:hover:bg-white/[0.16]"
+          className="size-9 rounded-full bg-accent text-foreground hover:bg-accent/70 dark:bg-white/10 dark:hover:bg-white/[0.16]"
         >
           {transcribing === "stop" ? (
             <Spinner className="size-3.5" />
@@ -264,12 +264,12 @@ export const ChatDictationBar: FC<{
           variant="default"
           onClick={send}
           disabled={transcribing !== null || sendDisabled}
-          className="aui-composer-send size-8 rounded-full"
+          className="aui-composer-send size-9 rounded-full"
         >
           {transcribing === "send" ? (
             <Spinner className="size-[18px]" />
           ) : (
-            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+            <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
           )}
         </TooltipIconButton>
       </div>

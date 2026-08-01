@@ -3679,7 +3679,7 @@ const ComposerRightControls: FC<{
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
       {/* Starts dictation; the recording bar then covers the input row and owns
-          the stop and discard actions. */}
+          the stop and send actions. */}
       <ComposerPrimitive.If dictation={false}>
         <TooltipIconButton
           tooltip="Dictate"
@@ -3689,7 +3689,8 @@ const ComposerRightControls: FC<{
           className="size-8 rounded-full text-foreground"
           onClick={startDictation}
         >
-          <MicIcon className="size-[22px]" />
+          {/* size-[22px] is the fallback; unsloth-dictate-icon sets the size. */}
+          <MicIcon className="unsloth-dictate-icon size-[22px]" />
         </TooltipIconButton>
       </ComposerPrimitive.If>
       <AuiIf
@@ -3708,13 +3709,13 @@ const ComposerRightControls: FC<{
             // disabled only once a send is parked.
             disabled={disabled || pendingSend}
             onClick={(event) => onSendClick?.(event)}
-            className="aui-composer-send ml-1.5 size-8 rounded-full"
+            className="aui-composer-send ml-1.5 size-9 rounded-full"
             aria-label="Send message"
           >
             {pendingSend ? (
               <Spinner className="size-[18px]" />
             ) : (
-              <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             )}
           </TooltipIconButton>
         </ComposerPrimitive.Send>
@@ -3729,10 +3730,10 @@ const ComposerRightControls: FC<{
             size="icon"
             disabled={disabled || queueDisabled}
             onClick={onQueueClick}
-            className="aui-composer-send ml-1.5 size-8 rounded-full"
+            className="aui-composer-send ml-1.5 size-9 rounded-full"
             aria-label="Queue message"
           >
-            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+            <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
           </TooltipIconButton>
         </AuiIf>
       ) : null}
@@ -3741,7 +3742,7 @@ const ComposerRightControls: FC<{
           type="button"
           variant="default"
           size="icon"
-          className="aui-composer-cancel ml-1.5 size-8 rounded-full"
+          className="aui-composer-cancel ml-1.5 size-9 rounded-full"
           aria-label={researchStopping ? "Stopping research" : "Stop research"}
           disabled={researchStopping}
           onClick={stop}
@@ -3761,7 +3762,7 @@ const ComposerRightControls: FC<{
                 type="button"
                 variant="default"
                 size="icon"
-                className="aui-composer-cancel size-8 rounded-full"
+                className="aui-composer-cancel size-9 rounded-full"
                 aria-label="Stop generating"
                 onClick={stop}
               >
@@ -3777,10 +3778,10 @@ const ComposerRightControls: FC<{
               size="icon"
               disabled={queueDisabled}
               onClick={onQueueClick}
-              className="aui-composer-send size-8 rounded-full"
+              className="aui-composer-send size-9 rounded-full"
               aria-label="Queue message"
             >
-              <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
             )}
           </div>
@@ -4609,7 +4610,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Previous"
           className="aui-branch-chevron-btn"
         >
-          <ChevronLeftIcon strokeWidth={1.25} className="size-[36px]" />
+          <ChevronLeftIcon strokeWidth={1.25} className="size-9" />
         </button>
       </BranchPickerPrimitive.Previous>
       <span className="aui-branch-picker-state font-mono text-ui-13 tabular-nums">
@@ -4621,7 +4622,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Next"
           className="aui-branch-chevron-btn"
         >
-          <ChevronRightIcon strokeWidth={1.25} className="size-[36px]" />
+          <ChevronRightIcon strokeWidth={1.25} className="size-9" />
         </button>
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
