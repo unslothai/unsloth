@@ -327,7 +327,7 @@ class TextPreprocessor:
         text = self._CODE_BLOCK_PATTERN.sub(r"<|code|\1|>\2<|/code|>", text)
         return text
 
-    def validate_dataset(self, dataset):
+    def validate_dataset(self, dataset, tokenizer = None):
         """
         Check for:
         - Minimum/maximum sequence lengths
@@ -346,7 +346,21 @@ class TextPreprocessor:
             "warnings": [],
         }
 
-        texts = dataset["text"]
+        if "text" in dataset.column_names:
+            texts = dataset['text']
+        
+        elif "input_ids" in dataset.column_names:
+            if tokenizer is None:
+                raise ValueError(
+                    "Dataset has 'input_ids' but no 'text' column; "
+                    "pass `tokenizer=` to validate_dataset() to decode it for validation."
+                )
+            texts = [tokenizer.decode(ids, skip_special_tokens = True) for ids in dataset["input_ids"]]
+            
+        else:
+            raise ValueError("Dataset must have either 'text' or 'input_ids' column")
+            
+            
         text_lengths = []
         seen_texts = set()
 
