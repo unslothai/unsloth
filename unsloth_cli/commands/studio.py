@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -2908,6 +2909,97 @@ def setup(
     _run_setup_script(verbose = verbose)
 
 
+def _fail_if_install_damaged() -> None:
+    """Refuse to call an update successful when the tree it produced is damaged.
+
+    pip considers a distribution with intact metadata already satisfied, so an
+    update reinstalls nothing when a package's FILES are damaged: it prints
+    "Unsloth Studio Installed", exits 0, and the backend then dies at boot. That
+    is the shape behind "just re-run the installer", and it is only actionable
+    if the update says so.
+    """
+    if _studio_deps.running_outside_managed_venv((STUDIO_HOME / "unsloth_studio",)):
+        # This CLI does not live in the venv the update just wrote, so its own
+        # file list describes the wrong tree. Silence beats a wrong answer.
+        return
+    damaged = _studio_deps.damaged_installed_files()
+    if not damaged:
+        return
+    typer.echo("", err = True)
+    typer.echo("Update finished, but some installed files are damaged:", err = True)
+    for entry in damaged:
+        typer.echo(f"  {entry}", err = True)
+    typer.echo("", err = True)
+    typer.echo("An update cannot repair these. pip sees intact package metadata and", err = True)
+    typer.echo("reinstalls nothing, so Studio will keep failing to start. Reinstall", err = True)
+    typer.echo("over the top:", err = True)
+    # Carry a custom root into the command. The shim is a bare symlink and
+    # _ensure_studio_env_exported only sets os.environ for this process, so the
+    # shell that runs this line has no UNSLOTH_STUDIO_HOME: an unqualified
+    # reinstall would build a fresh ~/.unsloth/studio and leave the damaged
+    # install exactly as broken as it was.
+    # And carry the recorded install mode. install.sh derives SKIP_TORCH only
+    # from its own flag or UNSLOTH_NO_TORCH and passes that value into setup, so
+    # a plain reinstall over a GGUF-only install downloads the whole PyTorch
+    # stack. Only added when the record says True: recorded_no_torch() returns
+    # None when nothing recorded the mode, and None must never be read as False.
+    #
+    # No root argument: the manifest and marker live in the VENV, not the
+    # install root, and recorded_no_torch defaults to Path(sys.prefix). Passing
+    # STUDIO_HOME would look one directory too high, find nothing, and silently
+    # never fire. The early return above guarantees sys.prefix is that venv.
+    no_torch = False
+    try:
+        _manifest = _studio_deps.load_install_manifest_module()
+        no_torch = _manifest is not None and _manifest.recorded_no_torch() is True
+    except Exception:
+        no_torch = False
+    if platform.system() == "Windows":
+        prefix = ""
+        if _STUDIO_HOME_IS_CUSTOM:
+            prefix = "$env:UNSLOTH_STUDIO_HOME = '{}'; ".format(str(STUDIO_HOME).replace("'", "''"))
+        if no_torch:
+            prefix += "$env:UNSLOTH_NO_TORCH = '1'; "
+        typer.echo(f"  {prefix}irm https://unsloth.ai/install.ps1 | iex", err = True)
+    else:
+        # The assignments go before `sh`, not before `curl`: that is the form
+        # install.sh documents, and it is sh that reads them.
+        env = ""
+        if _STUDIO_HOME_IS_CUSTOM:
+            env = f"UNSLOTH_STUDIO_HOME={shlex.quote(str(STUDIO_HOME))} "
+        if no_torch:
+            env += "UNSLOTH_NO_TORCH=1 "
+        typer.echo(f"  curl -fsSL https://unsloth.ai/install.sh | {env}sh", err = True)
+    typer.echo("", err = True)
+    # The installer installs the current requirement sets; it does not prune or
+    # reinstall anything outside them. So a package left over from an older
+    # release, or added by hand, is not repaired by the command above and would
+    # otherwise report the same damage forever. Say what to do in that case
+    # rather than scoping the scan, which would risk passing over real damage.
+    typer.echo("If a package above is still listed after that, the installer does not", err = True)
+    typer.echo("manage it. Repair it directly, or remove it if nothing needs it:", err = True)
+    # --no-deps: without it pip resolves the damaged package's dependency graph
+    # and --force-reinstall would replace pinned runtime packages too, which can
+    # swap the installed CUDA/ROCm torch build for a default one while repairing
+    # an unrelated orphan. The installer's own targeted repairs pair the two for
+    # the same reason. The interpreter path is quoted because a custom root may
+    # contain spaces, and on Windows a quoted command needs the call operator.
+    # <package>==<version> rather than a bare name: --force-reinstall reinstalls
+    # even when the package is already up to date, so an unpinned name fetches
+    # the newest release and silently upgrades an orphan whose consumers may
+    # depend on the older one. --no-deps does not protect against that.
+    _spec = "<package>==<installed version>"
+    if platform.system() == "Windows":
+        _py = str(Path(sys.executable)).replace("'", "''")
+        typer.echo(f"  & '{_py}' -m pip install --force-reinstall --no-deps {_spec}", err = True)
+    else:
+        _py = shlex.quote(str(Path(sys.executable)))
+        typer.echo(f"  {_py} -m pip install --force-reinstall --no-deps {_spec}", err = True)
+    typer.echo("", err = True)
+    typer.echo("To update anyway without this check: unsloth studio update --no-verify", err = True)
+    raise typer.Exit(code = 1)
+
+
 @studio_app.command()
 def update(
     local: bool = typer.Option(False, "--local", help = "Install from local repo instead of PyPI"),
@@ -2919,6 +3011,11 @@ def update(
         "--verbose",
         "-v",
         help = "Full pip/build output during update for troubleshooting.",
+    ),
+    verify: bool = typer.Option(
+        True,
+        "--verify/--no-verify",
+        help = "After updating, scan installed files for damage an update cannot repair.",
     ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
@@ -2991,6 +3088,8 @@ def update(
     # but leaving a stale binary around invites cross-version restore
     # confusion from _restore_self_exe_lock_windows.
     _cleanup_self_exe_lock_windows()
+    if verify:
+        _fail_if_install_damaged()
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
     if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
