@@ -16,6 +16,18 @@
 @custom-variant dark (&:is(.dark *));
 
 @layer components {
+	/* The surface the sidebar panel actually paints. The collapsed icon rail
+	   repaints it, so gradients fading into the panel must read this rather
+	   than --sidebar, or they render as a block instead of a fade. */
+	[data-sidebar="sidebar"] {
+		--sidebar-surface: var(--sidebar);
+	}
+	[data-collapsible="icon"] [data-sidebar="sidebar"] {
+		--sidebar-surface: #ffffff;
+	}
+	.dark [data-collapsible="icon"] [data-sidebar="sidebar"] {
+		--sidebar-surface: var(--background);
+	}
 	/* Sidebar scroll area (Gemini-style). The BOTTOM edge always fades so the
 	   last rows dissolve into the profile footer (no divider line). Once
 	   scrolled, the TOP edge also fades so rows dissolve as they pass under the
@@ -47,8 +59,8 @@
 		   black), which shows a grey midtone in Safari 27 Liquid Glass. */
 		background: linear-gradient(
 			to top,
-			var(--sidebar),
-			rgb(from var(--sidebar) r g b / 0)
+			var(--sidebar-surface),
+			rgb(from var(--sidebar-surface) r g b / 0)
 		);
 	}
 	/* Model picker list: once scrolled, the top edge fades so rows dissolve as

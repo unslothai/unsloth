@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import type { ProfileStats } from "../../api/profile-stats";
 import {
   formatCompactNumber,
   formatDuration,
   formatFullNumber,
   formatMilliseconds,
+  formatProfileCount,
 } from "../../utils/stats-format";
 import { StatMeter, StatRow, StatsCard } from "./stat-primitives";
 
@@ -106,6 +107,7 @@ export function ActivityInsightsCard({ stats }: { stats: ProfileStats }) {
 /** Right column: model leaderboard, ranked by tokens exchanged. */
 export function TopModelsCard({ stats }: { stats: ProfileStats }) {
   const t = useT();
+  const locale = useLocale();
   const models = stats.models;
   const peak = models.reduce((max, model) => Math.max(max, model.tokens), 0);
 
@@ -136,8 +138,17 @@ export function TopModelsCard({ stats }: { stats: ProfileStats }) {
                 </span>
                 <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                   {t("settings.profile.stats.modelSummary", {
-                    tokens: formatCompactNumber(model.tokens),
-                    messages: formatFullNumber(model.messages),
+                    tokens: formatProfileCount(
+                      model.tokens,
+                      "token",
+                      locale,
+                      formatCompactNumber(model.tokens),
+                    ),
+                    messages: formatProfileCount(
+                      model.messages,
+                      "message",
+                      locale,
+                    ),
                   })}
                 </span>
               </div>

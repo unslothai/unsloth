@@ -76,6 +76,7 @@ export const ru = {
       compare: "Сравнить",
       search: "Поиск",
       hub: "Хаб моделей",
+      projects: "Проекты",
       train: "Обучение",
       recipes: "Рецепты",
       export: "Экспорт",
@@ -127,6 +128,8 @@ export const ru = {
       title: "Настройки",
       description: "Управление настройками Unsloth.",
       closeAriaLabel: "Закрыть настройки",
+      searchPlaceholder: "Поиск по настройкам…",
+      searchNoResults: "Настройки не найдены.",
     },
     tabs: {
       general: "Общие",
@@ -137,6 +140,143 @@ export const ru = {
       connections: "Подключения",
       apiKeys: "API",
       about: "О программе",
+      data: "Данные",
+      agents: "Агенты",
+      voice: "Голос",
+    },
+    voice: {
+      title: "Голос",
+      description: "Микрофон, диктовка, распознавание речи и чтение вслух",
+      dictation: {
+        sectionTitle: "Диктовка",
+        engineLabel: "Движок диктовки",
+        engineBrowser: "Браузер",
+        engineBrowserDescription:
+          "Распознаёт речь через речевую службу вашего браузера. Выберите «Локальное распознавание», чтобы использовать модель STT.",
+        engineModel: "Локальное распознавание",
+        engineModelDescription:
+          "Запускает модель распознавания речи (STT) локально и работает офлайн. Скачайте модель, затем загрузите её; после простоя она выгружается.",
+        sttModelLabel: "Модель распознавания речи",
+        sttModelDescription:
+          "Выберите или найдите модель STT для локального запуска.",
+        sttModelSearchPlaceholder: "Поиск модели",
+        sttModelSearching: "Поиск на Hugging Face…",
+        sttModelValidating: "Проверка совместимости с Whisper…",
+        sttModelNoResults: "Модели Whisper не найдены",
+        sttModelInvalid: "Этот репозиторий нельзя использовать для диктовки",
+        sttModelFailed: "Не удалось загрузить модель STT",
+        sttModelUnsupported: "Запись не поддерживается в этом браузере",
+        sttChecking: "Проверка…",
+        sttOnDemand: "Скачано",
+        sttLoadingModel: "Загрузка модели…",
+        sttReady: "Загружено на {device}",
+        sttLoaded: "Загружено",
+        sttUnavailable:
+          "Компонент не установлен на этом сервере. Выполните `unsloth studio update`, чтобы включить локальную диктовку.",
+        sttRetry: "Повторить",
+        sttDownloadChecking: "Проверка состояния скачивания…",
+        sttNotDownloaded: "Не скачано",
+        sttDownloadStatusFailed: "Не удалось проверить состояние скачивания",
+        sttDownload: "Скачать",
+        sttDownloading: "Скачивание… {progress}%",
+        sttCancelDownload: "Отмена",
+        sttCancellingDownload: "Отмена…",
+        sttDownloadComplete: "Модель распознавания речи скачана",
+        sttDownloadFailed: "Не удалось скачать модель распознавания речи",
+        sttLoad: "Загрузить",
+        sttUnload: "Выгрузить",
+        sttUnloading: "Выгрузка…",
+        microphoneLabel: "Микрофон",
+        microphoneDescription: "Используется для диктовки",
+        microphoneFallbackHint:
+          "Используется для диктовки. Если речевой движок браузера не может работать с этим устройством, будет использовано системное устройство по умолчанию",
+        microphoneGrantDescription:
+          "Разрешите доступ к микрофону, чтобы видеть названия устройств",
+        allowMicrophone: "Разрешить доступ к микрофону",
+        micAccessBlocked:
+          "Доступ к микрофону заблокирован. Разрешите доступ к микрофону для этой страницы Unsloth и повторите попытку.",
+        micAccessUnsupported:
+          "Доступ к микрофону не поддерживается в этом браузере или контексте.",
+        systemDefault: "Системное устройство по умолчанию",
+        savedMicDisconnected: "Сохранённый микрофон (не подключён)",
+        languageLabel: "Язык диктовки",
+        languageDescription: "Язык для распознавания",
+        languageAuto: "Автоматически (язык браузера)",
+      },
+      dictionary: {
+        sectionTitle: "Словарь диктовки",
+        sectionDescription:
+          "Задайте, как диктовка записывает определённые слова и выражения",
+        manageLabel: "Пользовательские написания",
+        manage: "Управление",
+        backToVoice: "Назад к настройкам голоса",
+        addEntry: "Добавить запись",
+      },
+      recents: {
+        sectionTitle: "История диктовок",
+        sectionDescription:
+          "Каждая диктовка сохраняется здесь, чтобы вы могли восстановить текст",
+        manageLabel: "История диктовок",
+        manage: "Управление",
+        pageDescription:
+          "Каждая диктовка сохраняется. Просматривайте, копируйте и удаляйте их или открывайте чат, в котором диктовка использовалась.",
+        searchPlaceholder: "Поиск по диктовкам",
+        sortLabel: "Сортировать диктовки",
+        sortNewest: "Сначала новые",
+        sortOldest: "Сначала старые",
+        sortAlpha: "От А до Я",
+        noMatches: "Нет диктовок, соответствующих запросу",
+        detailTitle: "Сохранённая диктовка",
+        backToVoice: "Назад к настройкам голоса",
+        backToRecents: "Назад к недавним диктовкам",
+        view: "Посмотреть диктовку целиком",
+        empty: "Диктовок пока нет",
+        dictationColumn: "Диктовка",
+        dateColumn: "Дата создания",
+        copy: "Копировать диктовку",
+        copied: "Скопировано в буфер обмена",
+        copyFailed: "Не удалось скопировать в буфер обмена",
+        delete: "Удалить диктовку",
+        deleteTitle: "Удалить диктовку",
+        deleteDescription:
+          "Удалить эту сохранённую диктовку? Действие необратимо.",
+        deleteLinkedDescription:
+          "Удалить эту сохранённую диктовку? Можно также удалить чат, в котором она использовалась. Действие необратимо.",
+        deleteWithChat: "Удалить чат и диктовку",
+        deleteWithChatFailed: "Не удалось удалить чат",
+        clear: "Очистить историю",
+        clearTitle: "Очистить историю диктовок",
+        clearDescription:
+          "Удалить все сохранённые диктовки? Действие необратимо.",
+        clearConfirm: "Очистить всё",
+        showMore: "Показать ещё ({count})",
+        openChat: "Открыть чат",
+      },
+      readAloud: {
+        sectionTitle: "Чтение вслух",
+        buttonLabel: "Кнопка чтения вслух",
+        buttonDescription: "Показывать в ответах ассистента",
+        engineLabel: "Движок TTS",
+        engineSystemDescription: "Встроенные голоса устройства",
+        engineStudioDescription:
+          "Использует загруженную аудиомодель (например, Orpheus)",
+        engineSystem: "Системные голоса",
+        engineStudio: "Загрузить модель TTS",
+        modelLabel: "Модель TTS",
+        modelDescription:
+          "Загрузите аудиомодель из списка моделей (например, Orpheus TTS)",
+        voiceLabel: "Голос",
+        voiceDescription: "Лучшие голоса на этом устройстве",
+        speedLabel: "Скорость",
+        pitchLabel: "Высота тона",
+        volumeLabel: "Громкость",
+        previewLabel: "Прослушать голос",
+        previewDescription: "Воспроизвести короткий пример",
+        previewAction: "Прослушать",
+        stopAction: "Стоп",
+        ttsLabel: "Синтез речи",
+        notSupported: "Не поддерживается в этом браузере",
+      },
     },
     general: {
       title: "Общие",
@@ -168,6 +308,7 @@ export const ru = {
         updating: "Обновление...",
         updated: "Пароль обновлён.",
         updateFailed: "Не удалось обновить пароль.",
+        newHasSpaces: "Новый пароль не может содержать пробелы.",
       },
       chatDefaults: "Настройки чата по умолчанию",
       autoTitleNewChats: "Автоматически называть новые чаты",
@@ -198,6 +339,12 @@ export const ru = {
         loadError: "Не удалось загрузить настройки автопереключения модели.",
         saveError: "Не удалось сохранить настройки автопереключения модели.",
         idleError: "Введите 0, чтобы модель оставалась загруженной, или не менее 60 секунд.",
+        autoDownload: "Скачивать недостающие модели",
+        autoDownloadDescription:
+          "Скачивает GGUF, указанный в запросе к API, если его ещё нет. Тогда любой, у кого есть ключ API, сможет расходовать место на диске и трафик.",
+        keepKv: "Сохранять контекст чата при автовыгрузке",
+        keepKvDescription:
+          "Сохраняет KV-кеш перед автовыгрузкой при простое, чтобы возобновлённые чаты не перечитывали историю. До 10 ГБ на диске.",
       },
       previewSharing: {
         sectionTitle: "Публикация предпросмотра",
@@ -269,6 +416,12 @@ export const ru = {
           "Очищает только локальные настройки и перезагружает Unsloth. Чаты, доступ по API и настройки в базе данных сохраняются.",
         confirmAction: "Сбросить и перезагрузить",
       },
+      permissions: {
+        sectionTitle: "Разрешения",
+        bypassLabel: "Разрешения инструментов",
+        bypassDescription:
+          "Как Unsloth подтверждает вызовы инструментов в чате (терминал, python, веб, MCP) перед запуском. Режим «Full access» отключает подтверждения и песочницу для кода.",
+      },
     },
     profile: {
       title: "Профиль",
@@ -292,6 +445,69 @@ export const ru = {
         "Фото обновлено для этой сессии, но может не сохраниться после перезагрузки.",
       photoUpdateErrorTitle: "Не удалось обновить фото профиля",
       imageUseError: "Не удалось использовать это изображение.",
+      uploadPhoto: "Загрузить фото",
+      removePhoto: "Удалить",
+      pictureOptions: "Параметры фото профиля",
+      greetingSloth: "Ленивец в приветствии",
+      greetingSlothDescription: "Показывать ленивца в приветствии чата.",
+      noPicture: "Нет фото профиля",
+      noneLabel: "Нет",
+      stats: {
+        title: "Ваша статистика",
+        subtitle:
+          "Всё ниже считается по вашей собственной истории. Ничего не собирается и не отправляется в Unsloth.",
+        retry: "Повторить",
+        privacyNote:
+          "Статистика рассчитывается по истории чатов и обучения, которая хранится в вашей установке Unsloth. Ничего не собирается и ничего не отправляется ни в Unsloth, ни третьим лицам.",
+        emptyChats:
+          "Чатов пока нет. Начните разговор, и статистика появится здесь.",
+        lifetimeTokens: "Токенов за всё время",
+        peakTokens: "Пиковый день",
+        longestChat: "Самый длинный чат",
+        currentStreak: "Текущая серия",
+        longestStreak: "Самая длинная серия",
+        activityTitle: "Активность по токенам",
+        activityDescription: "Период: {weeks} · {total}",
+        mode: {
+          daily: "По дням",
+          weekly: "По неделям",
+          cumulative: "Накопительно",
+        },
+        cellTooltip: "{date} · {tokens}, {messages}",
+        weekTooltip: "Неделя с {date} · {tokens}",
+        less: "Меньше",
+        more: "Больше",
+        insightsTitle: "Сводка по активности",
+        totalChats: "Всего чатов",
+        totalMessages: "Всего сообщений",
+        tokensIn: "Отправлено токенов",
+        tokensOut: "Сгенерировано токенов",
+        cachedTokens: "Токенов из кеша",
+        cachedValue: "{tokens} ({percent}% ввода)",
+        avgTokensPerChat: "В среднем токенов на чат",
+        timeInChat: "Время в чате",
+        activeDays: "Активных дней",
+        toolCalls: "Вызовов инструментов",
+        attachments: "Прикреплено файлов",
+        avgSpeed: "Средняя скорость",
+        bestSpeed: "Самый быстрый ответ",
+        firstToken: "Среднее время до первого токена",
+        tokensPerSecond: "{value} ток/с",
+        topModelsTitle: "Самые используемые модели",
+        topModelsDescription: "По количеству обработанных токенов",
+        modelSummary: "{tokens} · {messages}",
+        noModels: "Использование моделей пока не зафиксировано.",
+        trainingTitle: "Обучение",
+        trainingDescription: "Запуски дообучения в этом рабочем пространстве",
+        trainingRuns: "Запуски",
+        trainingCompleted: "Завершено",
+        trainingSteps: "Шаги",
+        trainingTokens: "Обучено токенов",
+        trainingTime: "Время обучения",
+        bestLoss: "Лучший loss",
+        runSteps: "{steps}",
+        runLoss: "loss {loss}",
+      },
     },
     appearance: {
       title: "Оформление",
@@ -304,6 +520,93 @@ export const ru = {
         light: "Светлая",
         dark: "Тёмная",
       },
+      palette: {
+        label: "Цветовая палитра",
+        description: "Цвета, используемые в Unsloth в светлой и тёмной теме.",
+        standard: "Стандартная",
+        classic: "Классическая",
+        minimal: "Минимальная",
+      },
+      custom: {
+        reset: "Сбросить",
+        resetAll: "Сбросить настройки оформления",
+        preferencesTitle: "Параметры",
+        colors: {
+          lightGroup: "Светлая тема",
+          darkGroup: "Тёмная тема",
+          accent: "Акцент",
+          background: "Фон",
+          foreground: "Текст",
+        },
+        fontDefault: "По умолчанию",
+        fontBundledGroup: "Встроенные",
+        fontImportedGroup: "Импортированные",
+        fontDeviceGroup: "На этом устройстве",
+        fontFolderGroup: "Из папки",
+        fontDeviceLoading: "Поиск шрифтов на устройстве…",
+        fontSearch: "Поиск шрифтов…",
+        fontNoResults: "Шрифты не найдены.",
+        colorPicker: {
+          hue: "Оттенок",
+          hex: "Цвет в HEX",
+          eyedropper: "Выбрать цвет с экрана",
+        },
+        uiFont: {
+          label: "Шрифт интерфейса",
+        },
+        headingFont: {
+          label: "Шрифт заголовков",
+        },
+        chatFont: {
+          label: "Шрифт чата",
+        },
+        codeFont: {
+          label: "Шрифт кода",
+        },
+        importFont: {
+          upload: "Загрузить",
+          scanFolder: "Выбрать папку",
+          alreadyAvailable:
+            "Этот шрифт уже доступен, поэтому используется имеющаяся копия.",
+          folderNoFonts: "В этой папке не найдено файлов шрифтов.",
+          remove: "Удалить",
+          errorInvalidType:
+            "Неподдерживаемый тип файла. Используйте .woff2, .woff, .ttf или .otf.",
+          errorTooLarge: "Файл шрифта слишком большой (максимум 1,5 МБ).",
+          errorLimit: "Можно импортировать не более 3 шрифтов.",
+          errorStorageFull:
+            "Недостаточно локального хранилища для этого шрифта. Сначала удалите один из импортированных.",
+          errorFailed: "Не удалось загрузить этот файл шрифта.",
+        },
+        uiFontSize: {
+          label: "Размер шрифта интерфейса",
+          description: "Настройте базовый размер шрифта интерфейса Unsloth.",
+        },
+        codeFontSize: {
+          label: "Размер шрифта кода",
+          description: "Настройте базовый размер шрифта для кода.",
+        },
+        fontSmoothing: {
+          label: "Сглаживание шрифтов",
+          description: "Использовать сглаживание шрифтов.",
+        },
+        contrast: {
+          label: "Контраст",
+          description: "Выраженность границ и второстепенного текста.",
+        },
+        reduceMotion: {
+          label: "Уменьшить анимацию",
+          description: "Уменьшить анимацию или использовать системную настройку.",
+          system: "Системная",
+          on: "Вкл.",
+          off: "Выкл.",
+        },
+        pointerCursors: {
+          label: "Курсор-указатель",
+          description:
+            "Менять курсор на указатель при наведении на интерактивные элементы.",
+        },
+      },
       language: {
         title: "Язык",
         label: "Язык интерфейса",
@@ -315,6 +618,13 @@ export const ru = {
         compactSidebar: "Закреплять боковую панель по умолчанию",
         compactSidebarDescription:
           "Держать боковую панель развёрнутой, а не свёрнутой в значки.",
+      },
+      sidebarMenu: {
+        title: "Меню боковой панели",
+        description:
+          "Показывайте, скрывайте и меняйте порядок пунктов в меню профиля на боковой панели. «Настройки», «Справка», «Выйти» и «Выключить» остаются на месте.",
+        darkModeToggle: "Переключатель тёмной темы",
+        dragToReorder: "Перетащите, чтобы изменить порядок",
       },
     },
     resources: {
@@ -358,6 +668,16 @@ export const ru = {
         copied: "Путь скопирован",
         openError: "Не удалось открыть папку",
         copyError: "Не удалось скопировать путь",
+        futureDownloads: "Только новые загрузки",
+        environmentManaged: "Управляется переменной окружения {variable}.",
+        locationFree: "{free} свободно",
+        changeAction: "Изменить",
+        resetAction: "По умолчанию",
+        chooseTitle: "Выбор папки для загрузки моделей",
+        chooseAction: "Использовать для будущих загрузок",
+        cacheSaved: "Папка для загрузки моделей обновлена",
+        cacheSaveError: "Не удалось обновить папку для загрузки моделей",
+        cachePickerError: "Не удалось открыть окно выбора папки",
       },
       environment: {
         title: "Окружение",
@@ -369,6 +689,106 @@ export const ru = {
         processMemory: "Память процесса",
         notInstalled: "Не установлено",
         unknown: "Неизвестно",
+      },
+    },
+    agents: {
+      title: "Агенты",
+      description:
+        "Подключение кодинг-агентов, таких как Claude Code и Codex, к локальной модели с помощью unsloth start.",
+      intro:
+        "подключает Claude Code, Codex, Hermes, OpenClaw, OpenCode и других агентов к модели, которую Unsloth обслуживает локально, полностью офлайн. Запускается OpenAI-совместимый сервер, а файлы конфигурации вашего агента остаются нетронутыми.",
+      readDocs: "Открыть документацию",
+      copy: "Копировать",
+      copied: "Скопировано",
+      commandBuilder: "Конструктор команды",
+      agent: "Кодинг-агент",
+      model: "Модель",
+      searchModels: "Поиск моделей GGUF...",
+      noModels: "Подходящих моделей GGUF нет.",
+      showingModels:
+        "Показано {shown} из {total} совпадений. Продолжайте вводить, чтобы сузить список.",
+      quantization: "Квантизация",
+      loadingQuantizations: "Загрузка квантизаций...",
+      noQuantizations: "Без отдельной квантизации",
+      recommended: "Рекомендуется",
+      downloaded: "Скачано",
+      quantizationLoadError:
+        "Не удалось загрузить все квантизации. Команда использует доступное значение модели.",
+      generatedCommand: "Сформированная команда",
+      docs: "Документация",
+      agentDocs: "Открыть документацию по настройке {agent}",
+      copyGeneratedCommand: "Копировать сформированную команду",
+      modelNote:
+        "Codex требует модель GGUF, обслуживаемую llama-server. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth Studio.",
+      subagent: {
+        title: "Использовать локальную модель в качестве субагента",
+        description:
+          "Оставьте {agent} на текущей модели и делегируйте отдельные задачи этой локальной модели Unsloth.",
+        setupCommand: "Команда настройки",
+        copySetupCommand: "Копировать команду настройки субагента",
+        usagePrompt: "Затем в {agent} введите:",
+        copyUsagePrompt: "Копировать промпт для вызова субагента",
+        defaultPrompt:
+          "Запусти локального агента, чтобы реализовать эту функцию.",
+        opencodePrompt: "@unsloth найди причину этого падения теста",
+      },
+      quickstart: {
+        title: "Собрать команду",
+        description:
+          "Запустите агента на модели, уже загруженной в Studio. Сначала загрузите модель, затем замените claude на любого поддерживаемого агента из списка ниже.",
+        noneDetected: "В вашем PATH не найдено поддерживаемых CLI агентов.",
+        installed: "Установлен",
+      },
+      supportedAgents: {
+        title: "Поддерживаемые агенты",
+        description: "Каждый агент запускается своей командой:",
+        requiresGguf: "Нужна модель GGUF",
+      },
+      models: {
+        title: "Выбор модели",
+        description:
+          "Используйте --model, чтобы выбрать модель и квантизацию, и --context-length, чтобы задать окно контекста. Укажите суффикс квантизации или явный флаг --gguf-variant.",
+        suffixLabel: "С суффиксом квантизации",
+        variantLabel: "С явным флагом варианта",
+      },
+      options: {
+        title: "Основные параметры",
+        description:
+          "Сначала разбираются флаги Unsloth; всё, что не распознано, передаётся агенту без изменений.",
+        model:
+          "Выбирает модель. Без --model команда unsloth start использует модель, уже загруженную в Studio, и завершается ошибкой, если модели нет.",
+        contextLength:
+          "Задаёт запрашиваемую длину контекста (псевдоним: --max-seq-length).",
+        ggufVariant: "Выбирает вариант квантизации GGUF.",
+        loadIn4bit:
+          "Включает или выключает 4-битную загрузку моделей Hugging Face.",
+        tensorParallel:
+          "Включает или выключает тензорный параллелизм на нескольких GPU.",
+        serve: "Включает или выключает автоматический локальный сервер.",
+        launch: "Запускает агента либо только выводит команду и окружение.",
+        persist:
+          "Сохраняет между запусками хранилище агента, управляемое Unsloth.",
+        asSubagent:
+          "Оставляет родительского агента на текущей модели и регистрирует Unsloth как локального субагента (Claude Code, Codex и OpenCode).",
+        apiKey:
+          "Передаёт ваш ключ API Unsloth (альтернатива: переменная UNSLOTH_API_KEY).",
+        yolo:
+          "Пропускает запросы подтверждения. Используйте только в доверенных средах.",
+      },
+      remote: {
+        title: "Подключение к удалённому Studio",
+        description:
+          "Направьте unsloth start на Studio, работающий в другом месте, задав перед запуском следующие переменные (или передайте --api-key напрямую):",
+      },
+      passthrough: {
+        title: "Передача аргументов агенту",
+        description:
+          "Аргументы после флагов Unsloth передаются самому агенту, поэтому его собственные команды вроде resume продолжают работать:",
+      },
+      dryRun: {
+        title: "Предпросмотр без запуска",
+        description:
+          "Добавьте --no-launch, чтобы вывести окружение и команду вместо запуска агента. Если задан --model, модель всё равно может быть определена и загружена.",
       },
     },
     chat: {
@@ -442,6 +862,55 @@ export const ru = {
         "Не удалось очистить хранилище; возможно, осталось чатов: {count}. Повторите попытку.",
       failedToClearChats: "Не удалось очистить чаты",
     },
+    data: {
+      title: "Данные",
+      description:
+        "Управление историей чатов и загруженными файлами, которые хранятся на этом устройстве.",
+      archivedChats: "Архивные чаты",
+      archivedChatsDescription:
+        "Просматривайте чаты, отправленные в архив, и управляйте ими.",
+      manageAction: "Управление",
+      exportArchivedChats: "Экспорт",
+      exportingArchivedChats: "Экспорт...",
+      exportedOneArchivedChat: "Экспортирован 1 архивный чат",
+      exportedArchivedChatCount: "Экспортировано архивных чатов: {count}",
+      noArchivedChatsToExport: "Нет архивных чатов для экспорта.",
+      failedToExportArchivedChats: "Не удалось экспортировать архивные чаты",
+      archiveAllChats: "Архивировать все чаты",
+      archiveAllChatsDescription:
+        "Переносит в архив все чаты из «Недавних» и проектов.",
+      noChatsToArchive: "Нет чатов для архивации.",
+      archiveAllAction: "Архивировать все",
+      archivingAction: "Архивация...",
+      archiveAllChatsTitle: "Архивировать все чаты?",
+      archiveAllChatsConfirmDescription:
+        "Переносит в архив все чаты на этом устройстве. Архивные чаты остаются доступными, их можно вернуть из архива в любой момент.",
+      archivedAllChats: "Все чаты архивированы",
+      archivedOneChat: "Архивирован 1 чат",
+      archivedChatCount: "Архивировано чатов: {count}",
+      failedToArchiveChats: "Не удалось архивировать чаты",
+      confirmBeforeDeleting: "Подтверждать перед удалением",
+      confirmBeforeDeletingDescription:
+        "Запрашивает подтверждение перед удалением чата. Отключите, чтобы удалять сразу.",
+      filesSection: "Файлы",
+      uploadedFiles: "Загруженные файлы",
+      uploadedFilesDescription:
+        "Просматривайте файлы, загруженные в чаты, проекты и базы знаний, и управляйте ими.",
+      fineTuneExport: "Использовать чаты как обучающие данные",
+      fineTuneExportDescription:
+        "Создайте из своих чатов датасет JSONL для дообучения. Загрузите его в «Обучение», доработайте в «Рецептах» или экспортируйте.",
+      fineTuneExportAction: "Экспорт в JSONL",
+      fineTuneRunAction: "Запустить",
+      fineTuneExportingAction: "Экспорт...",
+      fineTuneOpenRecipesAction: "Открыть в «Рецептах»",
+      fineTuneOpeningRecipesAction: "Открытие...",
+      fineTuneTrainAction: "Загрузить во вкладку «Обучение»",
+      fineTuneTrainingAction: "Загрузка...",
+      fineTuneExportFailed: "Не удалось экспортировать обучающие данные",
+      fineTuneRecipeFailed: "Не удалось открыть чаты в «Рецептах»",
+      fineTuneTrainFailed:
+        "Не удалось загрузить датасет во вкладку «Обучение»",
+    },
     connections: {
       title: "Подключения",
       description: "Управление провайдерами и внешними подключениями.",
@@ -508,6 +977,8 @@ export const ru = {
         "Приложения, использующие этот токен, немедленно потеряют доступ. Это действие нельзя отменить.",
       revokeAction: 'Отозвать «{name}»',
       revoking: "Отзыв...",
+      usageNoModel:
+        "Загрузите или скачайте модель, чтобы увидеть готовые к запуску примеры. На этом сервере пока нет модели, которую можно подставить в примеры.",
     },
     about: {
       title: "О программе",
