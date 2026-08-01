@@ -14,6 +14,11 @@ const PERCENT = 0x25;
 // characters go; an escaped %0A or %20 is payload.
 const URL_WHITESPACE_RE = /[\t\n\r]/g;
 const HAS_URL_WHITESPACE_RE = /[\t\n\r]/;
+const DATA_SCHEME = "data:";
+
+function isUrlWhitespace(code: number): boolean {
+  return code === 0x09 || code === 0x0a || code === 0x0d;
+}
 
 function trimUrlControls(url: string): string {
   let start = 0;
@@ -42,8 +47,25 @@ export interface DecodedDataUri {
 
 /** URL schemes are case-insensitive, so `DATA:image/png;...` is a data URI. */
 export function isDataUri(url: string): boolean {
-  // Only the scheme is needed, so this stays O(1) on a huge payload.
-  return normalizeUrl(url.slice(0, 32)).slice(0, 5).toLowerCase() === "data:";
+  // Matched in place rather than by normalising a fixed-size prefix: any
+  // number of leading controls is legal, and a window large enough for all of
+  // them would be a guess. Cost is the leading run plus five characters.
+  let index = 0;
+  while (index < url.length && url.charCodeAt(index) <= 0x20) {
+    index += 1;
+  }
+  for (const expected of DATA_SCHEME) {
+    // Tabs and newlines are removed anywhere, the scheme included. A space is
+    // not, so `da ta:` stays invalid, which is what all three engines do.
+    while (index < url.length && isUrlWhitespace(url.charCodeAt(index))) {
+      index += 1;
+    }
+    if (index >= url.length || url[index].toLowerCase() !== expected) {
+      return false;
+    }
+    index += 1;
+  }
+  return true;
 }
 
 /** Hex digit value, or -1. Avoids allocating a substring per character. */

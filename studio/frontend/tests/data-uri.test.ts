@@ -218,3 +218,26 @@ test("trims leading and trailing C0 controls and spaces", () => {
     [97, 32, 98, 99],
   );
 });
+
+test("detects the scheme past any number of leading controls", () => {
+  // All three engines decode these; a fixed-size prefix window could not.
+  const lead = [" ".repeat(30), "\u0000".repeat(40), "  \u0000 \t"];
+  for (const prefix of lead) {
+    assert.ok(
+      isDataUri(`${prefix}data:text/plain,abc`),
+      JSON.stringify(prefix),
+    );
+    assert.deepEqual(
+      Array.from(decodeDataUri(`${prefix}data:text/plain,abc`).bytes),
+      [97, 98, 99],
+    );
+  }
+  // Tabs and newlines are removed inside the scheme too.
+  assert.ok(isDataUri("da\nta:text/plain,abc"));
+  assert.ok(isDataUri("da\tta:text/plain,abc"));
+  // A space is not removed, so this is not a data URL in any engine.
+  assert.ok(!isDataUri("da ta:text/plain,abc"));
+  assert.ok(!isDataUri("https://example.com/a.png"));
+  assert.ok(!isDataUri("dat"));
+  assert.ok(!isDataUri(""));
+});
