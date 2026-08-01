@@ -37,6 +37,7 @@ from loggers import get_logger
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -1144,7 +1145,14 @@ def _latest_sidecar_intact() -> bool:
 
     (_overlay_transformers_dir only calls this after gating on a present pin, so the
     pin-missing case here is the cache-revalidation caller whose pin was deleted after
-    the mapping was first cached.)"""
+    the mapping was first cached.)
+
+    Package level only, deliberately not _venv_dir_is_valid_and_undamaged: this
+    runs several times per /validate request, on _config_mapping_cache HITS as
+    well as misses, with no cache in front of it, and a False here only
+    re-routes a model. Sub-file damage is caught one step later instead, by
+    _ensure_venv_t5_latest_exists at worker activation, which repairs in a
+    parent and refuses with a named reason in a child."""
     pin = _latest_pin_data()
     if pin is None:
         return False
@@ -1920,8 +1928,120 @@ _VENV_T5_550_PACKAGES = (
 _VENV_T5_PACKAGES = _VENV_T5_550_PACKAGES
 
 
+_SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
+
+
+def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
+    """RECORD entries under *venv_dir* that are gone, or shorter than pip recorded.
+
+    A sidecar whose METADATA survived a disk-full or an interrupted pip still
+    passes every version check above, so the wipe-and-reinstall in
+    _ensure_venv_dir never fires and the worker dies importing transformers
+    instead. Comparing each RECORD row against the filesystem sees that;
+    a package-level check cannot, because the damaged module is still there.
+
+    Deliberately mirrored from ``unsloth_cli/_studio_deps.py``'s
+    ``damaged_installed_files`` rather than imported from it. The backend runs
+    with ``studio/backend`` on sys.path and never imports the CLI package (which
+    may be an entirely different install), and the subject differs: that one
+    describes its own interpreter through importlib.metadata, this one a flat
+    ``pip --target`` directory no interpreter owns. Same deliberate mirror as
+    ``auth/terminal_prompt.py``; keep the two predicates in sync.
+
+    Every distribution in the sidecar is checked, not only the pinned ones. The
+    whole directory is prepended to sys.path, so a truncated ``regex/`` or
+    ``urllib3/`` shadows the base install and breaks ``import transformers``
+    exactly as a truncated ``transformers/`` does. Measured on three live
+    sidecars that is 7729 files instead of 7432, i.e. 4% more work.
+
+    Only shrinkage and disappearance count, and only for paths a single
+    distribution claims: when two claim one path, whichever copy landed says
+    nothing about either RECORD, in either direction. A file LARGER than
+    recorded is a packaging collision, not damage. Sizes are therefore compared
+    after the whole scan, once multiply-owned paths are known.
+
+    Fails open everywhere. The caller's answer to a finding is to delete several
+    hundred MB and reinstall, so an unreadable or absent RECORD -- and any other
+    surprise -- reports nothing rather than guessing.
+    """
+    import csv
+    import io
+
+    if os.environ.get(_SIDECAR_FILE_CHECK_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
+        # Escape hatch: a false positive costs a several-hundred-MB reinstall,
+        # so a user hitting one must be able to turn the scan off without
+        # waiting for a release.
+        return []
+    root = Path(venv_dir)
+    entries: list[tuple] = []
+    owners: dict[str, int] = {}
+    try:
+        dist_infos = sorted(root.glob("*.dist-info"))
+    except OSError:
+        return []
+    for di in dist_infos:
+        name = di.name.split("-")[0]
+        try:
+            record = (di / "RECORD").read_text(encoding = "utf-8", errors = "replace")
+        except OSError:
+            # No RECORD says nothing about damage; some installs legitimately
+            # have none.
+            continue
+        try:
+            rows = list(csv.reader(io.StringIO(record)))
+        except csv.Error:
+            continue
+        for row in rows:
+            rel = row[0] if row else ""
+            # A trailing slash is a directory entry, which has nothing to check.
+            if not rel or rel.endswith("/"):
+                continue
+            # Installer-owned metadata is rewritten in place and drifts from the
+            # size recorded inside itself; .pyc is regenerated from source.
+            if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
+                continue
+            # The size field is optional and real wheels do leave it blank. Keep
+            # the row anyway with an unknown size: existence is still checkable,
+            # and dropping the row means a deletion goes unreported.
+            recorded: int | None = None
+            if len(row) >= 3 and row[2]:
+                try:
+                    recorded = int(row[2])
+                except ValueError:
+                    recorded = None
+            target = root / rel
+            key = os.path.normcase(str(target))
+            owners[key] = owners.get(key, 0) + 1
+            entries.append((name, rel, recorded, target, key))
+
+    found: list[str] = []
+    for name, rel, recorded, target, key in entries:
+        try:
+            info = target.stat()
+        except OSError:
+            # Multiple ownership makes the recorded SIZES ambiguous; it cannot
+            # explain the file being gone, so this branch runs for shared paths
+            # too.
+            found.append(f"{name}: {rel} is missing")
+        else:
+            if not stat.S_ISREG(info.st_mode):
+                # A directory standing in for a recorded module still imports as
+                # something else, and on POSIX its st_size (commonly 4096) can
+                # sail past the shrinkage test.
+                found.append(f"{name}: {rel} is not a regular file")
+            elif owners[key] == 1 and recorded is not None and info.st_size < recorded:
+                found.append(f"{name}: {rel} is {info.st_size} bytes, expected {recorded}")
+        if len(found) >= limit:
+            return found
+    return found
+
+
 def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
-    """Return True if *venv_dir* has all *packages* at the correct versions."""
+    """Return True if *venv_dir* has all *packages* at the correct versions.
+
+    Package level only. Callers that can REPAIR the sidecar want
+    _venv_dir_is_valid_and_undamaged below instead.
+    """
     if not os.path.isdir(venv_dir) or not os.listdir(venv_dir):
         return False
     for pkg_spec in packages:
@@ -1961,6 +2081,33 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
                 break
         if not dist_info_found:
             return False
+    return True
+
+
+def _venv_dir_is_valid_and_undamaged(venv_dir: str, packages: tuple[str, ...]) -> bool:
+    """_venv_dir_is_valid, plus a RECORD-against-filesystem scan of the whole dir.
+
+    Only for the callers that can act on a False: _ensure_venv_dir and the two
+    latest-sidecar installers, which wipe and reinstall. The routing predicate
+    _latest_sidecar_intact keeps the cheap check, because it runs several times
+    per /validate request with no cache in front of it and a False there only
+    re-routes a model. Measured on a live install the scan is ~28 ms per
+    sidecar: real money on an HTTP path, nothing next to the 1.7 s
+    ``import transformers`` that follows a repair-site call.
+
+    The package checks run first, so a wrong version is rejected without paying
+    for the scan.
+    """
+    if not _venv_dir_is_valid(venv_dir, packages):
+        return False
+    damaged = _sidecar_damaged_files(venv_dir)
+    if damaged:
+        logger.warning(
+            "%s has damaged files -- venv will be wiped and reinstalled: %s",
+            venv_dir,
+            "; ".join(damaged),
+        )
+        return False
     return True
 
 
@@ -2029,7 +2176,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
 
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing."""
-    if _venv_dir_is_valid(venv_dir, packages):
+    if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
         return True
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
@@ -2457,7 +2604,7 @@ def _ensure_venv_t5_latest_exists() -> bool:
         return False
     version = pin["version"]
     packages = tuple(pin["packages"])
-    if _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages):
+    if _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages):
         return True
     if _env_offline():
         logger.warning(
@@ -2531,7 +2678,7 @@ def ensure_latest_transformers_venv(
         pin is not None
         and pin["version"] == version
         and tuple(pin["packages"]) == packages
-        and _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages)
+        and _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages)
     ):
         return True
     return _stage_and_swap_latest_venv(version, packages, before_swap = before_swap)

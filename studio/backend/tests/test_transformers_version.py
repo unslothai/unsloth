@@ -59,6 +59,7 @@ from utils.transformers_version import (
     get_transformers_tier,
     activate_transformers_for_subprocess,
     _venv_dir_is_valid,
+    _venv_dir_is_valid_and_undamaged,
     _ensure_venv_dir,
     hf_endpoint_unreachable,
 )
@@ -1798,6 +1799,169 @@ class TestVenvDirIsValidLogging:
         assert not [
             r for r in caplog.records if r.levelno >= logging.WARNING
         ], "no warning expected when the installed version matches"
+
+
+# ---------------------------------------------------------------------------
+# _venv_dir_is_valid_and_undamaged — issue #7715
+# A sidecar whose METADATA survived a disk-full or an interrupted pip passes
+# every package-level check, so the wipe-and-reinstall in _ensure_venv_dir
+# never fires and the worker dies importing transformers instead.
+# ---------------------------------------------------------------------------
+
+
+class TestVenvDirFileIntegrity:
+    def _make_venv(
+        self,
+        venv_dir: Path,
+        pkg: str = "transformers",
+        version: str = "5.3.0",
+        files: dict | None = None,
+        record_extra: list | None = None,
+    ) -> Path:
+        """Fake target-dir install of *pkg* with a RECORD matching what it wrote."""
+        di = venv_dir / f"{pkg}-{version}.dist-info"
+        di.mkdir(parents = True)
+        (di / "METADATA").write_text(f"Name: {pkg}\nVersion: {version}\n")
+        files = files if files is not None else {f"{pkg}/__init__.py": "x" * 40}
+        rows = []
+        for rel, body in files.items():
+            path = venv_dir / rel
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_text(body)
+            rows.append(f"{rel},sha256=deadbeef,{len(body)}")
+        rows.extend(record_extra or [])
+        # pip records its own metadata with a blank size, as real wheels do.
+        rows.append(f"{pkg}-{version}.dist-info/METADATA,sha256=cafe,")
+        rows.append(f"{pkg}-{version}.dist-info/RECORD,,")
+        (di / "RECORD").write_text("\n".join(rows) + "\n")
+        return venv_dir
+
+    def test_intact_sidecar_is_valid(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_truncated_file_is_detected(self, tmp_path: Path, caplog):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")  # disk-full shape
+
+        caplog.set_level(logging.INFO)
+        result = _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+        assert result is False, "a truncated file must force the wipe-and-reinstall"
+        joined = " ".join(
+            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+        )
+        assert "transformers/__init__.py" in joined, f"damage not named in the log: {joined!r}"
+
+    def test_deleted_file_is_detected(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_damage_in_an_unpinned_dependency_is_detected(self, tmp_path: Path):
+        """The whole dir is prepended to sys.path, so a shadowing dep breaks the
+        import just as surely as transformers itself."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        self._make_venv(venv_dir, pkg = "regex", version = "2026.7.19")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        (venv_dir / "regex" / "__init__.py").write_text("")
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_larger_than_recorded_is_not_damage(self, tmp_path: Path):
+        """A packaging collision leaves a bigger file, not a broken one."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("y" * 400)
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_multiply_owned_path_skips_the_size_check_but_not_existence(self, tmp_path: Path):
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {"transformers/__init__.py": "x" * 40, "shared/mod.py": "z" * 90},
+        )
+        self._make_venv(
+            venv_dir,
+            pkg = "other",
+            version = "1.0.0",
+            files = {"other/__init__.py": "o" * 10},
+            record_extra = ["shared/mod.py,sha256=beef,999999"],
+        )
+        # Two RECORDs disagree on the size; whichever copy landed says nothing
+        # about either, so this is not damage.
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        # Ambiguous sizes cannot explain the file being gone.
+        (venv_dir / "shared" / "mod.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_directory_standing_in_for_a_recorded_file_is_damage(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        target = venv_dir / "transformers" / "__init__.py"
+        target.unlink()
+        target.mkdir()  # st_size 4096 on POSIX would sail past a shrinkage test
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_blank_size_row_still_reports_a_deletion(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "data.bin").write_text("q")
+        record = venv_dir / "transformers-5.3.0.dist-info" / "RECORD"
+        record.write_text(record.read_text() + "transformers/data.bin,,\n")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        (venv_dir / "transformers" / "data.bin").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_missing_record_is_not_damage(self, tmp_path: Path):
+        """Fails open: the answer to a finding is to delete hundreds of MB."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers-5.3.0.dist-info" / "RECORD").unlink()
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_pyc_and_dist_info_rows_are_ignored(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        record = venv_dir / "transformers-5.3.0.dist-info" / "RECORD"
+        record.write_text(
+            record.read_text()
+            + "transformers/__pycache__/__init__.cpython-311.pyc,sha256=aa,500\n"
+            + "transformers-5.3.0.dist-info/direct_url.json,sha256=bb,500\n"
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_directory_rows_are_ignored(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        record = venv_dir / "transformers-5.3.0.dist-info" / "RECORD"
+        record.write_text(record.read_text() + "transformers/subdir/,,\n")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_default_is_package_level_only(self, tmp_path: Path):
+        """The routing predicate keeps the cheap semantics: it runs several times
+        per /validate request with no cache in front of it."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+        assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is True
+
+    def test_env_kill_switch_disables_the_scan(self, tmp_path: Path, monkeypatch):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+        monkeypatch.setenv("UNSLOTH_SKIP_SIDECAR_FILE_CHECK", "1")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_ensure_venv_dir_wipes_and_reinstalls_a_damaged_sidecar(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """End to end: the damage reaches the repair that already exists."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+
+        installed = []
+
+        def _fake_install(pkg, target):
+            installed.append(pkg)
+            return True
+
+        monkeypatch.setattr("utils.transformers_version._install_to_dir", _fake_install)
+        ok = _ensure_venv_dir(str(venv_dir), ("transformers==5.3.0",), "transformers 5.3.0")
+
+        assert ok is True
+        assert installed == ["transformers==5.3.0"], "damaged sidecar was not reinstalled"
+        assert not (venv_dir / "transformers").exists(), "damaged tree was not wiped first"
 
 
 # ---------------------------------------------------------------------------
