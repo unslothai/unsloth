@@ -1984,6 +1984,50 @@ def test_the_delete_guard_lets_a_delete_through_when_nothing_is_loaded():
         orch._inference_backend = before
 
 
+def test_the_warm_epoch_is_retired_before_any_shutdown_await():
+    """The coordinated warm has to be stopped at shutdown entry too.
+
+    run_lifespan_shutdown() invalidates, but only after the idle-task cancel, the
+    supervisor stop, the llama HTTP close and its own download-termination await. A warm
+    running through those keeps building the inference backend and importing
+    transformers, datasets and unsloth_zoo for a lifespan that has stopped.
+    """
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
+    )
+    yield_line = next(sub.lineno for sub in ast.walk(fn) if isinstance(sub, ast.Yield))
+    awaits_after = sorted(
+        sub.lineno for sub in ast.walk(fn)
+        if isinstance(sub, ast.Await) and sub.lineno > yield_line
+    )
+    assert awaits_after, "the shutdown path no longer awaits anything; re-derive this"
+    # The call is made through a getattr-bound name, as the helper does, so match the
+    # binding rather than a literal attribute call.
+    retire_lines = [
+        node.lineno
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id == "getattr"
+            and any(
+                isinstance(a, ast.Constant) and a.value == "invalidate_detection"
+                for a in sub.args
+            )
+            for sub in ast.walk(node.value)
+        )
+        and node.lineno > yield_line
+    ]
+    assert retire_lines, "shutdown never retires the warm's detection epoch itself"
+    assert min(retire_lines) < awaits_after[0], (
+        f"the epoch is retired at line {min(retire_lines)}, after the first shutdown "
+        f"await at {awaits_after[0]}; the warm keeps importing through that gap"
+    )
+
+
 def test_the_post_warm_worker_is_retired_before_any_shutdown_await():
     """It has to stop first, not merely early.
 

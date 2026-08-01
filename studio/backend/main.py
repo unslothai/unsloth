@@ -727,6 +727,16 @@ async def lifespan(app: FastAPI):
     # read the lifespan as current and start MLX autorepair or the RAG embedder.
     _stop_post_warm_thread()
 
+    # Same reason, for the coordinated warm: retiring its epoch here stops it at the
+    # next stage boundary. run_lifespan_shutdown() invalidates too, but only after
+    # several awaits, and through those the warm would keep building the inference
+    # backend and importing transformers, datasets and unsloth_zoo for a lifespan that
+    # has stopped. Invalidating twice is harmless, the counter only moves forward.
+    # getattr for parity with the helper: tests inject a stub hardware module.
+    _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
+    if _invalidate_detection is not None:
+        _invalidate_detection()
+
     _idle_task = getattr(app.state, "idle_unload_task", None)
     if _idle_task is not None:
         _idle_task.cancel()
