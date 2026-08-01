@@ -178,22 +178,34 @@ class _DummyModel(torch.nn.Module):
 class _DummyTrainer:
     def __init__(self):
         self.args = SimpleNamespace(remove_unused_columns = True)
-        collator_args = {
-            "pad_token_id": 0,
-            "completion_only_loss": False,
-            "return_tensors": "pt",
-        }
-        optional_flags = [
-            {"padding_free": True, "return_position_ids": False},
-            {"padding_free": True},
-            {},
+        # Only ``pad_token_id`` and ``padding_free`` are accepted by every
+        # released ``DataCollatorForLanguageModeling``. Other keywords have
+        # moved between collator classes / TRL versions (e.g. TRL 1.9.2 drops
+        # ``completion_only_loss`` from this collator), so try the richest
+        # keyword set first and fall back to progressively smaller ones.
+        collator_attempts = [
+            {"pad_token_id": 0, "completion_only_loss": False, "return_tensors": "pt",
+             "padding_free": True, "return_position_ids": False},
+            {"pad_token_id": 0, "completion_only_loss": False, "return_tensors": "pt",
+             "padding_free": True},
+            {"pad_token_id": 0, "return_tensors": "pt", "padding_free": True},
+            {"pad_token_id": 0, "padding_free": True},
         ]
-        for extra in optional_flags:
+        self.data_collator = None
+        last_error = None
+        for collator_kwargs in collator_attempts:
             try:
-                self.data_collator = DataCollatorForLanguageModeling(**collator_args, **extra)
+                self.data_collator = DataCollatorForLanguageModeling(**collator_kwargs)
                 break
-            except TypeError:
+            except TypeError as error:
+                last_error = error
                 continue
+        if self.data_collator is None:
+            raise RuntimeError(
+                "Could not construct DataCollatorForLanguageModeling with any "
+                "known keyword combination; the installed TRL version may have "
+                f"changed its signature (last error: {last_error})"
+            )
         # Ensure attributes exist even if the constructor rejected them.
         if not hasattr(self.data_collator, "padding_free"):
             self.data_collator.padding_free = True
