@@ -2205,3 +2205,59 @@ def test_a_finished_warm_still_holds_the_latch_inside_its_own_lifespan():
         warm._thread, warm._thread_epoch = saved_thread, saved_epoch
         warm._status.clear()
         warm._status.update(saved_status)
+
+
+def test_an_offline_first_read_does_not_retire_the_ranking_fetch():
+    """Claiming the latch before the offline check disables the fetch for the process.
+
+    A boot that happened to be offline, or a temporary force_hf_offline() scope, would
+    then never pick the remote ranking up again however long the host stays online.
+    """
+    tree = ast.parse(
+        (_BACKEND / "core" / "inference" / "orchestrator.py").read_text(encoding = "utf-8")
+    )
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_start_top_models_fetch"
+    )
+    offline_line = next(
+        sub.lineno for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call)
+        and isinstance(sub.func, ast.Name)
+        and sub.func.id == "hf_env_offline"
+    )
+    claim_line = next(
+        node.lineno for node in ast.walk(fn)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Attribute) and t.attr == "_top_models_started"
+            for t in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+        and node.value.value is True
+    )
+    assert offline_line < claim_line, (
+        f"the latch is claimed at line {claim_line}, before the offline check at "
+        f"{offline_line}; an offline first read then retires the fetch permanently"
+    )
+
+
+def test_an_offline_read_leaves_the_fetch_available():
+    """Behavioural: offline must not consume the one-shot start."""
+    import core.inference.orchestrator as orch
+
+    started = []
+    backend = orch.InferenceOrchestrator.__new__(orch.InferenceOrchestrator)
+    backend._top_models_started = False
+    with mock.patch.object(orch, "hf_env_offline", lambda: True):
+        backend._start_top_models_fetch()
+    assert backend._top_models_started is False, (
+        "an offline read consumed the latch, so the ranking can never be fetched again"
+    )
+    with mock.patch.object(orch, "hf_env_offline", lambda: False):
+        with mock.patch.object(orch.threading, "Thread") as thread:
+            thread.side_effect = lambda **kw: started.append(kw) or mock.MagicMock()
+            backend._start_top_models_fetch()
+    assert backend._top_models_started is True and started, (
+        "coming back online did not start the fetch"
+    )

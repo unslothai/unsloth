@@ -202,13 +202,16 @@ class InferenceOrchestrator:
         """
         if self._top_models_started:
             return
+        # Checked before the latch is taken: claiming it while offline would retire the
+        # fetch for the life of the process, so a boot that happened to be offline, or
+        # a temporary force_hf_offline() scope, could never pick the ranking up later.
+        if hf_env_offline():
+            logger.info("offline mode requested; skipping the remote top-models ranking")
+            return
         with _inference_backend_lock:
             if self._top_models_started:
                 return
             self._top_models_started = True
-        if hf_env_offline():
-            logger.info("offline mode requested; skipping the remote top-models ranking")
-            return
         threading.Thread(target = self._fetch_top_models, daemon = True, name = "top-models").start()
 
     @property

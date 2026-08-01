@@ -97,14 +97,17 @@ export async function fetchDeviceType(options?: {
     // sending a GPU host to /chat with Train hidden. The window is only the torch
     // import, so a bounded re-read lands the measurement without stalling boot.
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-    // Once per load: a slow host leaves the reply provisional and `fetched` false, so
-    // without this every later navigation would spend the whole window on the same answer.
-    const deadline = hardwareWaitSpent
-      ? 0
-      : Date.now() + HARDWARE_DETECT_WAIT_MS;
+    // Wait only when a measurement can arrive, and only once. /api/health reports
+    // device_type to authed callers only, so an unauthenticated read stays provisional
+    // however long we poll, and beforeLoad awaits this: /login would sit behind the
+    // torch import for the whole window. `fetched` also stays false on a reply with no
+    // device_type, so without the latch every later navigation would spend the window
+    // again. Claim the latch after the wait, not during it, or a concurrent caller
+    // skips a window nobody has finished.
+    const spendWait = Boolean(token) && !hardwareWaitSpent;
+    const deadline = spendWait ? Date.now() + HARDWARE_DETECT_WAIT_MS : 0;
     let res = await fetch(apiUrl("/api/health"), { headers });
     while (res.ok && Date.now() < deadline) {
-      hardwareWaitSpent = true;
       const peek = (await res.clone().json()) as {
         hardware_detecting?: boolean;
         hardware_detection_deferred?: boolean;
@@ -114,6 +117,7 @@ export async function fetchDeviceType(options?: {
       await new Promise((resolve) => setTimeout(resolve, HARDWARE_DETECT_POLL_MS));
       res = await fetch(apiUrl("/api/health"), { headers });
     }
+    if (spendWait) hardwareWaitSpent = true;
     if (res.ok) {
       const data = (await res.json()) as {
         device_type?: string;

@@ -160,13 +160,43 @@ test("the bounded hardware wait is spent at most once per page load", async () =
   );
   assert.match(
     src,
-    /hardwareWaitSpent\s*\n?\s*\?\s*0/,
-    "the latch does not zero the deadline, so the wait is not actually skipped",
+    /const deadline = spendWait \? Date\.now\(\) \+ HARDWARE_DETECT_WAIT_MS : 0/,
+    "the guard does not zero the deadline, so the wait is not actually skipped",
+  );
+});
+
+// __root.tsx's beforeLoad awaits fetchDeviceType on every route, /login included, and
+// /api/health reports device_type to authed callers only. Polling without a token can
+// therefore never turn provisional into measured, so it only holds the login form
+// behind the torch import for the whole window, which is what this PR exists to avoid.
+test("an unauthenticated read never spends the detection window", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/config/env.ts", import.meta.url),
+    "utf8",
   );
   assert.match(
     src,
-    /hardwareWaitSpent = true/,
-    "the latch is never set, so it can never take effect",
+    /const spendWait = Boolean\(token\) && !hardwareWaitSpent/,
+    "the wait is not gated on having a token, so /login blocks on hardware detection",
+  );
+});
+
+// main.tsx fires an unawaited fetchDeviceType while __root.tsx awaits its own. Claiming
+// the latch inside the loop let the unawaited one consume a window it had not finished,
+// leaving the awaited caller on the local default and redirecting a GPU host to /chat.
+test("the latch is claimed after the wait, not during it", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/config/env.ts", import.meta.url),
+    "utf8",
+  );
+  const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
+  const loopEnd = src.indexOf("if (spendWait) hardwareWaitSpent = true;");
+  assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop or the latch moved");
+  assert.ok(
+    !src.slice(loopStart, loopEnd).includes("hardwareWaitSpent = true"),
+    "the latch is claimed inside the loop, so a concurrent caller skips an unfinished window",
   );
 });
 
