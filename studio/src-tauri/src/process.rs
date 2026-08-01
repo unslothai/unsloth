@@ -908,16 +908,17 @@ async fn validate_candidate_port(
 /// a cold laptop would be worse than the bug it fixes.
 const BACKEND_START_DEADLINE: Duration = Duration::from_secs(300);
 
-/// Fail an unresponsive backend loudly instead of waiting on it forever.
+/// Report an unresponsive backend early, with its own output.
 ///
-/// `server-crashed` only fires when the backend's stdout closes, so it covers a backend
-/// that dies. A backend that starts and then hangs, producing no output and never
-/// binding its port while the process stays alive, emits nothing at all, and the window
-/// sits on the startup screen indefinitely with no error and no way to retry.
+/// A backend that hangs (alive, silent, never binds its port) is not unreported today:
+/// `commands.rs`'s health watchdog kills it and emits `server-crashed` once three
+/// 15 s probes fail past `BACKEND_STARTUP_GRACE_PERIOD`, so at roughly t+330 s. What
+/// that path cannot do is say why: `server-crashed` carries no payload, so the user
+/// gets "Server stopped unexpectedly" and nothing to act on.
 ///
-/// This does not diagnose why the backend hung and deliberately does not kill it. It
-/// turns "spinner forever" into a reported error carrying the backend's own last log
-/// lines.
+/// This fires ~30 s earlier, carries the backend's last log lines, and deliberately
+/// does NOT kill it, leaving the kill policy with the watchdog that has the health
+/// evidence to justify it.
 fn start_watchdog(
     app: &AppHandle,
     state: &BackendState,
@@ -958,7 +959,11 @@ fn start_watchdog(
 
         let (still_ours, tail) = match state.lock() {
             Ok(proc) => {
-                if proc.generation != generation || proc.port.is_some() {
+                // Same three conditions as the loop. Dropping has_owned_backend here
+                // would let a crash in the last second be overwritten by a message
+                // claiming the backend is still running.
+                if proc.generation != generation || proc.port.is_some() || !proc.has_owned_backend()
+                {
                     (false, String::new())
                 } else {
                     let skip = proc.logs.len().saturating_sub(20);
@@ -1120,6 +1125,9 @@ fn read_output_stream<R: std::io::Read>(
             match reader.read(&mut sink) {
                 Ok(0) => break,
                 Ok(_) => continue,
+                // read_until retries this internally; a raw read does not, and giving
+                // up on EINTR would drop the read end and re-create the EPIPE above.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
         }
