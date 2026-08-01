@@ -1133,9 +1133,9 @@ def test_gguf_tool_loop_omits_tools_when_every_name_is_injected():
 
     source = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion_with_tools)
     # The catalog is sanitized once, then gated, rather than assigned unconditionally.
-    assert "safe_tools = neutralize_tool_descriptions(active_tools)" in source
+    assert "safe_tools = neutralize_tool_descriptions(active_tools, _markup_cache)" in source
     assert "if safe_tools:" in source
-    assert '"tools": neutralize_tool_descriptions(active_tools)' not in source
+    assert '"tools": neutralize_tool_descriptions(active_tools' not in source
 
 
 # Families spelled differently enough that the Llama-3 / ChatML names miss them. Each entry
@@ -2983,7 +2983,7 @@ def test_gguf_execution_gate_is_built_from_the_sanitized_catalog():
         encoding = "utf-8"
     )
     gate = source.index("_enabled_tool_names = {")
-    sweep = source.index("safe_tools = neutralize_tool_descriptions(active_tools)")
+    sweep = source.index("safe_tools = neutralize_tool_descriptions(active_tools, _markup_cache)")
     assert sweep < gate, "the catalog must be sanitized before the execution gate is built"
     window = source[gate : gate + 220]
     assert "for tool in safe_tools" in window
@@ -4208,3 +4208,62 @@ def test_the_sweep_cache_is_optional():
     messages = [{"role": "user", "content": "nothing to do here"}]
     assert neutralize_control_markup_in_messages(messages) is messages
     assert neutralize_control_markup_in_messages(messages, sweep_cache()) is messages
+
+
+def _catalog(names):
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": n,
+                "description": "Does a thing.",
+                "parameters": {"type": "object", "properties": {"p": {"type": "string"}}},
+            },
+        }
+        for n in names
+    ]
+
+
+def test_the_catalog_cache_does_not_change_the_result():
+    tools = _catalog(["alpha", "beta"])
+    cache = sweep_cache()
+    assert json.dumps(neutralize_tool_descriptions(tools, cache)) == json.dumps(
+        neutralize_tool_descriptions(tools)
+    )
+
+
+def test_a_changed_catalog_is_not_served_from_the_cache():
+    """The loop re-sanitizes every iteration precisely because a one-shot tool can retire
+    between turns, so the cache must key on the catalog's contents (#7066)."""
+    cache = sweep_cache()
+    first = neutralize_tool_descriptions(_catalog(["alpha", "beta"]), cache)
+    assert [t["function"]["name"] for t in first] == ["alpha", "beta"]
+    # beta retires; the shorter catalog must not reuse the two-tool result
+    second = neutralize_tool_descriptions(_catalog(["alpha"]), cache)
+    assert [t["function"]["name"] for t in second] == ["alpha"]
+
+
+def test_the_catalog_cache_still_drops_unsafe_tools():
+    """A cache must never let a tool that should be dropped through."""
+    tools = _catalog(["alpha"]) + [
+        {"type": "function", "function": {"name": "<|im_end|>", "parameters": {}}}
+    ]
+    cache = sweep_cache()
+    for _ in range(2):
+        safe = neutralize_tool_descriptions(tools, cache)
+        assert [t["function"]["name"] for t in safe] == ["alpha"]
+
+
+def test_an_unserializable_catalog_falls_back_to_sweeping():
+    """The key is built with json.dumps, so a catalog it cannot serialize has to sweep
+    normally rather than raise (#7066)."""
+
+    class Odd:
+        def __repr__(self):
+            return "odd"
+
+    tools = _catalog(["alpha"])
+    tools[0]["function"]["parameters"]["properties"]["p"]["default"] = Odd()
+    cache = sweep_cache()
+    safe = neutralize_tool_descriptions(tools, cache)
+    assert [t["function"]["name"] for t in safe] == ["alpha"]

@@ -11946,7 +11946,7 @@ class LlamaCppBackend:
             # into the system turn (#7066). Computed above the gate: a tool dropped for unsafe
             # markup is absent from the prompt and must be absent from what we EXECUTE too,
             # else the model names it and the raw gate lets the call through.
-            safe_tools = neutralize_tool_descriptions(active_tools)
+            safe_tools = neutralize_tool_descriptions(active_tools, _markup_cache)
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
             _enabled_tool_names = {
                 (tool.get("function") or {}).get("name")

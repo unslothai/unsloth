@@ -844,7 +844,7 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None) ->
     return out if changed else messages
 
 
-def neutralize_tool_descriptions(tools):
+def neutralize_tool_descriptions(tools, cache: dict = None):
     """Neutralize a rendered tool catalog, dropping any tool with an unsafe name.
 
     Every string in a declaration is prompt text: Gemma-4 interpolates the description into
@@ -861,6 +861,19 @@ def neutralize_tool_descriptions(tools):
     itself, not OpenAI's name grammar, so a passthrough client's ``ns.tool`` or
     ``functions.NAME:IDX`` still ships; it is the identity on markup-free strings, so a live
     catalog is returned unchanged."""
+    # The agentic loop re-sanitizes the catalog on every iteration, because a one-shot
+    # tool can retire between turns, so an unchanged catalog was swept again from scratch.
+    # Keyed on the serialized catalog rather than the list itself: a value snapshot cannot
+    # go stale if a caller mutates its own list in place, and building one is still five
+    # times cheaper than the sweep it skips (#7066).
+    key = None
+    if cache is not None:
+        try:
+            key = ("catalog", json.dumps(tools, sort_keys=True, default=str))
+        except (TypeError, ValueError):
+            key = None
+        if key is not None and key in cache:
+            return cache[key]
     if not tools or not isinstance(tools, list):
         return tools
     out: list = []
@@ -899,7 +912,10 @@ def neutralize_tool_descriptions(tools):
             continue
         out.append(new_tool)
         changed = True
-    return out if changed else tools
+    result = out if changed else tools
+    if key is not None:
+        cache[key] = result
+    return result
 
 
 # The machine-valued rather than descriptive positions in a JSON Schema: a property name, an
