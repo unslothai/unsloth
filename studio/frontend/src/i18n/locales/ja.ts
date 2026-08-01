@@ -1018,6 +1018,11 @@ export const ja = {
       modelLabel: "モデル",
       methodLabel: "手法",
       datasetLabel: "データセット",
+      hfTokenLabel: "Hugging Face トークン",
+      hfTokenDescription:
+        "アクセス制限付きまたは非公開のモデルとデータセットに必要です。",
+      hfTokenGet: "トークンを取得",
+      hfTokenChecking: "トークンを確認中…",
       modelPickerDescription:
         "Hugging Face を検索するか、このデバイス上のトレーニング可能なモデルを選択します。",
       trainingMethod: "トレーニング方法",
@@ -1145,6 +1150,8 @@ export const ja = {
         "「設定」→「一般」でトークンを更新してから、再試行してください。",
       hubUnreachable: "Hugging Face に接続できませんでした",
       cantUseModel: "このモデルはトレーニングに使用できません",
+      reasonTypeMismatch:
+        "このモデルは、前のステップで選択したトレーニングタイプと一致しません。",
       reasonInvalidHubId:
         "有効な Hugging Face モデル ID を入力してください。形式は repo または owner/repo で、使用できる文字は英字、数字、.、_、- のみです（各部分は最大 96 文字）。",
       reasonEmptyId: "モデル ID またはローカルモデルのパスを入力してください。",

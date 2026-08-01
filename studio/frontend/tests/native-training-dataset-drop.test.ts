@@ -57,6 +57,21 @@ test("truncates native dataset filenames without splitting Unicode characters", 
   assert.equal(filename.endsWith("💡"), true);
 });
 
+test("classifies native drops before truncating long display filenames", () => {
+  const datasetPath = `C:\\data\\${"a".repeat(170)}.JSONL`;
+  const documentPath = `/data/${"b".repeat(170)}.pdf`;
+
+  assert.deepEqual(classifyNativeTrainingDatasetDrop([datasetPath]), {
+    kind: "dataset",
+    path: datasetPath,
+    filename: "a".repeat(160),
+  });
+  assert.deepEqual(classifyNativeTrainingDatasetDrop([documentPath]), {
+    kind: "document",
+    filename: "b".repeat(160),
+  });
+});
+
 test("hit testing converts native physical coordinates to CSS pixels", () => {
   const bounds = { left: 100, right: 300, top: 50, bottom: 150 };
   assert.equal(

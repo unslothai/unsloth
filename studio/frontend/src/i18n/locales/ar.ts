@@ -1056,6 +1056,11 @@ export const ar = {
       modelLabel: "النموذج",
       methodLabel: "الطريقة",
       datasetLabel: "مجموعة البيانات",
+      hfTokenLabel: "رمز Hugging Face",
+      hfTokenDescription:
+        "مطلوب للنماذج ومجموعات البيانات المقيّدة أو الخاصة.",
+      hfTokenGet: "الحصول على رمز",
+      hfTokenChecking: "جارٍ التحقق من الرمز…",
       modelPickerDescription:
         "ابحث في Hugging Face أو اختر نموذجًا قابلًا للتدريب موجودًا على هذا الجهاز.",
       trainingMethod: "طريقة التدريب",
@@ -1176,6 +1181,8 @@ export const ar = {
         "حدّث التوكن في الإعدادات ← عام، ثم أعد المحاولة.",
       hubUnreachable: "تعذّر الوصول إلى Hugging Face",
       cantUseModel: "لا يمكن استخدام النموذج للتدريب",
+      reasonTypeMismatch:
+        "هذا النموذج لا يطابق نوع التدريب المحدد في الخطوة السابقة.",
       reasonEmptyId: "أدخل معرّف نموذج أو مسار نموذج محلي.",
       reasonInvalidHubId:
         "أدخل معرّفًا صالحًا لنموذج Hugging Face بصيغة مستودع أو مالك/مستودع، باستخدام الأحرف والأرقام و. و_ و- فقط (بحد أقصى 96 حرفًا لكل جزء).",

@@ -102,6 +102,7 @@ export {
   type ModelTypeCapabilityFlags,
   trainingModelTypeFlagsFromMetadata,
 } from "./lib/model-type-inference";
+export { trainingModelMatchesTypeConstraint } from "./lib/model-type-constraint";
 export {
   buildCachedTrainingModelLookup,
   buildLocalTrainingModelLookup,

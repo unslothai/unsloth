@@ -1026,6 +1026,10 @@ export const zhCN = {
       modelLabel: "模型",
       methodLabel: "方法",
       datasetLabel: "数据集",
+      hfTokenLabel: "Hugging Face 令牌",
+      hfTokenDescription: "访问受限或私有模型和数据集时需要。",
+      hfTokenGet: "获取令牌",
+      hfTokenChecking: "正在检查令牌…",
       modelPickerDescription:
         "搜索 Hugging Face，或选择此设备上已有的可训练模型。",
       trainingMethod: "训练方法",
@@ -1146,6 +1150,7 @@ export const zhCN = {
       tokenRejectedBody: "请在“设置”→“常规”中更新 token，然后重试。",
       hubUnreachable: "无法连接 Hugging Face",
       cantUseModel: "无法使用此模型进行训练",
+      reasonTypeMismatch: "此模型与上一步选择的训练类型不匹配。",
       reasonInvalidHubId:
         "请输入有效的 Hugging Face 模型 ID：repo 或 owner/repo。仅可使用字母、数字、.、_ 或 -（每部分最多 96 个字符）。",
       reasonEmptyId: "请输入模型 ID 或本地模型路径。",

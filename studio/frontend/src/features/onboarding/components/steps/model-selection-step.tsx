@@ -25,19 +25,33 @@ import { useT } from "@/i18n";
 import type { TrainingMethod } from "@/types/training";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { HfTokenField } from "../hf-token-field";
 
 export function ModelSelectionStep() {
   const t = useT();
-  const { selectedModel, trainingMethod, setTrainingMethod } =
-    useTrainingConfigStore(
-      useShallow((state) => ({
-        selectedModel: state.selectedModel,
-        trainingMethod: state.trainingMethod,
-        setTrainingMethod: state.setTrainingMethod,
-      })),
-    );
+  const {
+    ensureModelDefaultsLoaded,
+    modelType,
+    selectedModel,
+    trainingMethod,
+    setTrainingMethod,
+  } = useTrainingConfigStore(
+    useShallow((state) => ({
+      ensureModelDefaultsLoaded: state.ensureModelDefaultsLoaded,
+      modelType: state.modelType,
+      selectedModel: state.selectedModel,
+      trainingMethod: state.trainingMethod,
+      setTrainingMethod: state.setTrainingMethod,
+    })),
+  );
+
+  useEffect(() => {
+    if (selectedModel) {
+      ensureModelDefaultsLoaded();
+    }
+  }, [ensureModelDefaultsLoaded, selectedModel]);
 
   return (
     <FieldGroup>
@@ -48,7 +62,7 @@ export function ModelSelectionStep() {
         <FieldDescription>
           {t("studio.wizard.modelPickerDescription")}
         </FieldDescription>
-        <TrainModelSelector />
+        <TrainModelSelector requiredModelType={modelType ?? undefined} />
       </Field>
 
       {selectedModel && (

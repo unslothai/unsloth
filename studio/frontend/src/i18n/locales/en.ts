@@ -1049,6 +1049,11 @@ export const en = {
       modelLabel: "Model",
       methodLabel: "Method",
       datasetLabel: "Dataset",
+      hfTokenLabel: "Hugging Face token",
+      hfTokenDescription:
+        "Required for gated or private models and datasets.",
+      hfTokenGet: "Get token",
+      hfTokenChecking: "Checking token…",
       modelPickerDescription:
         "Search Hugging Face or choose a trainable model already on this device.",
       trainingMethod: "Training method",
@@ -1164,6 +1169,8 @@ export const en = {
       tokenRejectedBody: "Update your token in Settings → General, then retry.",
       hubUnreachable: "Couldn't reach Hugging Face",
       cantUseModel: "Can't use model for training",
+      reasonTypeMismatch:
+        "This model doesn't match the training type selected in the previous step.",
       reasonEmptyId: "Enter a model id or local model path.",
       reasonGguf: "GGUF models cannot be used for training.",
       reasonAdapter: "Adapter outputs cannot be used as base training models.",

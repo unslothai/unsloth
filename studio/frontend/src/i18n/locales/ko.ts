@@ -1055,6 +1055,11 @@ export const ko = {
       modelLabel: "모델",
       methodLabel: "방법",
       datasetLabel: "데이터셋",
+      hfTokenLabel: "Hugging Face 토큰",
+      hfTokenDescription:
+        "액세스가 제한되거나 비공개인 모델 및 데이터 세트에 필요합니다.",
+      hfTokenGet: "토큰 받기",
+      hfTokenChecking: "토큰 확인 중…",
       modelPickerDescription:
         "Hugging Face를 검색하거나 이 기기에 이미 있는 학습 가능한 모델을 선택하세요.",
       trainingMethod: "학습 방법",
@@ -1181,6 +1186,8 @@ export const ko = {
         "설정 → 일반에서 토큰을 업데이트한 후 다시 시도하세요.",
       hubUnreachable: "Hugging Face에 연결하지 못했습니다",
       cantUseModel: "이 모델은 학습에 사용할 수 없습니다",
+      reasonTypeMismatch:
+        "이 모델은 이전 단계에서 선택한 학습 유형과 일치하지 않습니다.",
       reasonInvalidHubId:
         "유효한 Hugging Face 모델 ID를 입력하세요. 형식은 repo 또는 owner/repo이며 영문자, 숫자, ., _, -만 사용할 수 있습니다(각 부분 최대 96자).",
       reasonEmptyId: "모델 ID 또는 로컬 모델 경로를 입력하세요.",

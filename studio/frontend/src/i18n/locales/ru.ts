@@ -1066,6 +1066,11 @@ export const ru = {
       modelLabel: "Модель",
       methodLabel: "Метод",
       datasetLabel: "Датасет",
+      hfTokenLabel: "Токен Hugging Face",
+      hfTokenDescription:
+        "Необходим для моделей и наборов данных с ограниченным или закрытым доступом.",
+      hfTokenGet: "Получить токен",
+      hfTokenChecking: "Проверка токена…",
       modelPickerDescription:
         "Найдите модель на Hugging Face или выберите доступную для обучения модель на этом устройстве.",
       trainingMethod: "Метод обучения",
@@ -1194,6 +1199,8 @@ export const ru = {
         "Обновите токен в разделе «Настройки» → «Общие», затем повторите попытку.",
       hubUnreachable: "Не удалось подключиться к Hugging Face",
       cantUseModel: "Модель нельзя использовать для обучения",
+      reasonTypeMismatch:
+        "Эта модель не соответствует типу обучения, выбранному на предыдущем шаге.",
       reasonInvalidHubId:
         "Введите допустимый ID модели Hugging Face: repo или owner/repo. Используйте только латинские буквы, цифры, ., _ или - (не более 96 символов в каждой части).",
       reasonEmptyId: "Введите ID модели или путь к локальной модели.",

@@ -1063,6 +1063,11 @@ export const hi = {
       modelLabel: "मॉडल",
       methodLabel: "विधि",
       datasetLabel: "डेटासेट",
+      hfTokenLabel: "Hugging Face टोकन",
+      hfTokenDescription:
+        "गेटेड या निजी मॉडल और डेटासेट के लिए आवश्यक।",
+      hfTokenGet: "टोकन प्राप्त करें",
+      hfTokenChecking: "टोकन की जाँच हो रही है…",
       modelPickerDescription:
         "Hugging Face पर खोजें या इस डिवाइस पर पहले से मौजूद ट्रेनिंग योग्य मॉडल चुनें।",
       trainingMethod: "ट्रेनिंग विधि",
@@ -1182,6 +1187,8 @@ export const hi = {
         "सेटिंग्स → सामान्य में अपना टोकन अपडेट करें, फिर पुनः प्रयास करें।",
       hubUnreachable: "Hugging Face तक नहीं पहुंच सके",
       cantUseModel: "मॉडल को ट्रेनिंग के लिए उपयोग नहीं कर सकते",
+      reasonTypeMismatch:
+        "यह मॉडल पिछले चरण में चुने गए प्रशिक्षण प्रकार से मेल नहीं खाता।",
       reasonEmptyId: "मॉडल ID या स्थानीय मॉडल पथ दर्ज करें।",
       reasonInvalidHubId:
         "एक मान्य Hugging Face मॉडल ID दर्ज करें: रेपो या मालिक/रेपो, जिसमें केवल अक्षर, अंक, ., _ या - हों (हर भाग में अधिकतम 96 वर्ण)।",

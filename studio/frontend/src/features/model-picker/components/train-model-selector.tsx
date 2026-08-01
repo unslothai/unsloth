@@ -17,6 +17,7 @@ import { usePickerHubPagination } from "@/components/resource-picker/use-picker-
 import { usePickerState } from "@/components/resource-picker/use-picker-state";
 import { usePlatformStore } from "@/config/env";
 import {
+  MODEL_TYPE_TO_HF_TASKS,
   PRIORITY_TRAINING_MODELS,
   applyPriorityOrdering,
 } from "@/config/training";
@@ -44,6 +45,7 @@ import {
   buildLocalTrainingModelLookup,
   inferTrainingModelTypeFromFlags,
   isLocalTrainingModelSelection,
+  trainingModelMatchesTypeConstraint,
   trainingModelTypeFlagsFromMetadata,
   useTrainingConfigStore,
   validateTrainingModelCandidate,
@@ -54,7 +56,7 @@ import { extractParamLabel, parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
 import { buildModelVramMap } from "@/lib/vram";
-import type { TrainingMethod } from "@/types/training";
+import type { ModelType, TrainingMethod } from "@/types/training";
 import { ArrowDown01Icon, ChipIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
@@ -140,12 +142,97 @@ function buildTrainModelVramViews(
 interface FreeformTrainingModelPick {
   deviceKey: string | null;
   id: string;
-  options: {
-    knownCached: boolean;
-    localPath: string | null;
-    modelFormat: ModelInventoryFormat | null;
-  };
+  options: TrainingModelPickOptions;
   modelTypeFlags: ModelTypeCapabilityFlags;
+}
+
+interface TrainingModelPickOptions {
+  knownCached?: boolean;
+  localPath?: string | null;
+  modelFormat?: ModelInventoryFormat | null;
+}
+
+function trainingModelTaskFilter(requiredModelType: ModelType | undefined) {
+  return requiredModelType
+    ? MODEL_TYPE_TO_HF_TASKS[requiredModelType]
+    : undefined;
+}
+
+function commitTrainingModelPick({
+  closePicker,
+  id,
+  inferredFlags,
+  mismatchDescription,
+  mismatchTitle,
+  options,
+  requiredModelType,
+  selectTrainingModel,
+}: {
+  closePicker: () => void;
+  id: string;
+  inferredFlags: ModelTypeCapabilityFlags;
+  mismatchDescription: string;
+  mismatchTitle: string;
+  options: TrainingModelPickOptions;
+  requiredModelType: ModelType | undefined;
+  selectTrainingModel: (
+    model: string,
+    modelType: ModelType,
+    options: TrainingModelPickOptions & ModelTypeCapabilityFlags,
+  ) => void;
+}) {
+  const next = id.trim();
+  if (!next) {
+    return;
+  }
+  const inferredModelType = inferTrainingModelTypeFromFlags(inferredFlags);
+  if (
+    !trainingModelMatchesTypeConstraint(inferredModelType, requiredModelType)
+  ) {
+    toast.error(mismatchTitle, { description: mismatchDescription });
+    return;
+  }
+  selectTrainingModel(next, inferredModelType, {
+    ...options,
+    ...inferredFlags,
+  });
+  closePicker();
+}
+
+function filterTrainableLocalModels(
+  models: readonly TrainModelDeviceItem[],
+  query: string,
+): TrainModelDeviceItem[] {
+  const tokens = tokenizeQuery(query);
+  if (tokens.length === 0) {
+    return [...models];
+  }
+  return models.filter((model) =>
+    matchTokens(
+      `${model.id} ${model.title} ${model.path} ${model.sourceLabel}`,
+      tokens,
+    ),
+  );
+}
+
+function shouldShowFreeformModelOption({
+  hasExactMatch,
+  isLoadingLocalModels,
+  query,
+  tab,
+}: {
+  hasExactMatch: boolean;
+  isLoadingLocalModels: boolean;
+  query: string;
+  tab: "device" | "hub";
+}): boolean {
+  return (
+    query.trim().length > 0 &&
+    !hasExactMatch &&
+    (tab === PICKER_TAB.device
+      ? !isLoadingLocalModels
+      : isValidHubResourceId(query))
+  );
 }
 
 function deviceItemFreeformPick(
@@ -184,7 +271,11 @@ function resolveFreeformTrainingModelPick(
   };
 }
 
-export function TrainModelSelector() {
+export function TrainModelSelector({
+  requiredModelType,
+}: {
+  requiredModelType?: ModelType;
+}) {
   const t = useT();
   const gpu = useGpuInfo();
   const {
@@ -326,6 +417,16 @@ export function TrainModelSelector() {
       ].sort(compareTrainModelDeviceItems),
     [cachedRows, localRows, isTrainableCachedRow, isTrainableLocalRow, t],
   );
+  const eligibleLocalModels = useMemo(
+    () =>
+      trainableLocalModels.filter((model) =>
+        trainingModelMatchesTypeConstraint(
+          inferTrainingModelTypeFromFlags(model.modelTypeFlags),
+          requiredModelType,
+        ),
+      ),
+    [requiredModelType, trainableLocalModels],
+  );
   const localModelDisplayCandidates = useMemo(
     () => [
       ...cachedRows.map(toCachedTrainModelDisplayCandidate),
@@ -334,22 +435,17 @@ export function TrainModelSelector() {
     [cachedRows, localRows],
   );
 
-  const hasDeviceItems = trainableLocalModels.length > 0;
+  const hasDeviceItems = eligibleLocalModels.length > 0;
   const pickerView = picker.getViewState({
     hasDeviceItems,
     isDeviceInventorySettled: inventorySettled,
   });
   const { activeQuery, handleOpenChange, handleQueryChange, tab } = pickerView;
 
-  const filteredLocalModels = useMemo(() => {
-    const tokens = tokenizeQuery(picker.deviceQuery);
-    if (tokens.length === 0) {
-      return trainableLocalModels;
-    }
-    return trainableLocalModels.filter((m) =>
-      matchTokens(`${m.id} ${m.title} ${m.path} ${m.sourceLabel}`, tokens),
-    );
-  }, [trainableLocalModels, picker.deviceQuery]);
+  const filteredLocalModels = useMemo(
+    () => filterTrainableLocalModels(eligibleLocalModels, picker.deviceQuery),
+    [eligibleLocalModels, picker.deviceQuery],
+  );
 
   const selectedDeviceItemKey = useMemo(() => {
     const matches = filteredLocalModels.filter((item) =>
@@ -388,6 +484,7 @@ export function TrainModelSelector() {
     scannedCount: scannedHfCount,
     hasMore: hasMoreHf,
   } = useHubModelSearch(picker.debouncedHubQuery, {
+    task: trainingModelTaskFilter(requiredModelType),
     accessToken: hfApiToken(picker.debouncedHfToken),
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
@@ -450,22 +547,19 @@ export function TrainModelSelector() {
 
   function pick(
     id: string,
-    options: {
-      knownCached?: boolean;
-      localPath?: string | null;
-      modelFormat?: ModelInventoryFormat | null;
-    },
+    options: TrainingModelPickOptions,
     inferredFlags: ModelTypeCapabilityFlags,
   ) {
-    const next = id.trim();
-    if (!next) {
-      return;
-    }
-    selectTrainingModel(next, inferTrainingModelTypeFromFlags(inferredFlags), {
-      ...options,
-      ...inferredFlags,
+    commitTrainingModelPick({
+      closePicker: picker.closePicker,
+      id,
+      inferredFlags,
+      mismatchDescription: t("studio.modelPicker.reasonTypeMismatch"),
+      mismatchTitle: t("studio.modelPicker.cantUseModel"),
+      options,
+      requiredModelType,
+      selectTrainingModel,
     });
-    picker.closePicker();
   }
 
   function pickHubModel(id: string) {
@@ -581,7 +675,7 @@ export function TrainModelSelector() {
     }
     const resolution = resolveExactTrainModelDeviceItem(
       query,
-      trainableLocalModels,
+      eligibleLocalModels,
     );
     if (resolution.kind === "ambiguous") {
       return {
@@ -617,14 +711,14 @@ export function TrainModelSelector() {
     activeQuery,
     tab,
     hubResultIds,
-    trainableLocalModels,
+    eligibleLocalModels,
   );
-  const showUseThis =
-    activeQuery.trim().length > 0 &&
-    !hasExactMatch &&
-    (tab === PICKER_TAB.device
-      ? !isLoadingLocalModels
-      : isValidHubResourceId(activeQuery));
+  const showUseThis = shouldShowFreeformModelOption({
+    hasExactMatch,
+    isLoadingLocalModels,
+    query: activeQuery,
+    tab,
+  });
   const useThisLabel =
     tab === PICKER_TAB.hub
       ? t("studio.modelPicker.useAsHubModel")

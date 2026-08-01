@@ -1251,11 +1251,40 @@ def test_training_picker_pagination_preserves_scanned_progress():
         assert "showLoadMore={showLoadMore}" in src
 
 
-def test_seamless_training_model_picker_has_no_hidden_task_filter():
+def test_training_model_picker_only_filters_tasks_for_an_explicit_constraint():
     src = _read("features/model-picker/components/train-model-selector.tsx")
     search_options = src.split("useHubModelSearch(", 1)[1].split("});", 1)[0]
-    assert "MODEL_TYPE_TO_HF_TASKS" not in src
-    assert re.search(r"\btask\b", search_options) is None
+    assert "requiredModelType?: ModelType" in src
+    assert "task: trainingModelTaskFilter(requiredModelType)" in search_options
+    task_filter = src.split("function trainingModelTaskFilter", 1)[1].split(
+        "function commitTrainingModelPick", 1
+    )[0]
+    assert "MODEL_TYPE_TO_HF_TASKS[requiredModelType]" in task_filter
+    assert ": undefined" in task_filter
+    assert "eligibleLocalModels" in src
+    assert "trainingModelMatchesTypeConstraint(" in src
+    assert "commitTrainingModelPick({" in src
+    assert 't("studio.modelPicker.reasonTypeMismatch")' in src
+
+
+def test_onboarding_constrains_model_type_and_recovers_default_loading():
+    src = _read("features/onboarding/components/steps/model-selection-step.tsx")
+
+    assert "modelType: state.modelType" in src
+    assert "ensureModelDefaultsLoaded: state.ensureModelDefaultsLoaded" in src
+    assert "ensureModelDefaultsLoaded();" in src
+    assert "[ensureModelDefaultsLoaded, selectedModel]" in src
+    assert "requiredModelType={modelType ?? undefined}" in src
+
+
+def test_picker_tabs_reset_the_shared_scroll_container():
+    src = _read("components/resource-picker/picker-shell.tsx")
+    tab_change = src.split("function handleTabChange", 1)[1].split(
+        "function findMatchingOption", 1
+    )[0]
+
+    assert "window.requestAnimationFrame" in tab_change
+    assert "scrollRef.current.scrollTop = 0" in tab_change
 
 
 def test_cached_training_rows_select_canonical_repo_identity():
@@ -1420,7 +1449,8 @@ def test_local_dataset_keyboard_commit_uses_canonical_path_identity():
     assert "export type PickerExactQueryCommitResult" in shell
     assert "onExactQueryCommit?: (query: string) => PickerExactQueryCommitResult;" in shell
     assert "isValidHubResourceId(activeQuery)" in selector
-    assert "isValidHubResourceId(activeQuery)" in model_selector
+    assert "isValidHubResourceId(query)" in model_selector
+    assert "query: activeQuery" in model_selector
     assert shell.index('commitResult?.kind === "handled"') < shell.index("if (canUseThis)")
     assert "const canCommitQuery = tab !== PICKER_TAB.hub || online" in shell
     assert "const canUseThis = showUseThis && canCommitQuery" in shell

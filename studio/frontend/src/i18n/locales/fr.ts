@@ -1093,6 +1093,11 @@ export const fr = {
       modelLabel: "Modèle",
       methodLabel: "Méthode",
       datasetLabel: "Jeu de données",
+      hfTokenLabel: "Jeton Hugging Face",
+      hfTokenDescription:
+        "Nécessaire pour les modèles et jeux de données restreints ou privés.",
+      hfTokenGet: "Obtenir un jeton",
+      hfTokenChecking: "Vérification du jeton…",
       modelPickerDescription:
         "Recherchez sur Hugging Face ou choisissez un modèle entraînable déjà présent sur cet appareil.",
       trainingMethod: "Méthode d'entraînement",
@@ -1215,6 +1220,8 @@ export const fr = {
         "Mettez à jour votre token dans Paramètres → Général, puis réessayez.",
       hubUnreachable: "Impossible de joindre Hugging Face",
       cantUseModel: "Impossible d'utiliser le modèle pour l'entraînement",
+      reasonTypeMismatch:
+        "Ce modèle ne correspond pas au type d’entraînement sélectionné à l’étape précédente.",
       reasonEmptyId:
         "Saisissez un ID de modèle ou le chemin d'un modèle local.",
       reasonInvalidHubId:

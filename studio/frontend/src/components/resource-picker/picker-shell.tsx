@@ -238,6 +238,11 @@ export function PickerShell({
   function handleTabChange(nextTab: PickerTab) {
     setQueryStatus("");
     onTabChange(nextTab);
+    window.requestAnimationFrame(() => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = 0;
+      }
+    });
   }
 
   function findMatchingOption(query: string) {

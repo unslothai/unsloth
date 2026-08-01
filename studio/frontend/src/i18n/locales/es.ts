@@ -1087,6 +1087,11 @@ export const es = {
       modelLabel: "Modelo",
       methodLabel: "Método",
       datasetLabel: "Conjunto de datos",
+      hfTokenLabel: "Token de Hugging Face",
+      hfTokenDescription:
+        "Necesario para modelos y conjuntos de datos restringidos o privados.",
+      hfTokenGet: "Obtener token",
+      hfTokenChecking: "Comprobando token…",
       modelPickerDescription:
         "Busca en Hugging Face o elige un modelo entrenable que ya esté en este dispositivo.",
       trainingMethod: "Método de entrenamiento",
@@ -1209,6 +1214,8 @@ export const es = {
         "Actualiza el token en Configuración → General y vuelve a intentarlo.",
       hubUnreachable: "No se pudo acceder a Hugging Face",
       cantUseModel: "No se puede usar el modelo para entrenar",
+      reasonTypeMismatch:
+        "Este modelo no coincide con el tipo de entrenamiento seleccionado en el paso anterior.",
       reasonEmptyId: "Introduce un ID de modelo o una ruta de modelo local.",
       reasonInvalidHubId:
         "Introduce un ID válido de modelo de Hugging Face: repositorio o propietario/repositorio, usando solo letras, números, ., _ o - (máximo 96 caracteres por parte).",

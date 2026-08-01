@@ -9,10 +9,12 @@ import {
 } from "@/components/ui/input-group";
 import { useHfTokenStore } from "@/features/hub";
 import { useHfTokenValidation } from "@/hooks";
+import { useT } from "@/i18n";
 import { Key01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 export function HfTokenField() {
+  const t = useT();
   const token = useHfTokenStore((state) => state.token);
   const setToken = useHfTokenStore((state) => state.setToken);
   const validation = useHfTokenValidation(token);
@@ -20,18 +22,20 @@ export function HfTokenField() {
   return (
     <Field>
       <FieldLabel>
-        Hugging Face token{" "}
-        <span className="font-normal text-muted-foreground">(Optional)</span>
+        {t("studio.wizard.hfTokenLabel")}{" "}
+        <span className="font-normal text-muted-foreground">
+          ({t("studio.params.optional")})
+        </span>
       </FieldLabel>
       <FieldDescription>
-        Required for gated or private models and datasets.{" "}
+        {t("studio.wizard.hfTokenDescription")}{" "}
         <a
           href="https://huggingface.co/settings/tokens"
           target="_blank"
           rel="noopener noreferrer"
           className="text-primary hover:underline"
         >
-          Get token
+          {t("studio.wizard.hfTokenGet")}
         </a>
       </FieldDescription>
       <InputGroup>
@@ -49,7 +53,9 @@ export function HfTokenField() {
         />
       </InputGroup>
       {validation.isChecking ? (
-        <p className="text-xs text-muted-foreground">Checking token…</p>
+        <p className="text-xs text-muted-foreground">
+          {t("studio.wizard.hfTokenChecking")}
+        </p>
       ) : validation.error ? (
         <p className="text-xs text-destructive">{validation.error}</p>
       ) : null}

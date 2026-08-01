@@ -20,6 +20,7 @@ const DATASET_EXTENSION_SET = new Set<string>(
 const DOCUMENT_EXTENSION_SET = new Set<string>(
   TRAINING_DOCUMENT_REDIRECT_EXTENSIONS,
 );
+const NATIVE_PATH_SEPARATOR_RE = /[\\/]/;
 
 export type NativeTrainingDatasetDrop =
   | { kind: "dataset"; path: string; filename: string }
@@ -28,7 +29,7 @@ export type NativeTrainingDatasetDrop =
   | { kind: "unsupported" };
 
 function extensionOf(path: string): string {
-  const filename = nativePathFilename(path);
+  const filename = path.split(NATIVE_PATH_SEPARATOR_RE).pop()?.trim() ?? "";
   const dot = filename.lastIndexOf(".");
   return dot >= 0 ? filename.slice(dot).toLowerCase() : "";
 }
@@ -38,7 +39,7 @@ export function isTrainingDatasetUploadPath(path: string): boolean {
 }
 
 export function nativePathFilename(path: string): string {
-  const filename = path.split(/[\\/]/).pop()?.trim() ?? "";
+  const filename = path.split(NATIVE_PATH_SEPARATOR_RE).pop()?.trim() ?? "";
   const sanitized = Array.from(filename, (character) => {
     const code = character.charCodeAt(0);
     return code <= 31 || code === 127 ? " " : character;
@@ -61,7 +62,7 @@ export function classifyNativeTrainingDatasetDrop(
   }
   const filename = nativePathFilename(path);
   const extension = extensionOf(path);
-  if (isTrainingDatasetUploadPath(path)) {
+  if (DATASET_EXTENSION_SET.has(extension)) {
     return { kind: "dataset", path, filename };
   }
   if (DOCUMENT_EXTENSION_SET.has(extension)) {
