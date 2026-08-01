@@ -247,8 +247,8 @@ def test_lifespan_honors_bootstrap_suppression_in_source():
 def test_clear_bootstrap_password_truncates_when_unlink_fails(monkeypatch, tmp_path):
     # If the file cannot be unlinked (Windows AV / read-only auth dir), clear must
     # truncate it so its stale plaintext cannot be re-seeded by
-    # generate_bootstrap_password() after a later reset-password deletes auth.db,
-    # which would re-validate the revoked bootstrap password.
+    # generate_bootstrap_password() if auth.db is ever recreated, which would
+    # re-validate the revoked bootstrap password.
     import pathlib
 
     pw_path = tmp_path / ".bootstrap_password"

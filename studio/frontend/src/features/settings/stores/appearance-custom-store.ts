@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import {
+  type StateStorage,
+  createJSONStorage,
+  persist,
+} from "zustand/middleware";
 import type { ResolvedTheme } from "./theme-store";
 
 // Best-effort persistence: localStorage can be blocked (private browsing) and
@@ -200,7 +204,9 @@ function sanitizeImportedFonts(value: unknown): ImportedFont[] {
     const source = (entry ?? {}) as Partial<ImportedFont>;
     // Cap to the backend name length so an over-long name can't fail the PUT.
     const rawName = sanitizeFont(source.name);
-    const name = rawName ? rawName.slice(0, MAX_IMPORTED_FONT_NAME_LENGTH) : null;
+    const name = rawName
+      ? rawName.slice(0, MAX_IMPORTED_FONT_NAME_LENGTH)
+      : null;
     if (!name || seen.has(name)) continue;
     const dataUrl = source.dataUrl;
     if (
@@ -389,15 +395,160 @@ function hexLuminance(hex: string): number {
   return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
 }
 
+const FOREGROUND_DARK = "#111417";
+const FOREGROUND_LIGHT = "#ffffff";
+const FOREGROUND_DARK_FALLBACK = "#000000";
+const FOREGROUND_CONTRAST_FLOOR = 4.5;
+const ACCENT_TEXT_FLOOR = 2.5;
+const ACCENT_TEXT_WASH_OPACITY = 0.2;
+// Cover the full 8-bit channel range so a narrow valid contrast band is not
+// skipped when the custom and elevated surfaces sit far apart.
+const MIX_STEPS = 255;
+
+/** WCAG contrast ratio between two relative luminances. */
+function contrastRatio(a: number, b: number): number {
+  const [high, low] = a >= b ? [a, b] : [b, a];
+  return (high + 0.05) / (low + 0.05);
+}
+
+function mixColors(hex: string, target: string, amount: number): string {
+  const channel = (index: number) => {
+    const value = Number.parseInt(hex.slice(index, index + 2), 16);
+    const targetValue = Number.parseInt(target.slice(index, index + 2), 16);
+    return Math.round(value + (targetValue - value) * amount)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
+
+/**
+ * Whichever foreground actually contrasts more. A fixed luminance threshold
+ * put white on mid-tone accents: #22c55e scored 2.28:1 on white against
+ * 8.11:1 on the dark ink. The crossover for this pair is near 0.19, but
+ * comparing the ratios needs no constant at all.
+ */
 function readableForeground(hex: string): string {
-  return hexLuminance(hex) > 0.45 ? "#111417" : "#ffffff";
+  const accent = hexLuminance(hex);
+  const darkContrast = contrastRatio(accent, hexLuminance(FOREGROUND_DARK));
+  const lightContrast = contrastRatio(accent, hexLuminance(FOREGROUND_LIGHT));
+  const preferred =
+    darkContrast >= lightContrast ? FOREGROUND_DARK : FOREGROUND_LIGHT;
+  if (Math.max(darkContrast, lightContrast) >= FOREGROUND_CONTRAST_FLOOR) {
+    return preferred;
+  }
+  // The preferred inks have a narrow crossover where both fall below AA.
+  // True black closes it without changing the established dark ink elsewhere.
+  return FOREGROUND_DARK_FALLBACK;
+}
+
+/** Palette surfaces that custom colors do not replace. */
+const PALETTE_SURFACES: Record<
+  ResolvedTheme,
+  { background: string; elevated: string }
+> = {
+  light: { background: "#ffffff", elevated: "#ffffff" },
+  dark: { background: "#181818", elevated: "#212121" },
+};
+
+function minimumAccentTextContrast(
+  accent: string,
+  backgrounds: readonly string[],
+): number {
+  const accentLuminance = hexLuminance(accent);
+  const against = (background: string) => {
+    const wash = mixColors(background, accent, ACCENT_TEXT_WASH_OPACITY);
+    return Math.min(
+      contrastRatio(accentLuminance, hexLuminance(background)),
+      contrastRatio(accentLuminance, hexLuminance(wash)),
+    );
+  };
+  return Math.min(...backgrounds.map(against));
+}
+
+function minimumPlainTextContrast(
+  accent: string,
+  backgrounds: readonly string[],
+): number {
+  const accentLuminance = hexLuminance(accent);
+  return Math.min(
+    ...backgrounds.map((background) =>
+      contrastRatio(accentLuminance, hexLuminance(background)),
+    ),
+  );
+}
+
+function findAccentCorrection(
+  accent: string,
+  backgrounds: readonly string[],
+  score: (hex: string, surfaces: readonly string[]) => number,
+): string | null {
+  const clears = (hex: string) => score(hex, backgrounds) >= ACCENT_TEXT_FLOOR;
+  if (clears(accent)) {
+    return accent;
+  }
+
+  const targets = [FOREGROUND_DARK_FALLBACK, FOREGROUND_LIGHT].sort(
+    (a, b) => score(b, backgrounds) - score(a, backgrounds),
+  );
+  for (let step = 1; step <= MIX_STEPS; step += 1) {
+    for (const target of targets) {
+      const candidate = mixColors(accent, target, step / MIX_STEPS);
+      if (clears(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The accent is not only a fill: text-primary and text-control-accent paint it
+ * straight onto page and elevated surfaces, including primary washes up to
+ * 20%. A pale pick in light mode, or a near-black one in dark, then disappears.
+ * Hold custom accents to the same 2.5:1 bar across both plain and tinted uses.
+ *
+ * Find the smallest correction in either direction. Endpoint order is based
+ * on actual worst-case contrast, so a mid-gray background cannot send a
+ * failing accent toward white when black is the readable endpoint. Arbitrary
+ * custom and elevated surfaces can make the stronger wash constraint
+ * impossible; in that case the plain-surface floor remains mandatory.
+ */
+function legibleAccent(accent: string, backgrounds: readonly string[]): string {
+  const washSafe = findAccentCorrection(
+    accent,
+    backgrounds,
+    minimumAccentTextContrast,
+  );
+  if (washSafe) {
+    return washSafe;
+  }
+
+  const plainSafe = findAccentCorrection(
+    accent,
+    backgrounds,
+    minimumPlainTextContrast,
+  );
+  if (plainSafe) {
+    return plainSafe;
+  }
+
+  const targets = [FOREGROUND_DARK_FALLBACK, FOREGROUND_LIGHT].sort(
+    (a, b) =>
+      minimumPlainTextContrast(b, backgrounds) -
+      minimumPlainTextContrast(a, backgrounds),
+  );
+  return targets[0] ?? FOREGROUND_DARK_FALLBACK;
 }
 
 /**
  * FontFaces registered for imported fonts, keyed by family name. The dataUrl is
  * tracked too so a re-import under the same name (new bytes) replaces the face.
  */
-const registeredFontFaces = new Map<string, { face: FontFace; dataUrl: string }>();
+const registeredFontFaces = new Map<
+  string,
+  { face: FontFace; dataUrl: string }
+>();
 
 function syncImportedFonts(fonts: ImportedFont[]): void {
   if (typeof document === "undefined" || !("fonts" in document)) return;
@@ -436,12 +587,20 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
 }
 
 /**
- * The custom "Accent" recolors the accent family (toggles, badges, chart-1).
- * Focus/selection rings and button colors (--primary) are deliberately left
- * alone: highlight borders stay neutral and Classic's buttons stay neutral.
+ * The custom "Accent" recolors the whole accent family: toggles and badges
+ * (--control-accent), charts (--chart-1), and the brand color behind primary
+ * buttons, active pills and meter labels (--primary). Only set while the user
+ * has picked an accent, so every palette keeps its own colors by default.
+ *
+ * Focus rings are unaffected: --ring is its own neutral in every palette.
+ * --verified stays pinned to the brand green on purpose, since it signals
+ * status rather than theme.
  */
-const ACCENT_VARS = ["--control-accent", "--chart-1"] as const;
-const ACCENT_FG_VARS = ["--control-accent-foreground"] as const;
+const ACCENT_VARS = ["--control-accent", "--chart-1", "--primary"] as const;
+const ACCENT_FG_VARS = [
+  "--control-accent-foreground",
+  "--primary-foreground",
+] as const;
 
 /**
  * Push the customization onto <html> as inline CSS variables, attributes, and
@@ -463,10 +622,18 @@ export function applyCustomizationToDocument(
   };
 
   const colors = c.colors[resolved];
+  const paletteSurfaces = PALETTE_SURFACES[resolved];
 
-  for (const name of ACCENT_VARS) setVar(name, colors.accent);
+  const accent = colors.accent
+    ? legibleAccent(colors.accent, [
+        colors.background ?? paletteSurfaces.background,
+        paletteSurfaces.elevated,
+      ])
+    : null;
+  for (const name of ACCENT_VARS) setVar(name, accent);
   for (const name of ACCENT_FG_VARS) {
-    setVar(name, colors.accent ? readableForeground(colors.accent) : null);
+    // Keyed off the corrected accent, since that is the color labels sit on.
+    setVar(name, accent ? readableForeground(accent) : null);
   }
   setVar("--background", colors.background);
   setVar("--foreground", colors.foreground);
@@ -515,7 +682,10 @@ export function applyCustomizationToDocument(
   // scale reaches text through the --text-* / --text-ui-* / --leading-*
   // tokens in index.css.
   if (c.uiFontSize !== null && c.uiFontSize !== UI_FONT_SIZE_RANGE.default) {
-    setVar("--ui-font-scale", String(c.uiFontSize / UI_FONT_SIZE_RANGE.default));
+    setVar(
+      "--ui-font-scale",
+      String(c.uiFontSize / UI_FONT_SIZE_RANGE.default),
+    );
     el.setAttribute("data-ui-font-size", String(c.uiFontSize));
   } else {
     setVar("--ui-font-scale", null);
@@ -563,7 +733,8 @@ export function applyCustomizationToDocument(
  * (canvas-confetti, view transitions) that CSS/MotionConfig cannot reach.
  */
 export function prefersReducedMotion(): boolean {
-  const setting = useAppearanceCustomStore.getState().customization.reduceMotion;
+  const setting =
+    useAppearanceCustomStore.getState().customization.reduceMotion;
   if (setting === "on") return true;
   if (setting === "off") return false;
   return (

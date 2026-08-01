@@ -17,7 +17,8 @@ if [ -n "${STUDIO_PERMISSION_FRONTEND:-}" ]; then
 fi
 
 mkdir -p "$artifact_dir"
-unsloth studio reset-password
+# Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
+rm -rf "$studio_home/auth"
 UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$port" "$@" \
   >"$server_log" 2>&1 &
 studio_pid=$!

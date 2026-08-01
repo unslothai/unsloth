@@ -464,6 +464,8 @@ def _read_marker_value(marker: Path) -> Optional[str]:
             return None
         value = marker.read_text(encoding = "utf-8").strip()
     except (OSError, UnicodeDecodeError):
+        # UnicodeDecodeError is a ValueError, so it would escape and abort
+        # prepare_cache_for_transport. An unknown value just purges and restarts.
         return None
     return value if value in VALID_TRANSPORTS else None
 

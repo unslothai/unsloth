@@ -91,6 +91,7 @@ import {
   useResearchRunStore,
 } from "@/features/chat/stores/research-run-store";
 import { parseExternalModelId } from "@/features/chat/external-providers";
+import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -2847,15 +2848,28 @@ const ToolStatusDisplay: FC = () => {
   }
   // From the store's start time, so returning to the conversation resumes rather than restarting.
   const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
-  const isRunning = toolStatus.startsWith("Running");
-  const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
+  const kind = toolStatusKind(toolStatus);
+  const isNudging = kind === "nudge";
+  const StatusIcon = kind === "terminal" ? TerminalIcon : GlobeIcon;
   return (
     <div
       data-testid="composer-tool-status"
       className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1"
     >
-      <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
-        <StatusIcon className="size-3.5" />
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary",
+          // The spinner is its own motion cue; pulsing too just fades it mid-spin.
+          !isNudging && "animate-pulse",
+        )}
+      >
+        {isNudging ? (
+          // label, not the default "Loading": the spinner is the badge's only
+          // role="status" region, so its name is what gets announced.
+          <Spinner className="size-3.5" label={toolStatus} />
+        ) : (
+          <StatusIcon className="size-3.5" />
+        )}
         <span>{toolStatus}</span>
         <span className="tabular-nums opacity-60">{elapsed}s</span>
       </div>

@@ -229,7 +229,8 @@ jobs:
 
       - name: Reset auth + boot Unsloth (API-only)
         run: |
-          unsloth studio reset-password
+          # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
+          rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
             > logs/studio.log 2>&1 &
@@ -573,7 +574,7 @@ jobs:
 
       - name: Reset auth + boot Unsloth (API-only, default tool policy)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
             > logs/studio.log 2>&1 &
@@ -1074,7 +1075,7 @@ jobs:
 
       - name: Reset auth + boot Unsloth (API-only)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
             > logs/studio.log 2>&1 &
@@ -1546,7 +1547,7 @@ jobs:
 
       - name: Reset auth + boot Unsloth (API-only)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
             > logs/studio.log 2>&1 &
@@ -1888,8 +1889,11 @@ jobs:
           # (step/substep -> Write-StudioStdoutMirror / Get-StudioAnsi).
           $script:StudioVtOk = $false
           $script:UnslothVerbose = $false
+          # Get-HostMachineArch is reached only on the absent path, where
+          # Test-VCRedistInstalled consults it before trusting the System32 DLL, so
+          # part A passes without it and only the clean-box part fails.
           foreach ($fn in @('Get-StudioAnsi', 'Write-StudioStdoutMirror', 'step', 'substep',
-                            'Invoke-SetupCommand', 'Refresh-Environment',
+                            'Invoke-SetupCommand', 'Refresh-Environment', 'Get-HostMachineArch',
                             'Test-VCRedistInstalled', 'Ensure-VCRedist')) {
               $src = Get-FunctionSource -Path $setup -Name $fn
               if (-not $src) { throw "Function '$fn' not found in setup.ps1" }

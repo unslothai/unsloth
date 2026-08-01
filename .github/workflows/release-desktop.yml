@@ -579,6 +579,27 @@ jobs:
         with:
           workspaces: 'studio/src-tauri -> target'
 
+      # ── macOS: fail before the build if notarization cannot run ──
+      - name: Check Apple notarization credentials
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          # A missing secret arrives as an empty string, so `set -u` never sees
+          # it, and tauri-action just skips notarization instead of failing.
+          # Check before the release build so a rotated secret costs seconds
+          # rather than a full compile.
+          for required in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!required:-}" ]; then
+              echo "Missing $required; refusing to publish an unnotarized disk image." >&2
+              exit 1
+            fi
+          done
+
       # ── macOS: import signing certificate ──
       - name: Import Apple certificate
         if: matrix.platform == 'macos-latest'
@@ -669,6 +690,113 @@ jobs:
           projectPath: studio
           tauriScript: npx --prefix . tauri
           args: -v ${{ matrix.args }}
+
+      # ── macOS: notarize + staple the disk image itself ──
+      # tauri-bundler notarizes and staples the .app, but only codesigns the
+      # .dmg it wraps around it (tauri-apps/tauri#7533). The disk image users
+      # actually download therefore ships signed but without a notarization
+      # ticket, so Gatekeeper has to phone home to clear it and blocks it
+      # outright offline. Close that gap here and fail the release if any part
+      # of it does not hold.
+      - name: Notarize final macOS disk image
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        # `--timeout` below caps the polling, but not the upload that precedes
+        # it. This job sets no timeout of its own, so without a backstop a stuck
+        # Notary service would hold `max-parallel: 1` for GitHub's 6h default
+        # and discard the Linux and Windows builds with it.
+        timeout-minutes: 45
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_macos.outputs.artifactPaths }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          dmg_path="$(
+            python3 <<'PY'
+          import json
+          import os
+          import sys
+
+          raw_paths = os.environ.get('ARTIFACT_PATHS', '')
+          try:
+              artifact_paths = json.loads(raw_paths)
+          except json.JSONDecodeError as error:
+              sys.exit(f'Invalid tauri-action artifactPaths output: {error}')
+          if not isinstance(artifact_paths, list):
+              sys.exit('tauri-action artifactPaths must be a JSON list')
+          matches = [
+              path
+              for path in artifact_paths
+              if isinstance(path, str) and path.lower().endswith('.dmg')
+          ]
+          if len(matches) != 1:
+              sys.exit(f'Expected exactly one final DMG from tauri-action, found {len(matches)}')
+          print(matches[0])
+          PY
+          )"
+
+          # First gate, before the multi-minute upload: the bundler signs the
+          # DMG whenever a signing identity is configured, so an unsigned image
+          # here means the signing step silently did nothing.
+          codesign --verify --verbose=2 "$dmg_path"
+
+          # notarytool has no environment or stdin form for --password, so the
+          # credentials are visible in argv and in the process table. That is
+          # the accepted tradeoff on a single-tenant ephemeral runner;
+          # --keychain-profile only moves the same arguments one command
+          # earlier, and the one form without argv secrets is App Store Connect
+          # API key auth, which needs a different secret type.
+          submit_status=0
+          submission="$(
+            xcrun notarytool submit "$dmg_path" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --output-format json \
+              --timeout 30m \
+              --wait
+          )" || submit_status=$?
+          printf '%s\n' "$submission"
+          submission_id="$(
+            printf '%s' "$submission" \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin).get("id", ""))' \
+              2>/dev/null
+          )" || submission_id=""
+          submission_result="$(
+            printf '%s' "$submission" \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin).get("status", ""))' \
+              2>/dev/null
+          )" || submission_result=""
+          if [ "$submit_status" -ne 0 ] || [ "$submission_result" != "Accepted" ]; then
+            # The service verdict is part of the JSON contract, independently
+            # of the command's exit code. Fetch the log whenever the response
+            # identifies a failed submission.
+            if [ -n "$submission_id" ]; then
+              xcrun notarytool log "$submission_id" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" >&2 || true
+            fi
+            if [ "$submit_status" -ne 0 ]; then
+              exit "$submit_status"
+            fi
+            echo "Notarization did not return Accepted (status=${submission_result:-missing})." >&2
+            exit 1
+          fi
+
+          xcrun stapler staple "$dmg_path"
+          # Stapling rewrites the image. `stapler validate` is what proves the
+          # offline case, since spctl can clear an unstapled image from an
+          # online CDN check; spctl then gives the verdict a user's machine
+          # would reach.
+          xcrun stapler validate "$dmg_path"
+          spctl --assess \
+            --type open \
+            --context context:primary-signature \
+            --verbose=4 \
+            "$dmg_path"
 
       # ── Windows: build + sign ──
       - name: Build Windows app
@@ -766,6 +894,7 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
+      PYPI_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
       DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
@@ -911,6 +1040,8 @@ jobs:
           notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
           metadata = {
               'version': os.environ['APP_VERSION'],
+              # App version is SemVer; CHANGELOG.md is keyed by the backend release.
+              'pypi_version': os.environ['PYPI_VERSION'],
               'notes': notes,
               'pub_date': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
               'platforms': {

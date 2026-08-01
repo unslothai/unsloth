@@ -110,11 +110,18 @@ def test_macos_upstream_pin_only_for_explicit_pre26_upstream():
     assert ilp.pinned_macos_release_tag(tahoe, UPSTREAM) is None
 
 
-def _run_resolve(monkeypatch, capsys, plans_or_exc):
+def _run_resolve(
+    monkeypatch,
+    capsys,
+    plans_or_exc,
+    *,
+    host = None,
+    extra_args = (),
+):
     monkeypatch.setattr(
         ilp,
         "detect_host",
-        lambda: _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64"),
+        lambda: host or _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64"),
     )
 
     def _resolver(tag, host, repo, published_release_tag):
@@ -126,7 +133,14 @@ def _run_resolve(monkeypatch, capsys, plans_or_exc):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["install_llama_prebuilt.py", "--resolve-prebuilt", "latest", "--output-format", "json"],
+        [
+            "install_llama_prebuilt.py",
+            "--resolve-prebuilt",
+            "latest",
+            "--output-format",
+            "json",
+            *extra_args,
+        ],
     )
     rc = ilp.main()
     assert rc == ilp.EXIT_SUCCESS
@@ -153,6 +167,33 @@ def test_resolve_prebuilt_unavailable(monkeypatch, capsys):
     out = _run_resolve(monkeypatch, capsys, ilp.PrebuiltFallback("no macOS asset"))
     assert out["prebuilt_available"] is False
     assert out["repo"] == FORK
+
+
+def test_resolve_prebuilt_backend_flag_filters_cpu_fallback(monkeypatch, capsys):
+    cpu_plan = ilp.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9585",
+        release_tag = "release",
+        attempts = [
+            ilp.AssetChoice(
+                repo = FORK,
+                tag = "release",
+                name = "app-release-linux-x64-cpu",
+                url = "https://example/cpu",
+                source_label = "published",
+                install_kind = "linux-cpu",
+            )
+        ],
+        approved_checksums = SimpleNamespace(),
+    )
+    out = _run_resolve(
+        monkeypatch,
+        capsys,
+        [cpu_plan],
+        host = _host(is_linux = True, is_x86_64 = True),
+        extra_args = ("--llama-backend", "vulkan"),
+    )
+    assert out["prebuilt_available"] is False
 
 
 def _run_resolve_capture_host(monkeypatch, capsys):
@@ -401,6 +442,99 @@ def test_direct_upstream_x86_intel_prefers_vulkan():
     assert "linux-cpu" in kinds
 
 
+def _published_vulkan_bundle(*install_kinds):
+    profiles = {
+        "linux-vulkan": "linux-vulkan-x64",
+        "windows-vulkan": "windows-vulkan-x64",
+        "linux-cpu": "linux-cpu-x64",
+        "linux-arm64": "linux-cpu-arm64",
+        "windows-cpu": "windows-cpu-x64",
+    }
+    artifacts = [
+        ilp.PublishedLlamaArtifact(
+            asset_name = f"app-release-{install_kind}",
+            install_kind = install_kind,
+            runtime_line = None,
+            coverage_class = None,
+            supported_sms = [],
+            min_sm = None,
+            max_sm = None,
+            bundle_profile = profiles.get(install_kind),
+            rank = 60,
+        )
+        for install_kind in install_kinds
+    ]
+    return ilp.PublishedReleaseBundle(
+        repo = FORK,
+        release_tag = "release",
+        upstream_tag = "b9925",
+        assets = {
+            artifact.asset_name: f"https://example/{artifact.asset_name}" for artifact in artifacts
+        },
+        artifacts = artifacts,
+    )
+
+
+def test_fork_linux_intel_prefers_published_vulkan_bundle():
+    bundle = _published_vulkan_bundle("linux-vulkan", "linux-cpu")
+    attempts = ilp._linux_published_attempts(
+        _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
+        bundle,
+    )
+    assert [attempt.install_kind for attempt in attempts] == ["linux-vulkan", "linux-cpu"]
+    assert attempts[0].source_label == "published"
+    assert ["llama-diffusion-gemma-visual-server"] in ilp.runtime_payload_health_groups(attempts[0])
+
+
+def test_fork_linux_arm64_does_not_select_x64_vulkan_bundle():
+    bundle = _published_vulkan_bundle("linux-vulkan", "linux-arm64")
+    attempts = ilp._linux_published_attempts(
+        _host(
+            machine = "aarch64",
+            is_linux = True,
+            is_arm64 = True,
+            has_intel_gpu = True,
+        ),
+        bundle,
+    )
+
+    assert [attempt.install_kind for attempt in attempts] == ["linux-arm64"]
+
+
+def test_fork_windows_intel_prefers_published_vulkan_bundle():
+    bundle = _published_vulkan_bundle("windows-vulkan", "windows-cpu")
+    checksums = ilp.ApprovedReleaseChecksums(
+        repo = FORK,
+        release_tag = bundle.release_tag,
+        upstream_tag = bundle.upstream_tag,
+        artifacts = {
+            artifact.asset_name: ilp.ApprovedArtifactHash(
+                asset_name = artifact.asset_name,
+                sha256 = "a" * 64,
+                repo = FORK,
+                kind = artifact.install_kind,
+            )
+            for artifact in bundle.artifacts
+        },
+    )
+    attempts = ilp.resolve_release_asset_choice(
+        _host(
+            system = "Windows",
+            is_windows = True,
+            is_x86_64 = True,
+            has_intel_gpu = True,
+        ),
+        bundle.upstream_tag,
+        bundle,
+        checksums,
+    )
+    assert [attempt.install_kind for attempt in attempts] == ["windows-vulkan", "windows-cpu"]
+    assert attempts[0].source_label == "published"
+    assert ["llama-diffusion-gemma-visual-server.exe"] in ilp.runtime_payload_health_groups(
+        attempts[0]
+    )
+
+
 def test_linux_vulkan_health_glob_matches_bare_cpu_lib():
     # The widened glob must cover both arch-suffixed (x64) and bare (arm64) CPU
     # libs so a valid Vulkan install is not re-flagged unhealthy every check.
@@ -417,15 +551,98 @@ def test_linux_vulkan_health_glob_matches_bare_cpu_lib():
     assert ["libggml-cpu-*.so*"] not in groups
 
 
-def test_route_to_vulkan_prebuilt_auto_intel_goes_upstream_and_drops_fork_pin():
-    # Routing fork -> upstream also drops the fork release pin, which is in a
-    # different tag namespace and would make the upstream resolver miss.
+@pytest.mark.parametrize(
+    "backend, legacy, expected_backend, expected",
+    [
+        (None, None, None, False),
+        ("vulkan", None, "vulkan", True),
+        (" VULKAN ", None, "vulkan", True),
+        ("auto", "1", None, True),
+        (None, "true", None, True),
+        (None, "on", None, True),
+        ("auto", None, None, False),
+        ("cpu", "0", "cpu", False),
+        ("hip", "1", "hip", False),
+        ("rocm", "on", "hip", False),
+        (" HIP ", "1", "hip", False),
+        (" ROCM ", "1", "hip", False),
+    ],
+)
+def test_force_vulkan_requested_accepts_public_selector_and_legacy_alias(
+    monkeypatch, backend, legacy, expected_backend, expected
+):
+    # UNSLOTH_LLAMA_CPP_BACKEND is the public selector; a recognized non-vulkan
+    # value is authoritative, so it opts out even against a stale legacy alias.
+    # auto/unset/unknown leave the backend unpinned so selection stays automatic.
+    for name, value in (
+        ("UNSLOTH_LLAMA_CPP_BACKEND", backend),
+        ("UNSLOTH_FORCE_VULKAN", legacy),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising = False)
+        else:
+            monkeypatch.setenv(name, value)
+    assert ilp.llama_backend_from_env() == expected_backend
+    assert ilp.force_vulkan_requested() is expected
+
+
+def test_forced_vulkan_filters_cpu_fallback_before_validation():
+    vulkan = ilp.AssetChoice(
+        repo = UPSTREAM,
+        tag = "b9925",
+        name = "llama-b9925-bin-ubuntu-vulkan-x64.tar.gz",
+        url = "https://example/vulkan",
+        source_label = "upstream",
+        install_kind = "linux-vulkan",
+    )
+    cpu = ilp.AssetChoice(
+        repo = UPSTREAM,
+        tag = "b9925",
+        name = "llama-b9925-bin-ubuntu-x64.tar.gz",
+        url = "https://example/cpu",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+    )
+    assert ilp._vulkan_only_attempts([vulkan, cpu]) == [vulkan]
+
+
+def test_forced_vulkan_skips_cpu_only_release_plans():
+    vulkan = ilp.AssetChoice(
+        repo = UPSTREAM,
+        tag = "b9924",
+        name = "llama-b9924-bin-ubuntu-vulkan-x64.tar.gz",
+        url = "https://example/vulkan",
+        source_label = "upstream",
+        install_kind = "linux-vulkan",
+    )
+    cpu = ilp.AssetChoice(
+        repo = UPSTREAM,
+        tag = "b9925",
+        name = "llama-b9925-bin-ubuntu-x64.tar.gz",
+        url = "https://example/cpu",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+    )
+    plans = [
+        ilp.InstallReleasePlan("latest", "b9925", "b9925", [cpu], SimpleNamespace()),
+        ilp.InstallReleasePlan("latest", "b9924", "b9924", [vulkan], SimpleNamespace()),
+    ]
+
+    filtered = ilp._vulkan_only_release_plans(plans)
+
+    assert [plan.release_tag for plan in filtered] == ["b9924"]
+    assert filtered[0].attempts == [vulkan]
+
+
+def test_route_to_vulkan_prebuilt_auto_intel_keeps_fork_release():
+    # The fork now publishes a verified Vulkan app bundle that includes the
+    # DiffusionGemma runner, so keep its release namespace and pin.
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
     routed, repo, tag, _persist = ilp._route_to_vulkan_prebuilt(
         host, FORK, "b9596-mix-abc", force_cpu = False
     )
-    assert repo == UPSTREAM
-    assert tag == ""
+    assert repo == FORK
+    assert tag == "b9596-mix-abc"
     assert routed.has_intel_gpu is True
 
 
@@ -439,6 +656,94 @@ def test_route_to_vulkan_prebuilt_preserves_explicit_upstream_pin():
     assert tag == "b9596"
 
 
+def _linux_arm64_vulkan_host():
+    return _host(
+        system = "Linux",
+        machine = "aarch64",
+        is_linux = True,
+        is_arm64 = True,
+        has_intel_gpu = True,
+    )
+
+
+def test_route_to_vulkan_prebuilt_linux_arm64_falls_back_to_upstream():
+    # The fork ships no ARM64 Vulkan bundle, so a forced-Vulkan Linux ARM64 host
+    # must keep planning against upstream (which publishes
+    # llama-<tag>-bin-ubuntu-vulkan-arm64.tar.gz). The fork pin is dropped because
+    # the two repos use different tag namespaces.
+    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
+        _linux_arm64_vulkan_host(),
+        FORK,
+        "b9596-mix-abc",
+        force_cpu = False,
+        llama_backend = "vulkan",
+    )
+
+    assert repo == UPSTREAM
+    assert tag == ""
+    assert persist == "vulkan"
+    assert routed.has_intel_gpu is True
+
+
+def test_forced_vulkan_linux_arm64_still_resolves_a_vulkan_bundle():
+    # End to end for the routing above: without it the fork planner yields only the
+    # ARM64 CPU attempt, and the strict-Vulkan filter then leaves nothing to install.
+    routed, repo, _tag, _persist = ilp._route_to_vulkan_prebuilt(
+        _linux_arm64_vulkan_host(),
+        FORK,
+        "",
+        force_cpu = False,
+        llama_backend = "vulkan",
+    )
+    fork_attempts = ilp._linux_published_attempts(
+        routed, _published_vulkan_bundle("linux-vulkan", "linux-arm64")
+    )
+    assert [attempt.install_kind for attempt in fork_attempts] == ["linux-arm64"]
+
+    release = _upstream_release(
+        "b9925",
+        ["llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz", "llama-b9925-bin-ubuntu-arm64.tar.gz"],
+    )
+    plan = ilp.direct_upstream_release_plan(release, routed, repo, "latest")
+    filtered = ilp._vulkan_only_release_plans([plan])
+
+    assert [attempt.name for attempt in filtered[0].attempts] == [
+        "llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz"
+    ]
+    assert filtered[0].attempts[0].repo == UPSTREAM
+
+
+def test_route_to_vulkan_prebuilt_linux_arm64_keeps_an_explicit_repo_override():
+    # A hand-picked --published-repo is the user's call; only the default fork
+    # repo is rerouted.
+    other = "someone/llama.cpp"
+    _routed, repo, tag, _persist = ilp._route_to_vulkan_prebuilt(
+        _linux_arm64_vulkan_host(),
+        other,
+        "b9596",
+        force_cpu = False,
+        llama_backend = "vulkan",
+    )
+
+    assert repo == other
+    assert tag == "b9596"
+
+
+def test_route_to_vulkan_prebuilt_linux_x86_64_keeps_the_fork_bundle():
+    # Only ARM64 lacks a fork Vulkan bundle; x86_64 must stay on the fork release
+    # so it keeps the DiffusionGemma visual server.
+    _routed, repo, tag, _persist = ilp._route_to_vulkan_prebuilt(
+        _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
+        FORK,
+        "b9596-mix-abc",
+        force_cpu = False,
+        llama_backend = "vulkan",
+    )
+
+    assert repo == FORK
+    assert tag == "b9596-mix-abc"
+
+
 def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     # --cpu-fallback suppresses Vulkan routing even for an Intel host.
     host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
@@ -448,6 +753,33 @@ def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     assert repo == FORK
     assert tag == "b9596-mix-abc"
     assert routed is host
+
+
+@pytest.mark.parametrize("via", ["env", "argument"])
+@pytest.mark.parametrize("backend", ["hip", "rocm", "cpu"])
+def test_non_vulkan_backend_suppresses_intel_auto_route(monkeypatch, backend, via):
+    # The selector suppresses the Intel auto-route the same way whether it arrives
+    # from the environment or from --llama-backend. Pinned to Linux ARM64, the one
+    # host where the suppression shows up in a returned VALUE: without it the Intel
+    # auto-route fires, falls through to the ARM64 fork -> upstream reroute and
+    # hands back UPSTREAM with the fork pin dropped. On x86_64 the auto-route
+    # rewrites neither host nor repo, so only a log line differs and the same case
+    # there cannot fail.
+    kwargs = {}
+    if via == "env":
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", backend)
+    else:
+        kwargs["llama_backend"] = backend
+    host = _linux_arm64_vulkan_host()
+
+    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "b9596-mix-abc", force_cpu = False, **kwargs
+    )
+
+    assert routed is host
+    assert repo == FORK, repo
+    assert tag == "b9596-mix-abc", tag
+    assert persist is None
 
 
 @pytest.mark.parametrize("cpu_flag", ["--cpu-fallback", "--force-cpu"])
@@ -483,6 +815,47 @@ def test_resolve_prebuilt_cpu_fallback_overrides_intel_vulkan(monkeypatch, capsy
     # The CPU flag must suppress Intel GPU, route to fork (not upstream Vulkan)
     assert seen["host"].has_intel_gpu is False
     assert seen["repo"] == FORK
+
+
+def test_cpu_backend_env_forces_cpu_in_resolver(monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "cpu")
+    monkeypatch.setattr(
+        ilp,
+        "detect_host",
+        lambda: _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
+    )
+    seen, _ = _run_resolve_capture_host(monkeypatch, capsys)
+    assert seen["host"].has_intel_gpu is False
+    assert seen["repo"] == FORK
+
+
+def test_cpu_backend_env_forces_cpu_in_direct_install(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "cpu")
+    monkeypatch.setattr(
+        ilp,
+        "detect_host",
+        lambda: _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
+    )
+    seen = {}
+
+    def _route(
+        host,
+        repo,
+        tag,
+        *,
+        force_cpu,
+        llama_backend = None,
+    ):
+        seen["host"] = host
+        seen["force_cpu"] = force_cpu
+        raise RuntimeError("stop after routing")
+
+    monkeypatch.setattr(ilp, "_route_to_vulkan_prebuilt", _route)
+    with pytest.raises(RuntimeError, match = "stop after routing"):
+        ilp.install_prebuilt(tmp_path, "latest", FORK, "")
+
+    assert seen["host"].has_intel_gpu is False
+    assert seen["force_cpu"] is True
 
 
 @pytest.mark.parametrize(
@@ -574,15 +947,15 @@ def test_route_to_vulkan_prebuilt_non_intel_unchanged():
     assert routed is host
 
 
-def test_resolve_prebuilt_intel_host_routes_to_upstream(monkeypatch, capsys):
+def test_resolve_prebuilt_intel_host_keeps_fork_manifest(monkeypatch, capsys):
     # The --resolve-prebuilt probe must agree with the install path: an
-    # auto-detected Intel host resolves against upstream (Vulkan), not the fork.
+    # auto-detected Intel host resolves the fork's Vulkan app bundle.
     monkeypatch.setattr(
         ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
     )
     seen, out = _run_resolve_capture_host(monkeypatch, capsys)
-    assert seen["repo"] == UPSTREAM
-    assert out["repo"] == UPSTREAM
+    assert seen["repo"] == FORK
+    assert out["repo"] == FORK
 
 
 # ---------------------------------------------------------------------------
@@ -844,7 +1217,7 @@ def _windows_amd_host(**overrides):
 def test_route_to_vulkan_prebuilt_auto_fallback_for_legacy_amd_gfx():
     host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"])
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
-    assert repo == UPSTREAM
+    assert repo == FORK
     assert persist == "vulkan"
     assert routed.has_intel_gpu is True
     assert routed.has_rocm is False
@@ -883,7 +1256,7 @@ def test_route_to_vulkan_prebuilt_auto_fallback_when_no_amd_gpu_reaches_floor():
         rocm_gfx_targets = ["gfx803", "gfx900"],
     )
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
-    assert repo == UPSTREAM
+    assert repo == FORK
     assert persist == "vulkan"
     assert routed.has_rocm is False
 
@@ -951,7 +1324,7 @@ def test_masked_probe_suppression_does_not_touch_non_amd_auto_paths(monkeypatch)
     _routed, repo, _tag, _persist = ilp._route_to_vulkan_prebuilt(
         host, FORK, "pin", force_cpu = False
     )
-    assert repo == UPSTREAM
+    assert repo == FORK
 
 
 def test_route_to_vulkan_prebuilt_hip_masked_host_still_honours_explicit_optin(monkeypatch):
@@ -965,7 +1338,7 @@ def test_route_to_vulkan_prebuilt_hip_masked_host_still_honours_explicit_optin(m
     _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
         host, FORK, "pin", force_cpu = False, llama_backend = "vulkan"
     )
-    assert repo == UPSTREAM
+    assert repo == FORK
     assert persist == "vulkan"
 
 
@@ -1060,13 +1433,13 @@ def test_route_to_vulkan_prebuilt_gfx1034_keeps_rocm():
 
 
 def test_route_to_vulkan_prebuilt_explicit_opt_in_on_mixed_amd(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
     host = _windows_amd_host(
         rocm_gfx_target = "gfx1201",
         rocm_gfx_targets = ["gfx1201", "gfx803"],
     )
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
-    assert repo == UPSTREAM
+    assert repo == FORK
     assert persist == "vulkan"
     assert routed.has_rocm is False
 
@@ -1087,21 +1460,16 @@ def test_direct_upstream_windows_amd_legacy_gfx_routes_to_vulkan():
     assert plan.attempts[0].install_kind == "windows-vulkan"
 
 
-def test_llama_backend_env_requests_vulkan(monkeypatch):
-    assert ilp.llama_backend_from_env() is None
-    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
-    assert ilp.llama_backend_from_env() == "vulkan"
-    assert ilp.force_vulkan_requested() is True
-
-
-def test_llama_cpp_backend_env_does_not_trigger_vulkan(monkeypatch):
-    # UNSLOTH_LLAMA_CPP_BACKEND is a separate setup variable (auto/cpu) whose other values
-    # setup warns about and ignores, so reading it here would opt in behind that warning.
-    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+def test_hip_backend_env_suppresses_auto_vulkan_fallback_on_unsupported_gfx(monkeypatch):
+    # An explicit HIP choice keeps HIP on an unsupported gfx target instead of
+    # silently substituting Vulkan.
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
-    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
-    assert ilp.llama_backend_from_env() is None
-    assert ilp.force_vulkan_requested() is False
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "hip")
+    host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"])
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert repo == FORK
+    assert persist is None
 
 
 def test_route_to_vulkan_prebuilt_hidden_physical_nvidia_amd_not_rerouted():
@@ -1121,7 +1489,7 @@ def test_route_to_vulkan_prebuilt_hidden_physical_nvidia_amd_not_rerouted():
 
 def test_route_to_vulkan_prebuilt_explicit_opt_in_overrides_hidden_nvidia(monkeypatch):
     # The physical-NVIDIA guard only gates the AMD auto path; an explicit opt-in wins.
-    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
     host = _windows_amd_host(
         rocm_gfx_target = "gfx803",
         rocm_gfx_targets = ["gfx803"],
@@ -1129,7 +1497,7 @@ def test_route_to_vulkan_prebuilt_explicit_opt_in_overrides_hidden_nvidia(monkey
         has_usable_nvidia = False,
     )
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
-    assert repo == UPSTREAM
+    assert repo == FORK
     assert persist == "vulkan"
 
 
@@ -1221,7 +1589,7 @@ def test_windows_hip_gfx_floor_covers_every_fork_windows_rocm_bundle():
 @pytest.mark.parametrize("gfx", _FORK_WINDOWS_ROCM_GFX)
 def test_route_to_vulkan_prebuilt_keeps_every_fork_windows_rocm_arch(gfx, monkeypatch):
     # No ambient opt-in: this asserts the AUTO path leaves covered archs alone.
-    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     host = _windows_amd_host(rocm_gfx_target = gfx, rocm_gfx_targets = [gfx])
     routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
@@ -1235,7 +1603,7 @@ def test_forwarded_gfx_does_not_undo_visible_device_auto_vulkan(monkeypatch):
     # Under CUDA_VISIBLE_DEVICES=1 setup.ps1 still resolves GPU 0 and forwards gfx1100, but
     # detect_host() resolved the visible gfx1010, so folding the forward in must not
     # reinstate gfx1100 and install a HIP bundle the visible GPU cannot run.
-    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
     host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1100", "gfx1010"])
@@ -1258,7 +1626,7 @@ def test_forwarded_gfx_absent_from_probe_keeps_the_physical_hip_card(monkeypatch
     # the HIP target but must not delete the probe's inventory, or the floor check concludes
     # no AMD GPU here reaches HIP and auto-routes to Vulkan, which ignores the HIP mask and
     # enumerates the reserved gfx1100.
-    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
     host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx1100", "gfx803"])
@@ -1274,7 +1642,7 @@ def test_forwarded_gfx_absent_from_probe_keeps_the_physical_hip_card(monkeypatch
 def test_forwarded_gfx_absent_from_probe_keeps_a_single_probed_hip_card(monkeypatch):
     # Same rule on a single-GPU box: a stale below-floor forward over a probe-confirmed
     # gfx1100 must not auto-route that machine to Vulkan.
-    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
     host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
@@ -1286,12 +1654,12 @@ def test_forwarded_gfx_absent_from_probe_keeps_a_single_probed_hip_card(monkeypa
 
 def test_forwarded_gfx_absent_from_probe_still_allows_explicit_vulkan(monkeypatch):
     # The physical-inventory rule gates the AUTO path only; naming the backend wins.
-    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
     monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
     host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
     host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx803")
     _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
-    assert repo == UPSTREAM
+    assert repo == FORK
     assert persist == "vulkan"
 
 
@@ -1299,7 +1667,7 @@ def test_forwarded_gfx_on_unprobed_host_still_auto_vulkans(monkeypatch):
     # Negative control: a driver-only AMD host runs no successful probe (no hipinfo, amd-smi
     # suppressed), so --rocm-gfx is the ONLY source of the arch and there is no inventory to
     # preserve. This is the #7357 path the feature exists for; it must still reach Vulkan.
-    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
     host = _windows_amd_host(rocm_gfx_target = None, rocm_gfx_targets = [])
@@ -1307,14 +1675,14 @@ def test_forwarded_gfx_on_unprobed_host_still_auto_vulkans(monkeypatch):
     assert host.rocm_gfx_targets == ["gfx803"]
     assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is True
     _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
-    assert repo == UPSTREAM
+    assert repo == FORK
     assert persist == "vulkan"
 
 
 def test_forwarded_gfx_still_fills_an_unprobed_arch(monkeypatch):
     # Negative control: on an amd-smi-only host detect_host() reports no arch, so the
     # forward is the only source and must still apply.
-    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
     host = _windows_amd_host(rocm_gfx_target = None, rocm_gfx_targets = [])
@@ -1326,9 +1694,9 @@ def test_forwarded_gfx_still_fills_an_unprobed_arch(monkeypatch):
     assert persist is None
 
 
-def test_llama_backend_hip_opts_out_of_auto_vulkan(monkeypatch):
-    # hip names a backend, so it keeps the fork path even on an auto-fallback arch.
-    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "hip")
+def test_llama_cpp_backend_cpu_opts_out_of_auto_vulkan(monkeypatch):
+    # cpu is an explicit non-Vulkan choice, so it suppresses the auto-fallback.
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "cpu")
     host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"])
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert routed is host
@@ -1338,10 +1706,10 @@ def test_llama_backend_hip_opts_out_of_auto_vulkan(monkeypatch):
 
 
 def test_explicit_backend_beats_legacy_force_vulkan(monkeypatch):
-    # A stale UNSLOTH_FORCE_VULKAN must not overrule UNSLOTH_LLAMA_BACKEND=rocm (== hip).
+    # A stale UNSLOTH_FORCE_VULKAN must not overrule the canonical CPU choice.
     monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
-    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "rocm")
-    assert ilp.resolved_llama_backend() == "hip"
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "cpu")
+    assert ilp.resolved_llama_backend() == "cpu"
     assert ilp.force_vulkan_requested() is False
     host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
     _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
@@ -1351,7 +1719,7 @@ def test_explicit_backend_beats_legacy_force_vulkan(monkeypatch):
 
 def test_unknown_llama_backend_value_falls_through_to_legacy_flag(monkeypatch):
     # An unrecognised value is ignored, not an error, so the legacy flag still works.
-    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "banana")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "banana")
     assert ilp.resolved_llama_backend() is None
     assert ilp.force_vulkan_requested() is False
     monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
@@ -1360,13 +1728,13 @@ def test_unknown_llama_backend_value_falls_through_to_legacy_flag(monkeypatch):
 
 def test_llama_backend_flag_beats_conflicting_env(monkeypatch):
     # --llama-backend is the caller's explicit request and outranks the env.
-    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "hip")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "cpu")
     assert ilp.force_vulkan_requested("vulkan") is True
     host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
     _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
         host, FORK, "pin", force_cpu = False, llama_backend = "vulkan"
     )
-    assert repo == UPSTREAM
+    assert repo == FORK
     assert persist == "vulkan"
 
 
@@ -1395,14 +1763,14 @@ def _windows_arm64_host(**overrides):
 @pytest.mark.parametrize(
     "env, flag",
     [
-        ({"UNSLOTH_LLAMA_BACKEND": "vulkan"}, None),
+        ({"UNSLOTH_LLAMA_CPP_BACKEND": "vulkan"}, None),
         ({"UNSLOTH_FORCE_VULKAN": "1"}, None),
         ({}, "vulkan"),
     ],
 )
-def test_vulkan_opt_in_ignored_on_windows_arm64(monkeypatch, env, flag):
-    # Upstream builds win-vulkan for x64 only (arm64 gets CPU + opencl-adreno), so rewriting
-    # the host would only swap the published arm64 bundle for the upstream CPU one.
+def test_vulkan_opt_in_keeps_windows_arm64_host_for_strict_rejection(monkeypatch, env, flag):
+    # Windows arm64 has no compatible Vulkan bundle. Keep the real host shape so
+    # strict filtering rejects the CPU plan instead of routing through x64.
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     host = _windows_arm64_host()
@@ -1416,10 +1784,10 @@ def test_vulkan_opt_in_ignored_on_windows_arm64(monkeypatch, env, flag):
 
 def test_vulkan_opt_in_still_routes_on_windows_x64(monkeypatch):
     # Negative control for the arm64 guard: x64 keeps its Vulkan routing.
-    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
     host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
     _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
-    assert repo == UPSTREAM
+    assert repo == FORK
     assert persist == "vulkan"
 
 
@@ -1490,12 +1858,9 @@ def test_marker_records_no_backend_when_vulkan_fell_back_to_cpu(tmp_path):
     assert marker["llama_backend"] == "vulkan"
 
 
-# UNSLOTH_LLAMA_CPP_BACKEND (setup.sh/setup.ps1, "auto"|"cpu") and
-# UNSLOTH_LLAMA_BACKEND (this module, a backend name) are different variables at
-# different layers, and both accept "cpu". setup translates its own =cpu into
-# --force-cpu to pin the CPU-only bundle on a GPU host, which is what keeps Intel
-# iGPU Vulkan crashes away (#7213). Vulkan is opt-in here, so no trigger it adds
-# may outrank that flag on any host.
+# setup translates UNSLOTH_LLAMA_CPP_BACKEND=cpu into --force-cpu to pin the
+# CPU-only bundle on a GPU host, which is what keeps Intel iGPU Vulkan crashes
+# away (#7213). Vulkan is opt-in, so no trigger may outrank that flag on any host.
 _SIM_PLATFORMS = {
     # WSL presents as Linux to this resolver, so it rides the Linux row.
     "Linux": dict(
@@ -1577,16 +1942,16 @@ def _sim_host(platform_name, gpu_name):
 
 @pytest.mark.parametrize("platform_name", sorted(_SIM_PLATFORMS))
 @pytest.mark.parametrize("gpu_name", sorted(_SIM_GPUS))
-@pytest.mark.parametrize("backend_env", [None, "vulkan", "hip", "rocm", "cpu"])
+@pytest.mark.parametrize("backend_env", [None, "auto", "vulkan", "cpu"])
 def test_forced_cpu_outranks_every_vulkan_trigger(
     monkeypatch, platform_name, gpu_name, backend_env
 ):
     """A deliberate CPU install stays CPU on every host, whatever asks for Vulkan."""
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     if backend_env is None:
-        monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+        monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     else:
-        monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", backend_env)
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", backend_env)
     # The legacy switch too, so a stale one cannot smuggle Vulkan past --force-cpu.
     monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
 

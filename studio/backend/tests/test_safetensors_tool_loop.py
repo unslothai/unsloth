@@ -24,6 +24,7 @@ from core.inference.safetensors_agentic import (
     strip_tool_markup_streaming,
 )
 from core.inference.tool_call_parser import (
+    NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     has_tool_signal,
     parse_tool_calls_from_text,
@@ -2231,6 +2232,51 @@ def test_reprompt_names_only_active_tools_not_hardcoded():
     assert "python" not in reprompt["content"]
 
 
+def test_reprompt_stops_when_the_retry_restates_the_stall():
+    """A nudge answered with the same text has not worked; do not spend the budget."""
+
+    captured: list[list] = []
+    stall = "I'll search for that now."
+
+    def fake_single_turn(messages, active_tools = None):
+        captured.append(list(messages))
+        yield stall  # same forward-looking intent every time
+
+    exec_fn = FakeExecuteTool([])
+    _events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "find X"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            execute_tool = exec_fn,
+            auto_heal_tool_calls = True,
+            nudge_tool_calls = True,
+            max_tool_iterations = 3,
+        )
+    )
+
+    # One nudge, then the repeat guard stops it: two generations, not MAX_ACT_REPROMPTS + 1.
+    assert len(captured) == 2, captured
+
+
+def test_reprompt_is_announced_on_the_status_channel():
+    # The re-prompted turn is hidden, so the badge is the only sign of life.
+    # Blank still comes first: the route resets its text cursor only on that.
+    _captured, events = _reprompt_loop(auto_heal_tool_calls = True)
+    statuses = [e["text"] for e in events if e["type"] == "status"]
+    assert NUDGE_TOOL_CALLS_STATUS in statuses
+    index = statuses.index(NUDGE_TOOL_CALLS_STATUS)
+    # index > 0 matters: at 0, statuses[-1] wraps to the terminal clear.
+    assert index > 0 and statuses[index - 1] == ""
+    assert statuses[-1] == ""
+
+
+def test_reprompt_status_absent_without_a_nudge():
+    _captured, events = _reprompt_loop(auto_heal_tool_calls = False)
+    statuses = [e["text"] for e in events if e["type"] == "status"]
+    assert NUDGE_TOOL_CALLS_STATUS not in statuses
+
+
 def test_reprompt_suppressed_when_auto_heal_disabled():
     # With Auto-Heal off the safetensors nudge must stay silent for backend parity
     # with the GGUF loop, so only the single initial generation runs.
@@ -3605,8 +3651,22 @@ class TestGGUFSafetensorsHealingParity:
             "Let me check",
             "I am going to call the tool",
             "First, I will explore",
+            "First, let's search the web",
+            "First, let us search the web",
+            # Imperative plans carry no pronoun; an action verb is enough.
+            "First, search the web for the latest release notes.",
+            "First, check the documentation.",
+            "First, analyze the attached data",
+            "The first step is to search the web",
+            "First, my plan is to search the web.",
+            "First: search the web for release notes.",
+            "First - search the web for release notes.",
+            "First \u2013 search the web for release notes.",
+            "First, our approach is to check the docs.",
             "Here's my plan",
             "Now I need to call web_search",
+            # The "let me know" exemption is scoped to "let me", not all direct intent.
+            "I will know the answer after I search the web",
         ):
             assert shared_re.search(phrase), f"missed {phrase!r}"
             assert shared_fn(phrase), f"helper missed {phrase!r}"
@@ -3622,6 +3682,18 @@ class TestGGUFSafetensorsHealingParity:
             # force a tool-call re-prompt on it.
             "I will not search the web for that.",
             "I'll never call that tool.",
+            # Hands control back rather than announcing an action.
+            "Let me know if you need anything else.",
+            "First, the answer is 42",
+            "First, the result is 3.",
+            "First, it is 42",
+            "First, my answer is 42",
+            "The first line is blank.",
+            # Ordinal prose, not a plan.
+            "First place went to Alice",
+            "First class is available",
+            # Advice to the user, not work for this turn.
+            "First, install the package.",
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"
@@ -3633,6 +3705,98 @@ class TestGGUFSafetensorsHealingParity:
         from core.inference.tool_call_parser import MAX_ACT_REPROMPTS as shared_cap
 
         assert gguf_cap == sf_cap == shared_cap
+
+    def test_reprompt_repeat_keeps_punctuation_bearing_terms(self):
+        # Stripping all non-word chars collapsed "C++" and "C#" to "c", so different
+        # plans compared equal and the retry lost its nudge.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+        assert not is_reprompt_repeat("I will search for C#.", "I will search for C++.")
+        # A leading mark is part of the term too.
+        assert not is_reprompt_repeat("I will search for .NET", "I will search for NET")
+
+    def test_reprompt_repeat_respects_word_order(self):
+        # Set overlap scores a reordered query as identical, so the comparison is
+        # sequence-based.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        assert not is_reprompt_repeat(
+            "I will search for dogs not cats", "I will search for cats not dogs"
+        )
+        assert is_reprompt_repeat(
+            "I will search for cats not dogs", "I will search for cats not dogs"
+        )
+        assert is_reprompt_repeat("I will search for C++!", "I will search for C++.")
+
+    def test_reprompt_repeat_keeps_a_changed_query_token(self):
+        # One corrected token in a long plan is a new attempt; at the old 0.85 bar it
+        # scored ~0.87 and cost the model its remaining nudge.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        before = "I will search the web for the latest CUDA version 12.4 driver release notes"
+        after = "I will search the web for the latest CUDA version 12.5 driver release notes"
+        assert not is_reprompt_repeat(after, before)
+        assert is_reprompt_repeat(before, before)
+
+    def test_reprompt_repeat_keeps_standalone_operator_tokens(self):
+        # A marks-only token stripped to nothing, so a bounded correction compared
+        # equal to the unbounded original.
+        from core.inference.tool_call_parser import is_reprompt_repeat, is_reprompt_restatement
+
+        loose = "Now I think the value is 5"
+        bounded = "Now I think the value is < 5"
+        assert not is_reprompt_repeat(bounded, loose)
+        assert not is_reprompt_restatement(bounded, loose)
+
+    def test_reprompt_repeat_keeps_a_changed_token_in_a_long_plan(self):
+        # Every similarity ratio is length-dependent: one changed token scored 0.98
+        # across 54 tokens, so long corrected plans lost their nudge.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        words = [f"token{index}" for index in range(54)]
+        corrected = list(words)
+        corrected[20] = "revised"
+        assert not is_reprompt_repeat(" ".join(corrected), " ".join(words))
+        assert is_reprompt_repeat(" ".join(words), " ".join(words))
+
+    def test_reprompt_repeat_keeps_articles_that_name_a_target(self):
+        # "The Who" and "Who" are different searches, so articles are not filler.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+        assert not is_reprompt_repeat(
+            "I will search for The Who discography",
+            "I will search for Who discography",
+        )
+
+    def test_reprompt_repeat_keeps_filler_words_that_name_a_target(self):
+        # No word is reliably filler: dropping "ok"/"the" to absorb rewording also
+        # absorbed the search target. Reordered filler now reads as a new attempt,
+        # which costs one nudge out of the cap and never strands a plan.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+        assert not is_reprompt_repeat(
+            "I will search for OK Go discography",
+            "I will search for Go discography",
+        )
+        assert not is_reprompt_repeat(
+            "I will now summarize the findings",
+            "I will summarize the findings now",
+        )
+
+    def test_reprompt_repeat_detects_restated_answers(self):
+        # A nudge answered with the same text again has not worked; stop there.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        same = "I will summarize what I found."
+        assert is_reprompt_repeat(same, same)
+        assert is_reprompt_repeat("I WILL summarize what I found!", same)
+        assert is_reprompt_repeat(
+            "The summary is ready, please let me know if you need anything else",
+            "The summary is ready. Please let me know if you need anything else!",
+        )
+
+        # No previous text, or genuinely different progress, keeps the nudge.
+        assert not is_reprompt_repeat(same, "")
+        assert not is_reprompt_repeat("Tokyo is 18C and cloudy right now.", same)
+        # Short texts must not collide on incidental word overlap.
+        assert not is_reprompt_repeat("Let me check.", "Let me search.")
 
 
 class TestLoopControl:
@@ -4163,9 +4327,11 @@ class TestPlanWithoutActionReprompt:
         # final answer and no further turn is generated.
         from core.inference.tool_call_parser import MAX_ACT_REPROMPTS
 
-        stall = "Let me look into it first."
+        # Distinct stalls: identical ones stop at the repeat guard, never reaching the cap.
+        stalls = [f"Let me look into detail {i} first." for i in range(MAX_ACT_REPROMPTS)]
+        stall = stalls[-1]
         turns = [["I'll search the web for that."]]
-        turns += [[stall]] * MAX_ACT_REPROMPTS
+        turns += [[s] for s in stalls]
         turns += [["SHOULD NOT APPEAR"]]
 
         generations = {"count": 0}

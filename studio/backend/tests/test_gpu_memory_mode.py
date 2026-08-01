@@ -619,11 +619,15 @@ def test_gguf_load_and_status_responses_include_requested_gpu_pool():
 def test_gpu_ids_property_default_and_reset():
     backend = LlamaCppBackend()
     assert backend.gpu_ids is None
+    assert backend.requested_gpu_ids is None
     backend._gpu_ids = [0, 1]
+    backend._requested_gpu_ids = [0, 1, 2]
     assert backend.gpu_ids == [0, 1]
+    assert backend.requested_gpu_ids == [0, 1, 2]
     backend._process = _FakeProcess()
     backend.unload_model()
     assert backend.gpu_ids is None
+    assert backend.requested_gpu_ids is None
 
 
 def _target_state_gpu_ids(backend, gpu_ids):
@@ -737,7 +741,7 @@ def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
     )
     monkeypatch.setattr(
         llama_cpp_module,
-        "_hf_offline_if_dns_dead",
+        "_hf_offline_if_unreachable",
         lambda: __import__("contextlib").nullcontext(),
     )
 
@@ -786,7 +790,7 @@ def test_remote_vulkan_preflight_download_failure_keeps_active_server(monkeypatc
         monkeypatch.setattr(llama_cpp_module, "_resolve_repo_id_casing", lambda repo: repo)
         monkeypatch.setattr(
             llama_cpp_module,
-            "_hf_offline_if_dns_dead",
+            "_hf_offline_if_unreachable",
             lambda: __import__("contextlib").nullcontext(),
         )
 

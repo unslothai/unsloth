@@ -142,7 +142,7 @@ def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -
             for name in _REMOTE_CODE_CONFIG_FILES:
                 p = root / name
                 if p.is_file():
-                    configs.append(json.loads(p.read_text(encoding = "utf-8")))
+                    configs.append(json.loads(p.read_text(encoding = "utf-8-sig")))
             return configs
 
         from huggingface_hub import hf_hub_download
@@ -164,7 +164,7 @@ def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -
                 # Transient/auth failure is not "absent" -> fail closed to "unknown" so
                 # the caller scans (a tokenizer/processor-only auto_map must not slip by).
                 return None
-            configs.append(json.loads(Path(p).read_text(encoding = "utf-8")))
+            configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
         # Every config was read or a genuine 404 -> an empty list is a definitive
         # "no auto_map", not "unknown".
         return configs

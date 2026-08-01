@@ -23,10 +23,17 @@ use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
 use std::fs;
+use std::sync::Once;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+
+/// Serializes the exit paths that must reap the backend: the tray "Quit" item,
+/// the Unix termination signal listener, and `RunEvent::Exit`. Exactly one path
+/// runs cleanup; the others block until it is done, so the process never exits
+/// out from under a cleanup that is still killing the backend tree.
+static TERMINATION_CLEANUP: Once = Once::new();
 
 #[tauri::command]
 fn has_saved_window_state(app: tauri::AppHandle) -> bool {
@@ -85,28 +92,123 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+/// Ask before quitting mid-install (true to proceed): `cleanup_child_processes` SIGTERMs the
+/// installer, leaving a venv that looks healthy but cannot start. Tray Quit only, since
+/// RunEvent::Exit must never block on a dialog nobody can answer.
+fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let Some(install_state) = app.try_state::<install::InstallState>() else {
+        return true;
+    };
+    if !install::is_install_running(&install_state) {
+        return true;
+    }
+    app.dialog()
+        .message(
+            "Unsloth Studio is still installing. Quitting now stops it part-way and \
+             leaves the installation incomplete, so it will need to be repaired before \
+             it can start.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Installation in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep installing".to_string(),
+        ))
+        .blocking_show()
+}
+
 fn cleanup_child_processes(app: &tauri::AppHandle) {
-    let diagnostics_state = app
-        .try_state::<diagnostics::DiagnosticsState>()
-        .map(|state| state.inner().clone());
-    if let Some(install_state) = app.try_state::<install::InstallState>() {
-        if let Some(diagnostics) = diagnostics_state.as_ref() {
-            install::record_install_intentional_stop(&install_state, diagnostics);
+    // `call_once_force` rather than `call_once`: a panicking cleanup poisons the `Once`
+    // instead of deadlocking the exit paths waiting on it, and the next caller retries
+    // it rather than exiting on a backend that was never reaped.
+    TERMINATION_CLEANUP.call_once_force(|state| {
+        if state.is_poisoned() {
+            warn!("Previous termination cleanup panicked, retrying it");
         }
-        let _ = install::stop_install(&install_state);
-    }
-    if let Some(update_state) = app.try_state::<update::UpdateState>() {
-        if let Some(diagnostics) = diagnostics_state.as_ref() {
-            update::record_update_intentional_stop(&update_state, diagnostics);
+
+        let diagnostics_state = app
+            .try_state::<diagnostics::DiagnosticsState>()
+            .map(|state| state.inner().clone());
+        if let Some(install_state) = app.try_state::<install::InstallState>() {
+            if let Some(diagnostics) = diagnostics_state.as_ref() {
+                install::record_install_intentional_stop(&install_state, diagnostics);
+            }
+            let _ = install::stop_install(&install_state);
         }
-        let _ = update::stop_update(&update_state);
-    }
-    if let Some(backend_state) = app.try_state::<process::BackendState>() {
-        let shutdown = app
-            .try_state::<process::ShutdownFlag>()
-            .expect("ShutdownFlag must be managed");
-        let _ = process::stop_backend(&backend_state, &shutdown, diagnostics_state.as_ref());
-    }
+        if let Some(update_state) = app.try_state::<update::UpdateState>() {
+            if let Some(diagnostics) = diagnostics_state.as_ref() {
+                update::record_update_intentional_stop(&update_state, diagnostics);
+            }
+            let _ = update::stop_update(&update_state);
+        }
+        if let Some(backend_state) = app.try_state::<process::BackendState>() {
+            let shutdown = app
+                .try_state::<process::ShutdownFlag>()
+                .expect("ShutdownFlag must be managed");
+            let _ = process::stop_backend(&backend_state, &shutdown, diagnostics_state.as_ref());
+        }
+    });
+}
+
+/// The backend is spawned as its own process-group leader, so nothing reaps it when the
+/// desktop app is terminated by a signal (logout, `kill`, a shell Ctrl-C). Tauri installs
+/// no handler for those, so without this the app would die and leave the backend running.
+/// Windows gets the same guarantee from the kill-on-close job object in `windows_job`.
+#[cfg(unix)]
+fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
+    use signal_hook::iterator::Signals;
+
+    let mut signals = Signals::new([SIGHUP, SIGINT, SIGQUIT, SIGTERM])?;
+    let app_handle = app.handle().clone();
+    std::thread::Builder::new()
+        .name("desktop-termination-signal".to_string())
+        .spawn(move || {
+            // Terminating is not conditional on cleanup succeeding. If cleanup panicked
+            // and took the exit with it, the app would keep running after SIGTERM, the
+            // session manager would SIGKILL it once its timeout expired, and the backend
+            // would be orphaned: exactly the failure this listener exists to prevent.
+            let cleanup_and_exit = |app: &tauri::AppHandle, exit_code: i32| {
+                let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    cleanup_child_processes(app)
+                }));
+                if cleanup.is_err() {
+                    warn!("Termination cleanup panicked, exiting anyway");
+                }
+                app.exit(exit_code);
+            };
+
+            let mut cleanup_started = false;
+            for signal in signals.forever() {
+                let name = signal_hook::low_level::signal_name(signal).unwrap_or("unknown signal");
+                let exit_code = 128 + signal;
+                if cleanup_started {
+                    // Cleanup blocks for as long as the backend takes to die. A repeat
+                    // signal is the user asking to stop waiting, so leave straight away
+                    // instead of swallowing it and forcing them to reach for SIGKILL.
+                    warn!("Received {name} ({signal}) while cleaning up, exiting immediately");
+                    std::process::exit(exit_code);
+                }
+                cleanup_started = true;
+                info!("Received Unix termination signal {name} ({signal})");
+
+                // Clean up on its own thread so this one stays in `signals.forever()` and
+                // can still observe a repeat signal. If that thread cannot be spawned we
+                // fall back to cleaning up here, which gives up the repeat-signal escape
+                // hatch until cleanup finishes.
+                let cleanup_handle = app_handle.clone();
+                let cleanup = std::thread::Builder::new()
+                    .name("desktop-termination-cleanup".to_string())
+                    .spawn(move || cleanup_and_exit(&cleanup_handle, exit_code));
+                if let Err(error) = cleanup {
+                    warn!("Could not spawn termination cleanup thread: {error}");
+                    cleanup_and_exit(&app_handle, exit_code);
+                }
+            }
+        })?;
+    Ok(())
 }
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -138,6 +240,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 // leaving the backend orphaned.
                 let app_handle = app.clone();
                 std::thread::spawn(move || {
+                    if !confirm_quit_during_install(&app_handle) {
+                        return;
+                    }
                     cleanup_child_processes(&app_handle);
                     app_handle.exit(0);
                 });
@@ -227,6 +332,7 @@ fn main() {
             native_file_dialogs::pick_native_chat_import,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
+            native_intents::register_native_attachment_path,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
             native_intents::consume_native_path_token,
@@ -246,15 +352,25 @@ fn main() {
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
             setup_tray(app)?;
+            #[cfg(unix)]
+            setup_unix_termination_signals(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Record real drops here, in Rust, so the renderer can only register paths the
+            // OS actually handed us (see native_intents::register_native_attachment_path).
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                window
+                    .state::<native_intents::NativeIntakeState>()
+                    .note_dropped_paths(paths);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Hide window instead of closing — this is a tray app.
+                // Hide window instead of closing, because this is a tray app.
                 // Processes keep running so the backend stays available.
                 // Full cleanup happens via:
                 //   - Tray "Quit" menu item (explicit user action)
-                //   - RunEvent::Exit handler (OS shutdown, SIGTERM, etc.)
+                //   - The Unix termination signal listener (logout, kill, Ctrl-C)
+                //   - RunEvent::Exit, for framework-driven exits
                 let _ = window.hide();
                 api.prevent_close();
             }
@@ -263,7 +379,10 @@ fn main() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                // Cleanup on ALL exit paths — safety net for non-tray exits
+                // Safety net for framework-driven exits. When another path already owns
+                // cleanup, this blocks the main event-loop thread until that path is
+                // done: worst case roughly 15s, waiting on the graceful-then-force stop
+                // of the installer (5s), the updater (5s) and the backend (5s).
                 cleanup_child_processes(app);
             }
         });

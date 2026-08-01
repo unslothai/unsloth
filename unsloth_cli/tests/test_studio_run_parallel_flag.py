@@ -461,6 +461,55 @@ def test_load_model_http_payload_for_gpu_memory_mode(monkeypatch, mode, expected
     assert captured["request"].get_header("Authorization") == "Bearer sk-test"
 
 
+def test_load_model_http_fails_on_a_deferred_error(monkeypatch):
+    """A slow load commits its 200 and pads the body (routes/inference.py
+    _tunnel_safe_json), so a late failure arrives in-band; it must still surface as the
+    RuntimeError `run` reports, not as a successful load."""
+    studio_mod = _load_run_command()
+
+    def urlopen(request, timeout):
+        # Keepalive pad, then the deferred failure: what the wire really carries.
+        return BytesIO(
+            b"  "
+            + json.dumps(
+                {"_deferred_error": {"status_code": 507, "detail": "CUDA out of memory"}}
+            ).encode()
+        )
+
+    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    with pytest.raises(RuntimeError) as excinfo:
+        studio_mod._load_model_via_http(
+            port = 8888,
+            api_key = "sk-test",
+            model = "owner/model-GGUF",
+            gguf_variant = None,
+            max_seq_length = 0,
+            load_in_4bit = True,
+        )
+    assert "HTTP 507" in str(excinfo.value)
+    assert "CUDA out of memory" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("body", [b"", b"   ", b'  {"status": "loa', b"{}"])
+def test_load_model_http_rejects_a_truncated_padded_body(monkeypatch, body):
+    """A 200 the load never finished under must fail like any other load failure."""
+    studio_mod = _load_run_command()
+
+    monkeypatch.setattr(
+        studio_mod.urllib.request, "urlopen", lambda request, timeout: BytesIO(body)
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        studio_mod._load_model_via_http(
+            port = 8888,
+            api_key = "sk-test",
+            model = "owner/model-GGUF",
+            gguf_variant = None,
+            max_seq_length = 0,
+            load_in_4bit = True,
+        )
+    assert "did not report completion" in str(excinfo.value)
+
+
 def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
@@ -606,14 +655,14 @@ def test_studio_default_exposes_parallel_option():
     assert "--parallel" in decls
     assert "--n-parallel" in decls
     assert (
-        getattr(opt, "default", None) == 1
-    ), "studio_default --parallel must default to 1 (pre-PR); `run` is 4"
+        getattr(opt, "default", None) == studio_mod._PARALLEL_DEFAULT_PLAIN
+    ), "studio_default --parallel must use _PARALLEL_DEFAULT_PLAIN"
     assert getattr(opt, "min", None) == 1
     assert getattr(opt, "max", None) == 64
 
 
 @pytest.mark.parametrize("value", [1, 4, 8, 64])
-def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
+def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value, stub_tool_policy_state):
     """In-venv path must forward --parallel to
     run_server(llama_parallel_slots=N), not the old hardcoded 4."""
     studio_mod = _load_run_command()
@@ -679,7 +728,6 @@ def test_api_only_option_is_registered():
     "extra,present",
     [
         (["--api-only"], True),
-        (["--secure", "--api-only"], True),  # secure headless path
         ([], False),
     ],
 )
@@ -691,8 +739,25 @@ def test_reexec_forwards_api_only(monkeypatch, extra, present):
     assert ("--api-only" in argv) is present, argv
 
 
+def test_secure_api_only_is_refused_before_any_reexec(monkeypatch, tmp_path):
+    """`--secure --api-only` used to re-exec; the pre-exposure gate now refuses
+    it, because api-only has no login page and the bootstrap deadline does not
+    apply, so the seeded password could never be changed."""
+    studio_mod = _load_run_command()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--secure", "--api-only"])
+
+    assert captured == [], captured
+    assert result.exit_code != 0
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "default admin password was never changed" in combined.lower()
+
+
 @pytest.mark.parametrize("extra,expected", [(["--api-only"], True), ([], False)])
-def test_in_venv_path_passes_api_only_to_run_server(monkeypatch, extra, expected):
+def test_in_venv_path_passes_api_only_to_run_server(
+    monkeypatch, extra, expected, stub_tool_policy_state
+):
     """In-venv path must forward --api-only to run_server(api_only=...)."""
     studio_mod = _load_run_command()
 

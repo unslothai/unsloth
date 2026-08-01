@@ -1901,8 +1901,8 @@ def get_chat_template(
 
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
 
-        # Check mapping to eos_token
-        if not map_eos_token and yes_map_eos_token: map_eos_token = True
+        # Check mapping to eos_token. The template can veto the mapping, but it must not
+        # force it back on: `map_eos_token = False` is an explicit choice by the caller.
         if not yes_map_eos_token and map_eos_token: map_eos_token = False
 
         if type(stop_word) in (list, tuple,):
@@ -1912,6 +1912,19 @@ def get_chat_template(
             token_mapping = None
 
         assert(type(stop_word) is str)
+
+        # gemma_chatml and gemma2_chatml build <|im_end|> by renaming <eos>, and that rename
+        # runs whether or not the caller opts out, while the rebuilt tokenizer only carries
+        # eos_token = stop_word when the mapping is on: honouring the opt-out here lets the
+        # tokenizer class default re-add <eos> as a fresh id past the end of the embeddings.
+        # Key on the mapping, not on tokenizer.eos_token, or a Gemma checkpoint whose
+        # eos_token is <end_of_turn> (gemma-3-270m-it, gemma-3-1b-it) slips through.
+        if not map_eos_token and yes_map_eos_token and token_mapping is not None:
+            logger.warning_once(
+                f"Unsloth: {type_chat_template} builds {stop_word} by renaming existing "\
+                f"tokens, so map_eos_token = False cannot be honored here."
+            )
+            map_eos_token = True
 
         # Check fast tokenizer
         if not is_fast_tokenizer:
@@ -2431,7 +2444,9 @@ extra_eos_tokens = None,
             "Unsloth: Base llama-3 models did not train <|eot_id|>.\n"\
             "Please use the instruct version or use <|end_of_text|>"
         )
-    extra_eos_tokens = list(set(extra_eos_tokens))
+    # dict.fromkeys, not set: `extra_eos_tokens.insert(0, tokenizer.eos_token)` above
+    # sets a priority that `extra_eos_tokens[0]` relies on when appending the EOS.
+    extra_eos_tokens = list(dict.fromkeys(extra_eos_tokens))
 
     count_eos = 0
     for eos in extra_eos_tokens:
@@ -2470,7 +2485,9 @@ extra_eos_tokens = None,
         final_combined_check = left if final_combined_check else chat_template
 
         # Isolate input
-        extra_eos_tokens_regex = "|".join(f"(?:{re.escape(x)})" for x in extra_eos_tokens)
+        # Regex alternations prefer the first match, so match prefix tokens last.
+        eos_tokens_for_matching = sorted(extra_eos_tokens, key = len, reverse = True)
+        extra_eos_tokens_regex = "|".join(f"(?:{re.escape(x)})" for x in eos_tokens_for_matching)
         if len(extra_eos_tokens_regex) != 0:
             find_end = f"(?:{extra_eos_tokens_regex})?"
         else:

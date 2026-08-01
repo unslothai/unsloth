@@ -61,6 +61,9 @@ from ..device_type import (
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
+    get_device_stats,
+    clean_gpu_cache,
+    get_current_device,
 )
 
 transformers_version = Version(transformers_version)
@@ -76,7 +79,8 @@ from transformers.models.llama.modeling_llama import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
-from transformers.modeling_attn_mask_utils import (
+from unsloth.models._attn_mask_compat import (
+    AttentionMaskConverter,
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 from ..kernels import *
@@ -125,13 +129,6 @@ from triton import __version__ as triton_version
 
 HAS_XFORMERS = xformers is not None
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
-
-if DEVICE_TYPE == "xpu":
-    clean_gpu_cache = torch.xpu.empty_cache
-    get_current_device = torch.xpu.current_device
-else:
-    clean_gpu_cache = torch.cuda.empty_cache
-    get_current_device = torch.cuda.current_device
 
 
 def original_apply_qkv(self, X):
@@ -1103,8 +1100,6 @@ def LlamaModel_fast_forward(
                 # masked_fill is making stuff slower!
                 # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
                 # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
-                from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-
                 self.SWA_mask = (
                     AttentionMaskConverter(
                         is_causal = True,
@@ -2349,41 +2344,12 @@ class FastLlamaModel:
             model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
-        if DEVICE_TYPE == "cuda":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
-            )
-            gpu_version = torch.version.cuda
-            gpu_stats_snippet = (
-                f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
-            )
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "hip":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = resolve_hip_gpu_stats_name(gpu_stats)
-            gpu_version = torch.version.hip
-            gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "xpu":
-            gpu_stats = torch.xpu.get_device_properties(0)
-            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
-            gpu_version = torch.version.xpu
-            gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        else:
-            raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
+        gpu_stats_name, gpu_stats_snippet, max_memory = get_device_stats()
 
-        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+        try:
+            vllm_version = f" vLLM: {importlib_version('vllm')}."
+        except:
+            vllm_version = ""
 
         statistics = (
             f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.{vllm_version}\n"
@@ -2870,10 +2836,7 @@ class FastLlamaModel:
         import gc
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
-            else:
-                torch.cuda.empty_cache()"""
+            clean_gpu_cache()"""
 
         debug_info = debug_info.split("\n")
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])

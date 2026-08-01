@@ -3157,12 +3157,35 @@ class TestInstallBnbWindowsRocm:
             assert result is False
             assert "BNB_ROCM_VERSION" not in os.environ
 
-    def test_no_op_when_win_amd64_url_missing(self):
-        """Should be silent no-op if win_amd64 key absent from _BNB_ROCM_PRERELEASE_URLS."""
+    def test_falls_back_to_pypi_when_win_amd64_url_missing(self):
+        """No win_amd64 pre-release wheel must not mean no bitsandbytes: PyPI
+        >=0.50.0 ships libbitsandbytes_rocm{714,72}.dll, so it is a real ROCm build."""
         with patch.object(stack_mod, "_BNB_ROCM_PRERELEASE_URLS", {}):
-            with patch.object(stack_mod, "pip_install_try") as mock_pip:
+            with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
                 stack_mod._install_bnb_windows_rocm()
-        mock_pip.assert_not_called()
+        assert mock_pip.call_count == 1
+        assert stack_mod._BNB_ROCM_PYPI_FALLBACK in mock_pip.call_args.args
+
+    def test_falls_back_to_pypi_when_prerelease_install_fails(self):
+        """A blocked GitHub pre-release URL must fall through to the PyPI floor rather
+        than leaving Windows ROCm with no working bitsandbytes."""
+        with patch.object(stack_mod, "pip_install_try", side_effect = [False, True]) as mock_pip:
+            with patch.object(stack_mod, "_detect_bnb_rocm_dll_ver", return_value = "72"):
+                result = stack_mod._install_bnb_windows_rocm()
+        assert result is True
+        assert mock_pip.call_count == 2
+        assert "win_amd64" in str(mock_pip.call_args_list[0])
+        assert stack_mod._BNB_ROCM_PYPI_FALLBACK in mock_pip.call_args_list[1].args
+
+    def test_returns_false_only_when_both_paths_fail(self):
+        """Both the pre-release wheel and the PyPI fallback must fail before the
+        helper reports failure."""
+        with patch.dict(os.environ, {}, clear = False):
+            os.environ.pop("BNB_ROCM_VERSION", None)
+            with patch.object(stack_mod, "pip_install_try", return_value = False) as mock_pip:
+                result = stack_mod._install_bnb_windows_rocm()
+        assert result is False
+        assert mock_pip.call_count == 2
 
     def test_sets_bnb_rocm_version_from_detected_dll(self):
         """BNB_ROCM_VERSION is set from the DLL detected after install."""

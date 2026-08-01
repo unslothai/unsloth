@@ -1,12 +1,31 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
 import {
-  aggregateGpuMemoryTotalGb,
+  type GpuIndexKind,
+  type PinnableGpuContext,
+  type ReconciledGpuSelection,
+  type SystemGpuDevice,
+  reconcileGpuSelection,
+  resolveGpuSelectionContext,
+} from "./gpu-selection";
+import {
   type SystemInfoResponse,
+  aggregateGpuMemoryTotalGb,
+  fetchSystemInfo,
+  getCachedSystemInfo,
+  subscribeSystemInfo,
 } from "./use-system";
+
+export {
+  pinnableGpuContext,
+  reconcileGpuSelection,
+  type GpuIndexKind,
+  type PinnableGpuContext,
+  type ReconciledGpuSelection,
+  type SystemGpuDevice,
+} from "./gpu-selection";
 
 export interface GpuInfo {
   available: boolean;
@@ -16,20 +35,7 @@ export interface GpuInfo {
   cpuCore: number;
   cpuThread: number;
   systemRamAvailableGb: number;
-  systemRamTotalGb: number
-}
-
-export interface SystemGpuDevice {
-  index: number;
-  name: string;
-  memoryTotalGb: number;
-  /** Free VRAM at fetch time. Degrades to the total when the utilization
-   * probe had no usage data; 0 only when the total is unknown too. */
-  memoryFreeGb: number;
-  /** "physical" = `index` is a stable physical/PCI id safe to pin via gpu_ids;
-   *  "relative" = an ordinal into a parent CUDA_VISIBLE_DEVICES mask, which the
-   *  backend can't map back, so the picker must not offer it. */
-  physicalIndex: boolean;
+  systemRamTotalGb: number;
 }
 
 const DEFAULT_GPU: GpuInfo = {
@@ -40,30 +46,8 @@ const DEFAULT_GPU: GpuInfo = {
   cpuCore: 0,
   cpuThread: 0,
   systemRamAvailableGb: 0,
-  systemRamTotalGb: 0
+  systemRamTotalGb: 0,
 };
-
-// One module-level cache so every GPU hook shares a single /api/system fetch.
-let cachedSystem: SystemInfoResponse | null = null;
-let systemPromise: Promise<SystemInfoResponse | null> | null = null;
-
-async function fetchSystemOnce(force = false): Promise<SystemInfoResponse | null> {
-  if (!force && cachedSystem) return cachedSystem;
-  if (systemPromise) return systemPromise;
-  systemPromise = (async () => {
-    try {
-      const res = await authFetch("/api/system");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      cachedSystem = (await res.json()) as SystemInfoResponse;
-      return cachedSystem;
-    } catch {
-      return null;
-    } finally {
-      systemPromise = null;
-    }
-  })();
-  return systemPromise;
-}
 
 function toGpuInfo(
   data: SystemInfoResponse | null,
@@ -78,9 +62,7 @@ function toGpuInfo(
     systemRamTotalGb: data?.memory?.total_gb ?? 0,
   };
   const gpuData =
-    source === "inference_gpu"
-      ? (data?.inference_gpu ?? data?.gpu)
-      : data?.gpu;
+    source === "inference_gpu" ? (data?.inference_gpu ?? data?.gpu) : data?.gpu;
   const devices = gpuData?.devices ?? [];
   if (!gpuData?.available || !devices.length) {
     return { ...DEFAULT_GPU, ...base, budgetKnown: data !== null };
@@ -106,39 +88,62 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
   // The XPU ban does not apply there, it is about torch-xpu ordinals that no
   // applicator speaks; a Vulkan pick does not use them.
   const inference = data?.inference_gpu;
-  if (inference?.backend === "vulkan" && (inference.devices ?? []).length) {
+  if (inference?.backend === "vulkan") {
+    // The installed inference backend is confirmed Vulkan, so even an empty
+    // device list (probe still cold, or transiently failed) must NOT fall
+    // through to the torch/CUDA inventory below: those physical IDs are
+    // meaningless to a Vulkan llama-server, and the backend rejects every
+    // explicit diffusion pin outright while is_vulkan_build is true. Report no
+    // pinnable/diffusionPinnable devices until the probe succeeds.
+    if (!(inference.devices ?? []).length) return [];
     const picksAccepted = inference.gguf_gpu_ids_supported !== false;
     return (inference.devices ?? [])
       .filter((d) => typeof d.index === "number")
       .map((d) => ({
         index: d.index as number,
+        indexKind: d.index_kind === "vulkan" ? ("vulkan" as const) : null,
         name: d.name ?? `GPU ${d.index}`,
         memoryTotalGb: d.memory_total_gb ?? 0,
         memoryFreeGb: d.vram_free_gb ?? 0,
-        physicalIndex: picksAccepted && d.index_kind === "vulkan",
+        pinnable: picksAccepted && d.index_kind === "vulkan",
+        // The DiffusionGemma runner is torch-side and never speaks ggml
+        // ordinals, so a Vulkan pick is not usable there.
+        diffusionPinnable: false,
       }));
   }
   // Otherwise the torch view is the pickable set. Unpinnable configurations
-  // must hide every pick surface: XPU indices are torch-xpu ordinals no
-  // applicator speaks, so /load and /validate 400 them, and the backend reports
-  // gpu.gguf_gpu_ids_supported. Absent support info defaults to pinnable
-  // (older backend).
-  const pinnableBackend =
-    data?.device_backend !== "xpu" &&
-    data?.gpu?.gguf_gpu_ids_supported !== false;
+  // must hide every pick surface: the backend reports gguf_gpu_ids_supported,
+  // and absent support info defaults to pinnable (older backend).
+  const pinnableBackend = data?.gpu?.gguf_gpu_ids_supported !== false;
+  // ROCm reuses torch.cuda.* and the same physical-ID path, so the runner takes
+  // its indices too; only the reported label differs (_backend_label swaps it).
+  const diffusionBackend =
+    data?.device_backend === "cuda" || data?.device_backend === "rocm";
   return (data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({
       index: d.index as number,
+      indexKind:
+        d.index_kind === "physical" || d.index_kind === "vulkan"
+          ? d.index_kind
+          : null,
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
       memoryFreeGb: d.vram_free_gb ?? 0,
-      physicalIndex: pinnableBackend && d.index_kind === "physical",
+      // The XPU ban is about torch-xpu ordinals no applicator speaks, so /load
+      // and /validate 400 them. A Vulkan ordinal is not one of those, so it
+      // stays pickable even when this list arrives from an XPU host.
+      pinnable:
+        pinnableBackend &&
+        (d.index_kind === "vulkan" ||
+          (data?.device_backend !== "xpu" && d.index_kind === "physical")),
+      diffusionPinnable: diffusionBackend && d.index_kind === "physical",
     }));
 }
 
 /** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
 function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
+  const cachedSystem = getCachedSystemInfo();
   const [gpu, setGpu] = useState<GpuInfo>(
     cachedSystem ? toGpuInfo(cachedSystem, source) : DEFAULT_GPU,
   );
@@ -146,33 +151,29 @@ function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
     // No early return on cachedSystem: a consumer mounting as the cache fills
     // (between render and effect) would otherwise stay stuck at the default.
     let cancelled = false;
-    let retryId: number | undefined;
-    const update = (force = false, retryVulkan = false) => {
-      fetchSystemOnce(force).then((d) => {
+    const sync = (data: SystemInfoResponse) => {
+      if (cancelled) return;
+      const next = toGpuInfo(data, source);
+      setGpu((current) =>
+        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+      );
+    };
+    const update = () => {
+      fetchSystemInfo().then((d) => {
         if (cancelled) return;
-        if (!d) {
-          // Once an unavailable Vulkan backend starts polling, a transient API
-          // failure must preserve the current state and continue the same loop.
-          if (retryVulkan) {
-            retryId = window.setTimeout(() => update(true, true), 3000);
-          }
-          return;
-        }
-        setGpu(toGpuInfo(d, source));
-        const inferenceGpu = d.inference_gpu;
-        if (
-          source === "inference_gpu" &&
-          inferenceGpu?.backend === "vulkan" &&
-          !inferenceGpu.available
-        ) {
-          retryId = window.setTimeout(() => update(true, true), 3000);
-        }
+        if (!d) return;
+        // A cache hit does not publish a new snapshot. Sync it here so a
+        // consumer mounting while the initial request finishes cannot miss it.
+        sync(d);
       });
     };
+    const unsubscribe = subscribeSystemInfo(sync, {
+      retryUnavailableVulkan: source === "inference_gpu",
+    });
     update();
     return () => {
       cancelled = true;
-      if (retryId !== undefined) window.clearTimeout(retryId);
+      unsubscribe();
     };
   }, [source]);
   return gpu;
@@ -190,6 +191,7 @@ export function useInferenceGpuInfo(): GpuInfo {
 
 /** All backend-visible GPUs (index, name, total VRAM); shares the same fetch. */
 export function useGpuDevices(): SystemGpuDevice[] {
+  const cachedSystem = getCachedSystemInfo();
   const [devices, setDevices] = useState<SystemGpuDevice[]>(
     cachedSystem ? toGpuDevices(cachedSystem) : [],
   );
@@ -197,42 +199,87 @@ export function useGpuDevices(): SystemGpuDevice[] {
     // No early return on cachedSystem: a consumer mounting as the cache fills
     // (between render and effect) would otherwise stay stuck at the default.
     let cancelled = false;
-    fetchSystemOnce().then((d) => {
-      if (!cancelled) setDevices(toGpuDevices(d));
+    let lastSerialized: string | null = null;
+    const sync = (data: SystemInfoResponse | null) => {
+      if (cancelled) return;
+      const next = toGpuDevices(data);
+      // Every refresh builds a fresh array, so compare by value or a 3s Vulkan
+      // retry loop would re-render this hook forever.
+      const serialized = JSON.stringify(next);
+      if (serialized === lastSerialized) return;
+      lastSerialized = serialized;
+      setDevices(next);
+    };
+    const unsubscribe = subscribeSystemInfo(sync, {
+      retryUnavailableVulkan: true,
     });
+    fetchSystemInfo().then(sync);
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
   return devices;
 }
 
-/**
- * Await the shared /api/system fetch so cachedPinnableGpuIndices (and the
- * store's reconcilePersistedGpuIds) can validate a persisted pick before a
- * load path sends it -- on a cold cache the reconcile passes ids through
- * unvalidated, and a stale cross-host pick then fails /load with the picker
- * hidden. Resolves immediately once the module cache is warm; a failed fetch
- * keeps the cache cold, preserving the "can't validate, backend guards"
- * degradation.
- */
+/** Whether device discovery is settled enough to rewrite remembered UI state. */
+export function gpuDeviceCacheReady(): boolean {
+  const cachedSystem = getCachedSystemInfo();
+  if (cachedSystem === null) {
+    return false;
+  }
+  const inferenceGpu = cachedSystem.inference_gpu;
+  return !(inferenceGpu?.backend === "vulkan" && !inferenceGpu.available);
+}
+
+/** Warm the shared system cache before validating persisted GPU IDs. */
 export async function ensureGpuDeviceCache(): Promise<void> {
-  await fetchSystemOnce();
+  await fetchSystemInfo();
+}
+
+/** Cached pinnable IDs, null before fetch, or [] when pinning is unavailable. */
+export function cachedPinnableGpuIndices(
+  forDiffusion = false,
+): number[] | null {
+  return cachedPinnableGpuContext(forDiffusion).ids;
+}
+
+/** Cached index namespace, undefined before fetch and null when unavailable. */
+export function cachedPinnableGpuIndexKind(
+  forDiffusion = false,
+): GpuIndexKind | null | undefined {
+  return cachedPinnableGpuContext(forDiffusion).indexKind;
 }
 
 /**
- * Pinnable physical GPU indices from the already-fetched /api/system cache, for
- * non-React code (the store) that needs to validate a persisted `gpu_ids` pick
- * without triggering a fetch. Returns:
- *  - `null` when the cache isn't populated yet (caller can't validate, so keep
- *    the pick and let the backend guard reject a truly bad one);
- *  - `[]` when the host has no pinnable multi-GPU set (single GPU, or relative/
- *    UUID-masked indices) -- the picker is hidden, so any saved pick is stale;
- *  - the physical indices otherwise.
+ * Cached namespace and membership are separate: an unavailable Vulkan probe
+ * leaves membership unknown while the Vulkan namespace remains authoritative.
  */
-export function cachedPinnableGpuIndices(): number[] | null {
-  if (!cachedSystem) return null;
-  const physical = toGpuDevices(cachedSystem).filter((d) => d.physicalIndex);
-  // Mirrors the sheet's showGpuPicker gate: only a 2+ physical-GPU host can pin.
-  return physical.length > 1 ? physical.map((d) => d.index) : [];
+export function cachedPinnableGpuContext(
+  forDiffusion = false,
+  devices?: SystemGpuDevice[],
+): PinnableGpuContext {
+  const cachedSystem = getCachedSystemInfo();
+  const unavailableVulkan =
+    cachedSystem?.inference_gpu?.backend === "vulkan" &&
+    !cachedSystem.inference_gpu.available;
+  return resolveGpuSelectionContext(
+    cachedSystem ? (devices ?? toGpuDevices(cachedSystem)) : null,
+    forDiffusion,
+    unavailableVulkan ? "vulkan" : undefined,
+  );
+}
+
+export function reconcileCachedGpuSelection(
+  ids: number[] | null,
+  savedIndexKind?: GpuIndexKind | null,
+  forDiffusion = false,
+): ReconciledGpuSelection {
+  const context = cachedPinnableGpuContext(forDiffusion);
+  return reconcileGpuSelection(
+    ids,
+    savedIndexKind,
+    context.indexKind,
+    context.ids,
+  );
 }
