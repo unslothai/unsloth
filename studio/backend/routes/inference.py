@@ -1008,6 +1008,7 @@ try:
         _canonicalize_spec_mode,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
+        _extra_args_requests_mtp,
         _extra_args_set_spec_type,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
@@ -1058,6 +1059,7 @@ except ImportError:
         _canonicalize_spec_mode,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
+        _extra_args_requests_mtp,
         _extra_args_set_spec_type,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
@@ -5175,10 +5177,17 @@ def _guard_chat_load_against_training(
     )
 
     # Size with the count that will actually launch, or a load that fits gets a
-    # 409: diffusion never receives --parallel, and load_model clamps to 1 on an
-    # llama-server without --kv-unified. An unclassified GGUF keeps the ask.
+    # 409: diffusion never receives --parallel, load_model clamps to 1 on an
+    # llama-server without --kv-unified, and it clamps MTP to 1 as well. An
+    # unclassified GGUF keeps the ask.
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
+            n_parallel = 1
+        # env = {} mirrors load_model's clamp: only an explicit --spec-type the
+        # user passed through is final this early. A mode that only resolves to
+        # MTP inside _build_speculative_flags still over-sizes here, which errs
+        # toward protecting training.
+        elif _extra_args_requests_mtp(llama_extra_args, env = {}):
             n_parallel = 1
         else:
             try:

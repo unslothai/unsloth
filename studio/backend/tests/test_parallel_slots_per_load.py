@@ -431,6 +431,7 @@ def _guard_required_gb(
     n_parallel: int,
     diffusion,
     caps = None,
+    llama_extra_args = None,
 ) -> float:
     """Run the training guard over a local GGUF and return the size it budgeted."""
     import routes.inference as inf
@@ -472,6 +473,7 @@ def _guard_required_gb(
         requested_gpu_ids = None,
         n_parallel = n_parallel,
         gpu_memory_mode = "auto",
+        llama_extra_args = llama_extra_args,
     )
     return seen["required_override_gb"]
 
@@ -507,6 +509,33 @@ def test_training_guard_sizes_one_slot_when_the_binary_has_no_kv_unified(monkeyp
 def test_training_guard_sizes_every_slot_when_kv_unified_exists(monkeypatch, tmp_path):
     # The clamp is scoped to binaries that cannot serve the slots; a capable one
     # really does allocate the SWA window per slot.
+    gguf = _write_swa_gguf(tmp_path / "chat.gguf")
+    new = {"found": True, "supports_kv_unified": True}
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False, caps = new)
+    assert many > one
+
+
+def test_training_guard_sizes_one_slot_for_an_explicit_mtp_load(monkeypatch, tmp_path):
+    # load_model clamps MTP to a single slot, so budgeting the asked count here
+    # would 409 an MTP load that the one-slot server it launches would have fitted.
+    gguf = _write_swa_gguf(tmp_path / "chat.gguf")
+    mtp = ["--spec-type", "draft-mtp"]
+    new = {"found": True, "supports_kv_unified": True}
+    one = _guard_required_gb(
+        monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new, llama_extra_args = mtp
+    )
+    many = _guard_required_gb(
+        monkeypatch, gguf, n_parallel = 8, diffusion = False, caps = new, llama_extra_args = mtp
+    )
+    assert one == many
+
+
+def test_training_guard_keeps_slots_when_a_stale_mtp_env_will_not_launch(monkeypatch, tmp_path):
+    # LLAMA_ARG_SPEC_TYPE alone does not survive Studio's own resolved --spec-type,
+    # so load_model does not clamp on it here; flattening the budget to one slot
+    # would under-size the estimate and let a load squeeze past the guard.
+    monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "draft-mtp")
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     new = {"found": True, "supports_kv_unified": True}
     one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new)

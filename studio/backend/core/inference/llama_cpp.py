@@ -3274,6 +3274,8 @@ class LlamaCppBackend:
                 "supports_no_cache_prompt": False,
                 "supports_metrics": False,
                 "supports_slot_save": False,
+                "supports_no_mmproj_offload": False,
+                "supports_spec_draft_ngl": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -3295,6 +3297,8 @@ class LlamaCppBackend:
         supports_no_cache_prompt = False
         supports_metrics = False
         supports_slot_save = False
+        supports_no_mmproj_offload = False
+        supports_spec_draft_ngl = False
         saw_spec_type = False
         probe_ok = False
         help_text = ""
@@ -3401,6 +3405,8 @@ class LlamaCppBackend:
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
+            supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
+            supports_spec_draft_ngl = _is_real("--spec-draft-ngl") or _is_real("-ngld")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
             saw_spec_type = False
@@ -3437,6 +3443,8 @@ class LlamaCppBackend:
             "supports_no_cache_prompt": supports_no_cache_prompt,
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
+            "supports_no_mmproj_offload": supports_no_mmproj_offload,
+            "supports_spec_draft_ngl": supports_spec_draft_ngl,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -7263,6 +7271,54 @@ class LlamaCppBackend:
             # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
                 raise RuntimeError("llama.cpp is updating; try again in a moment.")
+
+            # A virtualised Apple GPU corrupts every offloaded layer, so pin GGUF
+            # inference to CPU there; physical Apple Silicon is untouched. Settled
+            # ABOVE the duplicate-load check (and the KV estimates) so the compared
+            # placement is the one that launches: the launch records the normalized
+            # values, so comparing the raw request would miss the fast path and tear
+            # down a healthy CPU server on every repeat Auto /load.
+            _paravirtual_cpu_forced = False
+            if not (gpu_memory_mode == "manual" and gpu_layers == 0):
+                if _metal_device_is_paravirtual():
+                    logger.warning(
+                        "Forcing gpu_layers=0 for %s: this Mac's Metal device is "
+                        "virtualised and offloaded layers produce corrupt output.",
+                        model_identifier or gguf_path,
+                    )
+                    gpu_memory_mode = "manual"
+                    gpu_layers = 0
+                    _paravirtual_cpu_forced = True
+                    # Nothing is left on the GPU to split or keep on CPU, and the
+                    # launch drops these anyway; normalize them here too so the
+                    # recorded state and the next identical request agree.
+                    tensor_parallel = False
+                    tensor_split = None
+                    n_cpu_moe = 0
+                    # User pass-through args are appended AFTER the managed
+                    # --gpu-layers 0 and llama.cpp's parser is last-wins, so an
+                    # accepted `-ngl 99` would re-enable the corrupt offload. Only
+                    # manual mode strips these at the route, so an Auto request
+                    # still carries them here.
+                    if extra_args:
+                        _pv_stripped = strip_shadowing_flags(
+                            extra_args,
+                            strip_context = False,
+                            strip_cache = False,
+                            strip_spec = False,
+                            strip_template = False,
+                            strip_split_mode = False,
+                            strip_offload = True,
+                        )
+                        if _pv_stripped != list(extra_args):
+                            logger.warning(
+                                "Dropping offload flags from extra args on a "
+                                "virtualised Metal device: %s -> %s",
+                                list(extra_args),
+                                _pv_stripped,
+                            )
+                            extra_args = _pv_stripped
+
             # Duplicate /load that raced past the route check: do nothing if the
             # live server already satisfies this request.
             if self._already_in_target_state(
@@ -7336,23 +7392,19 @@ class LlamaCppBackend:
                 )
                 n_parallel = 1
 
-            # A virtualised Apple GPU corrupts every offloaded layer, so pin GGUF
-            # inference to CPU there. Ahead of the KV estimates so the fit matches what
-            # launches; physical Apple Silicon is untouched.
-            if not (gpu_memory_mode == "manual" and gpu_layers == 0):
-                if _metal_device_is_paravirtual():
-                    logger.warning(
-                        "Forcing gpu_layers=0 for %s: this Mac's Metal device is "
-                        "virtualised and offloaded layers produce corrupt output.",
-                        model_identifier or gguf_path,
-                    )
-                    gpu_memory_mode = "manual"
-                    gpu_layers = 0
-
-            # llama.cpp's draft-mtp path serves one sequence only. Left at the default of
-            # 4 slots, concurrent chats do not merely slow down, they share tokens across
-            # replies. Clamped beside the --kv-unified clamp so the KV fit matches.
-            if n_parallel > 1 and _extra_args_requests_mtp(extra_args):
+            # MTP is documented as single-slot: the model cards ship "-np 1" and say
+            # "-np > 1 [...] not yet supported with MTP". llama.cpp does keep the MTP
+            # state per sequence, so the committed text stays correct; what breaks at
+            # more slots is the draft. Unequal per-slot token counts make split_equal
+            # reorder the ubatch while the nextn hidden states are still read by raw
+            # token index, so slots read each other's rows, acceptance collapses and
+            # MTP ends up slower than no speculation at all. Clamped beside the
+            # --kv-unified clamp so the KV fit matches.
+            # env = {} on purpose: only an explicit --spec-type the user passed through
+            # is final here (extras are appended last, so they win at launch). A bare
+            # LLAMA_ARG_SPEC_TYPE is not -- Studio's own resolved spec flags override it
+            # -- so it is judged by the backstop after _build_speculative_flags instead.
+            if n_parallel > 1 and _extra_args_requests_mtp(extra_args, env = {}):
                 logger.warning(
                     "MTP speculative decoding (--spec-type draft-mtp) does not support "
                     "%d parallel slots; using 1. Load without MTP to serve chats in "
@@ -9002,11 +9054,39 @@ class LlamaCppBackend:
                 _spec_start = len(cmd)
                 cmd.extend(spec_flags)
 
+                # A *separate* drafter does not inherit the main --gpu-layers:
+                # common_base_params_to_speculative overwrites n_gpu_layers with
+                # params.speculative.draft.n_gpu_layers, whose default -1 means
+                # auto, so on a virtualised Metal device the drafter would run the
+                # corrupt path the CPU pin exists to avoid. An embedded MTP head
+                # needs nothing here: with no draft model that override is skipped
+                # (has_draft is false) and the head follows the main placement.
+                # Probe-gated like the other optional flags in this file: an older
+                # build would reject the unknown argument and refuse to start, which
+                # is worse than the corrupt drafter it prevents.
+                if (
+                    _paravirtual_cpu_forced
+                    and _extra_args_mtp_draft_path(spec_flags) is not None
+                    and server_caps.get("supports_spec_draft_ngl")
+                ):
+                    cmd.extend(["--spec-draft-ngl", "0"])
+                    logger.warning(
+                        "Pinning the speculative drafter to CPU: this Mac's Metal "
+                        "device is virtualised."
+                    )
+
                 # Backstop for the MTP clamp above, which only sees an explicit
                 # --spec-type in extra_args; speculative_type="auto"/"mtp" is not
                 # resolved until _build_speculative_flags runs, here. The KV fit was
                 # sized for more slots, so this over-reserves, never under-reserves.
-                if n_parallel > 1 and _extra_args_requests_mtp(spec_flags):
+                # Skipped when the user's extras own --spec-type: _build_speculative_flags
+                # emits nothing then, and judging the empty flag list would fall through
+                # to LLAMA_ARG_SPEC_TYPE and clamp a launch that is not MTP at all.
+                if (
+                    n_parallel > 1
+                    and not _extra_args_set_spec_type(extra_args)
+                    and _extra_args_requests_mtp(spec_flags)
+                ):
                     try:
                         _np_at = cmd.index("--parallel")
                     except ValueError:
@@ -9098,6 +9178,19 @@ class LlamaCppBackend:
                 if launch_mmproj_path and effective_is_vision:
                     cmd.extend(["--mmproj", launch_mmproj_path])
                     logger.info(f"Using mmproj for vision: {launch_mmproj_path}")
+                    # The projector never reads --gpu-layers: clip.cpp picks a GPU
+                    # backend from the boolean mmproj_use_gpu, which defaults to
+                    # true. So on a virtualised Metal device the vision encoder
+                    # would keep running the corrupt path the CPU pin above exists
+                    # to avoid, and every image would be encoded from garbage.
+                    # Probe-gated: a build without the flag would refuse to start,
+                    # which is worse than the corrupt encoder it prevents.
+                    if _paravirtual_cpu_forced and server_caps.get("supports_no_mmproj_offload"):
+                        cmd.append("--no-mmproj-offload")
+                        logger.warning(
+                            "Disabling mmproj GPU offload: this Mac's Metal device "
+                            "is virtualised."
+                        )
 
                 # Option C: --api-key for direct client access when enabled
                 import secrets as _secrets
