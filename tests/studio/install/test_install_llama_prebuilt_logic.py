@@ -3667,6 +3667,11 @@ def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) 
     }
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "setup.sh is the POSIX installer; Windows runs setup.ps1, and driving a "
+    "POSIX script through Git Bash with Windows paths proves nothing about either",
+)
 @pytest.mark.parametrize(
     "status, expect_source_build, expect_exit",
     [
@@ -3686,6 +3691,10 @@ def test_setup_sh_starts_source_build_only_for_expected_prebuilt_exit(
     The previous version of this test compared ``str.index`` offsets, which is a
     tautology -- ``index(needle, start)`` never returns less than ``start`` -- so
     it asserted only that three literals existed in textual order.
+
+    The PowerShell side of the same routing is covered textually by
+    test_setup_scripts_unexpected_exit_branch_never_sets_source_build, which is
+    platform independent.
     """
     if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
         pytest.skip("bash is required to exercise the setup.sh routing block")
@@ -3770,6 +3779,33 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+
+
+@pytest.mark.parametrize(
+    "error",
+    [TypeError("bug"), AttributeError("bug"), NameError("bug")],
+    ids = ["typeerror", "attributeerror", "nameerror"],
+)
+def test_release_listing_code_defect_stays_exit_error(tmp_path, monkeypatch, error):
+    """A defect in the resolver is an installer bug, not a transient condition.
+
+    It must not buy a multi-minute source build under a message that blames the
+    network. Only OSError/RuntimeError/ValueError -- the shapes a transport or
+    payload failure actually takes -- are reclassified as a fallback.
+    """
+
+    def boom(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+
+    # Escapes install_prebuilt, so __main__ maps it to EXIT_ERROR.
+    with pytest.raises(type(error)):
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
 
 def test_release_listing_enospc_still_exits_no_space(tmp_path, monkeypatch):
@@ -3924,10 +3960,43 @@ def test_marker_sync_survives_a_read_only_marker(tmp_path, sync, kwargs):
     if os.access(marker, os.W_OK):  # pragma: no cover - root ignores the mode
         pytest.skip("cannot make the marker read-only for this user")
 
+    logged: list[str] = []
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
     try:
+        # Must not raise: that would surface as EXIT_ERROR and abort setup.
         getattr(INSTALL_LLAMA_PREBUILT, sync)(install_dir, *kwargs.values())
     finally:
-        os.chmod(marker, 0o644)
+        monkeypatch.undo()
+        if marker.exists():
+            os.chmod(marker, 0o644)
 
-    # Unchanged on disk, but the install is intact and setup continues.
-    assert json.loads(marker.read_text(encoding = "utf-8"))["force_cpu"] is False
+    # Either the atomic swap landed the value (POSIX, writable dir) or we said
+    # so loudly. Silently losing force_cpu would let a later update re-route a
+    # deliberate CPU user onto a GPU bundle (#7213). os.replace onto a
+    # read-only destination is refused on Windows, hence the two-way assert.
+    field = list(kwargs)[0].replace("persist_", "")
+    expected = list(kwargs.values())[0]
+    persisted = json.loads(marker.read_text(encoding = "utf-8")).get(field) == expected
+    assert persisted or any("WARNING" in line and field in line for line in logged), logged
+
+
+def test_marker_sync_never_fails_setup_when_the_write_cannot_land(tmp_path, monkeypatch):
+    """If even the atomic swap is refused, warn and continue -- never abort setup."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker.write_text(json.dumps({"force_cpu": False}) + "\n", encoding = "utf-8")
+
+    def refuse(*args, **kwargs):
+        raise PermissionError(13, "Access is denied", str(marker), 5)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "atomic_write_bytes", refuse)
+    monkeypatch.setattr(Path, "write_bytes", refuse)
+
+    logged: list[str] = []
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
+
+    INSTALL_LLAMA_PREBUILT.sync_marker_force_cpu(install_dir, True)
+
+    assert any("WARNING" in line and "force_cpu" in line for line in logged), logged

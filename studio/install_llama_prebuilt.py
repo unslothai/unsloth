@@ -5688,6 +5688,28 @@ def write_prebuilt_metadata(
     )
 
 
+def _write_marker(marker_path: Path, marker: dict) -> bool:
+    """Best-effort marker rewrite for the reuse path. Returns False if it stuck.
+
+    Atomic first: os.replace swaps in a sibling temp file, which succeeds on a
+    read-only marker in a writable dir (a shared or admin-owned install), where
+    a plain write_text would not. Never raises -- the reuse path runs after the
+    install is already valid, and an unexpected exit no longer falls back to a
+    source build, so failing here would abort setup over a metadata refresh.
+    """
+    data = (json.dumps(marker, indent = 2) + "\n").encode("utf-8")
+    try:
+        atomic_write_bytes(marker_path, data)
+        return True
+    except OSError:
+        pass
+    try:
+        marker_path.write_bytes(data)
+        return True
+    except OSError:
+        return False
+
+
 def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
     """Sync only the force_cpu flag of an existing marker when the resolved bundle is
     unchanged, so the install is skipped without a full metadata rewrite. A deliberate
@@ -5702,13 +5724,14 @@ def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
     if not isinstance(marker, dict) or bool(marker.get("force_cpu")) == persist_force_cpu:
         return
     marker["force_cpu"] = persist_force_cpu
-    # Advisory: the read above is already guarded, and a read-only marker (shared
-    # or admin-owned install) must not fail the whole setup now that an
-    # unexpected exit no longer falls back to a source build.
-    try:
-        marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
-    except OSError as exc:
-        log(f"could not record force_cpu={persist_force_cpu} in the existing install marker: {exc}")
+    if not _write_marker(marker_path, marker):
+        # Losing this leaves the updater free to re-route a deliberate CPU user
+        # onto a GPU/Vulkan bundle (#7213), so say so loudly -- but do not fail
+        # setup over it, now that an unexpected exit no longer source builds.
+        log(
+            f"WARNING: could not record force_cpu={persist_force_cpu} in {marker_path}; "
+            "a later update may not re-assert this choice"
+        )
         return
     log(f"existing install reused; recorded force_cpu={persist_force_cpu} from this run")
 
@@ -5726,11 +5749,10 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
         marker.pop("llama_backend", None)
     else:
         marker["llama_backend"] = llama_backend
-    try:
-        marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
-    except OSError as exc:
+    if not _write_marker(marker_path, marker):
         log(
-            f"could not record llama_backend={llama_backend!r} in the existing install marker: {exc}"
+            f"WARNING: could not record llama_backend={llama_backend!r} in {marker_path}; "
+            "a later update may not re-assert this choice"
         )
         return
     log(f"existing install reused; recorded llama_backend={llama_backend!r} from this run")
@@ -6763,6 +6785,20 @@ def install_prebuilt(
             # RESOLVE_TTL_SECONDS -- so a resolver-side wrapper would pin a
             # transient 403 as "no prebuilt" for 24h. A nonzero exit is never
             # cached, so the resolver must keep failing hard.
+            #
+            # Not dead code even though the download-host fast path hides most
+            # API 403s: macOS skips that path entirely (see
+            # allow_download_host_fast_path below), as does a pinned
+            # UNSLOTH_LLAMA_RELEASE_TAG, a non-latest tag, a non-default
+            # --published-repo, and any CDN outage.
+            #
+            # The catch is deliberately narrow. Every transient shape lands in
+            # it -- URLError/HTTPError/SSLError/TimeoutError are OSError,
+            # JSONDecodeError is a ValueError, and fetch_json's 403 is a bare
+            # RuntimeError -- while a TypeError or AttributeError from a bug in
+            # host-conditional resolver code stays EXIT_ERROR. Catching those
+            # too would buy a 20 minute source build and log a network cause for
+            # a local defect.
             try:
                 requested_tag, release_plans = resolve_simple_install_release_plans(
                     llama_tag,
@@ -6772,7 +6808,7 @@ def install_prebuilt(
                 )
             except (BusyInstallConflict, PrebuiltFallback):
                 raise
-            except Exception as exc:
+            except (OSError, RuntimeError, ValueError) as exc:
                 raise PrebuiltFallback(
                     f"failed to inspect published releases in "
                     f"{published_repo or DEFAULT_PUBLISHED_REPO}: {exc}"
