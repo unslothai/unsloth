@@ -1394,3 +1394,50 @@ def test_the_metadata_cleanup_does_not_construct_the_backend():
         and sub.func.id == "peek_inference_backend"
         for sub in ast.walk(fn)
     ), "the cleanup path no longer checks the loaded model at all"
+
+
+def test_the_research_probes_do_not_construct_the_backend():
+    """A durable research run resumes on the loop as soon as the port is recorded.
+
+    _process() and _wait_for_local_model() call these two sync probes inline, so a cold
+    get_inference_backend() there parks uvicorn on the torch import for the rest of the
+    warm: login, liveness and the deadline-bound health probe all stall behind it.
+    """
+    tree = ast.parse((_BACKEND / "core" / "research_runs.py").read_text(encoding = "utf-8"))
+    for name in ("_loaded_context_length", "_local_model_ready"):
+        fn = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+        assert not [
+            sub
+            for sub in ast.walk(fn)
+            if isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id == "get_inference_backend"
+        ], f"{name} constructs the singleton inline; a resumed run then blocks the loop"
+        assert any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id == "_peek_inference_backend"
+            for sub in ast.walk(fn)
+        ), f"{name} no longer reads the native backend at all"
+
+
+def test_the_research_peek_answers_cold_without_constructing():
+    """Behavioural: with no orchestrator built, both probes answer and build nothing."""
+    import core.inference.orchestrator as orch
+    from core import research_runs
+
+    before = orch._inference_backend
+    try:
+        orch._inference_backend = None
+        assert research_runs._loaded_context_length() is None
+        assert research_runs._local_model_ready() is False, (
+            "no orchestrator means no native model is loaded; that is an answer, not a "
+            "failed probe, so the run must not be told to go ahead"
+        )
+        assert orch._inference_backend is None, "a probe constructed an orchestrator"
+    finally:
+        orch._inference_backend = before

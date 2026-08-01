@@ -625,6 +625,24 @@ def _positive_int_or_none(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
+def _peek_inference_backend() -> Any:
+    """The orchestrator if one already exists, else None. Never constructs one.
+
+    A resumed durable run probes these on uvicorn's loop, and constructing reaches
+    get_default_models() -> get_device(), so a cold probe would block the loop on the
+    torch import to answer "nothing is loaded". A patched core.inference getter still
+    wins: that is the seam these probes are injected through.
+    """
+    from core.inference import get_inference_backend
+
+    try:
+        from core.inference.orchestrator import get_inference_backend as _real
+        from core.inference.orchestrator import peek_inference_backend
+    except Exception:
+        return get_inference_backend()
+    return get_inference_backend() if get_inference_backend is not _real else peek_inference_backend()
+
+
 def _loaded_context_length() -> int | None:
     """Best-effort read of the active model's context window in tokens, or None if unknown.
 
@@ -644,9 +662,7 @@ def _loaded_context_length() -> int | None:
         logger.debug("research.context_probe_llama_failed", exc_info = True)
     # Native / transformers: the orchestrator the API layer reads (not the subprocess singleton).
     try:
-        from core.inference import get_inference_backend
-
-        backend = get_inference_backend()
+        backend = _peek_inference_backend()
         name = getattr(backend, "active_model_name", None)
         models = getattr(backend, "models", {}) or {}
         info = models.get(name) if (name and isinstance(models, dict)) else None
@@ -688,8 +704,8 @@ def _local_model_ready() -> bool:
     except Exception:
         logger.debug("research.model_probe_llama_failed", exc_info = True)
     try:
-        from core.inference import get_inference_backend
-        if getattr(get_inference_backend(), "active_model_name", None):
+        # No orchestrator yet is a real answer (nothing is loaded), not a failed probe.
+        if getattr(_peek_inference_backend(), "active_model_name", None):
             return True
         probed = True
     except Exception:
