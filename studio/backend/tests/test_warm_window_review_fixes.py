@@ -2732,3 +2732,42 @@ def test_an_interrupted_purge_reports_only_what_it_removed():
     for name in removed:
         assert name not in fake, f"{name} was reported removed but is still present"
     assert [name for name in names if name in fake], "the purge did not actually stop"
+
+
+def test_a_late_repair_cannot_erase_the_restarted_lifespans_verdict():
+    """A stale forced pass must bail before it touches anything.
+
+    detect_hardware() clears DETECTION_COMPLETE, probes, then discards when the epoch
+    moved. Reached with an already-stale owning epoch, that sequence runs over a verdict
+    the restarted lifespan had settled: the discard wipes DEVICE and the event, so the
+    new lifespan goes provisional and has to detect all over again.
+    """
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        stale_epoch = hw.current_detection_epoch()
+        hw.invalidate_detection()  # the restart
+
+        # The new lifespan has already measured and published.
+        hw.DEVICE = hw.DeviceType.CUDA
+        hw.CHAT_ONLY = False
+        hw.CHAT_ONLY_REASON = None
+        hw.DETECTION_COMPLETE.set()
+
+        probed = []
+        with hw.owning_detection_epoch(stale_epoch):
+            with mock.patch.object(hw, "_detect_hardware_locked", lambda: probed.append(1)):
+                hw.detect_hardware()
+
+        assert probed == [], "a retired repair probed anyway, importing MLX for a dead lifespan"
+        assert hw.DEVICE is hw.DeviceType.CUDA, (
+            "a late MLX repair erased the restarted lifespan's verdict; the new lifespan "
+            "drops back to provisional and re-detects"
+        )
+        assert hw.CHAT_ONLY is False
+        assert hw.DETECTION_COMPLETE.is_set(), "the settled event was cleared by a stale pass"
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()

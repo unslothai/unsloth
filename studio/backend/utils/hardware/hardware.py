@@ -345,6 +345,12 @@ def detect_hardware() -> DeviceType:
         epoch = getattr(_OWNING_EPOCH, "value", None)
         if epoch is None:
             epoch = current_detection_epoch()
+        elif current_detection_epoch() != epoch:
+            # Retired before this pass began, so leave the running lifespan alone. Going
+            # on would clear DETECTION_COMPLETE over a settled verdict, probe, and then
+            # discard: an old repair finishing late would erase the verdict the restart
+            # had already published, not merely fail to add its own.
+            return DEVICE
         DETECTION_COMPLETE.clear()
         try:
             device = _detect_hardware_locked()
