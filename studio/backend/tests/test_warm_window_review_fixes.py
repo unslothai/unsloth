@@ -2583,7 +2583,9 @@ def test_the_warm_runs_its_stages_inside_an_owning_scope():
     """
     tree = ast.parse((_BACKEND / "utils" / "torch_warmup.py").read_text(encoding = "utf-8"))
     warm = next(
-        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "_warm"
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_warm"
     )
     scoped = [
         node
