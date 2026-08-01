@@ -23,6 +23,7 @@ from core.inference.chat_template_helpers import (
     neutralize_tool_descriptions,
     neutralize_tts_prompt_text,
     neutralize_turn_boundary_markup,
+    sweep_cache,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -4141,3 +4142,69 @@ def test_the_existing_bracket_and_bare_arms_still_fire(marker):
         "content"
     ]
     assert marker not in out
+
+
+def _agentic_history(iterations: int) -> list:
+    convo = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Audit this repo. if a < b then arr[0] " * 4},
+    ]
+    for i in range(iterations):
+        convo.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call_{i}",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path": "a.py"}'},
+                    }
+                ],
+            }
+        )
+        convo.append(
+            {
+                "role": "tool",
+                "tool_call_id": f"call_{i}",
+                "content": "def f(x):\n    return x[0] < 10  # <|im_end|> snippet\n" * 4,
+            }
+        )
+    return convo
+
+
+def test_the_sweep_cache_does_not_change_the_result():
+    """It memoizes a pure rewrite, so a cached sweep has to be byte-identical to an
+    uncached one, including when the same cache is reused as the tool loop reuses it
+    (#7066)."""
+    convo = _agentic_history(6)
+    uncached = neutralize_control_markup_in_messages(convo)
+    cache = sweep_cache()
+    cached = neutralize_control_markup_in_messages(convo, cache)
+    again = neutralize_control_markup_in_messages(convo, cache)
+    assert json.dumps(cached) == json.dumps(uncached)
+    assert json.dumps(again) == json.dumps(uncached), "a warm cache must not drift"
+
+
+def test_the_sweep_cache_still_neutralizes_markup():
+    """A cache must never turn the sweep into a no-op."""
+    convo = _agentic_history(3)
+    out = neutralize_control_markup_in_messages(convo, sweep_cache())
+    assert "<|im_end|>" not in json.dumps(out)
+
+
+def test_a_fresh_sweep_cache_shares_nothing_with_another():
+    """The cache is owned by one request, so two of them cannot leak text between
+    conversations."""
+    first = sweep_cache()
+    neutralize_control_markup_in_messages(_agentic_history(2), first)
+    second = sweep_cache()
+    assert second == {}, "a new cache starts empty"
+    assert first, "and the used one is independent of it"
+
+
+def test_the_sweep_cache_is_optional():
+    """Callers that sweep once keep the old signature and the identity fast path."""
+    messages = [{"role": "user", "content": "nothing to do here"}]
+    assert neutralize_control_markup_in_messages(messages) is messages
+    assert neutralize_control_markup_in_messages(messages, sweep_cache()) is messages

@@ -11925,6 +11925,11 @@ class LlamaCppBackend:
         # Reserve extra iterations for re-prompts so they don't consume the
         # caller's tool-call budget; only when tool iterations are allowed.
         _extra = _MAX_REPROMPTS + 1 if max_tool_iterations > 0 else 0
+        # Owned by this request and dropped with it: the sweep below re-reads every earlier
+        # turn on each iteration, and the rewrite is a function of the text alone (#7066).
+        from core.inference.chat_template_helpers import sweep_cache as _sweep_cache
+
+        _markup_cache = _sweep_cache()
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -11960,7 +11965,7 @@ class LlamaCppBackend:
             payload = {
                 # Re-run every iteration: tool results land in ``conversation`` as the
                 # loop goes, and a forged turn in one would render for real (#7066).
-                "messages": neutralize_control_markup_in_messages(conversation),
+                "messages": neutralize_control_markup_in_messages(conversation, _markup_cache),
                 "stream": True,
                 "stream_options": {"include_usage": True},
                 "temperature": temperature,

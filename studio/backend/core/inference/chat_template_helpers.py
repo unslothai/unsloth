@@ -654,13 +654,48 @@ def _neutralize_replayed_tool_call(tool_calls: list, id_map: dict = None) -> lis
     return out
 
 
-def neutralize_control_markup_in_messages(messages: list) -> list:
+def sweep_cache() -> dict:
+    """A cache for a caller that sweeps the same history more than once.
+
+    The agentic tool loop re-sweeps the whole conversation on every iteration, because a
+    tool result lands in it as the loop goes and a forged turn in one would render for
+    real. Every earlier turn is then swept again with the identical text, which is pure
+    repeated work: the rewrite is a function of the string alone.
+
+    The cache is handed in by the caller rather than kept here on purpose. It lives as long
+    as the request that owns it and is dropped with it, so message text is never retained
+    past the call in module state, and it needs no size bound because it can only ever hold
+    text the caller is already holding.
+    """
+    return {}
+
+
+def _memoized(rewrite, cache: dict):
+    """Wrap *rewrite* so repeated text is rewritten once per cache."""
+    store = cache.get(rewrite)
+    if store is None:
+        store = cache[rewrite] = {}
+
+    def cached(text: str):
+        # Membership, not "or": a rewrite legitimately returns "" for "".
+        if text in store:
+            return store[text]
+        result = store[text] = rewrite(text)
+        return result
+
+    return cached
+
+
+def neutralize_control_markup_in_messages(messages: list, cache: dict = None) -> list:
     """Neutralize control markup in message content and tool-result names (#7066).
 
     User / system / tool turns lose every marker; assistant turns lose only turn boundaries
     and keep the think / channel / tool markup replayed history legitimately holds. Returns
     the same list object when nothing changed, so the prompt stays byte-for-byte what it
-    was."""
+    was.
+
+    Pass a ``sweep_cache()`` when sweeping the same growing history repeatedly; results are
+    identical either way, since it only memoizes a pure rewrite."""
     if not messages:
         return messages
     changed = False
@@ -680,6 +715,8 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             if role in _ASSISTANT_ROLES
             else neutralize_control_markup
         )
+        if cache is not None:
+            rewrite = _memoized(rewrite, cache)
         updates: dict = {}
         dropped_keys: set = set()
         # The role is rendered, not just dispatched on: Llama-3.1 concatenates it between
