@@ -126,9 +126,12 @@ for _flag in --help -h; do
     assert_fixture "$_flag keeps the install" "$FIXTURE_HOME" present
 done
 
-# The piped help form has to be spelled out, because the obvious one is
-# destructive: -h is a shell option (hashall), so `... | sh -h` is consumed by
-# the shell and the script uninstalls with no arguments.
+# The piped help form has to be spelled out, because the obvious one never
+# works: where -h is accepted it is the shell's own hashall option, so
+# `... | sh -h` uninstalls with no arguments; where it is not, the shell exits.
+# Its own run, not the loop's leftover $OUT, so a failure names the right check.
+make_home
+run_uninstall "$FIXTURE_HOME" --help
 assert_says "usage documents the piped help form" "sh -s -- --help" "$OUT"
 
 echo "=== unknown arguments: abort before touching anything ==="
