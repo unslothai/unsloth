@@ -117,6 +117,7 @@ def test_a_second_lifespan_warms_again_however_the_first_ended(monkeypatch):
     # run_lifespan_shutdown does: that is what makes the leftover thread stale rather
     # than this lifespan's own completed warm.
     from utils.hardware import hardware as hw
+
     hw.invalidate_detection()
     assert warmup.start_background_warm() is True
     assert warmup.join_background_warm(30) is True

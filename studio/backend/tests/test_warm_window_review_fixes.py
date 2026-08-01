@@ -1552,9 +1552,7 @@ def test_both_spawners_read_the_epoch_before_start():
         # Read inline in args, or bound to a name the spawner assigns from a reader.
         # Both are "read before start()"; a thread reading it itself is not.
         inline = any(
-            isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Name)
-            and sub.func.id in readers
+            isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id in readers
             for sub in ast.walk(args_kw.value)
         )
         names = {sub.id for sub in ast.walk(args_kw.value) if isinstance(sub, ast.Name)}
@@ -1569,9 +1567,7 @@ def test_both_spawners_read_the_epoch_before_start():
             )
             for node in ast.walk(fn)
         )
-        assert inline or bound, (
-            f"{spawner} passes args to {target} but not the detection epoch"
-        )
+        assert inline or bound, f"{spawner} passes args to {target} but not the detection epoch"
 
 
 def test_a_failed_forced_redetect_does_not_restore_a_retired_verdict():
@@ -2048,15 +2044,16 @@ def test_a_finished_warm_still_holds_the_latch_inside_its_own_lifespan():
             assert warm.start_background_warm() is True
             assert warm.join_background_warm(60) is True
             # Finished, same lifespan: still latched.
-            assert warm.start_background_warm() is False, (
-                "a second warm started beside a completed one in the same lifespan"
-            )
+            assert (
+                warm.start_background_warm() is False
+            ), "a second warm started beside a completed one in the same lifespan"
             # Shutdown retires the epoch, as run_lifespan_shutdown does.
             from utils.hardware import hardware as hw
+
             hw.invalidate_detection()
-            assert warm.start_background_warm() is True, (
-                "the next lifespan skipped its warm over hardware state shutdown cleared"
-            )
+            assert (
+                warm.start_background_warm() is True
+            ), "the next lifespan skipped its warm over hardware state shutdown cleared"
             assert warm.join_background_warm(60) is True
     finally:
         if disable is not None:
