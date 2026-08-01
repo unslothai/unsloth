@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -269,8 +270,11 @@ def test_install_prebuilt_uses_explicit_instruction_cleanup_root(
         "resolve_simple_install_release_plans",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stop after cleanup")),
     )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
 
-    with pytest.raises(RuntimeError, match = "stop after cleanup"):
+    # Resolver failures are classified as a source-build fallback, so the abort
+    # sentinel surfaces as EXIT_FALLBACK with the original message on the chain.
+    with pytest.raises(SystemExit) as caught:
         install_prebuilt(
             install_dir.resolve(),
             "latest",
@@ -279,6 +283,8 @@ def test_install_prebuilt_uses_explicit_instruction_cleanup_root(
             instruction_cleanup_root = linked_root.absolute(),
         )
 
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+    assert "stop after cleanup" in str(caught.value.__cause__)
     assert cleanup_roots == [linked_root.absolute()]
 
 
@@ -3592,20 +3598,340 @@ def test_windows_runtime_dirs_marks_path_candidates_as_optional(monkeypatch, tmp
     assert observed == {"paths": [denied], "skip_unusable": True}
 
 
-def test_setup_source_build_fallback_requires_expected_prebuilt_exit():
-    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+_SETUP_SH_ROUTING_START = 'if [ "$_PREBUILT_STATUS" -eq 0 ]; then'
+_SETUP_PS1_ROUTING_START = "if ($prebuiltExit -eq 0) {"
+
+# Stand-ins for the setup.sh helpers the routing block calls. Each records what
+# it was asked to do so the assertions can read the decision back out.
+_SETUP_SH_HARNESS = """
+set -u
+C_OK=""; C_WARN=""; C_ERR=""
+_NEED_LLAMA_SOURCE_BUILD=false
+_LLAMA_CPP_NO_SPACE=false
+_LLAMA_CPP_DEGRADED=false
+_explicit_vulkan_backend=false
+_STUDIO_HOME_IS_CUSTOM=false
+_STUDIO_OWNED_MARKER=".unsloth-owned"
+step() { echo "step: $2"; }
+substep() { echo "substep: $1"; }
+verbose_substep() { :; }
+print_llama_error_log() { :; }
+print_installed_llama_prebuilt_release() { :; }
+_has_local_llama_server() { return 1; }
+setup_fail() { echo "setup_fail: $1"; exit "$1"; }
+"""
+
+_SETUP_SH_HARNESS_TAIL = """
+echo "source_build=$_NEED_LLAMA_SOURCE_BUILD"
+echo "no_space=$_LLAMA_CPP_NO_SPACE"
+"""
+
+
+def _extract_block(text: str, start_marker: str, end_marker: str) -> str:
+    start = text.index(start_marker)
+    end = text.index(end_marker, start)
+    return text[start : end + len(end_marker)]
+
+
+def _setup_sh_routing_block() -> str:
     setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    # The routing chain ends at the first dedented "    fi" after it.
+    start = setup_sh.index(_SETUP_SH_ROUTING_START)
+    end = setup_sh.index("\n    fi\n", start)
+    return setup_sh[start : end + len("\n    fi\n")]
 
-    ps_fallback = setup_ps1.index("} elseif ($prebuiltExit -eq 2) {")
-    ps_source = setup_ps1.index("$NeedLlamaSourceBuild = $true", ps_fallback)
-    ps_error = setup_ps1.index(
-        "prebuilt helper failed unexpectedly (exit code $prebuiltExit)", ps_source
-    )
-    assert ps_fallback < ps_source < ps_error
 
-    sh_fallback = setup_sh.index('elif [ "$_PREBUILT_STATUS" -eq 2 ]; then')
-    sh_source = setup_sh.index("_NEED_LLAMA_SOURCE_BUILD=true", sh_fallback)
-    sh_error = setup_sh.index(
-        "prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS)", sh_source
+def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) -> dict[str, str]:
+    """Drive the real setup.sh exit-code chain with a stubbed helper result."""
+    llama_dir = tmp_path / "llama.cpp"
+    if install_exists:
+        llama_dir.mkdir(parents = True, exist_ok = True)
+    log_path = tmp_path / "prebuilt.log"
+    log_path.write_text("boom\n", encoding = "utf-8")
+
+    script = "\n".join(
+        [
+            _SETUP_SH_HARNESS,
+            f'LLAMA_CPP_DIR="{llama_dir}"',
+            f'_PREBUILT_LOG="{log_path}"',
+            f"_PREBUILT_STATUS={status}",
+            _setup_sh_routing_block(),
+            _SETUP_SH_HARNESS_TAIL,
+        ]
     )
-    assert sh_fallback < sh_source < sh_error
+    completed = subprocess.run(
+        ["bash", "-c", script], capture_output = True, text = True, timeout = 60
+    )
+    return {
+        "returncode": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+
+@pytest.mark.parametrize(
+    "status, expect_source_build, expect_exit",
+    [
+        (0, False, 0),  # installed and validated
+        (1, False, 1),  # helper error -> fail, never compile
+        (2, True, 0),  # the one status that means "prebuilt unusable, go build"
+        (3, False, 3),  # busy: a source build cannot replace locked binaries
+        (4, False, 0),  # out of disk: compiling needs more, not less
+        (137, False, 1),  # SIGKILL/OOM and anything else -> fail, never compile
+    ],
+)
+def test_setup_sh_starts_source_build_only_for_expected_prebuilt_exit(
+    tmp_path, status, expect_source_build, expect_exit
+):
+    """Behavioural cover for the exit-code routing: runs the real block under bash.
+
+    The previous version of this test compared ``str.index`` offsets, which is a
+    tautology -- ``index(needle, start)`` never returns less than ``start`` -- so
+    it asserted only that three literals existed in textual order.
+    """
+    if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
+        pytest.skip("bash is required to exercise the setup.sh routing block")
+
+    result = _run_setup_sh_routing(status, tmp_path, install_exists = True)
+
+    assert result["returncode"] == expect_exit, result
+    if expect_source_build:
+        assert "source_build=true" in result["stdout"], result
+    else:
+        assert "source_build=true" not in result["stdout"], result
+
+
+def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
+    """The new catch-all must fail loudly, not queue a compile, on both platforms."""
+    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+
+    sh_block = _setup_sh_routing_block()
+    sh_else = sh_block[sh_block.rindex("\n    else\n") :]
+    assert "_NEED_LLAMA_SOURCE_BUILD=true" not in sh_else
+    assert "setup_fail 1" in sh_else
+    assert "prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS)" in sh_else
+    # Only status 2 may queue the source build.
+    assert sh_block.count("_NEED_LLAMA_SOURCE_BUILD=true") == 1
+    assert 'elif [ "$_PREBUILT_STATUS" -eq 2 ]; then' in sh_block
+
+    ps_block = _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, "retry setup.\"\n        }")
+    ps_else = ps_block[ps_block.rindex("} else {") :]
+    assert "$NeedLlamaSourceBuild = $true" not in ps_else
+    assert "Exit-SetupFailure" in ps_else
+    assert "prebuilt helper failed unexpectedly (exit code $prebuiltExit)" in ps_else
+    assert ps_block.count("$NeedLlamaSourceBuild = $true") == 1
+    assert "} elseif ($prebuiltExit -eq 2) {" in ps_block
+
+    # Statuses 3 and 4 keep their dedicated branches ahead of the catch-all.
+    for needle in ('elif [ "$_PREBUILT_STATUS" -eq 3 ]', 'elif [ "$_PREBUILT_STATUS" -eq 4 ]'):
+        assert needle in setup_sh
+    for needle in ("elseif ($prebuiltExit -eq 3)", "elseif ($prebuiltExit -eq 4)"):
+        assert needle in setup_ps1
+
+
+# ── release-listing failures must stay source-build recoverable (exit 2) ──
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        # api.github.com rate limiting. fetch_json raises this as a bare
+        # RuntimeError, so it is not caught by any urllib/OSError handler.
+        RuntimeError(
+            "GitHub API returned 403 for "
+            "https://api.github.com/repos/unslothai/llama.cpp/releases?per_page=100&page=1"
+            "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
+        ),
+        RuntimeError("unexpected releases payload for unslothai/llama.cpp"),
+        urllib.error.URLError("connection reset"),
+        TimeoutError("timed out"),
+    ],
+    ids = ["rate-limit", "bad-payload", "urlerror", "timeout"],
+)
+def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch, error):
+    """A network problem while listing releases must ask for a source build.
+
+    The setup scripts only source build on EXIT_FALLBACK, so anything that
+    escapes as EXIT_ERROR here hard-fails the whole install for what is a
+    transient condition -- a source build clones over git, not api.github.com,
+    and succeeds while the API is rate limited.
+    """
+
+    def boom(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "collect_system_report", lambda *a, **k: "report")
+
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+
+
+def test_release_listing_enospc_still_exits_no_space(tmp_path, monkeypatch):
+    """Wrapping the listing must not hide a full disk behind a source build."""
+
+    def boom(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_NO_SPACE
+
+
+def test_fallback_survives_a_failing_system_report(tmp_path, monkeypatch):
+    """Diagnostics collected on the way out must not flip EXIT_FALLBACK to EXIT_ERROR."""
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_fork_manifest_release_plans",
+        lambda *a, **k: (_ for _ in ()).throw(PrebuiltFallback("no compatible prebuilt asset")),
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "collect_system_report",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("nvidia-smi hung")),
+    )
+
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+
+    with pytest.raises(SystemExit) as caught:
+        install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
+
+
+# ── inaccessible discovery roots outside dedupe_existing_dirs ──
+
+
+def test_python_runtime_dirs_skips_inaccessible_sys_path_entry(monkeypatch, tmp_path):
+    """A denied sys.path entry must not escape windows_runtime_dirs()."""
+    usable = tmp_path / "site-packages"
+    (usable / "torch" / "lib").mkdir(parents = True)
+
+    denied = Path(r"\\\\denied-share\\site-packages")
+
+    real_is_dir = Path.is_dir
+
+    def guarded_is_dir(self):
+        if str(self) == str(denied):
+            raise PermissionError(13, "Access is denied", str(self), 5)
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.sys, "path", [str(denied), str(usable)])
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.site, "getsitepackages", lambda: [])
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.site, "getusersitepackages", lambda: "")
+
+    assert INSTALL_LLAMA_PREBUILT.python_runtime_dirs() == [
+        str((usable / "torch" / "lib").resolve())
+    ]
+
+
+def test_windows_runtime_dirs_skips_inaccessible_program_files(monkeypatch):
+    """%ProgramFiles% is user-controllable, so its stat must not be fatal either."""
+    denied = r"C:\Denied Program Files"
+
+    real_is_dir = Path.is_dir
+
+    def guarded_is_dir(self):
+        if str(self).startswith(denied):
+            raise PermissionError(13, "Access is denied", str(self), 5)
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "pathsep", ";")
+    monkeypatch.setenv("ProgramFiles", denied)
+    monkeypatch.delenv("CUDA_RUNTIME_DLL_DIR", raising = False)
+    monkeypatch.delenv("CUDA_PATH", raising = False)
+    monkeypatch.delenv("CUDA_HOME", raising = False)
+    monkeypatch.delenv("CUDA_ROOT", raising = False)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "python_runtime_dirs", lambda: [])
+
+    assert INSTALL_LLAMA_PREBUILT.windows_runtime_dirs() == []
+
+
+def test_binary_env_linux_skips_inaccessible_inherited_ld_library_path(monkeypatch, tmp_path):
+    """Same class of bug as the Windows PATH fix, on the LD_LIBRARY_PATH side."""
+    binary_dir = tmp_path / "llama.cpp"
+    binary_dir.mkdir()
+    binary_path = binary_dir / "llama-server"
+    binary_path.write_bytes(b"")
+    usable = tmp_path / "usable-lib"
+    usable.mkdir()
+    denied = tmp_path / "denied-lib"
+    denied.mkdir()
+
+    real_is_dir = Path.is_dir
+
+    def guarded_is_dir(self):
+        if str(self) == str(denied):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda *a, **k: [])
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_wsl_system_rocm_lib_dirs", lambda: [])
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "_native_linux_system_rocm_lib_dirs", lambda *a: []
+    )
+    monkeypatch.setenv("LD_LIBRARY_PATH", os.pathsep.join([str(denied), str(usable)]))
+
+    env = binary_env(binary_path, binary_dir, linux_host())
+
+    assert env["LD_LIBRARY_PATH"].split(os.pathsep) == [
+        str(binary_dir.resolve()),
+        str(usable.resolve()),
+    ]
+
+
+# ── marker sync is advisory, never fatal ──
+
+
+@pytest.mark.parametrize(
+    "sync, kwargs",
+    [
+        ("sync_marker_force_cpu", {"persist_force_cpu": True}),
+        ("sync_marker_llama_backend", {"llama_backend": "vulkan"}),
+    ],
+)
+def test_marker_sync_survives_a_read_only_marker(tmp_path, sync, kwargs):
+    """A shared or admin-owned install must not fail setup on a marker rewrite.
+
+    Re-recording force_cpu / llama_backend runs on the existing-install reuse
+    path. The read is guarded but the write was not, so a read-only marker
+    raised PermissionError out of the helper as EXIT_ERROR -- which no longer
+    falls back to a source build, so it would abort the whole install.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker.write_text(
+        json.dumps({"force_cpu": False, "llama_backend": None}) + "\n", encoding = "utf-8"
+    )
+    os.chmod(marker, 0o444)
+    if os.access(marker, os.W_OK):  # pragma: no cover - root ignores the mode
+        pytest.skip("cannot make the marker read-only for this user")
+
+    try:
+        getattr(INSTALL_LLAMA_PREBUILT, sync)(install_dir, *kwargs.values())
+    finally:
+        os.chmod(marker, 0o644)
+
+    # Unchanged on disk, but the install is intact and setup continues.
+    assert json.loads(marker.read_text(encoding = "utf-8"))["force_cpu"] is False

@@ -4462,7 +4462,14 @@ def python_runtime_dirs() -> list[str]:
         pass
 
     for root in search_roots:
-        if not root.is_dir():
+        # sys.path / PYTHONPATH can name a directory this user cannot stat (a
+        # denied network share, a redirected per-machine site-packages), and
+        # is_dir() re-raises PermissionError. That would escape
+        # windows_runtime_dirs() and defeat its skip_unusable discovery.
+        try:
+            if not root.is_dir():
+                continue
+        except (OSError, ValueError):
             continue
         # ``nvidia/<pkg>/lib`` -- Linux convention; harmless on Windows
         # where the directory simply does not exist on real wheels.
@@ -4735,7 +4742,14 @@ def windows_runtime_dirs() -> list[str]:
 
     program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
     toolkit_base = Path(program_files) / "NVIDIA GPU Computing Toolkit" / "CUDA"
-    if toolkit_base.is_dir():
+    # %ProgramFiles% is user-controllable, so this stat is as deniable as the
+    # PATH entries below it. glob() itself swallows OSError, so only the guard
+    # needs protecting.
+    try:
+        toolkit_is_dir = toolkit_base.is_dir()
+    except (OSError, ValueError):
+        toolkit_is_dir = False
+    if toolkit_is_dir:
         candidates.extend(toolkit_base.glob("v*/bin"))
         candidates.extend(toolkit_base.glob("v*/lib/x64"))
 
@@ -5017,11 +5031,18 @@ def binary_env(
         if _native_rocm:
             ld_dirs = [*_native_rocm, *ld_dirs]
         existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
-        env["LD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*ld_dirs, *existing]))
+        # An inherited entry under a mode-000 parent or a stale NFS mount raises
+        # the same way a denied %PATH% entry does on Windows; it is not ours to
+        # require. The bundle's own dirs stay strict.
+        required = dedupe_existing_dirs(ld_dirs)
+        inherited = dedupe_existing_dirs(existing, skip_unusable = True)
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
     elif host.is_macos:
         dyld_dirs = [str(binary_path.parent), str(install_dir)]
         existing = [part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part]
-        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*dyld_dirs, *existing]))
+        required = dedupe_existing_dirs(dyld_dirs)
+        inherited = dedupe_existing_dirs(existing, skip_unusable = True)
+        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
     return env
 
 
@@ -5681,7 +5702,14 @@ def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
     if not isinstance(marker, dict) or bool(marker.get("force_cpu")) == persist_force_cpu:
         return
     marker["force_cpu"] = persist_force_cpu
-    marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
+    # Advisory: the read above is already guarded, and a read-only marker (shared
+    # or admin-owned install) must not fail the whole setup now that an
+    # unexpected exit no longer falls back to a source build.
+    try:
+        marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
+    except OSError as exc:
+        log(f"could not record force_cpu={persist_force_cpu} in the existing install marker: {exc}")
+        return
     log(f"existing install reused; recorded force_cpu={persist_force_cpu} from this run")
 
 
@@ -5698,7 +5726,11 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
         marker.pop("llama_backend", None)
     else:
         marker["llama_backend"] = llama_backend
-    marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
+    try:
+        marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
+    except OSError as exc:
+        log(f"could not record llama_backend={llama_backend!r} in the existing install marker: {exc}")
+        return
     log(f"existing install reused; recorded llama_backend={llama_backend!r} from this run")
 
 
@@ -6716,12 +6748,33 @@ def install_prebuilt(
             # an explicit ggml-org override selects by asset filename instead. A
             # Vulkan host is rewritten above so either resolver takes its Vulkan
             # asset branch.
-            requested_tag, release_plans = resolve_simple_install_release_plans(
-                llama_tag,
-                host,
-                published_repo,
-                published_release_tag,
-            )
+            #
+            # Listing releases is a network call, and only the ggml-org branch
+            # wraps its own failures. A rate limited api.github.com (fetch_json
+            # turns HTTP 403 into a bare RuntimeError) or a dropped connection
+            # therefore escapes as EXIT_ERROR, which the setup scripts refuse to
+            # source build on -- yet a source build clones over git rather than
+            # the API and is exactly the recovery these failures want. Wrapped
+            # here rather than inside the resolver because --resolve-prebuilt
+            # turns PrebuiltFallback into a successful {"prebuilt_available":
+            # false} payload, and update_flow caches any exit-0 answer for
+            # RESOLVE_TTL_SECONDS -- so a resolver-side wrapper would pin a
+            # transient 403 as "no prebuilt" for 24h. A nonzero exit is never
+            # cached, so the resolver must keep failing hard.
+            try:
+                requested_tag, release_plans = resolve_simple_install_release_plans(
+                    llama_tag,
+                    host,
+                    published_repo,
+                    published_release_tag,
+                )
+            except (BusyInstallConflict, PrebuiltFallback):
+                raise
+            except Exception as exc:
+                raise PrebuiltFallback(
+                    f"failed to inspect published releases in "
+                    f"{published_repo or DEFAULT_PUBLISHED_REPO}: {exc}"
+                ) from exc
             if strict_vulkan:
                 # Upstream plans append CPU as a generic fallback. An explicit
                 # Vulkan selection must fail instead of silently installing it.
@@ -6838,8 +6891,13 @@ def install_prebuilt(
             raise SystemExit(EXIT_NO_SPACE) from exc
         log("prebuilt install path failed; falling back to source build")
         log(f"prebuilt fallback reason: {exc}")
-        report = collect_system_report(host, choice, install_dir)
-        print(report)
+        # Diagnostics must never change the verdict: a probe that raises here
+        # would replace the in-flight fallback and exit EXIT_ERROR, which the
+        # setup scripts refuse to source build on.
+        try:
+            print(collect_system_report(host, choice, install_dir))
+        except Exception as report_exc:
+            log(f"system report unavailable: {report_exc}")
         raise SystemExit(EXIT_FALLBACK) from exc
 
 
