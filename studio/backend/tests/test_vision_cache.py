@@ -144,6 +144,13 @@ class TestVisionCacheSubprocessPath:
 # ---------------------------------------------------------------------------
 
 
+# ``detect_mmproj_file`` skips zero-length GGUFs as interrupted downloads
+# (an empty file cannot be a projector), so companion fixtures need a byte in
+# them to be seen at all. The contents are never parsed - only the size gate
+# and the filename matter for these tests.
+_GGUF_STUB = b"GGUF"
+
+
 class TestLocalGgufVisionDetection:
     @patch(
         "utils.models.model_config._is_vision_model_subprocess",
@@ -151,8 +158,8 @@ class TestLocalGgufVisionDetection:
     )
     def test_qwen36_gguf_with_mmproj_skips_transformers(self, mock_subprocess, tmp_path):
         model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
-        model.write_bytes(b"")
-        (tmp_path / "mmproj-F32.gguf").write_bytes(b"")
+        model.write_bytes(_GGUF_STUB)
+        (tmp_path / "mmproj-F32.gguf").write_bytes(_GGUF_STUB)
 
         assert is_vision_model(str(model)) is True
         mock_subprocess.assert_not_called()
@@ -165,8 +172,8 @@ class TestLocalGgufVisionDetection:
         variant_dir = tmp_path / "BF16"
         variant_dir.mkdir()
         model = variant_dir / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
-        model.write_bytes(b"")
-        (tmp_path / "mmproj-F32.gguf").write_bytes(b"")
+        model.write_bytes(_GGUF_STUB)
+        (tmp_path / "mmproj-F32.gguf").write_bytes(_GGUF_STUB)
 
         assert is_vision_model(str(model)) is True
         mock_subprocess.assert_not_called()
@@ -177,17 +184,17 @@ class TestLocalGgufVisionDetection:
     )
     def test_qwen36_gguf_without_mmproj_skips_transformers(self, mock_subprocess, tmp_path):
         model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
-        model.write_bytes(b"")
+        model.write_bytes(_GGUF_STUB)
 
         assert is_vision_model(str(model)) is False
         mock_subprocess.assert_not_called()
 
     def test_local_gguf_check_observes_mmproj_added_later(self, tmp_path):
         model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
-        model.write_bytes(b"")
+        model.write_bytes(_GGUF_STUB)
 
         assert is_vision_model(str(model)) is False
-        (tmp_path / "mmproj-F32.gguf").write_bytes(b"")
+        (tmp_path / "mmproj-F32.gguf").write_bytes(_GGUF_STUB)
         assert is_vision_model(str(model)) is True
 
     @patch(
@@ -196,9 +203,9 @@ class TestLocalGgufVisionDetection:
     )
     def test_ui_selection_returns_local_gguf_config(self, mock_subprocess, tmp_path):
         model = tmp_path / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
-        model.write_bytes(b"")
+        model.write_bytes(_GGUF_STUB)
         mmproj = tmp_path / "mmproj-F32.gguf"
-        mmproj.write_bytes(b"")
+        mmproj.write_bytes(_GGUF_STUB)
 
         config = ModelConfig.from_ui_selection(str(model), None)
 
@@ -218,9 +225,9 @@ class TestLocalGgufVisionDetection:
         variant_dir = tmp_path / "BF16"
         variant_dir.mkdir()
         model = variant_dir / "Qwen3.6-27B-UD-Q4_K_XL-MTP.gguf"
-        model.write_bytes(b"")
+        model.write_bytes(_GGUF_STUB)
         mmproj = tmp_path / "mmproj-F32.gguf"
-        mmproj.write_bytes(b"")
+        mmproj.write_bytes(_GGUF_STUB)
 
         config = ModelConfig.from_ui_selection(str(model), None)
 
