@@ -1436,7 +1436,7 @@ export function AppSidebar() {
               />
               <NavItem
                 icon={Folder01Icon}
-                label="Projects"
+                label={t("shell.navigation.projects")}
                 active={
                   pathname === "/projects" || pathname.startsWith("/projects/")
                 }
