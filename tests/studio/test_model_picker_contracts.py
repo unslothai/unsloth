@@ -1068,9 +1068,9 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     # Slice the two success branches apart, bounding the second at the shared tail
     # so it cannot swallow the fresh-default path below and stay green.
     candidate = adapter.split("async function loadAutoLoadCandidate", 1)[1]
-    gguf_branch, non_gguf_rest = candidate.split(
-        'if (candidate.kind === "gguf") {', 1
-    )[1].split("} else {", 1)
+    gguf_branch, non_gguf_rest = candidate.split('if (candidate.kind === "gguf") {', 1)[1].split(
+        "} else {", 1
+    )
     non_gguf_branch = non_gguf_rest.split("if (!(loadResp.is_lora ?? false)) {", 1)[0]
     # The cached-GGUF branch keeps the remembered override via the gated local...
     assert "nParallel: committedSlots," in gguf_branch

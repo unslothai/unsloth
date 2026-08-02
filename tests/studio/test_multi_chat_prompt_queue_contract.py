@@ -26,12 +26,12 @@ SHARED_COMPOSER = (FRONTEND / "features/chat/shared-composer.tsx").read_text(enc
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
     encoding = "utf-8"
 )
-PRE_STREAM_RESERVATION = (
-    FRONTEND / "features/chat/utils/pre-stream-run-reservation.ts"
-).read_text(encoding = "utf-8")
-CHAT_CLEAR_BOUNDARY = (
-    FRONTEND / "features/chat/utils/chat-history-clear-boundary.ts"
-).read_text(encoding = "utf-8")
+PRE_STREAM_RESERVATION = (FRONTEND / "features/chat/utils/pre-stream-run-reservation.ts").read_text(
+    encoding = "utf-8"
+)
+CHAT_CLEAR_BOUNDARY = (FRONTEND / "features/chat/utils/chat-history-clear-boundary.ts").read_text(
+    encoding = "utf-8"
+)
 QUEUED_SETTINGS = (FRONTEND / "features/chat/utils/queued-chat-run-settings.ts").read_text(
     encoding = "utf-8"
 )
