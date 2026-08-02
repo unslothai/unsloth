@@ -2218,13 +2218,11 @@ exit 0
         } catch { return $result }
     }
 
-    # Bounded Win32_VideoController scan. The display provider calls into the driver stack, so on
-    # a host with slow AV scanning or a degraded WMI repository the query blocks indefinitely:
-    # -ErrorAction only suppresses reported errors, and -OperationTimeoutSec is not enforced for
-    # the local COM session this uses. Out of process with a wall-clock kill is the only bound
-    # that holds, which is how install_llama_prebuilt.py runs the same query. Returns
-    # @{ Ok; Names }; Ok = $false on timeout, failure, or an empty answer (a Windows host always
-    # has an adapter), never a partial one. Mirrors setup.ps1's copy.
+    # Bounded Win32_VideoController scan: the query can block forever on a degraded WMI
+    # repository, and -ErrorAction only suppresses reported errors while -OperationTimeoutSec is
+    # not enforced for the local COM session this uses. Out of process with a wall-clock kill is
+    # the only bound that holds -- install_llama_prebuilt.py runs the same query. Ok = $false on
+    # an empty answer too, since a Windows host always has an adapter. Mirrors setup.ps1's copy.
     function Invoke-BoundedVideoControllerScan {
         param([int]$TimeoutSec = 15)
         $result = [pscustomobject]@{ Ok = $false; Names = @() }
@@ -2249,14 +2247,12 @@ exit 0
     }
 
     # Registry fallback for the scan above, mirroring install_llama_prebuilt.py's
-    # windows_intel_gpu_in_registry(): the display-adapter class key holds one NNNN subkey per
-    # installed driver config, each with a DriverDesc and a PCI MatchingDeviceId (ven_8086). It
-    # is in-process and answers in microseconds, but its guarantee is weaker -- a driver config
-    # can outlive removed hardware, so a stale entry can name a card that is gone. Hence the
-    # fallback, not the fast path that function is on: there a false positive only picks a
-    # different llama.cpp bundle, here it would install XPU torch on a host that has no Arc.
-    # On a fresh install there is no venv torch to rescue a failed query, so the alternative is
-    # silently selecting CPU. Mirrors setup.ps1's copy.
+    # windows_intel_gpu_in_registry(): the display-adapter class key, one NNNN subkey per driver
+    # config. Weaker than WMI -- a config can outlive removed hardware -- so it is the fallback
+    # here where that function is registry-first: there a false positive only picks a different
+    # llama.cpp bundle, here it would install XPU torch on a host with no Arc. Worth having
+    # because a fresh install has no venv torch to rescue a failed query, leaving CPU by default.
+    # Mirrors setup.ps1's copy.
     function Get-IntelRegistryAdapterNames {
         $names = @()
         $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
@@ -2290,8 +2286,7 @@ exit 0
     # An AMD host with no wheels is heading for CPU torch, so a neighbouring Arc card wins.
     if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
         try {
-            # Bounded, with the registry as the fallback when WMI does not answer. Same
-            # Arc / Data Center match whichever source answered.
+            # Bounded, registry as the fallback when WMI does not answer; same match either way.
             $_gpuScan = Invoke-BoundedVideoControllerScan
             $_gpuNames = if ($_gpuScan.Ok) { $_gpuScan.Names } else { @(Get-IntelRegistryAdapterNames) }
             $intelGpus = @($_gpuNames | Where-Object { $_ -match "(?i)Intel" })

@@ -665,13 +665,11 @@ function Assert-XpuRuntimeReady {
     return $false
 }
 
-# Bounded Win32_VideoController scan. The display provider calls into the driver stack, so on a
-# host with slow AV scanning or a degraded WMI repository the query blocks indefinitely:
-# -ErrorAction only suppresses reported errors, and -OperationTimeoutSec is not enforced for the
-# local COM session this uses. Out of process with a wall-clock kill is the only bound that
-# holds, which is how install_llama_prebuilt.py runs the same query. Returns @{ Ok; Names };
-# Ok = $false on timeout, failure, or an empty answer (a Windows host always has an adapter),
-# never a partial one. Mirrors install.ps1's copy.
+# Bounded Win32_VideoController scan: the query can block forever on a degraded WMI repository,
+# and -ErrorAction only suppresses reported errors while -OperationTimeoutSec is not enforced for
+# the local COM session this uses. Out of process with a wall-clock kill is the only bound that
+# holds -- install_llama_prebuilt.py runs the same query. Ok = $false on an empty answer too,
+# since a Windows host always has an adapter. Mirrors install.ps1's copy.
 function Invoke-BoundedVideoControllerScan {
     param([int]$TimeoutSec = 15)
     $result = [pscustomobject]@{ Ok = $false; Names = @() }
@@ -696,13 +694,10 @@ function Invoke-BoundedVideoControllerScan {
 }
 
 # Registry fallback for the scan above, mirroring install_llama_prebuilt.py's
-# windows_intel_gpu_in_registry(): the display-adapter class key holds one NNNN subkey per
-# installed driver config, each with a DriverDesc and a PCI MatchingDeviceId (ven_8086). It is
-# in-process and answers in microseconds, but its guarantee is weaker -- a driver config can
-# outlive removed hardware, so a stale entry can name a card that is gone. Hence the fallback,
-# not the fast path that function is on: there a false positive only picks a different
-# llama.cpp bundle, here it would install XPU torch on a host that has no Arc. Mirrors
-# install.ps1's copy.
+# windows_intel_gpu_in_registry(): the display-adapter class key, one NNNN subkey per driver
+# config. Weaker than WMI -- a config can outlive removed hardware -- so it is the fallback here
+# where that function is registry-first: there a false positive only picks a different llama.cpp
+# bundle, here it would install XPU torch on a host with no Arc. Mirrors install.ps1's copy.
 function Get-IntelRegistryAdapterNames {
     $names = @()
     $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
@@ -1767,9 +1762,8 @@ $script:IsIntelXpu = $false
 $IntelGpuLabel = $null
 if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
     try {
-        # Bounded, with the registry as the fallback when WMI does not answer -- an unbounded
-        # query hangs `studio update`, and a swallowed one silently reports no GPU. Same
-        # Arc / Data Center match whichever source answered.
+        # Bounded, registry as the fallback when WMI does not answer: an unbounded query hangs
+        # `studio update`, a swallowed one silently reports no GPU.
         $_gpuScan = Invoke-BoundedVideoControllerScan
         $_gpuNames = if ($_gpuScan.Ok) { $_gpuScan.Names } else { @(Get-IntelRegistryAdapterNames) }
         $xpuGpu = $_gpuNames | Where-Object { $_ -match "(?i)Intel.*(Arc|Data Center GPU)" } | Select-Object -First 1
@@ -3785,15 +3779,13 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
 }
 
 # ── Intel XPU: triton-windows must not shadow torch's XPU triton ──
-# triton-windows (the CUDA branch above installs it, and unsloth declares it as a win32 dep) and
-# torch's XPU triton BOTH own the top-level `triton` package -- 151 shared paths including
-# __init__.py and _C/libtriton.pyd -- so whichever lands last wins the files and the loser leaks
-# orphans. An in-place cu*-to-xpu pin repair keeps the CUDA one, since only the venv wipe would
-# have dropped it. Runs AFTER the stack for the reason the pass above does: base.txt re-resolves
-# unsloth, which reinstalls triton-windows over anything removed earlier. Removing it also drops
-# the shared paths the XPU wheel overwrote, so reinstall the spec the installed torch declares --
-# the name changed from pytorch-triton-xpu to triton-xpu in torch 2.10, so read it, never
-# hardcode. Only fires while triton-windows is actually present. Best-effort: a failure warns.
+# triton-windows and torch's XPU triton BOTH own the top-level `triton` package -- 151 shared
+# paths including __init__.py and _C/libtriton.pyd -- so an in-place cu*-to-xpu pin repair leaves
+# the CUDA build shadowing the XPU one. Runs AFTER the stack because unsloth declares
+# triton-windows a win32 core dep, so base.txt reinstalls anything removed earlier. Uninstall
+# paired with a reinstall, never alone: removing one drops the shared paths the other overwrote.
+# The spec is read from the installed torch, whose name for it changed from pytorch-triton-xpu to
+# triton-xpu in torch 2.10.
 if ($stackExit -eq 0 -and $XpuIndexUrl) {
     # One -c line, so no double quotes (Invoke-BoundedPythonProbe wraps $Code in them).
     $_tritonCode = "import importlib.metadata as m; " +
@@ -3805,10 +3797,8 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
     # Line-anchored like the other probes so a stdout banner ahead of the answer hides nothing.
     $_tritonWinVer = if ($_tritonProbe.Ok -and $_tritonProbe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
     $_tritonXpuSpec = if ($_tritonProbe.Ok -and $_tritonProbe.Output -match '(?m)^TRITONXPU=(\S+)\s*$') { $Matches[1] } else { "" }
-    # Both, never one: without a replacement to reinstall, removing triton-windows would leave
-    # no working `triton` at all, which is worse than the shadowing it fixes. The spec must
-    # itself be an XPU triton (pytorch-triton-xpu / triton-xpu); anything else means torch is
-    # not the +xpu wheel this branch assumes, and doing nothing is the safe answer.
+    # The spec must itself be an XPU triton (pytorch-triton-xpu / triton-xpu): anything else means
+    # torch is not the +xpu wheel this branch assumes, and doing nothing is the safe answer.
     if ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
         substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"
         Fast-Uninstall "triton-windows" | Out-Null
