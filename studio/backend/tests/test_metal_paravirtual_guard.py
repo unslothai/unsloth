@@ -118,10 +118,12 @@ def test_a_physical_mac_is_not_dragged_down_by_the_model_probe(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx", None)
     monkeypatch.setattr(
         "core.inference.llama_cpp.subprocess.run",
-        _probe_dispatch({
-            "hw.model": "Mac15,3\n",
-            "spdisplays": "Graphics/Displays:\n  Apple M3 Max:\n    Vendor: Apple",
-        }),
+        _probe_dispatch(
+            {
+                "hw.model": "Mac15,3\n",
+                "spdisplays": "Graphics/Displays:\n  Apple M3 Max:\n    Vendor: Apple",
+            }
+        ),
     )
     assert _metal_device_is_paravirtual() is False
 
@@ -133,10 +135,12 @@ def test_a_desktop_vm_still_answers_through_spdisplays(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx", None)
     monkeypatch.setattr(
         "core.inference.llama_cpp.subprocess.run",
-        _probe_dispatch({
-            "hw.model": "Mac14,2\n",
-            "spdisplays": "Graphics/Displays:\n  Apple Paravirtual device:",
-        }),
+        _probe_dispatch(
+            {
+                "hw.model": "Mac14,2\n",
+                "spdisplays": "Graphics/Displays:\n  Apple Paravirtual device:",
+            }
+        ),
     )
     assert _metal_device_is_paravirtual() is True
 
