@@ -21,6 +21,7 @@ LOADER = REPO / "unsloth" / "models" / "loader.py"
 VISION = REPO / "unsloth" / "models" / "vision.py"
 TOKENIZER_UTILS = REPO / "unsloth" / "tokenizer_utils.py"
 LOADER_UTILS = REPO / "unsloth" / "models" / "loader_utils.py"
+SAVE = REPO / "unsloth" / "save.py"
 
 
 def _tree(path):
@@ -262,8 +263,11 @@ def test_both_loader_paths_gate_before_and_after_resolution():
             keyword = _revision_kwarg(probe)
             if keyword is None:
                 continue  # the PEFT base-model probe deliberately pins nothing
-            assert (
-                getattr(keyword.value, "id", None) == "base_revision"
+            # adapter_revision is the same gated value, taken before the vLLM drop that
+            # only the base model's config and weights answer to.
+            assert getattr(keyword.value, "id", None) in (
+                "base_revision",
+                "adapter_revision",
             ), f"probe at line {probe.lineno} uses the ungated revision"
             gated += 1
         assert gated >= 2, f"{class_name} must gate its AutoConfig and PeftConfig probes"
@@ -755,3 +759,99 @@ def test_the_fp8_cache_key_survives_a_lossy_sanitization():
     ]
     assert digests
     assert any("revision" in ast.unparse(n) for n in digests), "hash the ref, not the repo"
+
+
+def test_the_peft_probe_keeps_the_adapter_ref_under_vllm():
+    """The vLLM drop runs before is_peft is known. An adapter is loaded in-process by peft,
+    so zeroing its probe would read the default branch and either miss PEFT entirely or
+    resolve a different base model before attaching the pinned adapter."""
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        probes = [
+            c for c in _calls(function, "from_pretrained") if ast.unparse(c.func).startswith("PeftConfig")
+        ]
+        assert probes, f"{class_name} must still probe for an adapter"
+        for call in probes:
+            keyword = _revision_kwarg(call)
+            assert keyword is not None
+            assert getattr(keyword.value, "id", None) == "adapter_revision", (
+                "the adapter probe must not take the base model's gated ref"
+            )
+
+
+def test_both_loaders_drop_the_vllm_pin_before_the_probe():
+    """model_types picks the architecture class off the probed config, so reading it at a
+    ref vLLM will not fetch dispatches the wrong one."""
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        drops = [
+            n
+            for n in ast.walk(function)
+            if isinstance(n, ast.If)
+            and any(
+                isinstance(b, ast.Assign)
+                and any(getattr(t, "id", None) == "base_revision" for t in b.targets)
+                and isinstance(b.value, ast.Constant)
+                and b.value.value is None
+                for b in n.body
+            )
+        ]
+        assert drops, f"{class_name} never drops base_revision for the vLLM path"
+        probes = [
+            c
+            for c in _calls(function, "from_pretrained")
+            if ast.unparse(c.func).split(".")[0] in ("AutoConfig", "PeftConfig")
+        ]
+        assert probes
+        assert drops[0].end_lineno < min(c.lineno for c in probes), (
+            f"{class_name} probes at a ref the weights will not be at"
+        )
+
+
+def test_llama_owns_the_vllm_predicate_the_loader_gates_on():
+    """FastLanguageModel also falls back in-process on pre-Volta GPUs and for a num_labels
+    load, so the loader cannot gate on `fast_inference and is_vLLM_available()` the way the
+    FastModel path does. One helper, used by both, or the two drift apart."""
+    tree = _tree(LLAMA)
+    helper = _function(tree, "_vllm_will_load_weights")
+    source = ast.unparse(helper)
+    for token in ("is_vLLM_available", "get_device_capability", "hip", "num_labels"):
+        assert token in source, token
+
+    guard = _function(tree, "from_pretrained", "FastLlamaModel")
+    assert _calls(guard, "_vllm_will_load_weights"), "llama.py must use its own helper"
+    loader = _function(_tree(LOADER), "from_pretrained", "FastLanguageModel")
+    assert _calls(loader, "_vllm_will_load_weights"), "the loader must gate on the same one"
+
+
+def test_a_pinned_tokenizer_is_stamped_for_the_save_path():
+    """save.py restores tokenizer.model from tokenizer.name_or_path, which names the repo
+    but not the branch, so a merged export would copy the default branch's asset."""
+    stamps = _calls(_function(_tree(TOKENIZER_UTILS), "load_correct_tokenizer"), "_mark_loaded_revision")
+    assert stamps, "the loaded ref has to travel with the tokenizer"
+    assert any(
+        any(getattr(a, "id", None) == "revision" for a in c.args) for c in stamps
+    ), "stamp the ref that was actually loaded"
+
+    tree = _tree(LOADER_UTILS)
+    assert _function(tree, "_mark_loaded_revision")
+    assert _function(tree, "_tokenizer_revision")
+    assert "revision" in _params(_function(tree, "_resolve_hub_repo_cached_file"))
+
+
+@pytest.mark.parametrize("callee", ["_resolve_hub_repo_cached_file", "hf_hub_download", "model_info"])
+def test_the_sentencepiece_restore_reads_the_stamped_ref(callee):
+    tree = _tree(SAVE)
+    functions = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_has_tokenizer_model", "_preserve_sentencepiece_tokenizer_assets")
+    ]
+    assert functions
+    calls = [c for f in functions for c in _calls(f, callee)]
+    assert calls, f"{callee} not found on the save path"
+    for call in calls:
+        assert _revision_kwarg(call) is not None, f"{callee} at line {call.lineno} drops the ref"

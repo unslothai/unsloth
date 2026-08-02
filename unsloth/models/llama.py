@@ -2244,6 +2244,26 @@ def unsloth_fast_generate(self, *args, **kwargs):
     return output
 
 
+def _vllm_will_load_weights(fast_inference, num_labels = None):
+    """Whether vLLM, which takes no revision, ends up owning the weight load.
+
+    The loader has to answer this before it probes the config, since that probe's ref
+    decides which architecture class the load is dispatched to. Mirrors the checks at the
+    top of from_pretrained below, which calls this too so the two cannot drift.
+    """
+    if not fast_inference or num_labels is not None:
+        return False
+    # from_pretrained clears fast_inference when vLLM is missing and then re-enables it on
+    # hip, so hip ends up True either way.
+    if DEVICE_TYPE == "hip":
+        return True
+    if not is_vLLM_available():
+        return False
+    if DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
+        return False
+    return True
+
+
 class FastLlamaModel:
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
@@ -2342,7 +2362,8 @@ class FastLlamaModel:
             # Only vLLM cannot take a revision. fast_inference may have just been turned
             # off above, and a num_labels load goes in-process regardless; both of those
             # can honour the pin, so use the same predicate as the prefetch warm below.
-            if fast_inference and num_labels is None and revision is not None:
+            # Through the helper, which the loader also uses to gate its config probe.
+            if _vllm_will_load_weights(fast_inference, num_labels) and revision is not None:
                 # load_vllm takes no revision, so vLLM fetches the default branch. Pinning
                 # only the config and tokenizer would mix two refs in one model.
                 logger.warning_once(

@@ -898,6 +898,37 @@ _LOCAL_FILES_ONLY_ATTR = "_unsloth_local_files_only"
 # The load's cache_dir travels with it too: saving derives one from HF_HUB_CACHE /
 # HF_HOME, which does not see a caller-supplied cache.
 _LOADED_CACHE_DIR_ATTR = "_unsloth_loaded_cache_dir"
+# So does the ref it was read at. Saving restores sentencepiece assets from
+# tokenizer.name_or_path, which names the repo but not the branch, so without this stamp a
+# merged export copies the default branch's tokenizer.model beside pinned metadata, or
+# misses the file when it only exists on the pinned ref.
+_LOADED_REVISION_ATTR = "_unsloth_loaded_revision"
+
+
+def _mark_loaded_revision(result, revision):
+    """Stamp the ref a tokenizer/processor was loaded at onto the returned objects."""
+    if revision is None:
+        return result
+    for obj in result if isinstance(result, (tuple, list)) else (result,):
+        try:
+            targets = (obj, getattr(obj, "tokenizer", None))
+        except Exception:
+            targets = (obj,)
+        for target in targets:
+            if target is None:
+                continue
+            # Objects that reject new attributes (__slots__) are skipped.
+            try:
+                setattr(target, _LOADED_REVISION_ATTR, str(revision))
+            except Exception:
+                pass
+    return result
+
+
+def _tokenizer_revision(tokenizer):
+    """The ref this tokenizer was loaded at, or None for the default branch."""
+    tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    return getattr(tokenizer, _LOADED_REVISION_ATTR, None)
 
 
 def _mark_loaded_local_files_only(result, cache_dir = None):
@@ -1280,6 +1311,7 @@ def _resolve_hub_repo_cached_file(
     token = None,
     cache_dir = None,
     local_files_only = True,
+    revision = None,
 ):
     """Return a cached file path under a Hub snapshot, or None if absent."""
     local_dir = _resolve_hub_repo_local_dir(
@@ -1287,6 +1319,7 @@ def _resolve_hub_repo_cached_file(
         token = token,
         cache_dir = cache_dir,
         local_files_only = local_files_only,
+        revision = revision,
         filenames = (filename,),
     )
     if local_dir is None:

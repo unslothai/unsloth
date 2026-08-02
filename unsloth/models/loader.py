@@ -27,7 +27,7 @@ from ._utils import (
     DISABLE_SDPA_MODEL_NAMES,
 )
 from .granite import FastGraniteModel
-from .llama import FastLlamaModel, logger
+from .llama import FastLlamaModel, logger, _vllm_will_load_weights
 from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
@@ -620,6 +620,22 @@ class FastLanguageModel(FastLlamaModel):
         base_revision = _revision_for_resolved_repo(
             revision, model_name, old_model_name, mapper_moved_name
         )
+        # The PeftConfig probe below reads the adapter repo, which peft loads in-process, so
+        # it keeps the ref even when vLLM takes the base model's away just after.
+        adapter_revision = base_revision
+        # vLLM takes no revision and fetches the default branch, so this pin is already dead
+        # for the weights. Drop it before the probe: model_types picks the architecture class
+        # off that config, and reading it at a ref the weights will not be at dispatches the
+        # wrong one. The predicate lives in llama.py, which also falls back in-process on
+        # pre-Volta GPUs and for a num_labels load; both of those can still honour the pin.
+        if base_revision is not None and _vllm_will_load_weights(
+            fast_inference, kwargs.get("num_labels")
+        ):
+            logger.warning_once(
+                f"Unsloth: Ignoring revision = `{base_revision}` since vLLM loads weights "
+                "from the default branch. Use `fast_inference = False` to load a pinned revision."
+            )
+            base_revision = None
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import (
@@ -670,7 +686,7 @@ class FastLanguageModel(FastLlamaModel):
             peft_config = PeftConfig.from_pretrained(
                 model_name,
                 token = token,
-                revision = base_revision,
+                revision = adapter_revision,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
             )
@@ -1362,12 +1378,14 @@ class FastModel(FastBaseModel):
         base_revision = _revision_for_resolved_repo(
             revision, model_name, old_model_name, mapper_moved_name
         )
+        # The PeftConfig probe below reads the adapter repo, which peft loads in-process, so
+        # it keeps the ref even when vLLM takes the base model's away just after.
+        adapter_revision = base_revision
         # vLLM takes no revision and fetches the default branch, so this pin is already dead
         # for the weights. Drop it here rather than at the dispatch: model_types, auto_model
         # and the text-only decision all come off the config probed below, and reading that
         # at a ref the weights will not be at picks the dispatch for the wrong model. Same
-        # predicate FastBaseModel uses, so its own guard is a no-op on this path. An adapter
-        # still keeps `revision`: peft loads it in-process, not through vLLM.
+        # predicate FastBaseModel uses, so its own guard is a no-op on this path.
         if base_revision is not None and fast_inference and is_vLLM_available():
             logger.warning_once(
                 f"Unsloth: Ignoring revision = `{base_revision}` since vLLM loads weights "
@@ -1451,7 +1469,7 @@ class FastModel(FastBaseModel):
             peft_config = PeftConfig.from_pretrained(
                 model_name,
                 token = token,
-                revision = base_revision,
+                revision = adapter_revision,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
             )
