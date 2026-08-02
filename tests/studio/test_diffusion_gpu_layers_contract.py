@@ -219,7 +219,10 @@ def test_route_dedup_compares_the_requested_split():
             # The fields are read through the paravirtual-normalized locals, which
             # fall back to the request itself off a virtualised Metal device.
             assert "_diffusion_manual_ngl(_req_gpu_memory_mode, _req_gpu_layers)" in body
-            assert "_req_gpu_memory_mode = _pv.gpu_memory_mode if _pv else request.gpu_memory_mode" in body
+            assert (
+                "_req_gpu_memory_mode = _pv.gpu_memory_mode if _pv else request.gpu_memory_mode"
+                in body
+            )
             assert "_req_gpu_layers = _pv.gpu_layers if _pv else request.gpu_layers" in body
             assert "llama_backend.diffusion_requested_ngl" in body
             return
