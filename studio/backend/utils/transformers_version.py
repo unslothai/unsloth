@@ -2336,6 +2336,24 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
     return True
 
 
+# setup.sh and setup.ps1 write this beside a sidecar venv they created, and refuse to
+# touch an unmarked directory under a custom UNSLOTH_STUDIO_HOME rather than risk
+# deleting something of the user's. A runtime rebuild takes the marker with the old
+# directory, so it has to put one back: the rebuilt tree is ours by construction, and
+# without it the next `unsloth studio update` aborts on a sidecar we just repaired.
+# Adoption cannot cover it either, since that needs a prebuilt-info file a venv never has.
+_STUDIO_OWNED_MARKER = ".unsloth-studio-owned"
+
+
+def _mark_studio_owned(venv_dir: str) -> None:
+    try:
+        Path(venv_dir, _STUDIO_OWNED_MARKER).touch()
+    except OSError:
+        # Best effort, exactly as the shell does: a missing marker costs a clear error
+        # on a later update, never a wrong deletion.
+        pass
+
+
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing."""
     if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
@@ -2344,6 +2362,7 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
     os.makedirs(venv_dir, exist_ok = True)
+    _mark_studio_owned(venv_dir)
     total = len(packages)
     for idx, pkg in enumerate(packages, start = 1):
         logger.info("Installing %s (%d/%d) into %s ...", pkg, idx, total, venv_dir)

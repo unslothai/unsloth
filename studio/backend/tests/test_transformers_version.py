@@ -2002,6 +2002,22 @@ class TestVenvDirFileIntegrity:
         assert installed == ["transformers==5.3.0"], "damaged sidecar was not reinstalled"
         assert not (venv_dir / "transformers").exists(), "damaged tree was not wiped first"
 
+    def test_ensure_venv_dir_restores_the_studio_owned_marker(self, tmp_path: Path, monkeypatch):
+        """The wipe takes setup.sh's ownership marker with the old directory. Without a
+        new one, the next `unsloth studio update` under a custom UNSLOTH_STUDIO_HOME
+        aborts on a sidecar we just repaired, and adoption cannot rescue it because that
+        needs a prebuilt-info file a venv never has."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / ".unsloth-studio-owned").touch()
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+
+        monkeypatch.setattr(
+            "utils.transformers_version._install_to_dir", lambda pkg, target: True
+        )
+        assert _ensure_venv_dir(str(venv_dir), ("transformers==5.3.0",), "transformers 5.3.0")
+
+        assert (venv_dir / ".unsloth-studio-owned").is_file()
+
 
 # ---------------------------------------------------------------------------
 # _ensure_venv_dir — issue #6103
