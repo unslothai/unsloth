@@ -43,6 +43,53 @@ def resolve_effective_use_xet(use_xet: bool) -> bool:
     return False
 
 
+def resolve_requested_use_xet(
+    transport_mode: Optional[str],
+    use_xet: bool,
+) -> tuple[bool, str]:
+    """Turn a download request's transport preference into ``(use_xet, reason)``.
+
+    ``transport_mode`` is the current field ("auto" / "xet" / "http"); ``use_xet`` is the older
+    boolean, still honoured so an older frontend (or a scripted API caller) keeps working. An
+    explicit "xet" is respected even on a machine the health check dislikes -- the user asked -- but
+    it still gets the memory caps and the stall fallback.
+    """
+    mode = (transport_mode or "").strip().lower()
+    if mode == download_registry.TRANSPORT_HTTP:
+        return (False, "HTTP (requested)")
+    if mode == download_registry.TRANSPORT_XET:
+        return (resolve_effective_use_xet(True), "Xet (requested)")
+    if mode == download_registry.TRANSPORT_AUTO:
+        return resolve_auto_use_xet()
+    resolved = resolve_effective_use_xet(use_xet)
+    return (resolved, "Xet" if resolved else "HTTP")
+
+
+def resolve_auto_use_xet() -> tuple[bool, str]:
+    """Pick a transport for a download the user left on "Auto". Returns ``(use_xet, reason)``.
+
+    Server-side on purpose: only the backend can see this machine's RAM, its hf_xet build, and
+    whether Xet has been failing here, and the browser must not have to guess any of it.
+
+    Probing IS allowed here (unlike on the per-download path) because Auto resolution happens once
+    per download request and the answer is cached for the whole machine -- a few hundred ms buys a
+    verdict that saves every subsequent download a stalled attempt.
+    """
+    if not resolve_effective_use_xet(True):
+        return (False, "hf_xet is not installed")
+    try:
+        from utils.hf_xet_fallback import xet_health
+
+        health = xet_health()
+    except Exception as exc:  # noqa: BLE001 - never let a health probe block a download
+        logger.debug("Xet health probe failed, defaulting to Xet: %s", exc)
+        return (True, "Xet (health check unavailable)")
+    if health is None:
+        # Older unsloth_zoo without the health module: no opinion, keep the existing default.
+        return (True, "Xet")
+    return (bool(health.use_xet), str(health.reason))
+
+
 def resolve_transport(use_xet: bool) -> str:
     transport = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
     unavailable_reason = download_registry.download_transport_unavailable_reason(transport)
@@ -82,6 +129,25 @@ def spawn_worker(
     env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     env["HF_HUB_DISABLE_XET"] = "0" if use_xet else "1"
+    if use_xet:
+        # hf_xet sizes its reconstruction buffers from constants (up to 8GB stock, 64GB under
+        # high-performance mode), not from the machine. Cap them from this host's RAM and cores
+        # BEFORE the worker starts: hf_xet reads its config natively at import, so setting these
+        # inside the worker would be too late. Anything already in `env` was set deliberately by
+        # the caller and is left alone.
+        from utils.hf_xet_fallback import xet_env_overrides
+
+        allow_high_perf = os.environ.get("UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        for key, value in xet_env_overrides().items():
+            if key in ("HF_XET_HIGH_PERFORMANCE", "HF_XET_HP") and not allow_high_perf:
+                # `env` is seeded from the parent environment, so an inherited "1" would arrive
+                # here and silently void every cap above (xet-core applies the high-performance
+                # preset AFTER reading the environment). Overwrite rather than setdefault.
+                env[key] = value
+            else:
+                env.setdefault(key, value)
     # No token in Unsloth settings: fall back to the backend's own HF_TOKEN so
     # private repos stay downloadable (needed while inkling repos are private).
     # Not for a repo an API caller named: that would lend them the owner's identity.
@@ -554,6 +620,72 @@ def kill_and_reap_process(
         pass
 
 
+def _record_xet_failure(reason: str, logger) -> None:
+    """Tell the health tracker a Xet transfer failed here; best-effort, never fatal to a download."""
+    try:
+        from utils.hf_xet_fallback import record_xet_outcome
+
+        record_xet_outcome(False, reason)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("could not record Xet outcome: %s", exc)
+
+
+def _start_stall_watchdog(
+    registry: download_registry.DownloadRegistry,
+    key: str,
+    proc: subprocess.Popen,
+    *,
+    repo_type: RepoType,
+    repo_id: str,
+    label: str,
+    log_prefix: str,
+    logger,
+    on_stall: Callable[[str], None],
+):
+    """Kill *proc* if its download stops making byte-level progress. Returns a stop event, or
+    ``None`` when no watchdog could be started.
+
+    SIGKILL rather than a polite signal: the worker traps SIGTERM and exits 130 ("cancelled"), which
+    would be recorded as a user cancel and skip the HTTP retry. An untrapped kill lands as "error",
+    which is the state that triggers the retry. The worker's writer is sequential and resumable, so
+    the partial it leaves behind is not lost work.
+    """
+    try:
+        from utils.hf_xet_fallback import start_watchdog
+    except Exception as exc:  # noqa: BLE001 - degraded unsloth_zoo: keep the old behaviour
+        logger.debug("%s stall watchdog unavailable for %s: %s", log_prefix, label, exc)
+        return None
+
+    metadata = registry.get_job_metadata(key)
+    cache_dir = getattr(metadata, "hub_cache", None) if metadata is not None else None
+
+    def _on_stall(message: str) -> None:
+        logger.warning("%s %s for %s; killing the worker to retry over HTTP",
+                       log_prefix, message, label)
+        on_stall(message)
+        try:
+            # Kill only -- the _watch thread is already blocked reaping this process, and a second
+            # wait() here would just race it for the exit status.
+            proc.kill()
+        except ProcessLookupError:
+            pass  # already exited between the stall verdict and the kill
+        except Exception:
+            logger.exception("%s failed to kill stalled worker for %s", log_prefix, label)
+
+    try:
+        return start_watchdog(
+            repo_ids = [repo_id],
+            repo_type = repo_type,
+            cache_dir = cache_dir,
+            on_stall = _on_stall,
+            child_pid = proc.pid,
+            xet_disabled = False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("%s could not start stall watchdog for %s: %s", log_prefix, label, exc)
+        return None
+
+
 def register_worker(
     registry: download_registry.DownloadRegistry,
     key: str,
@@ -576,6 +708,8 @@ def register_worker(
     worker_token = hf_token
 
     def _watch() -> None:
+        stalled: list[str] = []
+        watchdog_stop = None
         try:
             can_retry_http = (
                 transport == download_registry.TRANSPORT_XET
@@ -584,6 +718,17 @@ def register_worker(
                 )
                 is None
             )
+            # Until now this path had NO stall detection at all: it relied on the worker's own exit
+            # code, and a Xet transfer that hangs with no progress and no error never produces one.
+            # That is the common failure the model-hub page shows as a frozen progress bar. Watch
+            # the cache for byte-level progress and kill a hung worker so the HTTP retry below can
+            # take over; the SIGKILL surfaces as "error", which is exactly what triggers it.
+            if can_retry_http:
+                watchdog_stop = _start_stall_watchdog(
+                    registry, key, proc,
+                    repo_type = repo_type, repo_id = repo_id, label = label,
+                    log_prefix = log_prefix, logger = logger, on_stall = stalled.append,
+                )
             state = finalize_worker_exit(
                 registry,
                 key,
@@ -598,6 +743,13 @@ def register_worker(
                 cancel_marker_transport = cancel_marker_transport,
                 defer_error = can_retry_http,
             )
+            if watchdog_stop is not None:
+                # Stop measuring the moment the worker is reaped: post-download work (symlinking,
+                # verification) makes no byte-level progress and must not read as a stall.
+                watchdog_stop.set()
+            if stalled:
+                # A machine whose Xet transfers hang is one that should stop starting on Xet.
+                _record_xet_failure(stalled[0], logger)
             # XET-to-HTTP recovery: when a non-cancelled XET worker fails and
             # HTTP is available, attempt one automatic retry over HTTP.  The
             # transport check is the recursion guard: an HTTP worker that errors
@@ -615,6 +767,8 @@ def register_worker(
                     watch_name = watch_name,
                 )
         except Exception:
+            if watchdog_stop is not None:
+                watchdog_stop.set()
             # finalize_worker_exit is the only thing that clears running/cancelling;
             # if it raises, force a terminal state so claim() isn't blocked until restart.
             logger.exception("download watcher crashed for %s", key)

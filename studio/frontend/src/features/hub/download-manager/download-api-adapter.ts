@@ -24,7 +24,12 @@ import {
   TRANSPORT_STATUS_RETRY_DELAY_MS,
   TRANSPORT_STATUS_TIMEOUT_MS,
 } from "./download-manager-config";
-import { DOWNLOAD_KIND, TRANSPORT, type TransportMode } from "./constants";
+import {
+  DOWNLOAD_KIND,
+  TRANSPORT,
+  type ResolvedTransport,
+  type TransportMode,
+} from "./constants";
 import type {
   DownloadRequest,
   ManagedDownload,
@@ -90,17 +95,23 @@ export function apiStart(
   useXet: boolean,
   hfToken: string | null,
 ): Promise<DownloadStartResult> {
+  // `transport_mode` is already RESOLVED ("xet"/"http"), never "auto": effectiveTransportMode()
+  // asked the backend what auto means on this machine, and that same answer has to reach both the
+  // worker and the on-disk transport marker.
+  const transport_mode = useXet ? TRANSPORT.XET : TRANSPORT.HTTP;
   return req.kind === DOWNLOAD_KIND.DATASET
     ? startDatasetDownload({
         repo_id: req.repoId,
         hf_token: hfToken,
         use_xet: useXet,
+        transport_mode,
       })
     : startModelDownload({
         repo_id: req.repoId,
         gguf_variant: req.variant,
         hf_token: hfToken,
         use_xet: useXet,
+        transport_mode,
       });
 }
 
@@ -171,11 +182,19 @@ export async function apiTransportStatusWithRetry(
 
 export async function effectiveTransportMode(
   preferred: TransportMode,
-): Promise<TransportMode> {
-  if (preferred !== TRANSPORT.XET) {
-    return preferred;
+): Promise<ResolvedTransport> {
+  if (preferred === TRANSPORT.HTTP) {
+    return TRANSPORT.HTTP;
   }
   const capabilities = await getDownloadTransportCapabilities();
+  if (preferred === TRANSPORT.AUTO) {
+    // Resolve "auto" HERE, from the backend's own verdict, rather than letting the client and the
+    // server decide independently: the resolved transport is compared against the `.transport`
+    // marker of any existing partial, so the two must agree or a resume would be misjudged.
+    return capabilities.auto_resolves_to === TRANSPORT.HTTP
+      ? TRANSPORT.HTTP
+      : TRANSPORT.XET;
+  }
   if (capabilities.xet.available === true) {
     lastXetUnavailableWarningReason = null;
     return preferred;

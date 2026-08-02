@@ -112,6 +112,10 @@ export interface DownloadTransportCapability {
 export interface DownloadTransportCapabilities {
   http: DownloadTransportCapability;
   xet: DownloadTransportCapability;
+  // What the backend's "auto" mode resolves to right now, and why. Computed server-side because
+  // only the backend can see this machine's RAM, hf_xet build, and recent Xet failures.
+  auto_resolves_to?: "xet" | "http";
+  auto_reason?: string | null;
 }
 
 export interface DownloadProgressResponse {
@@ -139,6 +143,10 @@ const DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK: DownloadTransportCapabilities = 
     available: null,
     reason: "Couldn't verify Xet support with the Unsloth backend.",
   },
+  // Unknown backend state: stay on Xet, since the download-time ladder still falls back to HTTP
+  // if Xet turns out to be broken here.
+  auto_resolves_to: "xet",
+  auto_reason: null,
 };
 let downloadTransportCapabilitiesCache: DownloadTransportCapabilities | null =
   null;
@@ -222,6 +230,7 @@ export async function startModelDownload(payload: {
   gguf_variant?: string | null;
   hf_token?: string | null;
   use_xet?: boolean;
+  transport_mode?: "auto" | "xet" | "http";
 }): Promise<DownloadStartResult & { job_key: string }> {
   const { hf_token, ...body } = payload;
   const headers = {
@@ -343,6 +352,7 @@ export async function startDatasetDownload(payload: {
   repo_id: string;
   hf_token?: string | null;
   use_xet?: boolean;
+  transport_mode?: "auto" | "xet" | "http";
 }): Promise<DownloadStartResult & { repo_id: string }> {
   const { hf_token, ...body } = payload;
   const headers = {

@@ -36,6 +36,7 @@ import {
   DOWNLOAD_KIND,
   TRANSPORT,
   type DownloadKind,
+  type ResolvedTransport,
   type TransportMode,
 } from "./constants";
 import {
@@ -633,11 +634,16 @@ export async function startJob(
 
   const expected = Math.max(existing?.expectedBytes ?? 0, req.expectedBytes);
   const hfToken = getHfToken() || null;
-  const requestedUseXet = opts.useXet ?? (getTransportMode() === TRANSPORT.XET);
-  const requestedMode: TransportMode = requestedUseXet
-    ? TRANSPORT.XET
-    : TRANSPORT.HTTP;
-  let mode: TransportMode;
+  // An explicit opts.useXet (a retry pinning a transport) wins; otherwise carry the stored
+  // preference through UNRESOLVED so "auto" survives to effectiveTransportMode(). Collapsing it to
+  // a boolean here would silently read "auto" as "not xet" and send every download over HTTP.
+  const requestedMode: TransportMode =
+    opts.useXet === undefined
+      ? getTransportMode()
+      : opts.useXet
+        ? TRANSPORT.XET
+        : TRANSPORT.HTTP;
+  let mode: ResolvedTransport;
   try {
     mode = opts.adopt
       ? TRANSPORT.HTTP

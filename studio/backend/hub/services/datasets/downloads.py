@@ -157,8 +157,11 @@ async def download_dataset_response(
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
 
-    use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
+    use_xet, transport_reason = download_lifecycle.resolve_requested_use_xet(
+        getattr(body, "transport_mode", None), body.use_xet,
+    )
     transport = download_lifecycle.resolve_transport(use_xet)
+    logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
     from utils.hf_cache_settings import get_hf_cache_paths
 
     cache_paths = get_hf_cache_paths()

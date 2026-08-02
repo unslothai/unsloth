@@ -58,10 +58,12 @@ logger = get_logger(__name__)
 
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
+    TRANSPORT_AUTO,
     TRANSPORT_HTTP,
     TRANSPORT_XET,
     TRANSPORT_MARKER_NAME,
     VALID_TRANSPORTS,
+    VALID_TRANSPORT_MODES,
     has_active_incomplete_blobs,
     iter_repo_cache_dirs,
     iter_active_repo_cache_dirs,
@@ -81,10 +83,30 @@ class DownloadTransportCapability:
 class DownloadTransportCapabilities:
     http: DownloadTransportCapability
     xet: DownloadTransportCapability
+    # What "auto" would pick right now, and why, so the picker can say
+    # "Auto (HTTP -- Xet stalled twice on this machine)" instead of just "Auto".
+    auto_resolves_to: str = TRANSPORT_XET
+    auto_reason: Optional[str] = None
 
 
 def get_download_transport_capabilities() -> DownloadTransportCapabilities:
     xet_available = importlib.util.find_spec("hf_xet") is not None
+    auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
+    auto_reason: Optional[str] = None
+    if xet_available:
+        try:
+            from utils.hf_xet_fallback import xet_health
+
+            # probe = False: this endpoint is polled by the UI, so it answers from the cached
+            # verdict and the local signals rather than opening a connection on every poll.
+            health = xet_health(probe = False)
+            if health is not None:
+                auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
+                auto_reason = str(health.reason)
+        except Exception:
+            # No opinion available: leave the optimistic default; the download-time ladder still
+            # recovers if Xet turns out to be broken here.
+            pass
     return DownloadTransportCapabilities(
         http = DownloadTransportCapability(available = True),
         xet = DownloadTransportCapability(
@@ -93,6 +115,8 @@ def get_download_transport_capabilities() -> DownloadTransportCapabilities:
             if xet_available
             else "Xet transport is unavailable because hf_xet is not installed.",
         ),
+        auto_resolves_to = auto_transport,
+        auto_reason = auto_reason,
     )
 
 

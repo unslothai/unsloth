@@ -29,7 +29,12 @@ from typing import Any, Callable, Optional
 # default args below) without importing unsloth_zoo/transformers.
 DEFAULT_GRACE_PERIOD = 10.0
 DEFAULT_HEARTBEAT_INTERVAL = 30.0
-DEFAULT_STALL_TIMEOUT = 180.0
+# Xet gets 30s of zero progress before the HTTP retry; HTTP, as the last resort, keeps 180s. The
+# wrappers below pass None so the shared layer picks per transport -- these literals exist for
+# callers that want an explicit value without triggering the heavy import.
+DEFAULT_STALL_TIMEOUT = 30.0
+DEFAULT_CONNECT_TIMEOUT = 90.0
+DEFAULT_HTTP_STALL_TIMEOUT = 180.0
 
 # --- lazy shared-backend loader ----------------------------------------------------------------
 _shared: Any = None
@@ -87,6 +92,69 @@ def _load_shared() -> bool:
                     _os.environ.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
                 else:
                     _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = _prev_gpu_init
+
+
+def _load_optional(module_name: str) -> Any:
+    """Import an optional shared Xet helper module, or return ``None``.
+
+    Separate from ``_load_shared`` because these modules (health / tuning) are pure stdlib and
+    exist only in newer unsloth_zoo: a Studio pinned to an older zoo must keep downloading, just
+    without the preflight verdict or the buffer caps.
+    """
+    try:
+        import importlib
+
+        return importlib.import_module(module_name)
+    except Exception as exc:  # noqa: BLE001 - an older/absent unsloth_zoo must degrade, not crash
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug("%s unavailable: %s", module_name, exc)
+        return None
+
+
+def xet_health(**kwargs: Any) -> Any:
+    """The machine's Xet verdict, or ``None`` when unsloth_zoo cannot answer.
+
+    ``None`` means "no opinion": callers keep their existing default (Xet) rather than treating a
+    missing health module as a reason to downgrade.
+    """
+    module = _load_optional("unsloth_zoo.hf_xet_health")
+    if module is None:
+        return None
+    try:
+        return module.xet_health(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug("xet_health failed: %s", exc)
+        return None
+
+
+def record_xet_outcome(ok: bool, reason: str = "") -> None:
+    """Record a finished Xet attempt so a repeatedly-failing machine stops starting on Xet."""
+    module = _load_optional("unsloth_zoo.hf_xet_health")
+    if module is None:
+        return
+    try:
+        module.record_xet_outcome(ok, reason)
+    except Exception as exc:  # noqa: BLE001
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug("record_xet_outcome failed: %s", exc)
+
+
+def xet_env_overrides() -> "dict[str, str]":
+    """RAM/CPU-derived ``HF_XET_*`` caps for a download worker's environment; ``{}`` if unavailable."""
+    module = _load_optional("unsloth_zoo.hf_xet_tuning")
+    if module is None:
+        return {}
+    try:
+        return dict(module.xet_env_overrides())
+    except Exception as exc:  # noqa: BLE001
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug("xet_env_overrides failed: %s", exc)
+        return {}
 
 
 def child_should_disable_xet(config: dict) -> bool:
@@ -252,13 +320,18 @@ def _shared_snapshot_download_with_xet_fallback(*args: Any, **kwargs: Any) -> st
 
 
 __all__ = [
+    "DEFAULT_CONNECT_TIMEOUT",
     "DEFAULT_GRACE_PERIOD",
     "DEFAULT_HEARTBEAT_INTERVAL",
+    "DEFAULT_HTTP_STALL_TIMEOUT",
     "DEFAULT_STALL_TIMEOUT",
     "DownloadStallError",
     "child_should_disable_xet",
     "get_hf_download_state",
+    "record_xet_outcome",
     "start_watchdog",
+    "xet_env_overrides",
+    "xet_health",
     "hf_hub_download_with_xet_fallback",
     "snapshot_download_with_xet_fallback",
 ]
@@ -300,8 +373,8 @@ def hf_hub_download_with_xet_fallback(
     cancel_event: Optional[threading.Event] = None,
     repo_type: str = "model",
     revision: Optional[str] = None,
-    stall_timeout: float = DEFAULT_STALL_TIMEOUT,
-    interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+    stall_timeout: Optional[float] = None,
+    interval: Optional[float] = None,
     grace_period: float = DEFAULT_GRACE_PERIOD,
     on_status: Optional[Callable[[str], None]] = None,
     force_download: bool = False,
