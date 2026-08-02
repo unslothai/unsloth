@@ -218,7 +218,7 @@ vicuna_ollama = _ollama_template("vicuna")
 
 vicuna_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_ollama,)
-DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user\\'s questions."
+DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."
 
 # =========================================== Vicuna Old
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
@@ -248,7 +248,7 @@ vicuna_old_ollama = _ollama_template("vicuna_old")
 
 vicuna_old_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna_old"] = (vicuna_old_template, vicuna_old_eos_token, False, vicuna_old_ollama,)
-DEFAULT_SYSTEM_MESSAGE["vicuna_old"] = "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human\\'s questions."
+DEFAULT_SYSTEM_MESSAGE["vicuna_old"] = "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions."
 
 CHAT_TEMPLATES["vicuna old"] = CHAT_TEMPLATES["vicuna_old"]
 DEFAULT_SYSTEM_MESSAGE["vicuna old"] = DEFAULT_SYSTEM_MESSAGE["vicuna_old"]
@@ -1810,6 +1810,14 @@ yi_chat_template_eos_token = "<|endoftext|>"
 CHAT_TEMPLATES["yi-chat"] = (yi_chat_template, yi_chat_template_eos_token, False, yi_chat_ollama)
 DEFAULT_SYSTEM_MESSAGE["yi-chat"] = None
 
+# Caller text is spliced into Jinja '...' / "..." literals, where a bare quote closes
+# the literal and a backslash is read as an escape, and \r is normalised to \n before
+# unescaping. Backslash first, else it re-escapes the ones added after. Escaping both
+# quotes is safe in either literal style, so the caller need not know which is in use.
+def _escape_jinja_literal(text):
+    return text.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"').replace("\r", "\\r")
+
+
 def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
     # For predefined templates, check if default system message exists
     default_system_message = DEFAULT_SYSTEM_MESSAGE.get(f"{type_chat_template}", None)
@@ -1833,7 +1841,9 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
 
     # For predefined templates with default system message
     message_to_use = system_message if system_message is not None else default_system_message
-    new_template = template.replace("{system_message}", message_to_use)
+    # Our own templates hold {system_message} inside a Jinja literal, so escape it here.
+    # Custom templates (above) are filled verbatim: their placeholder may sit in raw text.
+    new_template = template.replace("{system_message}", _escape_jinja_literal(message_to_use))
 
     return new_template, message_to_use
 
@@ -2053,11 +2063,12 @@ def get_chat_template(
         chat_template = "{{ bos_token }}" + chat_template
 
     # For ShareGPT role -> from and content -> value
+    # Keys land inside Jinja literals, so escape them like any other spliced text.
     new_chat_template = chat_template\
-        .replace("'role'",      "'" + mapping["role"]      + "'")\
-        .replace("'content'",   "'" + mapping["content"]   + "'")\
-        .replace("'user'",      "'" + mapping["user"]      + "'")\
-        .replace("'assistant'", "'" + mapping["assistant"] + "'")
+        .replace("'role'",      "'" + _escape_jinja_literal(mapping["role"])      + "'")\
+        .replace("'content'",   "'" + _escape_jinja_literal(mapping["content"])   + "'")\
+        .replace("'user'",      "'" + _escape_jinja_literal(mapping["user"])      + "'")\
+        .replace("'assistant'", "'" + _escape_jinja_literal(mapping["assistant"]) + "'")
 
     if use_zoo_tokenizer_patch:
         # Unsloth MLX avoids the model-utils tokenizer wrapper because that
@@ -2617,15 +2628,9 @@ extra_eos_tokens = None,
         part + '\n\n' + ollama_eos
 
     # HF Jinja Chat template
-    # Caller text is spliced into Jinja '...' literals, where a bare quote closes
-    # the literal and a backslash is read as an escape, and \r is normalised to \n
-    # before unescaping. Backslash first, else it re-escapes the ones added after.
-    def escape_jinja_literal(text):
-        return text.replace("\\", "\\\\").replace("'", "\\'").replace("\r", "\\r")
-
     def process(part, which, content = "message['content']"):
         # Escape the literal pieces only; the placeholder becomes Jinja syntax below.
-        part = which.join(escape_jinja_literal(piece) for piece in part.split(which))
+        part = which.join(_escape_jinja_literal(piece) for piece in part.split(which))
         if part.endswith(which):
             part = "'" + part[:part.find(which)] + f"' + {content}"
         elif part.startswith(which):
@@ -2648,7 +2653,7 @@ extra_eos_tokens = None,
             "{% endif %}"\
         "{% endfor %}"\
         "{% if add_generation_prompt %}"\
-            "{{ '" + escape_jinja_literal(output_part[:output_part.find("{OUTPUT}")]) + "' }}"\
+            "{{ '" + _escape_jinja_literal(output_part[:output_part.find("{OUTPUT}")]) + "' }}"\
         "{% endif %}"
 
     # Now add system prompt to jinja
@@ -2668,7 +2673,7 @@ extra_eos_tokens = None,
                 "{{ " + partial_system + " }}"\
                 "{% set loop_messages = messages[1:] %}"
         if default_system_message is not None:
-            full_system = escape_jinja_literal(system_part.replace("{SYSTEM}", default_system_message))
+            full_system = _escape_jinja_literal(system_part.replace("{SYSTEM}", default_system_message))
             if "{SYSTEM}" in system_part:
                 modelfile += '\nSYSTEM "' + default_system_message + '"'
             partial_system += "{% else %}"\
