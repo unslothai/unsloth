@@ -755,9 +755,7 @@ def test_a_drafter_free_spec_mode_keeps_the_speculation_it_asked_for():
 def test_a_sibling_drafter_still_goes_when_unsloth_owns_the_spec_block():
     """The negative for the case above: with no user --spec-type the resolver is free
     to emit --model-draft for the sibling, so it is a real placement and still drops."""
-    drafter, out, warnings = _drafter_gate(
-        paravirtual = True, caps = {}, extra_args = ["--top-k", "40"]
-    )
+    drafter, out, warnings = _drafter_gate(paravirtual = True, caps = {}, extra_args = ["--top-k", "40"])
     assert drafter is None
     assert out == ["--top-k", "40"]
     assert warnings

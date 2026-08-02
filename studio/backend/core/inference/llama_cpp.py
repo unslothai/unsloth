@@ -2034,7 +2034,9 @@ def _metal_device_is_paravirtual() -> bool:
     if sys.platform != "darwin":
         return False
     if os.environ.get("UNSLOTH_ALLOW_PARAVIRTUAL_METAL", "").strip().lower() in (
-        "1", "true", "yes",
+        "1",
+        "true",
+        "yes",
     ):
         logger.info("UNSLOTH_ALLOW_PARAVIRTUAL_METAL set: keeping Metal offload.")
         return False
