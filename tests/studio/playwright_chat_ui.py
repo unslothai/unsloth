@@ -373,7 +373,21 @@ def exercise_floating_monitor_geometry(page):
                 // the geometry to hold for two consecutive animation frames --
                 // this runs under the default polling="raf", and it is how
                 // Playwright itself defines a stable element.
-                const signature = monitorHeight + "x" + contentHeight;
+                //
+                // Position belongs in the signature as well as size. An undragged
+                // panel is bottom-anchored by re-clamping its top against the new
+                // height, and that lands a frame AFTER the height it reacts to, so
+                // a size-only signature reports settled while the panel is still
+                // where the shorter version put it. Sampling there reads a bottom
+                // inset that is exactly the growth too low. Deliberately not
+                // waiting on the expected inset itself: that would gate on the
+                // very thing the assertions below check and turn a real
+                // misplacement into a timeout instead of a failure.
+                const rect = monitor.getBoundingClientRect();
+                const signature = [
+                    monitorHeight, contentHeight,
+                    Math.round(rect.top), Math.round(rect.left),
+                ].join("x");
                 const settled = window.__unslothMonitorGeometry === signature;
                 window.__unslothMonitorGeometry = signature;
                 return settled;

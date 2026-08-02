@@ -4102,7 +4102,7 @@ if ($LocalLlamaCppLinked) {
                 step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "Red"
                 Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
             }
-        } else {
+        } elseif ($prebuiltExit -eq 2) {
             step "llama.cpp" "prebuilt install failed" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
@@ -4116,6 +4116,14 @@ if ($LocalLlamaCppLinked) {
                 substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
                 $NeedLlamaSourceBuild = $true
             }
+        } else {
+            step "llama.cpp" "prebuilt helper failed unexpectedly" "Red"
+            Write-LlamaFailureLog -Output $prebuiltOutput
+            if (Test-Path -LiteralPath $LlamaCppDir) {
+                substep "Existing install was restored or left unchanged" "Yellow"
+            }
+            substep "Source build was not started because it cannot repair an unexpected helper or permissions error" "Yellow"
+            Exit-SetupFailure "llama.cpp prebuilt helper failed unexpectedly (exit code $prebuiltExit). Check the error above and retry setup."
         }
 }
 

@@ -1580,7 +1580,7 @@ else
             step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
             setup_fail 1 "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
         fi
-    else
+    elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
         rm -f "$_PREBUILT_LOG"
@@ -1595,6 +1595,15 @@ else
             substep "falling back to source build"
             _NEED_LLAMA_SOURCE_BUILD=true
         fi
+    else
+        step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "existing install was restored or left unchanged"
+        fi
+        substep "source build was not started because it cannot repair an unexpected helper or permissions error"
+        setup_fail 1 "llama.cpp prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS). Check the error above and retry setup."
     fi
 fi
 

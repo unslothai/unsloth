@@ -2298,7 +2298,7 @@ export function SharedComposer({
                   onClick={startDictation}
                   aria-label="Dictate"
                 >
-                  <MicIcon className="size-4" />
+                  <MicIcon className="unsloth-dictate-icon size-4" />
                 </TooltipIconButton>
               ) : (
                 <TooltipIconButton
@@ -2347,7 +2347,7 @@ export function SharedComposer({
               type="button"
               variant="default"
               size="icon"
-              className="ml-1.5 size-8 rounded-full"
+              className="ml-1.5 size-9 rounded-full"
               onClick={stop}
             >
               <SquareIcon className="size-3 fill-current" />
@@ -2358,12 +2358,12 @@ export function SharedComposer({
               side="bottom"
               variant="default"
               size="icon"
-              className="ml-1.5 size-8 rounded-full"
+              className="ml-1.5 size-9 rounded-full"
               onClick={send}
               disabled={!canSend}
               aria-label="Send message"
             >
-              <ArrowUpIcon className="size-[22px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon size-[22px] stroke-2" />
             </TooltipIconButton>
           )}
         </div>
