@@ -2039,9 +2039,7 @@ class TestVenvDirFileIntegrity:
             assert installed == [], label
             assert (venv_dir / "transformers" / "__init__.py").read_text() == "x", label
 
-    def test_a_deferred_repair_runs_as_soon_as_nobody_is_active(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_a_deferred_repair_runs_as_soon_as_nobody_is_active(self, tmp_path: Path, monkeypatch):
         """Stateless by design: nothing records the deferral, so nothing has to clear
         it. Any 'repair me later' record is the shape that deadlocked the latest tier."""
         import multiprocessing

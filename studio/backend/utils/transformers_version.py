@@ -2373,7 +2373,11 @@ def _repair_would_disturb_a_live_worker() -> bool:
 
 
 def _ensure_venv_dir(
-    venv_dir: str, packages: tuple[str, ...], label: str, *, shared: bool = True
+    venv_dir: str,
+    packages: tuple[str, ...],
+    label: str,
+    *,
+    shared: bool = True,
 ) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing.
 
