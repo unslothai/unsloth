@@ -1288,7 +1288,9 @@ def test_the_route_dedupe_reads_the_suppressed_drafter_too(monkeypatch, tmp_path
     from models.inference import LoadRequest
     from routes.inference import _request_matches_loaded_settings
 
-    _paravirtual(monkeypatch)
+    # _paravirtual alone leaves the route's own binding on real hardware, so this
+    # exercised the bare-metal path on Linux and the real one on a Mac.
+    _paravirtual_everywhere(monkeypatch)
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0)
     )
@@ -1300,6 +1302,10 @@ def test_the_route_dedupe_reads_the_suppressed_drafter_too(monkeypatch, tmp_path
     backend._gguf_path = str(gguf)
     backend._mtp_draft_path = None
     backend._mtp_draft_suppressed_path = str(drafter)
+    # What the first load on a virtualised Mac left behind, so the comparison is
+    # against a server that really launched under the pin.
+    backend._gpu_memory_mode = "manual"
+    backend._gpu_layers = 0
     request = LoadRequest(model_path = str(gguf))
     assert _request_matches_loaded_settings(request, backend)
     # The negative: nothing was suppressed, so a drafter that genuinely appeared

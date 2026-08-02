@@ -78,6 +78,29 @@ def _no_background_model_scan(monkeypatch):
     monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
 
 
+@pytest.fixture(autouse = True)
+def _assume_bare_metal(monkeypatch):
+    """Pin the virtualised-Metal detector off so the suite is host independent.
+
+    The dedupe comparators consult real hardware, so on a Mac (and on GitHub's
+    macos runners, which are paravirtual) every test of those comparators would
+    normalize the incoming request and mismatch fixture state that was never
+    normalized. Tests that want the fallback patch it back on.
+    """
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
+    # The route rebinds the detector as a module global (its import sits in a
+    # module-level try), so patching llama_cpp alone leaves it on real hardware.
+    try:
+        from routes import inference as routes_inference
+    except Exception:  # optional deps absent on some CI legs
+        return
+    monkeypatch.setattr(
+        routes_inference, "_metal_device_is_paravirtual", lambda: False, raising = False
+    )
+
+
 @pytest.fixture(scope = "session")
 def studio_server(request):
     """Yield ``(base_url, api_key)`` for e2e tests.
