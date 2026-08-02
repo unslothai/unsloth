@@ -146,11 +146,28 @@ def _windows_allocated_size(path: Path) -> Optional[int]:
         return None
 
 
-def latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
-    """Newest immediate child of ``repo_dir/snapshots`` by mtime, or None.
+def snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
+    """The one ordering every snapshot selector uses: mtime, then resolved path.
 
-    mtime is the signal huggingface_hub's from_pretrained resolves to, so this
-    points at whatever snapshot most recently landed on disk.
+    mtime alone is not a total order, and each selector broke ties by its own
+    iteration order (frozenset vs iterdir), so the inventory row and the variant
+    picker could name different snapshots. The path breaks ties identically.
+    """
+    try:
+        mtime = snapshot.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    try:
+        return mtime, str(snapshot.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return mtime, str(snapshot)
+
+
+def latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
+    """Newest immediate child of ``repo_dir/snapshots``, or None.
+
+    mtime is the signal huggingface_hub's from_pretrained resolves to; ties fall
+    to ``snapshot_selection_key`` so every caller names the same directory.
     """
     snapshots_dir = repo_dir / "snapshots"
     try:
@@ -159,7 +176,7 @@ def latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
         snapshots = [entry for entry in snapshots_dir.iterdir() if entry.is_dir()]
         if not snapshots:
             return None
-        return max(snapshots, key = lambda entry: entry.stat().st_mtime)
+        return max(snapshots, key = snapshot_selection_key)
     except OSError:
         return None
 
@@ -271,10 +288,7 @@ def latest_snapshot_from_cache_path(
                 candidates.append(candidate)
         if not candidates:
             return None
-        candidates.sort(
-            key = lambda path: path.stat().st_mtime if path.exists() else 0,
-            reverse = True,
-        )
+        candidates.sort(key = snapshot_selection_key, reverse = True)
         return str(candidates[0].resolve())
     except Exception:
         return None

@@ -1683,8 +1683,10 @@ html[data-chat-font] .aui-root {
 		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-2 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
+	/* Same 12px corner gap as the single composer, over this surface's px-1
+	   and no pb. */
 	.composer-action-wrapper {
-		@apply relative mx-2 mb-2 flex items-center justify-between;
+		@apply relative mx-2 mb-3 flex items-center justify-between;
 	}
 
 	.composer-footer-note {
@@ -1692,7 +1694,9 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 	}
 
-	/* Pill composer; own classes so compare-mode keeps its stacked layout. */
+	/* Pill composer; own classes so compare-mode keeps its stacked layout. py
+	   12px matches the send circle's gap to the right edge, so it sits evenly
+	   inside the 32px corner. */
 	.unsloth-composer-surface {
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
 		container-type: inline-size;
@@ -1748,8 +1752,8 @@ html[data-chat-font] .aui-root {
 	.unsloth-composer-line .aui-composer-action-wrapper {
 		order: 3;
 		margin-left: auto;
-		/* Inset the send circle from the edge, Gemini-style. */
-		margin-right: -0.125rem;
+		/* 12px surface + 4px line padding minus this = 12px edge gap. */
+		margin-right: -0.25rem;
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
@@ -2862,6 +2866,23 @@ html[data-chat-font] .aui-root {
 	& svg.size-\[20px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-\[21px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-\[22px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	/* Mic and send arrow sit above the shared glyph size: both fill their
+	   viewBox, so they read smaller than the stroked icons beside them. Keep
+	   after the size-[NN] rules they override. */
+	& svg.unsloth-dictate-icon {
+		width: calc(var(--ui-icon-size) * 1.2);
+		height: calc(var(--ui-icon-size) * 1.2);
+	}
+	& svg.unsloth-send-icon {
+		width: calc(var(--ui-icon-size) * 1.15);
+		height: calc(var(--ui-icon-size) * 1.15);
+	}
+	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
+	   curve a 22px glyph would follow), so only its scaling changed. */
+	& .unsloth-composer-plus svg {
+		width: calc(var(--ui-icon-size) * 1.375);
+		height: calc(var(--ui-icon-size) * 1.375);
+	}
 	& svg.size-\[36px\] { width: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); height: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); }
 	& svg.w-3 { width: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
 	& svg.h-3 { height: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
