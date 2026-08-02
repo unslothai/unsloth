@@ -8446,15 +8446,12 @@ class LlamaCppBackend:
                         and _mtp_size_for_fit < _MTP_MIN_SIZE_B
                         and not bool(mtp_draft_path)
                     )
-                    # LLAMA_ARG_SPEC_TYPE only reaches the child when neither extras
-                    # nor Unsloth emit a spec flag (mode "off", no user --spec-type),
-                    # since _build_speculative_flags emits one for every other mode.
-                    # Consult the env for the reserve only then, else a stale MTP env
-                    # would over-reserve.
+                    # The inherited spec env only reaches the child when the extras
+                    # own --spec-type: the launch scrubs it otherwise, so what Unsloth
+                    # emits is final. Reserve against the env in that case only, where
+                    # the user's flags and the env accumulate and both really launch.
                     _spec_env: Mapping[str, str] = (
-                        os.environ
-                        if (not _extra_args_set_spec_type(extra_args) and _mtp_canonical == "off")
-                        else {}
+                        os.environ if _extra_args_set_spec_type(extra_args) else {}
                     )
                     # Extras can run MTP even when Unsloth suppresses its own emission.
                     _user_mtp_via_extras = _extra_args_requests_mtp(extra_args, env = _spec_env)
@@ -9970,7 +9967,16 @@ class LlamaCppBackend:
                 # spec type goes too, for the same reason the CLI one did: llama.cpp
                 # appends types rather than replacing them, so an inherited
                 # draft-simple would outlive the model it needs.
-                if _pv_draft_unpinnable:
+                # Unsloth owns the spec block whenever the extras do not name a
+                # --spec-type: _build_speculative_flags then emits the whole thing.
+                # Nothing it emits can undo an inherited LLAMA_ARG_SPEC_TYPE, since
+                # llama.cpp applies the env first and appends rather than replaces,
+                # so a managed non-MTP launch would still start MTP, a crash-recovery
+                # replay could not drop it, and the fit would not have budgeted the
+                # drafter the env adds. Clearing it makes the emitted flags final.
+                # The user owning --spec-type is left alone: their flags and the env
+                # accumulate, which is what the slot clamp above reads.
+                if _pv_draft_unpinnable or not _extra_args_set_spec_type(extra_args):
                     for _pv_spec_var in (
                         "LLAMA_ARG_SPEC_DRAFT_MODEL",
                         "LLAMA_ARG_SPEC_DRAFT_HF_REPO",

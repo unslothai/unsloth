@@ -811,9 +811,10 @@ def test_a_real_mac_keeps_the_sibling_and_the_mode_alike():
 def test_the_env_the_child_inherits_is_dropped_too():
     """argv cannot un-set LLAMA_ARG_SPEC_DRAFT_MODEL: llama.cpp reads it directly,
     and it appends spec types rather than replacing them, so an inherited
-    draft-simple would outlive the model that was just removed."""
+    draft-simple would outlive the model that was just removed. The same scrub
+    also covers every launch whose spec block Unsloth owns."""
     src = _load_model_source()
-    gate_at = src.index("if _pv_draft_unpinnable:\n                    for _pv_spec_var in (")
+    gate_at = src.index("for _pv_spec_var in (")
     block = src[gate_at : gate_at + 900]
     for var in (
         "LLAMA_ARG_SPEC_DRAFT_MODEL",
@@ -826,6 +827,19 @@ def test_the_env_the_child_inherits_is_dropped_too():
     ):
         assert var in block, f"{var} survives the drafter drop into the child env"
     assert "env.pop(_pv_spec_var, None)" in block
+
+
+def test_a_managed_spec_block_clears_the_inherited_spec_env():
+    """Nothing Unsloth emits can undo an inherited LLAMA_ARG_SPEC_TYPE: llama.cpp
+    applies the env first and appends. So a managed non-MTP launch would still run
+    MTP, a crash-recovery replay could not drop it, and the fit would not have
+    budgeted the drafter the env adds. The launch clears it instead. Extras that
+    own --spec-type keep theirs, since there the two genuinely accumulate."""
+    src = _load_model_source()
+    at = src.index("for _pv_spec_var in (")
+    gate = src[src.rindex("if ", 0, at) : at]
+    assert "not _extra_args_set_spec_type(extra_args)" in gate
+    assert "_pv_draft_unpinnable" in gate
 
 
 def test_a_pinnable_drafter_survives_on_the_same_hardware():

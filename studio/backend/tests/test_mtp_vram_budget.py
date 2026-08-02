@@ -553,15 +553,19 @@ class TestExtraArgsMtpDetection:
         # -> _user_draft_via_extras True; _env_draft_for_budget sizes the drafter.
         assert _extra_args_mtp_draft_path([], env = dict(os.environ)) == "/large.gguf"
 
-    def test_load_model_gates_env_spec_type_on_off_mode(self):
-        # LLAMA_ARG_SPEC_TYPE only reaches the child when Unsloth emits no spec
-        # flag (UI mode "off", no user --spec-type); otherwise the emitted
-        # --spec-type/--spec-default overrides the env, so the reserve must not
-        # consult it or a stale MTP env over-reserves (Finding F3). Whitespace-
-        # stripped so the check survives formatter line-wrapping.
+    def test_the_fit_reads_the_env_only_when_the_extras_own_the_spec_type(self):
+        # An emitted --spec-type/--spec-default cannot override the env, since
+        # llama.cpp appends. So the launch scrubs LLAMA_ARG_SPEC_TYPE whenever
+        # Unsloth owns the spec block, and the reserve consults the env only in
+        # the one case it still reaches the child: the extras own --spec-type, and
+        # their flags and the env accumulate. Whitespace-stripped so the check
+        # survives formatter line-wrapping.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert '_mtp_canonical=="off"' in compact  # the env-reaches-child gate
+        assert "os.environif_extra_args_set_spec_type(extra_args)else{}" in compact
         assert "_extra_args_requests_mtp(extra_args,env=_spec_env)" in compact
+        # The other half: the launch really does clear it for a managed block.
+        assert "ornot_extra_args_set_spec_type(extra_args):" in compact
+        assert 'env.pop(_pv_spec_var,None)' in compact
 
     def test_spec_default_does_not_clear_an_inherited_spec_type(self):
         # --spec-default push_backs NGRAM_MOD rather than replacing the vector, so
