@@ -732,6 +732,36 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
     )
 
 
+def _force_stall_for_tests(repo_id: str, repo_type: str) -> None:
+    """Test-only fault injection: hang the Xet attempt so the stall watchdog can be exercised.
+
+    Never set in production. ``unsloth_zoo.hf_xet_fallback`` has the same hook for the downloads it
+    spawns itself, but the hub worker is a different process launched a different way, so without
+    this there is no way to make a *real* hub download hang on demand -- and the hub path is
+    precisely the one that had no stall detection at all before this change.
+
+    A partial has to exist and stay open: the watchdog counts only ``.incomplete`` files held open
+    by the child it is watching, which is what stops it from mistaking an unrelated cache entry for
+    live progress.
+    """
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    blobs = os.path.join(
+        HF_HUB_CACHE, f"{repo_type}s--" + repo_id.replace("/", "--"), "blobs")
+    handle = None
+    try:
+        os.makedirs(blobs, exist_ok = True)
+        handle = open(os.path.join(blobs, "xet-force-stall.incomplete"), "wb")
+        handle.write(b"\0" * 4096)
+        handle.flush()
+    except OSError:
+        pass
+    print("UNSLOTH_HF_XET_FORCE_STALL: hanging the xet attempt", file = sys.stderr, flush = True)
+    while True:
+        # `handle` stays referenced by this frame, which never returns, so the partial stays open.
+        time.sleep(3600)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description = "HuggingFace Hub download worker")
     parser.add_argument("--repo-id", required = True)
@@ -745,6 +775,9 @@ def main() -> None:
     _install_parent_death_watchdog(args.parent_pid)
 
     hf_token = os.environ.get("HF_TOKEN") or None
+
+    if args.transport == "xet" and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
+        _force_stall_for_tests(args.repo_id, "dataset" if args.dataset else "model")
 
     try:
         if args.dataset:

@@ -132,6 +132,19 @@ def _spawn_env(
     return captured
 
 
+def _tuning_available() -> bool:
+    try:
+        from utils.hf_xet_fallback import xet_env_overrides
+
+        return bool(xet_env_overrides())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@pytest.mark.skipif(
+    not _tuning_available(),
+    reason = "the installed unsloth_zoo predates hf_xet_tuning, so there are no caps to apply",
+)
 def test_xet_worker_gets_ram_caps(monkeypatch):
     env = _spawn_env(monkeypatch, use_xet = True)
     limit = int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"])
@@ -147,12 +160,29 @@ def test_high_performance_is_cleared_not_merely_defaulted(monkeypatch):
     assert env["HF_XET_HIGH_PERFORMANCE"] == "0"
 
 
+def test_high_performance_is_cleared_even_without_the_tuning_module(monkeypatch):
+    """The Studio can run against an unsloth_zoo that has no `hf_xet_tuning`, and that is exactly
+    the version that sets HF_XET_HIGH_PERFORMANCE=1 at import. If clearing the flag were routed
+    through the (then empty) overrides, the worker would inherit a 64GB buffer ceiling on precisely
+    the installs that cannot be fixed by upgrading Studio alone. CI caught this, not review."""
+    import utils.hf_xet_fallback as shim
+
+    monkeypatch.setattr(shim, "xet_env_overrides", lambda *a, **k: {})
+    env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
+    assert env["HF_XET_HIGH_PERFORMANCE"] == "0"
+    assert env["HF_XET_HP"] == "0"
+
+
 def test_user_can_opt_back_into_high_performance(monkeypatch):
     monkeypatch.setenv("UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", "1")
     env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
     assert env["HF_XET_HIGH_PERFORMANCE"] == "1"
 
 
+@pytest.mark.skipif(
+    not _tuning_available(),
+    reason = "the installed unsloth_zoo predates hf_xet_tuning, so there are no caps to preserve",
+)
 def test_explicit_cap_from_the_operator_is_preserved(monkeypatch):
     env = _spawn_env(
         monkeypatch,

@@ -140,11 +140,17 @@ def spawn_worker(
             "yes",
             "on",
         )
+        if not allow_high_perf:
+            # Unconditional, and deliberately not routed through xet_env_overrides(): an older
+            # unsloth_zoo has no tuning module, so the overrides come back empty -- and that same
+            # older zoo is the one that sets HF_XET_HIGH_PERFORMANCE=1 at import. `env` is seeded
+            # from the parent environment, so the inherited "1" would arrive here and raise the
+            # buffer ceiling to 64GB, voiding every cap below (xet-core applies the
+            # high-performance preset AFTER reading the environment). Overwrite, never setdefault.
+            for key in ("HF_XET_HIGH_PERFORMANCE", "HF_XET_HP"):
+                env[key] = "0"
         for key, value in xet_env_overrides().items():
             if key in ("HF_XET_HIGH_PERFORMANCE", "HF_XET_HP") and not allow_high_perf:
-                # `env` is seeded from the parent environment, so an inherited "1" would arrive
-                # here and silently void every cap above (xet-core applies the high-performance
-                # preset AFTER reading the environment). Overwrite rather than setdefault.
                 env[key] = value
             else:
                 env.setdefault(key, value)

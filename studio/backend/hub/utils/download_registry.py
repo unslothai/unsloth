@@ -567,7 +567,18 @@ def prepare_cache_for_transport(
     the environment. Markers are written for the new mode before returning.
     """
     if mode not in VALID_TRANSPORTS:
-        raise ValueError(f"Invalid transport mode: {mode!r}")
+        if mode == TRANSPORT_AUTO:
+            # "auto" is a request preference, not something that can write a cache: only the server
+            # can see the machine, so it must be resolved to xet/http before reaching this layer.
+            # Naming that explicitly turns a confusing "invalid transport" into the actual bug.
+            raise ValueError(
+                f"{TRANSPORT_AUTO!r} must be resolved to a concrete transport before preparing the "
+                f"cache; expected one of {sorted(VALID_TRANSPORTS)}"
+            )
+        raise ValueError(
+            f"Invalid transport mode: {mode!r} (transports: {sorted(VALID_TRANSPORTS)}, "
+            f"request modes: {sorted(VALID_TRANSPORT_MODES)})"
+        )
     root = hf_cache_root(create = True) if root is None else hf_cache_root(create = True, root = root)
     if root is None:
         return 0
