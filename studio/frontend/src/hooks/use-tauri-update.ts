@@ -104,6 +104,7 @@ export function useTauriUpdate(isExternalServer = false) {
   const [updatePolicy, setUpdatePolicy] = useState<DesktopUpdatePolicy>(DEFAULT_UPDATE_POLICY);
   const updateRef = useRef<Awaited<ReturnType<typeof checkDesktopUpdate>>>(null);
   const checkedRef = useRef(false);
+  const startupScheduledRef = useRef(false);
   const checkingRef = useRef(false);
   const updatingRef = useRef(false);
 
@@ -113,10 +114,14 @@ export function useTauriUpdate(isExternalServer = false) {
   }
 
   function offerUpdate(nextInfo: UpdateInfo) {
+    const isNewOffer = infoRef.current?.version !== nextInfo.version;
     replaceInfo(nextInfo);
-    setLastFailure(null);
-    setError(null);
-    setDismissed(false);
+    if (isNewOffer) {
+      // Only a version the user has not seen may reopen the banner.
+      setLastFailure(null);
+      setError(null);
+      setDismissed(false);
+    }
     setStatus("available");
   }
 
@@ -157,13 +162,17 @@ export function useTauriUpdate(isExternalServer = false) {
     return failure;
   }
 
-  async function resolveUpdatePolicy(): Promise<DesktopUpdatePolicy> {
-    if (!isTauri) return DEFAULT_UPDATE_POLICY;
+  /** `resolved` is false when the policy is a fail-safe guess, not the real answer. */
+  async function resolveUpdatePolicy(): Promise<{
+    policy: DesktopUpdatePolicy;
+    resolved: boolean;
+  }> {
+    if (!isTauri) return { policy: DEFAULT_UPDATE_POLICY, resolved: true };
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const policy = await invoke<DesktopUpdatePolicy>("desktop_update_policy");
       setUpdatePolicy(policy);
-      return policy;
+      return { policy, resolved: true };
     } catch (e) {
       console.warn("Desktop update policy check failed:", e);
       const failSafePolicy: DesktopUpdatePolicy = {
@@ -171,7 +180,7 @@ export function useTauriUpdate(isExternalServer = false) {
         mode: "manual_linux_package",
       };
       setUpdatePolicy(failSafePolicy);
-      return failSafePolicy;
+      return { policy: failSafePolicy, resolved: false };
     }
   }
 
@@ -204,19 +213,29 @@ export function useTauriUpdate(isExternalServer = false) {
 
   async function checkForUpdate() {
     if (checkingRef.current || updatingRef.current) return;
+    // A manual check covers startup, so the delayed timer must not repeat it.
+    checkedRef.current = true;
     checkingRef.current = true;
     setCheckError(null);
     setStatus("checking");
 
-    const policy = await resolveUpdatePolicy();
     try {
+      const { policy, resolved } = await resolveUpdatePolicy();
+
       if (policy.mode === "manual_linux_package") {
-        if (!(await checkManualUpdate(policy))) {
+        // This command self-gates on the real target_os, so it is authoritative
+        // even when the policy above is only a guess.
+        if (await checkManualUpdate(policy)) return;
+        if (resolved) {
+          // latest.json ships no deb/rpm key, so the in-app updater would offer
+          // an AppImage this install cannot apply. Stop instead.
           updateRef.current = null;
           replaceInfo(null);
           setStatus("idle");
+          return;
         }
-        return;
+        // Guessed policy, no manual offer: macOS, Windows and AppImage all land
+        // here, and they do have an in-app path. Fall through to it.
       }
 
       const update = await checkDesktopUpdate();
@@ -243,15 +262,17 @@ export function useTauriUpdate(isExternalServer = false) {
       setHasChecked(true);
     }
   }
-  // Startup owns one delayed check. Manual checks use the current controller
-  // function exposed below, while this ref keeps rerenders from resetting the timer.
+  // Startup owns one delayed check. The effect deps are empty, so this ref only
+  // keeps a per-render function out of the dependency list; every value the
+  // captured closure reads is a ref or a stable setState, so it cannot go stale.
   const initialCheckRef = useRef(checkForUpdate);
 
   useEffect(() => {
-    if (!isTauri || checkedRef.current) return;
-    checkedRef.current = true;
+    if (!isTauri || startupScheduledRef.current) return;
+    startupScheduledRef.current = true;
 
     const timer = setTimeout(() => {
+      if (checkedRef.current) return;
       void initialCheckRef.current();
     }, 5000);
     return () => clearTimeout(timer);
@@ -264,7 +285,7 @@ export function useTauriUpdate(isExternalServer = false) {
     const cleanups: (() => void)[] = [];
 
     try {
-      const policy = await resolveUpdatePolicy();
+      const { policy } = await resolveUpdatePolicy();
       if (policy.mode === "manual_linux_package") {
         const version = info?.version ?? updateRef.current?.version;
         if (!version) return;

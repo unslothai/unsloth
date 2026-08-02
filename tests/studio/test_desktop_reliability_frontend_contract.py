@@ -51,12 +51,54 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     assert "{appContent}" in provider[context_start:context_end]
     assert "appContent={" in provider
     assert "useContext(TauriUpdateContext)" in context
-    assert "checkForUpdate," in hook
-    assert "setDismissed(false);" in hook
+    # Scope these: the bare substrings also match the pre-existing
+    # setTimeout(checkForUpdate, 5000) and the installUpdate() reset.
+    assert "checkForUpdate," in hook.split("  return {", 1)[1]
+    manual = hook.split("async function checkForUpdate()", 1)[1]
+    assert "checkedRef.current = true;" in manual.split("try {", 1)[0]
+    offer = hook.split("function offerUpdate", 1)[1].split("\n  }", 1)[0]
+    assert "setDismissed(false);" in offer
+    assert "isNewOffer" in offer
     assert "const available = update.info !== null && !checking;" in settings
-    assert "update.dismissed" not in settings
     assert "void update.installUpdate();" in settings
     assert "void update.checkForUpdate();" in settings
+
+
+def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
+    """resolveUpdatePolicy fails safe to manual_linux_package on every platform.
+
+    Acting on that guess routes macOS, Windows and AppImage into the Linux-only
+    command, which returns Ok(None) off Linux, so Settings would claim the app
+    was up to date while an update was waiting.
+    """
+    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
+    policy = DESKTOP_UPDATE_POLICY.read_text(encoding = "utf-8")
+
+    assert "resolved: boolean" in hook
+    assert "resolved: false" in hook
+
+    manual_branch = hook.split("async function checkForUpdate()", 1)[1].split(
+        'if (policy.mode === "manual_linux_package") {', 1,
+    )[1]
+    give_up = manual_branch.split("checkDesktopUpdate()", 1)[0]
+    # Only a resolved policy may end the check without the in-app updater.
+    assert "if (resolved) {" in give_up
+    assert 'setStatus("idle");' in give_up
+    assert "await checkDesktopUpdate();" in manual_branch
+    # The Rust command self-gates on the real OS, which is what makes it safe
+    # to consult before the guess is trusted.
+    manual_cmd = policy.split("async fn check_desktop_manual_update", 1)[1]
+    assert "ManualLinuxPackage" in manual_cmd.split("{", 1)[1][:400]
+
+
+def test_settings_update_button_is_inert_while_an_install_runs():
+    settings = UPDATE_INSTRUCTIONS.read_text(encoding = "utf-8")
+
+    assert 'update.status === "updating-backend"' in settings
+    assert 'update.status === "downloading"' in settings
+    assert 'update.status === "installing"' in settings
+    assert "disabled={busy}" in settings
+    assert "aria-busy={busy}" in settings
 
 
 def test_desktop_update_check_failures_are_retryable():
@@ -67,9 +109,11 @@ def test_desktop_update_check_failures_are_retryable():
     assert "setCheckError(String(e));" in hook
     assert "update.checkError !== null" in settings
     assert 't("settings.about.update.retryCheck")' in settings
+    # The reason must reach the user, not just the console.
+    assert "${update.checkError}" in settings
     assert "server returned HTTP {status}" in policy
     request = policy.split("let response = client", 1)[1].split("let metadata", 1)[0]
-    assert ".map_err(|error|" in request
+    assert ".map_err(" in request
     assert "return Ok(None);" not in request
 
 

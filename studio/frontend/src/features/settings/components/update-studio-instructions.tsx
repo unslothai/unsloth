@@ -185,6 +185,12 @@ function DesktopUpdateControl(): ReactElement | null {
   if (!update) return null;
 
   const checking = update.status === "checking";
+  // A running install owns the update screen; do not offer a second "Update now".
+  const inFlight =
+    update.status === "updating-backend" ||
+    update.status === "downloading" ||
+    update.status === "installing";
+  const busy = checking || inFlight;
   const available = update.info !== null && !checking;
   const checkFailed = update.checkError !== null && !available;
 
@@ -204,7 +210,8 @@ function DesktopUpdateControl(): ReactElement | null {
         : t("settings.about.update.desktopAvailableDescription");
   } else if (checkFailed) {
     label = t("settings.about.update.desktopCheckFailed");
-    description = t("settings.about.update.desktopCheckFailedDescription");
+    // Keep the reason: it separates being offline from a bad release manifest.
+    description = `${t("settings.about.update.desktopCheckFailedDescription")} ${update.checkError}`;
   } else if (update.hasChecked) {
     label = t("settings.about.update.desktopCurrent");
     description = t("settings.about.update.desktopCurrentDescription");
@@ -232,7 +239,8 @@ function DesktopUpdateControl(): ReactElement | null {
         <Button
           size="sm"
           variant={available ? "default" : "outline"}
-          disabled={checking}
+          disabled={busy}
+          aria-busy={busy}
           onClick={() => {
             if (available) {
               void update.installUpdate();
