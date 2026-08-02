@@ -79,6 +79,7 @@ export {
   useDeviceInventorySources,
   useDeviceInventoryStore,
   useGgufVariantsCacheVersion,
+  useGgufVariantsCacheVersions,
   useHubInventory,
 } from "./inventory";
 export { bumpInventoryVersion } from "./stores/inventory-events";

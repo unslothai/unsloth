@@ -849,7 +849,10 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
     Polled by the frontend during training.
     """
     from utils.hardware import get_gpu_utilization
-    return get_gpu_utilization()
+
+    # Off-loop like /hardware/visible below; the first call blocks on detection while
+    # the warm is importing torch.
+    return await asyncio.to_thread(get_gpu_utilization)
 
 
 @router.get("/hardware/visible")
@@ -1041,6 +1044,9 @@ async def start_training(
 
         # Validate streaming-mode compatibility before any expensive work.
         # Streaming is supported only for Hugging Face text datasets.
+        from utils.hardware import hardware as _hw
+        from utils.hardware import ensure_hardware_detected
+
         if request.dataset_streaming:
             if not request.hf_dataset:
                 raise HTTPException(
@@ -1057,8 +1063,10 @@ async def start_training(
                     status_code = 400,
                     detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
                 )
-            from utils.hardware import hardware as _hw
-
+            # The warm fills DEVICE shortly after the socket binds, so a start in that window
+            # would read None, skip the MLX rejection, and hand a streaming dataset to the MLX
+            # loader (which materializes it whole). Detect first, off-loop: it imports torch.
+            await asyncio.to_thread(ensure_hardware_detected)
             if _hw.DEVICE == _hw.DeviceType.MLX:
                 raise HTTPException(
                     status_code = 400,
@@ -1108,6 +1116,10 @@ async def start_training(
                         "dataset cache; disable streaming to train from the cached copy."
                     ),
                 )
+        else:
+            # The synchronous backend start builds its worker config with get_device().
+            # Detect off-loop first so an early start cannot stall login or health.
+            await asyncio.to_thread(ensure_hardware_detected)
 
         model_preflight = await asyncio.to_thread(
             _reject_untrainable_model_request,

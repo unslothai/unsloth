@@ -37,6 +37,7 @@ from loggers import get_logger
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -1129,6 +1130,57 @@ _latest_repair_failed_at: float = 0.0
 _LATEST_REPAIR_BACKOFF_SECS = 5 * 60
 
 
+# Remembers that a RECORD scan found the sidecar damaged, so the cheap predicate
+# can act on damage it cannot itself see. Written by a worker child, which cannot
+# repair (repairs are a parent action) and needs the parent's routing self-heal to
+# pick the damage up, and by the parent when a repair attempt fails, so the backoff
+# window suppresses pip retries without handing the damaged sidecar back. Lives
+# inside the sidecar dir, so the stage-and-swap that repairs it clears the marker by
+# construction.
+_LATEST_REPAIR_MARKER = ".unsloth_sidecar_repair_needed"
+
+
+def _latest_repair_marker_path() -> Path:
+    return Path(_VENV_T5_LATEST_DIR) / _LATEST_REPAIR_MARKER
+
+
+def _latest_repair_requested() -> bool:
+    """True while a scan has found the sidecar damaged and no repair has succeeded.
+
+    One os.path.isfile, so the routing predicate below can carry it; the RECORD
+    scan that produced the request costs ~25 ms and cannot.
+    """
+    if _sidecar_file_check_disabled():
+        # The marker only ever records a file-level finding, which is precisely what
+        # the switch turns off. Ignoring it here is what makes the hatch immediate:
+        # otherwise a marker left by a false positive keeps the sidecar withheld for
+        # the rest of the backoff, since the disabled scan is never reached to clear it.
+        return False
+    try:
+        return _latest_repair_marker_path().is_file()
+    except OSError:
+        return False
+
+
+def _request_latest_repair() -> None:
+    """Record that the sidecar needs a repair the caller could not perform."""
+    try:
+        _latest_repair_marker_path().write_text(
+            json.dumps({"pid": os.getpid(), "at": time.time()}), encoding = "utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _clear_latest_repair_request() -> None:
+    """Drop the flag once a scan finds the sidecar healthy, so a request left by a
+    lost race costs one extra scan instead of looping forever."""
+    try:
+        _latest_repair_marker_path().unlink()
+    except OSError:
+        pass
+
+
 def _latest_sidecar_intact() -> bool:
     """The pinned latest sidecar exists with its transformers dir and every pinned
     package. False when the pin itself is gone: a cached 'latest' mapping must then be
@@ -1138,11 +1190,34 @@ def _latest_sidecar_intact() -> bool:
 
     (_overlay_transformers_dir only calls this after gating on a present pin, so the
     pin-missing case here is the cache-revalidation caller whose pin was deleted after
-    the mapping was first cached.)"""
+    the mapping was first cached.)
+
+    Package level only, deliberately not _venv_dir_is_valid_and_undamaged: this
+    runs several times per /validate request, on _config_mapping_cache HITS as
+    well as misses, with no cache in front of it, and a False here only
+    re-routes a model. Sub-file damage is caught one step later instead, by
+    _ensure_venv_t5_latest_exists at worker activation, which repairs in a
+    parent and refuses with a named reason in a child, after flagging the sidecar
+    for repair here."""
     pin = _latest_pin_data()
     if pin is None:
         return False
+    if _latest_repair_requested():
+        return False
     return _venv_dir_is_valid(_VENV_T5_LATEST_DIR, tuple(pin["packages"]))
+
+
+def _latest_sidecar_undamaged() -> bool:
+    """_latest_sidecar_intact plus the RECORD-vs-filesystem scan.
+
+    Only for the self-heal decision in _overlay_transformers_dir, which runs on a
+    _config_mapping_cache MISS -- measured once per process while the sidecar is
+    healthy, and never on the cached hot path _latest_sidecar_intact serves.
+    """
+    pin = _latest_pin_data()
+    if pin is None:
+        return False
+    return _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, tuple(pin["packages"]))
 
 
 def _overlay_transformers_dir(tier: str) -> str | None:
@@ -1159,21 +1234,32 @@ def _overlay_transformers_dir(tier: str) -> str | None:
             "latest": _VENV_T5_LATEST_DIR,
         }.get(tier)
         src = os.path.join(root, "transformers") if root else None
-        if src and tier == "latest" and not _latest_sidecar_intact():
-            # A valid pin whose sidecar vanished or lost a pinned package (partial
-            # deletion, disk issue, interrupted external edits) must self-heal, or
-            # latest-only models either silently route to older tiers or reach a
-            # worker that cannot repair, failing every load until a manual
-            # reinstall. Repair under the swap reservation; back off after a
-            # failure so routing calls don't hammer pip.
+        if src and tier == "latest":
+            # A valid pin whose sidecar vanished, lost a pinned package or had a
+            # recorded file truncated/deleted (partial deletion, disk issue,
+            # interrupted external edits) must self-heal, or latest-only models
+            # either silently route to older tiers or reach a worker that cannot
+            # repair, failing every load until a manual reinstall. Repair under the
+            # swap reservation; back off after a failure so routing calls don't
+            # hammer pip.
+            heal_due = time.time() - _latest_repair_failed_at >= _LATEST_REPAIR_BACKOFF_SECS
+            # The ~25 ms RECORD scan runs only when a repair could actually follow it,
+            # and only on a _config_mapping_cache miss (once per process while the
+            # sidecar is healthy) -- never during the backoff window, where every
+            # routing call would otherwise re-pay it for an answer it cannot act on.
+            broken = not _latest_sidecar_intact() or (heal_due and not _latest_sidecar_undamaged())
             repaired = False
-            if time.time() - _latest_repair_failed_at >= _LATEST_REPAIR_BACKOFF_SECS:
+            if broken and heal_due:
                 if _ensure_venv_t5_latest_exists():
                     _latest_repair_failed_at = 0.0
                     repaired = True
                 else:
+                    # The failed attempt left the marker, so the backoff suppresses pip
+                    # retries without also declaring the sidecar usable: without it the
+                    # cheap predicate would find nothing broken on the next routing call
+                    # and hand the damaged sidecar back for the whole window.
                     _latest_repair_failed_at = time.time()
-            if not repaired:
+            if broken and not repaired:
                 # Still broken: treat the overlay as unavailable rather than route
                 # models to a tier whose worker activation is known to fail. Models
                 # an older tier supports keep loading there until a repair succeeds,
@@ -1510,7 +1596,18 @@ def _probe_tier(
     if key in _probe_tier_cache:
         cached = _probe_tier_cache[key]
         # Kill switch beats the cache (like _config_model_types): a stale 'latest' probe must not keep activating it.
-        if cached != "latest" or not _latest_tier_disabled():
+        # A sidecar since found damaged beats it too, or a probe cached while it was
+        # healthy keeps spawning workers into a tier whose activation is known to fail,
+        # and a model that reaches latest this way never touches the config-mapping path
+        # that would repair it. So does an unpinned tier: deleting the pin takes the
+        # repair marker with it, and activation then short-circuits on a missing pin
+        # before anything can signal, so the cached answer would fail every retry.
+        # Falling through re-probes, which runs the ensure and repair path instead.
+        if cached != "latest" or not (
+            _latest_tier_disabled()
+            or _latest_repair_requested()
+            or latest_venv_pinned_version() is None
+        ):
             return cached
 
     def _cache(tier: str, *, skipped: bool) -> str:
@@ -1914,8 +2011,184 @@ _VENV_T5_550_PACKAGES = (
 _VENV_T5_PACKAGES = _VENV_T5_550_PACKAGES
 
 
+_SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
+
+
+def _sidecar_file_check_disabled() -> bool:
+    """Escape hatch: a false positive costs a several-hundred-MB reinstall, so a user
+    hitting one must be able to turn the scan off without waiting for a release. It has
+    to reach everything the scan produced, the repair marker included, or the hatch only
+    takes effect a backoff window later."""
+    return os.environ.get(_SIDECAR_FILE_CHECK_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _sidecar_scan(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
+    """``(findings, inconclusive)``. See _sidecar_damaged_files.
+
+    *inconclusive* is True when some row could not be read at all, so an empty
+    findings list means "nothing proven" rather than "proven healthy". Callers that
+    retire a record of damage need that difference; callers that only decide whether
+    to repair do not.
+    """
+    return _sidecar_scan_impl(venv_dir, limit)
+
+
+def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
+    """RECORD entries under *venv_dir* that are gone, or shorter than pip recorded.
+
+    Findings only. Use _sidecar_scan when an empty result has to be told apart from a
+    scan that could not read the disk.
+    """
+    return _sidecar_scan_impl(venv_dir, limit)[0]
+
+
+def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
+    """Body of the two above.
+
+    A sidecar whose METADATA survived a disk-full or an interrupted pip still
+    passes every version check above, so the wipe-and-reinstall in
+    _ensure_venv_dir never fires and the worker dies importing transformers
+    instead. Comparing each RECORD row against the filesystem sees that;
+    a package-level check cannot, because the damaged module is still there.
+
+    Deliberately mirrored from ``unsloth_cli/_studio_deps.py``'s
+    ``damaged_installed_files`` rather than imported from it. The backend runs
+    with ``studio/backend`` on sys.path and never imports the CLI package (which
+    may be an entirely different install), and the subject differs: that one
+    describes its own interpreter through importlib.metadata, this one a flat
+    ``pip --target`` directory no interpreter owns. Same deliberate mirror as
+    ``auth/terminal_prompt.py``; keep the two predicates in sync.
+
+    Every distribution in the sidecar is checked, not only the pinned ones. The
+    whole directory is prepended to sys.path, so a truncated ``regex/`` or
+    ``urllib3/`` shadows the base install and breaks ``import transformers``
+    exactly as a truncated ``transformers/`` does. Measured on three live
+    sidecars that is 7729 files instead of 7432, i.e. 4% more work.
+
+    Only shrinkage and disappearance count, and only for paths a single
+    distribution claims: when two claim one path, whichever copy landed says
+    nothing about either RECORD, in either direction. A file LARGER than
+    recorded is a packaging collision, not damage. Sizes are therefore compared
+    after the whole scan, once multiply-owned paths are known.
+
+    Fails open everywhere. The caller's answer to a finding is to delete several
+    hundred MB and reinstall, so an unreadable or absent RECORD -- and any other
+    surprise -- reports nothing rather than guessing.
+    """
+    import csv
+    import io
+
+    inconclusive = False
+    if _sidecar_file_check_disabled():
+        return [], False
+    root = Path(venv_dir)
+    entries: list[tuple] = []
+    owners: dict[str, int] = {}
+    try:
+        dist_infos = sorted(root.glob("*.dist-info"))
+    except OSError:
+        return [], True
+    for di in dist_infos:
+        name = di.name.split("-")[0]
+        try:
+            record = (di / "RECORD").read_text(encoding = "utf-8", errors = "replace")
+        except FileNotFoundError:
+            # No RECORD says nothing about damage; some installs legitimately
+            # have none, so this is not a gap in what the scan could see.
+            continue
+        except OSError:
+            # Present but unreadable: a real gap, so the result cannot be called clean.
+            inconclusive = True
+            continue
+        try:
+            rows = list(csv.reader(io.StringIO(record)))
+        except csv.Error:
+            inconclusive = True
+            continue
+        for row in rows:
+            rel = row[0] if row else ""
+            # A trailing slash is a directory entry, which has nothing to check.
+            if not rel or rel.endswith("/"):
+                continue
+            # Installer-owned metadata is rewritten in place and drifts from the
+            # size recorded inside itself; .pyc is regenerated from source.
+            if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
+                continue
+            # Console scripts are not checkable in a flat --target tree, and
+            # believing them fails CLOSED on a healthy sidecar, which is the
+            # worst outcome here. pip installs through a temporary normal-scheme
+            # prefix and writes RECORD before flattening, so it records
+            # ../../bin/hf (../../Scripts/hf.exe on Windows) while the file
+            # lands in <target>/bin. uv records bin/hf, which does resolve, but
+            # pip's --upgrade rmtree's a colliding directory in the target, so a
+            # later install into the same sidecar deletes an earlier package's
+            # scripts. Either way the sidecar is only ever prepended to
+            # sys.path, never put on PATH, so nothing here is imported and
+            # nothing is lost by skipping it.
+            parts = tuple(p for p in rel.replace("\\", "/").split("/") if p)
+            if (
+                rel.startswith("/")
+                or (len(rel) > 1 and rel[1] == ":")
+                or ".." in parts
+                or (parts and parts[0] in ("bin", "Scripts"))
+            ):
+                continue
+            # The size field is optional and real wheels do leave it blank. Keep
+            # the row anyway with an unknown size: existence is still checkable,
+            # and dropping the row means a deletion goes unreported.
+            recorded: int | None = None
+            if len(row) >= 3 and row[2]:
+                try:
+                    recorded = int(row[2])
+                except ValueError:
+                    recorded = None
+            target = root / rel
+            key = os.path.normcase(str(target))
+            owners[key] = owners.get(key, 0) + 1
+            entries.append((name, rel, recorded, target, key))
+
+    found: list[str] = []
+    for name, rel, recorded, target, key in entries:
+        try:
+            info = target.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            # Multiple ownership makes the recorded SIZES ambiguous; it cannot
+            # explain the file being gone, so this branch runs for shared paths
+            # too. NotADirectoryError means a parent component is a file, which
+            # is the same tree damage seen one level up.
+            found.append(f"{name}: {rel} is missing")
+        except OSError:
+            # Inconclusive, not damage. EIO, ESTALE on an NFS mount, or EACCES
+            # says the file could not be read, never that it is gone, and the
+            # answer here costs a several-hundred-MB wipe and re-download. Skip
+            # the row, but remember the gap: a scan that cannot see the disk must
+            # neither condemn it nor certify it.
+            inconclusive = True
+            continue
+        else:
+            if not stat.S_ISREG(info.st_mode):
+                # A directory standing in for a recorded module still imports as
+                # something else, and on POSIX its st_size (commonly 4096) can
+                # sail past the shrinkage test.
+                found.append(f"{name}: {rel} is not a regular file")
+            elif owners[key] == 1 and recorded is not None and info.st_size < recorded:
+                found.append(f"{name}: {rel} is {info.st_size} bytes, expected {recorded}")
+        if len(found) >= limit:
+            return found, inconclusive
+    return found, inconclusive
+
+
 def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
-    """Return True if *venv_dir* has all *packages* at the correct versions."""
+    """Return True if *venv_dir* has all *packages* at the correct versions.
+
+    Package level only. Callers that can REPAIR the sidecar want
+    _venv_dir_is_valid_and_undamaged below instead.
+    """
     if not os.path.isdir(venv_dir) or not os.listdir(venv_dir):
         return False
     for pkg_spec in packages:
@@ -1956,6 +2229,42 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
         if not dist_info_found:
             return False
     return True
+
+
+def _venv_dir_is_valid_and_undamaged(venv_dir: str, packages: tuple[str, ...]) -> bool:
+    """_venv_dir_is_valid, plus a RECORD-against-filesystem scan of the whole dir.
+
+    Only for the callers that can act on a False: _ensure_venv_dir and the two
+    latest-sidecar installers, which wipe and reinstall. The routing predicate
+    _latest_sidecar_intact keeps the cheap check, because it runs several times
+    per /validate request with no cache in front of it and a False there only
+    re-routes a model. Measured on a live install the scan is ~28 ms per
+    sidecar: real money on an HTTP path, nothing next to the 1.7 s
+    ``import transformers`` that follows a repair-site call.
+
+    The package checks run first, so a wrong version is rejected without paying
+    for the scan.
+    """
+    return _venv_dir_health(venv_dir, packages)[0]
+
+
+def _venv_dir_health(venv_dir: str, packages: tuple[str, ...]) -> tuple[bool, bool]:
+    """``(undamaged, conclusive)`` for _venv_dir_is_valid_and_undamaged.
+
+    *conclusive* is False when the scan hit a row it could not read, so *undamaged*
+    means "nothing proven against it" rather than "proven healthy".
+    """
+    if not _venv_dir_is_valid(venv_dir, packages):
+        return False, True
+    damaged, inconclusive = _sidecar_scan(venv_dir)
+    if damaged:
+        logger.warning(
+            "%s has damaged files -- venv will be wiped and reinstalled: %s",
+            venv_dir,
+            "; ".join(damaged),
+        )
+        return False, True
+    return True, not inconclusive
 
 
 def _venv_t5_is_valid() -> bool:
@@ -2021,14 +2330,33 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
     return True
 
 
+# setup.sh and setup.ps1 write this beside a sidecar venv they created, and refuse to
+# touch an unmarked directory under a custom UNSLOTH_STUDIO_HOME rather than risk
+# deleting something of the user's. A runtime rebuild takes the marker with the old
+# directory, so it has to put one back: the rebuilt tree is ours by construction, and
+# without it the next `unsloth studio update` aborts on a sidecar we just repaired.
+# Adoption cannot cover it either, since that needs a prebuilt-info file a venv never has.
+_STUDIO_OWNED_MARKER = ".unsloth-studio-owned"
+
+
+def _mark_studio_owned(venv_dir: str) -> None:
+    try:
+        Path(venv_dir, _STUDIO_OWNED_MARKER).touch()
+    except OSError:
+        # Best effort, exactly as the shell does: a missing marker costs a clear error
+        # on a later update, never a wrong deletion.
+        pass
+
+
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing."""
-    if _venv_dir_is_valid(venv_dir, packages):
+    if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
         return True
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
     os.makedirs(venv_dir, exist_ok = True)
+    _mark_studio_owned(venv_dir)
     total = len(packages)
     for idx, pkg in enumerate(packages, start = 1):
         logger.info("Installing %s (%d/%d) into %s ...", pkg, idx, total, venv_dir)
@@ -2451,8 +2779,23 @@ def _ensure_venv_t5_latest_exists() -> bool:
         return False
     version = pin["version"]
     packages = tuple(pin["packages"])
-    if _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages):
+    undamaged, conclusive = _venv_dir_health(_VENV_T5_LATEST_DIR, packages)
+    if undamaged and (conclusive or not _latest_repair_requested()):
+        # A repair request that a clean scan contradicts (another process already
+        # repaired it, or a child lost the race with a swap and flagged the fresh
+        # dir) must not survive, or every routing call re-enters the self-heal
+        # branch forever. Only a scan that actually read the files may retire it:
+        # a worker proved the damage, and a scan that hit EIO has not disproved it.
+        if conclusive:
+            _clear_latest_repair_request()
         return True
+    # Broken, and every path below can still fail to fix it (offline, a child, a swap
+    # already running, pip). Flag it here rather than per bailout, so the routing
+    # predicate withholds the sidecar no matter which one we take: it cannot see
+    # sub-file damage itself, and a mapping cached before the damage keeps it off the
+    # scanning path entirely. A repair that does succeed swaps the dir and takes the
+    # marker with it.
+    _request_latest_repair()
     if _env_offline():
         logger.warning(
             ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "
@@ -2525,7 +2868,7 @@ def ensure_latest_transformers_venv(
         pin is not None
         and pin["version"] == version
         and tuple(pin["packages"]) == packages
-        and _venv_dir_is_valid(_VENV_T5_LATEST_DIR, packages)
+        and _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages)
     ):
         return True
     return _stage_and_swap_latest_venv(version, packages, before_swap = before_swap)

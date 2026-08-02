@@ -324,7 +324,9 @@ function NavItem({
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
           {spinner && (
-            <Spinner className="ml-auto size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+            // mr-1.5 over the row's pr-2.5 = 16px, matching the chat rows'
+            // pr-4 so nav and Recents spinners share one column.
+            <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
           )}
         </SidebarMenuButton>
         {spinner && (
@@ -371,6 +373,7 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
   // Explain a greyed-out Train (chat-only host) on hover instead of disabling silently. Export is
   // no longer disabled here: it stays navigable so its page can show a precise grayed-out reason.
   const trainDisabledHint: string | undefined = !chatOnly
@@ -389,12 +392,14 @@ export function AppSidebar() {
   // recoverable mlx_unavailable case; the effect stops once Train/Export become
   // available (chatOnly flips false and this effect's guard returns early).
   useEffect(() => {
-    if (!chatOnly || chatOnlyReason !== "mlx_unavailable") return;
+    // Also while deferred: under the kill switch health settles nothing, so only a
+    // first-use operation detects and a GPU host would stay chat-only until a refresh.
+    if (!chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred)) return;
     const id = window.setInterval(() => {
       void fetchDeviceType({ force: true }).catch(() => undefined);
     }, 15000);
     return () => window.clearInterval(id);
-  }, [chatOnly, chatOnlyReason]);
+  }, [chatOnly, chatOnlyReason, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);
 

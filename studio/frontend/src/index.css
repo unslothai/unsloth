@@ -2362,45 +2362,55 @@ html[data-chat-font] .aui-root {
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
 	padding: 12px 18px !important;
+	align-items: start !important;
+	gap: 10px !important;
 	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 }
 
-[data-sonner-toast][data-styled='true']:has([data-close-button]):not(:has([data-cancel])) {
+[data-sonner-toast][data-styled='true'] [data-icon] {
+	margin: 2px 0 0 !important;
+}
+
+[data-sonner-toast][data-styled='true'] [data-content] {
+	min-width: 0;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]) {
+	display: grid !important;
+	grid-template-columns: 16px minmax(0, 1fr);
+	align-items: start !important;
+	column-gap: 10px !important;
+	row-gap: 10px !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]) [data-icon] {
+	grid-column: 1;
+	grid-row: 1;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]) [data-content] {
+	grid-column: 2;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]) [data-button] {
+	grid-column: 2;
+	justify-self: start;
+	margin: 0 !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-close-button]) {
 	padding-right: 48px !important;
 }
 
-[data-sonner-toast][data-styled='true']:has([data-cancel]):has([data-close-button]) {
-	padding-right: 88px !important;
-}
-
-[data-sonner-toast][data-styled='true'].chat-model-load-toast,
-[data-sonner-toast][data-styled='true'].chat-model-loaded-toast {
+/* Loading toast keeps its own vertical padding from #7683. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast {
 	padding-top: 14px !important;
 	padding-bottom: 14px !important;
 }
 
-/* Downloading state shows a progress bar as the last row; give it a little
-   extra breathing room below the bar. */
+/* Progress bar is the last row; give it room below. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
 	padding-bottom: 18px !important;
-}
-
-[data-sonner-toast][data-styled='true'].chat-model-loaded-toast [data-close-button] {
-	top: calc(50% - 0.25px) !important;
-	transform: translateY(-50%) !important;
-}
-
-[data-sonner-toast][data-styled='true'].chat-model-load-toast:not(:has([data-cancel])) [data-close-button] {
-	top: calc(50% - 0.25px) !important;
-	transform: translateY(-50%) !important;
-}
-
-[data-sonner-toast][data-styled="true"]:has([data-cancel]) [data-cancel] {
-	position: absolute !important;
-	right: 36px !important;
-	top: 50% !important;
-	transform: translateY(-50%) !important;
-	margin: 0 !important;
 }
 
 /* Dark toasts share the chatbox surface color (.chat-composer-surface

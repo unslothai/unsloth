@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isTauri } from "@/lib/api-base";
 import { useEffect } from "react";
 import {
   isTrainingStartPending,
@@ -8,6 +9,14 @@ import {
 } from "../stores/training-runtime-store";
 
 let currentHandler: ((e: BeforeUnloadEvent) => void) | null = null;
+
+// Desktop quit never fires beforeunload; Rust asks from the tray instead.
+function publishTrainingActive(active: boolean): void {
+  if (!isTauri) return;
+  void import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("set_training_active", { active }))
+    .catch(() => {});
+}
 
 /**
  * Mounts a beforeunload guard that warns the user if training is running.
@@ -31,6 +40,15 @@ export function useTrainingUnloadGuard() {
       window.removeEventListener("beforeunload", handler);
     };
   }, []);
+
+  useEffect(() => {
+    publishTrainingActive(useTrainingRuntimeStore.getState().isTrainingRunning);
+    return useTrainingRuntimeStore.subscribe((state, previous) => {
+      if (state.isTrainingRunning !== previous.isTrainingRunning) {
+        publishTrainingActive(state.isTrainingRunning);
+      }
+    });
+  }, []);
 }
 
 /**
@@ -43,4 +61,5 @@ export function removeTrainingUnloadGuard() {
     window.removeEventListener("beforeunload", currentHandler);
     currentHandler = null;
   }
+  publishTrainingActive(false);
 }
