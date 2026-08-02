@@ -1096,12 +1096,17 @@ def test_the_clamp_judges_the_env_the_child_will_actually_get():
     assert "_extra_args_requests_mtp(extra_args, env = {})" not in src
 
 
-def test_the_route_slot_clamp_uses_the_same_env_view_as_the_backend():
-    """The route sizes VRAM for the slots it expects to launch, so it has to model
-    the same scrubbed env the backend does or the two disagree about the count."""
+def test_the_training_guard_does_not_shrink_itself_for_mtp():
+    """The launch clamps MTP to one slot, but the guard's estimate counts only the
+    drafter file and the main KV: not the draft KV, the duplicated target context
+    under MLA, or the draft compute reserve. Sizing for one slot would drop the
+    slot KV without adding those back, and a guard that under-sizes evicts the
+    training run it protects. The unclamped slots stand in for the difference."""
     route_src = inspect.getsource(_routes())
-    assert "_child_spec_env(llama_extra_args)" in route_src
-    assert "_extra_args_requests_mtp(llama_extra_args, env = {})" not in route_src
+    assert "_extra_args_requests_mtp(llama_extra_args" not in route_src
+    # The diffusion and kv-unified clamps stay: neither drops a modelled term.
+    assert "if diffusion_kind is True:" in route_src
+    assert 'caps.get("supports_kv_unified")' in route_src
 
 
 def test_the_backstop_defers_to_a_user_owned_spec_type():

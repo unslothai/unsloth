@@ -1008,7 +1008,6 @@ try:
         _canonicalize_spec_mode,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _child_spec_env,
         _extra_args_requests_mtp,
         _extra_args_set_spec_type,
         _hf_offline_if_unreachable,
@@ -5296,13 +5295,13 @@ def _guard_chat_load_against_training(
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
             n_parallel = 1
-        # Reads the env like load_model's clamp: llama.cpp appends spec types
-        # rather than replacing them, so an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp
-        # really does launch MTP. A mode that only resolves to MTP inside
-        # _build_speculative_flags still over-sizes here, which errs toward
-        # protecting training.
-        elif _extra_args_requests_mtp(llama_extra_args, env = _child_spec_env(llama_extra_args)):
-            n_parallel = 1
+        # MTP is deliberately NOT clamped here even though the launch clamps it to
+        # one slot. _estimate_gguf_required_gb counts the drafter file and the main
+        # KV, but not the draft KV, the duplicated target context MLA keeps, or the
+        # draft compute reserve, all of which load_model does budget. Sizing this
+        # for one slot would drop the slot KV without replacing it with those, and
+        # a guard that under-sizes evicts the training run it exists to protect.
+        # The spare slots stand in for what is not modelled.
         else:
             try:
                 caps = LlamaCppBackend.probe_server_capabilities()
