@@ -63,9 +63,9 @@ def test_psresourceget_is_preferred_over_the_nuget_bootstrap():
     run = _bootstrap_step()["run"]
     assert "Install-PSResource" in run
     # The legacy path may remain as a fallback, but must not be the only option.
-    assert run.index("Install-PSResource") < run.index("Install-Module"), (
-        "PSResourceGet must be tried before the nuget.exe-backed Install-Module path"
-    )
+    assert run.index("Install-PSResource") < run.index(
+        "Install-Module"
+    ), "PSResourceGet must be tried before the nuget.exe-backed Install-Module path"
 
 
 def test_install_is_retried_and_then_fails_loudly():
@@ -78,17 +78,17 @@ def test_install_is_retried_and_then_fails_loudly():
 def test_a_failing_client_is_swapped_rather_than_retried_three_times():
     """PSGallery has served 500s to PSResourceGet while Install-Module kept working."""
     run = _bootstrap_step()["run"]
-    assert "if ($hasPSResourceGet) { $usePSResourceGet = -not $usePSResourceGet }" in run, (
-        "a failed attempt must swap install clients, not retry the same one"
-    )
+    assert (
+        "if ($hasPSResourceGet) { $usePSResourceGet = -not $usePSResourceGet }" in run
+    ), "a failed attempt must swap install clients, not retry the same one"
 
 
 def test_module_presence_is_verified_after_install():
     run = _bootstrap_step()["run"]
     assert "failed to import" in run, "expected a post-import version assertion"
-    assert "still not present after install" in run, (
-        "an install that reports success but leaves no usable module must fail"
-    )
+    assert (
+        "still not present after install" in run
+    ), "an install that reports success but leaves no usable module must fail"
 
 
 def test_network_is_skipped_when_the_image_already_satisfies_the_minimum():
