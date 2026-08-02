@@ -1192,8 +1192,8 @@ export function ModelConfigPage({
                 />
               ) : null}
               <p className="text-ui-11 leading-relaxed text-muted-foreground">
-                Unsloth automatically uses 95% of your device's maximum
-                supported context, but you can adjust it.
+                By default, Unsloth uses the maximum context supported by your
+                device.
               </p>
               {isActiveModel &&
                 loadedMaxContextLength != null &&
