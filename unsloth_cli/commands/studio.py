@@ -3079,13 +3079,16 @@ def update(
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
-    _release_self_exe_lock_windows()
+    exe_lock_err = _release_self_exe_lock_windows()
     try:
         _run_setup_script(verbose = verbose, repo_root = repo_root)
     except BaseException:
         # Restore unsloth.exe from .deleteme if setup failed before pip
         # produced a replacement; otherwise the user has no CLI for recovery.
         _restore_self_exe_lock_windows()
+        if exe_lock_err is not None:
+            # setup.ps1 reports this as a permissions problem, which it is not.
+            _explain_self_exe_locked(exe_lock_err)
         raise
     # On Windows clear the .deleteme orphan now that pip wrote a fresh
     # unsloth.exe; on next update os.replace would overwrite it anyway,
@@ -3103,25 +3106,72 @@ def update(
     _refresh_desktop_shortcuts(verbose = verbose)
 
 
-def _release_self_exe_lock_windows() -> None:
-    """Rename running unsloth.exe so pip can replace it. setup.ps1 also retries."""
+def _release_self_exe_lock_windows() -> "OSError | None":
+    """Rename running unsloth.exe so pip can replace it. setup.ps1 also retries.
+
+    Returns the error when the rename could not happen, which on Windows means this
+    process is running out of that very copy. Callers keep going and use it only to
+    explain a later failure.
+    """
     if platform.system() != "Windows":
-        return
+        return None
     try:
         venv_scripts = Path(sys.executable).resolve().parent
     except OSError:
-        return
+        return None
     exe = venv_scripts / "unsloth.exe"
     if not exe.exists():
-        return
+        return None
     stale = exe.with_suffix(".exe.deleteme")
     try:
         # os.replace is atomic-overwrite on Windows; os.rename would raise
         # FileExistsError if a prior aborted update left a .deleteme behind.
         os.replace(exe, stale)
     except OSError as e:
-        # Not fatal; setup.ps1 retries from a sibling process.
+        # Windows locks the directory entry an image was launched from, not the file
+        # behind it, so this fails exactly when the update is running out of the copy
+        # pip would have to replace. Report it rather than abort: an update with no
+        # package change never touches the file and still works from here, and
+        # failing early would break that. If setup does go on to fail, the caller
+        # turns this into the explanation, because pip hits the same lock and reports
+        # it as a permissions problem, which is what sent people to the installer.
         print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
+        return e
+    return None
+
+
+def _explain_self_exe_locked(err: OSError) -> None:
+    """Explain a setup failure that the lock above accounts for, then stop."""
+    try:
+        exe = Path(sys.executable).resolve().parent / "unsloth.exe"
+    except OSError:
+        exe = Path("unsloth.exe")
+    shim = STUDIO_HOME / "bin" / "unsloth.exe"
+    typer.echo("", err = True)
+    typer.echo(f"Cannot update: {exe} is in use by this process.", err = True)
+    typer.echo(f"  {err}", err = True)
+    typer.echo("", err = True)
+    typer.echo(
+        "This happens when the update is started from that copy directly, "
+        "because pip has to replace it.",
+        err = True,
+    )
+    if shim.is_file():
+        typer.echo("Run it through the launcher on PATH instead:", err = True)
+        typer.echo("", err = True)
+        typer.echo("    unsloth studio update", err = True)
+        typer.echo("", err = True)
+        typer.echo(f"(that is {shim}, which leaves this copy free to replace)", err = True)
+    else:
+        typer.echo(
+            "The launcher that normally avoids this is missing, so re-run the "
+            "installer to restore it:",
+            err = True,
+        )
+        typer.echo("", err = True)
+        typer.echo("    irm https://unsloth.ai/install.ps1 | iex", err = True)
+    typer.echo("", err = True)
+    raise typer.Exit(1)
 
 
 def _restore_self_exe_lock_windows() -> None:

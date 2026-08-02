@@ -264,6 +264,35 @@ jobs:
           grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
           echo "second update was clean"
 
+      - name: An update that must replace the unsloth package (issue #7697)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -o pipefail
+          # Every update above is a no-op, so pip never rewrites Scripts/unsloth.exe
+          # and the lock this guards is never reached. Force the replacement.
+          PY="$HOME/.unsloth/studio/unsloth_studio/Scripts/python.exe"
+          SCRIPTS="$HOME/.unsloth/studio/unsloth_studio/Scripts"
+          SHIM="$HOME/.unsloth/studio/bin/unsloth.exe"
+          test -f "$SHIM" || { echo "::error::no launcher at $SHIM"; exit 1; }
+          "$PY" -m pip install --no-deps --force-reinstall --no-build-isolation . 2>&1 | tail -5
+          test -f "$SCRIPTS/unsloth.exe" || { echo "::error::pip left no unsloth.exe"; exit 1; }
+
+          # Through the launcher, which is a second link to the same binary. Windows
+          # locks the entry an image was launched from, not the file, so this leaves
+          # the venv copy replaceable.
+          "$SHIM" studio update --local 2>&1 | tee logs/update_replace.log
+          if grep -qiE "WinError 32|could not rename unsloth\.exe|being used by another process" \
+                 logs/update_replace.log; then
+            echo "::error::the launcher path hit the unsloth.exe lock (issue #7697)."
+            grep -iE "WinError|rename|permission" logs/update_replace.log | tail -30
+            exit 1
+          fi
+          grep -q "" logs/update_replace.log || { echo "::error::no output, step is vacuous"; exit 1; }
+          "$PY" -c "import unsloth" || { echo "::error::unsloth unimportable after replacement"; exit 1; }
+          echo "an update that replaces the unsloth package works through the launcher"
+
       - name: Boot Unsloth briefly to confirm the install is still usable
         run: |
           mkdir -p logs
