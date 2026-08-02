@@ -27,6 +27,11 @@ on:
       - 'install.ps1'
       - 'pyproject.toml'
       - 'tests/studio_setup_ps1/**'
+      # The PowerShell unit tests this workflow runs live here. Without this a
+      # PR touching only one of them never exercises it, and no other workflow
+      # runs them. Scoped to *.ps1 so python-only changes under tests/studio do
+      # not pull in the GGUF smoke jobs.
+      - 'tests/studio/*.ps1'
       - '.github/workflows/studio-windows-inference-smoke.yml'
   push:
     branches: [main, pip]
