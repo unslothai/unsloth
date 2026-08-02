@@ -3870,9 +3870,7 @@ def test_a_count_never_spawns_mcp_servers():
         node.value
         for node in ast.walk(handler)
         if isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Name) and t.id == "_mcp_allowed" for t in node.targets
-        )
+        and any(isinstance(t, ast.Name) and t.id == "_mcp_allowed" for t in node.targets)
     ]
     assert assigned, "the count handler no longer pins _mcp_allowed; this test is stale"
     assert all(
