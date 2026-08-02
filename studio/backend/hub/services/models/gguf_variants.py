@@ -631,6 +631,35 @@ async def get_gguf_variants_response(
                 default_variant = default_variant,
             )
 
+        def _with_state_partials(response: GgufVariantsResponse) -> GgufVariantsResponse:
+            """Add quants known only from download state. A sibling cancelled
+            before any file landed has no snapshot entry, so a listing built
+            from the cache alone reads as if it were never asked for, and the
+            row loses its resume."""
+            state = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
+            if state is None:
+                return response
+            listed = {v.quant.lower() for v in response.variants if v.quant}
+            extra = [
+                GgufVariantDetail(
+                    filename = v.filename,
+                    quant = v.quant,
+                    display_label = v.display_label,
+                    size_bytes = v.size_bytes,
+                    download_size_bytes = v.download_size_bytes or v.size_bytes,
+                    downloaded = False,
+                    partial = True,
+                    partial_transport = _partial_transport_for_variant(
+                        repo_id, v.quant, repo_cache_dir
+                    ),
+                )
+                for v in state[0]
+                if v.quant and v.quant.lower() not in listed
+            ]
+            if not extra:
+                return response
+            return response.model_copy(update = {"variants": [*response.variants, *extra]})
+
         # Local directory path (e.g. LM Studio models) — scan filesystem
         if is_local_path(repo_id):
             variants, has_vision = list_local_gguf_variants(repo_id)
@@ -649,8 +678,10 @@ async def get_gguf_variants_response(
             variants, has_vision = list_local_gguf_variants(str(snapshot_scope))
             if not (variants or has_vision):
                 return None
-            return _local_response(
-                repo_id, variants, has_vision, _complete_quants_under(str(snapshot_scope))
+            return _with_state_partials(
+                _local_response(
+                    repo_id, variants, has_vision, _complete_quants_under(str(snapshot_scope))
+                )
             )
 
         local_only = prefer_local_cache or offline
@@ -662,7 +693,9 @@ async def get_gguf_variants_response(
             if cached is not None:
                 variants, has_vision, complete = cached
                 # The lister leaves torn quants in: they stay listed for management, but not ready.
-                return _local_response(repo_id, variants, has_vision, complete)
+                return _with_state_partials(
+                    _local_response(repo_id, variants, has_vision, complete)
+                )
             if local_path and is_local_path(local_path):
                 variants, has_vision = list_local_gguf_variants(local_path)
                 if variants or has_vision:
