@@ -2020,6 +2020,14 @@ def _metal_device_is_paravirtual() -> bool:
     gpu_layers=0, while MLX on the same machine stays correct. Parallels, UTM and
     cloud Macs are affected too. Physical Apple Silicon never reports "Paravirtual",
     so it keeps full offload.
+
+    Three probes, cheapest first. MLX names the device outright and costs about
+    40 ms, but is not on every Mac. hw.model then answers for the headless case
+    that matters most: measured on macos-14 and macos-15, SPDisplaysDataType
+    returns zero bytes on a VM with no display, so it cannot see a cloud or CI
+    Mac at all, while hw.model still reports VirtualMac2,1 against Mac<n>,<n> on
+    real hardware. SPDisplaysDataType stays last for desktop VMs, which do have a
+    display and do name the paravirtual chipset.
     """
     if sys.platform != "darwin":
         return False
@@ -2030,20 +2038,25 @@ def _metal_device_is_paravirtual() -> bool:
     except Exception:
         name = ""
     if "paravirtual" not in name.lower():
-        # MLX is not on every Mac, so ask the OS rather than assume bare metal.
-        try:
-            probe = subprocess.run(
-                ["system_profiler", "SPDisplaysDataType"],
-                capture_output = True,
-                text = True,
-                timeout = 30,
-                encoding = "utf-8",
-                errors = "replace",
-            )
-            name = f"{name} {probe.stdout}"
-        except Exception:
-            pass
-    if "paravirtual" in name.lower():
+        for _probe_cmd, _match in (
+            (["sysctl", "-n", "hw.model"], "virtual"),
+            (["system_profiler", "SPDisplaysDataType"], "paravirtual"),
+        ):
+            try:
+                probe = subprocess.run(
+                    _probe_cmd,
+                    capture_output = True,
+                    text = True,
+                    timeout = 30,
+                    encoding = "utf-8",
+                    errors = "replace",
+                )
+            except Exception:
+                continue
+            if _match in (probe.stdout or "").lower():
+                name = f"{name} {probe.stdout}".strip()
+                break
+    if "paravirtual" in name.lower() or "virtual" in name.lower():
         logger.warning(
             "Metal device looks virtualised (%s). llama.cpp GPU offload corrupts output "
             "on paravirtual Apple GPUs, so GGUF inference will run on CPU. MLX is "

@@ -87,6 +87,75 @@ def test_system_profiler_catches_it_when_mlx_is_absent(monkeypatch):
     assert _metal_device_is_paravirtual() is True
 
 
+def _probe_dispatch(responses):
+    """subprocess.run stub keyed on the probe being invoked, so a test can give
+    SPDisplaysDataType and hw.model different answers."""
+
+    def run(cmd, *a, **k):
+        key = "hw.model" if "sysctl" in cmd[0] else "spdisplays"
+        return types.SimpleNamespace(stdout = responses.get(key, ""))
+
+    return run
+
+
+def test_a_headless_vm_is_caught_when_spdisplays_says_nothing(monkeypatch):
+    """The case the OS fallback exists for and used to miss. Measured on macos-14
+    and macos-15: SPDisplaysDataType returns zero bytes on a VM with no display,
+    so every cloud and CI Mac without MLX read as bare metal and kept the offload
+    that corrupts its output. hw.model still names the machine."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setitem(sys.modules, "mlx", None)
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.subprocess.run",
+        _probe_dispatch({"hw.model": "VirtualMac2,1\n", "spdisplays": ""}),
+    )
+    assert _metal_device_is_paravirtual() is True
+
+
+def test_a_physical_mac_is_not_dragged_down_by_the_model_probe(monkeypatch):
+    """Negative: real hardware reports Mac<n>,<n>, which must not read as virtual."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setitem(sys.modules, "mlx", None)
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.subprocess.run",
+        _probe_dispatch({
+            "hw.model": "Mac15,3\n",
+            "spdisplays": "Graphics/Displays:\n  Apple M3 Max:\n    Vendor: Apple",
+        }),
+    )
+    assert _metal_device_is_paravirtual() is False
+
+
+def test_a_desktop_vm_still_answers_through_spdisplays(monkeypatch):
+    """Negative on the ordering: a VM whose hw.model does not say virtual is still
+    caught by the display probe, so adding hw.model did not narrow the net."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setitem(sys.modules, "mlx", None)
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.subprocess.run",
+        _probe_dispatch({
+            "hw.model": "Mac14,2\n",
+            "spdisplays": "Graphics/Displays:\n  Apple Paravirtual device:",
+        }),
+    )
+    assert _metal_device_is_paravirtual() is True
+
+
+def test_mlx_short_circuits_before_any_subprocess(monkeypatch):
+    """Negative on cost: MLX answered, so neither probe should be spawned. Measured
+    at roughly 40 ms for MLX against 300 ms for SPDisplaysDataType."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    parent, core = _fake_mlx("Apple Paravirtual device")
+    monkeypatch.setitem(sys.modules, "mlx", parent)
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+
+    def explode(*args, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError("spawned a probe after MLX already named the device")
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", explode)
+    assert _metal_device_is_paravirtual() is True
+
+
 def test_a_broken_probe_leaves_gpu_offload_alone(monkeypatch):
     """If neither source can answer, assume a real Mac. Guessing "virtualised" would
     silently drop everyone the probe fails on down to CPU."""
