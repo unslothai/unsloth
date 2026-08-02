@@ -3171,8 +3171,7 @@ export function HubModelPicker({
               className={downloadedRowButtonClassName}
             />
           </div>
-          {/* Reserves the settings and menu buttons the other rows carry, so
-              every row's GGUF tag lands in the same place. */}
+          {/* Stands in for the other rows' buttons, so the tags line up. */}
           <span aria-hidden="true" className="mr-1 h-6 w-[42px] shrink-0" />
         </div>
         {expanderOpen && (
