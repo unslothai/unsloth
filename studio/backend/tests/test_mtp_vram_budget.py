@@ -561,7 +561,7 @@ class TestExtraArgsMtpDetection:
         # their flags and the env accumulate. Whitespace-stripped so the check
         # survives formatter line-wrapping.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "os.environif_extra_args_set_spec_type(extra_args)else{}" in compact
+        assert "_spec_env:Mapping[str,str]=_child_spec_env(extra_args)" in compact
         assert "_extra_args_requests_mtp(extra_args,env=_spec_env)" in compact
         # The other half: the launch really does clear it for a managed block.
         assert "ornot_extra_args_set_spec_type(extra_args):" in compact
@@ -589,10 +589,11 @@ class TestExtraArgsMtpDetection:
     def test_load_model_drafter_budget_precedence(self):
         # The budget sizes the drafter the launch actually loads: CLI extras win,
         # then Unsloth's emitted mtp_draft_path (overrides LLAMA_ARG_SPEC_DRAFT_MODEL),
-        # then the env drafter -- not the env before Unsloth's (reviewer.py R3).
+        # then the env drafter -- and only when the env survives the launch scrub,
+        # else it reserves for a model the child never loads (reviewer.py R3).
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})" in compact
-        assert "_env_draft_for_budget=_extra_args_mtp_draft_path([],env=os.environ)" in compact
+        assert "_env_draft_for_budget=_extra_args_mtp_draft_path([],env=_spec_env)" in compact
         assert "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
 
     def test_load_model_drops_cpu_offloaded_drafter_from_budget(self):

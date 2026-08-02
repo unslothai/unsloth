@@ -1077,29 +1077,28 @@ def test_the_split_mode_override_outlives_the_pass_through_extras():
 # ── the MTP slot clamp must follow the flags that actually launch ─────
 
 
-def test_an_inherited_mtp_env_still_clamps_the_slots():
-    """llama.cpp appends spec types rather than replacing them: --spec-type inserts,
-    --spec-default push_backs, and enablement is a find over the vector. So an
-    inherited LLAMA_ARG_SPEC_TYPE=draft-mtp launches MTP on its own and the clamp
-    has to read the env to catch it. Extras naming another type do not clear it
-    either; see test_mtp_detection_reads_every_accumulated_type."""
+def test_the_clamp_judges_the_env_the_child_will_actually_get():
+    """An inherited draft-mtp does launch MTP, but the launch scrubs it whenever
+    Unsloth owns the spec block, so the slots must survive rather than be clamped
+    for a server that will not run MTP. The env only counts when the extras own
+    --spec-type, which is the one case it reaches the child."""
     env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
-    assert llama_cpp._extra_args_requests_mtp([], env) is True
-    assert llama_cpp._extra_args_requests_mtp(None, env) is True
-    # Negatives: nothing asks for MTP, so nothing is clamped.
-    assert llama_cpp._extra_args_requests_mtp(None, {}) is False
-    assert llama_cpp._extra_args_requests_mtp(["--spec-type", "ngram-mod"], {}) is False
+    # Managed block: scrubbed, so nothing to clamp for.
+    assert llama_cpp._child_spec_env([]) == {}
+    assert llama_cpp._extra_args_requests_mtp([], llama_cpp._child_spec_env([])) is False
+    # Extras own the spec type: their flags and the env accumulate and both launch.
+    extras = ["--spec-type", "ngram-mod"]
+    assert llama_cpp._extra_args_requests_mtp(extras, llama_cpp._child_spec_env(extras, env)) is True
     src = _load_model_source()
-    assert "_extra_args_requests_mtp(extra_args)" in src
+    assert "_child_spec_env(extra_args)" in src
     assert "_extra_args_requests_mtp(extra_args, env = {})" not in src
 
 
-def test_the_route_slot_clamp_reads_the_env_like_the_backend():
-    """The route sizes VRAM for the slots it expects to launch. If it ignored an
-    inherited draft-mtp while the backend clamps on it, it would size for N slots
-    against a server that launches 1 and could 409 a load that fits."""
+def test_the_route_slot_clamp_uses_the_same_env_view_as_the_backend():
+    """The route sizes VRAM for the slots it expects to launch, so it has to model
+    the same scrubbed env the backend does or the two disagree about the count."""
     route_src = inspect.getsource(_routes())
-    assert "_extra_args_requests_mtp(llama_extra_args)" in route_src
+    assert "_child_spec_env(llama_extra_args)" in route_src
     assert "_extra_args_requests_mtp(llama_extra_args, env = {})" not in route_src
 
 
@@ -1160,6 +1159,7 @@ def _run_clamp_then_fallback(
         "logger": llama_cpp.logger,
         "_extra_args_set_spec_type": llama_cpp._extra_args_set_spec_type,
         "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
+        "_child_spec_env": llama_cpp._child_spec_env,
         # The pre-fit ask, which the restore must NOT reach for.
         "_pending_load_kwargs": {"n_parallel": n_parallel if asked_for is None else asked_for},
     }

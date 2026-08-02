@@ -2002,6 +2002,21 @@ def _effective_spec_type(
     return (os.environ if env is None else env).get("LLAMA_ARG_SPEC_TYPE")
 
 
+def _child_spec_env(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Mapping[str, str]:
+    """The spec env the child will actually see.
+
+    The launch scrubs LLAMA_ARG_SPEC_* whenever Unsloth owns the spec block, so
+    only extras that name a --spec-type leave the inherited values in play. Every
+    prediction of what launches has to read this rather than os.environ, or it
+    describes a server that is not the one being started.
+    """
+    if not _extra_args_set_spec_type(extra_args):
+        return {}
+    return os.environ if env is None else env
+
+
 def _accumulated_spec_types(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> set:
@@ -7882,7 +7897,9 @@ class LlamaCppBackend:
             # (--spec-type inserts, --spec-default push_backs, and enablement is a
             # find over the vector), so an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp
             # really does launch MTP and no later flag can clear it.
-            if n_parallel > 1 and _extra_args_requests_mtp(extra_args):
+            if n_parallel > 1 and _extra_args_requests_mtp(
+                extra_args, env = _child_spec_env(extra_args)
+            ):
                 logger.warning(
                     "MTP speculative decoding (--spec-type draft-mtp) does not support "
                     "%d parallel slots; using 1. Load without MTP to serve chats in "
@@ -8450,9 +8467,7 @@ class LlamaCppBackend:
                     # own --spec-type: the launch scrubs it otherwise, so what Unsloth
                     # emits is final. Reserve against the env in that case only, where
                     # the user's flags and the env accumulate and both really launch.
-                    _spec_env: Mapping[str, str] = (
-                        os.environ if _extra_args_set_spec_type(extra_args) else {}
-                    )
+                    _spec_env: Mapping[str, str] = _child_spec_env(extra_args)
                     # Extras can run MTP even when Unsloth suppresses its own emission.
                     _user_mtp_via_extras = _extra_args_requests_mtp(extra_args, env = _spec_env)
                     # A non-MTP model-based draft mode (draft-simple/draft-eagle3) in
@@ -8535,7 +8550,10 @@ class LlamaCppBackend:
                         )
                         else None
                     )
-                    _env_draft_for_budget = _extra_args_mtp_draft_path([], env = os.environ)
+                    # Same scrubbed view: reserving for an inherited drafter the
+                    # child never loads shrinks the context or rejects a placement
+                    # that fits.
+                    _env_draft_for_budget = _extra_args_mtp_draft_path([], env = _spec_env)
                     _mtp_draft_for_budget = (
                         _cli_draft_for_budget or _studio_draft_for_budget or _env_draft_for_budget
                     )
@@ -9709,7 +9727,7 @@ class LlamaCppBackend:
                 if (
                     n_parallel > 1
                     and not _extra_args_set_spec_type(extra_args)
-                    and _extra_args_requests_mtp(spec_flags)
+                    and _extra_args_requests_mtp(spec_flags, env = _child_spec_env(extra_args))
                 ):
                     try:
                         _np_at = cmd.index("--parallel")
@@ -10288,13 +10306,10 @@ class LlamaCppBackend:
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
 
                 # MTP from Unsloth's spec flags or the user's (extra_args
-                # --spec-type / LLAMA_ARG_SPEC_TYPE). The env reaches the child
-                # only when neither emits a spec flag, so consult it only then.
-                _launch_spec_env: Mapping[str, str] = (
-                    os.environ
-                    if (not _extra_args_set_spec_type(extra_args) and not spec_flags)
-                    else {}
-                )
+                # --spec-type / LLAMA_ARG_SPEC_TYPE). The env survives to the child
+                # only when the extras own --spec-type; the launch scrubs it
+                # otherwise, so anything else would judge a server it is not starting.
+                _launch_spec_env: Mapping[str, str] = _child_spec_env(extra_args)
                 _spec_requested_mtp = any(
                     "mtp" in str(t).lower() for t in spec_flags
                 ) or _extra_args_requests_mtp(extra_args, env = _launch_spec_env)
@@ -12155,11 +12170,20 @@ class LlamaCppBackend:
                         logger.info("MTP-crash reload skipped: load settings changed.")
                         return
                     snapshot["speculative_type"] = "off"
-                    # Drop user/env MTP too: append a last-wins --spec-default.
+                    # Appending --spec-default cannot drop MTP: llama.cpp appends
+                    # spec types rather than replacing, so the extras have to lose
+                    # theirs. Once they do, Unsloth owns the block and the launch
+                    # scrubs the inherited env for the replay as well.
                     _ea = list(snapshot.get("extra_args") or [])
-                    if _extra_args_requests_mtp(_ea, env = os.environ):
-                        _ea.append("--spec-default")
-                        snapshot["extra_args"] = _ea
+                    if _extra_args_requests_mtp(_ea, env = _child_spec_env(_ea)):
+                        snapshot["extra_args"] = strip_shadowing_flags(
+                            _ea,
+                            strip_context = False,
+                            strip_cache = False,
+                            strip_spec = True,
+                            strip_template = False,
+                            strip_split_mode = False,
+                        )
                     self.load_model(**snapshot)
                     # Restore the requested mode + reason load_model("off") cleared,
                     # so /status shows the user's mode + note (like the startup fallback).

@@ -1008,6 +1008,7 @@ try:
         _canonicalize_spec_mode,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
+        _child_spec_env,
         _extra_args_requests_mtp,
         _extra_args_set_spec_type,
         _hf_offline_if_unreachable,
@@ -5300,7 +5301,9 @@ def _guard_chat_load_against_training(
         # really does launch MTP. A mode that only resolves to MTP inside
         # _build_speculative_flags still over-sizes here, which errs toward
         # protecting training.
-        elif _extra_args_requests_mtp(llama_extra_args):
+        elif _extra_args_requests_mtp(
+            llama_extra_args, env = _child_spec_env(llama_extra_args)
+        ):
             n_parallel = 1
         else:
             try:

@@ -531,17 +531,18 @@ def test_training_guard_sizes_one_slot_for_an_explicit_mtp_load(monkeypatch, tmp
     assert one == many
 
 
-def test_training_guard_sizes_for_one_slot_under_an_inherited_mtp_env(monkeypatch, tmp_path):
-    # llama.cpp appends spec types rather than replacing them, so an inherited
-    # LLAMA_ARG_SPEC_TYPE=draft-mtp does launch MTP and load_model clamps to one
-    # slot. Sizing for the slots that were asked for would over-size the estimate
-    # against a server that launches one, and could 409 a load that fits.
+def test_training_guard_keeps_slots_when_the_launch_scrubs_the_mtp_env(monkeypatch, tmp_path):
+    # An inherited LLAMA_ARG_SPEC_TYPE=draft-mtp really would launch MTP, since
+    # llama.cpp appends spec types rather than replacing them. But the extras do
+    # not own --spec-type here, so the launch scrubs the env and the server runs
+    # the slots that were asked for. Flattening the budget to one would under-size
+    # the estimate and let a load squeeze past the guard.
     monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "draft-mtp")
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     new = {"found": True, "supports_kv_unified": True}
     one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new)
     many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False, caps = new)
-    assert many == one
+    assert many > one
 
 
 def test_training_guard_keeps_slots_for_an_unclassified_gguf(monkeypatch, tmp_path):
