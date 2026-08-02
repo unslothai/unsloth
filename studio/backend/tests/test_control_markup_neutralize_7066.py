@@ -5054,9 +5054,9 @@ def test_the_mapped_template_is_resolved_before_the_authorization_catalog():
     """The generate-time mapper installs its template during the render, so a catalog built
     from the load-time tokenizer was a step behind the prompt it gates (#7066)."""
     for module in ("inference.py", "orchestrator.py"):
-        source = (
-            _REPO_ROOT / "studio" / "backend" / "core" / "inference" / module
-        ).read_text(encoding = "utf-8")
+        source = (_REPO_ROOT / "studio" / "backend" / "core" / "inference" / module).read_text(
+            encoding = "utf-8"
+        )
         assert "mapped_chat_template(" in source, module
         loop = source.split("run_safetensors_tool_loop(", 1)[1][:600]
         assert "_mapped_tpl" in loop, module
@@ -5078,7 +5078,10 @@ def test_a_list_shaped_named_template_selects_like_the_dict_form():
     fall back to the union, so a no-tools turn inherited the tool_use markers (#7066)."""
     listed = [
         {"name": "default", "template": "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}"},
-        {"name": "tool_use", "template": "{% for m in messages %}<tools>{{ m }}</tools>{% endfor %}"},
+        {
+            "name": "tool_use",
+            "template": "{% for m in messages %}<tools>{{ m }}</tools>{% endfor %}",
+        },
     ]
     assert model_markup(listed, None, None).markers == {"<|im_start|>"}
     with_tools = model_markup(listed, None, [{"type": "function"}]).markers
