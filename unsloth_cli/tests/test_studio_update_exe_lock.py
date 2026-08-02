@@ -140,3 +140,52 @@ def test_a_setup_failure_with_no_lock_is_not_explained_away(monkeypatch, tmp_pat
     _as_windows(monkeypatch, scripts)
 
     assert studio._release_self_exe_lock_windows() is None
+
+
+def test_cleanup_does_not_delete_the_only_copy(monkeypatch, tmp_path):
+    """Setup succeeding does not mean pip rewrote unsloth.exe. A dependency pass that
+    finds the package already current reinstalls nothing, and the only copy is then
+    the one renamed aside before it ran."""
+    scripts = tmp_path / "unsloth_studio" / "Scripts"
+    scripts.mkdir(parents = True)
+    exe = scripts / "unsloth.exe"
+    stale = scripts / "unsloth.exe.deleteme"
+    stale.write_bytes(b"MZ the only copy")   # renamed aside, pip wrote nothing back
+    _as_windows(monkeypatch, scripts)
+
+    studio._cleanup_self_exe_lock_windows()
+
+    assert exe.is_file(), "the CLI was deleted instead of restored"
+    assert exe.read_bytes() == b"MZ the only copy"
+    assert not stale.exists()
+
+
+def test_cleanup_still_clears_the_orphan_when_pip_wrote_a_new_one(monkeypatch, tmp_path):
+    """The case it was written for: a fresh binary is there, so the old one goes."""
+    scripts = tmp_path / "unsloth_studio" / "Scripts"
+    scripts.mkdir(parents = True)
+    exe = scripts / "unsloth.exe"
+    exe.write_bytes(b"MZ fresh from pip")
+    stale = scripts / "unsloth.exe.deleteme"
+    stale.write_bytes(b"MZ previous")
+    _as_windows(monkeypatch, scripts)
+
+    studio._cleanup_self_exe_lock_windows()
+
+    assert not stale.exists()
+    assert exe.read_bytes() == b"MZ fresh from pip", "the new binary was clobbered"
+
+
+def test_cleanup_replaces_a_zero_byte_exe(monkeypatch, tmp_path):
+    """A zero-byte exe is a torn write, not a usable replacement."""
+    scripts = tmp_path / "unsloth_studio" / "Scripts"
+    scripts.mkdir(parents = True)
+    exe = scripts / "unsloth.exe"
+    exe.write_bytes(b"")
+    stale = scripts / "unsloth.exe.deleteme"
+    stale.write_bytes(b"MZ the working one")
+    _as_windows(monkeypatch, scripts)
+
+    studio._cleanup_self_exe_lock_windows()
+
+    assert exe.read_bytes() == b"MZ the working one"

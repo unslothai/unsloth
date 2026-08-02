@@ -290,6 +290,19 @@ jobs:
             exit 1
           fi
           grep -q "" logs/update_replace.log || { echo "::error::no output, step is vacuous"; exit 1; }
+          # The update renames unsloth.exe aside so pip can replace it. If pip then
+          # reinstalls nothing, the renamed copy is the only one there is, so a
+          # cleanup that just deletes it leaves no CLI behind.
+          if [ ! -s "$SCRIPTS/unsloth.exe" ]; then
+            echo "::error::the update left no usable unsloth.exe in the venv."
+            ls -la "$SCRIPTS" | grep -i unsloth || true
+            exit 1
+          fi
+          if ls "$SCRIPTS"/*.deleteme >/dev/null 2>&1; then
+            echo "::error::a .deleteme orphan survived the update."
+            ls -la "$SCRIPTS"/*.deleteme
+            exit 1
+          fi
           "$PY" -c "import unsloth" || { echo "::error::unsloth unimportable after replacement"; exit 1; }
           echo "an update that replaces the unsloth package works through the launcher"
 

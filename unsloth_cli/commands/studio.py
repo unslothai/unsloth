@@ -3201,9 +3201,17 @@ def _restore_self_exe_lock_windows() -> None:
 
 
 def _cleanup_self_exe_lock_windows() -> None:
-    """Remove the .deleteme orphan after a successful update on Windows."""
+    """Remove the .deleteme orphan after a successful update on Windows.
+
+    Setup succeeding does not mean pip rewrote unsloth.exe: a dependency pass that
+    finds the package already at the right version reinstalls nothing, and then the
+    only copy is the one renamed aside before it ran. Deleting that leaves no CLI at
+    all. Put it back first -- a no-op once a fresh binary is there -- and clean up
+    whatever is left over.
+    """
     if platform.system() != "Windows":
         return
+    _restore_self_exe_lock_windows()
     try:
         venv_scripts = Path(sys.executable).resolve().parent
     except OSError:
