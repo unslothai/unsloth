@@ -2672,7 +2672,6 @@ class LlamaCppBackend:
         cached = getattr(self, "_markup_profile", None)
         if cached is None:
             from core.inference.chat_template_helpers import model_markup
-
             cached = (
                 model_markup(
                     getattr(self, "_chat_template_override", None)
@@ -5363,7 +5362,6 @@ class LlamaCppBackend:
                                     from core.inference.chat_template_helpers import (
                                         delimiter_shaped_tokens,
                                     )
-
                                     self._markup_tokens = delimiter_shaped_tokens(val_a)
                                 attr = arch_keys.get(key)
                                 if attr == "n_kv_heads" and val_a is not None:

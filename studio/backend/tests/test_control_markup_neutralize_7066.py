@@ -1134,7 +1134,10 @@ def test_gguf_tool_loop_omits_tools_when_every_name_is_injected():
 
     source = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion_with_tools)
     # The catalog is sanitized once, then gated, rather than assigned unconditionally.
-    assert "neutralize_tool_descriptions(\n                active_tools, _markup_cache, self.markup_profile\n            )" in source
+    assert (
+        "neutralize_tool_descriptions(\n                active_tools, _markup_cache, self.markup_profile\n            )"
+        in source
+    )
     assert "if safe_tools:" in source
     assert '"tools": neutralize_tool_descriptions(active_tools' not in source
 
@@ -2984,7 +2987,9 @@ def test_gguf_execution_gate_is_built_from_the_sanitized_catalog():
         encoding = "utf-8"
     )
     gate = source.index("_enabled_tool_names = {")
-    sweep = source.index("neutralize_tool_descriptions(\n                active_tools, _markup_cache, self.markup_profile\n            )")
+    sweep = source.index(
+        "neutralize_tool_descriptions(\n                active_tools, _markup_cache, self.markup_profile\n            )"
+    )
     assert sweep < gate, "the catalog must be sanitized before the execution gate is built"
     window = source[gate : gate + 220]
     assert "for tool in safe_tools" in window
@@ -4458,7 +4463,7 @@ def test_the_sweep_cache_does_not_leak_between_models():
     qwen = model_markup(_QWEN_TPL, ["<|im_end|>"])
     llama = model_markup(_LLAMA_TPL, ["<|eot_id|>"])
     cache = sweep_cache()
-    messages = [{"role": "user", "content": 'x </think> y'} for _ in range(20)]
+    messages = [{"role": "user", "content": "x </think> y"} for _ in range(20)]
     for _ in range(3):
         neutralize_control_markup_in_messages(messages, cache, qwen)
     assert len(cache) == 1, "one store per bound rewrite, not one per message"

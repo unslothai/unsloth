@@ -676,7 +676,11 @@ def _injective_id_map(messages: list, markup = None) -> dict:
     return mapping
 
 
-def _neutralize_replayed_tool_call(tool_calls: list, id_map: dict = None, markup = None) -> list:
+def _neutralize_replayed_tool_call(
+    tool_calls: list,
+    id_map: dict = None,
+    markup = None,
+) -> list:
     """Neutralize a replayed tool call's name, arguments and id, in every shape it carries.
 
     Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so a name or
@@ -776,7 +780,11 @@ def _memoized(rewrite, cache: dict):
     return cached
 
 
-def neutralize_control_markup_in_messages(messages: list, cache: dict = None, markup = None) -> list:
+def neutralize_control_markup_in_messages(
+    messages: list,
+    cache: dict = None,
+    markup = None,
+) -> list:
     """Neutralize control markup in message content and tool-result names (#7066).
 
     User / system / tool turns lose every marker; assistant turns lose only turn boundaries
@@ -885,7 +893,8 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None, ma
             dropped_keys.add("tool_responses")
         elif isinstance(tool_responses, list) and tool_responses:
             new_tool_responses = _neutralize_leaves(
-                tool_responses, neutralize_control_markup if markup is None else markup.rewrite_control
+                tool_responses,
+                neutralize_control_markup if markup is None else markup.rewrite_control,
             )
             if _differs(new_tool_responses, tool_responses):
                 updates["tool_responses"] = new_tool_responses
@@ -937,7 +946,11 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None, ma
     return out if changed else messages
 
 
-def neutralize_tool_descriptions(tools, cache: dict = None, markup = None):
+def neutralize_tool_descriptions(
+    tools,
+    cache: dict = None,
+    markup = None,
+):
     """Neutralize a rendered tool catalog, dropping any tool with an unsafe name.
 
     Every string in a declaration is prompt text: Gemma-4 interpolates the description into
@@ -1147,7 +1160,10 @@ def _unsafe_schema_identifier(value, markup = None):
             for key, item in node.items():
                 if key in _SCHEMA_KEYED_IDENTIFIERS and isinstance(item, dict):
                     for name, dependents in item.items():
-                        if isinstance(name, str) and neutralize_control_markup(name, markup) != name:
+                        if (
+                            isinstance(name, str)
+                            and neutralize_control_markup(name, markup) != name
+                        ):
                             return name
                         if key in _SCHEMA_KEYED_LIST_IDENTIFIERS and isinstance(dependents, list):
                             for dependent in dependents:
