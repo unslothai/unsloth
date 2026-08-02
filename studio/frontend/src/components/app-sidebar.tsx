@@ -323,7 +323,9 @@ function NavItem({
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
           {spinner && (
-            <Spinner className="ml-auto size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+            // mr-1.5 over the row's pr-2.5 = 16px, matching the chat rows'
+            // pr-4 so nav and Recents spinners share one column.
+            <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
           )}
         </SidebarMenuButton>
         {spinner && (
@@ -370,6 +372,7 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
   // Explain a greyed-out Train (chat-only host) on hover instead of disabling silently. Export is
   // no longer disabled here: it stays navigable so its page can show a precise grayed-out reason.
   const trainDisabledHint: string | undefined = !chatOnly
@@ -388,12 +391,14 @@ export function AppSidebar() {
   // recoverable mlx_unavailable case; the effect stops once Train/Export become
   // available (chatOnly flips false and this effect's guard returns early).
   useEffect(() => {
-    if (!chatOnly || chatOnlyReason !== "mlx_unavailable") return;
+    // Also while deferred: under the kill switch health settles nothing, so only a
+    // first-use operation detects and a GPU host would stay chat-only until a refresh.
+    if (!chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred)) return;
     const id = window.setInterval(() => {
       void fetchDeviceType({ force: true }).catch(() => undefined);
     }, 15000);
     return () => window.clearInterval(id);
-  }, [chatOnly, chatOnlyReason]);
+  }, [chatOnly, chatOnlyReason, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
@@ -1184,7 +1189,9 @@ export function AppSidebar() {
       collapsible="icon"
       variant="sidebar"
       className={cn(
-        "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background",
+        // Rail background comes from --sidebar-surface (index.css) so the
+        // footer fade below can match it in every theme.
+        "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
         usesNativeMacTitlebar &&
           "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
       )}
@@ -1259,7 +1266,7 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="inline-flex h-[33px] w-[28px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="inline-flex size-[28px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
                       <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
@@ -1283,7 +1290,7 @@ export function AppSidebar() {
                       <button
                         type="button"
                         onClick={togglePinned}
-                        className="inline-flex h-[33px] w-[28px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        className="inline-flex size-[28px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
                         <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -1436,7 +1443,7 @@ export function AppSidebar() {
               />
               <NavItem
                 icon={Folder01Icon}
-                label="Projects"
+                label={t("shell.navigation.projects")}
                 active={
                   pathname === "/projects" || pathname.startsWith("/projects/")
                 }
@@ -1861,7 +1868,7 @@ export function AppSidebar() {
         <div
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar)] to-[rgb(from_var(--sidebar)_r_g_b/0)] transition-opacity duration-200",
+            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             // Shorter fade when the update card sits above the profile so the
             // list reads closer to it.
             showUpdateCard ? "h-3" : "h-10",

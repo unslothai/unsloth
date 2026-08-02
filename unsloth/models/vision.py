@@ -96,6 +96,8 @@ except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
 from ..device_type import (
+    get_device_stats,
+    clean_gpu_cache,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -928,39 +930,14 @@ class FastBaseModel:
         token = hf_login(token)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
-        if DEVICE_TYPE == "cuda":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
-            )
-            gpu_version = torch.version.cuda
-            gpu_stats_snippet = (
-                f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
-            )
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "hip":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = resolve_hip_gpu_stats_name(gpu_stats)
-            gpu_version = torch.version.hip
-            gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "xpu":
-            gpu_stats = torch.xpu.get_device_properties(0)
-            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
-            gpu_version = torch.version.xpu
-            gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
-            # [TODO] After adding vLLM support for XPU, change this
+        gpu_stats_name, gpu_stats_snippet, max_memory = get_device_stats()
+        if DEVICE_TYPE == "xpu":
             vllm_version = ""
         else:
-            raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
-
-        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+            try:
+                vllm_version = f" vLLM: {importlib_version('vllm')}."
+            except:
+                vllm_version = ""
 
         arch_name = model_type_arch.title()
         arch_name = arch_name.replace("_Vl_", "_VL_").replace("_Moe", "_MoE")
@@ -1351,7 +1328,7 @@ class FastBaseModel:
                         # Device-safe embedding offload.
                         _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
                         # Must free GPU memory otherwise will not free!
-                        torch.cuda.empty_cache()
+                        clean_gpu_cache()
                         gc.collect()
             else:
                 from unsloth_zoo.vllm_utils import (
@@ -1452,10 +1429,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
@@ -1759,10 +1733,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         return model, tokenizer
 
     @staticmethod
@@ -1912,10 +1883,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         max_seq_length = model.max_seq_length
         # If we pass loftq_config = None we will get an error
         loftq_config = validate_loftq_config(
@@ -2061,10 +2029,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
 
@@ -2179,10 +2144,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         # Add for_inference and for_training
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)

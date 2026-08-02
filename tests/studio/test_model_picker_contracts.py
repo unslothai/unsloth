@@ -269,8 +269,16 @@ def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
 
 def test_compare_load_uses_each_models_gpu_config():
     src = _read("features/chat/shared-composer.tsx")
-    assert "ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode" in src
-    assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
+    # The mode/layer rule now lives in lib/gpu-placement.ts (behaviour covered by
+    # studio/frontend/tests/gpu-placement.test.ts): assert the delegation here.
+    assert "} = resolveComparePlacement(" in src
+    assert "shouldPinDiffusionPlacement(" in src
+    placement = " ".join(_read("features/chat/lib/gpu-placement.ts").split())
+    assert 'own.gpuMemoryMode ?? (treatAsDiffusion ? "auto" : shared.gpuMemoryMode)' in placement
+    assert "own.gpuLayers ?? (treatAsDiffusion ? GPU_LAYERS_AUTO : shared.gpuLayers)" in placement
+    # An unclassified GGUF is pinned like a confirmed one: /load may still find a
+    # diffusion header after the download.
+    assert "return isDiffusion === true || diffusionUnknown" in placement
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
     assert "ownConfig.selectedGpuIndexKind," in src
@@ -368,6 +376,81 @@ def test_local_picker_rows_require_chat_capability():
     memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows\]", src, re.S)
     assert memo, "localModels memo not found"
     assert "row.capabilities.canChat" in memo.group(0)
+
+
+def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
+    """The cached listing pins a snapshot when the repo's default ref reaches no copy
+    that loads, and it is the load that has to follow the pin. The id stays the repo
+    id everywhere it is shown, deduped or stored, so only model_path changes."""
+    inventory = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
+    for mapper in ("toCachedGgufRepo", "toCachedModelRepo"):
+        body = re.search(rf"function {mapper}\(.*?\n}}", inventory, re.S)
+        assert body, f"{mapper} not found"
+        assert "load_id: row.loadId" in body.group(0), f"{mapper} drops the pinned id"
+        # Delete sends this to remove the copy on screen, not the active cache's.
+        assert "cache_path: row.cachePath" in body.group(0), f"{mapper} drops the cache path"
+
+    meta = _read("features/model-picker/components/model-selector/types.ts")
+    assert "loadId?: string | null;" in meta
+
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert "loadId={c.load_id}" in picker, "the quant list cannot pass on a pin it never gets"
+    # Every row that can start a load, and every gear beside one, reloads through
+    # the same meta and so has to carry the pin. Counted rather than matched
+    # loosely, so a new row that forgets it is a failure here rather than a load
+    # that silently follows the default ref. #7736 added the third: the collapsed
+    # single-quant GGUF row, which is a load site like the other two.
+    assert picker.count("loadId: c.load_id") == 3, (
+        "a row or gear that can start a load is missing the pin, or a new one was "
+        "added and this count needs to follow it"
+    )
+    block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
+    assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
+    # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
+    block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
+    assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
+    # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants.
+    assert (
+        "listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)"
+        in picker
+    )
+    assert "cachePath={c.cache_path}" in picker
+
+    # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.
+    page = _read("features/chat/chat-page.tsx")
+    assert "loadId: activeLoadId," in page
+    assert "activeLoadId: string | null;" in _read("features/chat/stores/chat-runtime-store.ts")
+
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "activeLoadId: loadPath === modelId ? null : loadPath," in runtime
+    # A failed swap already unloaded the pinned model: reload it from the same place, pin and all.
+    assert "model_path: previousActiveLoadId || previousCheckpoint," in runtime
+    assert "activeLoadId: previousActiveLoadId ?? null," in runtime
+    # A model loaded outside this tab replaces the resident one, and the pin belonged to the old.
+    assert "useChatRuntimeStore.setState({ activeLoadId: null });" in runtime
+
+    # Auto-load keys identity off the backend, so the pin is recorded beside it, not in place of it.
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    assert "activeLoadId: modelPath === candidate.id ? null : modelPath," in adapter
+    assert (
+        '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
+    ), "loadPath must fall back to the id, so an unpinned pick is unchanged"
+    # Staged metadata, validate and load: all three read the copy that loads.
+    assert runtime.count("model_path: loadPath,") == 3
+    assert "model_path: modelId," not in runtime
+    # A rollback reads the approval under the snapshot path, so store it under both keys.
+    assert "rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);" in runtime
+    assert "approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null," in runtime
+
+
+def test_a_local_quant_short_a_shard_is_not_selectable():
+    """The variants endpoint now reports a local folder's torn quant as partial. A folder has no
+    download to resume, so the row has to say so and refuse the pick rather than send validate and
+    load at files that are not on disk."""
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert "const unusableLocal = isLocalPath && v.partial === true;" in picker
+    assert "disabled={unusableLocal}" in picker
+    assert "incomplete" in picker
 
 
 def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
@@ -831,7 +914,10 @@ def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
     metadata = autoload.index("fetchGgufStagedMetadata({", prepare)
     assert prepare < metadata
     assert "hf_token: preparedToken.token" in autoload
-    assert 'throw new Error("Model load cancelled.")' in autoload
+    # The throw carries the cancellation marker, so the sweep stops rather than reopen the dialog.
+    assert 'new Error("Model load cancelled.")' in autoload
+    assert "unslothUserCancelled: true" in autoload
+    assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
 
 
 def test_cpu_only_llama_build_hides_gpu_picker():
@@ -1199,6 +1285,74 @@ def test_vulkan_inference_devices_are_the_pickable_set():
         'data?.device_backend === "cuda" || data?.device_backend === "rocm";' in src
     )
     assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src
+
+
+def test_chat_autoload_records_every_validation_failure():
+    """canAutoLoad runs validateModel, which prepares the token, so a dismissed dialog, a dead
+    backend or a model-specific rejection throws there rather than from loadModel. The sweep's
+    catches are bare, so an unrecorded one reads as an empty device and fetches the Hub default.
+    Only a declined dialog ends the sweep."""
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    recorder = adapter.split("function recordCandidateFailure", 1)[1]
+    recorder = recorder.split("async function canAutoLoadRecordingFailures", 1)[0]
+    # Unconditional: no tag is consulted before recording, so a plain rejection counts too.
+    assert recorder.count("noteLoadFailure(label, error)") == 1
+    assert recorder.index("noteLoadFailure(label, error)") < recorder.index(
+        "unslothUserCancelled === true"
+    ), "recording must not sit behind a marker test"
+    # A declined dialog halts the sweep (retrying reopens it); nothing else does.
+    assert "unslothUserCancelled === true" in recorder
+    assert recorder.count("autoLoadCancelled = true;") == 1
+    assert recorder.index("unslothUserCancelled === true") < recorder.index(
+        "autoLoadCancelled = true;"
+    ), "the halt belongs to the cancellation branch alone"
+    # Rethrown by the wrapper, so the candidate still fails and control flow is unchanged.
+    wrapper = adapter.split("async function canAutoLoadRecordingFailures", 1)[1]
+    wrapper = wrapper.split("async function loadAutoLoadCandidate", 1)[0]
+    assert "recordCandidateFailure(label, error)" in wrapper
+    assert "throw error;" in wrapper
+    autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
+    autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
+    # The preflight and the GGUF metadata probe both record, and a cancelled sweep skips the rest.
+    assert "canAutoLoadRecordingFailures(failureLabel, {" in autoload
+    assert "recordCandidateFailure(failureLabel, error)" in autoload
+    # The preflight's own cancellation goes through the helper too, or it records without halting.
+    assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
+    assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
+    assert "if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS)" in autoload
+
+
+def test_auth_retries_tag_transport_failures_like_the_first_attempt():
+    """noteLoadFailure keys on the tag, so an untagged TypeError from a retry reads as a
+    rejection: retries reissue through retryWithCurrentToken, so it tags like the first attempt."""
+    src = (WORKDIR / "studio" / "frontend" / "src" / "features" / "auth" / "api.ts").read_text(
+        encoding = "utf-8"
+    )
+    assert src.count("unslothTransportFailure: true") == 2, "one tag per message, in one helper"
+    tagger = src.split("function asTransportFailure", 1)[1].split("\n}\n", 1)[0]
+    assert "err instanceof TypeError" in tagger
+    assert "navigator.onLine === false" in tagger
+    retry = src.split("async function retryWithCurrentToken", 1)[1]
+    retry = retry.split("\n}\n", 1)[0]
+    assert "fetchWithTauriNetworkRetry" in retry
+    assert "throw asTransportFailure(err);" in retry
+    first = src.split("export async function authFetch", 1)[1]
+    assert "throw asTransportFailure(err);" in first
+
+
+def test_external_readoption_drops_a_pin_taken_for_another_model():
+    """Status polling skips its own pin clearing while an external provider is selected, so the
+    re-adoption branch can adopt a resident the pin was never taken for and Apply would reload the
+    old model. The branch has to clear it itself."""
+    src = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    branch = src.split("if (!forceReload && isExternalModelId(selectedCheckpoint))", 1)[1]
+    branch = branch.split("const stopDecision = await confirmStopRunningChatsIfNeeded", 1)[0]
+    assert "activeLoadId !== modelId" in branch
+    assert "setState({ activeLoadId: null })" in branch
+    # Clearing must land before the checkpoint moves, so nothing reads the pair half updated.
+    assert branch.index("activeLoadId: null") < branch.index(
+        ".setCheckpoint(modelId, residentStatus.gguf_variant)"
+    ), "the pin must be cleared before the checkpoint is adopted"
 
 
 def test_only_gguf_configs_are_mirrored_to_the_server():

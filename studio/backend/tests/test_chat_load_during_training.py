@@ -486,6 +486,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         llama_extra_args = None,
         cache_type_kv = None,
         tensor_parallel = False,
+        gpu_layers = -1,
     ):
         config = config or SimpleNamespace(is_gguf = False, is_lora = False, path = None)
         with _stub_guard_deps(
@@ -502,6 +503,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 cache_type_kv = cache_type_kv,
                 tensor_parallel = tensor_parallel,
                 gpu_memory_mode = gpu_memory_mode,
+                gpu_layers = gpu_layers,
                 gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
             )
 
@@ -606,6 +608,59 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["single_device_gpu"], "1")
         self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
+
+    def _guard_zero_layer(self, *, diffusion_kind, captured):
+        """Drive the guard with a manual zero-layer split and a shim that has --ngl."""
+        config = SimpleNamespace(is_gguf = True)
+        backend = SimpleNamespace(diffusion_split_supported = lambda: True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = diffusion_kind),
+            patch.object(self.route, "get_llama_cpp_backend", return_value = backend),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(self.route.LlamaCppBackend, "_effective_gpu_count", return_value = 2),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (False, {"reason": "must not run"}),
+                gpu_memory_mode = "manual",
+                gpu_layers = 0,
+            )
+
+    def test_zero_layer_diffusion_split_bypasses_the_training_guard(self):
+        """A confirmed DiffusionGemma at ngl 0 places no layers, so it is not refused."""
+        captured = []
+        self._guard_zero_layer(diffusion_kind = True, captured = captured)
+        self.assertEqual(captured, [])
+
+    def test_zero_layer_unclassified_gguf_still_hits_the_training_guard(self):
+        """An unreadable header is not a diffusion promise: --gpu-layers 0 on an
+        ordinary GGUF can still hold VRAM, so the estimate must run."""
+        captured = []
+        with self.assertRaises(HTTPException) as ctx:
+            self._guard_zero_layer(diffusion_kind = None, captured = captured)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(len(captured), 1)
+
+    def test_zero_layer_unclassified_gguf_is_not_sized_as_cpu_only(self):
+        """Reaching the guard is not enough: it must not be handed a CPU-only token.
+
+        can_load_chat_during_training short-circuits an EMPTY single_device_gpu to
+        "cpu_only" and always returns True, so an unclassified GGUF passed through with
+        force_cpu would be allowed during training on an assumption that only holds for
+        confirmed diffusion. The sibling test above stubs can_load, so it cannot see this.
+        """
+        captured = []
+        with self.assertRaises(HTTPException):
+            self._guard_zero_layer(diffusion_kind = None, captured = captured)
+        self.assertEqual(len(captured), 1)
+        token = captured[0].get("single_device_gpu")
+        self.assertTrue(
+            token is None or str(token).strip() != "",
+            "an unclassified zero-layer GGUF must not be budgeted as CPU-only; "
+            f"single_device_gpu was {token!r}, which training_vram reads as cpu_only",
+        )
 
     def test_unclassified_gguf_on_vulkan_build_budgets_as_ordinals(self):
         # Unknown GGUFs still use the Vulkan ordinal namespace selected by the build.

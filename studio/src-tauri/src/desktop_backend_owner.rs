@@ -559,9 +559,7 @@ async fn health_ready_status(port: u16) -> OwnedBackendReadiness {
 }
 
 async fn fetch_liveness(port: u16) -> Result<Option<DesktopLiveness>, reqwest::Error> {
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()?;
+    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT)?;
     for path in ["/api/liveness", "/api/health"] {
         let response = client
             .get(format!("http://127.0.0.1:{port}{path}"))
@@ -594,10 +592,7 @@ fn fetch_liveness_blocking(port: u16) -> Result<Option<DesktopLiveness>, String>
     Ok(None)
 }
 async fn fetch_health(port: u16) -> Result<Option<HealthResponse>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
     let response = client
         .get(format!("http://127.0.0.1:{port}/api/health"))
         .send()
@@ -614,10 +609,7 @@ async fn fetch_health(port: u16) -> Result<Option<HealthResponse>, String> {
 }
 
 async fn desktop_login_route_compatible(port: u16) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-    {
+    let client = match crate::loopback_http::client(LOCAL_HTTP_TIMEOUT) {
         Ok(client) => client,
         Err(_) => return false,
     };
@@ -636,10 +628,7 @@ async fn desktop_login_route_compatible(port: u16) -> bool {
 
 async fn desktop_secret_login_compatible(port: u16) -> Result<(), String> {
     let secret = read_desktop_secret()?.ok_or_else(|| "desktop_auth_secret_missing".to_string())?;
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
     let response = client
         .post(format!("http://127.0.0.1:{port}/api/auth/desktop-login"))
         .json(&DesktopLoginPayload { secret: &secret })

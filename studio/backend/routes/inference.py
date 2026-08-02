@@ -1954,7 +1954,7 @@ def _request_used_api_key(request: Any) -> bool:
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
-from core.inference.model_ids import public_model_id
+from core.inference.model_ids import model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.tool_call_parser import (
@@ -3287,14 +3287,30 @@ def _monitor_anthropic_response(
     return response
 
 
+def _peek_inference_backend() -> Any:
+    """The orchestrator if one already exists, else None. Never constructs one.
+
+    Constructing reaches get_default_models() -> get_device(), so during the warm a caller
+    that only describes what is loaded would block uvicorn on the torch import to answer
+    "nothing". A patched module getter still wins: that is this module's injection seam.
+    """
+    from core.inference import orchestrator as _orch
+
+    if get_inference_backend is not _orch.get_inference_backend:
+        return get_inference_backend()
+    return _orch.peek_inference_backend()
+
+
 def _monitor_context_length() -> Optional[int]:
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
         context_length = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if context_length is not None:
             return context_length
-    backend = get_inference_backend()
-    if not backend.active_model_name:
+    # Peek, not the constructing getter: called inline from the OpenAI, Responses and
+    # Anthropic monitor paths, and no orchestrator already means nothing is loaded.
+    backend = _peek_inference_backend()
+    if backend is None or not backend.active_model_name:
         return None
     models = getattr(backend, "models", {}) or {}
     model_info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
@@ -3339,7 +3355,11 @@ def _monitor_active_model() -> Optional[str]:
         if model_id and variant and ":" not in model_id:
             return f"{model_id}:{variant}"
         return model_id
-    backend = get_inference_backend()
+    # Peek: the monitor overlay is on by default and polls this read-only, so building
+    # the singleton to answer "nothing loaded" would import torch on a warm-disabled host.
+    backend = _peek_inference_backend()
+    if backend is None:
+        return None
     return public_model_id(backend.active_model_name) or backend.active_model_name
 
 
@@ -3596,10 +3616,28 @@ def _request_matches_loaded_settings(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
         return False
-    # The diffusion runner is mode-agnostic (it always reports "auto" and ignores
-    # the layer/MoE/split knobs), so a standing manual preference in the request
-    # must not force a needless reload -- only the GPU pick matters.
-    if not llama_backend.is_diffusion:
+    # The diffusion runner takes the layer split but ignores the MoE/split knobs, so only
+    # the GPU pick and the effective --ngl matter for it.
+    if llama_backend.is_diffusion:
+        # Compare the EFFECTIVE split, not the raw mode: a standing manual preference would
+        # reload forever, while raw gpu_layers would miss that Auto(-1) and Unsloth mode both
+        # mean "runner default". And compare against what the runner was ASKED for, not what
+        # it applied: without --ngl the two differ and the same request mismatches forever.
+        from core.inference.llama_cpp import _diffusion_manual_ngl
+
+        loaded_ngl = llama_backend.diffusion_requested_ngl
+        requested_ngl = _diffusion_manual_ngl(request.gpu_memory_mode, request.gpu_layers)
+        if requested_ngl != loaded_ngl:
+            return False
+        # A dropped split (old shim) still dedupes, unless the shim has gained --ngl
+        # since (zoo upgraded mid-session). Mirrors _already_in_target_state.
+        if (
+            requested_ngl is not None
+            and llama_backend.gpu_layers != requested_ngl
+            and llama_backend.diffusion_split_supported()
+        ):
+            return False
+    else:
         if request.gpu_memory_mode != llama_backend.gpu_memory_mode:
             return False
         # Manual: a layer-count change always reloads; MoE/split only matter with
@@ -4089,7 +4127,7 @@ async def _no_model_loaded_error(
     if named is None or not get_openai_auto_switch_enabled():
         return status, _no_model_loaded_detail(base)
     try:
-        if _loaded_satisfies(named):
+        if await asyncio.to_thread(_loaded_satisfies, named):
             # Resident but on a backend this endpoint can't use, so "not downloaded" is false.
             return status, _no_model_loaded_detail(base)
         if await asyncio.to_thread(resolve_local_gguf, named) is not None:
@@ -4152,7 +4190,7 @@ async def _maybe_auto_download_model(
     if not is_downloadable_ref(requested_model):
         return
     # An Ollama-style tag (":latest") names no quant, so the resolver misses a servable model.
-    if _loaded_satisfies(requested_model):
+    if await asyncio.to_thread(_loaded_satisfies, requested_model):
         return
     try:
         refusal = await maybe_auto_download(
@@ -4397,11 +4435,11 @@ async def _reject_unservable_model(
 
     still_indexing = False
     try:
-        if _loaded_satisfies(requested_model):
+        if await asyncio.to_thread(_loaded_satisfies, requested_model):
             return
         if not (
             get_llama_cpp_backend().is_loaded
-            or getattr(get_inference_backend(), "active_model_name", None)
+            or getattr(await asyncio.to_thread(get_inference_backend), "active_model_name", None)
         ):
             return
         # Refresh in the background and read the index as-is: scanning here would stall the
@@ -4428,9 +4466,11 @@ async def _reject_unservable_model(
         # so match on the path too. Quants of one repo share a directory, so the path
         # alone cannot tell them apart: without the variant check an explicit :Q8_0
         # would be answered by a resident Q4_K_M.
+        # Off-loop: reads the Transformers singleton, and the llama.cpp short-circuits above
+        # skip the offloaded reads, so on a restart this built the singleton on the loop.
         if (
             resolved is not None
-            and _resolves_to_resident(resolved[0], llama_only = quantified)
+            and await asyncio.to_thread(_resolves_to_resident, resolved[0], llama_only = quantified)
             and (not quantified or _resident_quant_is(variant))
         ):
             return
@@ -4439,7 +4479,7 @@ async def _reject_unservable_model(
         advertised = _advertised_local_path(base)
         if (
             advertised is not None
-            and _resolves_to_resident(advertised, llama_only = quantified)
+            and await asyncio.to_thread(_resolves_to_resident, advertised, llama_only = quantified)
             and (not quantified or _resident_quant_is(variant))
         ):
             return
@@ -4576,7 +4616,9 @@ async def _maybe_auto_switch_model(
             if (
                 not last
                 or get_llama_cpp_backend().is_loaded
-                or getattr(get_inference_backend(), "active_model_name", None)
+                or getattr(
+                    await asyncio.to_thread(get_inference_backend), "active_model_name", None
+                )
             ):
                 return
             if len(last) == 3:
@@ -4962,6 +5004,25 @@ def _estimate_gguf_required_gb(
         return None
 
 
+def _gguf_layer_count(config: ModelConfig) -> Optional[int]:
+    """Total block count from a local GGUF header, or None (remote / unreadable)."""
+    try:
+        main = getattr(config, "gguf_file", None)
+        if not (main and Path(main).is_file()):
+            repo = getattr(config, "gguf_hf_repo", None)
+            variant = getattr(config, "gguf_variant", None)
+            if repo and variant:
+                from hub.utils.gguf import resolve_local_gguf_path
+                main = resolve_local_gguf_path(repo, variant)
+        if main and Path(main).is_file():
+            probe = LlamaCppBackend()
+            probe._read_gguf_metadata(str(main))
+            return getattr(probe, "_n_layers", None) or None
+    except Exception as e:
+        logger.debug("Could not read GGUF layer count for training guard: %s", e)
+    return None
+
+
 def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     """Classify a GGUF as diffusion, normal, or unknown before loading."""
     identity = " ".join(
@@ -5006,11 +5067,20 @@ async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
         from utils.hardware import DeviceType, get_device
         from utils.hardware.hardware import resolve_requested_gpu_ids
 
-        is_vulkan = LlamaCppBackend._is_vulkan_backend()
-        if get_device() == DeviceType.XPU and not is_vulkan:
+        # One hop for the whole device-dependent block: resolve_requested_gpu_ids() reaches
+        # get_device() itself, so both wait on the detection lock during the warm.
+        def _device_and_resolution() -> tuple[object, bool, list]:
+            is_vulkan = LlamaCppBackend._is_vulkan_backend()
+            return (
+                get_device(),
+                is_vulkan,
+                resolve_requested_gpu_ids(gpu_ids, is_vulkan = is_vulkan),
+            )
+
+        device, is_vulkan, resolved = await asyncio.to_thread(_device_and_resolution)
+        if device == DeviceType.XPU and not is_vulkan:
             # Rejected outright on XPU.
             return False
-        resolved = resolve_requested_gpu_ids(gpu_ids, is_vulkan = is_vulkan)
         if is_vulkan and resolved:
             # Vulkan ordinals are their own index space, so presence needs the ggml probe.
             binary = LlamaCppBackend._find_llama_server_binary()
@@ -5070,7 +5140,8 @@ async def _resolve_gguf_gpu_ids_for_request(
         diffusion_kind = _classify_diffusion_gguf(config)
     confirmed_diffusion = diffusion_kind is True
     definitively_non_diffusion = diffusion_kind is False
-    device = get_device()
+    # Off-loop: get_device() waits on the detection lock, i.e. the cold torch import.
+    device = await asyncio.to_thread(get_device)
     lacks_gpu_lib = getattr(llama_backend, "_backend_lacks_gpu_lib", None)
 
     # ROCm is deliberately DeviceType.CUDA internally because it uses
@@ -5165,6 +5236,7 @@ def _guard_chat_load_against_training(
     cache_type_kv: Optional[str] = None,
     tensor_parallel: bool = False,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
+    gpu_layers: int = -1,
     gpu_ids_are_vulkan_ordinals: bool = False,
     diffusion_kind: Optional[bool] | object = _DIFFUSION_KIND_UNSET,
 ) -> None:
@@ -5174,10 +5246,10 @@ def _guard_chat_load_against_training(
     effective quantization (see _effective_load_in_4bit). Manual chat-GGUF
     placement is an explicit override: Auto layers delegate fitting to
     llama.cpp's ``--fit`` and pinned layers are owned by the user, so neither is
-    estimated here. Diffusion is still guarded because its mode-agnostic runner
-    ignores those controls and uses one GPU. An unclassified GGUF is guarded as
-    potentially diffusion until its local header proves otherwise. Other loads
-    raise HTTP 409 when they would not fit beside training.
+    estimated here. Diffusion is still guarded because its runner uses one GPU, except
+    for an explicit zero-layer split, which places no layers at all; an unclassified
+    GGUF is guarded as potentially diffusion until its local header proves otherwise.
+    Other loads raise HTTP 409 when they would not fit beside training.
     """
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
@@ -5189,10 +5261,31 @@ def _guard_chat_load_against_training(
         logger.warning("Could not check training state for chat-load guard: %s", e)
         return
 
+    from core.inference.llama_cpp import _diffusion_manual_ngl, _scale_diffusion_required_gb
+
     is_gguf = bool(getattr(config, "is_gguf", False))
     if diffusion_kind is _DIFFUSION_KIND_UNSET:
         diffusion_kind = _classify_diffusion_gguf(config) if is_gguf else False
     if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
+        return
+    # A zero-layer diffusion split places no model layers on any device, so it cannot compete
+    # with training for VRAM. Mirrors the loader, which folds the same condition into its
+    # cpu_only (core/inference/llama_cpp.py).
+    diffusion_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers) if is_gguf else None
+    if diffusion_ngl is not None and diffusion_kind is not False:
+        # The loader drops the split when the shim has no --ngl and launches GPU-resident.
+        # Guard what will run, not what was asked, or a zero-layer request skips the VRAM
+        # check while the child takes a whole GPU.
+        try:
+            if not get_llama_cpp_backend().diffusion_split_supported():
+                diffusion_ngl = None
+        except Exception as e:
+            logger.warning("Could not probe diffusion shim for chat-load guard: %s", e)
+            diffusion_ngl = None
+    # `is True`, not `is not False`: only a CONFIRMED diffusion GGUF places nothing at ngl 0.
+    # On a possibly-ordinary GGUF a device pin, tensor mode, mmproj or a GPU drafter keeps it
+    # resident (see LlamaCppBackend._zero_offload_keeps_gpu_visible).
+    if is_gguf and diffusion_kind is True and diffusion_ngl == 0:
         return
 
     diffusion_gpu = None
@@ -5201,6 +5294,11 @@ def _guard_chat_load_against_training(
         # followed by DG_GPU, the first parent-visible token, then GPU 0. Suppressed
         # for a Vulkan-ordinal pin so single-device CUDA budgeting can't override the
         # Vulkan-ordinal path (single_device_gpu wins in can_load_chat_during_training).
+        # No force_cpu, deliberately: a CONFIRMED zero-layer split already returned above, so
+        # ngl 0 here means an UNCLASSIFIED GGUF -- and an empty token makes
+        # can_load_chat_during_training short-circuit to "cpu_only" and always allow the
+        # load, on an assumption that only holds for real diffusion. Let the picker choose a
+        # device so an ordinary GGUF keeping VRAM at --gpu-layers 0 stays conservatively sized.
         diffusion_gpu = LlamaCppBackend._diffusion_gpu_arg(
             requested_gpu_ids,
             cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
@@ -5248,6 +5346,18 @@ def _guard_chat_load_against_training(
         if is_gguf
         else None
     )
+    # A confirmed-diffusion positive split puts only ngl/n_layers of the weights on the GPU (a
+    # split the loader would drop was nulled above). Unknown classification keeps the full
+    # estimate: its header was unreadable, so the layer count is too.
+    if (
+        required_override_gb is not None
+        and diffusion_kind is True
+        and diffusion_ngl is not None
+        and diffusion_ngl > 0
+    ):
+        required_override_gb = _scale_diffusion_required_gb(
+            required_override_gb, diffusion_ngl, _gguf_layer_count(config)
+        )
 
     vulkan_free_vram_gb = None
     if is_gguf:
@@ -5570,6 +5680,46 @@ async def _drain_and_recancel_before_teardown(*, force: bool, action: str) -> No
 _UNRESOLVED_BACKEND_STATE = object()
 
 
+def _names_the_resident_model(resident: Optional[str], model_path: str) -> bool:
+    """Whether a client's ``model_path`` names ``resident``.
+
+    A cached row can pin a snapshot directory, so the load sends that path while the status the
+    client reads back reports the repo id it maps to. Both name the same model, and an unload
+    arriving under either has to find it.
+    """
+    return bool(resident) and model_id_matches(model_path, resident)
+
+
+def _names_the_loading_model(loading: str, model_path: str) -> bool:
+    """Whether a client's ``model_path`` names the load already in flight.
+
+    Cancel sends the id the picker shows, which for a pinned row is not the path the load is
+    running as, so a raw compare left Stop loading reporting success on a load still running.
+    """
+    return (
+        model_path == loading
+        or model_path.lower() == loading.lower()
+        or _names_the_resident_model(loading, model_path)
+    )
+
+
+def _resident_standard_model_name(backend, model_path: str) -> str:
+    """The registry name to unload for ``model_path``, or ``model_path`` when nothing matches.
+
+    The backend refuses a name it never loaded, so a pinned load has to be evicted under the
+    name it was registered with rather than the id the client shows.
+    """
+    active = getattr(backend, "active_model_name", None)
+    if isinstance(active, str) and _names_the_resident_model(active, model_path):
+        return active
+    loaded = getattr(backend, "models", None)
+    if isinstance(loaded, dict):
+        for name in loaded:
+            if isinstance(name, str) and _names_the_resident_model(name, model_path):
+                return name
+    return model_path
+
+
 def _unload_evicts_standard_backend(backend, model_path: str) -> bool:
     """Whether ``backend.unload_model(model_path)`` will really evict something.
 
@@ -5588,7 +5738,13 @@ def _unload_evicts_standard_backend(backend, model_path: str) -> bool:
         return True
     if isinstance(active, str) and active and active.lower() == (model_path or "").lower():
         return True
-    return isinstance(loaded, dict) and model_path in loaded
+    if isinstance(active, str) and _names_the_resident_model(active, model_path):
+        return True
+    if not isinstance(loaded, dict):
+        return False
+    return model_path in loaded or any(
+        isinstance(name, str) and _names_the_resident_model(name, model_path) for name in loaded
+    )
 
 
 def _unload_may_evict(model_path: str) -> bool:
@@ -5612,13 +5768,14 @@ def _unload_may_evict(model_path: str) -> bool:
     if (
         loading is not None
         and hasattr(backend, "cancel_load")
-        and (model_path == loading or model_path.lower() == loading.lower())
+        and _names_the_loading_model(loading, model_path)
     ):
         return True
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_active and (
         llama_backend.model_identifier == model_path
         or is_registered_native_path_label(llama_backend.model_identifier, model_path)
+        or _names_the_resident_model(llama_backend.model_identifier, model_path)
         # Up but not serving is mid-load, evicted whatever model was named.
         or not llama_backend.is_loaded
     ):
@@ -5808,7 +5965,7 @@ async def _load_model_impl(
         )
 
         # ── Already-loaded check: skip reload if the exact model is active ──
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         llama_backend = get_llama_cpp_backend()
 
         # Resolve the slot count once (per-load field, else the server-wide
@@ -5871,6 +6028,7 @@ async def _load_model_impl(
                         llama_backend, native_grant_backed, llama_backend.model_identifier
                     ),
                     is_diffusion = llama_backend.is_diffusion,
+                    diffusion_requested_ngl = llama_backend.diffusion_requested_ngl,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
                     has_audio_input = getattr(llama_backend, "_has_audio_input", False),
@@ -5974,6 +6132,8 @@ async def _load_model_impl(
                     gguf_variant = request.gguf_variant,
                 )
 
+        # Guard and call go to the worker together: from_identifier can import transformers
+        # to build the detection registry, and the guard's probe is a network round trip.
         config = await asyncio.to_thread(_resolve_config)
 
         if not config:
@@ -6064,6 +6224,7 @@ async def _load_model_impl(
             cache_type_kv = request.cache_type_kv,
             tensor_parallel = bool(request.tensor_parallel),
             gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
             gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
             diffusion_kind = diffusion_kind,
         )
@@ -6071,7 +6232,7 @@ async def _load_model_impl(
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
             llama_backend = get_llama_cpp_backend()
-            unsloth_backend = get_inference_backend()
+            unsloth_backend = await asyncio.to_thread(get_inference_backend)
 
             if config.gguf_hf_repo:
                 from core.inference.llama_cpp import gguf_load_in_flight
@@ -6342,6 +6503,7 @@ async def _load_model_impl(
                 is_gguf = True,
                 is_local_model = config.is_local,
                 is_diffusion = llama_backend.is_diffusion,
+                diffusion_requested_ngl = llama_backend.diffusion_requested_ngl,
                 is_audio = _gguf_is_audio,
                 audio_type = _gguf_audio,
                 has_audio_input = llama_backend._has_audio_input,
@@ -6374,7 +6536,7 @@ async def _load_model_impl(
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
 
         # Same sidecar rejection as GGUF: fast path ahead of the drain, rechecked after.
         _raise_if_sidecar_swap_in_progress()
@@ -6717,6 +6879,8 @@ async def validate_model(
 
         # The frontend validates before it loads, so this needs the same guard as
         # /load; otherwise the stall just moves here and /load is never reached.
+        # Off-loop twice over: the guard is a network round trip, and the first
+        # from_identifier builds the detection registry (transformers, or the warm's lock).
         def _resolve_config():
             with _hf_offline_if_unreachable_for(model_identifier):
                 return ModelConfig.from_identifier(
@@ -6867,6 +7031,7 @@ async def validate_model(
                 cache_type_kv = request.cache_type_kv,
                 tensor_parallel = request.tensor_parallel,
                 gpu_memory_mode = request.gpu_memory_mode,
+                gpu_layers = request.gpu_layers,
                 gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
                 diffusion_kind = diffusion_kind,
             )
@@ -6950,6 +7115,8 @@ async def validate_model(
             else getattr(config, "display_name", config.identifier),
             is_gguf = is_gguf,
             is_diffusion = is_gguf and diffusion_kind is True,
+            # None = unreadable header + no family in the name, not "ordinary GGUF".
+            diffusion_unknown = is_gguf and diffusion_kind is None,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
             requires_trust_remote_code = requires_trust_remote_code,
@@ -7116,7 +7283,7 @@ async def install_latest_transformers_route(
         # before_swap, only once the staged install succeeded: a failed pip/compat check
         # must not leave the user with their model gone. GGUF stays loaded (llama-server
         # never imports transformers).
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         export_backend = get_export_backend()
 
         unloaded_chat = {"v": False}
@@ -7273,14 +7440,15 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load only
         # tears the loading subprocess down, so it is safe off-gate -- and ahead of the
         # active-generation refusal below, which it can never need (see there).
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         loading = getattr(backend, "get_loading_model", lambda: None)()
         if (
             loading is not None
             and hasattr(backend, "cancel_load")
-            and (request.model_path == loading or request.model_path.lower() == loading.lower())
+            and _names_the_loading_model(loading, request.model_path)
         ):
-            if await asyncio.to_thread(backend.cancel_load, request.model_path):
+            # Cancel under the name the load runs as, which a pinned row states as a path.
+            if await asyncio.to_thread(backend.cancel_load, loading):
                 note_model_unloaded()
                 logger.info(f"Cancelled in-flight load: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
@@ -7299,6 +7467,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 or is_registered_native_path_label(
                     llama_backend.model_identifier, request.model_path
                 )
+                or _names_the_resident_model(llama_backend.model_identifier, request.model_path)
             )
         ):
             await asyncio.to_thread(llama_backend.unload_model)
@@ -7314,7 +7483,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         # anything yet, so neither can interrupt a chat, and refusing them counted a teardown that
         # cannot happen (unretryably -- the frontend's Cancel sends this unload unforced and drops
         # the error). Any other name still falls through here.
-        if _unload_may_evict(request.model_path):
+        if await asyncio.to_thread(_unload_may_evict, request.model_path):
             _raise_or_cancel_active_generations(
                 force = request.force_cancel_active,
                 action = "Unloading the model",
@@ -7329,7 +7498,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # Rechecked under the gate, like /load: a chat can register while this one queues here (the
             # middleware takes and releases the same gate). Still refusal only, and re-read rather
             # than carried down, since a load may have finished meanwhile.
-            if _unload_may_evict(request.model_path):
+            if await asyncio.to_thread(_unload_may_evict, request.model_path):
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active,
                     action = "Unloading the model",
@@ -7342,6 +7511,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 or is_registered_native_path_label(
                     llama_backend.model_identifier, request.model_path
                 )
+                or _names_the_resident_model(llama_backend.model_identifier, request.model_path)
                 or not llama_backend.is_loaded
             ):
                 # Read the identity before teardown clears it, so the row reads repo:QUANT.
@@ -7374,7 +7544,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # Unload from Unsloth backend off the event loop: unload takes _gen_lock, which
             # a slow SSE stream paused between tokens still holds, so a sync call would block
             # the loop that drives the stream's next token and the lock release.
-            backend = get_inference_backend()
+            backend = await asyncio.to_thread(get_inference_backend)
             if _unload_evicts_standard_backend(backend, request.model_path):
                 # Point of no return for the standard path, same rule as above.
                 _raise_or_cancel_active_generations(
@@ -7383,7 +7553,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 await _drain_and_recancel_before_teardown(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
-            await asyncio.to_thread(backend.unload_model, request.model_path)
+            await asyncio.to_thread(
+                backend.unload_model, _resident_standard_model_name(backend, request.model_path)
+            )
             note_model_unloaded()
             api_monitor.record_lifecycle(
                 event = "unload",
@@ -7457,7 +7629,11 @@ async def confirm_tool_call(
 @studio_router.get("/monitor")
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Unsloth."""
-    active_model = _monitor_active_model()
+    # Off-loop: both helpers reach get_inference_backend(), whose first call waits on
+    # hardware detection, and this is polled from first paint.
+    active_model, context_length = await asyncio.to_thread(
+        lambda: (_monitor_active_model(), _monitor_context_length())
+    )
     active_requests = api_monitor.active_count(subject = current_subject)
     if active_requests:
         operating_status = "generating"
@@ -7474,7 +7650,7 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         # against this, since the browser's clock need not agree over a tunnel.
         "server_time": time.time(),
         "active_model": active_model,
-        "context_length": _monitor_context_length(),
+        "context_length": context_length,
         "active_requests": active_requests,
         "logging_enabled": api_monitor.enabled,
         "entries": api_monitor.snapshot(include_details = False, subject = current_subject),
@@ -7517,7 +7693,7 @@ async def generate_stream(
 
     For vision models, provide image_base64 (base64-encoded image).
     """
-    backend = get_inference_backend()
+    backend = await asyncio.to_thread(get_inference_backend)
 
     if not backend.active_model_name:
         raise HTTPException(
@@ -7709,6 +7885,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                     llama_backend, _native_grant_backed, _model_id
                 ),
                 is_diffusion = llama_backend.is_diffusion,
+                diffusion_requested_ngl = llama_backend.diffusion_requested_ngl,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
                 audio_type = _audio_type,
@@ -7750,8 +7927,16 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_latest_tag = _latest_tag,
             )
 
-        # Otherwise, report Unsloth backend status
-        backend = get_inference_backend()
+        # Otherwise report Unsloth backend status. Peek rather than build: no singleton means
+        # nothing is loaded, and the chat UI polls this from first paint.
+        backend = _peek_inference_backend()
+        if backend is None:
+            return InferenceStatusResponse(
+                llama_cpp_supports_mtp = _supports_mtp,
+                llama_cpp_prebuilt_stale = _stale,
+                llama_cpp_installed_tag = _installed_tag,
+                llama_cpp_latest_tag = _latest_tag,
+            )
 
         is_vision = False
         is_audio = False
@@ -7927,7 +8112,7 @@ async def generate_audio(
             cancel_event = _audio_cancel,
         )
     else:
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         if not backend.active_model_name:
             raise HTTPException(status_code = 400, detail = "No model loaded.")
         model_info = backend.models.get(backend.active_model_name, {})
@@ -9595,7 +9780,7 @@ async def openai_chat_completions(
                 context_length = llama_backend.context_length,
             )
     else:
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         if not backend.active_model_name:
             _status, _detail = await _no_model_loaded_error(
                 "No model loaded. Call POST /inference/load first.",
@@ -12543,7 +12728,9 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
-    for entry in _openai_model_objects():
+    # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
+    # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
+    for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
 
     # Locally available (downloaded/cached) models that are not already loaded.
@@ -12617,7 +12804,8 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # Loaded models resolve without a catalog scan (the common case); only build
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
-    _loaded = _openai_model_objects()
+    # Off-loop like the catalog helper: the singleton's cold build waits on detection.
+    _loaded = await asyncio.to_thread(_openai_model_objects)
     for entry in _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
@@ -12637,7 +12825,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # path, so public_model_id(path) would miss the advertised entry and 404 a
     # model that is in fact loaded.
     llama_backend = get_llama_cpp_backend()
-    backend = get_inference_backend()
+    backend = await asyncio.to_thread(get_inference_backend)
     raw_to_public: list[tuple[str, Optional[str]]] = []
     if llama_backend.is_loaded and llama_backend.model_identifier:
         raw_to_public.append(

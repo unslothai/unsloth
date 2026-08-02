@@ -101,11 +101,7 @@ export function ModelRowMenu({
 }) {
   const deviceType = usePlatformStore((s) => s.deviceType);
   const revealLabel =
-    deviceType === "mac"
-      ? "Reveal in Finder"
-      : deviceType === "windows"
-        ? "Reveal in File Explorer"
-        : "Reveal in File Manager";
+    deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);

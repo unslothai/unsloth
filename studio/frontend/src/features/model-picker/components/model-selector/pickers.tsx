@@ -34,7 +34,9 @@ import {
   TrainIcon,
   TransportConflictDialog,
   deleteCachedModel,
+  invalidateGgufVariantsCache,
   listGgufVariants as listGgufVariantsCached,
+  useGgufVariantsCacheVersions,
   useHubInfiniteScroll,
 } from "@/features/hub";
 import {
@@ -118,7 +120,21 @@ import {
   matchesFormatFilter,
   paramsFromId,
 } from "./recommended-fit";
+import {
+  ggufVariantsMatchForPicker,
+  modelIdsMatchForPicker,
+  soleQuantRowState,
+} from "./row-identity";
 import { parseMetaTokens, splitRepoLabel } from "./row-meta";
+import {
+  type SoleQuantEntry,
+  type SoleQuantTarget,
+  createSoleQuantReader,
+  partitionSoleQuants,
+  soleQuantFingerprint,
+  soleQuantKey,
+  takeDriftedRepos,
+} from "./sole-quant-cache";
 import type {
   DeletedModelRef,
   ExternalModelOption,
@@ -126,6 +142,11 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
+import {
+  shouldMountVariantExpander,
+  toggleAutoExpandedRow,
+  visibleGgufVariants,
+} from "./variant-visibility";
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
@@ -389,41 +410,6 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
   );
 }
 
-function normalizeModelIdForPicker(modelId: string): string {
-  const trimmed = modelId.trim();
-  const slashPath = trimmed.replace(/\\/g, "/").replace(/\/+$/, "");
-  const caseInsensitive =
-    !/^(\/|\.{1,2}\/|~\/)/.test(slashPath) ||
-    /^[A-Za-z]:\//.test(slashPath) ||
-    slashPath.startsWith("//") ||
-    /^\/mnt\/[A-Za-z](?:\/|$)/.test(slashPath);
-  return caseInsensitive ? slashPath.toLowerCase() : slashPath;
-}
-
-function modelIdsMatchForPicker(
-  left: string | null | undefined,
-  right: string | null | undefined,
-): boolean {
-  return Boolean(
-    left &&
-      right &&
-      normalizeModelIdForPicker(left) === normalizeModelIdForPicker(right),
-  );
-}
-
-function normalizeGgufVariantForPicker(variant: string | null | undefined) {
-  return variant?.trim().toLowerCase() ?? "";
-}
-
-function ggufVariantsMatchForPicker(
-  left: string | null | undefined,
-  right: string | null | undefined,
-): boolean {
-  return (
-    normalizeGgufVariantForPicker(left) === normalizeGgufVariantForPicker(right)
-  );
-}
-
 function isRuntimeLoadedModel(
   loadedModelId: string | undefined,
   activeGgufVariant: string | null | undefined,
@@ -458,6 +444,7 @@ function ModelRow({
   hideOwner,
   downloaded,
   showVision,
+  quantChip,
   className,
 }: {
   label: string;
@@ -484,6 +471,8 @@ function ModelRow({
   downloaded?: boolean;
   /** Show a Vision badge on the name (On Device, read from GGUF metadata). */
   showVision?: boolean;
+  /** Grey chip beside the name, for rows that load one specific quant. */
+  quantChip?: string | null;
   className?: string;
 }) {
   const exceeds = vramStatus === "exceeds";
@@ -532,6 +521,11 @@ function ModelRow({
           </span>
         ) : null}
         <span className="min-w-0 flex-1 truncate">{name}</span>
+        {quantChip ? (
+          <span className="ml-2 shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-white/[0.1]">
+            {quantChip}
+          </span>
+        ) : null}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {showCaps && <CapabilityIcons caps={caps} />}
@@ -715,8 +709,133 @@ function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
     : variant.size_bytes;
 }
 
+/** The one quant a repo holds, plus the vision flag read with it. The
+ *  collapsed row never mounts the expander, so this is its only source. */
+interface SoleDownloadedQuant {
+  variant: GgufVariantDetail;
+  hasVision: boolean;
+}
+
+/** The repo's one complete quant, or null when it holds none, holds several,
+ *  or could not be read. Disk-only and client-cached: no remote listing. */
+async function readSoleQuant(
+  target: SoleQuantTarget,
+  hfToken?: string,
+): Promise<SoleDownloadedQuant | null> {
+  try {
+    const res = await listGgufVariantsCached(target.repoId, hfToken, {
+      preferLocalCache: true,
+      localPath: target.localSource,
+    });
+    const normalized = normalizeGgufVariantsResponse(res);
+    const local = normalized.variants;
+    // One file on disk and nothing torn beside it. A partial quant keeps the
+    // expander, where it can be resumed.
+    if (local.length !== 1 || local[0].downloaded !== true) return null;
+    return { variant: local[0], hasVision: normalized.hasVision };
+  } catch {
+    return null;
+  }
+}
+
+const EMPTY_SOLE_QUANT_ENTRIES: ReadonlyMap<
+  string,
+  SoleQuantEntry<SoleDownloadedQuant>
+> = new Map();
+// Reads run a few at a time, so a large cache doesn't fire one request per
+// repo. A worker pool, not fixed batches: one slow repo holds up only itself.
+const SOLE_QUANT_WORKERS = 6;
+
+/** On Device repos holding exactly one quant on disk, keyed by repo id. With
+ *  "Show all quantizations" off there is nothing else to pick, so those repos
+ *  collapse into one pinned-style row. Results are kept per repo, so one
+ *  repo's download or delete leaves every other row as it was. */
+function useSoleDownloadedQuants(
+  repos: readonly CachedGgufRepo[],
+  { enabled, hfToken }: { enabled: boolean; hfToken?: string },
+): {
+  quants: ReadonlyMap<string, SoleDownloadedQuant>;
+  pending: ReadonlySet<string>;
+} {
+  const repoIds = useMemo(() => repos.map((repo) => repo.repo_id), [repos]);
+  // A download or delete invalidates one repo, so watch each repo's version.
+  const variantsVersion = useGgufVariantsCacheVersions(repoIds);
+  const targets = useMemo(() => {
+    const versions = variantsVersion.split(",");
+    return repos.map((repo, index) => {
+      const localSource = repo.load_id || repo.cache_path || null;
+      const fingerprint = soleQuantFingerprint(repo);
+      return {
+        repoId: repo.repo_id,
+        localSource,
+        fingerprint,
+        key: soleQuantKey(versions[index], localSource, fingerprint),
+      };
+    });
+  }, [repos, variantsVersion]);
+
+  const [entries, setEntries] =
+    useState<ReadonlyMap<string, SoleQuantEntry<SoleDownloadedQuant>>>(
+      EMPTY_SOLE_QUANT_ENTRIES,
+    );
+  const { quants, pending, stale } = useMemo(
+    () => partitionSoleQuants(targets, entries, { enabled }),
+    [targets, entries, enabled],
+  );
+
+  // A change outside this tab, another window or the CLI, moves the row's
+  // bytes without touching this instance's variants cache. Drop that repo's
+  // cached listing so the read, and every other reader, sees disk again.
+  const fingerprintsRef = useRef(new Map<string, string>());
+  useEffect(() => {
+    for (const repoId of takeDriftedRepos(targets, fingerprintsRef.current)) {
+      invalidateGgufVariantsCache(repoId);
+    }
+  }, [targets]);
+
+  // Reads outlive a render, so they run outside it. The token is read at call
+  // time, so a change to it does not strand the reader.
+  const hfTokenRef = useRef(hfToken);
+  hfTokenRef.current = hfToken;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    // Set on setup, not just cleared on teardown: StrictMode replays effects,
+    // and a ref left false would discard every later read.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const readerRef = useRef<ReturnType<
+    typeof createSoleQuantReader<SoleDownloadedQuant>
+  > | null>(null);
+  if (readerRef.current === null) {
+    readerRef.current = createSoleQuantReader<SoleDownloadedQuant>({
+      workers: SOLE_QUANT_WORKERS,
+      read: (target) => readSoleQuant(target, hfTokenRef.current),
+      commit: (target, quant) => {
+        if (!mountedRef.current) return;
+        setEntries((prev) => {
+          const next = new Map(prev);
+          next.set(target.repoId, { key: target.key, quant });
+          return next;
+        });
+      },
+    });
+  }
+
+  useEffect(() => {
+    if (stale.length > 0) readerRef.current?.start(stale);
+  }, [stale]);
+
+  return { quants, pending };
+}
+
 function GgufVariantExpander({
   repoId,
+  loadId,
+  cachePath,
   onSelect,
   gpuGb,
   systemRamGb,
@@ -733,6 +852,10 @@ function GgufVariantExpander({
   onHasVision,
 }: {
   repoId: string;
+  /** Snapshot the cached listing pinned this repo to, if any. */
+  loadId?: string | null;
+  /** Cache directory this downloaded row represents, if any. */
+  cachePath?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
@@ -792,6 +915,7 @@ function GgufVariantExpander({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const localSource = loadId || cachePath || null;
 
   useEffect(() => {
     let canceled = false;
@@ -801,7 +925,9 @@ function GgufVariantExpander({
       setError(null);
     });
 
-    listGgufVariants(repoId, hfToken)
+    // The row's own directory, so disk contents count against that cache, not the active one. No
+    // preferLocalCache: it answers from disk alone and drops the undownloaded.
+    listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)
       .then((res) => {
         if (canceled) return;
         const normalized = normalizeGgufVariantsResponse(res);
@@ -824,7 +950,7 @@ function GgufVariantExpander({
     return () => {
       canceled = true;
     };
-  }, [repoId, refreshKey, hfToken]);
+  }, [repoId, localSource, refreshKey, hfToken]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
@@ -837,6 +963,8 @@ function GgufVariantExpander({
       onSelect(repoId, {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
+        // Only for a quant already in the pinned snapshot: a new download lands elsewhere.
+        loadId: downloaded === true ? loadId : undefined,
         ggufVariant: quant,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
@@ -844,7 +972,7 @@ function GgufVariantExpander({
         isGguf: true,
       });
     },
-    [repoId, isLocalPath, onSelect, sourceOverride, nativeContext],
+    [repoId, loadId, isLocalPath, onSelect, sourceOverride, nativeContext],
   );
 
   // GGUF fit classification matching llama-server's _select_gpus logic:
@@ -923,15 +1051,16 @@ function GgufVariantExpander({
   }, [variants, effectiveRecommended, getGgufFit]);
 
   // On Device only: when Show all quantizations is off, list quants already on
-  // disk. Recommended and other browse lists always show every quant.
+  // disk, torn ones included. Browse lists always show every quant.
   const showAllQuantizations = useChatRuntimeStore(
     (s) => s.showAllQuantizations,
   );
   const displayVariants = useMemo(() => {
     if (!sortedVariants) return sortedVariants;
-    return showAllQuantizations || !onDevice
-      ? sortedVariants
-      : sortedVariants.filter((v) => v.downloaded);
+    return visibleGgufVariants(sortedVariants, {
+      onDevice,
+      showAll: showAllQuantizations,
+    });
   }, [sortedVariants, showAllQuantizations, onDevice]);
 
   const variantOptionKeys = useMemo(
@@ -1003,6 +1132,8 @@ function GgufVariantExpander({
         const oom = fit === "oom";
         const tight = fit === "tight";
         const expectedBytes = ggufVariantExpectedBytes(v);
+        // A folder has no download to resume; a quant short a shard has no files to load.
+        const unusableLocal = isLocalPath && v.partial === true;
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
         return (
@@ -1010,11 +1141,14 @@ function GgufVariantExpander({
             <button
               type="button"
               {...variantList.getOptionProps(variantOptionKey, false)}
+              disabled={unusableLocal}
               onClick={() =>
                 handleVariantClick(v.quant, v.downloaded, expectedBytes)
               }
               className={cn(
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+                unusableLocal &&
+                  "cursor-default opacity-50 hover:bg-transparent dark:hover:bg-transparent",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -1023,7 +1157,11 @@ function GgufVariantExpander({
                 >
                   {v.quant}
                 </span>
-                {v.downloaded ? (
+                {unusableLocal ? (
+                  <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
+                    incomplete
+                  </span>
+                ) : v.downloaded ? (
                   <>
                     <span className="ml-1.5 text-ui-9 font-sans font-medium text-green-600/90 dark:text-green-400/80">
                       downloaded
@@ -1064,6 +1202,7 @@ function GgufVariantExpander({
                   onConfigure(repoId, {
                     source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
                     isLora: false,
+                    loadId,
                     ggufVariant: v.quant,
                     isDownloaded: true,
                     expectedBytes,
@@ -1497,19 +1636,30 @@ export function HubModelPicker({
   }, []);
   // When on, On Device GGUF repos show their quantizations without a click.
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
+  // Off: On Device lists only downloaded quants, so a repo holding one collapses
+  // into a single row instead of hiding it behind an expander.
+  const showAllQuantizations = useChatRuntimeStore(
+    (s) => s.showAllQuantizations,
+  );
   // Shared with the Hub page: list only models sized within the device budget.
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
-  // Repos the user clicked to collapse while expand-by-default is on. Kept in
-  // memory only, so it resets on reload (and when the setting is toggled).
+  // Repos the user clicked to collapse while expand-by-default is on, and the
+  // ones they clicked back open. Kept in memory only, so both reset on reload
+  // (and when the setting is toggled).
   const [collapsedGgufState, setCollapsedGgufState] = useState<{
     expandQuantizations: boolean;
     value: Set<string>;
-  }>(() => ({ expandQuantizations, value: new Set() }));
-  const collapsedGguf =
-    collapsedGgufState.expandQuantizations === expandQuantizations
-      ? collapsedGgufState.value
-      : new Set<string>();
+    reopened: Set<string>;
+  }>(() => ({ expandQuantizations, value: new Set(), reopened: new Set() }));
+  const expansionMatchesSetting =
+    collapsedGgufState.expandQuantizations === expandQuantizations;
+  const collapsedGguf = expansionMatchesSetting
+    ? collapsedGgufState.value
+    : new Set<string>();
+  const reopenedGguf = expansionMatchesSetting
+    ? collapsedGgufState.reopened
+    : new Set<string>();
   const isGgufExpanded = useCallback(
     (id: string) =>
       expandQuantizations ? !collapsedGguf.has(id) : expandedGguf === id,
@@ -1518,23 +1668,31 @@ export function HubModelPicker({
   // Toggle a repo's quantizations: flip the collapse set when expand-by-default
   // is on, otherwise drive the single-open expandedGguf state.
   const toggleGgufExpanded = useCallback(
-    (id: string) => {
-      if (expandQuantizations) {
-        setCollapsedGgufState((prev) => {
-          const current =
-            prev.expandQuantizations === expandQuantizations
-              ? prev.value
-              : new Set<string>();
-          const next = new Set(current);
-          if (next.has(id)) next.delete(id);
-          else next.add(id);
-          return { expandQuantizations, value: next };
-        });
-      } else {
+    // `showing` is what the row actually renders, which is not the collapse
+    // set alone: a row held back by its sole-quant probe shows nothing, and a
+    // click on it should open it rather than collapse what is already hidden.
+    (id: string, showing = isGgufExpanded(id)) => {
+      if (!expandQuantizations) {
         setExpandedGguf((prev) => (prev === id ? null : id));
+        return;
       }
+      setCollapsedGgufState((prev) => {
+        const matches = prev.expandQuantizations === expandQuantizations;
+        const next = toggleAutoExpandedRow(
+          {
+            collapsed: matches ? prev.value : new Set(),
+            reopened: matches ? prev.reopened : new Set(),
+          },
+          { repoId: id, showing },
+        );
+        return {
+          expandQuantizations,
+          value: next.collapsed,
+          reopened: next.reopened,
+        };
+      });
     },
-    [expandQuantizations],
+    [expandQuantizations, isGgufExpanded],
   );
 
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
@@ -2084,6 +2242,12 @@ export function HubModelPicker({
   // Non-GGUF cached rows are not shown in chat-only mode, so the empty-state
   // logic must use this (not visibleCachedModels) or the picker can go blank.
   const visibleCachedModelRows = chatOnly ? [] : visibleCachedModels;
+
+  // Unfiltered list, so typing a query doesn't re-run resolution.
+  const soleQuants = useSoleDownloadedQuants(sortedCachedGguf, {
+    enabled: section === "downloaded" && !showAllQuantizations,
+    hfToken: hfToken || undefined,
+  });
 
   // Pinned entries surface in their own section above the Unsloth heading.
   // GGUF quants pin individually and their repo stays listed below; non-GGUF
@@ -2874,10 +3038,112 @@ export function HubModelPicker({
     );
   };
 
+  // One quant on disk with "Show all quantizations" off: the expander would
+  // list just that quant, so the row carries it as a chip and loads it in one
+  // click, like a pinned quant.
+  const renderSoleQuantGgufRow = (
+    c: (typeof visibleCachedGguf)[number],
+    sole: SoleDownloadedQuant,
+  ) => {
+    const variant = sole.variant;
+    const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
+    // The row names one quant, so the repo running a different one is not it.
+    const rowState = soleQuantRowState({
+      pickerValue: value,
+      repoId: c.repo_id,
+      quant: variant.quant,
+      loadedModelId,
+      activeGgufVariant,
+    });
+    const isSelected = rowState.selected;
+    const expectedBytes = ggufVariantExpectedBytes(variant);
+    const isPinned = pinnedSet.has(pinKey(c.repo_id, variant.quant));
+    const selectMeta: ModelSelectorChangeMeta = {
+      source: "hub",
+      isLora: false,
+      loadId: c.load_id,
+      ggufVariant: variant.quant,
+      isDownloaded: true,
+      expectedBytes,
+      isGguf: true,
+    };
+    return (
+      <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
+        <div className="min-w-0 flex-1">
+          <ModelRow
+            label={c.repo_id}
+            tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
+            meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
+            quantChip={variant.quant}
+            showVision={c.has_vision || sole.hasVision}
+            selected={isSelected}
+            loaded={rowState.loaded}
+            optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+            onClick={() => onSelect(c.repo_id, selectMeta)}
+            vramStatus={null}
+            className={downloadedRowButtonClassName}
+          />
+        </div>
+        {onConfigure && (
+          <ModelLoadSettingsAction
+            ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
+            onConfigure={() => onConfigure(c.repo_id, selectMeta)}
+          />
+        )}
+        <ModelRowMenu
+          ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
+          buttonClassName="mr-1"
+          cachePath={{ repoId: c.repo_id, variant: variant.quant }}
+          pin={{
+            pinned: isPinned,
+            pinLabel: "Pin to top",
+            unpinLabel: "Unpin",
+            onToggle: () => togglePinned(c.repo_id, variant.quant),
+          }}
+          del={{
+            title: "Delete cached model?",
+            description: (
+              <>
+                This will remove{" "}
+                <span className="font-medium text-foreground">
+                  {c.repo_id} ({variant.quant})
+                </span>{" "}
+                from disk. You can re-download it later.
+              </>
+            ),
+            successMessage: `Deleted ${c.repo_id} ${variant.quant}`,
+            disabled: deleteDisabled,
+            onConfirm: async () => {
+              await deleteCachedModel(
+                c.repo_id,
+                variant.quant,
+                hfToken || undefined,
+                c.cache_path || undefined,
+              );
+              // The file is gone, so drop its pin too.
+              if (isPinned) togglePinned(c.repo_id, variant.quant);
+              prunePinnedQuantValidation(c.repo_id, variant.quant);
+              refreshCachedLists();
+            },
+          }}
+        />
+      </div>
+    );
+  };
+
   // Shared row renderers so Downloaded (Unsloth) and Other models render alike.
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
     const isSelected = value === c.repo_id;
+    const soleQuant = soleQuants.quants.get(c.repo_id);
+    if (soleQuant) return renderSoleQuantGgufRow(c, soleQuant);
+    // Auto-expansion waits for the probe: expanding every row first would
+    // mount an expander, and its remote listing, for repos about to collapse.
+    const expanderOpen = shouldMountVariantExpander({
+      expanded: isGgufExpanded(c.repo_id),
+      autoExpand: expandQuantizations && !reopenedGguf.has(c.repo_id),
+      soleQuantsPending: soleQuants.pending.has(c.repo_id),
+    });
     return (
       <div key={c.repo_id}>
         <div className={downloadedRowShellClassName(isSelected)}>
@@ -2895,9 +3161,9 @@ export function HubModelPicker({
                 "required",
               )}
               optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
-              onClick={() => toggleGgufExpanded(c.repo_id)}
+              onClick={() => toggleGgufExpanded(c.repo_id, expanderOpen)}
               onArrowDownIntoChildren={
-                isGgufExpanded(c.repo_id)
+                expanderOpen
                   ? () => focusFirstChildOption(optionKey)
                   : undefined
               }
@@ -2905,11 +3171,14 @@ export function HubModelPicker({
               className={downloadedRowButtonClassName}
             />
           </div>
-          <span aria-hidden="true" className="mr-1 h-6 w-[26px] shrink-0" />
+          {/* Stands in for the other rows' buttons, so the tags line up. */}
+          <span aria-hidden="true" className="mr-1 h-6 w-[42px] shrink-0" />
         </div>
-        {isGgufExpanded(c.repo_id) && (
+        {expanderOpen && (
           <GgufVariantExpander
             repoId={c.repo_id}
+            loadId={c.load_id}
+            cachePath={c.cache_path}
             onDevice={true}
             allowPin={true}
             onHasVision={(v) => reportVision(c.repo_id, v)}
@@ -2968,6 +3237,7 @@ export function HubModelPicker({
               onSelect(c.repo_id, {
                 source: "hub",
                 isLora: false,
+                loadId: c.load_id,
                 isDownloaded: true,
               })
             }
@@ -2982,6 +3252,7 @@ export function HubModelPicker({
               onConfigure(c.repo_id, {
                 source: "hub",
                 isLora: false,
+                loadId: c.load_id,
                 isDownloaded: true,
                 isGguf: false,
               })
