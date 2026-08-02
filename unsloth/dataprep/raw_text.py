@@ -350,10 +350,16 @@ class TextPreprocessor:
             "warnings": [],
         }
 
-        if "text" in dataset.column_names:
+        # `column_names` is HF Dataset-only, so fall back to plain indexing to keep
+        # accepting mapping-likes (DataFrames, dicts, custom __getitem__) as before.
+        column_names = getattr(dataset, "column_names", None)
+        if column_names is None:
             texts = dataset["text"]
 
-        elif "input_ids" in dataset.column_names:
+        elif "text" in column_names:
+            texts = dataset["text"]
+
+        elif "input_ids" in column_names:
             if tokenizer is None:
                 raise ValueError(
                     "Dataset has 'input_ids' but no 'text' column; "

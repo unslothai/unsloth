@@ -496,6 +496,50 @@ def test_validate_dataset_handles_tokenized_and_text_columns():
         os.unlink(test_file)
 
 
+def test_validate_dataset_accepts_objects_without_column_names():
+    """Dispatching on `column_names` must not narrow the accepted input types.
+
+    validate_dataset() read dataset["text"] directly, so it worked for any
+    mapping-like object: DataFrames, plain dicts, custom __getitem__ wrappers.
+    """
+
+    preprocessor = TextPreprocessor()
+    texts = ["first sample with enough characters", "second sample with enough characters"]
+    longest = max(len(t) for t in texts)
+
+    class DuckTypedDataset:
+        # Only __len__ + __getitem__, i.e. the pre-existing implicit contract.
+        def __init__(self, data):
+            self.data = data
+
+        def __len__(self):
+            return len(next(iter(self.data.values())))
+
+        def __getitem__(self, key):
+            return self.data[key]
+
+    stats = preprocessor.validate_dataset(DuckTypedDataset({"text": texts}))
+    assert stats["total_samples"] == 2, stats
+    assert stats["empty_samples"] == 0, stats
+    assert stats["max_length"] == longest, stats
+
+    stats = preprocessor.validate_dataset({"text": texts})
+    assert stats["max_length"] == longest, stats
+
+    try:
+        import pandas as pd
+    except ImportError:
+        pd = None
+
+    if pd is not None:
+        stats = preprocessor.validate_dataset(pd.DataFrame({"text": texts}))
+        assert stats["total_samples"] == 2, stats
+        assert stats["max_length"] == longest, stats
+
+    print("test_validate_dataset_accepts_objects_without_column_names passed")
+    return True
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
@@ -503,4 +547,5 @@ if __name__ == "__main__":
     success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
     success = test_load_from_files_all_empty_raises() and success
     success = test_validate_dataset_handles_tokenized_and_text_columns() and success
+    success = test_validate_dataset_accepts_objects_without_column_names() and success
     sys.exit(0 if success else 1)
