@@ -50,7 +50,11 @@ fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
             ));
         }
         let mut cmd = Command::new(python);
-        cmd.args(["-c", WINDOWS_CLI_ENTRYPOINT, "studio", "update"]);
+        // Isolated mode prevents a project-local unsloth_cli module or an
+        // inherited Python search path from shadowing the managed package.
+        cmd.args(["-I", "-c", WINDOWS_CLI_ENTRYPOINT, "studio", "update"]);
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
         Ok(cmd)
     }
 
@@ -462,7 +466,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_update_command_uses_python_not_replaceable_console_stub() {
-        use std::ffi::OsString;
+        use std::ffi::{OsStr, OsString};
 
         let dir =
             std::env::temp_dir().join(format!("unsloth-update-command-{}", std::process::id()));
@@ -479,12 +483,18 @@ mod tests {
         assert_eq!(
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
             vec![
+                OsString::from("-I"),
                 OsString::from("-c"),
                 OsString::from(WINDOWS_CLI_ENTRYPOINT),
                 OsString::from("studio"),
                 OsString::from("update")
             ]
         );
+        for name in ["PYTHONHOME", "PYTHONPATH"] {
+            assert!(cmd
+                .get_envs()
+                .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
