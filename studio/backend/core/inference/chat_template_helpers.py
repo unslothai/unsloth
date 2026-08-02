@@ -349,13 +349,51 @@ class ModelMarkup:
         self.rewrite_boundary = functools.partial(neutralize_turn_boundary_markup, markup = self)
 
 
+# A marker that differs from its siblings only by an embedded run of digits. Gemma ships
+# "<unused0>" through "<unused6241>", so a literal alternation over them is 78 times larger
+# than the rest of that vocabulary put together and costs more to run than the curated sweep
+# it replaces. Collapsing the family to one "\d+" arm is the same match set over any token
+# the vocabulary actually holds (#7066).
+_NUMERIC_FAMILY = re.compile(r"\A(\D*)(\d+)(\D*)\Z")
+# Below this a family is not worth an arm of its own: the literals are cheaper.
+_FAMILY_MIN = 8
+
+
+def _collapsed_sources(markers: set) -> list:
+    """Pattern sources for *markers*, with large numeric families folded into one arm each."""
+    families: dict = {}
+    singles: list = []
+    for marker in markers:
+        match = _NUMERIC_FAMILY.match(marker)
+        # Only a marker with no dynamic form of its own: "<function=1>" must stay dynamic.
+        if match and not _DYNAMIC_OPENER.match(marker) and not _DYNAMIC_ATTR_OPENER.match(marker):
+            families.setdefault((match.group(1), match.group(3)), []).append(marker)
+        else:
+            singles.append(marker)
+    sources = []
+    for (prefix, suffix), members in families.items():
+        if len(members) < _FAMILY_MIN:
+            singles.extend(members)
+            continue
+        # Bounded to the digit widths the vocabulary actually holds, so folding "[1]".."[8]"
+        # cannot start rewriting "array[42]". Over "<unused0>".."<unused6241>" that is
+        # "\d{1,4}", which is the same match set the literals had.
+        widths = [len(m) - len(prefix) - len(suffix) for m in members]
+        span = f"{{{min(widths)},{max(widths)}}}" if min(widths) != max(widths) else f"{{{widths[0]}}}"
+        sources.append(re.escape(prefix) + "\\d" + span + re.escape(suffix))
+    # Longest first so no prefix shadows a longer literal; the family arms go last, since
+    # they only ever match strings no literal here spells out.
+    sources = [
+        _marker_pattern_source(m) for m in sorted(singles, key = len, reverse = True)
+    ] + sources
+    return sources
+
+
 def _alternation(markers: set):
     """A pattern matching any of *markers*, longest first so no prefix shadows a longer one."""
     if not markers:
         return None
-    return re.compile(
-        "|".join(_marker_pattern_source(m) for m in sorted(markers, key = len, reverse = True))
-    )
+    return re.compile("|".join(_collapsed_sources(markers)))
 
 
 def model_markup(chat_template, tokens = None) -> Optional[ModelMarkup]:

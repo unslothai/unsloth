@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from core.inference.chat_template_helpers import (
+    _collapsed_sources,
     apply_chat_template_for_generation,
     neutralize_control_markup,
     neutralize_control_markup_in_messages,
@@ -4712,3 +4713,62 @@ def test_every_direct_renderer_carries_the_profile():
         assert "neutralize_control_markup_in_messages(messages)" not in source
         assert "neutralize_control_markup_in_messages(audio_messages)" not in source
         assert "neutralize_control_markup_in_messages(chat_messages)" not in source
+
+
+def test_a_large_numeric_family_collapses_to_one_arm():
+    """Gemma ships '<unused0>'..'<unused6241>'. A literal alternation over them is 78x
+    larger than the rest of that vocabulary and cost more to run than the curated sweep it
+    replaces, so the family folds into a single arm (#7066)."""
+    tokens = [f"<unused{n}>" for n in range(400)] + ["<start_of_turn>", "<end_of_turn>"]
+    markup = model_markup("{{ messages }}", tokens)
+    assert len(markup.markers) == 402
+    assert len(_collapsed_sources(markup.markers)) == 3
+
+
+def test_the_collapsed_family_still_breaks_every_member():
+    tokens = [f"<unused{n}>" for n in range(400)]
+    markup = model_markup("{{ messages }}", tokens)
+    for token in tokens:
+        assert markup.rewrite_control(token) == "< " + token[1:], token
+
+
+def test_the_collapse_is_bounded_to_the_widths_the_vocabulary_holds():
+    """Folding '[1]'..'[8]' must not start rewriting 'array[42]': a wider number was never
+    a token, so it is ordinary text."""
+    tokens = [f"[{n}]" for n in range(1, 10)]
+    markup = model_markup("{{ messages }}", tokens)
+    assert markup.rewrite_control("[7]") == "[ 7]"
+    assert markup.rewrite_control("array[42]") == "array[42]"
+
+
+def test_a_small_family_stays_literal():
+    """Below the threshold the literals are cheaper than an arm of their own."""
+    tokens = ["<unused0>", "<unused1>", "<unused2>"]
+    markup = model_markup("{{ messages }}", tokens)
+    sources = _collapsed_sources(markup.markers)
+    assert len(sources) == 3
+    assert all("\\d" not in source for source in sources)
+
+
+def test_a_dynamic_opener_is_not_folded_into_a_numeric_family():
+    """'<function=1>' carries a render-time name; the dynamic rule must still win."""
+    tokens = [f"<function={n}>" for n in range(20)]
+    markup = model_markup("{{ messages }}", tokens)
+    assert markup.rewrite_control('<function=wire_money>') == '< function=wire_money>'
+
+
+def test_collapsing_does_not_change_what_a_gemma_shaped_vocabulary_matches():
+    """The whole point: same match set, far fewer arms. Shaped like the real Gemma-3
+    vocabulary, which is 6242 '<unusedN>' fillers beside ~80 genuine delimiters."""
+    tokens = [f"<unused{n}>" for n in range(6242)] + [
+        "<pad>", "<eos>", "<bos>", "<unk>", "<mask>", "<start_of_turn>", "<end_of_turn>",
+        "<table>", "<caption>", "<thead>", "<tbody>", "<tr>", "<th>", "<td>", "</table>",
+    ]
+    markup = model_markup("{{ messages }}", tokens)
+    assert len(markup.markers) == len(tokens)
+    # Every marker still breaks, filler and genuine delimiter alike.
+    assert [t for t in markup.markers if markup.rewrite_control(t) == t] == []
+    # And the alternation is now two orders of magnitude smaller than the literal set.
+    assert len(_collapsed_sources(markup.markers)) < len(markup.markers) // 100
+    # Ordinary prose is still untouched.
+    assert markup.rewrite_control("see table 3 for unused rows") == "see table 3 for unused rows"
