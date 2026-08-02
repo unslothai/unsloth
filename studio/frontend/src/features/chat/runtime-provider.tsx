@@ -66,6 +66,7 @@ import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
+  preStreamRunThreadIdsForRuntime,
   releasePreStreamRunReservation,
 } from "./utils/pre-stream-run-reservation";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
@@ -1391,11 +1392,10 @@ function useStudioRuntimeAdapters(
         ]),
         () => {
           const state = aui.threadListItem().getState();
-          return [
-            state.remoteId,
-            state.id,
+          return preStreamRunThreadIdsForRuntime(
+            [state.remoteId, state.id],
             useChatRuntimeStore.getState().activeThreadId,
-          ];
+          );
         },
       ),
     [aui],

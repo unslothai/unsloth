@@ -185,6 +185,14 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "releaseCurrentPreStreamRun();" in CHAT_ADAPTER
     assert "releasePreStreamRunReservation(reservationToken)" in CHAT_ADAPTER
     assert "class PreStreamAwareAttachmentAdapter" in RUNTIME_PROVIDER
+    assert "preStreamRunThreadIdsForRuntime(" in RUNTIME_PROVIDER
+    attachment_adapter = _between(
+        RUNTIME_PROVIDER,
+        "const attachments = useMemo(",
+        "const adapters = useMemo(",
+    )
+    assert "[state.remoteId, state.id]" in attachment_adapter
+    assert "useChatRuntimeStore.getState().activeThreadId" in attachment_adapter
     assert "preStreamRunThreadIdsForAdapter(" in CHAT_ADAPTER
     adapter_wrapper = CHAT_ADAPTER.rsplit("async *run(args)", 1)[1]
     assert "args.unstable_threadId," in adapter_wrapper

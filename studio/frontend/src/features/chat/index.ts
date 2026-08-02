@@ -92,6 +92,7 @@ export {
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
+  preStreamRunThreadIdsForRuntime,
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
   reservePreStreamRun,

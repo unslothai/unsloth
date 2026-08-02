@@ -6,6 +6,7 @@ import {
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
+  preStreamRunThreadIdsForRuntime,
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
   reservePreStreamRun,
@@ -21,6 +22,24 @@ test("adapter thread ids never mix an identified background run with the visible
     ["visible-thread"],
   );
   assert.deepEqual(preStreamRunThreadIdsForAdapter(undefined, null), []);
+});
+
+test("runtime thread ids use the visible chat only when no runtime identity exists", () => {
+  assert.deepEqual(
+    preStreamRunThreadIdsForRuntime(
+      ["remote-thread", "local-thread"],
+      "visible-thread",
+    ),
+    ["remote-thread", "local-thread"],
+  );
+  assert.deepEqual(
+    preStreamRunThreadIdsForRuntime([null, undefined], "visible-thread"),
+    ["visible-thread"],
+  );
+  assert.deepEqual(
+    preStreamRunThreadIdsForRuntime(["thread", "thread"], null),
+    ["thread"],
+  );
 });
 
 test("pre-stream reservations are immediate and scoped per thread", () => {

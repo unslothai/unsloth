@@ -11,8 +11,20 @@ export function preStreamRunThreadIdsForAdapter(
   unstableThreadId: string | null | undefined,
   activeThreadId: string | null | undefined,
 ): string[] {
-  const threadId = unstableThreadId ?? activeThreadId;
-  return threadId ? [threadId] : [];
+  return preStreamRunThreadIdsForRuntime([unstableThreadId], activeThreadId);
+}
+
+export function preStreamRunThreadIdsForRuntime(
+  runtimeThreadIds: Iterable<string | null | undefined>,
+  activeThreadId: string | null | undefined,
+): string[] {
+  const identifiedThreadIds = [
+    ...new Set(Array.from(runtimeThreadIds).filter(Boolean)),
+  ] as string[];
+  if (identifiedThreadIds.length > 0) {
+    return identifiedThreadIds;
+  }
+  return activeThreadId ? [activeThreadId] : [];
 }
 
 function normalizedThreadIds(
