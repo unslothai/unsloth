@@ -1628,6 +1628,20 @@ if (-not $HasNvidiaSmi) {
     }
 }
 
+# Mirrors the Intel scan in install.ps1 so setup does not report "none (chat-only)" right
+# after install.ps1 reported a usable Arc GPU. Self-contained: setup.ps1 also runs standalone
+# (studio update), where no signal from install.ps1 exists. Same gates, same Arc / Data Center
+# match; Get-CimInstance because Get-WmiObject is absent in PowerShell 7.
+$script:IsIntelXpu = $false
+$IntelGpuLabel = $null
+if (-not $HasNvidiaSmi -and -not $HasROCm -and -not $script:ROCmGfxArch) {
+    try {
+        $xpuGpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match "(?i)Intel.*(Arc|Data Center GPU)" } | Select-Object -First 1
+        if ($xpuGpu) { $script:IsIntelXpu = $true; $IntelGpuLabel = $xpuGpu.Name }
+    } catch {}
+}
+
 if ($HasNvidiaSmi) {
     step "gpu" "NVIDIA GPU detected"
 } elseif ($HasROCm) {
@@ -1635,6 +1649,12 @@ if ($HasNvidiaSmi) {
     $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
     substep "HIP SDK: $hipSdkPath"
     if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
+} elseif ($script:IsIntelXpu) {
+    Write-Host ""
+    step "gpu" "Intel GPU detected" "Green"
+    substep "$IntelGpuLabel"
+    substep "PyTorch XPU (SYCL) wheels provide training and GPU inference on this GPU." "Cyan"
+    Write-Host ""
 } elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
     # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
     $sdkVer = if ($script:ROCmVersionFull) { " (HIP $script:ROCmVersionFull)" } else { "" }
@@ -1664,7 +1684,7 @@ if ($HasNvidiaSmi) {
 } else {
     Write-Host ""
     step "gpu" "none (chat-only / GGUF)" "Yellow"
-    substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
+    substep "Training and GPU inference require an NVIDIA, AMD ROCm, or Intel Arc GPU." "Yellow"
     Write-Host ""
 }
 

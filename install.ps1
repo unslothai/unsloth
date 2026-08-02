@@ -2165,6 +2165,46 @@ exit 0
         } catch {}
     }
 
+    # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
+    # Runs BEFORE the report chain, not inside its final else: an AMD adapter that is only
+    # WMI-named (ROCmGpuLabel set, no usable ROCm) would otherwise take that chain and hide
+    # a discrete Arc card, e.g. an AMD CPU's integrated Radeon next to an Arc GPU.
+    # XPU (SYCL) wheels bundle their own oneAPI runtime, but Windows still needs the Intel
+    # driver (Unsloth also documents oneAPI + Level Zero), so an Intel adapter alone proves
+    # nothing: $HasIntelGpu is "one is present", $script:IsIntelXpu is "XPU wheels suit it".
+    # Only Arc / Data Center parts are XPU-capable; UHD / HD / Iris Xe are not.
+    # Get-CimInstance, not Get-WmiObject: the latter does not exist in PowerShell 7.
+    $HasIntelGpu = $false
+    $IntelGpuLabel = $null
+    # Excluding $ROCmGfxArch keeps a usable AMD host out of the XPU reroute below.
+    if (-not $HasNvidiaSmi -and -not $HasROCm -and -not $ROCmGfxArch) {
+        try {
+            $intelGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "(?i)Intel" })
+            if ($intelGpus.Count -gt 0) {
+                $HasIntelGpu = $true
+                $xpuGpu = $intelGpus | Where-Object { $_.Name -match "(?i)Intel.*(Arc|Data Center GPU)" } | Select-Object -First 1
+                $IntelGpuLabel = if ($xpuGpu) { $xpuGpu.Name } else { $intelGpus[0].Name }
+                if ($xpuGpu) { $script:IsIntelXpu = $true }
+            }
+        } catch {}
+        # A migrated env's torch can confirm the match, and can veto it only when it is
+        # itself an XPU build: a CPU build reports False for lacking XPU support, not for
+        # unsuitable hardware, and must not block the CPU-to-XPU upgrade.
+        if (Test-Path -LiteralPath $VenvPython) {
+            try {
+                $xpuCheck = (& $VenvPython -c "import torch; print(torch.xpu.is_available(), '+xpu' in torch.__version__)" 2>$null | Out-String).Trim()
+                if ($xpuCheck -like 'True*') {
+                    $HasIntelGpu = $true
+                    $script:IsIntelXpu = $true
+                    if (-not $IntelGpuLabel) { $IntelGpuLabel = "Intel GPU (detected by PyTorch XPU)" }
+                } elseif ($xpuCheck -eq 'False True') {
+                    $script:IsIntelXpu = $false
+                }
+            } catch {}
+        }
+    }
+
     if ($HasNvidiaSmi) {
         step "gpu" "NVIDIA GPU detected"
     } elseif ($HasROCm) {
@@ -2172,6 +2212,12 @@ exit 0
         $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
         substep "HIP SDK: $hipSdkPath"
         if ($ROCmVersionFull) { substep "hipconfig: $ROCmVersionFull" }
+    } elseif ($script:IsIntelXpu) {
+        # Ranks above the two "AMD present but unusable" branches below; it cannot reach
+        # here when ROCm or a mapped gfx arch is usable, since those gate the scan above.
+        step "gpu" "Intel GPU detected" "Green"
+        substep "$IntelGpuLabel"
+        # Reroute below prints the index: only it knows the mirror URL and any pin override.
     } elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
         # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
         $sdkVer = if ($ROCmVersionFull) { " (HIP $ROCmVersionFull)" } else { "" }
@@ -2194,46 +2240,9 @@ exit 0
         substep "UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm PyTorch:" "Yellow"
         substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     } else {
-        # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
-        # XPU (SYCL) wheels bundle their own oneAPI runtime, but Windows still needs the Intel
-        # driver (Unsloth also documents oneAPI + Level Zero), so an Intel adapter alone proves
-        # nothing: $HasIntelGpu is "one is present", $script:IsIntelXpu is "XPU wheels suit it".
-        # Only Arc / Data Center parts are XPU-capable; UHD / HD / Iris Xe are not.
-        # Get-CimInstance, not Get-WmiObject: the latter does not exist in PowerShell 7.
-        $HasIntelGpu = $false
-        $IntelGpuLabel = $null
-        try {
-            $intelGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match "(?i)Intel" })
-            if ($intelGpus.Count -gt 0) {
-                $HasIntelGpu = $true
-                $xpuGpu = $intelGpus | Where-Object { $_.Name -match "(?i)Intel.*(Arc|Data Center GPU)" } | Select-Object -First 1
-                $IntelGpuLabel = if ($xpuGpu) { $xpuGpu.Name } else { $intelGpus[0].Name }
-                if ($xpuGpu) { $script:IsIntelXpu = $true }
-            }
-        } catch {}
-        # An installed torch (migrated env) is authoritative: it confirms or vetoes the match.
-        if (Test-Path -LiteralPath $VenvPython) {
-            try {
-                $xpuCheck = & $VenvPython -c "import torch; print(torch.xpu.is_available())" 2>$null | Out-String
-                if ($xpuCheck.Trim() -eq 'True') {
-                    $HasIntelGpu = $true
-                    $script:IsIntelXpu = $true
-                    if (-not $IntelGpuLabel) { $IntelGpuLabel = "Intel GPU (detected by PyTorch XPU)" }
-                } elseif ($xpuCheck.Trim() -eq 'False') {
-                    $script:IsIntelXpu = $false
-                }
-            } catch {}
-        }
-        if ($script:IsIntelXpu) {
-            step "gpu" "Intel GPU detected" "Green"
-            substep "$IntelGpuLabel"
-            # Reroute below prints the index: only it knows the mirror URL and any pin override.
-        } else {
-            step "gpu" "none (chat-only / GGUF)" "Yellow"
-            if ($HasIntelGpu) { substep "Detected: $IntelGpuLabel (not XPU-capable)" "Yellow" }
-            substep "Training and GPU inference require an NVIDIA, AMD ROCm, or Intel Arc GPU." "Yellow"
-        }
+        step "gpu" "none (chat-only / GGUF)" "Yellow"
+        if ($HasIntelGpu) { substep "Detected: $IntelGpuLabel (not XPU-capable)" "Yellow" }
+        substep "Training and GPU inference require an NVIDIA, AMD ROCm, or Intel Arc GPU." "Yellow"
     }
     # On an AMD GPU (no NVIDIA), surface the optional WSL-ROCm driver hint.
     if (-not $HasNvidiaSmi -and ($ROCmGfxArch -or $ROCmGpuLabel)) { Show-AmdWslDriverHint }
