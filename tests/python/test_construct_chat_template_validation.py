@@ -258,8 +258,7 @@ _APOSTROPHE_CHAT_TEMPLATE = (
         "Answer the user's question.",
         r"Put the answer in \boxed{}.",
         r"Files live in C:\Users\me",
-        # A template authored on Windows arrives with CRLF; Jinja rewrites a raw
-        # carriage return to \n before unescaping, so \r needs escaping as well.
+        # Windows CRLF: Jinja rewrites a raw \r to \n before unescaping.
         "Answer briefly.\r\nBe polite.",
     ],
 )

@@ -2617,17 +2617,14 @@ extra_eos_tokens = None,
         part + '\n\n' + ollama_eos
 
     # HF Jinja Chat template
-    # Every piece of the caller's template below is concatenated into a Jinja
-    # '...' literal, so a single quote in it closes the literal early and a
-    # backslash is read as a Jinja escape. Escape the backslash first, or the
-    # one added for the quote gets doubled. A raw \r is rewritten to \n before
-    # unescaping, so it only survives as an escape too.
+    # Caller text is concatenated into Jinja '...' literals, where a quote closes
+    # the literal early, a backslash is read as an escape, and a raw \r is
+    # rewritten to \n. Backslash first, or the quote's own escape gets doubled.
     def escape_jinja_literal(text):
         return text.replace("\\", "\\\\").replace("'", "\\'").replace("\r", "\\r")
 
     def process(part, which, content = "message['content']"):
-        # Escape the literal text only, before the placeholder is swapped for the
-        # ' + message['content'] + ' concatenation, whose quotes must survive.
+        # Escape before the placeholder becomes a concatenation whose quotes must survive.
         part = which.join(escape_jinja_literal(piece) for piece in part.split(which))
         if part.endswith(which):
             part = "'" + part[:part.find(which)] + f"' + {content}"
@@ -2656,8 +2653,7 @@ extra_eos_tokens = None,
 
     # Now add system prompt to jinja
     if len(system_part) != 0:
-        # Separate the BOS while the text is still raw: a bos_token holding a
-        # quote or backslash no longer matches once process() has escaped it.
+        # Strip the BOS while raw: an escaped bos_token no longer matches.
         if has_bos_token:
             system_part = system_part.replace(tokenizer.bos_token, "", 1)
         partial_system = process(system_part, "{SYSTEM}", "messages[0]['content']")
