@@ -59,9 +59,8 @@ def _triton_supports_tma():
     )
 
 
-# Precompute at module import
-# NOTE: TMA is disabled for now due to compatibility issues with permute_x/permute_y settings
-# in the MoE grouped GEMM forward/backward passes. Re-enable once these are resolved.
+# TMA disabled for now: incompatible with permute_x/permute_y in the MoE
+# grouped GEMM passes. Re-enable once resolved.
 _TRITON_HAS_TMA = False  # _triton_supports_tma()
 
 
@@ -307,16 +306,11 @@ def get_dW_kernel_configs(
 
 
 def estimate_smem_reqs(
-    num_stages: int,
-    BLOCK_SIZE_M: int,
-    BLOCK_SIZE_N: int,
-    BLOCK_SIZE_K: int,
-    dtype: torch.dtype,
+    num_stages: int, BLOCK_SIZE_M: int, BLOCK_SIZE_N: int, BLOCK_SIZE_K: int, dtype: torch.dtype
 ):
     num_bytes = dtype.itemsize
     return (
-        num_stages * BLOCK_SIZE_K * (BLOCK_SIZE_M + BLOCK_SIZE_N)
-        + BLOCK_SIZE_M * BLOCK_SIZE_N
+        num_stages * BLOCK_SIZE_K * (BLOCK_SIZE_M + BLOCK_SIZE_N) + BLOCK_SIZE_M * BLOCK_SIZE_N
     ) * num_bytes
 
 
@@ -329,9 +323,7 @@ def exceeds_smem_capacity(
     smem_size: int,
     slack: float = 50000,
 ):
-    smem_reqs = estimate_smem_reqs(
-        num_stages, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, dtype
-    )
+    smem_reqs = estimate_smem_reqs(num_stages, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, dtype)
     return smem_reqs > smem_size + slack
 
 
@@ -369,7 +361,6 @@ def common_prune_criteria(config: triton.Config, kwargs: dict, dtype):
 
 def maybe_disable_tma(config: triton.Config):
     from ..interface import supports_tma
-
     tma_keys = [k for k in config.kwargs.keys() if k.startswith("USE_TMA_")]
     if not supports_tma():
         logger.info("Disabling TMA")

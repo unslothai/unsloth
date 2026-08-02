@@ -29,7 +29,6 @@ import triton
 
 logger = logging.getLogger(__name__)
 
-# Global cache for kernel configurations
 _kernel_config_cache: Dict[str, Any] = {}
 _autotune_completed: Dict[str, bool] = {}
 
@@ -71,10 +70,10 @@ def load_cached_config(cache_key: str) -> Optional[Dict[str, Any]]:
         return None
 
     try:
-        with open(cache_file, "r") as f:
+        with open(cache_file, "r", encoding = "utf-8") as f:
             cached_data = json.load(f)
 
-        # Verify cache is still valid (same device, etc.)
+        # Invalidate if device capability changed
         current_device_capability = torch.cuda.get_device_capability()
         if cached_data.get("device_capability") != current_device_capability:
             logger.info("Device capability changed, invalidating cache")
@@ -105,9 +104,7 @@ def save_cached_config(
     cache_data = {
         "timestamp": time.time(),
         "device_capability": torch.cuda.get_device_capability(),
-        "config_fwd": config_fwd.__dict__
-        if hasattr(config_fwd, "__dict__")
-        else str(config_fwd),
+        "config_fwd": config_fwd.__dict__ if hasattr(config_fwd, "__dict__") else str(config_fwd),
         "config_bwd_dx": config_bwd_dx.__dict__
         if hasattr(config_bwd_dx, "__dict__")
         else str(config_bwd_dx),
@@ -118,7 +115,7 @@ def save_cached_config(
     }
 
     try:
-        with open(cache_file, "w") as f:
+        with open(cache_file, "w", encoding = "utf-8") as f:
             json.dump(cache_data, f, indent = 2)
         logger.info(f"Saved MoE kernel config cache: {cache_key}")
     except Exception as e:
@@ -160,7 +157,7 @@ def get_or_autotune_moe_kernels(
         seq_len,
     )
 
-    # 0. Check for environment variable override to DISABLE autotuning
+    # Env override to disable autotuning
     if os.environ.get("UNSLOTH_MOE_DISABLE_AUTOTUNE", "0") == "1":
         logger.info(
             f"UNSLOTH_MOE_DISABLE_AUTOTUNE=1: Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
@@ -174,7 +171,7 @@ def get_or_autotune_moe_kernels(
     if not force_autotune:
         cached_data = load_cached_config(cache_key)
         if cached_data is not None:
-            # Reconstruct config objects from cached data
+            # Reconstruct config objects from cache
             try:
                 from .grouped_gemm.kernels.tuning import (
                     KernelConfigForward,
@@ -192,7 +189,6 @@ def get_or_autotune_moe_kernels(
             except Exception as e:
                 logger.warning(f"Failed to reconstruct cached configs: {e}")
 
-    # Run autotuning
     if cache_key in _autotune_completed and not force_autotune:
         logger.info(f"Autotuning already completed for: {cache_key}")
         return _kernel_config_cache[cache_key]
@@ -207,7 +203,6 @@ def get_or_autotune_moe_kernels(
             num_experts, hidden_dim, intermediate_dim, top_k, dtype, seq_len
         )
 
-        # Cache the results
         _kernel_config_cache[cache_key] = configs
         _autotune_completed[cache_key] = True
 
@@ -230,9 +225,7 @@ def get_or_autotune_moe_kernels(
 
     except Exception as e:
         logger.error(f"MoE kernel auto-tuning failed: {e}")
-        if "AttributeError" in str(e) and "_experimental_make_tensor_descriptor" in str(
-            e
-        ):
+        if "AttributeError" in str(e) and "_experimental_make_tensor_descriptor" in str(e):
             logger.warning(
                 "Unsloth: Your Triton version might be incompatible with TMA features. Falling back to default configs."
             )
@@ -250,18 +243,13 @@ def _run_moe_autotuning(
 ) -> Tuple[Any, Any, Any]:
     """Run the actual auto-tuning for MoE kernels."""
 
-    # Create dummy inputs for tuning
     device = "cuda"
-    # Use a fixed, safe number of tokens for autotuning to avoid OOMs and dependency on seq_len
-    # 4096 is standard for finding good kernels without consuming 10GB+ VRAM
-    # We ignore the passed seq_len for the actual allocation to satisfy user request
+    # Fixed token count avoids OOMs and seq_len dependency; we ignore the passed seq_len here
     num_tokens = 4096
     total_tokens = num_tokens * top_k
 
-    # Create dummy tensors
     hidden_states = torch.randn(num_tokens, hidden_dim, device = device, dtype = dtype)
 
-    # Create dummy weights
     gate_up_weights = torch.randn(
         num_experts, 2 * intermediate_dim, hidden_dim, device = device, dtype = dtype
     )
@@ -269,12 +257,10 @@ def _run_moe_autotuning(
         num_experts, hidden_dim, intermediate_dim, device = device, dtype = dtype
     )
 
-    # Create dummy routing data
-    m_sizes = torch.randint(
-        1, total_tokens // num_experts + 1, (num_experts,), device = device
-    )
+    # Dummy routing data
+    m_sizes = torch.randint(1, total_tokens // num_experts + 1, (num_experts,), device = device)
     m_sizes = m_sizes * (total_tokens // m_sizes.sum().item())
-    # Adjust to ensure exact total
+    # Adjust to exact total
     diff = total_tokens - m_sizes.sum().item()
     if diff != 0:
         m_sizes[0] += diff
@@ -282,8 +268,7 @@ def _run_moe_autotuning(
     gather_indices = torch.arange(total_tokens, device = device)
     torch.randperm(total_tokens, out = gather_indices)
 
-    # Autotune forward kernel - use the interface function with autotune=True
-    # This properly invokes the kernel and lets triton handle the autotuning
+    # Autotune via the interface function with autotune=True (lets triton tune)
     from .grouped_gemm.interface import (
         grouped_gemm_forward,
         grouped_gemm_dX,
@@ -301,7 +286,6 @@ def _run_moe_autotuning(
     )
 
     logger.info("Autotuning forward kernel (first GEMM)...")
-    # Run with autotune=True to trigger autotuning
     _ = grouped_gemm_forward(
         X = hidden_states,
         W = gate_up_weights,
@@ -314,7 +298,6 @@ def _run_moe_autotuning(
     )
     triton_config_fwd = _autotuned_grouped_gemm_forward_kernel.best_config
 
-    # Convert triton.Config to KernelConfigForward
     config_fwd = KernelConfigForward(
         BLOCK_SIZE_M = triton_config_fwd.kwargs["BLOCK_SIZE_M"],
         BLOCK_SIZE_N = triton_config_fwd.kwargs["BLOCK_SIZE_N"],
@@ -328,9 +311,7 @@ def _run_moe_autotuning(
 
     # Autotune backward dX kernel
     logger.info("Autotuning backward dX kernel...")
-    dummy_grad = torch.randn(
-        total_tokens, 2 * intermediate_dim, device = device, dtype = dtype
-    )
+    dummy_grad = torch.randn(total_tokens, 2 * intermediate_dim, device = device, dtype = dtype)
     _ = grouped_gemm_dX(
         dY = dummy_grad,
         W = gate_up_weights,
@@ -343,7 +324,6 @@ def _run_moe_autotuning(
     )
     triton_config_bwd_dx = _autotuned_grouped_gemm_dX_kernel.best_config
 
-    # Convert triton.Config to KernelConfigBackward_dX
     config_bwd_dx = KernelConfigBackward_dX(
         BLOCK_SIZE_M = triton_config_bwd_dx.kwargs["BLOCK_SIZE_M"],
         BLOCK_SIZE_N = triton_config_bwd_dx.kwargs["BLOCK_SIZE_N"],
@@ -369,7 +349,6 @@ def _run_moe_autotuning(
     )
     triton_config_bwd_dw = _autotuned_grouped_gemm_dW_kernel.best_config
 
-    # Convert triton.Config to KernelConfigBackward_dW
     config_bwd_dw = KernelConfigBackward_dW(
         BLOCK_SIZE_M = triton_config_bwd_dw.kwargs["BLOCK_SIZE_M"],
         BLOCK_SIZE_N = triton_config_bwd_dw.kwargs["BLOCK_SIZE_N"],

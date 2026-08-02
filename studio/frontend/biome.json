@@ -1,0 +1,150 @@
+{
+  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "files": {
+    "ignore": [
+      "dist",
+      "node_modules",
+      "test",
+      "test/**",
+      "**/._*",
+      "._*",
+      "**/.DS_Store",
+      "tsconfig*.json"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "organizeImports": {
+    "enabled": true
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "a11y": { "all": true },
+      "complexity": { "all": true },
+      "correctness": { "all": true, "useImportExtensions": "off" },
+      "performance": { "all": true },
+      "security": { "all": true },
+      "style": {
+        "all": true,
+        "useNamingConvention": { "options": { "strictCase": false } }
+      },
+      "suspicious": { "all": true, "noReactSpecificProps": "off" }
+    }
+  },
+  "overrides": [
+    {
+      "include": ["vite.config.ts", "eslint.config.js"],
+      "linter": {
+        "rules": {
+          "correctness": { "noNodejsModules": "off" },
+          "style": { "noDefaultExport": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/components/assistant-ui/reasoning.tsx"],
+      "linter": {
+        "rules": {
+          "style": { "useNamingConvention": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/components/assistant-ui/attachment.tsx"],
+      "linter": {
+        "rules": {
+          "style": { "useNamingConvention": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/components/assistant-ui/tool-fallback.tsx"],
+      "linter": {
+        "rules": {
+          "style": { "useNamingConvention": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/components/component-example.tsx"],
+      "linter": {
+        "rules": {
+          "style": { "noNamespaceImport": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/config/env.ts"],
+      "linter": {
+        "rules": {
+          "style": { "useNamingConvention": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/components/layout/index.ts"],
+      "linter": {
+        "rules": {
+          "performance": { "noBarrelFile": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/features/**/index.ts"],
+      "linter": {
+        "rules": {
+          "performance": { "noBarrelFile": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/features/chat/thread-sidebar.tsx"],
+      "linter": {
+        "rules": {
+          "a11y": { "useSemanticElements": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/features/chat/runtime-provider.tsx"],
+      "linter": {
+        "rules": {
+          "style": { "useNamingConvention": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/components/assistant-ui/thread.tsx"],
+      "linter": {
+        "rules": {
+          "style": { "useNamingConvention": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/features/onboarding/components/steps/summary-step.tsx"],
+      "linter": {
+        "rules": {
+          "style": { "useExplicitLengthCheck": "off" }
+        }
+      }
+    },
+    {
+      "include": ["src/components/ui/**"],
+      "linter": {
+        "enabled": false
+      },
+      "formatter": {
+        "enabled": false
+      },
+      "organizeImports": {
+        "enabled": false
+      }
+    }
+  ]
+}

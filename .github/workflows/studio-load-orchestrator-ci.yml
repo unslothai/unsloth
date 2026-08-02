@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Event-loop regression test for the Unsloth model-load orchestrator.
+# Pins down issue #5642 (Win10 UI freeze on model load): the /load
+# route calls LlamaCppBackend.detect_audio_type synchronously, blocking
+# the FastAPI event loop on a chain of sync httpx.Client.post() probes.
+#
+# The suite stands up a stdlib fake llama-server + a tiny FastAPI app
+# via uvicorn and asserts that detect_audio_type runs via
+# asyncio.to_thread so concurrent /api/inference/load-progress polling
+# stays responsive. CPU-only, no torch, no real llama.cpp binary, no
+# GPU -- the matching cross-OS staging proof lives on
+# danielhanchen/unsloth-staging-2 (Ubuntu / macOS / Windows all
+# green at PR time).
+
+name: Unsloth load-orchestrator CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/routes/inference.py'
+      - 'studio/backend/core/inference/llama_cpp.py'
+      - 'tests/studio/load_freeze/**'
+      - '.github/workflows/studio-load-orchestrator-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'studio/backend/routes/inference.py'
+      - 'studio/backend/core/inference/llama_cpp.py'
+      - 'tests/studio/load_freeze/**'
+      - '.github/workflows/studio-load-orchestrator-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install minimal deps (no torch, no unsloth)
+        # The test stubs `loggers` and `structlog`, imports
+        # core.inference.llama_cpp directly, and drives a small
+        # FastAPI app. Nothing here pulls torch or any GPU code,
+        # so the entire job typically completes in well under 60 s.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            'pytest>=8' \
+            'httpx>=0.27,<1' \
+            'fastapi>=0.110,<1' \
+            'uvicorn>=0.30,<1' \
+            'anyio>=4'
+      - name: Run load-orchestrator tests
+        run: python -m pytest -v --tb=short tests/studio/load_freeze/

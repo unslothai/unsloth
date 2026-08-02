@@ -1,0 +1,273 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Focused integration tests for explicit GGUF GPU placement."""
+
+from __future__ import annotations
+
+import os
+import struct
+import subprocess
+import sys
+import types
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+
+def _stub_module(name: str, **attrs):
+    if name in sys.modules:
+        return
+    try:
+        __import__(name)
+        return
+    except Exception:
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        sys.modules[name] = module
+
+
+_stub_module("loggers", get_logger = lambda name: __import__("logging").getLogger(name))
+_stub_module("structlog", get_logger = lambda *a, **k: __import__("logging").getLogger("stub"))
+_stub_module(
+    "jwt",
+    decode = lambda *a, **k: {},
+    ExpiredSignatureError = type("ExpiredSignatureError", (Exception,), {}),
+    InvalidTokenError = type("InvalidTokenError", (Exception,), {}),
+)
+if "httpx" not in sys.modules:
+    try:
+        import httpx  # noqa: F401
+    except Exception:
+        module = types.ModuleType("httpx")
+        for name in (
+            "ConnectError",
+            "TimeoutException",
+            "ReadTimeout",
+            "ReadError",
+            "RemoteProtocolError",
+            "CloseError",
+        ):
+            setattr(module, name, type(name, (Exception,), {}))
+        module.Timeout = type("Timeout", (), {"__init__": lambda self, *a, **k: None})
+        module.Client = type(
+            "Client",
+            (),
+            {
+                "__init__": lambda self, **kwargs: None,
+                "__enter__": lambda self: self,
+                "__exit__": lambda self, *args: None,
+            },
+        )
+        sys.modules["httpx"] = module
+
+from core.inference.llama_cpp import LlamaCppBackend
+
+_REAL_POPEN = subprocess.Popen
+
+
+def _write_gguf(path: Path, architecture: str = "llama") -> Path:
+    def string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    metadata = string("general.architecture") + struct.pack("<I", 8) + string(architecture)
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+    return path
+
+
+def _backend(tmp_path: Path, *, vulkan: bool, memory):
+    backend = LlamaCppBackend()
+    gguf = _write_gguf(tmp_path / "model.gguf")
+    backend._get_gpu_memory = lambda _binary = None: list(memory)
+    backend._get_gpu_free_memory = lambda _binary = None: [
+        (index, free) for index, free, _total in memory
+    ]
+    backend._read_gguf_metadata = lambda _path: None
+    backend._can_estimate_kv = lambda: False
+    backend._get_gguf_size_bytes = lambda _path: 1024
+    backend._mmproj_vram_bytes = lambda _path: 0
+    backend._resolve_launch_mmproj_path = lambda **kwargs: None
+    backend._apu_ram_shortfall_message = lambda *args, **kwargs: None
+    backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: vulkan
+    backend._wait_for_health = lambda timeout: True
+    backend._detect_audio_type_strict = lambda: None
+    backend._apply_detected_audio = lambda _detected: True
+    return backend, gguf
+
+
+def _launch(backend, gguf, **load_kwargs):
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        captured["cmd"] = list(cmd)
+        captured["env"] = kwargs.get("env") or dict(os.environ)
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            gguf_path = str(gguf),
+            model_identifier = "test",
+            **load_kwargs,
+        )
+    return captured
+
+
+def test_vulkan_selection_uses_ordinals_and_owns_device_flags(tmp_path):
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 10_000, 16_000), (1, 8_000, 16_000)],
+    )
+    backend._select_gpus = lambda *args, **kwargs: ([1], False)
+
+    result = _launch(
+        backend,
+        gguf,
+        gpu_ids = [0, 1],
+        extra_args = ["--device", "Vulkan0", "--main-gpu", "0", "--top-k", "5"],
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--device") + 1] == "Vulkan1"
+    assert cmd.count("--device") == 1
+    assert "--main-gpu" not in cmd
+    assert cmd[cmd.index("--top-k") + 1] == "5"
+    assert backend.requested_gpu_ids == [0, 1]
+    assert backend.gpu_ids == [1]
+
+
+@pytest.mark.parametrize(
+    "gpu_ids,extra_args,expected_draft,user_device_survives",
+    [
+        (None, None, "Vulkan1", False),
+        (None, ["--device", "Vulkan1", "-dev=Vulkan0"], "Vulkan0", True),
+        ([1], ["--device", "Vulkan1", "-dev=Vulkan0"], "Vulkan1", False),
+    ],
+)
+def test_vulkan_fit_and_mtp_drafter_follow_placement_owner(
+    tmp_path, gpu_ids, extra_args, expected_draft, user_device_survives
+):
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 0), (1, 8_000, 16_000)],
+    )
+    planned = []
+
+    def fallback(_model_size, gpus, *args, **kwargs):
+        planned.append(list(gpus))
+        return None, True
+
+    backend._select_gpus = fallback
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    backend._resolve_launch_mtp_path = lambda **_kwargs: "/fake/mtp.gguf"
+    result = _launch(
+        backend,
+        gguf,
+        mtp_draft_path = "/fake/mtp.gguf",
+        speculative_type = "mtp",
+        gpu_ids = gpu_ids,
+        extra_args = extra_args,
+    )
+
+    assert planned
+    assert all(gpus == [(1, 8_000)] for gpus in planned)
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--device") + 1] == "Vulkan1"
+    assert cmd[cmd.index("--spec-draft-device") + 1] == expected_draft
+    assert ("-dev=Vulkan0" in cmd) is user_device_survives
+
+
+def test_cuda_selection_uses_visibility_and_removes_environment_placement(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
+    monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "0")
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 10_000, 16_000), (1, 8_000, 16_000)],
+    )
+    backend._select_gpus = lambda *args, **kwargs: ([1], False)
+
+    result = _launch(backend, gguf, gpu_ids = [1])
+
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1"
+    assert "LLAMA_ARG_DEVICE" not in result["env"]
+    assert "LLAMA_ARG_MAIN_GPU" not in result["env"]
+
+
+def test_backend_detection_accepts_versioned_vulkan_soname(tmp_path):
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix = "" if sys.platform == "win32" else "lib"
+    extension = "dll" if sys.platform == "win32" else "so"
+    (lib_dir / f"{prefix}ggml-vulkan.{extension}.0").write_bytes(b"x")
+
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir):
+        assert LlamaCppBackend._is_vulkan_backend(str(binary)) is True
+        assert LlamaCppBackend._backend_lacks_gpu_lib(str(binary)) is False
+
+
+def test_cpu_only_detection_requires_a_proven_split_library_layout(tmp_path):
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix = "" if sys.platform == "win32" else "lib"
+    extension = "dll" if sys.platform == "win32" else "so"
+    (lib_dir / f"{prefix}ggml-cpu.{extension}").write_bytes(b"x")
+
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir):
+        assert LlamaCppBackend._backend_lacks_gpu_lib(str(binary)) is True
+
+    (lib_dir / f"{prefix}ggml-vulkan.{extension}").write_bytes(b"x")
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir):
+        assert LlamaCppBackend._backend_lacks_gpu_lib(str(binary)) is False
+
+
+def test_diffusion_does_not_reinterpret_vulkan_ordinals(tmp_path):
+    gguf = _write_gguf(tmp_path / "diffusion.gguf", "diffusion-gemma")
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: True
+    backend._get_gpu_memory = lambda _binary = None: [(1, 8_000, 8_000)]
+    backend._download_gguf = lambda **kwargs: str(gguf)
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_is_diffusion", True)
+    backend._start_diffusion_server = lambda **kwargs: pytest.fail(
+        "Vulkan ordinal reached the CUDA diffusion runner"
+    )
+
+    with pytest.raises(ValueError, match = "no defined mapping"):
+        backend.load_model(
+            hf_repo = "renamed/model",
+            hf_variant = "Q4_K_M",
+            model_identifier = "renamed/model",
+            speculative_type = "off",
+            gpu_ids = [1],
+        )

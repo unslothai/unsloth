@@ -120,9 +120,7 @@ def _grouped_gemm_dX_kernel(
 
             if USE_TMA_STORE:
                 # Need to define descript within loop to predicate store along M
-                tl.static_assert(
-                    K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K"
-                )
+                tl.static_assert(K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K")
                 dX_desc = tl.make_tensor_descriptor(
                     dX_ptr,
                     shape = [m_end, K],
@@ -130,12 +128,9 @@ def _grouped_gemm_dX_kernel(
                     block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_K],
                 )
 
-            # Lower bound and upper bound are defined relative to the total tiles processed so far
-            # This ensures that we are only processing tiles for the current expert group AND
-            # we never exceed the total number of tiles for all expert groups
-            while tidx >= processed_tiles and tidx < (
-                processed_tiles + num_tiles_per_expert
-            ):
+            # Bounds are relative to tiles processed so far, so we only handle
+            # this expert's tiles and never exceed the total across experts.
+            while tidx >= processed_tiles and tidx < (processed_tiles + num_tiles_per_expert):
                 group_index = tidx - processed_tiles
 
                 # Output tile for this thread block for this expert group
@@ -177,9 +172,7 @@ def _grouped_gemm_dX_kernel(
                         load_a_idx = (
                             expert_token_offsets * N
                         )  # Permute on load from token -> expert order
-                        store_idx = (
-                            indices_to_gather[:, None] * K
-                        )  # Store in contiguous order
+                        store_idx = indices_to_gather[:, None] * K  # Store in contiguous order
                 else:
                     # # Position in full matrix - needed for TMA
                     # m_offset = (M_start + (tile_m_idx * BLOCK_SIZE_M)).to(tl.int32)
@@ -218,16 +211,12 @@ def _grouped_gemm_dX_kernel(
                     if not USE_TMA_LOAD_dY:
                         dY = tl.load(dY_ptrs, mask = row_mask)
                     else:
-                        dY = dY_desc.load(
-                            [m_start + tile_m_idx * BLOCK_SIZE_M, n_offset]
-                        )
+                        dY = dY_desc.load([m_start + tile_m_idx * BLOCK_SIZE_M, n_offset])
 
                     if not USE_TMA_LOAD_W:
                         w = tl.load(w_ptrs)  # , mask=col_mask)
                     else:
-                        w = w_desc.load(
-                            [expert_idx, n_offset, tile_k_idx * BLOCK_SIZE_K]
-                        )
+                        w = w_desc.load([expert_idx, n_offset, tile_k_idx * BLOCK_SIZE_K])
                         w = tl.reshape(w, (BLOCK_SIZE_N, BLOCK_SIZE_K))
                     # TODO: check if predication along K is needed since we checked that K is divisible by BLOCK_SIZE_K in the forward kernel
 
@@ -358,9 +347,7 @@ def _grouped_gemm_dW_kernel(
             block_shape = [1, BLOCK_SIZE_N, BLOCK_SIZE_K],
         )
 
-    for tile_idx in range(
-        tidx, output_tiles_per_expert, NUM_SMS
-    ):  # , flatten=FLATTEN):
+    for tile_idx in range(tidx, output_tiles_per_expert, NUM_SMS):  # , flatten=FLATTEN):
         # Output tile index
         tile_n_idx = tile_idx % num_n_tiles
         tile_k_idx = tile_idx // num_n_tiles
@@ -460,9 +447,7 @@ def _grouped_gemm_dW_kernel(
                             x = x_desc.load([m_global_offset, k_offset])
                         else:
                             x = tl.load(
-                                x_ptr
-                                + x_row_load_idx
-                                + (k_offset + block_range_k)[None, :],
+                                x_ptr + x_row_load_idx + (k_offset + block_range_k)[None, :],
                                 mask = mk_mask,
                             )
 
@@ -470,9 +455,7 @@ def _grouped_gemm_dW_kernel(
                             dY = dY_desc.load([m_global_offset, n_offset])
                         else:
                             dY = tl.load(
-                                dY_ptr
-                                + dY_row_load_idx
-                                + (n_offset + block_range_n)[None, :],
+                                dY_ptr + dY_row_load_idx + (n_offset + block_range_n)[None, :],
                                 mask = mn_mask,
                             )
 

@@ -57,7 +57,11 @@ def test_sdpa_packed_attention_mask_sliding_window():
 
 def test_xformers_block_mask_sliding_window(monkeypatch):
     class _FakeMask:
-        def __init__(self, lengths, window = None):
+        def __init__(
+            self,
+            lengths,
+            window = None,
+        ):
             self.lengths = lengths
             self.window = window
 
@@ -87,7 +91,13 @@ def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
     original_builder = attention_dispatch.build_sdpa_packed_attention_mask
     captured = {}
 
-    def _capture_builder(seq_info_arg, *, dtype, device, sliding_window = None):
+    def _capture_builder(
+        seq_info_arg,
+        *,
+        dtype,
+        device,
+        sliding_window = None,
+    ):
         captured["window"] = sliding_window
         return original_builder(
             seq_info_arg,
@@ -154,24 +164,29 @@ def test_run_attention_xformers_passes_sliding_window(monkeypatch):
 
     captured = {}
 
-    def _fake_builder(seq_info_arg, *, sliding_window = None, base_mask = None):
+    def _fake_builder(
+        seq_info_arg,
+        *,
+        sliding_window = None,
+        base_mask = None,
+    ):
         captured["window"] = sliding_window
         captured["base"] = base_mask
         return _FakeBias()
 
-    def _fake_attention(Q, K, V, attn_bias = None, **_):
+    def _fake_attention(
+        Q,
+        K,
+        V,
+        attn_bias = None,
+        **_,
+    ):
         captured["bias"] = attn_bias
         return torch.zeros_like(Q)
 
-    monkeypatch.setattr(
-        attention_dispatch, "build_xformers_block_causal_mask", _fake_builder
-    )
-    monkeypatch.setattr(
-        attention_dispatch, "xformers_attention", _fake_attention, raising = False
-    )
-    monkeypatch.setattr(
-        attention_dispatch, "XFORMERS_BLOCK_DIAG_CLS", _FakeBias, raising = False
-    )
+    monkeypatch.setattr(attention_dispatch, "build_xformers_block_causal_mask", _fake_builder)
+    monkeypatch.setattr(attention_dispatch, "xformers_attention", _fake_attention, raising = False)
+    monkeypatch.setattr(attention_dispatch, "XFORMERS_BLOCK_DIAG_CLS", _FakeBias, raising = False)
 
     config = attention_dispatch.AttentionConfig(
         backend = attention_dispatch.XFORMERS,

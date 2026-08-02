@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Fast, focused supply-chain audit of every checked-in lockfile.
+#
+# Runs scripts/lockfile_supply_chain_audit.py on PRs that touch any
+# npm or cargo lockfile, on push to main, and on a daily schedule so
+# newly-published IOCs surface even when no PR opens.
+#
+# Default behavior is "advisory": only public indicator-of-compromise
+# strings, known-malicious pinned versions, and structurally broken
+# lockfiles fail the build. Structural anomalies (missing integrity,
+# non-default registry, etc.) are emitted as GitHub Actions warnings
+# but do not block merges. This deliberately keeps the noise floor
+# low while still failing the moment a checked-in lockfile starts
+# pointing at known-bad bytes.
+#
+# This workflow is intentionally separate from security-audit.yml:
+#   - security-audit.yml is the umbrella job (pip-audit + npm audit +
+#     cargo audit + OSV + Semgrep + secret scanning + SBOM + ...);
+#     it takes ~25 minutes and runs only when dep manifests change.
+#   - lockfile-audit.yml is a ~30 second pure-Python parse + grep on
+#     the lockfiles themselves; it runs on every PR that even nudges
+#     a lockfile so reviewers always see the audit result inline.
+
+name: Lockfile supply-chain audit
+
+on:
+  pull_request:
+    paths:
+      - 'studio/frontend/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/package-lock.json'
+      - 'studio/src-tauri/Cargo.lock'
+      - 'scripts/lockfile_supply_chain_audit.py'
+      - '.github/workflows/lockfile-audit.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'studio/frontend/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/package-lock.json'
+      - 'studio/src-tauri/Cargo.lock'
+      - 'scripts/lockfile_supply_chain_audit.py'
+      - '.github/workflows/lockfile-audit.yml'
+  schedule:
+    - cron: '37 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: lockfile supply-chain audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Verify audit script parses
+        run: python3 -c "import ast; ast.parse(open('scripts/lockfile_supply_chain_audit.py').read())"
+
+      - name: Run lockfile supply-chain audit
+        # Default mode: only known-malicious pinned versions, known IOC
+        # strings, and structurally broken lockfiles fail the build.
+        # Missing-integrity and other structural anomalies are emitted
+        # as ::warning:: annotations and do not gate merges.
+        run: python3 scripts/lockfile_supply_chain_audit.py
