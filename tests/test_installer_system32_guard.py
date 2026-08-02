@@ -160,6 +160,7 @@ def _run_relocation_block(
     current_dir: Path,
     home_env: Path,
     with_llama_cpp_dir: str = "",
+    studio_home: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the relocation body on the host's own filesystem (no '\\' concatenation in it)."""
     script = (
@@ -167,6 +168,7 @@ def _run_relocation_block(
         + f"$SystemRootDir = '{system_root}'\n"
         + f"$CurrentDir = '{current_dir}'\n"
         + f"$WithLlamaCppDir = '{with_llama_cpp_dir}'\n"
+        + f"$StudioHome = '{studio_home or (home_env / '.unsloth' / 'studio')}'\n"
         + "Set-Location -LiteralPath $CurrentDir\n"
         + _extract_relocation_block()
         + '\nWrite-Host "CWD:$((Get-Location).ProviderPath)"\n'
@@ -230,6 +232,23 @@ def test_relocation_block_leaves_a_fully_qualified_llama_cpp_dir_alone(tmp_path)
     assert (
         f"LLAMA:{absolute}" in res.stdout
     ), "an already qualified path must pass through untouched"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_relocation_block_refuses_a_studio_home_under_the_system_root(tmp_path):
+    """Relocating the CWD does not move $StudioHome, which SYSTEM resolves to
+    C:\\Windows\\System32\\config\\systemprofile\\.unsloth\\studio: fail rather than install there."""
+    system_root = tmp_path / "Windows"
+    current_dir = system_root / "System32"
+    current_dir.mkdir(parents = True)
+    home = tmp_path / "home"
+    home.mkdir()
+    studio_home = system_root / "System32" / "config" / "systemprofile" / ".unsloth" / "studio"
+    res = _run_relocation_block(tmp_path, system_root, current_dir, home, studio_home = studio_home)
+    assert res.returncode == 42, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert "would install into" in res.stdout
+    assert "normal user account" in res.stdout
+    assert "FAILED:" in res.stdout, "must route through Exit-InstallFailure for rollback"
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")

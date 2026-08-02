@@ -1193,6 +1193,24 @@ exit 0
                 continue
             }
         }
+        # $StudioHome came from USERPROFILE, resolved long before this block, so a SYSTEM
+        # account would keep installing into C:\Windows\System32\config\systemprofile while
+        # we report having escaped. Rebasing it would orphan the install -- the runtime
+        # resolvers recompute the root from USERPROFILE -- so stop, which is what happened
+        # before this block existed, only with a reason attached.
+        $StudioHomeFull = ""
+        try { $StudioHomeFull = [System.IO.Path]::GetFullPath($StudioHome).TrimEnd('\') } catch {}
+        if ($SafeDir -and $StudioHomeFull.StartsWith($SystemRootDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-Host ""
+            Write-Host "[ERROR] Unsloth would install into $StudioHomeFull," -ForegroundColor Red
+            Write-Host "        which is inside $SystemRootDir." -ForegroundColor Yellow
+            Write-Host "        That is where a service or the SYSTEM account keeps its profile." -ForegroundColor Yellow
+            Write-Host "        Sign in as a normal user, open PowerShell there, and run the" -ForegroundColor Yellow
+            Write-Host "        installer again:" -ForegroundColor Yellow
+            Write-Host "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
+            Write-Host ""
+            return (Exit-InstallFailure "Refusing to install into $StudioHomeFull, which is inside $SystemRootDir. Run the installer from a normal user account.")
+        }
         if ($SafeDir) {
             Write-TauriLog "STEP" "Left system directory $CurrentDir for $SafeDir"
             step "directory" "$CurrentDir is a Windows system folder" "Yellow"
