@@ -226,29 +226,37 @@ function loadAdvancedSettingsOpen(): boolean | null {
   }
 }
 
-// Memory is the source of truth. A browser that refuses the write still gets a
-// working switch, it just forgets the choice next launch. undefined = unread.
-let advancedOpen: boolean | null | undefined;
+// Set only when a write is refused, so the switch keeps working in a browser
+// with storage disabled, sandboxed or full. Cleared by the next write that
+// sticks, which puts storage back in charge.
+let unpersisted: { open: boolean } | null = null;
 const advancedOpenListeners = new Set<() => void>();
 
 /** null until the switch is used, so an untouched panel is free to open the
- *  section for a model that carries non-default advanced values. */
+ *  section for a model that carries non-default advanced values.
+ *
+ *  Read straight from storage rather than cached: a write from another tab
+ *  while every panel was unmounted has no listener to catch it, and its
+ *  storage event is not replayed on the next mount. */
 export function readAdvancedSettingsOpen(): boolean | null {
-  if (advancedOpen === undefined) {
-    advancedOpen = loadAdvancedSettingsOpen();
+  return unpersisted ? unpersisted.open : loadAdvancedSettingsOpen();
+}
+
+/** True when the choice reached storage. */
+function writeAdvancedSettingsOpen(open: boolean): boolean {
+  if (!canUseStorage()) {
+    return false;
   }
-  return advancedOpen;
+  try {
+    localStorage.setItem(ADVANCED_SETTINGS_OPEN_KEY, open ? "true" : "false");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function saveAdvancedSettingsOpen(open: boolean): void {
-  advancedOpen = open;
-  if (canUseStorage()) {
-    try {
-      localStorage.setItem(ADVANCED_SETTINGS_OPEN_KEY, open ? "true" : "false");
-    } catch {
-      // ignore
-    }
-  }
+  unpersisted = writeAdvancedSettingsOpen(open) ? null : { open };
   // Run Settings is mounted on several surfaces at once, and the sidebar copy
   // stays mounted while collapsed, so tell them all rather than let them keep
   // a snapshot taken at mount.
@@ -270,7 +278,6 @@ export function subscribeAdvancedSettingsOpen(
   const onStorage = (event: StorageEvent) => {
     // A null key is a clear(), which drops this preference too.
     if (event.key === null || event.key === ADVANCED_SETTINGS_OPEN_KEY) {
-      advancedOpen = loadAdvancedSettingsOpen();
       onChange();
     }
   };

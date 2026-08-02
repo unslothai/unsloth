@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -70,11 +71,9 @@ test("closing it is remembered as closed, not as untouched", () => {
 });
 
 test("a value it cannot parse counts as untouched", () => {
-  const panel = mounted();
   store.set(ADVANCED_SETTINGS_OPEN_KEY, "yes");
-  fromAnotherTab(ADVANCED_SETTINGS_OPEN_KEY);
   assert.equal(readAdvancedSettingsOpen(), null);
-  panel.unmount();
+  store.delete(ADVANCED_SETTINGS_OPEN_KEY);
 });
 
 test("a refused write still moves the switch", () => {
@@ -123,7 +122,7 @@ test("an unmounted panel stops hearing them", () => {
   assert.equal(panel.changes(), 0);
 });
 
-test("a toggle in another tab reaches mounted panels", () => {
+test("a toggle in another tab repaints mounted panels", () => {
   const panel = mounted();
 
   store.set(ADVANCED_SETTINGS_OPEN_KEY, "false");
@@ -135,13 +134,36 @@ test("a toggle in another tab reaches mounted panels", () => {
   store.delete(ADVANCED_SETTINGS_OPEN_KEY);
   fromAnotherTab(null);
   assert.equal(panel.changes(), 2);
-  assert.equal(readAdvancedSettingsOpen(), null);
 
   // An unrelated key does not.
   fromAnotherTab("unsloth_model_configs");
   assert.equal(panel.changes(), 2);
 
   panel.unmount();
+});
+
+test("a toggle in another tab lands even with no panel mounted to hear it", () => {
+  // Nothing is subscribed, so no storage event is caught, and events are not
+  // replayed. The next panel to mount still has to see the new value.
+  saveAdvancedSettingsOpen(true);
+  store.set(ADVANCED_SETTINGS_OPEN_KEY, "false");
+  assert.equal(readAdvancedSettingsOpen(), false);
+
+  store.delete(ADVANCED_SETTINGS_OPEN_KEY);
+  assert.equal(readAdvancedSettingsOpen(), null);
+});
+
+test("the reset in Settings > General clears it", async () => {
+  const source = await readFile(
+    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const PREFS_KEYS");
+  const keys = source.slice(start, source.indexOf("];", start));
+  assert.ok(
+    keys.includes(`"${ADVANCED_SETTINGS_OPEN_KEY}"`),
+    `${ADVANCED_SETTINGS_OPEN_KEY} missing from PREFS_KEYS`,
+  );
 });
 
 test("unsubscribing detaches the cross-tab listener too", () => {
