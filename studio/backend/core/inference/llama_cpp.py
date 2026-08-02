@@ -35,6 +35,7 @@ from typing import (
     Literal,
     Mapping,
     MutableMapping,
+    NamedTuple,
     Optional,
     Union,
 )
@@ -2113,7 +2114,11 @@ _OVERRIDE_TENSOR_FLAGS: frozenset = frozenset(
 )
 
 
-def _paravirtual_strip_gpu_overrides(extra_args: Optional[Iterable[str]]) -> Optional[List[str]]:
+def _paravirtual_strip_gpu_overrides(
+    extra_args: Optional[Iterable[str]],
+    *,
+    log_dropped: bool = True,
+) -> Optional[List[str]]:
     """Drop --override-tensor entries that place weights back on the corrupt device.
 
     ``-ot`` is the one placement flag ``--gpu-layers 0`` cannot answer: llama.cpp
@@ -2127,6 +2132,10 @@ def _paravirtual_strip_gpu_overrides(extra_args: Optional[Iterable[str]]) -> Opt
     Only non-CPU targets are dropped. ``-ot exps=CPU`` is the common and useful
     spelling, it moves weights the same way this fallback does, and stripping it
     would slow the very load it is meant to rescue.
+
+    ``log_dropped=False`` for the duplicate-load comparators, which normalize a
+    request they are only inspecting: they must not narrate a drop no launch is
+    performing, on every /load.
     """
     if not extra_args:
         return extra_args if extra_args is None else list(extra_args)
@@ -2145,7 +2154,7 @@ def _paravirtual_strip_gpu_overrides(extra_args: Optional[Iterable[str]]) -> Opt
                 out.append(tok)
                 if not inline and i + 1 < len(args):
                     out.append(args[i + 1])
-            else:
+            elif log_dropped:
                 logger.warning(
                     "Dropping %s %s: this Mac's Metal device is virtualised, so an "
                     "override that keeps weights on it would return corrupt output.",
@@ -2157,6 +2166,82 @@ def _paravirtual_strip_gpu_overrides(extra_args: Optional[Iterable[str]]) -> Opt
         out.append(tok)
         i += 1
     return out
+
+
+class ParavirtualPlacement(NamedTuple):
+    """A load request's GPU placement after the virtualised-Metal CPU pin."""
+
+    gpu_memory_mode: Literal["auto", "manual"]
+    gpu_layers: int
+    tensor_parallel: bool
+    tensor_split: Optional[List[float]]
+    n_cpu_moe: int
+    extra_args: Optional[List[str]]
+
+
+def paravirtual_normalized_request(
+    *,
+    gpu_memory_mode: Literal["auto", "manual"] = "auto",
+    gpu_layers: int = -1,
+    tensor_parallel: bool = False,
+    tensor_split: Optional[List[float]] = None,
+    n_cpu_moe: int = 0,
+    extra_args: Optional[Iterable[str]] = None,
+    log_dropped: bool = True,
+) -> ParavirtualPlacement:
+    """Map a requested placement to the one a virtualised Metal device launches.
+
+    Single source of truth for the CPU pin, shared by the launch (load_model)
+    and by BOTH duplicate-load comparators (``_already_in_target_state`` and the
+    route's ``_request_matches_loaded_settings``). The launch records what it
+    normalized, so a comparator that judged the RAW request would mismatch its
+    own state and tear down a healthy CPU server on every repeat Apply -- and,
+    with an unbounded reload loop, 409 or cancel a live generation.
+
+    Pure and unconditional: callers gate on ``_metal_device_is_paravirtual()``,
+    and it is idempotent, so applying it to an already-normalized request (a
+    respawn replay, or a comparator running inside load_model) is a no-op.
+
+    Deliberately NOT keyed on the request already being manual/0. A user who
+    picks Manual + 0 layers has placed the main model on CPU, but the extras are
+    the caller's, not Unsloth's: ``-ot ".*=Metal"`` is applied while each weight's
+    buffer type is chosen, before any layer is assigned, so it puts weights back
+    on the corrupt device no matter what the layer count says -- and the route
+    only strips the ``-ngl`` family, never ``-ot``.
+
+    ``log_dropped=False`` for the comparators: they normalize a request they are
+    only inspecting, so they must not narrate a rewrite no launch is performing.
+    """
+    normalized = extra_args if extra_args is None else list(extra_args)
+    if normalized:
+        # User pass-through args are appended AFTER the managed --gpu-layers 0 and
+        # llama.cpp's parser is last-wins, so an accepted `-ngl 99` would re-enable
+        # the corrupt offload. Only manual mode strips these at the route, so an
+        # Auto request still carries them here.
+        normalized = strip_shadowing_flags(
+            normalized,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_offload = True,
+        )
+        # strip_offload only covers the layer-count family; an --override-tensor
+        # aimed at Metal survives it and places weights before any layer
+        # assignment happens.
+        normalized = _paravirtual_strip_gpu_overrides(normalized, log_dropped = log_dropped)
+    return ParavirtualPlacement(
+        gpu_memory_mode = "manual",
+        gpu_layers = 0,
+        # Nothing is left on the GPU to split or keep on CPU, and the launch drops
+        # these anyway; normalize them here too so the recorded state and the next
+        # identical request agree.
+        tensor_parallel = False,
+        tensor_split = None,
+        n_cpu_moe = 0,
+        extra_args = normalized,
+    )
 
 
 def _paravirtual_split_mode_pin(extra_args: Optional[Iterable[str]]) -> List[str]:
@@ -2780,6 +2865,11 @@ class LlamaCppBackend:
         # ``_extra_args_source`` records the (model_identifier, hf_variant) the
         # stored args came from so the route can refuse cross-model inheritance.
         self._extra_args: Optional[List[str]] = None
+        # The same extras as REQUESTED, before a launch-time rewrite (the
+        # virtualised-Metal drafter drop strips the spec group). Duplicate-load
+        # comparators key on the caller's list, which keeps arriving unchanged,
+        # so they compare requested-vs-requested like _requested_n_ctx does.
+        self._requested_extra_args: Optional[List[str]] = None
         self._extra_args_source: Optional[tuple[str, Optional[str]]] = None
         self._requested_n_ctx: int = 0
         # Raw kwargs of the last healthy load, for the MTP-crash reload. Memory-only
@@ -2907,6 +2997,19 @@ class LlamaCppBackend:
         never set, [] = explicitly cleared. Used by the route for
         inheritance."""
         return list(self._extra_args) if self._extra_args is not None else None
+
+    @property
+    def requested_extra_args(self) -> Optional[List[str]]:
+        """Extras the last load was INVOKED with (a copy), before any launch-time
+        rewrite; falls back to the launched list when nothing was rewritten. Used
+        by the duplicate-load comparators so a rewrite the caller cannot see (the
+        virtualised-Metal drafter drop) never reads as a settings change."""
+        stored = (
+            self._requested_extra_args
+            if self._requested_extra_args is not None
+            else self._extra_args
+        )
+        return list(stored) if stored is not None else None
 
     @property
     def requested_n_ctx(self) -> int:
@@ -6345,6 +6448,10 @@ class LlamaCppBackend:
             self._gpu_offload_active = not holds_no_gpu
             if extra_args is not None:
                 self._extra_args = list(extra_args)
+                # The diffusion runner has no spec block to drop, so the launched
+                # list IS the requested one; rebind so a prior GGUF load's record
+                # cannot outlive it.
+                self._requested_extra_args = list(extra_args)
                 self._extra_args_source = (model_identifier, hf_variant)
             # The visual server logs "MAXTOK=<N>" with the context budget it actually resolved
             # (auto-sized to VRAM). Read it back so the UI context bar shows the real budget.
@@ -7605,54 +7712,54 @@ class LlamaCppBackend:
             # placement is the one that launches: the launch records the normalized
             # values, so comparing the raw request would miss the fast path and tear
             # down a healthy CPU server on every repeat Auto /load.
-            # Keyed on the hardware, not on the request: Manual + 0 layers already
-            # places the main model on CPU, but the companions below (mmproj, a
-            # separate drafter) do not read --gpu-layers, so a manual CPU load on
-            # this hardware still needs their pins. Only the placement rewrite is
-            # skipped for it, since there is nothing left to rewrite.
+            # Keyed on the hardware, not on the request, and applied whole rather
+            # than only when the request asks for offload: Manual + 0 layers
+            # already places the main model on CPU, but the companions below
+            # (mmproj, a separate drafter) do not read --gpu-layers, and the
+            # extras are the caller's -- an `-ot ".*=Metal"` the route never
+            # strips would put weights straight back on the corrupt device.
+            # paravirtual_normalized_request is the one definition of that
+            # rewrite, shared with both duplicate-load comparators.
             _paravirtual_cpu_forced = _metal_device_is_paravirtual()
             if _paravirtual_cpu_forced:
-                if not (gpu_memory_mode == "manual" and gpu_layers == 0):
+                _pv_placement = paravirtual_normalized_request(
+                    gpu_memory_mode = gpu_memory_mode,
+                    gpu_layers = gpu_layers,
+                    tensor_parallel = tensor_parallel,
+                    tensor_split = tensor_split,
+                    n_cpu_moe = n_cpu_moe,
+                    extra_args = extra_args,
+                )
+                if (gpu_memory_mode, gpu_layers) != (
+                    _pv_placement.gpu_memory_mode,
+                    _pv_placement.gpu_layers,
+                ):
                     logger.warning(
                         "Forcing gpu_layers=0 for %s: this Mac's Metal device is "
                         "virtualised and offloaded layers produce corrupt output.",
                         model_identifier or gguf_path,
                     )
-                    gpu_memory_mode = "manual"
-                    gpu_layers = 0
-                    # Nothing is left on the GPU to split or keep on CPU, and the
-                    # launch drops these anyway; normalize them here too so the
-                    # recorded state and the next identical request agree.
-                    tensor_parallel = False
-                    tensor_split = None
-                    n_cpu_moe = 0
-                    # User pass-through args are appended AFTER the managed
-                    # --gpu-layers 0 and llama.cpp's parser is last-wins, so an
-                    # accepted `-ngl 99` would re-enable the corrupt offload. Only
-                    # manual mode strips these at the route, so an Auto request
-                    # still carries them here.
-                    if extra_args:
-                        _pv_stripped = strip_shadowing_flags(
-                            extra_args,
-                            strip_context = False,
-                            strip_cache = False,
-                            strip_spec = False,
-                            strip_template = False,
-                            strip_split_mode = False,
-                            strip_offload = True,
-                        )
-                        # strip_offload only covers the layer-count family; an
-                        # --override-tensor aimed at Metal survives it and places
-                        # weights before any layer assignment happens.
-                        _pv_stripped = _paravirtual_strip_gpu_overrides(_pv_stripped)
-                        if _pv_stripped != list(extra_args):
-                            logger.warning(
-                                "Dropping offload flags from extra args on a "
-                                "virtualised Metal device: %s -> %s",
-                                list(extra_args),
-                                _pv_stripped,
-                            )
-                            extra_args = _pv_stripped
+                if extra_args and _pv_placement.extra_args != list(extra_args):
+                    logger.warning(
+                        "Dropping offload flags from extra args on a "
+                        "virtualised Metal device: %s -> %s",
+                        list(extra_args),
+                        _pv_placement.extra_args,
+                    )
+                if tensor_parallel or tensor_split:
+                    logger.info(
+                        "Virtualised Metal device: dropping tensor split/parallel "
+                        "flags (nothing to split on the GPU)"
+                    )
+                gpu_memory_mode = _pv_placement.gpu_memory_mode
+                gpu_layers = _pv_placement.gpu_layers
+                n_cpu_moe = _pv_placement.n_cpu_moe
+                extra_args = _pv_placement.extra_args
+                # Spelled out rather than read off _pv_placement so the TP-drop
+                # allowlist in tests/test_tp_vision_regression.py still sees this
+                # site; the helper returns exactly these two values.
+                tensor_parallel = False
+                tensor_split = None
 
             # Duplicate /load that raced past the route check: do nothing if the
             # live server already satisfies this request.
@@ -9405,6 +9512,7 @@ class LlamaCppBackend:
                     mtp_draft_path = mtp_draft_path,
                 )
                 _pv_suppressed_draft_path: Optional[str] = None
+                _pv_suppressed_spec_extra_args: Optional[List[str]] = None
                 # Same shape as the projector drop above: the CPU pin below needs a
                 # draft-layer flag from the probe, and without one the drafter keeps
                 # its own automatic placement on the virtualised device. Unlike the
@@ -9449,6 +9557,12 @@ class LlamaCppBackend:
                     _pv_suppressed_draft_path = launch_mtp_draft_path
                     launch_mtp_draft_path = None
                     if extra_args:
+                        # Same reason as the suppressed path: record the extras as
+                        # REQUESTED next to the launched ones. Both comparators key
+                        # on the caller's list, and the caller keeps sending it, so
+                        # comparing it against this rewrite would reload a healthy
+                        # server on every repeat Apply.
+                        _pv_suppressed_spec_extra_args = list(extra_args)
                         extra_args = strip_shadowing_flags(
                             extra_args,
                             strip_context = False,
@@ -9468,6 +9582,13 @@ class LlamaCppBackend:
                     mtp_draft_path = launch_mtp_draft_path,
                     draft_device = _draft_device,
                 )
+                # _build_speculative_flags judged the stripped list, so a user
+                # --spec-type that the drop removed left the canonical requested
+                # mode reading "auto" while the caller's own extras still mean
+                # "the user owns it" (None). Restore the requested view, or the
+                # spec-mode compare mismatches forever.
+                if _extra_args_set_spec_type(_pv_suppressed_spec_extra_args):
+                    self._requested_spec_mode = None
                 # Remember where the spec block sits so a drafter-load failure
                 # can be retried with these flags swapped out (see below).
                 _spec_start = len(cmd)
@@ -10342,6 +10463,18 @@ class LlamaCppBackend:
                         if gpu_ids is not None
                         else list(extra_args)
                     )
+                    # Device-stripped the same way, so the comparators can hold both
+                    # sides to one rule.
+                    _pv_requested = (
+                        _pv_suppressed_spec_extra_args
+                        if _pv_suppressed_spec_extra_args is not None
+                        else extra_args
+                    )
+                    self._requested_extra_args = (
+                        self._strip_device_extra_args(_pv_requested)
+                        if gpu_ids is not None
+                        else list(_pv_requested)
+                    )
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
@@ -10772,6 +10905,29 @@ class LlamaCppBackend:
         """
         if not self.is_loaded:
             return False
+        # The stored state is what LAUNCHED, and on a virtualised Metal device
+        # that is the CPU-pinned rewrite of the request, not the request. Apply
+        # the same rewrite here (idempotent, so load_model's own call is a no-op)
+        # or a client that keeps sending Auto -- the API, a second tab, a saved
+        # preset -- mismatches on every single call.
+        _pv_forced = _metal_device_is_paravirtual()
+        if _pv_forced:
+            (
+                gpu_memory_mode,
+                gpu_layers,
+                tensor_parallel,
+                tensor_split,
+                n_cpu_moe,
+                extra_args,
+            ) = paravirtual_normalized_request(
+                gpu_memory_mode = gpu_memory_mode,
+                gpu_layers = gpu_layers,
+                tensor_parallel = tensor_parallel,
+                tensor_split = tensor_split,
+                n_cpu_moe = n_cpu_moe,
+                extra_args = extra_args,
+                log_dropped = False,
+            )
         if (self._model_identifier or "").lower() != (model_identifier or "").lower():
             return False
         # Direct-file loads pass hf_variant=None while the backend stores an
@@ -10802,7 +10958,16 @@ class LlamaCppBackend:
         # launched tensor: if load_model downgraded to layer split it scrubbed
         # the child env, so the env must not force an endless reload of a healthy
         # server. An identical request would downgrade the same way.
-        if not _tensor_parallel_matches_loaded(extra_args, tensor_parallel, self._tensor_parallel):
+        # A virtualised Metal device never launches a tensor split (the load is
+        # CPU-pinned and --split-mode is overridden with the default layer split),
+        # so judge the normalized request there: an extras `-sm tensor`, which the
+        # pin deliberately leaves in place, would otherwise never match.
+        if _pv_forced:
+            if self._tensor_parallel:
+                return False
+        elif not _tensor_parallel_matches_loaded(
+            extra_args, tensor_parallel, self._tensor_parallel
+        ):
             return False
         # Preserved tensor->layer fallback + an EXPLICIT tensor drop: reload so
         # placement re-selects instead of keeping the all-GPU mask (mirrors the route,
@@ -10835,8 +11000,8 @@ class LlamaCppBackend:
             ):
                 return False
         else:
-            requested_extra_args = extra_args if extra_args is not None else self._extra_args
-            if self._swa_full != _swa_full_from_args_or_env(requested_extra_args):
+            _swa_extra_args = extra_args if extra_args is not None else self._extra_args
+            if self._swa_full != _swa_full_from_args_or_env(_swa_extra_args):
                 return False
             # A GPU-memory-mode flip (Unsloth / manual) must always reload.
             if self._gpu_memory_mode != gpu_memory_mode:
@@ -10918,9 +11083,13 @@ class LlamaCppBackend:
             return False
 
         # extra_args=None means "no opinion" (inherit handled at the route
-        # layer); only an explicit list forces equality.
+        # layer); only an explicit list forces equality. Compared against what the
+        # last load was INVOKED with, not what it launched: the caller keeps
+        # sending its own list, so judging a launch-time rewrite it cannot see
+        # (the virtualised-Metal drafter drop) would reload on every Apply.
         if extra_args is not None:
-            current = list(self._extra_args) if self._extra_args is not None else []
+            _stored_requested = self.requested_extra_args
+            current = list(_stored_requested) if _stored_requested is not None else []
             candidate = list(extra_args)
             # Compare the same device-stripped extras that load_model persisted.
             if gpu_ids is not None:

@@ -145,10 +145,11 @@ _ALLOWED_TP_DROP_GUARDS = {
     "gpu_memory_mode == 'manual' and gpu_layers == 0",
     # Virtualised Metal: offloaded layers return corrupt tokens there, so the load
     # is rewritten to manual/0 and there is nothing left to split. Multi-GPU is not
-    # being given up, since a paravirtual Mac has one (emulated) device. The
-    # negated form is the branch that performs the rewrite, entered only when the
-    # request is not already manual/0; the detector itself gates the whole block.
-    "not (gpu_memory_mode == 'manual' and gpu_layers == 0)",
+    # being given up, since a paravirtual Mac has one (emulated) device. Guarded on
+    # the hardware alone: the rewrite is applied to every request on this device,
+    # including one that already asks for manual/0 (whose extras can still carry an
+    # --override-tensor the route does not strip).
+    "_paravirtual_cpu_forced",
 }
 
 

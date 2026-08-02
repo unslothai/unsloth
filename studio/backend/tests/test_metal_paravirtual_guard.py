@@ -1330,3 +1330,417 @@ def test_the_env_scrub_lands_before_the_spawn():
     src = _load_model_source()
     scrub = 'for _pv_mmproj_var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")'
     assert src.index(scrub) < src.index("_spawn_and_wait(")
+
+
+# ── one normalization, shared by the launch and both duplicate-load comparators ──
+#
+# The rewrite used to live inside load_model while the comparators judged the RAW
+# incoming request, so a repeat identical Apply mismatched the backend's own
+# recorded state and tore down a healthy CPU server -- 409-ing on an active
+# generation, or cancelling it. Every case below carries NON-EMPTY extra_args,
+# which is the blind spot that let the drafter-drop rewrite through.
+
+
+def _routes():
+    """routes/inference.py, imported lazily so this file's cheap AST tests do not
+    pay for FastAPI."""
+    from routes import inference as routes_inference
+
+    return routes_inference
+
+
+def _paravirtual_everywhere(monkeypatch):
+    """The route imports the detector by value, so patching only the llama_cpp
+    attribute would leave the route comparator on real hardware."""
+    _paravirtual(monkeypatch)
+    monkeypatch.setattr(_routes(), "_metal_device_is_paravirtual", lambda: True)
+
+
+def _real_mac_everywhere(monkeypatch):
+    monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
+    monkeypatch.setattr(_routes(), "_metal_device_is_paravirtual", lambda: False)
+
+
+def _normalized(**kwargs):
+    return llama_cpp.paravirtual_normalized_request(**kwargs)
+
+
+def test_the_normalizer_pins_every_placement_knob_to_cpu():
+    """The one definition of the rewrite: whatever came in, this is what launches."""
+    out = _normalized(
+        gpu_memory_mode = "auto",
+        gpu_layers = -1,
+        tensor_parallel = True,
+        tensor_split = [0.5, 0.5],
+        n_cpu_moe = 8,
+        extra_args = ["-ngl", "99", "--top-k", "40"],
+    )
+    assert out.gpu_memory_mode == "manual"
+    assert out.gpu_layers == 0
+    assert out.tensor_parallel is False
+    assert out.tensor_split is None
+    assert out.n_cpu_moe == 0
+    assert out.extra_args == ["--top-k", "40"]
+
+
+def test_the_normalizer_is_idempotent():
+    """load_model normalizes, then calls a comparator that normalizes again (and a
+    respawn replays the raw kwargs): a second pass must change nothing."""
+    once = _normalized(
+        gpu_memory_mode = "auto", gpu_layers = -1, extra_args = ["-ot", ".*=Metal", "--top-k", "40"]
+    )
+    twice = _normalized(
+        gpu_memory_mode = once.gpu_memory_mode,
+        gpu_layers = once.gpu_layers,
+        tensor_parallel = once.tensor_parallel,
+        tensor_split = once.tensor_split,
+        n_cpu_moe = once.n_cpu_moe,
+        extra_args = once.extra_args,
+    )
+    assert twice == once
+
+
+def test_the_normalizer_still_runs_for_a_request_that_already_asks_for_cpu():
+    """The severe one: the whole block used to be skipped for Manual + 0 layers, so
+    an --override-tensor in extras (which the route never strips, and which
+    llama.cpp applies while choosing each weight's buffer type, before any layer is
+    assigned) put the weights straight back on the corrupt device."""
+    out = _normalized(
+        gpu_memory_mode = "manual",
+        gpu_layers = 0,
+        extra_args = ["-ot", ".*=Metal", "--top-k", "40"],
+    )
+    assert out.extra_args == ["--top-k", "40"]
+
+
+def test_the_normalizer_keeps_extras_it_has_no_business_touching():
+    """The negatives: a CPU-targeted override does what this fallback does, a
+    --split-mode is neutralised at the launch instead (the comparators compare the
+    stored list verbatim), and "no opinion" must stay None, not become []."""
+    out = _normalized(extra_args = ["-ot", "exps=CPU", "-sm", "row", "--temp", "0.7"])
+    assert out.extra_args == ["-ot", "exps=CPU", "-sm", "row", "--temp", "0.7"]
+    assert _normalized(extra_args = None).extra_args is None
+    assert _normalized(extra_args = []).extra_args == []
+
+
+def test_the_launch_normalizes_a_manual_cpu_request_too(monkeypatch):
+    """End-to-end on the launch side: the flags reaching the duplicate-load check
+    are the ones that launch, for a request that already said Manual + 0."""
+    _paravirtual(monkeypatch)
+    backend = llama_cpp.LlamaCppBackend()
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return True
+
+    monkeypatch.setattr(backend, "_already_in_target_state", _capture)
+    monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d: True)
+    backend._audio_probed = True
+    backend._healthy = True
+    backend.load_model(
+        model_identifier = "owner/repo",
+        gguf_path = "/nonexistent/model.gguf",
+        gpu_memory_mode = "manual",
+        gpu_layers = 0,
+        n_cpu_moe = 8,
+        tensor_parallel = True,
+        extra_args = ["-ot", ".*=Metal", "--top-k", "40"],
+    )
+    assert seen["extra_args"] == ["--top-k", "40"]
+    assert seen["n_cpu_moe"] == 0
+    assert seen["tensor_parallel"] is False
+    assert seen["tensor_split"] is None
+
+
+def test_a_real_mac_keeps_its_tensor_override_on_a_manual_cpu_load(monkeypatch):
+    """The negative: none of this applies to physical Apple Silicon, where a
+    deliberate -ot must reach llama-server exactly as written."""
+    monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
+    backend = llama_cpp.LlamaCppBackend()
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return True
+
+    monkeypatch.setattr(backend, "_already_in_target_state", _capture)
+    monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d: True)
+    backend._audio_probed = True
+    backend._healthy = True
+    backend.load_model(
+        model_identifier = "owner/repo",
+        gguf_path = "/nonexistent/model.gguf",
+        gpu_memory_mode = "manual",
+        gpu_layers = 0,
+        n_cpu_moe = 8,
+        extra_args = ["-ot", ".*=Metal", "--top-k", "40"],
+    )
+    assert seen["extra_args"] == ["-ot", ".*=Metal", "--top-k", "40"]
+    assert seen["n_cpu_moe"] == 8
+
+
+def _cpu_server(monkeypatch, tmp_path, *, launched_extras, requested_extras = None):
+    """A healthy paravirtual CPU server that recorded a normalized placement."""
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0)
+    )
+    backend = llama_cpp.LlamaCppBackend()
+    backend._process = _FakeProcess()
+    backend._healthy = True
+    backend._audio_probed = True
+    backend._model_identifier = "owner/repo"
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF")
+    backend._gguf_path = str(gguf)
+    backend._requested_n_ctx = 8192
+    backend._requested_n_parallel = 1
+    backend._requested_spec_mode = "auto"
+    backend._gpu_memory_mode = "manual"
+    backend._gpu_layers = 0
+    backend._n_cpu_moe = 0
+    backend._tensor_split = None
+    backend._tensor_parallel = False
+    backend._extra_args = list(launched_extras)
+    backend._requested_extra_args = list(
+        requested_extras if requested_extras is not None else launched_extras
+    )
+    backend._extra_args_source = ("owner/repo", None)
+    return backend, gguf
+
+
+def _load_request(gguf, **overrides):
+    from models.inference import LoadRequest
+
+    fields = dict(
+        model_path = str(gguf),
+        max_seq_length = 8192,
+        speculative_type = "auto",
+        gpu_memory_mode = "auto",
+        gpu_layers = -1,
+    )
+    fields.update(overrides)
+    return LoadRequest(**fields)
+
+
+def test_a_repeat_auto_request_with_extras_matches_the_cpu_server_it_left(
+    monkeypatch, tmp_path
+):
+    """F6/F9 on both comparators. An API client, a second tab or a saved preset
+    keeps sending Auto: the browser adopting the normalized echo does not cover
+    them, and it never covers the extras box, which the UI does not round-trip."""
+    _paravirtual_everywhere(monkeypatch)
+    backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
+    request = _load_request(
+        gguf,
+        llama_extra_args = ["-ngl", "99", "--top-k", "40"],
+        tensor_parallel = True,
+        n_cpu_moe = 8,
+    )
+    assert _routes()._request_matches_loaded_settings(request, backend) is True
+    assert (
+        _target_state(
+            backend,
+            gguf,
+            speculative_type = "auto",
+            gpu_memory_mode = "auto",
+            gpu_layers = -1,
+            tensor_parallel = True,
+            n_cpu_moe = 8,
+            extra_args = ["-ngl", "99", "--top-k", "40"],
+        )
+        is True
+    )
+
+
+def test_the_same_pair_still_mismatches_on_a_real_mac(monkeypatch, tmp_path):
+    """The negative that keeps the normalization honest: off this hardware an Auto
+    request against a Manual/0 server is a genuine settings change and must reload."""
+    _real_mac_everywhere(monkeypatch)
+    backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
+    request = _load_request(gguf, llama_extra_args = ["--top-k", "40"])
+    assert _routes()._request_matches_loaded_settings(request, backend) is False
+    assert (
+        _target_state(
+            backend,
+            gguf,
+            speculative_type = "auto",
+            gpu_memory_mode = "auto",
+            gpu_layers = -1,
+            extra_args = ["--top-k", "40"],
+        )
+        is False
+    )
+
+
+def test_a_genuinely_different_extras_box_still_reloads(monkeypatch, tmp_path):
+    """The other negative: normalizing must not swallow a real edit. Only the
+    offload family and GPU-bound tensor overrides are rewritten, so a changed
+    sampler flag is still a settings change."""
+    _paravirtual_everywhere(monkeypatch)
+    backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
+    request = _load_request(gguf, llama_extra_args = ["--top-k", "20"])
+    assert _routes()._request_matches_loaded_settings(request, backend) is False
+    assert (
+        _target_state(
+            backend,
+            gguf,
+            speculative_type = "auto",
+            gpu_memory_mode = "auto",
+            gpu_layers = -1,
+            extra_args = ["--top-k", "20"],
+        )
+        is False
+    )
+
+
+def test_a_tensor_split_mode_in_extras_does_not_reload_a_cpu_server(monkeypatch, tmp_path):
+    """The pin overrides --split-mode at the launch rather than stripping it, so
+    the stored extras still say tensor while nothing tensor ever launched; judging
+    the raw extras would reload on every Apply."""
+    _paravirtual_everywhere(monkeypatch)
+    backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["-sm", "tensor"])
+    request = _load_request(gguf, llama_extra_args = ["-sm", "tensor"], tensor_parallel = True)
+    assert _routes()._request_matches_loaded_settings(request, backend) is True
+    assert (
+        _target_state(
+            backend,
+            gguf,
+            speculative_type = "auto",
+            gpu_memory_mode = "auto",
+            gpu_layers = -1,
+            tensor_parallel = True,
+            extra_args = ["-sm", "tensor"],
+        )
+        is True
+    )
+
+
+def test_a_dropped_drafter_does_not_reload_over_the_extras_it_rewrote(monkeypatch, tmp_path):
+    """F1/F3. The drop strips the whole spec group from extra_args and stores the
+    rewrite, but the caller keeps sending its own list, so comparing launched-vs-
+    requested mismatched on every Apply and reloaded without bound."""
+    _paravirtual_everywhere(monkeypatch)
+    asked = ["--draft-max", "8", "--top-k", "40"]
+    backend, gguf = _cpu_server(
+        monkeypatch, tmp_path, launched_extras = ["--top-k", "40"], requested_extras = asked
+    )
+    request = _load_request(gguf, llama_extra_args = list(asked))
+    assert _routes()._request_matches_loaded_settings(request, backend) is True
+    assert (
+        _target_state(
+            backend,
+            gguf,
+            speculative_type = "auto",
+            gpu_memory_mode = "auto",
+            gpu_layers = -1,
+            extra_args = list(asked),
+        )
+        is True
+    )
+
+
+def test_an_edited_spec_flag_still_reloads_after_a_dropped_drafter(monkeypatch, tmp_path):
+    """The negative: requested-vs-requested must still notice a real change to the
+    very flags the drop removed."""
+    _paravirtual_everywhere(monkeypatch)
+    backend, gguf = _cpu_server(
+        monkeypatch,
+        tmp_path,
+        launched_extras = ["--top-k", "40"],
+        requested_extras = ["--draft-max", "8", "--top-k", "40"],
+    )
+    request = _load_request(gguf, llama_extra_args = ["--draft-max", "4", "--top-k", "40"])
+    assert _routes()._request_matches_loaded_settings(request, backend) is False
+    assert (
+        _target_state(
+            backend,
+            gguf,
+            speculative_type = "auto",
+            gpu_memory_mode = "auto",
+            gpu_layers = -1,
+            extra_args = ["--draft-max", "4", "--top-k", "40"],
+        )
+        is False
+    )
+
+
+def test_the_requested_extras_default_to_the_launched_ones():
+    """Nothing rewritten means the two records are the same list, so every load
+    that never hits the drop keeps comparing exactly what it compared before."""
+    backend = llama_cpp.LlamaCppBackend()
+    assert backend.requested_extra_args is None
+    backend._extra_args = ["--top-k", "40"]
+    assert backend.requested_extra_args == ["--top-k", "40"]
+    backend._requested_extra_args = ["--draft-max", "8", "--top-k", "40"]
+    assert backend.requested_extra_args == ["--draft-max", "8", "--top-k", "40"]
+    # A copy, like extra_args: a caller mutating the result must not edit state.
+    backend.requested_extra_args.append("--temp")
+    assert backend.requested_extra_args == ["--draft-max", "8", "--top-k", "40"]
+
+
+def test_the_drop_records_the_requested_extras_before_rewriting_them():
+    """The recording contract, mirroring _pv_suppressed_draft_path: capture the
+    caller's list, then strip."""
+    src = _load_model_source()
+    assert src.index("_pv_suppressed_spec_extra_args = list(extra_args)") < src.index(
+        "                            strip_spec = True,"
+    )
+    assert "self._requested_extra_args = (" in src
+
+
+def _restore_requested_spec_mode(*, requested_extras):
+    """Execute load_model's real spec-mode restore against a backend whose
+    _build_speculative_flags already judged the stripped list."""
+    block = _if_block(
+        lambda test: "_pv_suppressed_spec_extra_args" in _names(test),
+    )
+    backend = llama_cpp.LlamaCppBackend()
+    backend._requested_spec_mode = "auto"
+    scope = {
+        "self": backend,
+        "_pv_suppressed_spec_extra_args": requested_extras,
+        "_extra_args_set_spec_type": llama_cpp._extra_args_set_spec_type,
+    }
+    exec(ast.unparse(ast.Module(body = [block], type_ignores = [])), scope)
+    return backend._requested_spec_mode
+
+
+def test_a_user_owned_spec_type_survives_the_drafter_drop():
+    """F2. The drop removed --spec-type before _build_speculative_flags saw the
+    list, so the backend recorded "auto" while the caller's own extras still mean
+    "the user owns it" (None) -- and the spec-mode compare mismatched forever."""
+    assert _restore_requested_spec_mode(
+        requested_extras = ["--spec-type", "draft-simple", "--model-draft", "/m/d.gguf"]
+    ) is None
+
+
+def test_the_restore_is_scoped_to_a_drop_that_owned_spec_type():
+    """The negatives: no drop, or a drop whose extras never set --spec-type, must
+    leave the mode _build_speculative_flags resolved exactly as it is."""
+    assert _restore_requested_spec_mode(requested_extras = None) == "auto"
+    assert _restore_requested_spec_mode(requested_extras = ["--draft-max", "8"]) == "auto"
+
+
+def test_the_route_really_can_deliver_a_manual_cpu_request_carrying_an_override():
+    """The reachability leg for the block above: manual mode owns the offload flags
+    at the route, but that strip is the --gpu-layers family only. An -ot survives
+    it untouched, and parse_gpu_layers_override reads nothing from it, so
+    gpu_layers stays 0 and the request arrives as Manual + 0 with a GPU-bound
+    override still in the extras. (An -ngl cannot: the route translates it into
+    gpu_layers first, which is why only -ot reaches the skipped branch.)"""
+    extras = ["-ot", ".*=Metal", "--top-k", "40"]
+    assert llama_server_args.parse_gpu_layers_override(extras) is None
+    assert (
+        llama_server_args.strip_shadowing_flags(
+            extras,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_tensor_split = True,
+            strip_offload = True,
+        )
+        == extras
+    )

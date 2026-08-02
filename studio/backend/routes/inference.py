@@ -1014,9 +1014,11 @@ try:
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
+        _metal_device_is_paravirtual,
         _planned_main_cache_types,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
+        paravirtual_normalized_request,
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
@@ -1065,9 +1067,11 @@ except ImportError:
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
+        _metal_device_is_paravirtual,
         _planned_main_cache_types,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
+        paravirtual_normalized_request,
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
@@ -3518,6 +3522,33 @@ def _request_matches_loaded_settings(
 
     ``requested_parallel_slots`` is the resolved count the load would use
     (per-load ``n_parallel``, else the server-wide default); None skips it."""
+    # A virtualised Metal device corrupts every offloaded layer, so load_model
+    # rewrites the placement to CPU and records THAT. This check runs before any
+    # of it, so compare the rewritten request: a browser adopts the normalized
+    # echo, but an API client, a second tab or a saved preset keeps sending Auto
+    # and would mismatch on every call, tearing down a healthy CPU server (and
+    # 409-ing or cancelling a live generation). The rewrite is applied only to
+    # the compared values -- the raw request still drives _should_strip_*, which
+    # must keep describing what the reload's inheritance resolver would do.
+    _pv_forced = _metal_device_is_paravirtual()
+    _pv = (
+        paravirtual_normalized_request(
+            gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
+            tensor_parallel = request.tensor_parallel,
+            tensor_split = request.tensor_split,
+            n_cpu_moe = request.n_cpu_moe,
+            extra_args = request.llama_extra_args,
+            log_dropped = False,
+        )
+        if _pv_forced
+        else None
+    )
+    _req_gpu_memory_mode = _pv.gpu_memory_mode if _pv else request.gpu_memory_mode
+    _req_gpu_layers = _pv.gpu_layers if _pv else request.gpu_layers
+    _req_n_cpu_moe = _pv.n_cpu_moe if _pv else request.n_cpu_moe
+    _req_tensor_split = _pv.tensor_split if _pv else request.tensor_split
+    _req_extra_args = _pv.extra_args if _pv else request.llama_extra_args
     # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask an
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
@@ -3540,8 +3571,8 @@ def _request_matches_loaded_settings(
     # tensor load isn't seen as a mismatch that needlessly reloads the server.
     backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
     effective_extra = (
-        request.llama_extra_args
-        if request.llama_extra_args is not None
+        _req_extra_args
+        if _req_extra_args is not None
         else strip_shadowing_flags(
             backend_extra,
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
@@ -3549,11 +3580,24 @@ def _request_matches_loaded_settings(
             strip_offload = request.gpu_memory_mode == "manual",
         )
     )
+    if _pv_forced and effective_extra:
+        # The inherit branch above describes the shadow strip only; the reload
+        # would run the CPU pin over it as well.
+        effective_extra = paravirtual_normalized_request(
+            extra_args = effective_extra, log_dropped = False
+        ).extra_args
     if not llama_backend.is_diffusion and llama_backend.swa_full != _swa_full_from_args_or_env(
         effective_extra
     ):
         return False
-    if not _tensor_parallel_matches_loaded(
+    # Nothing launches a tensor split on a virtualised Metal device (CPU pin, and
+    # --split-mode is overridden with the default layer split), so judge the
+    # normalized request there: an extras `-sm tensor`, which the pin deliberately
+    # leaves in place, would otherwise never match the stored False.
+    if _pv_forced:
+        if llama_backend.tensor_parallel:
+            return False
+    elif not _tensor_parallel_matches_loaded(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
         return False
@@ -3567,7 +3611,7 @@ def _request_matches_loaded_settings(
         from core.inference.llama_cpp import _diffusion_manual_ngl
 
         loaded_ngl = llama_backend.diffusion_requested_ngl
-        requested_ngl = _diffusion_manual_ngl(request.gpu_memory_mode, request.gpu_layers)
+        requested_ngl = _diffusion_manual_ngl(_req_gpu_memory_mode, _req_gpu_layers)
         if requested_ngl != loaded_ngl:
             return False
         # A dropped split (old shim) still dedupes, unless the shim has gained --ngl
@@ -3579,18 +3623,18 @@ def _request_matches_loaded_settings(
         ):
             return False
     else:
-        if request.gpu_memory_mode != llama_backend.gpu_memory_mode:
+        if _req_gpu_memory_mode != llama_backend.gpu_memory_mode:
             return False
         # Manual: a layer-count change always reloads; MoE/split only matter with
         # an explicit offload (gpu_layers >= 0), so a leftover value under Auto
         # must not force one. Mirrors LlamaCppBackend._already_in_target_state.
-        if request.gpu_memory_mode == "manual" and (
-            request.gpu_layers != llama_backend.gpu_layers
+        if _req_gpu_memory_mode == "manual" and (
+            _req_gpu_layers != llama_backend.gpu_layers
             or (
-                request.gpu_layers >= 0
+                _req_gpu_layers >= 0
                 and (
-                    request.n_cpu_moe != llama_backend.n_cpu_moe
-                    or (request.tensor_split or None) != (llama_backend.tensor_split or None)
+                    _req_n_cpu_moe != llama_backend.n_cpu_moe
+                    or (_req_tensor_split or None) != (llama_backend.tensor_split or None)
                 )
             )
         ):
@@ -3641,7 +3685,7 @@ def _request_matches_loaded_settings(
     # forces a reload. On the inherit path, refuse to match if stored extras
     # contain any shadow flag, so the reload path strips them rather than
     # leaving a stale override in effect. (backend_extra computed above.)
-    if request.llama_extra_args is None:
+    if _req_extra_args is None:
         # Mirror the reload's conditional strips, so a preserved non-tensor mode
         # (row/none/layer) isn't seen as stale and doesn't trigger a needless
         # reload of a healthy server, while an inherited offload/ratio flag that
@@ -3658,11 +3702,14 @@ def _request_matches_loaded_settings(
         ):
             return False
     else:
-        # Compare against the managed flags that load_model actually persisted.
+        # Compare against what the last load was INVOKED with, not what it
+        # launched: a rewrite the caller cannot see (the virtualised-Metal
+        # drafter drop strips the whole spec group) would otherwise never
+        # match the list the client keeps sending.
         _strip_dev = bool(request.gpu_ids)
         _request_extra = (
             strip_shadowing_flags(
-                request.llama_extra_args,
+                _req_extra_args,
                 strip_context = False,
                 strip_cache = False,
                 strip_spec = False,
@@ -3671,9 +3718,9 @@ def _request_matches_loaded_settings(
                 strip_device = _strip_dev,
             )
             if _strip_dev
-            else list(request.llama_extra_args)
+            else list(_req_extra_args)
         )
-        if _request_extra != backend_extra:
+        if _request_extra != (llama_backend.requested_extra_args or []):
             return False
     # A separate drafter (Gemma's root mtp-*.gguf) appearing or disappearing
     # next to the loaded weights changes the launch command (--model-draft),
@@ -3688,9 +3735,9 @@ def _request_matches_loaded_settings(
     # returns the resolved blob.
     if req_mode in ("auto", "mtp", "mtp+ngram") and llama_backend.gguf_path:
         effective_extras = (
-            request.llama_extra_args
-            if request.llama_extra_args is not None
-            else llama_backend.extra_args
+            _req_extra_args
+            if _req_extra_args is not None
+            else llama_backend.requested_extra_args
         )
         if not _extra_args_set_spec_type(effective_extras):
             companion_root = _local_gguf_companion_search_root(
