@@ -328,6 +328,7 @@ def test_capabilities_stay_optimistic_when_health_raises(monkeypatch):
 # CPU-only hosts
 # --------------------------------------------------------------------------------------------
 
+
 def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
     """unsloth_zoo.__init__ runs torch accelerator detection and raises on a CPU-only host -- which
     is exactly the small machine these caps exist to protect. Without the retry the caps would
@@ -341,6 +342,7 @@ def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
 
     def _fake_import(name):
         import os
+
         seen = os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
         attempts.append(seen)
         if seen != "1":
@@ -354,6 +356,7 @@ def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
     assert attempts == [None, "1"]
     # The flag is scoped to the retry: it must not leak into unrelated later imports.
     import os
+
     assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" not in os.environ
 
 
