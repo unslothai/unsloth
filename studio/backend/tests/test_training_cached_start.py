@@ -74,7 +74,12 @@ def _fake_hf_modules(api_type, validate_repo_id = _accept_repo_id):
     }
 
 
-def _start(route, request, *, run_dataset_preflight = False):
+def _start(
+    route,
+    request,
+    *,
+    run_dataset_preflight = False,
+):
     if run_dataset_preflight:
         return asyncio.run(route.start_training(request, current_subject = "test-user"))
     with (
