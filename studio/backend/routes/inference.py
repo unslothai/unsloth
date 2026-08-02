@@ -15092,23 +15092,23 @@ async def chat_count_tokens(
             detail = "Cannot count tokens for a pending turn that would retrieve documents.",
         )
 
-    from state.tool_policy import get_tool_policy as _get_tool_policy_ct
-
     # The passthrough is the only route that puts the caller's own catalog on the wire, and only
     # under _passthrough_client_tools' rule. Every other route renders tools solely from the
     # selection below, so a catalog surviving here would price schemas the completion never sends
     # -- which is what tool_choice "none" would do, since it also disables that selection.
     openai_tools = _passthrough_client_tools(payload) if _takes_passthrough else None
-    _cli_policy = _get_tool_policy_ct()
+    # The CLI hard-override still applies: _effective_enable_tools resolves it into _tools_on.
     _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
         _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
     )
     # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
     _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
-    _mcp_allowed = (
-        not _client_disabled_tool_calls and bool(payload.mcp_enabled) and _cli_policy is not False
-    )
-    if not _takes_passthrough and (_tools_on or _mcp_allowed) and llama_backend.supports_tools:
+    # Never on a count: _select_request_tools would reach get_enabled_mcp_tools, which can spawn
+    # stdio MCP servers, write cache and cooloff state, and block for a whole probe timeout on a
+    # server that is down. A background count must not do host work a completion did not ask for.
+    # The cost is that MCP schemas go unpriced, so the bar undercounts while MCP tools are on.
+    _mcp_allowed = False
+    if not _takes_passthrough and _tools_on and llama_backend.supports_tools:
         tools_to_use = await _select_request_tools(
             payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
         )

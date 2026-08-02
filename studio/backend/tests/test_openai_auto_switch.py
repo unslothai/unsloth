@@ -3849,6 +3849,44 @@ def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
     assert count > 0, "a fresh chat still prices the template preamble"
 
 
+def test_a_count_never_spawns_mcp_servers():
+    """get_enabled_mcp_tools starts stdio MCP server processes, writes cache and cooloff state,
+    and blocks for a whole probe timeout against a server that is down. A background recount
+    must not do host work the user's completion never asked for, so the count path pins
+    mcp_allowed False rather than deriving it from payload.mcp_enabled."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[1] / "routes" / "inference.py"
+    tree = ast.parse(src.read_text(encoding = "utf-8"))
+    handler = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "chat_count_tokens"
+    )
+
+    # The only assignment to _mcp_allowed in the handler must be the constant False.
+    assigned = [
+        node.value
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "_mcp_allowed" for t in node.targets
+        )
+    ]
+    assert assigned, "the count handler no longer pins _mcp_allowed; this test is stale"
+    assert all(
+        isinstance(v, ast.Constant) and v.value is False for v in assigned
+    ), "a count must never enable MCP discovery"
+
+    called = {
+        node.func.id
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "get_enabled_mcp_tools" not in called
+
+
 def test_audio_generate_is_reload_only(monkeypatch):
     # Codex P2: /audio/generate must not switch to a client-named GGUF. A local
     # GGUF's audio-input capability is not a cheap pre-load probe (the mmproj signal

@@ -48,6 +48,7 @@ BOUND_NAMES = {
     "enabled",
     "ggufContextLength",
     "isLoading",
+    "localRunActive",
     "modelLoading",
     "nonce",
 }
@@ -144,6 +145,8 @@ const state: any = {
   ggufContextLength: null,
   modelLoading: false,
   runningByThreadId: {},
+  // The subset decoding on the local llama-server: the recount must not share it with a decode.
+  localRunByThreadId: {},
   // What the recount reads to tell an output-only audio GGUF from a chat one.
   models: [],
 };
@@ -274,11 +277,13 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const checkpoint = state.params.checkpoint;
   const ggufContextLength = state.ggufContextLength;
   const modelLoading = state.modelLoading;
+  const localRunActive = Object.values(state.localRunByThreadId ?? {}).some(Boolean);
   const scope: any = {
     activeThreadId,
     checkpoint,
     enabled,
     ggufContextLength,
+    localRunActive,
     modelLoading,
   };
   const effects: any[] = [
@@ -1231,3 +1236,64 @@ def test_an_output_only_audio_gguf_is_never_recounted(model_flags, expected_coun
     )
     if expected_counts == 0:
         assert out["contextUsage"] is None, "the bar stays blank, as it did before the recount"
+
+
+@pytest.mark.parametrize(
+    ("local_runs", "expected_counts"),
+    [
+        # Decoding on the local llama-server: the count would share the process with generation.
+        ('{ "thread-a": true }', 0),
+        # A different thread, still the same llama-server.
+        ('{ "thread-b": true }', 0),
+        # An external-provider run never touches llama-server, so it cannot contend.
+        ("{}", 1),
+    ],
+    ids = ["this_thread_decoding", "another_thread_decoding", "nothing_decoding"],
+)
+def test_no_count_is_issued_while_the_local_model_is_decoding(local_runs, expected_counts):
+    """/apply-template and /tokenize take no inference slot, so the measured cost of counting
+    during a decode is inside the noise, but the budget for this endpoint is zero rather than
+    small. The request is not issued at all while a local run is live."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ refreshContextUsage, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{
+              activeThreadId: "thread-a",
+              contextUsage: null,
+              contextUsageByThreadId: {{}},
+              localRunByThreadId: {local_runs},
+            }});
+            await refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == expected_counts, (
+        "a count must never be issued while the local server is decoding"
+        if expected_counts == 0
+        else "an idle server must still be counted"
+    )
+
+
+def test_the_count_is_retried_once_the_local_run_finishes():
+    """Skipping is only safe because the run finishing re-fires the effect. The recount
+    component lists localRunActive in its dependency array for exactly this reason, so a count
+    skipped for being busy is not a count lost."""
+    src = read(PROVIDER)
+    recount = slice_between(
+        src,
+        "function ThreadContextUsageRecount(",
+        "\n// Exposes the current thread's cancelRun()",
+    )
+    assert "localRunByThreadId" in recount, "the effect must observe local decoding"
+    deps = re.search(r"\}, \[([^\]]*)\]\);", recount, re.S)
+    assert deps and "localRunActive" in deps.group(1), (
+        "localRunActive must be a DEPENDENCY, not just a guard: nothing else in this array "
+        "changes when a run ends, so without it a skipped count would never be retried"
+    )

@@ -1478,12 +1478,19 @@ function ThreadContextUsageRecount({
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  // A count must never share the llama-server with a decode. This is a dependency, not just a
+  // guard: nothing else here changes when a run ends, so without it a count skipped for being
+  // busy would never be retried and the bar would stay blank.
+  const localRunActive = useChatRuntimeStore((s) =>
+    Object.values(s.localRunByThreadId).some(Boolean),
+  );
 
   useEffect(() => {
     if (
       !enabled ||
       !activeThreadId ||
       modelLoading ||
+      localRunActive ||
       !checkpoint ||
       ggufContextLength == null
     ) {
@@ -1492,7 +1499,14 @@ function ThreadContextUsageRecount({
     // Only into a blank bar: restored or completion-written usage is exact, this is an estimate.
     if (useChatRuntimeStore.getState().contextUsage != null) return;
     void refreshContextUsage({ threadId: activeThreadId });
-  }, [activeThreadId, checkpoint, enabled, ggufContextLength, modelLoading]);
+  }, [
+    activeThreadId,
+    checkpoint,
+    enabled,
+    ggufContextLength,
+    localRunActive,
+    modelLoading,
+  ]);
 
   return null;
 }
