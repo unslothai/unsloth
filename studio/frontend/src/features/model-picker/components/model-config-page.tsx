@@ -40,6 +40,7 @@ import {
   useId,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { syncModelOverride } from "../api/model-overrides";
 import {
@@ -65,8 +66,11 @@ import {
   isDefaultConfig,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
+  readAdvancedSettingsOpen,
   resolveInitialConfig,
+  saveAdvancedSettingsOpen,
   savePerModelConfig,
+  subscribeAdvancedSettingsOpen,
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
@@ -759,9 +763,19 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(() =>
-    hasNonDefaultAdvanced(config),
+  // Read live, not snapshotted at mount: the sidebar copy of Run Settings stays
+  // mounted while collapsed, so it has to follow a toggle made in the picker.
+  const advancedPreference = useSyncExternalStore(
+    subscribeAdvancedSettingsOpen,
+    readAdvancedSettingsOpen,
+    () => null,
   );
+  // Until the switch is used anywhere, a model carrying non-default advanced
+  // values opens the section on its own so those stay visible. Frozen at mount
+  // so editing a field back to its default cannot close the section underfoot.
+  const [autoOpenAdvanced] = useState(() => hasNonDefaultAdvanced(config));
+  const showAdvanced = advancedPreference ?? autoOpenAdvanced;
+  const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
   const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);
@@ -1217,7 +1231,7 @@ export function ModelConfigPage({
               <Switch
                 className="panel-switch shrink-0"
                 checked={showAdvanced}
-                onCheckedChange={setShowAdvanced}
+                onCheckedChange={toggleAdvanced}
                 aria-label="Show advanced settings"
               />
             </div>
