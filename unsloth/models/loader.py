@@ -934,6 +934,7 @@ class FastLanguageModel(FastLlamaModel):
             base_revision = _revision_for_resolved_repo(
                 base_revision, model_name, old_model_name, mapper_moved_name
             )
+        # A PEFT load resolved model_name to the base, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
 
         load_in_4bit_kwargs = load_in_4bit
@@ -1916,6 +1917,7 @@ class FastModel(FastBaseModel):
             base_revision = _revision_for_resolved_repo(
                 base_revision, model_name, old_model_name, mapper_moved_name
             )
+        # A PEFT load resolved model_name to the base, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
 
         model, tokenizer = FastBaseModel.from_pretrained(
