@@ -259,6 +259,11 @@ _DELIMITER_SHAPED = re.compile(r"\A(?:<[^\s<>]{1,60}>|\[[^\s\[\]]{1,40}\])\Z")
 # on exactly the models that honour it (#7066).
 _TEMPLATE_DELIMITERS = re.compile(
     '<[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\s+[A-Za-z_][A-Za-z0-9_.\\-]{0,38}="[^"<>]{0,60}">'
+    # Llama-2 opens its system block with the DOUBLED angle "<<SYS>>", so this arm has to
+    # come before the single-angle one: that would otherwise match the inner "<SYS>", and a
+    # profile holding a marker the curated pattern does not recognize is dropped by the
+    # structure gate, leaving "<<SYS>>" unbroken (#7066).
+    "|<</?[A-Za-z_][A-Za-z0-9_.\\-]{0,38}>>"
     "|<[^\\s<>'\"]{1,60}>"
     "|\\[/?[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\]"
 )
@@ -273,6 +278,17 @@ _JINJA_INDEX = re.compile(r"[\w\]\)]\Z")
 # ("usage: tool [OPTIONS] [ARGS]"). Harvesting them from a Mistral-style template would
 # reintroduce exactly the false rewrite the curated list documents avoiding (#7066).
 _BLOCK_METADATA = frozenset({"[ARGS]", "[CALL_ID]", "[TOOL_CONTENT]"})
+# A template that builds its role sentinel by concatenation, "'<|' + message['role'] + '|>'"
+# (Phi-3, chat_templates.py:383), never writes "<|system|>" out as a literal, so harvesting
+# literals alone leaves it out of a profile that is otherwise non-empty -- and a non-empty
+# profile is what disables the curated fallback. Client text could then carry a trusted role
+# marker into a user turn (#7066).
+_DYNAMIC_PIPE_ROLE = re.compile(r"""['"]<\|['"]\s*\+|\+\s*['"]\|>['"]""")
+# The roles a chat template can interpolate. Closed on purpose: this adds exactly what the
+# construction can emit, rather than re-enabling a match on any "<|word|>".
+_ROLE_NAMES = (
+    "system", "user", "assistant", "tool", "ipython", "function", "developer", "human",
+)
 # A marker whose name is filled in at render time, so a template only ever shows one
 # example. "<function=pay>" must break on a model whose template spells
 # "<function=example>", which an alternation over literals alone cannot do.
@@ -413,7 +429,7 @@ def _alternation(markers: set):
     )
 
 
-def model_markup(chat_template, tokens = None) -> Optional[ModelMarkup]:
+def model_markup(chat_template, tokens = None, tools = None) -> Optional[ModelMarkup]:
     """Profile one model's structural markers, or None when nothing is known about it.
 
     None means "sweep everything the curated patterns know", which is the safe direction
@@ -435,14 +451,28 @@ def model_markup(chat_template, tokens = None) -> Optional[ModelMarkup]:
         # and whose vocabulary marks it special=False, while "<table>" is not (#7066).
         if _CONTROL_MARKUP.search(token):
             markers.add(token)
-    for body in _template_strings(chat_template):
+    known = {token for token in tokens or () if isinstance(token, str)}
+    # Only the template this request will render with. A named-template dict carries both
+    # "default" and "tool_use", and unioning them made a no-tools turn rewrite "<tools>",
+    # which cannot appear in the prompt it is about to send (#7066).
+    bodies = _selected_template_strings_from_value(chat_template, tools)
+    for body in bodies or _template_strings(chat_template):
         for match in _TEMPLATE_DELIMITERS.finditer(body):
             marker = match.group(0)
             if marker.startswith("[") and _JINJA_INDEX.search(body, 0, match.start()):
                 continue  # "loop_messages[i]": an index, not something the prompt shows.
             if marker in _BLOCK_METADATA:
                 continue
-            markers.add(marker)
+            # A literal a template writes out is structure when the tokenizer has a token
+            # for it, or when the curated pattern already knows it. Neither holds for the
+            # instructional placeholders Qwen prints inside its tool-use prose,
+            # "<function-name>" and "<args-json-object>" (chat_templates.py:561, 716):
+            # those are words the model reads, and rewriting them mangles ordinary code and
+            # tool descriptions that mention them (#7066).
+            if marker in known or _CONTROL_MARKUP.search(marker):
+                markers.add(marker)
+        if _DYNAMIC_PIPE_ROLE.search(body):
+            markers.update(f"<|{role}|>" for role in _ROLE_NAMES)
     return ModelMarkup(markers) if markers else None
 
 
@@ -1434,6 +1464,7 @@ def renderable_tool_catalog(
     model_info,
     cache = None,
     active_model_name = None,
+    template = None,
 ):
     """The catalog that survives EVERY template this request could render with.
 
@@ -1447,7 +1478,9 @@ def renderable_tool_catalog(
     the template that did NOT get selected stays advertised and directly callable; it just
     is not auto-healed out of text-form output that round.
     """
-    safe = neutralize_tool_descriptions(tools, cache, markup_for_tokenizer(tokenizer))
+    safe = neutralize_tool_descriptions(
+        tools, cache, markup_for_tokenizer(tokenizer, tools, template)
+    )
     if not safe:
         return safe
     # Resolved rather than read: render_native_template fetches it during the render, so on
@@ -1844,7 +1877,7 @@ def _split_parallel_tool_calls(messages: list) -> list:
 _MARKUP_BY_TOKENIZER: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
-def markup_for_tokenizer(tokenizer) -> Optional[ModelMarkup]:
+def markup_for_tokenizer(tokenizer, tools = None, template = None) -> Optional[ModelMarkup]:
     """Profile the loaded tokenizer's own structural markers, cached per tokenizer.
 
     Returns None when the template and vocabulary cannot be read, which falls back to the
@@ -1859,14 +1892,36 @@ def markup_for_tokenizer(tokenizer) -> Optional[ModelMarkup]:
     # processor while the vocabulary lives on the inner tokenizer, so each is read from
     # whichever actually has it (mirrors chat_eos's template_source unwrap).
     inner = getattr(tokenizer, "tokenizer", tokenizer)
-    template = getattr(tokenizer, "chat_template", None)
+    # An explicit *template* is the one this request will actually render with: the
+    # generate-time mapper installs its template later, so profiling the load-time one left
+    # the authorization catalog a step behind the prompt it was gating (#7066).
+    if not template:
+        template = getattr(tokenizer, "chat_template", None)
     if not template:
         template = getattr(inner, "chat_template", None)
     # Keyed on the template as well as the tokenizer: get_chat_template() installs a mapped
     # template on the SAME object at generate time, so a profile built at load time would
     # otherwise be reused and the mapped template's own delimiters would go unswept (#7066).
-    if cached is not None and cached[1] == template:
-        return cached[0]
+    # Keyed on whether tools are present too: a named-template dict renders "tool_use" for a
+    # tool-calling turn and "default" otherwise, and the two emit different literals. Both
+    # live in the same entry, so a conversation alternating tool and no-tool turns keeps
+    # hitting instead of rebuilding on every message.
+    selector = bool(tools)
+    # A named-template dict is unhashable, so the key is a stable serialization of it;
+    # without this the cache write raised TypeError and every call rebuilt the profile.
+    if not isinstance(template, str):
+        try:
+            template_key = json.dumps(template, sort_keys = True, default = str)
+        except (TypeError, ValueError):
+            template_key = repr(template)
+    else:
+        template_key = template
+    if isinstance(cached, dict):
+        hit = cached.get((template_key, selector), _UNPARSED)
+        if hit is not _UNPARSED:
+            return hit
+    else:
+        cached = None
     tokens = None
     added = getattr(inner, "added_tokens_decoder", None)
     if isinstance(added, dict):
@@ -1878,9 +1933,15 @@ def markup_for_tokenizer(tokenizer) -> Optional[ModelMarkup]:
                 tokens = list(vocab())
             except Exception:
                 tokens = None
-    profile = model_markup(template, tokens)
+    profile = model_markup(template, tokens, tools)
     try:
-        _MARKUP_BY_TOKENIZER[tokenizer] = (profile, template)
+        entry = cached if isinstance(cached, dict) else {}
+        # Two selectors and one template per tokenizer; a template swap adds a key rather
+        # than growing without bound, so trim if a tokenizer somehow cycles templates.
+        if len(entry) >= 4:
+            entry.clear()
+        entry[(template_key, selector)] = profile
+        _MARKUP_BY_TOKENIZER[tokenizer] = entry
     except TypeError:
         pass
     return profile
@@ -1900,7 +1961,7 @@ def apply_chat_template_for_generation(
     propagate."""
     # Shared choke point for the transformers and MLX backends (#7066). Gated on the
     # loaded model's own markers, so text naming another family's sentinel is left alone.
-    _markup = markup_for_tokenizer(tokenizer)
+    _markup = markup_for_tokenizer(tokenizer, tools)
     messages = neutralize_control_markup_in_messages(messages, None, _markup)
     tools = neutralize_tool_descriptions(tools, None, _markup)
     reasoning_kwargs: dict = {}

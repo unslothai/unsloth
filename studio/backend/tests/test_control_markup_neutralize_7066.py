@@ -4501,8 +4501,12 @@ def test_a_list_shaped_chat_template_is_profiled():
 
 
 def test_a_dict_shaped_chat_template_is_profiled():
-    profile = model_markup({"default": "<|im_start|>", "tool_use": "<tools>"}, [])
-    assert {"<|im_start|>", "<tools>"} <= profile.markers
+    """Named templates are profiled, but only the one the request will select: a no-tools
+    turn cannot render "<tools>", so rewriting it there is pure over-sweep (#7066)."""
+    named = {"default": "<|im_start|>", "tool_use": "<|im_start|><tools>"}
+    assert model_markup(named, []).markers == {"<|im_start|>"}
+    with_tools = model_markup(named, [], [{"type": "function"}]).markers
+    assert {"<|im_start|>", "<tools>"} <= with_tools
 
 
 def test_a_dynamic_opener_matches_any_name():
@@ -4869,11 +4873,27 @@ def test_a_vocabulary_marker_the_curated_pattern_knows_is_still_structure():
     assert markup.rewrite_control("<table>") == "<table>"
 
 
-def test_a_template_literal_is_structure_even_if_the_curated_pattern_misses_it():
-    """The template side is not gated: whatever a template writes out IS that model's
-    structure, curated list or not."""
-    markup = model_markup("{%- for m in messages %}<|weird_custom|>{{ m }}{%- endfor %}", None)
+def test_a_novel_template_literal_is_structure_when_the_tokenizer_has_a_token_for_it():
+    """A delimiter this module has never seen is still that model's structure when the
+    tokenizer holds a token for it: that is what makes the renderer treat it as one."""
+    template = "{%- for m in messages %}<|weird_custom|>{{ m }}{%- endfor %}"
+    markup = model_markup(template, ["<|weird_custom|>"])
     assert markup.rewrite_control("<|weird_custom|>") == "< |weird_custom|>"
+
+
+def test_an_instructional_placeholder_is_not_structure():
+    """Qwen prints "<function-name>" and "<args-json-object>" inside its tool-use prose.
+    Neither is a token nor curated markup, so both are words the model reads, and rewriting
+    them mangles ordinary code and tool descriptions that mention them (#7066)."""
+    template = (
+        "{%- for m in messages %}<|im_start|>{{ m }}<|im_end|>{%- endfor %}"
+        '<tool_call>{"name": <function-name>, "arguments": <args-json-object>}</tool_call>'
+    )
+    markup = model_markup(template, None)
+    assert markup.rewrite_control("<function-name>") == "<function-name>"
+    assert markup.rewrite_control("<args-json-object>") == "<args-json-object>"
+    # The real delimiters around them are still broken.
+    assert markup.rewrite_control("<tool_call>") == "< tool_call>"
 
 
 def test_an_opener_does_not_migrate_across_a_media_part():
@@ -4980,3 +5000,63 @@ def test_the_real_deepseek_profile_breaks_the_short_alias():
     markup = model_markup(payload.get("chat_template"), tokens)
     short = f"<{_FW}tool\u2581calls{_FW}>"
     assert markup.rewrite_control(short) != short
+
+
+def test_a_dynamically_built_role_sentinel_is_profiled():
+    """Phi-3 builds its role marker as "'<|' + message['role'] + '|>'", so it never appears
+    as a literal. Harvesting literals alone left it out of a profile that was otherwise
+    non-empty, and a non-empty profile is what disables the curated fallback (#7066)."""
+    template = (
+        "{% for message in messages %}"
+        "{{'<|' + message['role'] + '|>' + message['content'] + '<|end|>'}}"
+        "{% endfor %}"
+    )
+    markup = model_markup(template, None)
+    for role in ("system", "user", "assistant", "tool"):
+        sentinel = f"<|{role}|>"
+        assert markup.rewrite_control(sentinel) != sentinel, sentinel
+    # And it does not widen to any "<|word|>".
+    assert markup.rewrite_control("<|nonsense|>") == "<|nonsense|>"
+
+
+def test_the_doubled_angle_system_block_is_profiled():
+    """Llama-2 opens its system block with "<<SYS>>". The single-angle arm matched the
+    inner "<SYS>", which the structure gate then dropped, silently leaving "<<SYS>>"
+    unbroken -- the dangerous direction (#7066)."""
+    template = "{% for m in messages %}[INST] <<SYS>>{{ m }}<</SYS>> [/INST]{% endfor %}"
+    markup = model_markup(template, None)
+    assert "<<SYS>>" in markup.markers
+    assert markup.rewrite_control("<<SYS>>") != "<<SYS>>"
+    assert markup.rewrite_control("a << b") == "a << b"
+
+
+def test_the_profile_cache_keeps_both_tool_selections():
+    """A conversation alternating tool and no-tool turns must not rebuild every message."""
+
+    class _Tok:
+        chat_template = {
+            "default": "{% for m in messages %}<|im_start|>{{ m }}<|im_end|>{% endfor %}",
+            "tool_use": "{% for m in messages %}<|im_start|>{{ m }}<tools>x</tools>{% endfor %}",
+        }
+        added_tokens_decoder: dict = {}
+
+    tok = _Tok()
+    plain = markup_for_tokenizer(tok)
+    tooled = markup_for_tokenizer(tok, [{"type": "function"}])
+    assert plain is not tooled
+    assert markup_for_tokenizer(tok) is plain
+    assert markup_for_tokenizer(tok, [{"type": "function"}]) is tooled
+    assert plain.rewrite_control("</tools>") == "</tools>"
+    assert tooled.rewrite_control("</tools>") == "< /tools>"
+
+
+def test_the_mapped_template_is_resolved_before_the_authorization_catalog():
+    """The generate-time mapper installs its template during the render, so a catalog built
+    from the load-time tokenizer was a step behind the prompt it gates (#7066)."""
+    for module in ("inference.py", "orchestrator.py"):
+        source = (
+            _REPO_ROOT / "studio" / "backend" / "core" / "inference" / module
+        ).read_text(encoding = "utf-8")
+        assert "_mapped_chat_template(" in source, module
+        loop = source.split("run_safetensors_tool_loop(", 1)[1][:600]
+        assert "_mapped_tpl" in loop, module
