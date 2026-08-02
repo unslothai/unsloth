@@ -49,8 +49,13 @@ class _RecordingLogger:
         self.warnings.append(str(msg))
 
     def __getattr__(self, name):
-        def sink(msg = "", *a, **k):
+        def sink(
+            msg = "",
+            *a,
+            **k,
+        ):
             self.other.append((name, str(msg)))
+
         return sink
 
 
