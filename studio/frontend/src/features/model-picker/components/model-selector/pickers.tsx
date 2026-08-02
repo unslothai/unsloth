@@ -724,7 +724,14 @@ function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
     : variant.size_bytes;
 }
 
-const EMPTY_SOLE_QUANTS: ReadonlyMap<string, GgufVariantDetail> = new Map();
+/** The one quant a repo holds, plus the vision flag read with it. The
+ *  collapsed row never mounts the expander, so this is its only source. */
+interface SoleDownloadedQuant {
+  variant: GgufVariantDetail;
+  hasVision: boolean;
+}
+
+const EMPTY_SOLE_QUANTS: ReadonlyMap<string, SoleDownloadedQuant> = new Map();
 // A few repos at a time, so a large cache doesn't fire one request per repo.
 const SOLE_QUANT_BATCH = 6;
 
@@ -734,7 +741,7 @@ const SOLE_QUANT_BATCH = 6;
 function useSoleDownloadedQuants(
   repos: readonly CachedGgufRepo[],
   { enabled, hfToken }: { enabled: boolean; hfToken?: string },
-): ReadonlyMap<string, GgufVariantDetail> {
+): ReadonlyMap<string, SoleDownloadedQuant> {
   const targets = useMemo(
     () =>
       repos.map((repo) => ({
@@ -758,7 +765,7 @@ function useSoleDownloadedQuants(
   );
   const [resolved, setResolved] = useState<{
     key: string;
-    quants: ReadonlyMap<string, GgufVariantDetail>;
+    quants: ReadonlyMap<string, SoleDownloadedQuant>;
   }>({ key: "", quants: EMPTY_SOLE_QUANTS });
 
   useEffect(() => {
@@ -769,7 +776,7 @@ function useSoleDownloadedQuants(
     let cancelled = false;
 
     const resolve = async () => {
-      const found = new Map<string, GgufVariantDetail>();
+      const found = new Map<string, SoleDownloadedQuant>();
       for (let i = 0; i < targets.length; i += SOLE_QUANT_BATCH) {
         if (cancelled) return;
         await Promise.all(
@@ -780,11 +787,15 @@ function useSoleDownloadedQuants(
                 preferLocalCache: true,
                 localPath: target.localSource,
               });
-              const local = normalizeGgufVariantsResponse(res).variants;
+              const normalized = normalizeGgufVariantsResponse(res);
+              const local = normalized.variants;
               // One file on disk and nothing torn beside it. A partial quant
               // keeps the expander, where it can be resumed or deleted.
               if (local.length === 1 && local[0].downloaded === true) {
-                found.set(target.repoId, local[0]);
+                found.set(target.repoId, {
+                  variant: local[0],
+                  hasVision: normalized.hasVision,
+                });
               }
             } catch {
               // Unresolved repos keep their expandable row.
@@ -3001,8 +3012,9 @@ export function HubModelPicker({
   // click, like a pinned quant.
   const renderSoleQuantGgufRow = (
     c: (typeof visibleCachedGguf)[number],
-    variant: GgufVariantDetail,
+    sole: SoleDownloadedQuant,
   ) => {
+    const variant = sole.variant;
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
     const isSelected = value === c.repo_id;
     const expectedBytes = ggufVariantExpectedBytes(variant);
@@ -3024,14 +3036,13 @@ export function HubModelPicker({
             tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
             meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
             quantChip={variant.quant}
-            showVision={c.has_vision ?? visionByRepo[c.repo_id]}
+            showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
-            loaded={isRuntimeLoadedModel(
-              loadedModelId,
-              activeGgufVariant,
-              c.repo_id,
-              "required",
-            )}
+            // The row is one quant, so only that quant counts as loaded.
+            loaded={
+              modelIdsMatchForPicker(loadedModelId, c.repo_id) &&
+              ggufVariantsMatchForPicker(activeGgufVariant, variant.quant)
+            }
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
             onClick={() => onSelect(c.repo_id, selectMeta)}
             vramStatus={null}
