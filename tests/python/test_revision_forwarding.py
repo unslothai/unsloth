@@ -26,7 +26,11 @@ def _tree(path):
     return ast.parse(path.read_text(encoding = "utf-8"))
 
 
-def _function(tree, name, class_name = None):
+def _function(
+    tree,
+    name,
+    class_name = None,
+):
     body = tree.body
     if class_name is not None:
         classes = [n for n in body if isinstance(n, ast.ClassDef) and n.name == class_name]
@@ -45,7 +49,8 @@ def _params(function):
 def _calls(function, callee):
     """Every Call whose dotted name ends with `callee`."""
     return [
-        node for node in ast.walk(function)
+        node
+        for node in ast.walk(function)
         if isinstance(node, ast.Call) and ast.unparse(node.func).split(".")[-1] == callee
     ]
 
@@ -61,24 +66,30 @@ def test_fast_llama_model_reads_its_revision_argument():
     """The whole of #3544: the parameter existed but had zero reads."""
     function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")
     assert "revision" in _params(function)
-    loads = [n for n in ast.walk(function) if isinstance(n, ast.Name) and n.id == "revision"
-             and isinstance(n.ctx, ast.Load)]
+    loads = [
+        n
+        for n in ast.walk(function)
+        if isinstance(n, ast.Name) and n.id == "revision" and isinstance(n.ctx, ast.Load)
+    ]
     assert loads, "revision is accepted but never read"
 
 
 @pytest.mark.parametrize(
     "callee, minimum",
     [
-        ("AutoConfig", 2),                            # checkpoint probe + main config
-        ("AutoModelForCausalLM", 2),                  # user-config and plain branches
+        ("AutoConfig", 2),  # checkpoint probe + main config
+        ("AutoModelForCausalLM", 2),  # user-config and plain branches
         ("AutoModelForSequenceClassification", 1),
         ("load_correct_tokenizer", 1),
     ],
 )
 def test_llama_loads_forward_revision(callee, minimum):
     function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")
-    calls = _calls(function, "from_pretrained") if callee != "load_correct_tokenizer" else \
-        _calls(function, "load_correct_tokenizer")
+    calls = (
+        _calls(function, "from_pretrained")
+        if callee != "load_correct_tokenizer"
+        else _calls(function, "load_correct_tokenizer")
+    )
     if callee != "load_correct_tokenizer":
         calls = [c for c in calls if ast.unparse(c.func).startswith(callee)]
     assert len(calls) >= minimum, f"expected >= {minimum} {callee} loads, found {len(calls)}"
@@ -91,7 +102,8 @@ def test_llama_does_not_pass_revision_to_load_vllm():
     so putting one in that dict is an unconditional TypeError on the vLLM path."""
     function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")
     dicts = [
-        node.value for node in ast.walk(function)
+        node.value
+        for node in ast.walk(function)
         if isinstance(node, ast.Assign)
         and any(getattr(t, "id", None) == "load_vllm_kwargs" for t in node.targets)
         and isinstance(node.value, ast.Call)
@@ -116,8 +128,7 @@ def test_fast_base_model_does_not_bind_revision():
 def test_vision_loads_forward_revision(callee, minimum):
     function = _function(_tree(VISION), "from_pretrained", "FastBaseModel")
     calls = [
-        c for c in _calls(function, "from_pretrained")
-        if ast.unparse(c.func).startswith(callee)
+        c for c in _calls(function, "from_pretrained") if ast.unparse(c.func).startswith(callee)
     ]
     assert len(calls) >= minimum, f"expected >= {minimum} {callee} loads, found {len(calls)}"
     for call in calls:
@@ -139,7 +150,9 @@ def test_tokenizer_helpers_forward_revision():
     loads = _calls(private, "from_pretrained")
     assert len(loads) >= 2, "expected the slow and fast tokenizer loads"
     for call in loads:
-        assert _revision_kwarg(call) is not None, f"tokenizer load at line {call.lineno} drops revision"
+        assert (
+            _revision_kwarg(call) is not None
+        ), f"tokenizer load at line {call.lineno} drops revision"
 
 
 def _load_gate():
@@ -163,7 +176,7 @@ def test_revision_survives_when_the_repo_is_unchanged():
     "model_name, old_model_name",
     [
         ("unsloth/llama-3-8b-bnb-4bit", "meta-llama/Meta-Llama-3-8B"),  # prequant mirror
-        ("unsloth/Qwen3-30B-A3B", "unsloth/Qwen3-30B-A3B-bnb-4bit"),    # suffix strip
+        ("unsloth/Qwen3-30B-A3B", "unsloth/Qwen3-30B-A3B-bnb-4bit"),  # suffix strip
         ("/tmp/unsloth-fp8-cache/model", "meta-llama/Meta-Llama-3-8B"),  # fp8 temp dir
     ],
 )
@@ -205,11 +218,15 @@ def test_both_loader_paths_gate_the_revision_they_dispatch(function_name):
         gate_calls = _calls(function, "_revision_for_resolved_repo")
         assert len(gate_calls) == 1, f"{class_name} must gate revision exactly once"
         assigned = [
-            n for n in ast.walk(function)
+            n
+            for n in ast.walk(function)
             if isinstance(n, ast.Assign)
             and any(getattr(t, "id", None) == "base_revision" for t in n.targets)
         ]
         assert assigned, f"{class_name} must keep the gated value separate from revision"
-        used = [n for n in ast.walk(function) if isinstance(n, ast.Name) and n.id == "base_revision"
-                and isinstance(n.ctx, ast.Load)]
+        used = [
+            n
+            for n in ast.walk(function)
+            if isinstance(n, ast.Name) and n.id == "base_revision" and isinstance(n.ctx, ast.Load)
+        ]
         assert used, f"{class_name} computes base_revision but never dispatches it"
