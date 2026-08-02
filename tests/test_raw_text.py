@@ -566,7 +566,11 @@ def test_validate_dataset_streams_instead_of_materialising_columns():
             return self.rows
 
     class Tokenizer:
-        def decode(self, token_ids, skip_special_tokens = False):
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
             return " ".join(f"word_{i}" for i in token_ids)
 
     dataset = BatchedDataset([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
