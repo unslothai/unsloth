@@ -47,8 +47,8 @@ const TRAINING_UPLOAD_EXTENSION_SET = new Set<string>(
   TRAINING_UPLOAD_EXTENSIONS,
 );
 export const TRAINING_UPLOAD_ACCEPT = TRAINING_UPLOAD_EXTENSIONS.join(",");
-const TRAINING_UPLOAD_LABEL = TRAINING_UPLOAD_EXTENSIONS.map((extension) =>
-  extension.slice(1).toUpperCase(),
+export const TRAINING_UPLOAD_LABEL = TRAINING_UPLOAD_EXTENSIONS.map(
+  (extension) => extension.slice(1).toUpperCase(),
 ).join(", ");
 const TRAINING_DATASET_UPLOAD_LABEL = TRAINING_DATASET_UPLOAD_EXTENSIONS.map(
   (extension) => extension.slice(1).toUpperCase(),

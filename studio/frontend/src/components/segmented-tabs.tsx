@@ -3,7 +3,12 @@
 
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
-import { SegmentedControlIndicator } from "./segmented-control";
+import {
+  SegmentedControlIndicator,
+  type SegmentedSize,
+  segmentedSegmentLabel,
+  segmentedTrackHeight,
+} from "./segmented-control";
 import { TabsList, TabsTrigger } from "./ui/tabs";
 
 export interface SegmentedTabOption<T extends string> {
@@ -26,7 +31,7 @@ export function SegmentedTabsList<T extends string>({
     ...SegmentedTabOption<T>[],
   ];
   ariaLabel: string;
-  size?: "compact" | "default";
+  size?: SegmentedSize;
   className?: string;
 }) {
   const activeIndex = Math.max(
@@ -40,7 +45,7 @@ export function SegmentedTabsList<T extends string>({
       aria-label={ariaLabel}
       className={cn(
         "hub-menu-trigger hub-tab-toggle relative inline-flex w-full shrink-0 items-center rounded-full",
-        size === "compact" ? "h-8" : "h-9",
+        segmentedTrackHeight[size],
         className,
       )}
     >
@@ -58,7 +63,8 @@ export function SegmentedTabsList<T extends string>({
             disabled={option.disabled}
             indicatorClassName="hidden"
             className={cn(
-              "relative z-10 h-full min-w-0 flex-1 cursor-pointer rounded-full border-0 px-3 py-0 text-ui-12p5",
+              "relative z-10 h-full min-w-0 flex-1 cursor-pointer rounded-full border-0 py-0",
+              segmentedSegmentLabel,
               active
                 ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",

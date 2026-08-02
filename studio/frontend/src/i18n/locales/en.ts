@@ -21,7 +21,7 @@ export const en = {
     hfToken: {
       label: "HF token",
       saved: "Saved",
-      add: "Add",
+      add: "Not set",
       savedAriaLabel: "Hugging Face token saved",
       addAriaLabel: "Set Hugging Face token",
       savedHint: "Token saved. Access is checked when you use it.",
@@ -1047,11 +1047,14 @@ export const en = {
       configTitle: "Configuration",
       configDescription: "Save and load configurations",
       modelLabel: "Model",
+      modelTooltip: "The base model you want to fine-tune.",
       methodLabel: "Method",
+      methodTooltip:
+        "How the model is trained. LoRA and QLoRA update small adapters instead of every weight.",
       datasetLabel: "Dataset",
+      datasetTooltip: "The training data used to fine-tune the model.",
       hfTokenLabel: "Hugging Face token",
-      hfTokenDescription:
-        "Required for gated or private models and datasets.",
+      hfTokenDescription: "Required for gated or private models and datasets.",
       hfTokenGet: "Get token",
       hfTokenChecking: "Checking token…",
       modelPickerDescription:
@@ -1301,8 +1304,7 @@ export const en = {
             "Embedding models don't support streaming (training needs the full dataset).",
           imageDataset: "This dataset looks like images, which can't stream.",
           audioDataset: "This dataset looks like audio, which can't stream.",
-          appleSilicon:
-            "Streaming isn't supported on Apple Silicon (MLX) yet.",
+          appleSilicon: "Streaming isn't supported on Apple Silicon (MLX) yet.",
         },
         options: {
           trainOnCompletions: "assistant completions only",
@@ -1331,7 +1333,10 @@ export const en = {
         "Last row index to include from the training split (inclusive, 0-based). For example, set Start to 0 and End to 99 to train on the first 100 rows. Leave empty to use all remaining rows.",
       endPlaceholder: "End",
       clear: "Clear",
-      dropFileOrClick: "Drop 1 file here or click to upload",
+      dropFileOrClick: "Drop file or click to upload",
+      uploadDetails: "Upload details",
+      uploadDetailsTooltip:
+        "Up to {limit} per file. PDF, DOCX and TXT are not ready-to-train datasets, so convert them in Learning Recipes first.",
       viewDataset: "View dataset",
       uploadFailed: "Upload failed",
       unknownError: "Unknown error",

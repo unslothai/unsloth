@@ -1093,6 +1093,9 @@ export const fr = {
       modelLabel: "Modèle",
       methodLabel: "Méthode",
       datasetLabel: "Jeu de données",
+      modelTooltip: "Le modèle de base que vous souhaitez affiner.",
+      methodTooltip: "Comment le modèle est entraîné. LoRA et QLoRA mettent à jour de petits adaptateurs au lieu de tous les poids.",
+      datasetTooltip: "Les données d'entraînement utilisées pour affiner le modèle.",
       hfTokenLabel: "Jeton Hugging Face",
       hfTokenDescription:
         "Nécessaire pour les modèles et jeux de données restreints ou privés.",

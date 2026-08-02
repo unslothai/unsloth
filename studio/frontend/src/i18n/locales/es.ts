@@ -1087,6 +1087,9 @@ export const es = {
       modelLabel: "Modelo",
       methodLabel: "Método",
       datasetLabel: "Conjunto de datos",
+      modelTooltip: "El modelo base que quieres ajustar.",
+      methodTooltip: "Cómo se entrena el modelo. LoRA y QLoRA actualizan adaptadores pequeños en lugar de todos los pesos.",
+      datasetTooltip: "Los datos de entrenamiento usados para ajustar el modelo.",
       hfTokenLabel: "Token de Hugging Face",
       hfTokenDescription:
         "Necesario para modelos y conjuntos de datos restringidos o privados.",

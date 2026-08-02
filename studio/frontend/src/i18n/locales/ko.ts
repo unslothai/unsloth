@@ -1055,6 +1055,9 @@ export const ko = {
       modelLabel: "모델",
       methodLabel: "방법",
       datasetLabel: "데이터셋",
+      modelTooltip: "파인튜닝할 기본 모델입니다.",
+      methodTooltip: "모델 학습 방식입니다. LoRA와 QLoRA는 전체 가중치 대신 작은 어댑터를 업데이트합니다.",
+      datasetTooltip: "모델을 파인튜닝하는 데 사용하는 학습 데이터입니다.",
       hfTokenLabel: "Hugging Face 토큰",
       hfTokenDescription:
         "액세스가 제한되거나 비공개인 모델 및 데이터 세트에 필요합니다.",

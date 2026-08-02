@@ -8,16 +8,25 @@ import { type ReactNode, useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { DatasetAdvancedSettingsSection } from "./dataset-advanced-settings-section";
 import { DatasetSelectionSection } from "./dataset-selection";
-import { DatasetSourceToggle } from "./dataset-source-toggle";
 import { DatasetUploadField } from "./dataset-upload";
+import { FieldHint } from "./field-hint";
 import { S3ConfigForm } from "./s3-config-form";
 import { useDatasetUploads } from "./use-dataset-uploads";
 import { useLocalDatasetInventory } from "./use-local-dataset-inventory";
 
-function FieldLabel({ children }: { children: ReactNode }) {
+function FieldLabel({
+  children,
+  hint,
+  hintLabel,
+}: {
+  children: ReactNode;
+  hint?: string;
+  hintLabel?: string;
+}) {
   return (
-    <span className="text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
+    <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
       {children}
+      {hint ? <FieldHint text={hint} label={hintLabel ?? hint} /> : null}
     </span>
   );
 }
@@ -26,7 +35,6 @@ export function DatasetPanel() {
   const t = useT();
   const {
     datasetSource,
-    selectS3Source,
     restoreBrowseDatasetSource,
     isVisionModel,
     isAudioModel,
@@ -34,7 +42,6 @@ export function DatasetPanel() {
   } = useTrainingConfigStore(
     useShallow((state) => ({
       datasetSource: state.datasetSource,
-      selectS3Source: state.selectS3Source,
       restoreBrowseDatasetSource: state.restoreBrowseDatasetSource,
       isVisionModel: state.isVisionModel,
       isAudioModel: state.isAudioModel,
@@ -57,20 +64,18 @@ export function DatasetPanel() {
   }, [datasetSource, isMultimodalModel, restoreBrowseDatasetSource]);
 
   return (
-    <div className="flex min-w-0 flex-col gap-4">
-      <DatasetSourceToggle
-        datasetSource={datasetSource}
-        isMultimodalModel={isMultimodalModel}
-        restoreBrowseDatasetSource={restoreBrowseDatasetSource}
-        selectS3Source={selectS3Source}
-      />
-
+    <div className="flex min-w-0 flex-col gap-5">
       {datasetSource === "s3" && <S3ConfigForm />}
 
       {datasetSource !== "s3" && (
         <div className="grid grid-cols-1 items-start gap-4 @xl/train-section:grid-cols-2 @xl/train-section:gap-5">
           <div className="flex flex-col gap-2">
-            <FieldLabel>{t("studio.wizard.datasetLabel")}</FieldLabel>
+            <FieldLabel
+              hint={t("studio.wizard.datasetTooltip")}
+              hintLabel={t("studio.wizard.datasetLabel")}
+            >
+              {t("studio.wizard.datasetLabel")}
+            </FieldLabel>
             <DatasetSelector />
           </div>
           <DatasetUploadField uploads={uploads} />

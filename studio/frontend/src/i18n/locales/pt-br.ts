@@ -1068,6 +1068,9 @@ export const ptBR = {
       modelLabel: "Modelo",
       methodLabel: "Método",
       datasetLabel: "Dataset",
+      modelTooltip: "O modelo base que você quer ajustar.",
+      methodTooltip: "Como o modelo é treinado. LoRA e QLoRA atualizam adaptadores pequenos em vez de todos os pesos.",
+      datasetTooltip: "Os dados de treinamento usados para ajustar o modelo.",
       hfTokenLabel: "Token do Hugging Face",
       hfTokenDescription:
         "Necessário para modelos e conjuntos de dados restritos ou privados.",

@@ -4,6 +4,11 @@
 import { PICKER_FOCUS_VISIBLE_CLASS } from "@/components/resource-picker/picker-focus";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { datasetDisplayName } from "@/features/dataset-picker";
 import {
   TRAINING_DATASET_UPLOAD_ACCEPT,
@@ -15,6 +20,7 @@ import {
   Cancel01Icon,
   CloudUploadIcon,
   FileAttachmentIcon,
+  InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef } from "react";
@@ -22,6 +28,7 @@ import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog"
 import {
   type DatasetUploads,
   TRAINING_UPLOAD_ACCEPT,
+  TRAINING_UPLOAD_LABEL,
 } from "./use-dataset-uploads";
 
 export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
@@ -29,8 +36,24 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
+      <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
         {t("studio.wizard.uploadLocalLabel")}
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              aria-label={t("studio.dataset.uploadDetails")}
+              className="text-foreground/70 hover:text-foreground"
+            >
+              <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-xs">
+            {t("studio.dataset.uploadDetailsTooltip", {
+              limit: uploads.uploadLimitLabel,
+            })}
+          </TooltipContent>
+        </Tooltip>
       </span>
       <button
         id={uploads.datasetDropTargetId}
@@ -68,9 +91,7 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
         </span>
       </button>
       <p className="truncate text-ui-10 text-muted-foreground">
-        {t("studio.dataset.uploadLimitsHint", {
-          limit: uploads.uploadLimitLabel,
-        })}
+        {TRAINING_UPLOAD_LABEL}
       </p>
       <input
         ref={fileInputRef}

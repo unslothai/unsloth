@@ -1096,6 +1096,9 @@ export const de = {
       modelLabel: "Modell",
       methodLabel: "Methode",
       datasetLabel: "Datensatz",
+      modelTooltip: "Das Basismodell, das du feinabstimmen möchtest.",
+      methodTooltip: "Wie das Modell trainiert wird. LoRA und QLoRA aktualisieren kleine Adapter statt aller Gewichte.",
+      datasetTooltip: "Die Trainingsdaten für die Feinabstimmung des Modells.",
       hfTokenLabel: "Hugging Face-Token",
       hfTokenDescription:
         "Erforderlich für zugriffsbeschränkte oder private Modelle und Datensätze.",

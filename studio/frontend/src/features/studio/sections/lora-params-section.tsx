@@ -47,7 +47,8 @@ export function LoraParamsSection(): ReactElement | null {
       setTargetModules: state.setTargetModules,
     })),
   );
-  const [open, setOpen] = useState(false);
+  // Only mounted in advanced mode, so start expanded when the user switches to it.
+  const [open, setOpen] = useState(true);
   const isCpt = store.trainingMethod === "cpt";
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
 
@@ -246,7 +247,7 @@ export function LoraParamsSection(): ReactElement | null {
                   disabled={unsupportedOnMlx}
                   aria-pressed={store.loraVariant === option.value}
                   onClick={() => store.setLoraVariant(option.value)}
-                  className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${selectableOptionStateClassName(store.loraVariant === option.value)}`}
+                  className={`flex-1 corner-squircle rounded-[14px] border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${selectableOptionStateClassName(store.loraVariant === option.value)}`}
                 >
                   <p className="text-xs font-medium">{option.label}</p>
                   <p className="text-ui-10 text-muted-foreground">
