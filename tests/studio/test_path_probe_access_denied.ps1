@@ -22,7 +22,8 @@ $setupPath = [System.IO.Path]::Combine($repoRoot, "studio", "setup.ps1")
 . ([System.IO.Path]::Combine($repoRoot, "tests", "studio_setup_ps1", "Get-FunctionSource.ps1"))
 
 foreach ($fn in @("Test-AccessDeniedError", "Get-PathState", "Test-PathQuiet",
-                  "Get-PathDenialDetail", "Test-StudioOwnedAdoptable")) {
+                  "Get-PathDenialDetail", "Get-StudioAdoptableState",
+                  "Test-StudioOwnedAdoptable")) {
     $src = Get-FunctionSource -Path $setupPath -Name $fn
     Check "setup.ps1 defines $fn" ($null -ne $src)
     if ($src) { . ([scriptblock]::Create($src)) }
@@ -141,6 +142,34 @@ foreach ($p in $parityProbes) {
 Remove-Item -Recurse -Force -LiteralPath $parityRoot -ErrorAction SilentlyContinue
 Check "Get-PathState matches bare Test-Path on every non-throwing probe ($probed)" ($mismatch -eq 0)
 Check "Denied never appears where the old probe did not throw" ($deniedWithoutThrow -eq 0)
+
+# ── A denied marker FILE under a readable directory ──
+# Windows only: POSIX keeps a mode-000 file stat-able, so this state cannot be
+# built on Unix. Collapsing it to "No" made the ownership guard report an
+# Unsloth tree as an unrelated directory instead of a permissions problem.
+$adoptRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_adopt_" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $adoptRoot | Out-Null
+$adoptMarker = Join-Path $adoptRoot "UNSLOTH_PREBUILT_INFO.json"
+Set-Content -LiteralPath $adoptMarker -Value '{"release_tag":"app-1"}'
+Check "a readable marker reports Yes" ((Get-StudioAdoptableState -Path $adoptRoot) -eq "Yes")
+if ($onWindows) {
+    $who = "$env:USERDOMAIN\$env:USERNAME"
+    icacls $adoptMarker /deny "${who}:(R)" *>$null
+    try {
+        $markerThrew = $false
+        try { $null = Test-Path -LiteralPath $adoptMarker -PathType Leaf -ErrorAction Stop } catch { $markerThrew = $true }
+        if ($markerThrew) {
+            Check "a denied marker reports Denied, not No" ((Get-StudioAdoptableState -Path $adoptRoot) -eq "Denied")
+            Check "the boolean view still refuses to adopt it" (-not (Test-StudioOwnedAdoptable $adoptRoot))
+        } else {
+            Write-Host "  SKIP  this host would not deny the marker file" -ForegroundColor Yellow
+        }
+    } finally { icacls $adoptMarker /remove:d "$who" *>$null }
+} else {
+    Write-Host "  SKIP  denied marker file is a Windows-ACL-only state (POSIX keeps mode-000 files stat-able)" -ForegroundColor Yellow
+}
+Remove-Item -Recurse -Force -LiteralPath $adoptRoot -ErrorAction SilentlyContinue
+Check "a missing marker reports No" ((Get-StudioAdoptableState -Path ([System.IO.Path]::GetTempPath())) -eq "No")
 
 # ── The reporting path must not itself fail ──
 # Get-PathDenialDetail runs while a failure is being reported, so a null or empty

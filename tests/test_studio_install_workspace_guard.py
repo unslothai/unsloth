@@ -253,7 +253,9 @@ def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
 
 def test_setup_ps1_adopts_existing_whisper_prebuilt_marker():
     text = SETUP_PS1.read_text(encoding = "utf-8")
-    helper_start = text.index("function Test-StudioOwnedAdoptable")
+    # The marker scan lives in Get-StudioAdoptableState; Test-StudioOwnedAdoptable
+    # is the boolean view of it.
+    helper_start = text.index("function Get-StudioAdoptableState")
     helper_end = text.index("function Assert-StudioOwnedOrAbsent", helper_start)
     helper = text[helper_start:helper_end]
     assert "UNSLOTH_WHISPER_PREBUILT_INFO.json" in helper

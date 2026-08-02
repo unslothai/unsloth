@@ -50,7 +50,7 @@ def test_every_denial_route_reports_instead_of_proceeding():
     assert '$llamaGitState -eq "Denied"' in SETUP_PS1
     assert "$pathState = Get-PathState -Path $Path -PathType Container" in SETUP_PS1
     assert '$StudioHomeIsCustom -and $pathState -eq "Denied"' in SETUP_PS1
-    assert SETUP_PS1.count("Exit-PathAccessDenied -Path") == 8
+    assert SETUP_PS1.count("Exit-PathAccessDenied -Path") == 9
 
 
 def test_denied_install_reports_an_actionable_failure():
@@ -148,6 +148,38 @@ def test_local_llama_dir_probes_are_three_state():
     # whether a preserved binary is usable, and an unreadable one is not.
 
 
+def test_phase_1b_git_scan_is_guarded_too():
+    """The git prerequisite scan probes the same candidate binaries in Phase 1b,
+    thousands of lines before the Phase 4 guards, and under "Stop". A denial
+    there reproduced the original raw termination."""
+    scan = SETUP_PS1.split("$_localLlamaBuilt = $false", 1)[1].split(
+        "if (-not $_localLlamaBuilt) {", 1
+    )[0]
+    assert "$_cState = Get-PathState -Path (Join-Path $_localLlamaDir $_c)" in scan
+    assert '$_cState -eq "Denied"' in scan
+    assert '$_cState -eq "Present"' in scan
+    assert "Test-Path -LiteralPath (Join-Path $_localLlamaDir $_c)" not in scan
+    assert "-UserSupplied" in scan
+
+
+def test_adoption_markers_keep_their_denial():
+    """A denied prebuilt marker is not evidence of absence. Collapsing it made the
+    ownership guard call an Unsloth tree an unrelated directory and tell the user
+    to move it aside, hiding a permissions problem."""
+    assert "function Get-StudioAdoptableState" in SETUP_PS1
+    state = SETUP_PS1.split("function Get-StudioAdoptableState", 1)[1].split("\nfunction ", 1)[0]
+    assert "Get-PathState -Path (Join-Path $Path $marker) -PathType Leaf" in state
+    for verdict in ('return "Yes"', 'return "No"', 'return "Denied"'):
+        assert verdict in state
+    guard = SETUP_PS1.split("function Assert-StudioOwnedOrAbsent", 1)[1].split("\nfunction ", 1)[0]
+    assert "$adoptState = Get-StudioAdoptableState -Path $Path" in guard
+    assert '$adoptState -eq "Denied"' in guard
+    # The denial must be reported before the "not Unsloth-owned" wording.
+    assert guard.index('$adoptState -eq "Denied"') < guard.index(
+        "is not marked as an Unsloth-owned"
+    )
+
+
 def test_user_supplied_paths_are_never_told_to_delete_themselves():
     """The managed advice ("delete it, Unsloth reinstalls it") is wrong for a tree
     the user pointed us at with UNSLOTH_LOCAL_LLAMA_CPP_DIR."""
@@ -157,9 +189,14 @@ def test_user_supplied_paths_are_never_told_to_delete_themselves():
     assert "delete or rename" not in user_branch
     assert "managed cache" not in user_branch
     assert "UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build" in user_branch
-    # Every user-supplied call site must actually pass the switch.
+    # Every call site that reports a path the user pointed us at must pass the
+    # switch, including the canonical location: the override says that tree is
+    # the user's build, so "delete it, we reinstall it" is wrong there too.
     for line in SETUP_PS1.splitlines():
         if "Exit-PathAccessDenied" in line and "UNSLOTH_LOCAL_LLAMA_CPP_DIR" in line:
             assert "-UserSupplied" in line, line
-        if "Exit-PathAccessDenied" in line and "--with-llama-cpp-dir" in line:
+    local_block = SETUP_PS1.split("$LocalLlamaCppSrc = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR", 1)[1]
+    local_block = local_block.split("if ($LocalLlamaCppLinked) {", 1)[0]
+    for line in local_block.splitlines():
+        if "Exit-PathAccessDenied" in line:
             assert "-UserSupplied" in line, line

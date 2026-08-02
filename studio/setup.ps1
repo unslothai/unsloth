@@ -1860,7 +1860,13 @@ if (-not $HasGit) {
     if ($_localLlamaDir) {
         # Same layout candidates as the reuse check in Phase 4.
         foreach ($_c in @("llama-server.exe", "build\bin\llama-server.exe", "build\bin\Release\llama-server.exe")) {
-            if (Test-Path -LiteralPath (Join-Path $_localLlamaDir $_c)) { $_localLlamaBuilt = $true; break }
+            # Denied here terminated the run under "Stop" long before Phase 4's
+            # guarded probes, so this scan needs the same three-state handling.
+            $_cState = Get-PathState -Path (Join-Path $_localLlamaDir $_c)
+            if ($_cState -eq "Denied") {
+                Exit-PathAccessDenied -Path $_localLlamaDir -Label "the UNSLOTH_LOCAL_LLAMA_CPP_DIR build" -UserSupplied
+            }
+            if ($_cState -eq "Present") { $_localLlamaBuilt = $true; break }
         }
     }
     if (-not $_localLlamaBuilt) {
@@ -2906,12 +2912,25 @@ $StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
 # llama.cpp or whisper.cpp predating the .unsloth-studio-owned marker (see
 # setup.sh). Only Unsloth prebuilt markers count; source builds are
 # indistinguishable from a user clone on Windows and stay under the strict guard.
-# Test-PathQuiet: an unreadable tree must reach the errors below, not throw here.
+# "Yes" / "No" / "Denied". A denied marker is not evidence of absence: reading it
+# as "No" makes the guard below call an Unsloth tree an unrelated directory and
+# tell the user to move it aside, when the real problem is permissions.
+function Get-StudioAdoptableState {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $denied = $false
+    foreach ($marker in @("UNSLOTH_PREBUILT_INFO.json", "UNSLOTH_WHISPER_PREBUILT_INFO.json")) {
+        switch (Get-PathState -Path (Join-Path $Path $marker) -PathType Leaf) {
+            "Present" { return "Yes" }
+            "Denied"  { $denied = $true }
+        }
+    }
+    if ($denied) { return "Denied" }
+    return "No"
+}
+# Boolean view for callers that only gate a cosmetic cleanup on adoption.
 function Test-StudioOwnedAdoptable {
     param([Parameter(Mandatory = $true)][string]$Path)
-    if (Test-PathQuiet (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") "Leaf") { return $true }
-    if (Test-PathQuiet (Join-Path $Path "UNSLOTH_WHISPER_PREBUILT_INFO.json") "Leaf") { return $true }
-    return $false
+    return ((Get-StudioAdoptableState -Path $Path) -eq "Yes")
 }
 function Assert-StudioOwnedOrAbsent {
     param(
@@ -2934,7 +2953,11 @@ function Assert-StudioOwnedOrAbsent {
         Exit-PathAccessDenied -Path $Path -Label $Label
     }
     if ($StudioHomeIsCustom -and $markerState -ne "Present") {
-        if (Test-StudioOwnedAdoptable $Path) {
+        $adoptState = Get-StudioAdoptableState -Path $Path
+        if ($adoptState -eq "Denied") {
+            Exit-PathAccessDenied -Path $Path -Label $Label
+        }
+        if ($adoptState -eq "Yes") {
             Mark-StudioOwned $Path
             return
         }
@@ -3984,10 +4007,10 @@ if ($LocalLlamaCppSrc) {
         # replaces the very build this flag asked to reuse.
         $candState = Get-PathState -Path $_cand
         if ($candState -eq "Denied") {
-            if ($LocalIsCanonical) {
-                Exit-PathAccessDenied -Path $ResolvedLocal -Label "llama.cpp install"
-            }
-            Exit-PathAccessDenied -Path $ResolvedLocal -Label "the --with-llama-cpp-dir build" -UserSupplied
+            # -UserSupplied even when this is the canonical location: the
+            # override says the tree is the user's build, so never advise
+            # deleting it, managed path or not.
+            Exit-PathAccessDenied -Path $ResolvedLocal -Label "the UNSLOTH_LOCAL_LLAMA_CPP_DIR build" -UserSupplied
         }
         if ($candState -eq "Present") { $LocalLlamaServerFound = $true; break }
     }
