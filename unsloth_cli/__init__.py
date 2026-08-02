@@ -90,13 +90,33 @@ def main(
         if any(_cwd == _dir or _cwd.startswith(_dir + _os.sep) for _dir in _system_dirs):
             # Name the folder and hand back a runnable fix: users get here via
             # "Run as administrator", so the directory is the last thing they suspect.
-            _home = _os.environ.get("USERPROFILE") or _os.path.expanduser("~")
-            # Quote it, or C:\Users\Jane Doe reaches Set-Location as two arguments and
-            # the one line we hand out does not run. PowerShell single quotes are
-            # verbatim ('' escapes an apostrophe, C:\Users\O'Brien); cmd needs double
-            # quotes once extensions are off. " is not legal in a Windows path.
-            _home_ps = "'" + _home.replace("'", "''") + "'"
-            _home_cmd = '"' + _home + '"'
+            # SYSTEM's USERPROFILE is C:\Windows\System32\config\systemprofile, which
+            # would send the user straight back here, so take the first home outside the
+            # Windows tree and print none rather than a bad one (install.ps1 does the same).
+            _windir_norm = _os.path.normcase(_os.path.normpath(_windir))
+            _home = None
+            for _candidate in (
+                _os.environ.get("USERPROFILE"),
+                _os.environ.get("PUBLIC"),
+                _os.path.expanduser("~"),
+            ):
+                _norm = _os.path.normcase(_os.path.normpath(_candidate)) if _candidate else ""
+                if _norm and _norm != _windir_norm and not _norm.startswith(_windir_norm + _os.sep):
+                    _home = _candidate
+                    break
+            if _home:
+                # Quote it, or C:\Users\Jane Doe reaches Set-Location as two arguments and
+                # the one line we hand out does not run. PowerShell single quotes are
+                # verbatim ('' escapes an apostrophe, C:\Users\O'Brien); cmd needs double
+                # quotes once extensions are off. " is not legal in a Windows path.
+                _home_ps = "'" + _home.replace("'", "''") + "'"
+                _home_cmd = '"' + _home + '"'
+                _cd_lines = (
+                    f"    cd {_home_ps}          (PowerShell)\n"
+                    f"    cd /d {_home_cmd}       (cmd.exe)\n"
+                )
+            else:
+                _cd_lines = f"    (any folder outside {_windir})\n"
             _argv = " ".join((f'"{_arg}"' if " " in _arg else _arg) for _arg in _sys.argv[1:])
             _retry = ("unsloth " + _argv).rstrip()
             typer.secho(
@@ -108,8 +128,7 @@ def main(
                 "this one, which is how most people end up here.\n"
                 "\n"
                 "Change to a normal folder and run the command again:\n"
-                f"    cd {_home_ps}          (PowerShell)\n"
-                f"    cd /d {_home_cmd}       (cmd.exe)\n"
+                f"{_cd_lines}"
                 f"    {_retry}",
                 fg = "red",
                 err = True,

@@ -62,10 +62,14 @@ def test_install_ps1_guard_relocates_and_keeps_relative_llama_cpp_dir():
     idx = src.index("$InSystemDir = $CurrentDir -and (")
     block = src[idx : idx + 3000]
     assert "Set-Location -LiteralPath $candidate" in block, "the guard must relocate, not just warn"
-    llama_idx = block.index("$WithLlamaCppDir = Join-Path $CurrentDir $WithLlamaCppDir")
+    llama_idx = block.index("GetUnresolvedProviderPathFromPSPath($WithLlamaCppDir)")
     set_loc_idx = block.index("Set-Location -LiteralPath $candidate")
     assert llama_idx < set_loc_idx, (
-        "a relative --with-llama-cpp-dir must be pinned to the original directory before Set-Location"
+        "--with-llama-cpp-dir must be pinned to the original directory before Set-Location"
+    )
+    assert "GetFullPath($WithLlamaCppDir)" not in block, (
+        "GetFullPath resolves against [Environment]::CurrentDirectory, which Set-Location "
+        "does not update; the PSPath resolver follows the PowerShell location"
     )
 
 
@@ -208,6 +212,23 @@ def test_relocation_block_moves_out_and_rebases_relative_llama_cpp_dir(tmp_path)
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_relocation_block_leaves_a_fully_qualified_llama_cpp_dir_alone(tmp_path):
+    system_root = tmp_path / "Windows"
+    current_dir = system_root / "System32"
+    current_dir.mkdir(parents = True)
+    home = tmp_path / "home"
+    home.mkdir()
+    absolute = tmp_path / "elsewhere" / "llama.cpp"
+    res = _run_relocation_block(
+        tmp_path, system_root, current_dir, home, with_llama_cpp_dir = str(absolute)
+    )
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert f"LLAMA:{absolute}" in res.stdout, (
+        "an already qualified path must pass through untouched"
+    )
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(tmp_path):
     """No safe directory (SYSTEM account: profile lives under System32) must fail before any install work."""
     system_root = tmp_path / "Windows"
@@ -234,6 +255,7 @@ def _run_cli_guard(
     cwd: str,
     argv: list[str] | None = None,
     userprofile: str = r"C:\Users\me",
+    public: str | None = None,
 ) -> tuple[str | None, int | None]:
     """Exec the CLI's win32 guard block with ntpath semantics; returns (message, exit code)."""
     src = CLI_INIT.read_text(encoding = "utf-8")
@@ -252,12 +274,23 @@ def _run_cli_guard(
     ):
         captured["message"] = message
 
+    environ = {"WINDIR": r"C:\Windows", "USERPROFILE": userprofile}
+    if public is not None:
+        environ["PUBLIC"] = public
     fake_typer = types.SimpleNamespace(secho = _secho, Exit = _FakeExit)
+    # ntpath for the path semantics, but expanduser has to be pinned: the real one reads
+    # the host's HOME, and on Windows "~" is USERPROFILE, SYSTEM's included.
+    fake_path = types.SimpleNamespace(
+        normcase = ntpath.normcase,
+        normpath = ntpath.normpath,
+        join = ntpath.join,
+        expanduser = lambda _p: userprofile,
+    )
     fake_os = types.SimpleNamespace(
-        path = ntpath,
+        path = fake_path,
         sep = "\\",
         getcwd = lambda: cwd,
-        environ = {"WINDIR": r"C:\Windows", "USERPROFILE": userprofile},
+        environ = environ,
     )
     fake_sys = types.SimpleNamespace(platform = "win32", argv = argv or ["unsloth", "studio", "setup"])
 
@@ -347,6 +380,31 @@ def test_cli_guard_cd_lines_are_quoted(profile_name: str):
     assert message is not None
     assert _cd_line(message, "PowerShell") == "cd '" + profile.replace("'", "''") + "'"
     assert _cd_line(message, "cmd.exe") == 'cd /d "' + profile + '"'
+
+
+def test_cli_guard_skips_a_system_account_home():
+    """SYSTEM's USERPROFILE is under System32, so the cd would land back in the guard."""
+    message, code = _run_cli_guard(
+        r"C:\Windows\System32",
+        userprofile = r"C:\Windows\System32\config\systemprofile",
+        public = r"C:\Users\Public",
+    )
+    assert code == 1
+    assert message is not None
+    assert "systemprofile" not in message, "must not advertise a home inside the Windows tree"
+    assert _cd_line(message, "PowerShell") == "cd 'C:\\Users\\Public'"
+
+
+def test_cli_guard_omits_the_cd_line_when_every_home_is_a_system_directory():
+    message, code = _run_cli_guard(
+        r"C:\Windows\System32",
+        userprofile = r"C:\Windows\System32\config\systemprofile",
+        public = r"C:\Windows\Temp",
+    )
+    assert code == 1
+    assert message is not None
+    assert "cd " not in message, "no pasteable path is better than one that fails again"
+    assert r"any folder outside C:\Windows" in message
 
 
 def test_cli_guard_message_repeats_the_actual_command():

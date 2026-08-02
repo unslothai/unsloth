@@ -1159,8 +1159,18 @@ exit 0
         $CurrentDir.StartsWith($SystemRootDir + '\', [System.StringComparison]::OrdinalIgnoreCase)
     )
     if ($InSystemDir) {
-        if ($WithLlamaCppDir -and -not [System.IO.Path]::IsPathRooted($WithLlamaCppDir)) {
-            $WithLlamaCppDir = Join-Path $CurrentDir $WithLlamaCppDir
+        if ($WithLlamaCppDir) {
+            # Anchor to the location the user typed it against. Covers the partially
+            # qualified forms (C:llama.cpp, \llama.cpp) that IsPathRooted calls rooted
+            # while Set-Location still moves them, and not [System.IO.Path]::GetFullPath,
+            # which resolves against [Environment]::CurrentDirectory -- a different
+            # directory that Set-Location never updates.
+            try {
+                $WithLlamaCppDir =
+                    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WithLlamaCppDir)
+            } catch {
+                $WithLlamaCppDir = Join-Path $CurrentDir $WithLlamaCppDir
+            }
         }
         # SYSTEM's profile is C:\Windows\System32\config\systemprofile, so a candidate
         # under the Windows directory is no better than where we already are. Prefix
