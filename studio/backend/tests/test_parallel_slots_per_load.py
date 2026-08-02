@@ -162,6 +162,12 @@ def test_frontend_mirror_matches_shared_bounds():
     assert (int(low.group(1)), int(high.group(1))) == (PARALLEL_MIN, PARALLEL_MAX)
 
 
+def test_override_mirror_matches_shared_bounds():
+    # Mirrored, not imported: llama_server_args owns the allow-list that module stays out of.
+    from utils.openai_auto_switch_settings import PARALLEL_SLOTS_MAX, PARALLEL_SLOTS_MIN
+    assert (PARALLEL_SLOTS_MIN, PARALLEL_SLOTS_MAX) == (PARALLEL_MIN, PARALLEL_MAX)
+
+
 def test_preset_model_reuses_shared_bounds():
     # Bounds drifting from PARALLEL_MIN/MAX would 422 valid presets on every sync.
     from routes.chat_history import ChatPresetLoadConfig
@@ -460,6 +466,7 @@ def _guard_required_gb(
         cache_type_kv = None,
         tensor_parallel = False,
         gpu_memory_mode = "auto",
+        gpu_layers = -1,
     )
     inf._guard_chat_load_against_training(
         config,
