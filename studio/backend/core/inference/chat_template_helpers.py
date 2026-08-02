@@ -272,6 +272,11 @@ _TEMPLATE_DELIMITERS = re.compile(
 # newline or "}". Gating on the preceding character keeps the shipped Gemma-4 loop indexes
 # out of the profile without also dropping the Mistral delimiters (#7066).
 _JINJA_INDEX = re.compile(r"[\w\]\)]\Z")
+# "{# ... #}" never reaches the prompt. The shipped gptoss template mentions "<|final|>"
+# only in a comment (chat_templates.py:1311) while the live protocol emits
+# "<|channel|>final<|message|>", so harvesting comment text rewrote ordinary user and tool
+# text containing "<|final|>" (#7066).
+_JINJA_COMMENT = re.compile(r"\{#.*?#\}", re.S)
 # Bracket names the curated pattern deliberately leaves alone: metadata WITHIN a block,
 # never its opener, so with the openers broken none can start or close anything by itself.
 # "[ARGS]" also collides with real text, being the standard CLI-synopsis metavariable
@@ -468,6 +473,8 @@ def model_markup(
     # which cannot appear in the prompt it is about to send (#7066).
     bodies = _selected_template_strings_from_value(chat_template, tools)
     for body in bodies or _template_strings(chat_template):
+        # Blanked rather than removed, so every offset the index check relies on survives.
+        body = _JINJA_COMMENT.sub(lambda m: " " * len(m.group(0)), body)
         for match in _TEMPLATE_DELIMITERS.finditer(body):
             marker = match.group(0)
             if marker.startswith("[") and _JINJA_INDEX.search(body, 0, match.start()):
@@ -1469,6 +1476,39 @@ def _vocabulary_of(tokenizer) -> Optional[list]:
     return None
 
 
+def mapped_chat_template(model_info: dict, active_model_name):
+    """The template the generate-time mapper will install, resolved once and cached.
+
+    ``_generate_chat_response_inner`` applies ``get_chat_template`` only when it renders, so
+    a profile or an authorization catalog built before that saw the LOAD-time template. A
+    tool whose schema carries a delimiter the mapped template introduces was then dropped
+    from the prompt but still authorized for healing or execution (#7066).
+
+    Resolved to a template string rather than installed on the shared tokenizer: mutating
+    that object outside the generation lock races concurrent requests, which is why
+    ``render_native_template`` renders on a clone."""
+    if not isinstance(model_info, dict):
+        return None
+    if "mapped_chat_template" in model_info:
+        return model_info["mapped_chat_template"]
+    mapped = None
+    try:
+        from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
+        from unsloth.chat_templates import get_chat_template
+
+        name = (active_model_name or "").lower()
+        if name in MODEL_TO_TEMPLATE_MAPPER:
+            remapped = get_chat_template(
+                model_info.get("tokenizer"), chat_template = MODEL_TO_TEMPLATE_MAPPER[name]
+            )
+            mapped = getattr(remapped, "chat_template", None)
+    except Exception as exc:
+        logger.debug("Could not resolve the mapped chat template early: %s", exc)
+        return None  # unresolved, so retry next turn rather than pinning None
+    model_info["mapped_chat_template"] = mapped
+    return mapped
+
+
 def renderable_tool_catalog(
     tools,
     tokenizer,
@@ -1489,6 +1529,8 @@ def renderable_tool_catalog(
     the template that did NOT get selected stays advertised and directly callable; it just
     is not auto-healed out of text-form output that round.
     """
+    if template is None:
+        template = mapped_chat_template(model_info or {}, active_model_name)
     safe = neutralize_tool_descriptions(
         tools, cache, markup_for_tokenizer(tokenizer, tools, template)
     )
@@ -1502,7 +1544,7 @@ def renderable_tool_catalog(
     )
     if not native_tpl:
         return safe
-    native = model_markup(native_tpl, _vocabulary_of(tokenizer))
+    native = model_markup(native_tpl, _vocabulary_of(tokenizer), tools)
     if native is None:
         return safe
     kept = catalog_tool_names(neutralize_tool_descriptions(tools, cache, native))
@@ -1548,6 +1590,22 @@ def _selected_template_strings_from_value(
     tools = tools or None
     if isinstance(template, str):
         return (template,)
+    # The list form Hermes-3 ships, [{"name": ..., "template": ...}], is the same selection
+    # as the dict form; returning nothing for it made every caller fall back to the union,
+    # so a no-tools turn inherited the tool_use markers (#7066).
+    if isinstance(template, (list, tuple)):
+        named = {
+            entry["name"]: entry["template"]
+            for entry in template
+            if isinstance(entry, dict)
+            and isinstance(entry.get("name"), str)
+            and isinstance(entry.get("template"), str)
+        }
+        if named:
+            return _selected_template_strings_from_value(
+                named, tools, prefer_tool_use = prefer_tool_use
+            )
+        return ()
     if not isinstance(template, dict):
         return ()
     if prefer_tool_use and tools and isinstance(template.get("tool_use"), str):

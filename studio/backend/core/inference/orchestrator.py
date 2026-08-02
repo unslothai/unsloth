@@ -36,33 +36,6 @@ from utils.hf_xet_fallback import DownloadStallError
 logger = get_logger(__name__)
 
 
-def _mapped_chat_template(model_info: dict, active_model_name):
-    """The template the generate-time mapper will install, resolved once and cached.
-
-    ``_generate_chat_response_inner`` applies ``get_chat_template`` only when it renders, so
-    a profile and an authorization catalog built before that saw the LOAD-time template. A
-    tool whose schema carries a delimiter the mapped template introduces was then dropped
-    from the prompt but still authorized by the controller (#7066)."""
-    if "mapped_chat_template" in model_info:
-        return model_info["mapped_chat_template"]
-    mapped = None
-    try:
-        from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
-        from unsloth.chat_templates import get_chat_template
-
-        name = (active_model_name or "").lower()
-        if name in MODEL_TO_TEMPLATE_MAPPER:
-            remapped = get_chat_template(
-                model_info.get("tokenizer"), chat_template = MODEL_TO_TEMPLATE_MAPPER[name]
-            )
-            mapped = getattr(remapped, "chat_template", None)
-    except Exception as exc:
-        logger.debug("Could not resolve the mapped chat template early: %s", exc)
-        return None  # unresolved, so retry next turn rather than pinning None
-    model_info["mapped_chat_template"] = mapped
-    return mapped
-
-
 _CTX = mp.get_context("spawn")
 
 
@@ -1647,13 +1620,14 @@ class InferenceOrchestrator:
         # catalog safe under every template this turn could select, because the
         # native-template fallback renders with a different profile (#7066).
         from core.inference.chat_template_helpers import (
+            mapped_chat_template,
             markup_for_tokenizer,
             renderable_tool_catalog,
         )
 
         _model_info = self.models.get(self.active_model_name) or {}
         # Resolved BEFORE the profile: the mapper installs its template during the render.
-        _mapped_tpl = _mapped_chat_template(_model_info, self.active_model_name)
+        _mapped_tpl = mapped_chat_template(_model_info, self.active_model_name)
 
         yield from run_safetensors_tool_loop(
             markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),

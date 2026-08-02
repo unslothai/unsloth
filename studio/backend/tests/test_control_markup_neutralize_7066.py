@@ -5054,9 +5054,83 @@ def test_the_mapped_template_is_resolved_before_the_authorization_catalog():
     """The generate-time mapper installs its template during the render, so a catalog built
     from the load-time tokenizer was a step behind the prompt it gates (#7066)."""
     for module in ("inference.py", "orchestrator.py"):
-        source = (_REPO_ROOT / "studio" / "backend" / "core" / "inference" / module).read_text(
-            encoding = "utf-8"
-        )
-        assert "_mapped_chat_template(" in source, module
+        source = (
+            _REPO_ROOT / "studio" / "backend" / "core" / "inference" / module
+        ).read_text(encoding = "utf-8")
+        assert "mapped_chat_template(" in source, module
         loop = source.split("run_safetensors_tool_loop(", 1)[1][:600]
         assert "_mapped_tpl" in loop, module
+
+
+def test_the_client_healer_catalog_also_resolves_the_mapped_template():
+    """The safetensors/MLX client-tool path builds its allowlist before generation too, so
+    it needs the same template the render will install (#7066)."""
+    catalog = (
+        _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "chat_template_helpers.py"
+    ).read_text(encoding = "utf-8")
+    body = catalog.split("def renderable_tool_catalog(", 1)[1].split("\ndef ", 1)[0]
+    # Resolved inside the helper, so every caller gets it without threading it by hand.
+    assert "mapped_chat_template(model_info or {}, active_model_name)" in body
+
+
+def test_a_list_shaped_named_template_selects_like_the_dict_form():
+    """Hermes-3 ships [{"name", "template"}]. Returning no selection for it made callers
+    fall back to the union, so a no-tools turn inherited the tool_use markers (#7066)."""
+    listed = [
+        {"name": "default", "template": "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}"},
+        {"name": "tool_use", "template": "{% for m in messages %}<tools>{{ m }}</tools>{% endfor %}"},
+    ]
+    assert model_markup(listed, None, None).markers == {"<|im_start|>"}
+    with_tools = model_markup(listed, None, [{"type": "function"}]).markers
+    assert "<tools>" in with_tools
+
+
+def test_a_jinja_comment_is_not_harvested():
+    """The shipped gptoss template mentions "<|final|>" only in a comment, while the live
+    protocol emits "<|channel|>final<|message|>", so profiling comment text rewrote
+    ordinary user and tool text containing it (#7066)."""
+    template = (
+        "{# the protocol used to spell this <|final|> #}"
+        "{% for m in messages %}<|start|>{{ m }}<|end|>{% endfor %}"
+    )
+    markup = model_markup(template, None)
+    assert "<|final|>" not in markup.markers
+    assert markup.rewrite_control("<|final|>") == "<|final|>"
+    assert markup.rewrite_control("<|start|>") == "< |start|>"
+
+
+def test_blanking_a_comment_keeps_the_index_check_aligned():
+    """Comments are blanked, not removed, so the offsets the bracket-index check uses on
+    the raw body still line up."""
+    template = "{# pad #}{% for m in messages %}{{ loop_messages[i] }}[INST]{% endfor %}"
+    markup = model_markup(template, None)
+    assert "[i]" not in markup.markers
+    assert "[INST]" in markup.markers
+
+
+def test_the_native_catalog_profile_sees_the_requests_tools():
+    """A named native template profiled without tools selects "default", so a schema
+    identifier carrying a tool_use-only marker stayed authorized while the real native tool
+    render dropped it (#7066)."""
+
+    class _Tok:
+        chat_template = "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}"
+        added_tokens_decoder: dict = {}
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "pay",
+                "parameters": {"type": "object", "properties": {"</tools>": {"type": "string"}}},
+            },
+        },
+        {"type": "function", "function": {"name": "ok", "parameters": {"type": "object"}}},
+    ]
+    info = {
+        "native_chat_template": {
+            "default": "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}",
+            "tool_use": "{% for m in messages %}<tools>{{ m }}</tools>{% endfor %}",
+        }
+    }
+    assert catalog_tool_names(renderable_tool_catalog(tools, _Tok(), info)) == {"ok"}
