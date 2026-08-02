@@ -33,6 +33,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from typing import Optional
 
 import structlog
 
@@ -321,12 +322,22 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     return True
 
 
-def _run_repair_and_redetect() -> None:
+def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
     if not attempt_mlx_repair():
         return
     try:
         from utils.hardware import hardware as hw
-        hw.detect_hardware()  # flips CHAT_ONLY / DEVICE now that mlx imports
+
+        # A pip install, so shutdown can land anywhere inside it. Scoping to the epoch read
+        # before start() discards the re-detect rather than republish for a dead lifespan.
+        with hw.owning_detection_epoch(epoch):
+            hw.detect_hardware()  # flips CHAT_ONLY / DEVICE now that mlx imports
+        if epoch is not None and hw.current_detection_epoch() != epoch:
+            # The scoped pass declined: this repair outlived its lifespan. The install
+            # still succeeded, so the live lifespan holds a verdict measured before mlx
+            # existed and the _attempted latch blocks any later repair. Re-detect under
+            # the live epoch, or a now-capable Mac stays chat-only until a restart.
+            hw.detect_hardware()
         logger.info(
             "MLX self-heal succeeded; Train/Export enabled (reload the page). chat_only=%s",
             hw.CHAT_ONLY,
@@ -358,8 +369,13 @@ def start_mlx_autorepair_if_needed() -> bool:
         "Set %s=1 to disable.",
         DISABLE_ENV_VAR,
     )
+    # Read before start(): the thread may not run for a while, so reading the epoch
+    # inside it would bind the pass to a later shutdown.
+    from utils.hardware import hardware as _hw
+
     threading.Thread(
         target = _run_repair_and_redetect,
+        args = (_hw.current_detection_epoch(),),
         daemon = True,
         name = "mlx-autorepair",
     ).start()
