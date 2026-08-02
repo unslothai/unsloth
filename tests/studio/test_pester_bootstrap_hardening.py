@@ -29,6 +29,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOW = REPO_ROOT / ".github" / "workflows" / "studio-windows-inference-smoke.yml"
+_GUARD_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pester-guard-ci.yml"
 
 
 def _bootstrap_step() -> dict:
@@ -112,17 +113,22 @@ def test_the_guard_runs_from_the_workflow_it_guards():
     on = workflow.get("on") or workflow.get(True)
     # as_posix(), not str(): this runs on windows-latest, where str() would give
     # backslashes and never match the forward-slash paths in the YAML.
-    paths = on["pull_request"]["paths"]
-    assert _WORKFLOW.relative_to(REPO_ROOT).as_posix() in paths
-    # `tests/studio/*.ps1` does not cover this file, so editing the guard alone used
-    # to skip the job that runs it, which is how a Windows-only break got merged.
-    assert (
-        Path(__file__).resolve().relative_to(REPO_ROOT).as_posix() in paths
-    ), "editing this guard must run the Windows job it guards"
+    assert _WORKFLOW.relative_to(REPO_ROOT).as_posix() in on["pull_request"]["paths"]
     steps = workflow["jobs"]["pester"]["steps"]
     assert any(
         Path(__file__).name in (s.get("run") or "") for s in steps
     ), "the pester job must run this guard, or a workflow-only edit skips it entirely"
+
+
+def test_editing_the_guard_runs_it_on_windows():
+    """The heavy workflow has no job-level gating, so the guard gets its own cheap one."""
+    workflow = yaml.safe_load(_GUARD_WORKFLOW.read_text(encoding = "utf-8"))
+    on = workflow.get("on") or workflow.get(True)
+    assert Path(__file__).resolve().relative_to(REPO_ROOT).as_posix() in on["pull_request"]["paths"]
+    jobs = list(workflow["jobs"].values())
+    assert len(jobs) == 1, "keep this workflow to one job, it exists to be cheap"
+    assert jobs[0]["runs-on"] == "windows-latest", "the bug this catches is Windows-only"
+    assert any(Path(__file__).name in (s.get("run") or "") for s in jobs[0]["steps"])
 
 
 def test_network_is_skipped_when_the_image_already_satisfies_the_minimum():
