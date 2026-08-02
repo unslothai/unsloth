@@ -729,8 +729,11 @@ async def get_gguf_variants_response(
             cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
                 variants, has_vision, complete = cached
-                # Same reason as the local_only branch above.
-                return _local_response(repo_id, variants, has_vision, complete)
+                # Same reason as the local_only branch above, state partials included:
+                # an unreachable Hub is exactly when a resume has nowhere else to surface.
+                return _with_state_partials(
+                    _local_response(repo_id, variants, has_vision, complete)
+                )
             partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
             if partial is not None:
                 variants, has_vision = partial
