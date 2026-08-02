@@ -867,9 +867,8 @@ class FastBaseModel:
         if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
             os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
-        # Read revision out of kwargs rather than binding it in the signature: the weight
-        # load below forwards **kwargs, so a named parameter would drop it from there.
-        # It names a ref on the repo as passed in, so pin that before any remap.
+        # Read revision from kwargs, not the signature: the weight load below forwards
+        # **kwargs, so binding it would drop it there. Pin its repo before any remap.
         _revision = kwargs.get("revision")
         _revision_repo = model_name
 
@@ -1121,7 +1120,7 @@ class FastBaseModel:
             and _tokenizer_repo != model_name
         )
         if _warm_tokenizer_repo:
-            # No revision: this only runs for a repo other than the one it belongs to.
+            # No revision: this only runs when the repo differs from the revision's repo.
             maybe_prefetch_hf_snapshot(
                 _tokenizer_repo,
                 token = token,
@@ -1449,8 +1448,8 @@ class FastBaseModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
-        # The tokenizer repo can differ from the one the revision belongs to (a caller
-        # override, or model_name remapped by fast_inference_setup above).
+        # The tokenizer repo can differ from the revision's repo (a caller override, or
+        # model_name remapped by fast_inference_setup above).
         _tokenizer_revision = _revision if tokenizer_name == _revision_repo else None
 
         # On the vLLM path the tokenizer warm was deferred (fast_inference_setup may remap model_name).

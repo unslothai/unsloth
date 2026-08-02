@@ -2432,7 +2432,7 @@ class FastLlamaModel:
 
         # Prefetch the repo (killable child) so the weight load is a cache hit. Runs after the
         # AutoConfig/model-class check so an unsupported repo fails on its small config fetch.
-        # Warm the same revision the load below uses, or the repo is downloaded twice.
+        # Warm the same revision the load uses, or the repo downloads twice.
         _prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -2660,7 +2660,7 @@ class FastLlamaModel:
                     model_name,
                     local_files_only = kwargs.get("local_files_only", False),
                     token = token,
-                    # Read the scales from the same revision the weights came from.
+                    # Read scales from the same revision as the weights.
                     revision = revision,
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
@@ -2712,7 +2712,7 @@ class FastLlamaModel:
                     model_name,
                     local_files_only = kwargs.get("local_files_only", False),
                     token = token,
-                    # Read the scales from the same revision the weights came from.
+                    # Read scales from the same revision as the weights.
                     revision = revision,
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),

@@ -867,8 +867,8 @@ class FastLanguageModel(FastLlamaModel):
         if fast_inference:
             fast_inference, model_name = fast_inference_setup(model_name, model_config)
 
-        # Last point model_name can change. Kept separate from `revision`, which still
-        # belongs to old_model_name for the adapter load further below.
+        # Last point model_name can change. Separate from `revision`, which the adapter
+        # load below still needs for old_model_name.
         base_revision = _revision_for_resolved_repo(revision, model_name, old_model_name)
 
         load_in_4bit_kwargs = load_in_4bit
@@ -1819,8 +1819,8 @@ class FastModel(FastBaseModel):
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
 
-        # Kept separate from `revision`, which still belongs to old_model_name for the
-        # adapter load further below. FastBaseModel remaps again via fast_inference_setup.
+        # Separate from `revision`, which the adapter load below still needs for
+        # old_model_name. FastBaseModel remaps again via fast_inference_setup.
         base_revision = _revision_for_resolved_repo(revision, model_name, old_model_name)
 
         model, tokenizer = FastBaseModel.from_pretrained(
