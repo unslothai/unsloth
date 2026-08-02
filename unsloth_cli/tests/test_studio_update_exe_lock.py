@@ -168,6 +168,72 @@ def test_an_apostrophe_in_the_path_does_not_break_the_powershell_line(
     assert line.count("'") % 2 == 0
 
 
+def test_a_custom_package_survives_into_the_retry(monkeypatch, tmp_path, capsys):
+    """update exports --package as STUDIO_PACKAGE_NAME, so dropping it resets the
+    retry to `unsloth` and updates a different thing, then records that package in
+    the manifest for later verification to follow."""
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    shim = tmp_path / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"), package = "unsloth-test")
+
+    assert "--package 'unsloth-test'" in capsys.readouterr().err
+
+
+def test_the_default_package_is_not_spelled_out(monkeypatch, tmp_path, capsys):
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    shim = tmp_path / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"), package = "unsloth")
+
+    assert "--package" not in capsys.readouterr().err
+
+
+def test_a_zero_byte_launcher_is_not_recommended(monkeypatch, tmp_path, capsys):
+    """A damaged shim is a reason to have run the venv copy directly, so pointing
+    back at it sends the user to the file that already does not start."""
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    shim = tmp_path / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
+
+    err = capsys.readouterr().err
+    assert str(shim) not in err, "an unusable launcher was recommended anyway"
+    assert "install.ps1" in err, "the reinstall fallback was hidden"
+
+
+def test_the_note_says_another_process_can_hold_the_lock(monkeypatch, tmp_path, capsys):
+    """The OSError says the entry is locked, not who by. If a second process
+    launched from the same copy holds it, the retry changes nothing, because it is
+    pip that has to replace the file."""
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    shim = tmp_path / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
+
+    assert "another program is running from" in capsys.readouterr().err
+
+
 def test_without_a_launcher_the_note_carries_the_install_config(monkeypatch, tmp_path, capsys):
     """A pasted reinstall runs in a new shell with none of this process's env, so a
     custom root has to be spelled out or it repairs the wrong installation."""

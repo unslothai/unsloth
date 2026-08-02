@@ -3068,7 +3068,7 @@ def update(
         # A note, never a replacement: the original failure keeps its own error, so
         # a cause unrelated to the lock is not hidden behind it.
         if exe_lock_err is not None:
-            _note_self_exe_locked(exe_lock_err, repo_root = repo_root)
+            _note_self_exe_locked(exe_lock_err, repo_root = repo_root, package = package)
         raise
     # On Windows clear the .deleteme orphan now that pip wrote a fresh
     # unsloth.exe; on next update os.replace would overwrite it anyway,
@@ -3164,7 +3164,27 @@ def _ps_single_quote(value: str) -> str:
     return "'{}'".format(str(value).replace("'", "''"))
 
 
-def _note_self_exe_locked(err: OSError, repo_root: "Optional[Path]" = None) -> None:
+def _is_usable_launcher(shim: Path) -> bool:
+    """Is the shim something worth telling someone to run.
+
+    is_file() alone accepts a zero-byte or unreadable one, and that is a realistic
+    case here rather than a hypothetical: a damaged shim is a reason to have run the
+    venv copy directly in the first place. Recommending it then sends the user back
+    to the file that already does not start, and hides the reinstall fallback.
+    """
+    try:
+        if not shim.is_file() or shim.stat().st_size <= 0:
+            return False
+        return os.access(shim, os.R_OK)
+    except OSError:
+        return False
+
+
+def _note_self_exe_locked(
+    err: OSError,
+    repo_root: "Optional[Path]" = None,
+    package: "Optional[str]" = None,
+) -> None:
     """Add the cause behind a setup failure this process cannot avoid.
 
     setup.ps1 reports this one as a permissions problem, which is what sent people
@@ -3190,7 +3210,7 @@ def _note_self_exe_locked(err: OSError, repo_root: "Optional[Path]" = None) -> N
         "while this process is running from it.",
         err = True,
     )
-    if shim.is_file():
+    if _is_usable_launcher(shim):
         typer.echo("", err = True)
         typer.echo("Re-run through the launcher, a separate entry to the same", err = True)
         typer.echo("binary, which leaves this copy replaceable:", err = True)
@@ -3203,21 +3223,37 @@ def _note_self_exe_locked(err: OSError, repo_root: "Optional[Path]" = None) -> N
         # retry runs in a new shell that inherits neither, so without them it
         # silently becomes a PyPI update and reports success while the checkout
         # that prompted the replacement stays uninstalled.
+        #
+        # --package likewise: update exports it as STUDIO_PACKAGE_NAME, so dropping
+        # it resets the retry to `unsloth` and updates something else, and the
+        # manifest then records that package for later verification.
+        local_flag = " --local" if repo_root is not None else ""
+        custom_package = package is not None and package != "unsloth"
         if platform.system() == "Windows":
             prefix = ""
             if repo_root is not None:
                 prefix = f"$env:STUDIO_LOCAL_REPO = {_ps_single_quote(str(repo_root))}; "
-            suffix = " --local" if repo_root is not None else ""
+            suffix = local_flag
+            if custom_package:
+                suffix += f" --package {_ps_single_quote(package)}"
             typer.echo(f"  {prefix}& {_ps_single_quote(str(shim))} studio update{suffix}", err = True)
         else:
             prefix = ""
             if repo_root is not None:
                 prefix = f"STUDIO_LOCAL_REPO={shlex.quote(str(repo_root))} "
-            suffix = " --local" if repo_root is not None else ""
+            suffix = local_flag
+            if custom_package:
+                suffix += f" --package {shlex.quote(package)}"
             typer.echo(f"  {prefix}{shlex.quote(str(shim))} studio update{suffix}", err = True)
+        # The OSError says the entry is locked, not who by. A second process
+        # launched from the same copy holds it just as well, and then the retry
+        # above changes nothing, because it is pip that has to replace the file.
+        typer.echo("", err = True)
+        typer.echo("If that fails the same way, another program is running from", err = True)
+        typer.echo(f"{exe}. Close it and retry.", err = True)
     else:
         typer.echo("", err = True)
-        typer.echo("The launcher that avoids this is missing; reinstall to restore it:", err = True)
+        typer.echo("The launcher that avoids this is unusable; reinstall to restore it:", err = True)
         typer.echo("", err = True)
         typer.echo(f"  {_reinstall_command()}", err = True)
     typer.echo("", err = True)
