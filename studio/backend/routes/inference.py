@@ -15854,7 +15854,12 @@ def _build_passthrough_payload(
     return body
 
 
-def _nudge_retry_messages(body, data, allowed_tools, markup = None):
+def _nudge_retry_messages(
+    body,
+    data,
+    allowed_tools,
+    markup = None,
+):
     """The nudge retry's message list, re-neutralized like the enable-tools loop.
 
     The appended suffix is not sanitized text: the assistant turn replays the model's own
@@ -15866,6 +15871,7 @@ def _nudge_retry_messages(body, data, allowed_tools, markup = None):
     neutralized prefix stays byte-identical and llama-server still reuses the slot's KV
     cache, the entire point of appending instead of rebuilding."""
     from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
     # Same profile the body was built with: sweeping the retry with the curated patterns
     # would rewrite a prefix the first attempt preserved, so the prefix would no longer be
     # byte-identical and the slot's KV cache would miss (#7066).
@@ -17870,8 +17876,8 @@ async def _openai_passthrough_non_streaming_upstream(
         retry_body = {
             **body,
             "messages": _nudge_retry_messages(
-                    body, data, _allowed_tools, getattr(llama_backend, "markup_profile", None)
-                ),
+                body, data, _allowed_tools, getattr(llama_backend, "markup_profile", None)
+            ),
         }
         try:
             retry_resp = await _post(retry_body)

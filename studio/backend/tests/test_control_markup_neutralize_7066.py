@@ -4606,4 +4606,9 @@ def test_the_nudge_retry_keeps_the_profile():
         encoding = "utf-8"
     )
     assert "def _nudge_retry_messages(body, data, allowed_tools, markup = None):" in source
-    assert source.count('_nudge_retry_messages(\n                    body, data, _allowed_tools, getattr(llama_backend, "markup_profile", None)\n                )') == 2
+    assert (
+        source.count(
+            '_nudge_retry_messages(\n                    body, data, _allowed_tools, getattr(llama_backend, "markup_profile", None)\n                )'
+        )
+        == 2
+    )
