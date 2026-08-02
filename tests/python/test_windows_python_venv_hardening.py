@@ -21,7 +21,7 @@ POWERSHELLS = [shell for shell in ("pwsh", "powershell") if shutil.which(shell)]
 
 
 def _extract(pattern: str, source: str) -> str:
-    match = re.search(pattern, source, flags=re.DOTALL)
+    match = re.search(pattern, source, flags = re.DOTALL)
     assert match is not None, f"install.ps1 block not found: {pattern}"
     return match.group(0)
 
@@ -29,22 +29,22 @@ def _extract(pattern: str, source: str) -> str:
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     result = subprocess.run(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=30,
+        check = True,
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 30,
     )
     return result.stdout.strip()
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_path_python_wrapper_resolves_to_real_executable(tmp_path: Path, shell: str):
-    source = INSTALL_PS1.read_text(encoding="utf-8")
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
     finder = _extract(r"    function Find-CompatiblePython \{.*?\n    \}\n", source)
     wrapper = tmp_path / "python.bat"
-    wrapper.write_text(f'@"{sys.executable}" %*\n', encoding="utf-8")
+    wrapper.write_text(f'@"{sys.executable}" %*\n', encoding = "utf-8")
 
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -70,16 +70,16 @@ Write-Output $found.Path
     assert Path(_run_powershell(shell, script, env)).resolve() == Path(sys.executable).resolve()
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("case", ["missing", "unlaunchable", "working"])
 def test_managed_python_readiness_probe(tmp_path: Path, shell: str, case: str):
-    source = INSTALL_PS1.read_text(encoding="utf-8")
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
     readiness = _extract(r"    function Test-VenvPythonReady \{.*?\n    \}\n", source)
     python_exe = tmp_path / "broken-python.cmd"
     expected = "False"
     if case == "unlaunchable":
-        python_exe.write_text("@exit /b 17\n", encoding="utf-8")
+        python_exe.write_text("@exit /b 17\n", encoding = "utf-8")
     elif case == "working":
         python_exe = Path(sys.executable)
         expected = "True"
@@ -95,7 +95,7 @@ Write-Output (Test-VenvPythonReady -PythonExe $env:TEST_MANAGED_PYTHON)
 
 
 def test_readiness_gate_precedes_installs_and_names_both_interpreters():
-    source = INSTALL_PS1.read_text(encoding="utf-8")
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
     gate = source.index("if (-not (Test-VenvPythonReady -PythonExe $VenvPython))")
     first_uv_pip = source.index("uv pip install --python $VenvPython")
     gpu_detection = source.index("function Invoke-AmdSmiNoElevate")
