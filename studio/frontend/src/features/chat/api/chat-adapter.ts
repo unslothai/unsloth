@@ -1640,9 +1640,19 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
+/** Whether a cache row is chattable. Both fields are optional so an older backend keeps trying. */
+function isChattableCachedRepo(repo: {
+  partial?: boolean;
+  capabilities?: { can_chat?: boolean } | null;
+}): boolean {
+  return repo.partial !== true && repo.capabilities?.can_chat !== false;
+}
+
 async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
+  /** A load failure was already toasted, so callers must not replace it with generic advice. */
+  loadFailureReported?: boolean;
 }> {
   if (await tryAdoptServerActiveModel()) {
     return { loaded: true, blockedByTrustRemoteCode: false };
@@ -1689,6 +1699,31 @@ async function autoLoadSmallestModel(): Promise<{
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
   const skippedAutoLoadCandidates = new Set<string>();
+  // Why the last load attempt failed. Boxed: a `let` set only in a nested fn narrows to `null`.
+  const loadFailure: {
+    current: { label: string; detail: string; blamesModel: boolean } | null;
+  } = { current: null };
+
+  // Set once the user declines the HF token dialog, so nothing asks again.
+  let autoLoadCancelled = false;
+
+  function noteLoadFailure(label: string, error: unknown): void {
+    const detail =
+      error instanceof Error && error.message.trim() ? error.message.trim() : "";
+    // loadModel also rejects before /api/inference/load is sent (dismissed token dialog, dead
+    // backend): those stop the Hub download, but must not blame the model.
+    const marker = error as { unslothTransportFailure?: boolean; unslothUserCancelled?: boolean };
+    const blamesModel = !(
+      marker?.unslothTransportFailure === true || marker?.unslothUserCancelled === true
+    );
+    loadFailure.current = {
+      label,
+      // Older backends and non-Error throws carry no detail; still name the model that failed.
+      detail:
+        detail || "The server did not report a reason. Check the Studio logs.",
+      blamesModel,
+    };
+  }
 
   async function canAutoLoad(payload: {
     model_path: string;
@@ -1728,14 +1763,43 @@ async function autoLoadSmallestModel(): Promise<{
     return true;
   }
 
+  function recordCandidateFailure(label: string, error: unknown): void {
+    // Every rejection is recorded: the sweep's catches are bare, so one left unrecorded reads as
+    // "nothing was cached" and fetches the default. Only cancelling ends the sweep.
+    const marker = error as { unslothUserCancelled?: boolean };
+    noteLoadFailure(label, error);
+    if (marker?.unslothUserCancelled === true) {
+      // The next candidate would reopen the same dialog, so stop rather than ask per repo. A
+      // transport failure deliberately does NOT: the backend can come back mid-sweep.
+      autoLoadCancelled = true;
+    }
+  }
+
+  async function canAutoLoadRecordingFailures(
+    label: string,
+    payload: Parameters<typeof canAutoLoad>[0],
+  ): Promise<boolean> {
+    try {
+      return await canAutoLoad(payload);
+    } catch (error) {
+      // validateModel prepares the token too, so a dismissed dialog or dead backend surfaces here,
+      // where the sweep's bare catches would drop it and hit the Hub download.
+      recordCandidateFailure(label, error);
+      throw error;
+    }
+  }
+
   async function loadAutoLoadCandidate(
     candidate: AutoLoadCandidate,
   ): Promise<boolean> {
-    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+    if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
     const modelPath = candidate.loadId ?? candidate.id;
+    const failureLabel = candidate.ggufVariant
+      ? `${candidate.id} (${candidate.ggufVariant})`
+      : candidate.id;
     const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
@@ -1776,13 +1840,23 @@ async function autoLoadSmallestModel(): Promise<{
       // replacement-token recovery flow could run.
       const preparedToken = await prepareHfTokenForUse(hfToken);
       if (!preparedToken.proceed) {
-        throw new Error("Model load cancelled.");
+        // Raised before loadModel, so route it through the same helper or every later candidate
+        // reopens the dialog.
+        const cancelled = Object.assign(new Error("Model load cancelled."), {
+          unslothUserCancelled: true,
+        });
+        recordCandidateFailure(failureLabel, cancelled);
+        throw cancelled;
       }
       isDiffusion = (
         await fetchGgufStagedMetadata({
           model_path: modelPath,
           gguf_variant: candidate.ggufVariant,
           hf_token: preparedToken.token,
+        }).catch((error: unknown) => {
+          // Same authFetch as validate and load, so a dead backend throws here first.
+          recordCandidateFailure(failureLabel, error);
+          throw error;
         })
       ).isDiffusion;
     }
@@ -1816,7 +1890,7 @@ async function autoLoadSmallestModel(): Promise<{
       ? config.chatTemplateOverride
       : null;
     if (
-      !(await canAutoLoad({
+      !(await canAutoLoadRecordingFailures(failureLabel, {
         model_path: modelPath,
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
@@ -1828,6 +1902,9 @@ async function autoLoadSmallestModel(): Promise<{
           ? {
               gpu_ids: effectiveGpuIds ?? undefined,
               gpu_memory_mode: effectiveGpuMemoryMode,
+              // Sized like the load below: a remembered manual DiffusionGemma
+              // split (0 especially) must not be refused as a full-GGUF occupant.
+              gpu_layers: effectiveGpuLayers,
               n_parallel: config.nParallel ?? null,
             }
           : {}),
@@ -1866,6 +1943,10 @@ async function autoLoadSmallestModel(): Promise<{
             n_parallel: config.nParallel ?? null,
           }
         : {}),
+    }).catch((error: unknown) => {
+      // The sweep's parameterless catches discard this error, so record it before rethrowing.
+      noteLoadFailure(failureLabel, error);
+      throw error;
     });
     // Only persist the global preference when the value came from the global
     // settings. A per-model config's choice must stay load-local, or autoloading
@@ -1876,6 +1957,11 @@ async function autoLoadSmallestModel(): Promise<{
     // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
     persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
     const loadedModelId = loadResp.model || modelPath;
+    // The identity stays the backend's, per the inactive-cache contract; the pin is recorded
+    // alongside it so a later reload finds the same directory.
+    useChatRuntimeStore.setState({
+      activeLoadId: modelPath === candidate.id ? null : modelPath,
+    });
     useChatRuntimeStore
       .getState()
       .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined);
@@ -1994,10 +2080,13 @@ async function autoLoadSmallestModel(): Promise<{
     return true;
   }
   try {
-    const [ggufRepos, modelRepos] = await Promise.all([
+    const [allGgufRepos, allModelRepos] = await Promise.all([
       listCachedGguf().catch(() => []),
       listCachedModels().catch(() => []),
     ]);
+    // Filtered once, so the last-used lookup sees the same set as the sweeps.
+    const ggufRepos = allGgufRepos.filter(isChattableCachedRepo);
+    const modelRepos = allModelRepos.filter(isChattableCachedRepo);
 
     if (lastLoaded) {
       if (lastLoaded.kind === "gguf") {
@@ -2149,12 +2238,29 @@ async function autoLoadSmallestModel(): Promise<{
 
     // Cap also gates the default download, so total /api/inference/load
     // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
-    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+    // A tried-and-failed cached model stops here: that reason beats an unrelated Hub default.
+    // An empty cache never sets loadFailure and still falls through.
+    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {
       toast.dismiss(toastId);
+      if (loadFailure.current) {
+        toast.error(
+          loadFailure.current.blamesModel
+            ? `Could not load ${loadFailure.current.label}`
+            : loadFailure.current.detail,
+          {
+            description: loadFailure.current.blamesModel
+              ? loadFailure.current.detail
+              : `Stopped before loading ${loadFailure.current.label}.`,
+            duration: 10000,
+            closeButton: true,
+          },
+        );
+      }
       return {
         loaded: false,
         blockedByTrustRemoteCode:
           blockedByTrustRemoteCode && !hadNonTrustFailure,
+        loadFailureReported: loadFailure.current !== null,
       };
     }
 
@@ -2325,19 +2431,22 @@ export function createOpenAIStreamAdapter(
           await waitForModelReady(abortSignal);
         }
         if (!useChatRuntimeStore.getState().params.checkpoint) {
-          const { loaded, blockedByTrustRemoteCode } =
+          const { loaded, blockedByTrustRemoteCode, loadFailureReported } =
             await autoLoadSmallestModel();
           if (!loaded) {
-            toast.error(
-              blockedByTrustRemoteCode
-                ? "This model needs custom code approval"
-                : "No model loaded",
-              {
-                description: blockedByTrustRemoteCode
-                  ? "Select it from the top bar to review and approve its custom code, or pick another model."
-                  : "Pick a model in the top bar, then retry.",
-              },
-            );
+            // A reported failure already names the model; generic advice buries it.
+            if (!loadFailureReported) {
+              toast.error(
+                blockedByTrustRemoteCode
+                  ? "This model needs custom code approval"
+                  : "No model loaded",
+                {
+                  description: blockedByTrustRemoteCode
+                    ? "Select it from the top bar to review and approve its custom code, or pick another model."
+                    : "Pick a model in the top bar, then retry.",
+                },
+              );
+            }
             throw new Error("Load a model first.");
           }
         }
@@ -2617,24 +2726,28 @@ export function createOpenAIStreamAdapter(
         // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
+        let loadFailureReported: boolean | undefined;
         try {
-          ({ loaded, blockedByTrustRemoteCode } =
+          ({ loaded, blockedByTrustRemoteCode, loadFailureReported } =
             await autoLoadSmallestModel());
         } catch (error) {
           clearSelectedImageEditReference();
           throw error;
         }
         if (!loaded) {
-          toast.error(
-            blockedByTrustRemoteCode
-              ? "This model needs custom code approval"
-              : "No model loaded",
-            {
-              description: blockedByTrustRemoteCode
-                ? "Select it from the top bar to review and approve its custom code, or pick another model."
-                : "Pick a model in the top bar, then retry.",
-            },
-          );
+          // A reported failure already names the model; generic advice buries it.
+          if (!loadFailureReported) {
+            toast.error(
+              blockedByTrustRemoteCode
+                ? "This model needs custom code approval"
+                : "No model loaded",
+              {
+                description: blockedByTrustRemoteCode
+                  ? "Select it from the top bar to review and approve its custom code, or pick another model."
+                  : "Pick a model in the top bar, then retry.",
+              },
+            );
+          }
           clearSelectedImageEditReference();
           throw new Error("Load a model first.");
         }

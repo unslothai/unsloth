@@ -76,6 +76,8 @@ import type {
 
 export type SelectedModelInput = {
   id: string;
+  /** Sent as model_path in place of the id, which stays the identity the UI shows. */
+  loadId?: string | null;
   isLora?: boolean;
   ggufVariant?: string;
   /** Where the pick came from (e.g. "hub", "local", "external"). Used to decide
@@ -112,17 +114,14 @@ function rememberApprovedRemoteCode(
   if (fingerprint) approvedRemoteCodeFingerprints.set(checkpoint, fingerprint);
 }
 
+// Class carries the progress-bar spacing; layout is shared CSS now.
 const MODEL_LOAD_TOAST_CLASSNAMES = {
-  toast: "chat-model-load-toast items-center gap-2.5",
+  toast: "chat-model-load-toast",
   content: "gap-0.5 flex-1 min-w-0",
   title: "leading-5",
   description: "mt-0 w-full",
   cancelButton:
     "!h-auto !rounded-none !border-0 !bg-transparent !px-1 !text-ui-11 !font-normal !text-muted-foreground hover:!bg-transparent hover:!text-destructive focus-visible:!text-destructive",
-} as const;
-
-const MODEL_LOADED_TOAST_CLASSNAMES = {
-  toast: "chat-model-loaded-toast items-center gap-2.5",
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -312,6 +311,14 @@ async function syncInferenceStatusToStore(options?: {
       if (checkpointId) {
         const previousGgufVariant =
           useChatRuntimeStore.getState().activeGgufVariant;
+        // A model loaded outside this tab replaces the resident one, and the pin belonged to the
+        // old one: keeping it reloads that one from another's settings.
+        if (
+          checkpointId !== selectedCheckpoint ||
+          (statusRes.gguf_variant ?? null) !== (previousGgufVariant ?? null)
+        ) {
+          useChatRuntimeStore.setState({ activeLoadId: null });
+        }
         setCheckpoint(checkpointId, statusRes.gguf_variant);
         applyActiveModelStatusToStore(statusRes, {
           previousCheckpoint: selectedCheckpoint,
@@ -506,6 +513,8 @@ export function useChatModelRuntime() {
   const selectModel = useCallback(
     async (selection: string | SelectedModelInput) => {
       const modelId = typeof selection === "string" ? selection : selection.id;
+      const loadPath =
+        (typeof selection === "string" ? null : selection.loadId) || modelId;
       const ggufVariant =
         typeof selection === "string" ? undefined : selection.ggufVariant;
       const forceReload =
@@ -591,6 +600,11 @@ export function useChatModelRuntime() {
           }
           const previousGgufVariant =
             useChatRuntimeStore.getState().activeGgufVariant;
+          // The poll skips its own clearing while an external pick is active, so a pin taken
+          // for an earlier resident can survive; Apply would then reload that old model.
+          if (useChatRuntimeStore.getState().activeLoadId !== modelId) {
+            useChatRuntimeStore.setState({ activeLoadId: null });
+          }
           useChatRuntimeStore
             .getState()
             .setCheckpoint(modelId, residentStatus.gguf_variant);
@@ -730,7 +744,7 @@ export function useChatModelRuntime() {
             }
             isDiffusion = (
               await fetchGgufStagedMetadata({
-                model_path: modelId,
+                model_path: loadPath,
                 gguf_variant: ggufVariant ?? null,
                 hf_token: preparedToken.token,
                 nativePathToken: nativePathToken ?? null,
@@ -753,6 +767,7 @@ export function useChatModelRuntime() {
             stateBeforeUnload.params.maxSeqLength;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
+          const previousActiveLoadId = stateBeforeUnload.activeLoadId;
           const previousIsGguf =
             previousModel?.isGguf === true
             || previousVariant != null
@@ -897,7 +912,7 @@ export function useChatModelRuntime() {
               }),
             );
             const validation = await validateModel({
-              model_path: modelId,
+              model_path: loadPath,
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: validateMaxSeqLength,
@@ -910,6 +925,9 @@ export function useChatModelRuntime() {
               ...(isGguf
                 ? {
                     gpu_memory_mode: loadGpuMemoryMode,
+                    // Sized like the follow-up /load: else a manual DiffusionGemma
+                    // split 409s during training even when it fits.
+                    gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
                   }
                 : {}),
@@ -1073,7 +1091,7 @@ export function useChatModelRuntime() {
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
             const loadResponse = await loadModel({
-              model_path: modelId,
+              model_path: loadPath,
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
@@ -1206,6 +1224,8 @@ export function useChatModelRuntime() {
                 ? stateBeforeUnload.reasoningEnabled
                 : reasoningDefault;
             rememberApprovedRemoteCode(modelId, approvedRemoteCodeFingerprint);
+            // A later rollback reads the snapshot path, not the id this was stored under.
+            rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
               ggufMaxContextLength,
@@ -1248,6 +1268,7 @@ export function useChatModelRuntime() {
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeModelIsLocal: loadResponse.is_local_model ?? false,
+              activeLoadId: loadPath === modelId ? null : loadPath,
               activeNativePathToken: nativePathToken ?? null,
               activeNativePathExpiresAtMs: nativePathToken
                 ? nativePathExpiresAtMs
@@ -1328,7 +1349,8 @@ export function useChatModelRuntime() {
               }
               try {
                 const rollbackResponse = await loadModel({
-                  model_path: previousCheckpoint,
+                  // The pin it loaded from: without it this retries the ref that needed pinning.
+                  model_path: previousActiveLoadId || previousCheckpoint,
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
@@ -1365,6 +1387,7 @@ export function useChatModelRuntime() {
                 );
                 useChatRuntimeStore.setState({
                   activeModelIsLocal: rollbackResponse.is_local_model ?? false,
+                  activeLoadId: previousActiveLoadId ?? null,
                   activeNativePathToken: previousActiveNativePathToken ?? null,
                   // Restore the previous token's lease together with the token so a
                   // rollback never pairs restored token A with failed load B's expiry.
@@ -1675,7 +1698,6 @@ export function useChatModelRuntime() {
           if (abortCtrl.signal.aborted) return;
           if (loadToastDismissedRef.current) {
             toast.success(`${toastDisplayName} loaded`, {
-              classNames: MODEL_LOADED_TOAST_CLASSNAMES,
               closeButton: true,
               duration: 8000,
             });
@@ -1684,7 +1706,6 @@ export function useChatModelRuntime() {
               id: toastId,
               description: undefined,
               cancel: undefined,
-              classNames: MODEL_LOADED_TOAST_CLASSNAMES,
               closeButton: true,
               duration: 8000,
               onDismiss: undefined,

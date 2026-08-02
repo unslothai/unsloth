@@ -89,6 +89,24 @@ async function redirectToAuth(): Promise<void> {
   window.location.href = target;
 }
 
+function asTransportFailure(err: unknown): unknown {
+  // fetch TypeError = offline | backend down | CORS/DNS. Tauri is always backend-down; the web
+  // build distinguishes offline. Tagged so callers tell "never reached" from "rejected".
+  if (!(err instanceof TypeError)) return err;
+  if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
+    return Object.assign(
+      new Error(
+        "You appear to be offline. Check your network connection and try again.",
+      ),
+      { unslothTransportFailure: true },
+    );
+  }
+  return Object.assign(
+    new Error("Unsloth isn't running -- please relaunch it."),
+    { unslothTransportFailure: true },
+  );
+}
+
 async function retryWithCurrentToken(
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -96,7 +114,13 @@ async function retryWithCurrentToken(
   const retryHeaders = new Headers(init?.headers);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
-  return fetchWithTauriNetworkRetry(input, { ...init, headers: retryHeaders });
+  // Retries are tagged like the first attempt; an untagged TypeError reads as a rejection and
+  // lets auto-load fall through to the default download.
+  try {
+    return await fetchWithTauriNetworkRetry(input, { ...init, headers: retryHeaders });
+  } catch (err) {
+    throw asTransportFailure(err);
+  }
 }
 
 async function retryWithTauriAutoAuth(
@@ -171,17 +195,7 @@ export async function authFetch(
       headers,
     });
   } catch (err) {
-    if (err instanceof TypeError) {
-      // fetch TypeError = offline | backend down | CORS/DNS. Tauri is always
-      // backend-down; the web build distinguishes offline for the right message.
-      if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
-        throw new Error(
-          "You appear to be offline. Check your network connection and try again.",
-        );
-      }
-      throw new Error("Unsloth isn't running -- please relaunch it.");
-    }
-    throw err;
+    throw asTransportFailure(err);
   }
 
   if (await isPasswordChangeRequiredResponse(response)) {
