@@ -35,6 +35,7 @@ import {
   TransportConflictDialog,
   deleteCachedModel,
   listGgufVariants as listGgufVariantsCached,
+  useGgufVariantsCacheVersion,
   useHubInfiniteScroll,
 } from "@/features/hub";
 import {
@@ -458,6 +459,7 @@ function ModelRow({
   hideOwner,
   downloaded,
   showVision,
+  quantChip,
   className,
 }: {
   label: string;
@@ -484,6 +486,8 @@ function ModelRow({
   downloaded?: boolean;
   /** Show a Vision badge on the name (On Device, read from GGUF metadata). */
   showVision?: boolean;
+  /** Grey chip beside the name, for rows that load one specific quant. */
+  quantChip?: string | null;
   className?: string;
 }) {
   const exceeds = vramStatus === "exceeds";
@@ -532,6 +536,11 @@ function ModelRow({
           </span>
         ) : null}
         <span className="min-w-0 flex-1 truncate">{name}</span>
+        {quantChip ? (
+          <span className="ml-2 shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-white/[0.1]">
+            {quantChip}
+          </span>
+        ) : null}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {showCaps && <CapabilityIcons caps={caps} />}
@@ -713,6 +722,87 @@ function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
     downloadBytes > 0
     ? downloadBytes
     : variant.size_bytes;
+}
+
+const EMPTY_SOLE_QUANTS: ReadonlyMap<string, GgufVariantDetail> = new Map();
+// A few repos at a time, so a large cache doesn't fire one request per repo.
+const SOLE_QUANT_BATCH = 6;
+
+/** On Device repos holding exactly one quant on disk, keyed by repo id. With
+ *  "Show all quantizations" off there is nothing else to pick, so those repos
+ *  collapse into one pinned-style row. Shares the expander's variants cache. */
+function useSoleDownloadedQuants(
+  repos: readonly CachedGgufRepo[],
+  { enabled, hfToken }: { enabled: boolean; hfToken?: string },
+): ReadonlyMap<string, GgufVariantDetail> {
+  // A download or delete bumps this, so a repo that gained or lost a sibling
+  // quant switches row style.
+  const variantsVersion = useGgufVariantsCacheVersion();
+  const targets = useMemo(
+    () =>
+      repos.map((repo) => ({
+        repoId: repo.repo_id,
+        // Same local source the expander passes, so both read one cache entry.
+        localSource: repo.load_id || repo.cache_path || null,
+      })),
+    [repos],
+  );
+  const fetchKey = useMemo(
+    () =>
+      `${variantsVersion}::${enabled ? "on" : "off"}::${targets
+        .map((target) => `${target.repoId}|${target.localSource ?? ""}`)
+        .join(",")}`,
+    [enabled, targets, variantsVersion],
+  );
+  const [resolved, setResolved] = useState<{
+    key: string;
+    quants: ReadonlyMap<string, GgufVariantDetail>;
+  }>({ key: "", quants: EMPTY_SOLE_QUANTS });
+
+  useEffect(() => {
+    if (!enabled || targets.length === 0) {
+      setResolved({ key: fetchKey, quants: EMPTY_SOLE_QUANTS });
+      return;
+    }
+    let cancelled = false;
+
+    const resolve = async () => {
+      const found = new Map<string, GgufVariantDetail>();
+      for (let i = 0; i < targets.length; i += SOLE_QUANT_BATCH) {
+        if (cancelled) return;
+        await Promise.all(
+          targets.slice(i, i + SOLE_QUANT_BATCH).map(async (target) => {
+            try {
+              const res = await listGgufVariants(
+                target.repoId,
+                hfToken,
+                target.localSource
+                  ? { localPath: target.localSource }
+                  : undefined,
+              );
+              const downloaded = normalizeGgufVariantsResponse(
+                res,
+              ).variants.filter((variant) => variant.downloaded === true);
+              if (downloaded.length === 1) {
+                found.set(target.repoId, downloaded[0]);
+              }
+            } catch {
+              // Unresolved repos keep their expandable row.
+            }
+          }),
+        );
+      }
+      if (!cancelled) setResolved({ key: fetchKey, quants: found });
+    };
+
+    void resolve();
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, fetchKey, hfToken, targets]);
+
+  // Stale results would collapse a row onto a quant that is already gone.
+  return resolved.key === fetchKey ? resolved.quants : EMPTY_SOLE_QUANTS;
 }
 
 function GgufVariantExpander({
@@ -1518,6 +1608,11 @@ export function HubModelPicker({
   }, []);
   // When on, On Device GGUF repos show their quantizations without a click.
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
+  // Off: On Device lists only downloaded quants, so a repo holding one collapses
+  // into a single row instead of hiding it behind an expander.
+  const showAllQuantizations = useChatRuntimeStore(
+    (s) => s.showAllQuantizations,
+  );
   // Shared with the Hub page: list only models sized within the device budget.
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
@@ -2105,6 +2200,12 @@ export function HubModelPicker({
   // Non-GGUF cached rows are not shown in chat-only mode, so the empty-state
   // logic must use this (not visibleCachedModels) or the picker can go blank.
   const visibleCachedModelRows = chatOnly ? [] : visibleCachedModels;
+
+  // Unfiltered list, so typing a query doesn't re-run resolution.
+  const soleDownloadedQuants = useSoleDownloadedQuants(sortedCachedGguf, {
+    enabled: section === "downloaded" && !showAllQuantizations,
+    hfToken: hfToken || undefined,
+  });
 
   // Pinned entries surface in their own section above the Unsloth heading.
   // GGUF quants pin individually and their repo stays listed below; non-GGUF
@@ -2895,10 +2996,129 @@ export function HubModelPicker({
     );
   };
 
+  // One quant on disk with "Show all quantizations" off: the expander would
+  // list just that quant, so the row carries it as a chip and loads it in one
+  // click, like a pinned quant.
+  const renderSoleQuantGgufRow = (
+    c: (typeof visibleCachedGguf)[number],
+    variant: GgufVariantDetail,
+  ) => {
+    const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
+    const isSelected = value === c.repo_id;
+    const expectedBytes = ggufVariantExpectedBytes(variant);
+    const isPinned = pinnedSet.has(pinKey(c.repo_id, variant.quant));
+    const selectMeta: ModelSelectorChangeMeta = {
+      source: "hub",
+      isLora: false,
+      loadId: c.load_id,
+      ggufVariant: variant.quant,
+      isDownloaded: true,
+      expectedBytes,
+      isGguf: true,
+    };
+    return (
+      <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
+        <div className="min-w-0 flex-1">
+          <ModelRow
+            label={c.repo_id}
+            tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
+            meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
+            quantChip={variant.quant}
+            showVision={c.has_vision ?? visionByRepo[c.repo_id]}
+            selected={isSelected}
+            loaded={isRuntimeLoadedModel(
+              loadedModelId,
+              activeGgufVariant,
+              c.repo_id,
+              "required",
+            )}
+            optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+            onClick={() => onSelect(c.repo_id, selectMeta)}
+            vramStatus={null}
+            className={downloadedRowButtonClassName}
+          />
+        </div>
+        <span className="mr-1 flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100">
+          {onConfigure && (
+            <ModelLoadSettingsAction
+              ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
+              onConfigure={() => onConfigure(c.repo_id, selectMeta)}
+            />
+          )}
+          <ModelRowMenu
+            ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
+            iconClassName="size-3"
+            cachePath={{ repoId: c.repo_id, variant: variant.quant }}
+            pin={{
+              pinned: isPinned,
+              pinLabel: "Pin to top",
+              unpinLabel: "Unpin",
+              onToggle: () => togglePinned(c.repo_id, variant.quant),
+            }}
+            update={
+              variant.update_available
+                ? {
+                    title: "Update cached model?",
+                    description: (
+                      <>
+                        This will update{" "}
+                        <span className="font-medium text-foreground">
+                          {c.repo_id} ({variant.quant})
+                        </span>
+                        {"."}
+                      </>
+                    ),
+                    repoId: c.repo_id,
+                    variant: variant.quant,
+                    disabled: loadedModelId === c.repo_id,
+                    onConfirm: () =>
+                      updateGgufVariant(
+                        c.repo_id,
+                        variant.quant,
+                        expectedBytes,
+                      ),
+                    onUpdated: refreshCachedLists,
+                  }
+                : undefined
+            }
+            del={{
+              title: "Delete cached model?",
+              description: (
+                <>
+                  This will remove{" "}
+                  <span className="font-medium text-foreground">
+                    {c.repo_id} ({variant.quant})
+                  </span>{" "}
+                  from disk. You can re-download it later.
+                </>
+              ),
+              successMessage: `Deleted ${c.repo_id} ${variant.quant}`,
+              disabled: deleteDisabled,
+              onConfirm: async () => {
+                await deleteCachedModel(
+                  c.repo_id,
+                  variant.quant,
+                  hfToken || undefined,
+                  c.cache_path || undefined,
+                );
+                // The file is gone, so drop its pin too.
+                if (isPinned) togglePinned(c.repo_id, variant.quant);
+                prunePinnedQuantValidation(c.repo_id, variant.quant);
+                refreshCachedLists();
+              },
+            }}
+          />
+        </span>
+      </div>
+    );
+  };
+
   // Shared row renderers so Downloaded (Unsloth) and Other models render alike.
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
     const isSelected = value === c.repo_id;
+    const soleQuant = soleDownloadedQuants.get(c.repo_id);
+    if (soleQuant) return renderSoleQuantGgufRow(c, soleQuant);
     return (
       <div key={c.repo_id}>
         <div className={downloadedRowShellClassName(isSelected)}>

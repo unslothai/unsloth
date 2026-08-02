@@ -21,6 +21,7 @@ export {
   listGgufVariants,
   listScanFolders,
   removeScanFolder,
+  useGgufVariantsCacheVersion,
 } from "./inventory";
 export {
   type HfModelResult,
