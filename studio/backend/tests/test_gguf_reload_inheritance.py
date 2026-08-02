@@ -311,7 +311,26 @@ def test_reasoning_budget_state_resets_on_unload():
 
 def test_load_wires_reasoning_args_and_respawn_snapshot():
     source = inspect.getsource(LlamaCppBackend.load_model)
-    assert 'cmd.extend(["--reasoning-budget", str(reasoning_budget)])' in source
-    assert 'cmd.extend(["--reasoning-budget-message", reasoning_budget_message])' in source
+    assert "_build_reasoning_budget_flags(" in source
     assert '"reasoning_budget": reasoning_budget' in source
     assert '"reasoning_budget_message": reasoning_budget_message' in source
+    assert source.index("validate_reasoning_budget_capabilities") < source.index(
+        "self._kill_process()"
+    )
+
+
+def test_route_checks_reasoning_budget_capabilities_before_teardown():
+    route_source = (
+        Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+    ).read_text(encoding = "utf-8")
+    preflight = route_source.index("llama_backend.validate_reasoning_budget_capabilities")
+    diffusion_rejection = route_source.index(
+        "Reasoning Budget settings are not supported for DiffusionGemma models."
+    )
+    unknown_rejection = route_source.index(
+        "Reasoning Budget settings cannot be applied until this GGUF is"
+    )
+    teardown = route_source.index("# Point of no return for the GGUF path")
+    assert preflight < teardown
+    assert diffusion_rejection < teardown
+    assert unknown_rejection < teardown

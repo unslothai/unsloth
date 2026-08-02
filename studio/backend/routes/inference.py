@@ -5992,6 +5992,38 @@ async def _load_model_impl(
         # Invalid GPU IDs must fail before the training coexistence guard.
         gguf_gpu_ids: Optional[List[int]] = None
         if config.is_gguf:
+            _reasoning_requested = any(
+                llama_backend.reasoning_budget_settings_requested(
+                    extra_args = extra_llama_args,
+                    reasoning_budget = request.reasoning_budget,
+                    reasoning_budget_message = request.reasoning_budget_message,
+                )
+            )
+            if diffusion_kind and _reasoning_requested:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Reasoning Budget settings are not supported for DiffusionGemma models.",
+                )
+            if diffusion_kind is None and _reasoning_requested:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "Reasoning Budget settings cannot be applied until this GGUF is "
+                        "downloaded and its architecture can be verified. Load it once with "
+                        "the default reasoning budget, then apply these settings."
+                    ),
+                )
+            if not diffusion_kind:
+                try:
+                    await asyncio.to_thread(
+                        llama_backend.validate_reasoning_budget_capabilities,
+                        llama_backend._find_llama_server_binary(),
+                        extra_args = extra_llama_args,
+                        reasoning_budget = request.reasoning_budget,
+                        reasoning_budget_message = request.reasoning_budget_message,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
             (
                 gguf_gpu_ids,
                 gpu_ids_are_vulkan_ordinals,
