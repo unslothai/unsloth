@@ -322,3 +322,52 @@ def test_capabilities_stay_optimistic_when_health_raises(monkeypatch):
         pytest.skip("hf_xet is not installed in this environment")
     # The download-time ladder still recovers, so an unknown verdict should not cost the fast path.
     assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
+
+
+# --------------------------------------------------------------------------------------------
+# CPU-only hosts
+# --------------------------------------------------------------------------------------------
+
+def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
+    """unsloth_zoo.__init__ runs torch accelerator detection and raises on a CPU-only host -- which
+    is exactly the small machine these caps exist to protect. Without the retry the caps would
+    switch themselves off precisely where they are needed. Caught by CI, not by review."""
+    import importlib
+
+    import utils.hf_xet_fallback as shim
+
+    attempts: list[str | None] = []
+    sentinel = _types.ModuleType("fake_zoo_module")
+
+    def _fake_import(name):
+        import os
+        seen = os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
+        attempts.append(seen)
+        if seen != "1":
+            raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
+        return sentinel
+
+    monkeypatch.setattr(importlib, "import_module", _fake_import)
+    monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
+
+    assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is sentinel
+    assert attempts == [None, "1"]
+    # The flag is scoped to the retry: it must not leak into unrelated later imports.
+    import os
+    assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" not in os.environ
+
+
+def test_optional_loader_returns_none_when_truly_absent(monkeypatch):
+    import importlib
+
+    import utils.hf_xet_fallback as shim
+
+    def _always_fail(name):
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(importlib, "import_module", _always_fail)
+    assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is None
+    # A missing module means "no opinion", never a hard failure.
+    assert shim.xet_env_overrides() == {}
+    assert shim.xet_health() is None
+    shim.record_xet_outcome(False, "x")

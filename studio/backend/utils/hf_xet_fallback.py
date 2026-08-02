@@ -100,14 +100,35 @@ def _load_optional(module_name: str) -> Any:
     Separate from ``_load_shared`` because these modules (health / tuning) are pure stdlib and
     exist only in newer unsloth_zoo: a Studio pinned to an older zoo must keep downloading, just
     without the preflight verdict or the buffer caps.
+
+    The GPU-init retry matters more here than anywhere else. ``unsloth_zoo.__init__`` runs torch
+    accelerator detection and raises ``NotImplementedError`` on a CPU-only host -- and a CPU-only
+    host is precisely the small machine whose RAM these caps exist to protect. Without the retry
+    the caps would silently switch themselves off exactly where they are needed.
     """
+    import importlib
+    import os as _os
+
     try:
-        import importlib
         return importlib.import_module(module_name)
     except Exception as exc:  # noqa: BLE001 - an older/absent unsloth_zoo must degrade, not crash
+        first_error = exc
+
+    previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
+    _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
+    try:
+        return importlib.import_module(module_name)
+    except Exception as exc:  # noqa: BLE001
         import logging as _logging
-        _logging.getLogger(__name__).debug("%s unavailable: %s", module_name, exc)
+        _logging.getLogger(__name__).debug(
+            "%s unavailable (%s; with GPU init disabled: %s)", module_name, first_error, exc
+        )
         return None
+    finally:
+        if previous is None:
+            _os.environ.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
+        else:
+            _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = previous
 
 
 def xet_health(**kwargs: Any) -> Any:
