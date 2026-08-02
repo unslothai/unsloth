@@ -1978,10 +1978,11 @@ def _flash_attn_enabled_from_args(
 def _effective_spec_type(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[str]:
-    """The --spec-type llama-server will use: the last CLI --spec-type (or
-    --spec-default, which resolves non-MTP), else LLAMA_ARG_SPEC_TYPE. A CLI flag
-    overrides the env (matching llama.cpp), so a stale MTP env can't make the
-    budget reserve a drafter the launch won't load. None if neither sets it."""
+    """The last --spec-type label a launch carries: the final CLI --spec-type (or
+    --spec-default, which resolves non-MTP), else LLAMA_ARG_SPEC_TYPE. This is the
+    single label to display and compare modes with. It is NOT what llama.cpp
+    enables: types accumulate there, so ask _extra_args_requests_mtp whether MTP
+    is on. None if neither sets it."""
     args = [str(a) for a in extra_args] if extra_args else []
     cli_present = False
     cli_value: Optional[str] = None
@@ -2004,12 +2005,24 @@ def _effective_spec_type(
 def _extra_args_requests_mtp(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """True if the effective --spec-type selects MTP (mtp/draft-mtp), so the
-    budget must reserve for it."""
-    value = _effective_spec_type(extra_args, env)
-    if not value:
-        return False
-    return any(p.strip().lower() in ("mtp", "draft-mtp") for p in value.split(","))
+    """True if MTP lands in llama.cpp's spec-type vector, so the budget must
+    reserve for it and the slots must clamp.
+
+    Types accumulate rather than replace: the env is applied first through the
+    same handler, every --spec-type inserts at the end, and enablement is a find
+    over the vector. So MTP counts if ANY source names it, not just the last."""
+    values = []
+    args = [str(a) for a in extra_args] if extra_args else []
+    for i, raw in enumerate(args):
+        _, eq, inline = raw.partition("=")
+        if _flag_name(raw) == "--spec-type":
+            values.append(inline if eq else (args[i + 1] if i + 1 < len(args) else ""))
+    env_value = (os.environ if env is None else env).get("LLAMA_ARG_SPEC_TYPE")
+    if env_value:
+        values.append(env_value)
+    return any(
+        p.strip().lower() in ("mtp", "draft-mtp") for v in values for p in v.split(",")
+    )
 
 
 @functools.lru_cache(maxsize = 1)
@@ -8013,6 +8026,11 @@ class LlamaCppBackend:
                 # Not a tensor/layer GGUF: clear any preserved-fallback flag from a
                 # prior load (this path skips the command builder that clears it).
                 self._layer_preserves_tensor_intent = False
+                # Same reason, and a diffusion server never carries a drafter: only
+                # unload clears these, and the dedupe compares the pair, so a stale
+                # one reloads a healthy diffusion server on every Apply.
+                self._mtp_draft_path = None
+                self._mtp_draft_suppressed_path = None
                 with self._lock:
                     if self._cancel_event.is_set():
                         logger.info("Load cancelled before diffusion server start")

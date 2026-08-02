@@ -905,6 +905,34 @@ def test_a_load_with_no_separate_drafter_is_unaffected():
     assert (drafter, out, warnings) == (None, None, [])
 
 
+def test_mtp_detection_reads_every_accumulated_type():
+    """llama.cpp inserts each --spec-type rather than replacing, and applies the env
+    first, so MTP is on if ANY source names it. Reading only the last one left the
+    slot clamp off for a launch that really does run MTP."""
+    f = llama_cpp._extra_args_requests_mtp
+    env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
+    assert f(["--spec-type", "ngram-mod"], env) is True
+    assert f(["--spec-type", "draft-mtp", "--spec-type", "ngram-mod"], {}) is True
+    assert f(["--spec_type=draft-mtp"], {}) is True
+    assert f([], env) is True
+    # Negatives: nothing names MTP, so nothing clamps.
+    assert f(None, {}) is False
+    assert f(["--spec-type", "ngram-mod"], {}) is False
+    assert f(["--spec-default"], {}) is False
+
+
+def test_a_diffusion_load_drops_the_drafter_state_it_inherits():
+    """The diffusion path returns before the assignment that records the drafter,
+    and only unload clears it, so a suppressed or real drafter from the previous
+    load would linger and the dedupe would reload a healthy diffusion server."""
+    src = _load_model_source()
+    at = src.index("self._layer_preserves_tensor_intent = False")
+    tail = src[at : at + 600]
+    assert "self._mtp_draft_path = None" in tail
+    assert "self._mtp_draft_suppressed_path = None" in tail
+    assert at < src.index("return self._start_diffusion_server(")
+
+
 def test_the_drafter_pin_covers_the_device_not_just_the_layers():
     """common_base_params_to_speculative replaces the draft context's device list
     with the draft one, so the main --device none never reaches it and an empty
@@ -1039,8 +1067,8 @@ def test_an_inherited_mtp_env_still_clamps_the_slots():
     """llama.cpp appends spec types rather than replacing them: --spec-type inserts,
     --spec-default push_backs, and enablement is a find over the vector. So an
     inherited LLAMA_ARG_SPEC_TYPE=draft-mtp launches MTP on its own and the clamp
-    has to read the env to catch it. (When extras also set a spec type,
-    _extra_args_requests_mtp gives the CLI precedence; that predates this change.)"""
+    has to read the env to catch it. Extras naming another type do not clear it
+    either; see test_mtp_detection_reads_every_accumulated_type."""
     env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
     assert llama_cpp._extra_args_requests_mtp([], env) is True
     assert llama_cpp._extra_args_requests_mtp(None, env) is True
