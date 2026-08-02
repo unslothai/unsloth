@@ -606,20 +606,50 @@ function Get-RocmPinStaleTags {
     }
 }
 
-# True when $PythonExe's torch can actually drive an Intel GPU. Quiet on purpose: the two
-# callers read a False differently (no XPU runtime here vs an XPU wheel the driver cannot
-# initialize). Only an XPU build can answer True, so a CPU build never vetoes a migration.
-# Mirrors the probe install.ps1 runs during its Intel scan.
+# Bounded "ask python a question" probe, shared by every torch probe below. A wedged torch
+# import or a hanging Intel compute-driver init -- what the XPU probes exist to detect --
+# would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr cannot
+# trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot deadlock on
+# a full pipe; WaitForExit bounds the wait and kills the child on timeout. Every failure
+# (timeout, crash, exception) reads as .Ok = $false. Same shape as Invoke-NvidiaSmiBounded /
+# Invoke-AmdSmiNoElevate below, and as install.ps1's copy.
+function Invoke-BoundedPythonProbe {
+    param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
+    $result = [pscustomobject]@{ Ok = $false; Output = "" }
+    if (-not $PythonExe -or -not $Code) { return $result }
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $PythonExe
+        $psi.Arguments = "-c `"$Code`""
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            try { $proc.Kill() } catch {}
+            return $result
+        }
+        $result.Output = $outTask.GetAwaiter().GetResult()
+        [void]$errTask.GetAwaiter().GetResult()
+        $result.Ok = ($proc.ExitCode -eq 0)
+        return $result
+    } catch { return $result }
+}
+
+# True when $PythonExe's torch can actually drive an Intel GPU. Quiet on purpose: the three
+# callers read a False differently (no XPU runtime here, an XPU wheel the driver cannot
+# initialize, or a CPU wheel on an Arc box). Only an XPU build can answer True, so a CPU
+# build never vetoes a migration. Mirrors the probe install.ps1 runs during its Intel scan.
 function Test-TorchXpuAvailable {
     param([string]$PythonExe)
     if (-not $PythonExe) { return $false }
-    try {
-        # 2>$null so PS 5.1 cannot turn an import-time torch warning into a terminating error
-        # (that would read as "no XPU" and cost the caller a working venv), and a line-anchored
-        # match so a stdout banner ahead of the answer hides nothing.
-        $probe = (& $PythonExe -c "import torch; print(torch.xpu.is_available())" 2>$null | Out-String)
-        return ($probe -match '(?m)^\s*True\s*$')
-    } catch { return $false }
+    # Bounded, and a line-anchored match so a stdout banner ahead of the answer hides
+    # nothing. A timeout reads as "no XPU" -- never as available.
+    $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.xpu.is_available())'
+    return ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
 }
 
 # Post-install XPU runtime check. A WMI marketing-name match says the part is XPU-capable, not
@@ -3257,12 +3287,11 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # never reaches the XPU install below, so an up-to-date package on a CPU wheel
         # stays on CPU torch forever. $SkipPythonDeps is re-tested so an escape already
         # taken above (AMD, anyio, incomplete install) does not probe twice.
+        # Test-TorchXpuAvailable, not a bare `& python`: it is the same question the stale-venv
+        # rescue asks, and it is bounded, so a wedged import cannot hang setup here. A timeout
+        # reads as "not XPU", which costs one dependency pass, never a silent CPU venv.
         if ($script:IsIntelXpu -and $SkipPythonDeps) {
-            $_torchIsXpu = $false
-            try {
-                & python -c "import torch, sys; sys.exit(0 if torch.xpu.is_available() else 1)" 2>$null
-                if ($LASTEXITCODE -eq 0) { $_torchIsXpu = $true }
-            } catch {}
+            $_torchIsXpu = Test-TorchXpuAvailable -PythonExe "python"
             if (-not $_torchIsXpu) {
                 substep "Intel GPU detected but PyTorch XPU is unavailable -- reinstalling XPU PyTorch" "Cyan"
                 $SkipPythonDeps = $false

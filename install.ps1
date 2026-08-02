@@ -2186,6 +2186,42 @@ exit 0
     # $HasROCm / $ROCmGfxArch are true on unmapped arches too, and those install CPU torch.
     $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
 
+    # ── Bounded "ask the venv python" probe ──
+    # Every probe that imports torch goes through here. A wedged torch import or a hanging
+    # Intel compute-driver init -- exactly what the XPU probes below exist to detect -- would
+    # block a bare `& python -c ...` forever, and the installer would never reach the warning.
+    # ProcessStartInfo, not &, so stderr cannot trip $ErrorActionPreference; BOTH streams are
+    # drained async so a noisy import cannot deadlock on a full pipe; WaitForExit bounds the
+    # wait and the child is killed on timeout. Failure (timeout, crash, exception) always
+    # reads as .Ok = $false -- a probe that never answers is never treated as a yes.
+    # Defined here, above the Intel scan, because PowerShell binds a function when its
+    # definition RUNS: one placed further down would not exist yet for that scan.
+    function Invoke-BoundedPythonProbe {
+        param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
+        $result = [pscustomobject]@{ Ok = $false; Output = "" }
+        if (-not $PythonExe -or -not $Code) { return $result }
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $PythonExe
+            $psi.Arguments = "-c `"$Code`""
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+                try { $proc.Kill() } catch {}
+                return $result
+            }
+            $result.Output = $outTask.GetAwaiter().GetResult()
+            [void]$errTask.GetAwaiter().GetResult()
+            $result.Ok = ($proc.ExitCode -eq 0)
+            return $result
+        } catch { return $result }
+    }
+
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
     # Runs BEFORE the report chain, not inside its final else: an AMD adapter that is only
     # WMI-named (ROCmGpuLabel set, no usable ROCm) would otherwise take that chain and hide
@@ -2221,15 +2257,15 @@ exit 0
         # +xpu wheel (PEP 440 ignores the local label, so it satisfies torch>=2.4,<2.11.0),
         # so the user kept an XPU build while being told the GPU was unusable. The driver
         # warning after the install below is the honest treatment; setup.ps1 agrees.
+        # Bounded: a torch import that never returns must not hang the installer, and a
+        # timeout reads as "no XPU" (the WMI verdict above stands).
         if (Test-Path -LiteralPath $VenvPython) {
-            try {
-                $xpuCheck = (& $VenvPython -c "import torch; print(torch.xpu.is_available())" 2>$null | Out-String)
-                if ($xpuCheck -match '(?m)^\s*True\s*$') {
-                    $HasIntelGpu = $true
-                    $script:IsIntelXpu = $true
-                    if (-not $IntelGpuLabel) { $IntelGpuLabel = "Intel GPU (detected by PyTorch XPU)" }
-                }
-            } catch {}
+            $xpuCheck = Invoke-BoundedPythonProbe -PythonExe $VenvPython -Code 'import torch; print(torch.xpu.is_available())'
+            if ($xpuCheck.Ok -and $xpuCheck.Output -match '(?m)^\s*True\s*$') {
+                $HasIntelGpu = $true
+                $script:IsIntelXpu = $true
+                if (-not $IntelGpuLabel) { $IntelGpuLabel = "Intel GPU (detected by PyTorch XPU)" }
+            }
         }
     }
 
@@ -2380,35 +2416,16 @@ exit 0
         return $null
     }
 
-    # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Uses
-    # ProcessStartInfo (not &) so stderr doesn't trip $ErrorActionPreference.
+    # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Bounded, so a
+    # wedged "import torch" cannot stall the flavor repair.
     function Get-InstalledTorchTag {
         param([string]$PythonExe)
         if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
-        try {
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $PythonExe
-            $psi.Arguments = '-c "import torch; print(torch.__version__)"'
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.UseShellExecute = $false
-            $psi.CreateNoWindow = $true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            # Drain BOTH streams async, then WaitForExit. A synchronous ReadToEnd()
-            # before the wait would block forever if a wedged "import torch" never
-            # closes stdout; leaving the redirected stderr undrained would deadlock a
-            # child that floods it past the pipe buffer. Async reads let a noisy-but-
-            # exiting probe finish, while a truly hung one still hits the 30s timeout
-            # and is killed -- bounded either way.
-            $outTask = $proc.StandardOutput.ReadToEndAsync()
-            $errTask = $proc.StandardError.ReadToEndAsync()
-            $finished = $proc.WaitForExit(30000)
-            if (-not $finished) { try { $proc.Kill() } catch {}; return $null }
-            $torchVer = $outTask.GetAwaiter().GetResult().Trim()
-            [void]$errTask.GetAwaiter().GetResult()
-            if ($proc.ExitCode -ne 0 -or -not $torchVer) { return $null }
-            return ConvertTo-TorchFlavorTag $torchVer
-        } catch { return $null }
+        $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.__version__)'
+        if (-not $probe.Ok) { return $null }
+        $torchVer = $probe.Output.Trim()
+        if (-not $torchVer) { return $null }
+        return ConvertTo-TorchFlavorTag $torchVer
     }
 
     # Post-install XPU runtime check. Installing the +xpu wheel is not proof the GPU can
@@ -2419,14 +2436,11 @@ exit 0
         # No interpreter to ask means something bigger already broke; stay quiet rather than
         # blame the Intel driver. Same defensive shape as Get-InstalledTorchTag above.
         if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $true }
-        $xpuReady = $false
-        try {
-            # 2>$null so PS 5.1 cannot turn an import-time torch warning into a terminating
-            # error, and a line-anchored match so a stdout banner ahead of it hides nothing.
-            $probe = (& $PythonExe -c "import torch; print(torch.xpu.is_available())" 2>$null | Out-String)
-            if ($probe -match '(?m)^\s*True\s*$') { $xpuReady = $true }
-        } catch {}
-        if ($xpuReady) { return $true }
+        # Bounded and line-anchored: a stdout banner ahead of the answer hides nothing, and
+        # a driver init that never returns times out into the warning below instead of
+        # hanging the installer. Not-ready is the fail-safe verdict for every failure.
+        $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.xpu.is_available())'
+        if ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$') { return $true }
         substep "[WARN] PyTorch XPU is installed but torch.xpu.is_available() is False." "Yellow"
         substep "       The Intel GPU driver is most likely too old -- PyTorch XPU on Windows" "Yellow"
         substep "       needs Intel Graphics Driver 32.0.101.6739 (WHQL) or newer." "Yellow"
@@ -2800,6 +2814,27 @@ exit 0
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
+        }
+    }
+
+    # ── Intel XPU: bitsandbytes must carry XPU kernels ──
+    # unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 when device_type is
+    # "xpu"; only bitsandbytes' XPU library exports those (the CUDA one has the naive gemm
+    # instead), so a wheel without it turns 4-bit QLoRA off. win_amd64 first shipped an XPU
+    # library in 0.49.0, but the floor is 0.50.0 -- the same one the AMD paths use, since
+    # <=0.49.2 NaNs at 4-bit decode on AMD and an Arc card can sit next to a Radeon.
+    # unsloth's own floor (>=0.45.5) is low enough that a MIGRATED venv keeps an older
+    # wheel: --reinstall-package unsloth upgrades unsloth alone. Runs after the unsloth
+    # install so it is the last word. --no-deps (torch/numpy are in already), and never the
+    # curated unsloth[intel-gpu-torch*] extra: that pins torch to a single +xpu wheel URL,
+    # which would unpin the bounded trio, and it carries the bitsandbytes preview wheel uv
+    # refuses ("Wheel version does not match filename"), which would fail the whole command.
+    # Best-effort: 4-bit is one feature, so a failure warns instead of aborting the install.
+    if (-not $SkipTorch -and $script:IsIntelXpu -and (Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
+        substep "installing bitsandbytes with Intel XPU kernels..."
+        $bnbXpuExit = Invoke-InstallCommandRetry -Label "install bitsandbytes (Intel XPU)" { uv pip install --python $VenvPython --no-deps "bitsandbytes>=0.50.0" }
+        if ($bnbXpuExit -ne 0) {
+            substep "[WARN] could not install an XPU-capable bitsandbytes (exit $bnbXpuExit); 4-bit QLoRA may be unavailable." "Yellow"
         }
     }
 
