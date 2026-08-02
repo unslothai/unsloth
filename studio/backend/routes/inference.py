@@ -11333,7 +11333,12 @@ async def openai_chat_completions(
         # the schema the render falls back to the model's native one, whose profile can
         # drop a tool the active profile kept; gating on the active catalog alone would let
         # the healer promote a call for a tool the prompt never advertised (#7066).
-        _sf_renderable_tools(payload.tools, _sf_model_info.get("tokenizer"), _sf_model_info)
+        _sf_renderable_tools(
+            payload.tools,
+            _sf_model_info.get("tokenizer"),
+            _sf_model_info,
+            active_model_name = backend.active_model_name,
+        )
         if _sf_client_tools
         else None
     )

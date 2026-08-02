@@ -371,59 +371,13 @@ class ModelMarkup:
         self.rewrite_boundary = functools.partial(neutralize_turn_boundary_markup, markup = self)
 
 
-# A marker that differs from its siblings only by an embedded run of digits. Gemma ships
-# "<unused0>" through "<unused6241>", so a literal alternation over them is 78 times larger
-# than the rest of that vocabulary put together and costs more to run than the curated sweep
-# it replaces. Collapsing the family to one "\d+" arm is the same match set over any token
-# the vocabulary actually holds (#7066).
-_NUMERIC_FAMILY = re.compile(r"\A(\D*)(\d+)(\D*)\Z")
-# Below this a family is not worth an arm of its own: the literals are cheaper.
-_FAMILY_MIN = 8
-
-
-def _collapsed_sources(markers: set) -> list:
-    """Pattern sources for *markers*, with large numeric families folded into one arm each."""
-    families: dict = {}
-    singles: list = []
-    for marker in markers:
-        match = _NUMERIC_FAMILY.match(marker)
-        # Only a marker with no dynamic form of its own: "<function=1>" must stay dynamic.
-        if match and not _DYNAMIC_OPENER.match(marker) and not _DYNAMIC_ATTR_OPENER.match(marker):
-            families.setdefault((match.group(1), match.group(3)), []).append(marker)
-        else:
-            singles.append(marker)
-    sources = []
-    for (prefix, suffix), members in families.items():
-        if len(members) < _FAMILY_MIN:
-            singles.extend(members)
-            continue
-        # Only a DENSE range folds. A sparse family (say only the even "<extra_id_N>")
-        # would widen to numbers the vocabulary never held, and the profile would start
-        # rewriting "<extra_id_1>" on a model that has no such token -- the cross-family
-        # mangling this profiling exists to remove (#7066).
-        numbers = sorted(int(m[len(prefix) : len(m) - len(suffix) or None]) for m in members)
-        if numbers != list(range(numbers[0], numbers[0] + len(numbers))):
-            singles.extend(members)
-            continue
-        # Bounded to the digit widths the vocabulary actually holds, so folding "[1]".."[8]"
-        # cannot start rewriting "array[42]". Over "<unused0>".."<unused6241>" that is
-        # "\d{1,4}", which is the same match set the literals had.
-        widths = [len(m) - len(prefix) - len(suffix) for m in members]
-        span = (
-            f"{{{min(widths)},{max(widths)}}}" if min(widths) != max(widths) else f"{{{widths[0]}}}"
-        )
-        sources.append(re.escape(prefix) + "\\d" + span + re.escape(suffix))
-    # Longest first so no prefix shadows a longer literal; the family arms go last, since
-    # they only ever match strings no literal here spells out.
-    sources = [_marker_pattern_source(m) for m in sorted(singles, key = len, reverse = True)] + sources
-    return sources
-
-
 def _alternation(markers: set):
     """A pattern matching any of *markers*, longest first so no prefix shadows a longer one."""
     if not markers:
         return None
-    return re.compile("|".join(_collapsed_sources(markers)))
+    return re.compile(
+        "|".join(_marker_pattern_source(m) for m in sorted(markers, key = len, reverse = True))
+    )
 
 
 def model_markup(chat_template, tokens = None) -> Optional[ModelMarkup]:
@@ -434,9 +388,20 @@ def model_markup(chat_template, tokens = None) -> Optional[ModelMarkup]:
     """
     markers: set = set()
     for token in tokens or ():
-        if isinstance(token, str) and _DELIMITER_SHAPED.match(token):
-            if token not in _BLOCK_METADATA:
-                markers.add(token)
+        if not isinstance(token, str) or not _DELIMITER_SHAPED.match(token):
+            continue
+        if token in _BLOCK_METADATA:
+            continue
+        # A dedicated vocabulary entry proves only that the string has a token, not that
+        # anything treats it as structure. Gemma reserves "<table>", "<caption>", "<tr>"
+        # and "<td>", so harvesting the whole delimiter-shaped vocabulary turned an HTML
+        # prompt into "< table>< caption>" -- the exact cross-family mangling this
+        # profiling exists to remove. The curated pattern is the repo's record of what the
+        # renderer and the parsers actually treat as structure, so the vocabulary side is
+        # its intersection: "</think>" is kept on granite, whose template never emits it
+        # and whose vocabulary marks it special=False, while "<table>" is not (#7066).
+        if _CONTROL_MARKUP.search(token):
+            markers.add(token)
     for body in _template_strings(chat_template):
         for match in _TEMPLATE_DELIMITERS.finditer(body):
             marker = match.group(0)
@@ -580,11 +545,16 @@ _OPAQUE_PART_KEYS = frozenset(
 )
 
 
-def _redistribute_swept(texts: list, rewrite):
+def _redistribute_swept(texts: list, rewrite, contiguous = None):
     """Sweep the joined *texts* and hand each carrier back its own share, or None.
 
     Every carrier keeps its own text in its own position: nothing is moved past a
     neighbour, so a caption still sits on the side of the item it describes.
+
+    *contiguous*[i] says whether carrier i+1 directly follows carrier i in the parts list.
+    Where it does not -- an image or a JSON part sits between them -- the opener is NOT
+    migrated, because moving a character across a media item reorders the text around it
+    and a renderer that keeps the media would bind the caption to the wrong side (#7066).
     """
     swept = rewrite("".join(texts))
     pieces: list = []
@@ -612,6 +582,8 @@ def _redistribute_swept(texts: list, rewrite):
     # Only the marker's own characters move, and only across the split they already
     # straddle, so no text passes a neighbour (#7066).
     for index in range(len(pieces) - 1):
+        if contiguous is not None and not contiguous[index]:
+            continue  # a media or JSON part sits here; nothing crosses it.
         while pieces[index] and inserted[index + 1] and inserted[index + 1][0]:
             pieces[index + 1].insert(0, pieces[index].pop())
             inserted[index + 1].insert(0, inserted[index].pop())
@@ -688,7 +660,20 @@ def _neutralize_content_parts(
         # text: Llama-3.1 serializes the list in order with "message.content | tojson"
         # (chat_templates.py:517-523), so moving text between carriers would put a caption
         # on the wrong side of the item it describes (#7066).
-        redistributed = _redistribute_swept([texts[index] for index in carriers], rewrite)
+        run = [texts[index] for index in carriers]
+        # First choice: migrate an opener only between carriers that really are adjacent,
+        # so nothing crosses an image or a JSON part sitting between them.
+        redistributed = _redistribute_swept(
+            run,
+            rewrite,
+            [carriers[i + 1] == carriers[i] + 1 for i in range(len(carriers) - 1)],
+        )
+        if redistributed is None:
+            # The split straddles a non-text part and a trimming renderer would re-form the
+            # marker. Moving the opener across that part is a smaller harm than the collapse
+            # below: one marker character changes side, rather than every carrier's text
+            # being pulled into the first one (#7066).
+            redistributed = _redistribute_swept(run, rewrite)
         if redistributed is None:
             # A last resort only: migrating the opener leaves the break inside a carrier for
             # every split of every marker this module knows, so nothing reaches this today.
@@ -1407,10 +1392,7 @@ def _vocabulary_of(tokenizer) -> Optional[list]:
 
 
 def renderable_tool_catalog(
-    tools,
-    tokenizer,
-    model_info,
-    cache = None,
+    tools, tokenizer, model_info, cache = None, active_model_name = None
 ):
     """The catalog that survives EVERY template this request could render with.
 
@@ -1425,8 +1407,15 @@ def renderable_tool_catalog(
     is not auto-healed out of text-form output that round.
     """
     safe = neutralize_tool_descriptions(tools, cache, markup_for_tokenizer(tokenizer))
-    native_tpl = (model_info or {}).get("native_chat_template")
-    if not native_tpl or not safe:
+    if not safe:
+        return safe
+    # Resolved rather than read: render_native_template fetches it during the render, so on
+    # the FIRST request needing the fallback the cache is still empty and this would hand
+    # back the active-profile catalog unchanged (#7066).
+    native_tpl = resolve_native_chat_template(
+        model_info or {}, active_model_name, (model_info or {}).get("hf_token")
+    )
+    if not native_tpl:
         return safe
     native = model_markup(native_tpl, _vocabulary_of(tokenizer))
     if native is None:
@@ -1930,6 +1919,43 @@ def apply_chat_template_for_generation(
         raise
 
 
+def resolve_native_chat_template(model_info: dict, active_model_name, hf_token = None):
+    """The model's native chat template, fetched once and cached on *model_info*.
+
+    Returns False when the repo has none and None when the fetch failed, so a failure is
+    retried rather than pinned. Shared by the render path and by the authorization catalog,
+    which must know the native template on the FIRST request too: it is fetched during
+    rendering, so a catalog built before that saw no native profile at all and could
+    authorize a tool the native render then left out of the prompt (#7066)."""
+    native_tpl = model_info.get("native_chat_template")
+    if native_tpl is not None:
+        return native_tpl
+    # A LoRA adapter's native template lives on the base model, not the adapter id.
+    template_source = model_info.get("base_model") or active_model_name
+    if not template_source:
+        return None
+    # Re-use the load-time trust_remote_code so a custom-code tokenizer repo can
+    # instantiate its class (the stored flag already covers template_source).
+    trust_remote_code = bool(model_info.get("trust_remote_code", False))
+    try:
+        from transformers import AutoTokenizer
+        nt = AutoTokenizer.from_pretrained(
+            template_source,
+            token = hf_token if hf_token and hf_token.strip() else None,
+            trust_remote_code = trust_remote_code,
+        )
+        native_tpl = nt.chat_template or False
+    except Exception as exc:
+        logger.warning(
+            "Could not load native chat template for '%s': %s", template_source, exc
+        )
+        # A failed fetch is not "no template": leave the sentinel unset so the next call
+        # retries (caching False would pin the tool-dropping override).
+        return None
+    model_info["native_chat_template"] = native_tpl
+    return native_tpl
+
+
 def render_native_template(
     *,
     model_info: dict,
@@ -1971,31 +1997,7 @@ def render_native_template(
     # ``apply_fn`` lets a backend inject its own render; defaults to the module helper.
     if apply_fn is None:
         apply_fn = apply_chat_template_for_generation
-    native_tpl = model_info.get("native_chat_template")
-    if native_tpl is None:
-        # A LoRA adapter's native template lives on the base model, not the adapter id.
-        template_source = model_info.get("base_model") or active_model_name
-        # Re-use the load-time trust_remote_code so a custom-code tokenizer repo can
-        # instantiate its class (the stored flag already covers template_source).
-        trust_remote_code = bool(model_info.get("trust_remote_code", False))
-        try:
-            from transformers import AutoTokenizer
-            nt = AutoTokenizer.from_pretrained(
-                template_source,
-                token = hf_token if hf_token and hf_token.strip() else None,
-                trust_remote_code = trust_remote_code,
-            )
-            native_tpl = nt.chat_template or False
-        except Exception as exc:
-            logger.warning(
-                "Could not load native chat template for '%s': %s",
-                template_source,
-                exc,
-            )
-            # A failed fetch is not "no template": leave the sentinel unset so the next
-            # call retries (caching False would pin the tool-dropping override).
-            return None
-        model_info["native_chat_template"] = native_tpl
+    native_tpl = resolve_native_chat_template(model_info, active_model_name, hf_token)
     if not native_tpl:
         return None
 

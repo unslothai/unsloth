@@ -1628,7 +1628,10 @@ class InferenceOrchestrator:
         yield from run_safetensors_tool_loop(
             markup = markup_for_tokenizer(_model_info.get("tokenizer")),
             renderable_tools = renderable_tool_catalog(
-                tools, _model_info.get("tokenizer"), _model_info
+                tools,
+                _model_info.get("tokenizer"),
+                _model_info,
+                active_model_name = self.active_model_name,
             ),
             single_turn = _single_turn,
             messages = initial,

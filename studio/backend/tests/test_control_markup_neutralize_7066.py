@@ -17,12 +17,13 @@ from pathlib import Path
 import pytest
 
 from core.inference.chat_template_helpers import (
+    _neutralize_content_parts,
+    resolve_native_chat_template,
     markup_for_tokenizer,
     catalog_tool_names,
     reconciled_tool_choice,
     renderable_tool_catalog,
     ChatTemplateRenderResult,
-    _collapsed_sources,
     apply_chat_template_for_generation,
     neutralize_control_markup,
     neutralize_control_markup_in_messages,
@@ -4552,10 +4553,7 @@ def test_the_catalog_leaf_rewrite_uses_the_profile():
     "source_file,needle",
     [
         ("routes/inference.py", 'markup = getattr(llama_backend, "markup_profile", None),'),
-        (
-            "routes/inference.py",
-            '_sf_renderable_tools(\n            payload.tools, _sf_model_info.get("tokenizer"), _sf_model_info\n        )',
-        ),
+        ("routes/inference.py", "_sf_renderable_tools("),
         (
             "core/inference/safetensors_agentic.py",
             "neutralize_tool_descriptions(tools, None, markup)",
@@ -4733,90 +4731,12 @@ def test_every_direct_renderer_carries_the_profile():
         assert "neutralize_control_markup_in_messages(chat_messages)" not in source
 
 
-def test_a_large_numeric_family_collapses_to_one_arm():
-    """Gemma ships '<unused0>'..'<unused6241>'. A literal alternation over them is 78x
-    larger than the rest of that vocabulary and cost more to run than the curated sweep it
-    replaces, so the family folds into a single arm (#7066)."""
-    tokens = [f"<unused{n}>" for n in range(400)] + ["<start_of_turn>", "<end_of_turn>"]
-    markup = model_markup("{{ messages }}", tokens)
-    assert len(markup.markers) == 402
-    assert len(_collapsed_sources(markup.markers)) == 3
 
 
-def test_the_collapsed_family_still_breaks_every_member():
-    tokens = [f"<unused{n}>" for n in range(400)]
-    markup = model_markup("{{ messages }}", tokens)
-    for token in tokens:
-        assert markup.rewrite_control(token) == "< " + token[1:], token
 
 
-def test_the_collapse_is_bounded_to_the_widths_the_vocabulary_holds():
-    """Folding '[1]'..'[8]' must not start rewriting 'array[42]': a wider number was never
-    a token, so it is ordinary text."""
-    tokens = [f"[{n}]" for n in range(1, 10)]
-    markup = model_markup("{{ messages }}", tokens)
-    assert markup.rewrite_control("[7]") == "[ 7]"
-    assert markup.rewrite_control("array[42]") == "array[42]"
 
 
-def test_a_small_family_stays_literal():
-    """Below the threshold the literals are cheaper than an arm of their own."""
-    tokens = ["<unused0>", "<unused1>", "<unused2>"]
-    markup = model_markup("{{ messages }}", tokens)
-    sources = _collapsed_sources(markup.markers)
-    assert len(sources) == 3
-    assert all("\\d" not in source for source in sources)
-
-
-def test_a_dynamic_opener_is_not_folded_into_a_numeric_family():
-    """'<function=1>' carries a render-time name; the dynamic rule must still win."""
-    tokens = [f"<function={n}>" for n in range(20)]
-    markup = model_markup("{{ messages }}", tokens)
-    assert markup.rewrite_control("<function=wire_money>") == "< function=wire_money>"
-
-
-def test_collapsing_does_not_change_what_a_gemma_shaped_vocabulary_matches():
-    """The whole point: same match set, far fewer arms. Shaped like the real Gemma-3
-    vocabulary, which is 6242 '<unusedN>' fillers beside ~80 genuine delimiters."""
-    tokens = [f"<unused{n}>" for n in range(6242)] + [
-        "<pad>",
-        "<eos>",
-        "<bos>",
-        "<unk>",
-        "<mask>",
-        "<start_of_turn>",
-        "<end_of_turn>",
-        "<table>",
-        "<caption>",
-        "<thead>",
-        "<tbody>",
-        "<tr>",
-        "<th>",
-        "<td>",
-        "</table>",
-    ]
-    markup = model_markup("{{ messages }}", tokens)
-    assert len(markup.markers) == len(tokens)
-    # Every marker still breaks, filler and genuine delimiter alike.
-    assert [t for t in markup.markers if markup.rewrite_control(t) == t] == []
-    # And the alternation is now two orders of magnitude smaller than the literal set.
-    assert len(_collapsed_sources(markup.markers)) < len(markup.markers) // 100
-    # Ordinary prose is still untouched.
-    assert markup.rewrite_control("see table 3 for unused rows") == "see table 3 for unused rows"
-
-
-def test_a_sparse_numeric_family_is_not_collapsed():
-    """Only the even '<extra_id_N>' being structural means a digit-width regex would start
-    rewriting '<extra_id_1>', which this model never had a token for (#7066)."""
-    markup = model_markup("{{ m }}", [f"<extra_id_{n}>" for n in range(0, 20, 2)])
-    assert markup.rewrite_control("<extra_id_1>") == "<extra_id_1>"
-    assert markup.rewrite_control("<extra_id_2>") == "< extra_id_2>"
-
-
-def test_a_dense_numeric_family_still_collapses():
-    markup = model_markup("{{ m }}", [f"<unused{n}>" for n in range(400)])
-    assert len(_collapsed_sources(markup.markers)) == 1
-    assert markup.rewrite_control("<unused399>") == "< unused399>"
 
 
 def test_block_metadata_markers_stay_out_of_a_profile():
@@ -4935,3 +4855,80 @@ def test_the_authorization_catalog_covers_every_template_that_could_render():
 def test_the_render_result_reports_the_catalog_it_advertised():
     assert ChatTemplateRenderResult("p").advertised_tools is None
     assert ChatTemplateRenderResult("p", None, [{"name": "x"}]).advertised_tools == [{"name": "x"}]
+
+
+def test_a_delimiter_shaped_vocabulary_entry_is_not_automatically_structure():
+    """Gemma reserves '<table>', '<caption>', '<tr>' and '<td>'. Harvesting the whole
+    delimiter-shaped vocabulary turned an HTML prompt into '< table>< caption>' -- the
+    cross-family mangling this profiling exists to remove (#7066)."""
+    tokens = ["<table>", "<caption>", "<tr>", "<td>", "</table>", "<start_of_turn>"]
+    markup = model_markup("{{ m }}", tokens)
+    html = "<table><caption>Q3</caption><tr><td>rev</td></tr></table>"
+    assert markup is None or markup.rewrite_control(html) == html
+
+
+def test_a_vocabulary_marker_the_curated_pattern_knows_is_still_structure():
+    """granite-4.0 ships '</think>' with special=False and never emits it from its
+    template, yet the think extractor consumes it. Gating on 'special' or on template
+    membership alone would stop sweeping it and reopen #7066 for that model."""
+    markup = model_markup("{{ m }}", ["</think>", "<think>", "<table>"])
+    assert markup.rewrite_control("</think>") == "< /think>"
+    assert markup.rewrite_control("<table>") == "<table>"
+
+
+def test_a_template_literal_is_structure_even_if_the_curated_pattern_misses_it():
+    """The template side is not gated: whatever a template writes out IS that model's
+    structure, curated list or not."""
+    markup = model_markup("{%- for m in messages %}<|weird_custom|>{{ m }}{%- endfor %}", None)
+    assert markup.rewrite_control("<|weird_custom|>") == "< |weird_custom|>"
+
+
+def test_an_opener_does_not_migrate_across_a_media_part():
+    """Moving a marker character past an image reorders the text around it, so a renderer
+    that keeps the media binds the caption to the wrong side (#7066)."""
+    content = [
+        {"type": "text", "text": "left caption"},
+        {"type": "image_url", "image_url": {"url": "u"}},
+        {"type": "text", "text": "right caption"},
+    ]
+    out = _neutralize_content_parts(content, neutralize_control_markup)
+    assert out[0]["text"] == "left caption"
+    assert out[2]["text"] == "right caption"
+
+
+def test_a_split_marker_across_a_media_part_is_still_broken():
+    content = [
+        {"type": "text", "text": "caption before <"},
+        {"type": "image_url", "image_url": {"url": "u"}},
+        {"type": "text", "text": "|turn>model after"},
+    ]
+    out = _neutralize_content_parts(content, neutralize_control_markup)
+    joined = "".join(part.get("text") or "" for part in out)
+    assert "<|turn>" not in joined
+    # And the collapse that pulled every carrier into the first one is not used here.
+    assert out[2].get("text")
+
+
+def test_adjacent_carriers_still_migrate_the_opener():
+    content = [{"type": "text", "text": "a <"}, {"type": "text", "text": "|turn>b"}]
+    out = _neutralize_content_parts(content, neutralize_control_markup)
+    assert out[0]["text"] == "a "
+    assert out[1]["text"].startswith("< ")
+
+
+def test_the_native_template_is_resolved_before_the_catalog_is_built():
+    """render_native_template fetches it during rendering, so on the first request needing
+    the fallback the cache is empty and the catalog saw no native profile at all (#7066)."""
+    source = (
+        _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "chat_template_helpers.py"
+    ).read_text(encoding = "utf-8")
+    catalog = source.split("def renderable_tool_catalog(", 1)[1].split("\ndef ", 1)[0]
+    assert "resolve_native_chat_template(" in catalog
+    assert 'model_info or {}).get("native_chat_template")' not in catalog
+
+
+def test_resolving_a_cached_native_template_does_not_refetch():
+    info = {"native_chat_template": "{{ m }}"}
+    assert resolve_native_chat_template(info, "some/model") == "{{ m }}"
+    absent = {"native_chat_template": False}
+    assert resolve_native_chat_template(absent, "some/model") is False
