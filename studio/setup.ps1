@@ -361,16 +361,27 @@ function Get-PathDenialDetail {
 function Exit-PathAccessDenied {
     param(
         [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Label
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Label,
+        # "delete it, we reinstall it" is true of the managed cache and wrong for
+        # a tree the user pointed us at. Never tell them to delete their build.
+        [switch]$UserSupplied
     )
 
     step "permissions" "$Label at $Path cannot be read: access is denied$(Get-PathDenialDetail -Path $Path)" "Red"
-    substep "This folder lives outside the app, so reinstalling Unsloth Studio, to any drive, reuses it and fails the same way" "Yellow"
-    substep "Simplest fix: close Unsloth, delete or rename $Path, then re-run setup (it is a managed cache and gets reinstalled)" "Yellow"
-    substep "If deleting is also denied, run these two in an elevated PowerShell, then re-run setup:" "Yellow"
+    if ($UserSupplied) {
+        substep "Unsloth will not touch a directory you pointed it at, so this has to be fixed at the source" "Yellow"
+        substep "Restore access with these two in an elevated PowerShell, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build:" "Yellow"
+    } else {
+        substep "This folder lives outside the app, so reinstalling Unsloth Studio, to any drive, reuses it and fails the same way" "Yellow"
+        substep "Simplest fix: close Unsloth, delete or rename $Path, then re-run setup (it is a managed cache and gets reinstalled)" "Yellow"
+        substep "If deleting is also denied, run these two in an elevated PowerShell, then re-run setup:" "Yellow"
+    }
     substep "takeown /F `"$Path`" /R /D Y" "Yellow"
     substep "icacls `"$Path`" /reset /T" "Yellow"
     substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
+    if ($UserSupplied) {
+        Exit-SetupFailure "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
+    }
     Exit-SetupFailure "Access denied reading the existing $Label at $Path. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
 }
 
@@ -3947,7 +3958,13 @@ if ($LlamaPr) {
 $LocalLlamaCppLinked = $false
 $LocalLlamaCppSrc = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR
 if ($LocalLlamaCppSrc) {
-    if (-not (Test-Path -LiteralPath $LocalLlamaCppSrc -PathType Container)) {
+    # Unreadable is not missing: reporting "does not exist" would send the user
+    # looking for the wrong problem.
+    $localSrcState = Get-PathState -Path $LocalLlamaCppSrc -PathType Container
+    if ($localSrcState -eq "Denied") {
+        Exit-PathAccessDenied -Path $LocalLlamaCppSrc -Label "the UNSLOTH_LOCAL_LLAMA_CPP_DIR directory" -UserSupplied
+    }
+    if ($localSrcState -ne "Present") {
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $LocalLlamaCppSrc" "Red"
         Exit-SetupFailure "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $LocalLlamaCppSrc"
     }
@@ -3957,13 +3974,24 @@ if ($LocalLlamaCppSrc) {
     # layout LlamaCppBackend._layout_candidates() resolves (root-level, build\bin,
     # or build\bin\Release) so the flag never rejects a tree Unsloth could run.
     $LocalLlamaServerFound = $false
+    $LocalIsCanonical = ($ResolvedLocal -eq $LlamaCppDir)
     foreach ($_cand in @(
             (Join-Path $ResolvedLocal "llama-server.exe"),
             (Join-Path $ResolvedLocal "build\bin\llama-server.exe"),
             (Join-Path $ResolvedLocal "build\bin\Release\llama-server.exe"))) {
-        if (Test-PathQuiet $_cand) { $LocalLlamaServerFound = $true; break }
+        # Denied must not read as "nothing built here": the canonical branch
+        # below would then hand the tree to the prebuilt installer, which
+        # replaces the very build this flag asked to reuse.
+        $candState = Get-PathState -Path $_cand
+        if ($candState -eq "Denied") {
+            if ($LocalIsCanonical) {
+                Exit-PathAccessDenied -Path $ResolvedLocal -Label "llama.cpp install"
+            }
+            Exit-PathAccessDenied -Path $ResolvedLocal -Label "the --with-llama-cpp-dir build" -UserSupplied
+        }
+        if ($candState -eq "Present") { $LocalLlamaServerFound = $true; break }
     }
-    if ($ResolvedLocal -eq $LlamaCppDir) {
+    if ($LocalIsCanonical) {
         # Points at the canonical install location itself: never delete-then-link
         # onto itself. Reuse an existing build here (skip prebuilt + source) so the
         # staged prebuilt installer can't replace a build the user asked to reuse;

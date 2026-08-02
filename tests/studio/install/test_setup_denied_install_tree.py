@@ -50,7 +50,7 @@ def test_every_denial_route_reports_instead_of_proceeding():
     assert '$llamaGitState -eq "Denied"' in SETUP_PS1
     assert "$pathState = Get-PathState -Path $Path -PathType Container" in SETUP_PS1
     assert '$StudioHomeIsCustom -and $pathState -eq "Denied"' in SETUP_PS1
-    assert SETUP_PS1.count("Exit-PathAccessDenied -Path") == 5
+    assert SETUP_PS1.count("Exit-PathAccessDenied -Path") == 8
 
 
 def test_denied_install_reports_an_actionable_failure():
@@ -129,3 +129,37 @@ def test_reporting_helpers_tolerate_an_empty_path():
         assert "[AllowEmptyString()]" in head, name
     detail = SETUP_PS1.split("function Get-PathDenialDetail", 1)[1].split("\nfunction ", 1)[0]
     assert 'if ([string]::IsNullOrWhiteSpace($Path)) { return "" }' in detail
+
+
+def test_local_llama_dir_probes_are_three_state():
+    """--with-llama-cpp-dir pointed at the canonical location reuses whatever is
+    built there so the prebuilt installer cannot replace it. A denied binary read
+    as "nothing built" put that replacement back, which is what the branch exists
+    to prevent."""
+    assert "$localSrcState = Get-PathState -Path $LocalLlamaCppSrc -PathType Container" in SETUP_PS1
+    assert '$localSrcState -eq "Denied"' in SETUP_PS1
+    local_block = SETUP_PS1.split("$LocalLlamaCppSrc = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR", 1)[1]
+    local_block = local_block.split("if ($LocalLlamaCppLinked) {", 1)[0]
+    assert "$candState = Get-PathState -Path $_cand" in local_block
+    assert '$candState -eq "Denied"' in local_block
+    assert '$candState -eq "Present"' in local_block
+    assert "Test-PathQuiet $_cand" not in local_block
+    # The disk-space branch keeps Test-PathQuiet on purpose: it only decides
+    # whether a preserved binary is usable, and an unreadable one is not.
+
+
+def test_user_supplied_paths_are_never_told_to_delete_themselves():
+    """The managed advice ("delete it, Unsloth reinstalls it") is wrong for a tree
+    the user pointed us at with UNSLOTH_LOCAL_LLAMA_CPP_DIR."""
+    body = SETUP_PS1.split("function Exit-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
+    assert "[switch]$UserSupplied" in body
+    user_branch = body.split("if ($UserSupplied) {", 1)[1].split("} else {", 1)[0]
+    assert "delete or rename" not in user_branch
+    assert "managed cache" not in user_branch
+    assert "UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build" in user_branch
+    # Every user-supplied call site must actually pass the switch.
+    for line in SETUP_PS1.splitlines():
+        if "Exit-PathAccessDenied" in line and "UNSLOTH_LOCAL_LLAMA_CPP_DIR" in line:
+            assert "-UserSupplied" in line, line
+        if "Exit-PathAccessDenied" in line and "--with-llama-cpp-dir" in line:
+            assert "-UserSupplied" in line, line
