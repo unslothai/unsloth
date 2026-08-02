@@ -3054,9 +3054,7 @@ def test_tool_loop_controllers_are_built_from_the_sanitized_catalog():
         window = source[start : start + 200]
         # Either sanitized at construction, or handed the catalog the caller already
         # narrowed to what every template this turn could select would advertise.
-        assert (
-            "neutralize_tool_descriptions" in window or "_authorized" in window
-        ), module
+        assert "neutralize_tool_descriptions" in window or "_authorized" in window, module
     agentic = (
         _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "safetensors_agentic.py"
     ).read_text(encoding = "utf-8")
@@ -4371,7 +4369,9 @@ def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
         "heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)" not in source
     )
     assert "_sf_renderable_tools(" in source
-    assert "heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice)" in source
+    assert (
+        "heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice)" in source
+    )
     for call in (
         "StreamToolCallHealer(_sf_heal, _sf_healing_tools)",
         "heal_openai_message(_msg, _sf_heal, _sf_healing_tools)",
@@ -4552,7 +4552,10 @@ def test_the_catalog_leaf_rewrite_uses_the_profile():
     "source_file,needle",
     [
         ("routes/inference.py", 'markup = getattr(llama_backend, "markup_profile", None),'),
-        ("routes/inference.py", "_sf_renderable_tools(\n            payload.tools, _sf_model_info.get(\"tokenizer\"), _sf_model_info\n        )"),
+        (
+            "routes/inference.py",
+            '_sf_renderable_tools(\n            payload.tools, _sf_model_info.get("tokenizer"), _sf_model_info\n        )',
+        ),
         (
             "core/inference/safetensors_agentic.py",
             "neutralize_tool_descriptions(tools, None, markup)",

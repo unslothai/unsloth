@@ -401,7 +401,7 @@ def _collapsed_sources(markers: set) -> list:
         # would widen to numbers the vocabulary never held, and the profile would start
         # rewriting "<extra_id_1>" on a model that has no such token -- the cross-family
         # mangling this profiling exists to remove (#7066).
-        numbers = sorted(int(m[len(prefix):len(m) - len(suffix) or None]) for m in members)
+        numbers = sorted(int(m[len(prefix) : len(m) - len(suffix) or None]) for m in members)
         if numbers != list(range(numbers[0], numbers[0] + len(numbers))):
             singles.extend(members)
             continue
@@ -1406,7 +1406,12 @@ def _vocabulary_of(tokenizer) -> Optional[list]:
     return None
 
 
-def renderable_tool_catalog(tools, tokenizer, model_info, cache = None):
+def renderable_tool_catalog(
+    tools,
+    tokenizer,
+    model_info,
+    cache = None,
+):
     """The catalog that survives EVERY template this request could render with.
 
     A tool-calling turn may render with the active template or, when that template drops
@@ -2045,9 +2050,7 @@ def render_native_template(
             # The NATIVE profile decided this render's catalog: it can drop a tool the
             # active profile kept, so callers must gate healing and tool execution on this
             # list rather than on the one they sanitized themselves (#7066).
-            neutralize_tool_descriptions(
-                tools, None, markup_for_tokenizer(render_tokenizer)
-            ),
+            neutralize_tool_descriptions(tools, None, markup_for_tokenizer(render_tokenizer)),
         )
     return with_tools
 
@@ -2079,7 +2082,11 @@ def render_with_native_template_fallback(
     for the exact template used by this request."""
     live_markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
 
-    def _result(prompt: str, markers = live_markers, advertised = None):
+    def _result(
+        prompt: str,
+        markers = live_markers,
+        advertised = None,
+    ):
         if return_metadata:
             if advertised is None and tools:
                 advertised = neutralize_tool_descriptions(
