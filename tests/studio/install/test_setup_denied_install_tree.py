@@ -50,7 +50,8 @@ def test_every_denial_route_reports_instead_of_proceeding():
     assert '$llamaGitState -eq "Denied"' in SETUP_PS1
     assert "$pathState = Get-PathState -Path $Path -PathType Container" in SETUP_PS1
     assert '$StudioHomeIsCustom -and $pathState -eq "Denied"' in SETUP_PS1
-    assert SETUP_PS1.count("Exit-PathAccessDenied -Path") == 9
+    # Floor, not an exact count: losing a route is the bug, adding one is not.
+    assert SETUP_PS1.count("Exit-PathAccessDenied -Path") >= 9
 
 
 def test_denied_install_reports_an_actionable_failure():
@@ -108,6 +109,18 @@ def test_no_bare_test_path_probes_inside_the_llama_install_tree():
         f"{index}: {line.strip()}"
         for index, line in enumerate(SETUP_PS1.splitlines(), start = 1)
         if inside_tree.search(line)
+    ]
+    assert not offenders, offenders
+
+
+def test_metadata_reads_are_literal_like_the_probes_that_gate_them():
+    """A literal probe followed by a globbing read still fails on a path holding
+    [ or ], so the probe passes and the read throws into the catch."""
+    offenders = [
+        f"{index}: {line.strip()}"
+        for index, line in enumerate(SETUP_PS1.splitlines(), start = 1)
+        if re.search(r"Get-Content\b[^\n]*(\$metadataPath|\$existingMetaPath|\$llamaMarker)", line)
+        and "-LiteralPath" not in line
     ]
     assert not offenders, offenders
 
@@ -195,8 +208,14 @@ def test_user_supplied_paths_are_never_told_to_delete_themselves():
     for line in SETUP_PS1.splitlines():
         if "Exit-PathAccessDenied" in line and "UNSLOTH_LOCAL_LLAMA_CPP_DIR" in line:
             assert "-UserSupplied" in line, line
+    # Keyed on the path being reported, not on position: this block also reports
+    # the managed destination ($LlamaCppDir), where "delete it" is the right advice.
     local_block = SETUP_PS1.split("$LocalLlamaCppSrc = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR", 1)[1]
     local_block = local_block.split("if ($LocalLlamaCppLinked) {", 1)[0]
     for line in local_block.splitlines():
-        if "Exit-PathAccessDenied" in line:
+        if "Exit-PathAccessDenied" not in line:
+            continue
+        if "$ResolvedLocal" in line or "$LocalLlamaCppSrc" in line:
             assert "-UserSupplied" in line, line
+        elif "$LlamaCppDir" in line:
+            assert "-UserSupplied" not in line, line

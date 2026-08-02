@@ -297,8 +297,10 @@ function Test-AccessDeniedError {
     $ex = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
     while ($ex) {
         if ($ex -is [System.UnauthorizedAccessException]) { return $true }
-        # IOException/Win32Exception carry the HRESULT for ERROR_ACCESS_DENIED (5).
+        # IOException carries ERROR_ACCESS_DENIED as an HRESULT; Win32Exception
+        # keeps E_FAIL there and puts the code in NativeErrorCode instead.
         if ($ex.HResult -eq -2147024891) { return $true }
+        if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -eq 5) { return $true }
         $ex = $ex.InnerException
     }
     if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) {
@@ -347,6 +349,9 @@ function Get-PathDenialDetail {
     if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     if (-not $item) { return "" }
+    # Non-filesystem providers expose an unrelated .Attributes with no -band
+    # overload, and throwing here would replace the failure we are reporting.
+    if (-not ($item.Attributes -is [System.IO.FileAttributes])) { return "" }
     if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
     $target = $null
     try { $target = $item.Target } catch { $target = $null }
@@ -394,7 +399,7 @@ function Get-InstalledLlamaPrebuiltRelease {
     }
 
     try {
-        $payload = Get-Content $metadataPath -Raw | ConvertFrom-Json
+        $payload = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
     } catch {
         return $null
     }
@@ -4049,12 +4054,20 @@ if ($LocalLlamaCppSrc) {
         if ($StudioHomeIsCustom) {
             Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
         }
-        if (Test-Path -LiteralPath $LlamaCppDir) {
+        # The destination is about to be deleted and replaced, so a denial here
+        # must stop rather than throw raw: under a default home nothing above
+        # has probed it three-state.
+        $destState = Get-PathState -Path $LlamaCppDir
+        if ($destState -eq "Denied") {
+            Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install"
+        }
+        if ($destState -eq "Present") {
             Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
             # A locked/in-use tree can silently survive removal (SilentlyContinue
             # masks it). Don't then junction/copy over a half-present dir; mirror the
             # prebuilt path's active-process handling and stop with a clear message.
-            if (Test-Path -LiteralPath $LlamaCppDir) {
+            # Denied counts as surviving: unreadable is not gone.
+            if ((Get-PathState -Path $LlamaCppDir) -ne "Absent") {
                 step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
                 substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
                 Exit-SetupFailure "llama.cpp install is blocked by an active llama.cpp process" 3
@@ -4109,7 +4122,7 @@ if ($LocalLlamaCppLinked) {
         }
         if ($existingMetaState -eq "Present") {
             try {
-                $existingMeta = Get-Content $existingMetaPath -Raw | ConvertFrom-Json
+                $existingMeta = Get-Content -LiteralPath $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
                 # A ROCm host may legitimately carry the fork's windows-rocm bundle
                 # or the upstream windows-hip fallback, so accept either and never
