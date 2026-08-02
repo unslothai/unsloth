@@ -385,7 +385,9 @@ def resolve_reasoning_budget_message(args: Optional[Iterable[str]], fallback: st
 
 
 def resolve_reasoning_budget_with_env(
-    args: Optional[Iterable[str]], fallback: int, env: Optional[Mapping[str, str]] = None
+    args: Optional[Iterable[str]],
+    fallback: int,
+    env: Optional[Mapping[str, str]] = None,
 ) -> int:
     """Resolve CLI/first-class intent, then inherit llama.cpp's env default."""
     override = parse_reasoning_budget_override(args)
@@ -400,7 +402,9 @@ def resolve_reasoning_budget_with_env(
 
 
 def resolve_reasoning_budget_message_with_env(
-    args: Optional[Iterable[str]], fallback: str, env: Optional[Mapping[str, str]] = None
+    args: Optional[Iterable[str]],
+    fallback: str,
+    env: Optional[Mapping[str, str]] = None,
 ) -> str:
     """Resolve CLI/first-class intent, then inherit llama.cpp's env default."""
     override = parse_reasoning_budget_message_override(args)
