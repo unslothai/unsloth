@@ -1615,12 +1615,20 @@ class InferenceOrchestrator:
             initial = [{"role": "system", "content": system_prompt}] + initial
 
         # Same profile the renderer uses, so the controller never drops a tool over a
-        # marker this model does not treat as structure (#7066).
-        from core.inference.chat_template_helpers import markup_for_tokenizer
+        # marker this model does not treat as structure. The controller is also given the
+        # catalog safe under every template this turn could select, because the
+        # native-template fallback renders with a different profile (#7066).
+        from core.inference.chat_template_helpers import (
+            markup_for_tokenizer,
+            renderable_tool_catalog,
+        )
+
+        _model_info = self.models.get(self.active_model_name) or {}
 
         yield from run_safetensors_tool_loop(
-            markup = markup_for_tokenizer(
-                (self.models.get(self.active_model_name) or {}).get("tokenizer")
+            markup = markup_for_tokenizer(_model_info.get("tokenizer")),
+            renderable_tools = renderable_tool_catalog(
+                tools, _model_info.get("tokenizer"), _model_info
             ),
             single_turn = _single_turn,
             messages = initial,

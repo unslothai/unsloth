@@ -11323,14 +11323,21 @@ async def openai_chat_completions(
     from core.inference.chat_template_helpers import (
         markup_for_tokenizer as _sf_markup_for,
         neutralize_tool_descriptions as _sf_neutralize_tools,
+        renderable_tool_catalog as _sf_renderable_tools,
     )
 
     _sf_markup = _sf_markup_for(_sf_model_info.get("tokenizer"))
 
     _sf_healing_tools = (
-        # The same profile apply_chat_template_for_generation renders with, so the healer
-        # offers exactly the catalog the model was shown (#7066).
-        _sf_neutralize_tools(payload.tools, None, _sf_markup) if _sf_client_tools else None
+        # Safe under EVERY template this turn could select. When the active template drops
+        # the schema the render falls back to the model's native one, whose profile can
+        # drop a tool the active profile kept; gating on the active catalog alone would let
+        # the healer promote a call for a tool the prompt never advertised (#7066).
+        _sf_renderable_tools(
+            payload.tools, _sf_model_info.get("tokenizer"), _sf_model_info
+        )
+        if _sf_client_tools
+        else None
     )
     _sf_heal = (
         heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice)

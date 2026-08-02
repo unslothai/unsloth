@@ -267,6 +267,12 @@ _TEMPLATE_DELIMITERS = re.compile(
 # newline or "}". Gating on the preceding character keeps the shipped Gemma-4 loop indexes
 # out of the profile without also dropping the Mistral delimiters (#7066).
 _JINJA_INDEX = re.compile(r"[\w\]\)]\Z")
+# Bracket names the curated pattern deliberately leaves alone: metadata WITHIN a block,
+# never its opener, so with the openers broken none can start or close anything by itself.
+# "[ARGS]" also collides with real text, being the standard CLI-synopsis metavariable
+# ("usage: tool [OPTIONS] [ARGS]"). Harvesting them from a Mistral-style template would
+# reintroduce exactly the false rewrite the curated list documents avoiding (#7066).
+_BLOCK_METADATA = frozenset({"[ARGS]", "[CALL_ID]", "[TOOL_CONTENT]"})
 # A marker whose name is filled in at render time, so a template only ever shows one
 # example. "<function=pay>" must break on a model whose template spells
 # "<function=example>", which an alternation over literals alone cannot do.
@@ -277,8 +283,24 @@ _DYNAMIC_ATTR_OPENER = re.compile(
 )
 
 
+# DeepSeek spells one marker several ways: "<\uff5ctool\u2581calls\u2581begin\uff5c>" in the
+# vocabulary, but tool_call_parser.py:47-53 also accepts the space and backslash-escaped
+# spellings. The curated fullwidth arm matched any name between the bars, so all three broke;
+# an exact literal from the profile breaks only the one the vocabulary happens to hold, and a
+# pasted alias opens a tool-call envelope (#7066).
+_FULLWIDTH_MARKER = re.compile("\\A<\uff5c([A-Za-z][A-Za-z\u2581_ \\\\]{0,39})\uff5c>\\Z")
+_ALIAS_SEPARATORS = "(?:\u2581|\\\\?_| )"
+
+
 def _marker_pattern_source(marker: str) -> str:
     """The regex for one harvested marker: exact, unless its name is dynamic."""
+    fullwidth = _FULLWIDTH_MARKER.match(marker)
+    if fullwidth:
+        # Every separator position accepts the three spellings the parser accepts.
+        name = fullwidth.group(1)
+        parts = re.split("[\u2581_ ]", name)
+        if len(parts) > 1:
+            return "<\uff5c" + _ALIAS_SEPARATORS.join(re.escape(p) for p in parts) + "\uff5c>"
     dynamic = _DYNAMIC_OPENER.match(marker)
     if dynamic:
         return "<" + re.escape(dynamic.group(1)) + "=[^\\s<>]*>"
@@ -375,6 +397,14 @@ def _collapsed_sources(markers: set) -> list:
         if len(members) < _FAMILY_MIN:
             singles.extend(members)
             continue
+        # Only a DENSE range folds. A sparse family (say only the even "<extra_id_N>")
+        # would widen to numbers the vocabulary never held, and the profile would start
+        # rewriting "<extra_id_1>" on a model that has no such token -- the cross-family
+        # mangling this profiling exists to remove (#7066).
+        numbers = sorted(int(m[len(prefix):len(m) - len(suffix) or None]) for m in members)
+        if numbers != list(range(numbers[0], numbers[0] + len(numbers))):
+            singles.extend(members)
+            continue
         # Bounded to the digit widths the vocabulary actually holds, so folding "[1]".."[8]"
         # cannot start rewriting "array[42]". Over "<unused0>".."<unused6241>" that is
         # "\d{1,4}", which is the same match set the literals had.
@@ -405,12 +435,15 @@ def model_markup(chat_template, tokens = None) -> Optional[ModelMarkup]:
     markers: set = set()
     for token in tokens or ():
         if isinstance(token, str) and _DELIMITER_SHAPED.match(token):
-            markers.add(token)
+            if token not in _BLOCK_METADATA:
+                markers.add(token)
     for body in _template_strings(chat_template):
         for match in _TEMPLATE_DELIMITERS.finditer(body):
             marker = match.group(0)
             if marker.startswith("[") and _JINJA_INDEX.search(body, 0, match.start()):
                 continue  # "loop_messages[i]": an index, not something the prompt shows.
+            if marker in _BLOCK_METADATA:
+                continue
             markers.add(marker)
     return ModelMarkup(markers) if markers else None
 
@@ -1347,10 +1380,55 @@ def catalog_tool_names(tools) -> set:
         if not isinstance(tool, dict):
             continue
         function = tool.get("function")
-        name = function.get("name") if isinstance(function, dict) else tool.get("name")
-        if isinstance(name, str):
-            names.add(name)
+        # Both spellings: an entry may carry an empty "function" mapping beside the flat
+        # name that actually dispatches, and reading only the nested level made a dropped
+        # tool look as though it had never been in the caller's catalog -- so a forced
+        # tool_choice for it was forwarded unchanged (#7066).
+        nested = function.get("name") if isinstance(function, dict) else None
+        for name in (nested, tool.get("name")):
+            if isinstance(name, str):
+                names.add(name)
     return names
+
+
+def _vocabulary_of(tokenizer) -> Optional[list]:
+    """The delimiter-shaped side of a tokenizer's vocabulary, or None."""
+    inner = getattr(tokenizer, "tokenizer", tokenizer)
+    added = getattr(inner, "added_tokens_decoder", None)
+    if isinstance(added, dict):
+        return [getattr(v, "content", v) for v in added.values()]
+    vocab = getattr(inner, "get_vocab", None)
+    if callable(vocab):
+        try:
+            return list(vocab())
+        except Exception:
+            return None
+    return None
+
+
+def renderable_tool_catalog(tools, tokenizer, model_info, cache = None):
+    """The catalog that survives EVERY template this request could render with.
+
+    A tool-calling turn may render with the active template or, when that template drops
+    the schema, with the model's native one, and the two profiles can disagree about which
+    tools carry markup. A healer or controller is an authorization boundary, so it has to
+    be built from the catalog that is safe either way: promoting a call for a tool the
+    prompt never advertised is the failure this guards (#7066).
+
+    The cost of the conservative direction is narrow and one-sided. A tool dropped only by
+    the template that did NOT get selected stays advertised and directly callable; it just
+    is not auto-healed out of text-form output that round.
+    """
+    safe = neutralize_tool_descriptions(tools, cache, markup_for_tokenizer(tokenizer))
+    native_tpl = (model_info or {}).get("native_chat_template")
+    if not native_tpl or not safe:
+        return safe
+    native = model_markup(native_tpl, _vocabulary_of(tokenizer))
+    if native is None:
+        return safe
+    kept = catalog_tool_names(neutralize_tool_descriptions(tools, cache, native))
+    narrowed = [t for t in safe if catalog_tool_names([t]) <= kept]
+    return safe if len(narrowed) == len(safe) else narrowed
 
 
 def reconciled_tool_choice(tool_choice, openai_tools, safe_tools):
@@ -1485,6 +1563,11 @@ class ChatTemplateRenderResult:
 
     prompt: str
     reasoning_channel_markers: Optional[tuple[str, str]] = None
+    # The tool catalog the SELECTED template actually rendered. The native-template
+    # fallback sanitizes with the native model's profile, which can drop a tool the active
+    # profile kept, so a healer or controller built from the active catalog could promote a
+    # call for a tool the prompt never advertised (#7066).
+    advertised_tools: Optional[list] = None
 
 
 def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
@@ -1737,8 +1820,6 @@ def markup_for_tokenizer(tokenizer) -> Optional[ModelMarkup]:
         cached = _MARKUP_BY_TOKENIZER.get(tokenizer)
     except TypeError:  # not weak-referenceable
         cached = None
-    if cached is not None:
-        return cached[0]
     # A vision model stores the container processor here: the chat_template lives on the
     # processor while the vocabulary lives on the inner tokenizer, so each is read from
     # whichever actually has it (mirrors chat_eos's template_source unwrap).
@@ -1746,6 +1827,11 @@ def markup_for_tokenizer(tokenizer) -> Optional[ModelMarkup]:
     template = getattr(tokenizer, "chat_template", None)
     if not template:
         template = getattr(inner, "chat_template", None)
+    # Keyed on the template as well as the tokenizer: get_chat_template() installs a mapped
+    # template on the SAME object at generate time, so a profile built at load time would
+    # otherwise be reused and the mapped template's own delimiters would go unswept (#7066).
+    if cached is not None and cached[1] == template:
+        return cached[0]
     tokens = None
     added = getattr(inner, "added_tokens_decoder", None)
     if isinstance(added, dict):
@@ -1759,7 +1845,7 @@ def markup_for_tokenizer(tokenizer) -> Optional[ModelMarkup]:
                 tokens = None
     profile = model_markup(template, tokens)
     try:
-        _MARKUP_BY_TOKENIZER[tokenizer] = (profile,)
+        _MARKUP_BY_TOKENIZER[tokenizer] = (profile, template)
     except TypeError:
         pass
     return profile
@@ -1956,6 +2042,12 @@ def render_native_template(
             _detect_reasoning_channel_markers_from_templates(
                 _selected_template_strings_from_value(native_tpl, tools)
             ),
+            # The NATIVE profile decided this render's catalog: it can drop a tool the
+            # active profile kept, so callers must gate healing and tool execution on this
+            # list rather than on the one they sanitized themselves (#7066).
+            neutralize_tool_descriptions(
+                tools, None, markup_for_tokenizer(render_tokenizer)
+            ),
         )
     return with_tools
 
@@ -1987,9 +2079,13 @@ def render_with_native_template_fallback(
     for the exact template used by this request."""
     live_markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
 
-    def _result(prompt: str, markers = live_markers):
+    def _result(prompt: str, markers = live_markers, advertised = None):
         if return_metadata:
-            return ChatTemplateRenderResult(prompt, markers)
+            if advertised is None and tools:
+                advertised = neutralize_tool_descriptions(
+                    tools, None, markup_for_tokenizer(tokenizer)
+                )
+            return ChatTemplateRenderResult(prompt, markers, advertised)
         return prompt
 
     if not tools:

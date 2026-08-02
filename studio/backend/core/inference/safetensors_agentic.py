@@ -493,6 +493,7 @@ def run_safetensors_tool_loop(
     permission_mode: Optional[str] = None,
     reasoning_prefilled: bool = False,
     markup = None,
+    renderable_tools = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -564,9 +565,17 @@ def run_safetensors_tool_loop(
     from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
     # *markup* is the same profile the renderer uses, so a tool is never dropped from the
-    # controller over a marker this model does not treat as structure (#7066).
+    # controller over a marker this model does not treat as structure. *renderable_tools*,
+    # when the caller supplies it, is the catalog safe under every template this turn could
+    # select: the native-template fallback renders with a different profile, and prepare_call
+    # must not authorize a tool that render left out of the prompt (#7066).
+    _authorized = (
+        renderable_tools
+        if renderable_tools is not None
+        else neutralize_tool_descriptions(tools, None, markup)
+    )
     tool_controller = ToolLoopController(
-        tools = (None if unrestricted_tools else neutralize_tool_descriptions(tools, None, markup)),
+        tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
