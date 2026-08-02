@@ -15326,7 +15326,6 @@ async def chat_count_tokens(
     _mcp_tools: list[dict] = []
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
         from core.inference.tools import cached_mcp_tools
-
         _mcp_tools, _mcp_complete = cached_mcp_tools()
         if not _mcp_complete:
             raise HTTPException(

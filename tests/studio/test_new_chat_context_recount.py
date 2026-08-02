@@ -997,9 +997,9 @@ def test_a_new_chat_recount_is_retried_after_a_background_run_ends():
             """
         )
     )
-    assert out["during"]["counts"] == 0, (
-        "a New Chat must not count while the outgoing conversation is still generating"
-    )
+    assert (
+        out["during"]["counts"] == 0
+    ), "a New Chat must not count while the outgoing conversation is still generating"
     assert out["during"]["contextUsage"] is None
     assert out["counts"] == 1, (
         "the run ending must re-fire this effect: nothing else can, so without it the count is "

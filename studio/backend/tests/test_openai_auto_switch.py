@@ -3548,7 +3548,13 @@ def test_chat_count_tokens_refuses_a_generation_that_starts_mid_count(monkeypatc
     assert counted == {}, "the tokenizer must not be reached"
 
 
-def _enabled_mcp_server(tmp_path, monkeypatch, *, cached = None, cooloff = False):
+def _enabled_mcp_server(
+    tmp_path,
+    monkeypatch,
+    *,
+    cached = None,
+    cooloff = False,
+):
     """One enabled MCP server, with its discovery cache in a known state.
 
     Both cache dicts are module globals shared across the whole test session, so they are
@@ -3571,6 +3577,7 @@ def _enabled_mcp_server(tmp_path, monkeypatch, *, cached = None, cooloff = False
         mcp_client.cache_tools("s1", cached)
     if cooloff:
         mcp_client.record_probe_failure("s1")
+
     # Any probe at all is a failure of the whole design: a count must not reach the network.
     async def _no_probes(**_kwargs):
         raise AssertionError("a count must never probe an MCP server")
@@ -3637,9 +3644,9 @@ def test_chat_count_tokens_prices_cached_mcp_schemas(tmp_path, monkeypatch):
     body = _counted_body(payload)
     assert body["input_tokens"] == 1234
     names = [tool["function"]["name"] for tool in (counted.get("tools") or [])]
-    assert "mcp__s1__lookup" in names, (
-        "a cached MCP schema is in the completion's prompt, so it must be in the count"
-    )
+    assert (
+        "mcp__s1__lookup" in names
+    ), "a cached MCP schema is in the completion's prompt, so it must be in the count"
 
 
 def test_chat_count_tokens_ignores_an_mcp_server_the_request_did_not_enable(tmp_path, monkeypatch):
