@@ -330,7 +330,7 @@ export const it = {
         sectionTitle: "Condivisione delle anteprime",
         enableLabel: "Link di anteprima pubblici",
         enableDescription:
-          "Permetti a chiunque abbia un link firmato di chattare con un modello finito, senza accesso. Disattiva per mettere offline l'anteprima pubblica: i link condivisi smettono di funzionare.",
+          "Permetti a chiunque abbia un link firmato di chattare con un modello addestrato, senza dover effettuare l'accesso. Disattiva l'opzione per rendere inaccessibile l'anteprima pubblica: i link condivisi smetteranno di funzionare.",
         loadError:
           "Caricamento delle impostazioni di condivisione delle anteprime non riuscito.",
         saveError:
@@ -351,7 +351,7 @@ export const it = {
         sectionTitle: "Autorizzazioni",
         bypassLabel: "Autorizzazioni degli strumenti",
         bypassDescription:
-          "Come Unsloth approva le chiamate agli strumenti della chat (terminale, python, web, MCP) prima che vengano eseguite. L'accesso completo disattiva le approvazioni e la sandbox del codice.",
+          "Come Unsloth approva le chiamate agli strumenti della chat (terminale, python, web, MCP) prima che vengano eseguite. La modalità «Full access» disattiva le approvazioni e la sandbox del codice.",
       },
       notifications: {
         sectionTitle: "Notifiche",
@@ -488,9 +488,9 @@ export const it = {
         trainingRuns: "Run",
         trainingCompleted: "Completati",
         trainingSteps: "Step",
-        trainingTokens: "Token addestrati",
+        trainingTokens: "Token usati nell'addestramento",
         trainingTime: "Tempo di addestramento",
-        bestLoss: "Loss migliore",
+        bestLoss: "Loss minima",
         runSteps: "{steps} step",
         runLoss: "loss {loss}",
       },
@@ -627,9 +627,9 @@ export const it = {
         ram: "RAM",
         disk: "Disco",
         vram: "VRAM",
-        cpuCores: "{logical} core logici / {physical} fisici",
+        cpuCores: "Core logici: {logical} / fisici: {physical}",
         currentLoad: "Carico attuale",
-        free: "{value} liberi",
+        free: "Disponibili: {value}",
         noGpu: "Nessuna GPU visibile",
       },
       gpu: {
@@ -639,15 +639,15 @@ export const it = {
         unknownDevice: "GPU sconosciuta",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
-        used: "{value} usati",
-        free: "{value} liberi",
-        total: "{value} in totale",
+        used: "In uso: {value}",
+        free: "Disponibili: {value}",
+        total: "Totale: {value}",
       },
       storage: {
         title: "Archiviazione",
         systemDisk: "Disco di sistema",
-        diskUsage: "{used} usati / {total}",
-        diskFree: "{free} liberi",
+        diskUsage: "In uso: {used} / Totale: {total}",
+        diskFree: "Disponibili: {free}",
         modelsFolder: "Cartella dei modelli",
         modelsFolderDescription:
           "Dove vengono salvati i modelli scaricati. Cambiala per tenere i modelli fuori dal disco di sistema.",
@@ -656,7 +656,7 @@ export const it = {
           "cartella modelli directory percorso posizione download scaricati cache archiviazione disco unità spostare sposta hugging face models folder path storage",
         futureDownloads: "Solo i nuovi download",
         environmentManaged: "Gestita dalla variabile d'ambiente {variable}.",
-        locationFree: "{free} liberi",
+        locationFree: "Disponibili: {free}",
         openAction: "Apri",
         copyAction: "Copia il percorso",
         changeAction: "Cambia",
@@ -698,7 +698,7 @@ export const it = {
       searchModels: "Cerca modelli GGUF...",
       noModels: "Nessun modello GGUF corrispondente.",
       showingModels:
-        "Mostrati {shown} risultati su {total}. Continua a digitare per restringere l'elenco.",
+        "Risultati mostrati: {shown} su {total}. Continua a digitare per restringere l'elenco.",
       quantization: "Quantizzazione",
       loadingQuantizations: "Caricamento delle quantizzazioni...",
       noQuantizations: "Nessuna quantizzazione separata",
@@ -757,7 +757,8 @@ export const it = {
         tensorParallel:
           "Attiva o disattiva il parallelismo dei tensori su più GPU.",
         serve: "Attiva o disattiva il server locale automatico.",
-        launch: "Avvia l'agente, oppure stampa solo comando e ambiente.",
+        launch:
+          "Avvia l'agente oppure mostra soltanto il comando e le variabili d'ambiente.",
         persist:
           "Mantieni tra un'esecuzione e l'altra i dati dell'agente gestiti da Unsloth.",
         asSubagent:
@@ -779,7 +780,7 @@ export const it = {
       dryRun: {
         title: "Anteprima senza avviare",
         description:
-          "Aggiungi --no-launch per stampare ambiente e comando invece di avviare l'agente. Se --model è impostato, il modello potrebbe comunque essere risolto e caricato.",
+          "Aggiungi --no-launch per mostrare le variabili d'ambiente e il comando invece di avviare l'agente. Se --model è impostato, il modello potrebbe comunque essere individuato e caricato.",
       },
     },
     chat: {
@@ -851,9 +852,9 @@ export const it = {
         "1 chat cancellata; {remainingCount} chat rimangono. Riprova.",
       oneChatClearedRemainOne: "1 chat cancellata; 1 chat rimane. Riprova.",
       storageClearFailedOne:
-        "Una cancellazione dall'archivio non è riuscita; 1 chat potrebbe rimanere. Riprova.",
+        "Un'operazione di cancellazione non è riuscita; 1 chat potrebbe rimanere. Riprova.",
       storageClearFailed:
-        "Una cancellazione dall'archivio non è riuscita; {count} chat potrebbero rimanere. Riprova.",
+        "Un'operazione di cancellazione non è riuscita; {count} chat potrebbero rimanere. Riprova.",
       failedToClearChats: "Cancellazione delle chat non riuscita",
     },
     data: {
@@ -1117,7 +1118,7 @@ export const it = {
       huggingFaceTokenOptional: "Token Hugging Face (facoltativo)",
       continuedPretraining: "Continued Pretraining",
       localModels: "Modelli locali",
-      localModelsFound: "{count} modelli locali o in cache trovati",
+      localModelsFound: "Modelli locali o in cache trovati: {count}",
       loadingLocalModels: "Caricamento dei modelli locali...",
     },
     dataset: {
@@ -1141,7 +1142,7 @@ export const it = {
         "Stai esplorando {browsing}. La selezione attuale resta {current}.",
       localDatasets: "Dataset locali",
       localDataset: "Dataset locale",
-      localDatasetRows: " / {count} righe",
+      localDatasetRows: " / Righe: {count}",
       huggingFaceDataset: "Dataset Hugging Face",
       localDatasetMetadata: "Metadati del dataset locale",
       dataRecipeOutput: "Output di una ricetta dei dati.",
@@ -1350,14 +1351,14 @@ export const it = {
       stopDescription:
         "Scegli come fermare il run di addestramento in corso. «Ferma e salva» scrive un checkpoint da cui potrai riprendere più tardi; «Ferma» non è ripristinabile.",
       stopAction: "Ferma",
-      stopping: "Arresto...",
+      stopping: "Arresto in corso...",
       stopAndSave: "Ferma e salva",
       compareInChat: "Confronta in chat",
       exportModel: "Esporta il modello",
       milestone: "Traguardo",
-      halfwayDone: "Metà strada. L'addestramento ha superato il 50%.",
+      halfwayDone: "A metà strada. L'addestramento ha superato il 50%.",
       doneNextStep:
-        "Addestramento finito. Passo successivo: confronta gli output del modello base con quelli del fine-tuned.",
+        "Addestramento completato. Passo successivo: confronta gli output del modello base con quelli del modello sottoposto a fine-tuning.",
     },
     history: {
       title: "Cronologia",
@@ -1407,7 +1408,7 @@ export const it = {
     charts: {
       settings: "Impostazioni dei grafici",
       settingsDescription:
-        "Regola la resa dei grafici mentre l'addestramento continua.",
+        "Regola la visualizzazione dei grafici mentre l'addestramento continua.",
       openSettings: "Apri le impostazioni dei grafici",
       viewWindow: "Finestra di visualizzazione",
       viewWindowDescription:
@@ -1426,7 +1427,7 @@ export const it = {
       scaleAndCleanup: "Scala e pulizia",
       linear: "Lineare",
       log: "Logaritmica",
-      noClip: "Nessun taglio",
+      noClip: "Nessun clipping",
       clipP99: "Taglia al p99",
       clipP95: "Taglia al p95",
       lossAxis: "Asse della loss",
@@ -1478,12 +1479,12 @@ export const it = {
       model: "Modello",
       method: "Metodo",
       elapsed: "Trascorso: {value}",
-      eta: "Stima: {value}",
+      eta: "Tempo stimato: {value}",
       stepsPerSecond: "{value} step/s",
       noStepsPerSecond: "-- step/s",
       tokens: "Token: {value}",
       gpuMonitor: "Monitor della GPU",
-      live: "In diretta",
+      live: "In tempo reale",
       utilization: "Utilizzo",
       temperature: "Temperatura",
       vram: "VRAM",
@@ -1505,9 +1506,9 @@ export const it = {
       ready: "Pronto",
       downloading: "Download",
       preparing: "Preparazione",
-      left: "{eta} rimanenti",
-      downloaded: "{size} scaricati",
-      terminalStart: "> l'addestramento unsloth parte...",
+      left: "tempo rimanente: {eta}",
+      downloaded: "Dati scaricati: {size}",
+      terminalStart: "> avvio dell'addestramento con Unsloth...",
       preparingResources: "> Preparazione di modello e dataset...",
       gettingReady: "> Stiamo preparando tutto per il tuo run...",
       waitingForFirstStep: "> {message} | in attesa del primo step... ({step})",
