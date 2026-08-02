@@ -78,7 +78,8 @@ def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
     assert "resolved: false" in hook
 
     manual_branch = hook.split("async function checkForUpdate()", 1)[1].split(
-        'if (policy.mode === "manual_linux_package") {', 1,
+        'if (policy.mode === "manual_linux_package") {',
+        1,
     )[1]
     give_up = manual_branch.split("checkDesktopUpdate()", 1)[0]
     # Only a resolved policy may end the check without the in-app updater.
