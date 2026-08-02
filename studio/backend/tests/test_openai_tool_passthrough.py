@@ -1864,6 +1864,85 @@ class TestDropEmptyAssistantSentinels:
         for m in out:
             assert m.get("content"), m
 
+    def test_keeps_reasoning_only_assistant_and_pads_content(self):
+        """A reasoning-only assistant turn (no content/tool_calls, reasoning_content set)
+        is preserved and gains ``content=\"\"`` so llama-server sees the key it requires.
+        A truly empty assistant turn (no content/tool_calls/reasoning_content) is still
+        dropped."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "reasoning_content": "I am thinking..."},
+            {"role": "assistant"},
+        ]
+        out = _drop_empty_assistant_sentinels(msgs)
+        assert len(out) == 2
+        # Kept turn got content="" so llama-server has the required key.
+        assert out[0]["role"] == "user"
+        assert out[1]["role"] == "assistant"
+        assert out[1]["reasoning_content"] == "I am thinking..."
+        assert out[1]["content"] == ""
+        # Truly empty sentinel was still dropped.
+        assert all(m["role"] != "assistant" or m.get("content") or m.get("tool_calls") or m.get("reasoning_content") for m in out)
+
+    def test_openai_messages_for_passthrough_forwards_reasoning_content(self):
+        """``reasoning_content`` on an assistant message must reach the wire
+        byte-identical: the Jinja template branches on it when
+        ``preserve_thinking=true``."""
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(
+                    role = "assistant",
+                    content = "answer",
+                    reasoning_content = "step-by-step trace \u00e9",
+                ),
+            ],
+        )
+        out = _openai_messages_for_passthrough(req)
+        assistant = [m for m in out if m["role"] == "assistant"][0]
+        assert assistant["reasoning_content"] == "step-by-step trace \u00e9"
+        assert assistant["content"] == "answer"
+
+    def test_openai_messages_for_gguf_chat_forwards_reasoning_content(self):
+        """GGUF chat path must also forward ``reasoning_content`` verbatim."""
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                ChatMessage(role = "user", content = "hi"),
+                ChatMessage(
+                    role = "assistant",
+                    content = "answer",
+                    reasoning_content = "long thinking \u00e9",
+                ),
+            ],
+        )
+        messages, _has_image = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assistant = [m for m in messages if m["role"] == "assistant"][0]
+        assert assistant["reasoning_content"] == "long thinking \u00e9"
+        assert assistant["content"] == "answer"
+
+    def test_strip_provider_synthetic_tool_history_preserves_reasoning_content(self):
+        """``reasoning_content`` is a real field, not Gemini-synthetic garbage:
+        ``_strip_provider_synthetic_tool_history`` must NOT scrub it the way
+        it scrubs ``extra_content``."""
+        from routes.inference import _strip_provider_synthetic_tool_history
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning_content": "i thought about it",
+                "extra_content": {"google": {"thought_signature": "deadbeef"}},
+            }
+        ]
+        out = _strip_provider_synthetic_tool_history(msgs)
+        assert len(out) == 1
+        kept = out[0]
+        # Asymmetry lock: reasoning_content is real and survives, extra_content is
+        # Gemini-synthetic and is the actual target of the scrubber.
+        assert kept.get("reasoning_content") == "i thought about it"
+        assert "extra_content" not in kept
+
 
 class TestGgufVisionMessages:
     _PNG_B64 = (

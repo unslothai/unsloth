@@ -275,3 +275,64 @@ def test_v1_models_exposes_real_context_window(monkeypatch):
     # The REAL (post /props readback) window, not the requested one.
     assert entry["context_length"] == 67584
     assert entry["max_context_length"] == 262144
+
+
+def _conversation_with_big_trace(trace_chars = 40000):
+    """A normal turn list whose last assistant turn carries a huge reasoning trace.
+
+    That turn is inside the protected tail, so group-dropping can never shrink it.
+    """
+    msgs = [{"role": "system", "content": "sys"}]
+    for i in range(8):
+        msgs.append({"role": "user", "content": f"question {i} " + "u" * 200})
+        msgs.append({"role": "assistant", "content": f"answer {i} " + "a" * 200})
+    msgs[-1]["reasoning_content"] = "t" * trace_chars
+    msgs.append({"role": "user", "content": "final question"})
+    return msgs
+
+
+def test_estimate_counts_reasoning_conservatively():
+    # Templates disagree on when prior reasoning renders (Qwen3.5 gates on the last user
+    # turn, Kimi-K2-Thinking on the last non-tool-call assistant turn), and a GGUF can
+    # carry any template, so the estimate must never assume a trace is free.
+    msgs = _conversation_with_big_trace()
+    assert routes_mod._estimate_messages_tokens(msgs) == sum(
+        _estimate_message_tokens(m) for m in msgs
+    )
+
+
+def test_reasoning_clip_shrinks_a_protected_turn():
+    # The trace sits in the protected tail, which group-dropping can never reach.
+    msgs = _conversation_with_big_trace()
+    before = routes_mod._estimate_messages_tokens(msgs)
+    assert routes_mod._clip_reasoning_contents(msgs) == 1
+    assert _CLIP_MARKER in msgs[-2]["reasoning_content"]
+    assert routes_mod._estimate_messages_tokens(msgs) < before / 5
+
+
+def test_reasoning_clip_leaves_short_traces_alone():
+    msgs = [{"role": "assistant", "content": "a", "reasoning_content": "short"}]
+    assert routes_mod._clip_reasoning_contents(msgs) == 0
+    assert msgs[0]["reasoning_content"] == "short"
+
+
+def test_big_trace_no_longer_evicts_the_whole_middle():
+    # Regression: the trace sat in a protected turn, so the drop loop could never shed its
+    # weight and evicted extra history chasing a target the trace itself had inflated.
+    # Clipping reasoning first makes the outcome independent of the trace.
+    err = (
+        "the request exceeds the available context size. try increasing the context size "
+        "or enable context shift: n_prompt_tokens = 9000, n_ctx = 4096"
+    )
+    with_trace = {"messages": _conversation_with_big_trace()}
+    without_trace = {"messages": _conversation_with_big_trace(trace_chars = 0)}
+    without_trace["messages"][-2].pop("reasoning_content", None)
+
+    assert routes_mod._apply_overflow_truncation(with_trace, err) is True
+    assert routes_mod._apply_overflow_truncation(without_trace, err) is True
+    # Within one turn-group of the trace-free run: the trace is no longer what drives
+    # eviction. It was 6 groups worse before the clip moved ahead of the sizing.
+    assert abs(len(with_trace["messages"]) - len(without_trace["messages"])) <= 2
+    # The trace was clipped rather than paid for by dropping conversation.
+    traces = [m for m in with_trace["messages"] if m.get("reasoning_content")]
+    assert traces and _CLIP_MARKER in traces[0]["reasoning_content"]
