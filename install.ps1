@@ -1677,6 +1677,110 @@ exit 0
     $script:StudioVenvRollbackTarget = $VenvDir
     $script:StudioVenvRollbackActive = $false
 
+    $script:StudioManagedRuntimeMutexName = "Local\UnslothStudioManagedEnvironment"
+
+    function Enter-StudioNamedMutex {
+        param([Parameter(Mandatory = $true)][string]$Name)
+        $mutex = [System.Threading.Mutex]::new($false, $Name)
+        $acquired = $false
+        try {
+            $acquired = $mutex.WaitOne(0)
+        } catch [System.Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) {
+            $mutex.Dispose()
+            return $null
+        }
+        return $mutex
+    }
+
+    function Get-StudioInstallMutexName {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        try {
+            $canonical = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+        } catch {
+            $canonical = [System.IO.Path]::GetFullPath($Path)
+        }
+        $canonical = [System.IO.Path]::GetFullPath($canonical).TrimEnd('\', '/').ToUpperInvariant()
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $sha256.ComputeHash($bytes)
+        } finally {
+            $sha256.Dispose()
+        }
+        $hex = -join ($digest | ForEach-Object { $_.ToString('x2') })
+        return "Local\UnslothStudioInstall-$hex"
+    }
+
+    function Enter-StudioInstallMutex {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        return (Enter-StudioNamedMutex -Name (Get-StudioInstallMutexName -Path $Path))
+    }
+
+    function Exit-StudioInstallMutex {
+        param([System.Threading.Mutex]$Mutex)
+        if ($null -eq $Mutex) { return }
+        try { $Mutex.ReleaseMutex() } catch {} finally { $Mutex.Dispose() }
+    }
+
+    function Get-RunningStudioVenvProcesses {
+        param([Parameter(Mandatory = $true)][string]$VenvPath)
+        try {
+            $prefix = [System.IO.Path]::GetFullPath($VenvPath).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+        } catch {
+            return
+        }
+        $venvNeedle = $prefix.TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+        $seenProcessIds = @{}
+        foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
+            $executable = $null
+            try { $executable = $process.Path } catch { continue }
+            if (-not $executable) { continue }
+            try { $executable = [System.IO.Path]::GetFullPath($executable) } catch { continue }
+            if ($executable.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $seenProcessIds[[string]$process.Id] = $true
+                [pscustomobject]@{
+                    ProcessName = $process.ProcessName
+                    Id = $process.Id
+                    Path = $executable
+                }
+            }
+        }
+
+        # Some launchers hand off to a base Python while their command line still
+        # references a script inside the managed environment. CIM is best-effort:
+        # retain the executable-path matches above when policy blocks this query.
+        try {
+            $cimProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+        } catch {
+            return
+        }
+        foreach ($process in $cimProcesses) {
+            $processId = [string]$process.ProcessId
+            if ($seenProcessIds.ContainsKey($processId)) { continue }
+            $executableMatch = $false
+            if ($process.ExecutablePath) {
+                try {
+                    $candidateExecutable = [System.IO.Path]::GetFullPath($process.ExecutablePath)
+                    $executableMatch = $candidateExecutable.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+                } catch {}
+            }
+            $commandLineMatch = (
+                $process.CommandLine -and
+                $process.CommandLine.IndexOf($venvNeedle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+            )
+            if ($executableMatch -or $commandLineMatch) {
+                [pscustomobject]@{
+                    ProcessName = $process.Name
+                    Id = $process.ProcessId
+                    Path = if ($process.ExecutablePath) { $process.ExecutablePath } else { $process.CommandLine }
+                }
+            }
+        }
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -1800,6 +1904,53 @@ exit 0
             Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
         }
     }
+
+    try {
+        $studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome
+    } catch {
+        Write-Host "[ERROR] Could not create the Studio install lock: $($_.Exception.Message)" -ForegroundColor Red
+        return (Exit-InstallFailure "Could not create the Studio install lock")
+    }
+    if ($null -eq $studioInstallMutex) {
+        Write-Host "[ERROR] Another Unsloth Studio install or repair is already running." -ForegroundColor Red
+        Write-Host "        Wait for it to finish, then re-run install.ps1." -ForegroundColor Yellow
+        return (Exit-InstallFailure "Another Unsloth Studio install or repair is already running")
+    }
+
+    $studioRuntimeMutex = $null
+    try {
+        if ($StudioRedirectMode -eq 'legacy') {
+            try {
+                $studioRuntimeMutex = Enter-StudioNamedMutex -Name $script:StudioManagedRuntimeMutexName
+            } catch {
+                Write-Host "[ERROR] Could not create the Studio runtime lock: $($_.Exception.Message)" -ForegroundColor Red
+                return (Exit-InstallFailure "Could not create the Studio runtime lock")
+            }
+            if ($null -eq $studioRuntimeMutex) {
+                Write-Host "[ERROR] Unsloth Studio is starting or installation is already running." -ForegroundColor Red
+                Write-Host "        Close Unsloth Studio completely, wait for the other operation, then re-run install.ps1." -ForegroundColor Yellow
+                return (Exit-InstallFailure "The managed Studio environment is busy")
+            }
+        }
+
+        $runningVenvProcesses = @(Get-RunningStudioVenvProcesses -VenvPath $VenvDir)
+        if ($runningVenvProcesses.Count -gt 0) {
+            $runningSummary = ($runningVenvProcesses | ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" }) -join ", "
+            Write-Host "[ERROR] Unsloth Studio is using the managed Python environment." -ForegroundColor Red
+            Write-Host "        Active processes: $runningSummary" -ForegroundColor Yellow
+            Write-Host "        Close Unsloth Studio completely, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
+            return (Exit-InstallFailure "The managed Python environment is still in use")
+        }
+
+        if (-not $TauriMode -and $StudioRedirectMode -eq 'legacy') {
+            $runningDesktopApps = @(Get-Process -Name "unsloth-studio" -ErrorAction SilentlyContinue)
+            if ($runningDesktopApps.Count -gt 0) {
+                $desktopSummary = ($runningDesktopApps | ForEach-Object { "PID $($_.Id)" }) -join ", "
+                Write-Host "[ERROR] The Unsloth Studio desktop app is still running ($desktopSummary)." -ForegroundColor Red
+                Write-Host "        Close the app completely, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
+                return (Exit-InstallFailure "The Unsloth Studio desktop app is still running")
+            }
+        }
 
     $studioVenvReplacementCommitted = $false
     try {
@@ -3054,6 +3205,10 @@ exit 0
         if (-not $studioVenvReplacementCommitted) {
             Restore-StudioVenvRollback
         }
+    }
+    } finally {
+        Exit-StudioInstallMutex -Mutex $studioRuntimeMutex
+        Exit-StudioInstallMutex -Mutex $studioInstallMutex
     }
 
     # Env-mode session export AFTER Refresh-SessionPath; otherwise a legacy

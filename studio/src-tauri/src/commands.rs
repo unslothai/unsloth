@@ -377,8 +377,17 @@ pub fn open_models_dir(window: tauri::WebviewWindow, path: String) -> Result<(),
 pub async fn start_install(
     app: AppHandle,
     state: tauri::State<'_, install::InstallState>,
+    backend_state: tauri::State<'_, BackendState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
+    if has_owned_backend(&backend_state)? {
+        return Err(
+            "The Unsloth backend is still running. Stop it before starting installation."
+                .to_string(),
+        );
+    }
+    block_external_conflict(&[]).await?;
+
     let state = state.inner().clone();
     let diagnostics_state = diagnostics.inner().clone();
     tokio::task::spawn_blocking(move || install::run_install(app, state, diagnostics_state))

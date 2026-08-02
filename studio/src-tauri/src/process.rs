@@ -12,6 +12,102 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
+#[cfg(windows)]
+const STUDIO_MANAGED_RUNTIME_MUTEX_NAME: &str = "Local\\UnslothStudioManagedEnvironment";
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct StudioManagedRuntimeLaunchGuard {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl Drop for StudioManagedRuntimeLaunchGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows_sys::Win32::System::Threading::ReleaseMutex(self.handle);
+            let _ = windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn acquire_named_studio_runtime_launch_guard(
+    name: &str,
+) -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    const WAIT_OBJECT_0: u32 = 0x0000_0000;
+    const WAIT_ABANDONED: u32 = 0x0000_0080;
+    const WAIT_TIMEOUT: u32 = 0x0000_0102;
+
+    let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let handle = unsafe {
+        windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, wide_name.as_ptr())
+    };
+    if handle.is_null() {
+        return Err(format!(
+            "Could not create the Studio runtime lock: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let wait = unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(handle, 0) };
+    match wait {
+        WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(StudioManagedRuntimeLaunchGuard { handle }),
+        WAIT_TIMEOUT => {
+            unsafe {
+                let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
+            }
+            Err(
+                "Unsloth Studio installation is modifying the managed environment. Wait for it to finish, then start the backend again."
+                    .to_string(),
+            )
+        }
+        _ => {
+            let error = std::io::Error::last_os_error();
+            unsafe {
+                let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
+            }
+            Err(format!(
+                "Could not acquire the Studio runtime lock: {error}"
+            ))
+        }
+    }
+}
+
+#[cfg(windows)]
+fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    acquire_named_studio_runtime_launch_guard(STUDIO_MANAGED_RUNTIME_MUTEX_NAME)
+}
+
+#[cfg(all(test, windows))]
+mod studio_runtime_launch_guard_tests {
+    use super::*;
+
+    #[test]
+    fn blocks_a_second_launcher_until_the_first_releases_the_gate() {
+        let name = format!(
+            "Local\\UnslothStudioRuntimeGateTest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let first = acquire_named_studio_runtime_launch_guard(&name).unwrap();
+        let contender_name = name.clone();
+        let error = std::thread::spawn(move || {
+            acquire_named_studio_runtime_launch_guard(&contender_name)
+                .err()
+                .expect("second launcher unexpectedly acquired the gate")
+        })
+        .join()
+        .unwrap();
+        assert!(error.contains("installation is modifying"));
+        drop(first);
+        acquire_named_studio_runtime_launch_guard(&name).unwrap();
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) enum OwnedBackendHandle {
     Spawned {
@@ -556,6 +652,9 @@ pub fn start_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
+    #[cfg(windows)]
+    let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
+
     let bin = match resolve_backend_binary() {
         Ok(bin) => bin,
         Err(msg) => {
