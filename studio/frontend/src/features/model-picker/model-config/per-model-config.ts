@@ -209,6 +209,33 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
+// Whether Run Settings shows its advanced section is a standing preference,
+// not a per-model one: opening it once keeps it open for every model and
+// quant. Closed until asked for.
+export const ADVANCED_SETTINGS_OPEN_KEY = "unsloth_model_advanced_settings";
+
+export function readAdvancedSettingsOpen(): boolean {
+  if (!canUseStorage()) {
+    return false;
+  }
+  try {
+    return localStorage.getItem(ADVANCED_SETTINGS_OPEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveAdvancedSettingsOpen(open: boolean): void {
+  if (!canUseStorage()) {
+    return;
+  }
+  try {
+    localStorage.setItem(ADVANCED_SETTINGS_OPEN_KEY, open ? "true" : "false");
+  } catch {
+    // ignore
+  }
+}
+
 function serializedByteLength(value: string): number {
   return typeof TextEncoder !== "undefined"
     ? new TextEncoder().encode(value).byteLength

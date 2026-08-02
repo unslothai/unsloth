@@ -65,7 +65,9 @@ import {
   isDefaultConfig,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
+  readAdvancedSettingsOpen,
   resolveInitialConfig,
+  saveAdvancedSettingsOpen,
   savePerModelConfig,
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
@@ -759,9 +761,15 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(() =>
-    hasNonDefaultAdvanced(config),
+  // Follows the standing preference, and still opens on its own for a model
+  // carrying non-default advanced values so those stay visible.
+  const [showAdvanced, setShowAdvanced] = useState(
+    () => readAdvancedSettingsOpen() || hasNonDefaultAdvanced(config),
   );
+  const toggleAdvanced = (open: boolean) => {
+    setShowAdvanced(open);
+    saveAdvancedSettingsOpen(open);
+  };
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
   const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);
@@ -1217,7 +1225,7 @@ export function ModelConfigPage({
               <Switch
                 className="panel-switch shrink-0"
                 checked={showAdvanced}
-                onCheckedChange={setShowAdvanced}
+                onCheckedChange={toggleAdvanced}
                 aria-label="Show advanced settings"
               />
             </div>
