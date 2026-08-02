@@ -223,19 +223,18 @@ export function useTauriUpdate(isExternalServer = false) {
       const { policy, resolved } = await resolveUpdatePolicy();
 
       if (policy.mode === "manual_linux_package") {
-        // This command self-gates on the real target_os, so it is authoritative
-        // even when the policy above is only a guess.
+        // Self-gates on the real target_os, so it is authoritative even if policy is a guess.
         if (await checkManualUpdate(policy)) return;
         if (resolved) {
-          // latest.json ships no deb/rpm key, so the in-app updater would offer
-          // an AppImage this install cannot apply. Stop instead.
+          // latest.json has no deb/rpm key, so the in-app updater would offer an
+          // AppImage this install cannot apply. Stop instead.
           updateRef.current = null;
           replaceInfo(null);
           setStatus("idle");
           return;
         }
-        // Guessed policy, no manual offer: macOS, Windows and AppImage all land
-        // here, and they do have an in-app path. Fall through to it.
+        // Guessed policy, no manual offer: macOS, Windows and AppImage land here
+        // and do have an in-app path. Fall through to it.
       }
 
       const update = await checkDesktopUpdate();
@@ -262,9 +261,8 @@ export function useTauriUpdate(isExternalServer = false) {
       setHasChecked(true);
     }
   }
-  // Startup owns one delayed check. The effect deps are empty, so this ref only
-  // keeps a per-render function out of the dependency list; every value the
-  // captured closure reads is a ref or a stable setState, so it cannot go stale.
+  // Startup owns one delayed check; this ref keeps a per-render function out of
+  // the empty dep list. The closure reads only refs/setState, so it cannot stale.
   const initialCheckRef = useRef(checkForUpdate);
 
   useEffect(() => {

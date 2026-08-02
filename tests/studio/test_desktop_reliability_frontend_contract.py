@@ -51,8 +51,8 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     assert "{appContent}" in provider[context_start:context_end]
     assert "appContent={" in provider
     assert "useContext(TauriUpdateContext)" in context
-    # Scope these: the bare substrings also match the pre-existing
-    # setTimeout(checkForUpdate, 5000) and the installUpdate() reset.
+    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000)
+    # and the installUpdate() reset.
     assert "checkForUpdate," in hook.split("  return {", 1)[1]
     manual = hook.split("async function checkForUpdate()", 1)[1]
     assert "checkedRef.current = true;" in manual.split("try {", 1)[0]
@@ -86,8 +86,7 @@ def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
     assert "if (resolved) {" in give_up
     assert 'setStatus("idle");' in give_up
     assert "await checkDesktopUpdate();" in manual_branch
-    # The Rust command self-gates on the real OS, which is what makes it safe
-    # to consult before the guess is trusted.
+    # The Rust command self-gates on the real OS, so it is safe to consult first.
     manual_cmd = policy.split("async fn check_desktop_manual_update", 1)[1]
     assert "ManualLinuxPackage" in manual_cmd.split("{", 1)[1][:400]
 

@@ -185,7 +185,7 @@ function DesktopUpdateControl(): ReactElement | null {
   if (!update) return null;
 
   const checking = update.status === "checking";
-  // A running install owns the update screen; do not offer a second "Update now".
+  // A running install owns the update screen; no second "Update now".
   const inFlight =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
@@ -210,7 +210,7 @@ function DesktopUpdateControl(): ReactElement | null {
         : t("settings.about.update.desktopAvailableDescription");
   } else if (checkFailed) {
     label = t("settings.about.update.desktopCheckFailed");
-    // Keep the reason: it separates being offline from a bad release manifest.
+    // Keep the reason: it separates offline from a bad release manifest.
     description = `${t("settings.about.update.desktopCheckFailedDescription")} ${update.checkError}`;
   } else if (update.hasChecked) {
     label = t("settings.about.update.desktopCurrent");
