@@ -45,9 +45,7 @@ def test_a_locked_exe_is_reported_but_does_not_abort(monkeypatch, tmp_path):
     assert isinstance(err, OSError), "the lock has to be reported to the caller"
 
 
-def test_the_message_points_at_the_launcher_when_there_is_one(
-    monkeypatch, tmp_path, capsys
-):
+def test_the_message_points_at_the_launcher_when_there_is_one(monkeypatch, tmp_path, capsys):
     """The PATH launcher is a second link to the same binary, and the lock follows
     the entry, so running through it leaves this copy replaceable."""
     scripts = tmp_path / "unsloth_studio" / "Scripts"
