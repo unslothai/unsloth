@@ -236,6 +236,80 @@ Check "a wrapped UnauthorizedAccessException classifies as access denied" (
 Check "an unrelated exception does not classify as access denied" (
     -not (Test-AccessDeniedError ([System.IO.FileNotFoundException]::new("missing"))))
 
+# -- Assert-StudioOwnedOrAbsent -NonFatal, run for real --
+# whisper.cpp promises "failure is never fatal", so a denied tree there must be
+# handed back to the caller instead of exiting the run and taking llama.cpp
+# inference with it. Everything else about the guard has to stay fatal.
+$assertSrc = Get-FunctionSource -Path $setupPath -Name Assert-StudioOwnedOrAbsent
+$markSrc = Get-FunctionSource -Path $setupPath -Name Mark-StudioOwned
+Check "setup.ps1 defines Assert-StudioOwnedOrAbsent" ($null -ne $assertSrc)
+if ($assertSrc -and $markSrc) {
+    . ([scriptblock]::Create($assertSrc))
+    . ([scriptblock]::Create($markSrc))
+    # Reaching either of these is the failure the -NonFatal mode exists to avoid.
+    function Exit-PathAccessDenied { param($Path, $Label, [switch]$UserSupplied, [switch]$OwnershipUnverified) throw "EXIT-DENIED" }
+    function Exit-SetupFailure { param($Message, $Code) throw "EXIT-SETUP" }
+    function step { param($a, $b, $c) }
+    function substep { param($a, $b) }
+    $StudioOwnedMarker = ".unsloth-studio-owned"
+    $StudioHomeIsCustom = $true
+
+    $nfRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_nf_" + [guid]::NewGuid().ToString("N"))
+    $nfDenied = Join-Path $nfRoot "whisper.cpp"
+    $nfUnowned = Join-Path $nfRoot "unowned"
+    New-Item -ItemType Directory -Force -Path (Join-Path $nfDenied "sub") | Out-Null
+    New-Item -ItemType Directory -Force -Path $nfUnowned | Out-Null
+    Set-Content -LiteralPath (Join-Path $nfUnowned "someone-elses.txt") -Value "x"
+    function Set-NfDenied([bool]$on) {
+        if ($onWindows) {
+            $who = "$env:USERDOMAIN\$env:USERNAME"
+            if ($on) { icacls $nfDenied /deny "${who}:(OI)(CI)(RX)" *>$null }
+            else { icacls $nfDenied /remove:d "$who" *>$null }
+        } else {
+            if ($on) { chmod 000 $nfDenied } else { chmod 755 $nfDenied }
+        }
+    }
+    try {
+        Set-NfDenied $true
+        # Same environment gate as above: no real denial means no real test.
+        $nfReal = $false
+        try { $null = Test-Path (Join-Path $nfDenied $StudioOwnedMarker) } catch { $nfReal = $true }
+        Check "the host can actually deny a read (negative control)" $nfReal
+        if ($nfReal) {
+            $threw = $false
+            $out = $null
+            try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfDenied -Label "whisper.cpp install" -NonFatal) }
+            catch { $threw = $true }
+            Check "-NonFatal hands a denied tree back instead of exiting" (-not $threw)
+            # One bare string, not an array: a stray emit would break the caller's -eq.
+            Check "-NonFatal returns exactly one value" ($out.Count -eq 1)
+            Check "-NonFatal returns Denied" ($out.Count -eq 1 -and $out[0] -eq "Denied")
+
+            $threw = $false
+            try { $null = Assert-StudioOwnedOrAbsent -Path $nfDenied -Label "whisper.cpp install" } catch { $threw = $true }
+            Check "without -NonFatal a denied tree still stops setup" $threw
+
+            # A locked directory still probes Present from its readable parent, so
+            # the case above only covers the marker read. Lock the parent to reach
+            # the root probe itself.
+            $nfInner = Join-Path $nfDenied "inner"
+            $out = $null
+            $threw = $false
+            try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfInner -Label "whisper.cpp install" -NonFatal) }
+            catch { $threw = $true }
+            Check "-NonFatal hands back a tree whose parent is unreadable" (
+                -not $threw -and $out.Count -eq 1 -and $out[0] -eq "Denied")
+        }
+        # -NonFatal rescues the denial only: someone else's folder must still stop.
+        $threw = $false
+        try { $null = Assert-StudioOwnedOrAbsent -Path $nfUnowned -Label "whisper.cpp install" -NonFatal } catch { $threw = $true }
+        Check "-NonFatal does not excuse an unowned tree" $threw
+    } finally {
+        Set-NfDenied $false
+        Remove-Item -Recurse -Force -LiteralPath $nfRoot -ErrorAction SilentlyContinue
+    }
+}
+
 if ($script:failures -gt 0) {
     Write-Host "$($script:failures) check(s) failed" -ForegroundColor Red
     exit 1

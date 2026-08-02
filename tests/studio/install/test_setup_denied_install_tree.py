@@ -109,12 +109,16 @@ def test_no_bare_test_path_probes_inside_the_llama_install_tree():
     """Probes that read *inside* a tree whose permissions we do not control are
     the ones that throw; they must all go through the guarded helpers."""
     inside_tree = re.compile(
-        r"Test-Path\b[^\n]*(\$existingMetaPath|\$llamaMarker|\$_cand|Join-Path \$LlamaCppDir)"
+        r"Test-Path\b[^\n]*("
+        r"\$existingMetaPath|\$llamaMarker|\$_cand|Join-Path \$LlamaCppDir"
+        r"|\$LlamaServerBin|\$CmakeCacheFile|\$QuantizeBin|\$altBin"
+        r"|Join-Path \$BuildDir)"
     )
+    # A comment naming a probe is not a probe.
     offenders = [
         f"{index}: {line.strip()}"
         for index, line in enumerate(SETUP_PS1.splitlines(), start = 1)
-        if inside_tree.search(line)
+        if inside_tree.search(line.split("#", 1)[0])
     ]
     assert not offenders, offenders
 
@@ -265,3 +269,84 @@ def test_the_temp_dir_swap_checks_both_of_its_destructive_steps():
     # And catch a move that silently did not happen.
     assert '(Get-PathState -Path $LlamaCppDir) -ne "Absent"' in swap.split(move, 1)[1], swap
     assert "Test-Path -LiteralPath $OriginalLlamaCppDir" not in swap, swap
+
+
+def test_the_source_build_phase_probes_the_tree_three_state():
+    """A forced compile, a pinned PR or a custom source skips the prebuilt phase
+    and its denial guard, so the rebuild check is the first read inside the tree."""
+    anchor = "$llamaBinState = "
+    assert anchor in SETUP_PS1
+    build = SETUP_PS1.split(anchor, 1)[1].split("# -- Summary --", 1)[0]
+    assert "Get-PathState -Path $LlamaServerBin -PathType Leaf" in SETUP_PS1
+    assert '$llamaBinState -eq "Denied"' in SETUP_PS1
+    assert '$llamaBinState -eq "Present"' in SETUP_PS1
+    assert "Test-Path -LiteralPath $LlamaServerBin" not in build, build
+
+
+def test_the_source_build_probe_skips_a_linked_local_dir():
+    """$LlamaCppDir is a junction onto the user's checkout there, so probing it
+    reads their tree, and nothing this block computes is consumed on that path."""
+    flat = " ".join(SETUP_PS1.split())
+    assert '$llamaBinState = if ($LocalLlamaCppLinked) { "Absent" }' in flat
+
+
+def test_the_source_build_denial_never_advises_deleting_an_unproven_tree():
+    """Nothing on this route ran the ownership guard, so under a custom home the
+    tree cannot be proven ours and the delete advice must stay suppressed."""
+    block = SETUP_PS1.split("$llamaBinState = ", 1)[1].split("$WillBuildLlamaFromSource", 1)[0]
+    denials = [ln.strip() for ln in block.splitlines() if "Exit-PathAccessDenied" in ln]
+    assert len(denials) >= 2, denials
+    assert all(d.endswith("-OwnershipUnverified:$StudioHomeIsCustom") for d in denials), denials
+
+
+def test_the_cmake_cache_read_is_guarded_not_just_its_probe():
+    """Test-PathQuiet only proves the entry is listed; a deny ACE on the file
+    itself leaves the probe true and throws on the read below it."""
+    anchor = "$CmakeCacheFile = Join-Path"
+    assert anchor in SETUP_PS1
+    block = SETUP_PS1.split(anchor, 1)[1].split("$WillBuildLlamaFromSource", 1)[0]
+    read = "Select-String -LiteralPath $CmakeCacheFile"
+    assert read in block, block
+    before, after = block.split(read, 1)
+    assert "try {" in before, before
+    assert "Test-AccessDeniedError" in after, after
+    assert "Exit-PathAccessDenied" in after, after
+
+
+def _whisper_phase() -> str:
+    """The whisper phase body. Both anchors are asserted so a phase renumbering
+    fails as an assertion instead of an IndexError, and cannot silently widen
+    the window to end-of-file."""
+    start = "Install the whisper.cpp prebuilt"
+    end = "PHASE 3.5"
+    assert start in SETUP_PS1
+    assert end in SETUP_PS1
+    return SETUP_PS1.split(start, 1)[1].split(end, 1)[0]
+
+
+def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
+    """The phase header promises failure is never fatal, but the ownership guard
+    exits the whole run, which would take llama.cpp inference down with it."""
+    guard = SETUP_PS1.split("function Assert-StudioOwnedOrAbsent", 1)[1].split("\nfunction ", 1)[0]
+    assert "[switch]$NonFatal" in guard
+    # Only the denial is handed back; an unowned tree must still stop.
+    assert guard.count('if ($NonFatal) { return "Denied" }') >= 3, guard
+    assert 'Exit-SetupFailure "$Label path is not an Unsloth-owned install' in guard
+    whisper = _whisper_phase()
+    assert '-Label "whisper.cpp install" -NonFatal) -eq "Denied"' in whisper, whisper
+    # Pin the new message, not prose the phase already contained.
+    assert "install directory cannot be read: access is denied" in whisper, whisper
+    assert "browser and Transformers dictation remain available" in whisper
+    # The skip has to come before the branch whose guard would exit. Anchor on
+    # that branch's body, which survives a hardening of its own probe.
+    body = "$whisperArgs = @("
+    assert body in whisper, whisper
+    assert whisper.index("-NonFatal") < whisper.index(body)
+
+
+def test_the_whisper_skip_stays_behind_the_installer_gate():
+    """The guard used to live inside the installer branch, so a tree without the
+    installer was a no-op. Hoisting it must not make that case fatal."""
+    branch = _whisper_phase().split("-NonFatal) -eq", 1)[0].rsplit("} elseif", 1)[1]
+    # Anchor on the variable, not the probe form: that probe may be hardened later.
+    assert "$WhisperInstaller" in branch, branch

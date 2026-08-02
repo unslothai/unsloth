@@ -172,7 +172,13 @@ def _is_runnable(p: Path) -> bool:
     """A real whisper-server is an executable file. On Windows os.access(X_OK) is
     effectively an existence check; on Unix it rejects a non-executable stub so a
     half-written or wrong-mode file isn't mistaken for the server."""
-    return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
+    try:
+        return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
+    except OSError:
+        # is_file() propagates EACCES. An unreadable install dir must read as
+        # engine-unavailable, the same as a missing one, never a 500 out of
+        # /api/inference/audio/stt/status.
+        return False
 
 
 def _whisper_install_marker(binary: str) -> Optional[dict]:
