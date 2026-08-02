@@ -915,7 +915,7 @@ class TestLoadHubDownloadExclusion:
             patch.object(route, "_resolve_gguf_gpu_ids_for_request", _no_gguf_gpu_ids),
             patch.object(route, "_guard_chat_load_against_training", return_value = None),
             patch.object(route, "_effective_load_in_4bit", return_value = False),
-            patch.object(route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(route, "_hf_offline_if_unreachable", nullcontext),
             patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
             patch.object(llama_cpp_module, "_hub_download_blocks_gguf_load", _fake_blocks),
         ):

@@ -23,6 +23,44 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
+# `unsloth studio update` spawns powershell.exe, which is Windows PowerShell 5.1,
+# and the child inherits the caller's PSModulePath. Launched from a PowerShell 7
+# prompt that path leads with PowerShell 7's module directories, which ship their
+# own Microsoft.PowerShell.Security. 5.1 finds that copy first and cannot load it:
+#
+#   The 'Get-ExecutionPolicy' command was found in the module
+#   'Microsoft.PowerShell.Security', but the module could not be loaded.
+#
+# astral's uv installer calls Get-ExecutionPolicy, and the run ends there with
+# exit 1 and no further output. The try/catch around that call does not help,
+# because Invoke-Expression runs the installer in this process.
+#
+# Prepended, not appended: the problem is precedence, not absence. Clearing the
+# variable so 5.1 rebuilds its default does not help either, because the
+# machine-level value on the windows-latest image also leads with PS7.
+#
+# PowerShell rewrites PSModulePath only for a direct pwsh -> powershell.exe hop,
+# so any intermediate process defeats it (PowerShell/PowerShell#18681 is this
+# exact chain through Python). install.ps1 carries the same block for the same
+# reason; scripts/uninstall.ps1 needs none, as it loads no Security cmdlet.
+#
+# Not restored afterwards, deliberately. $env: is the process environment, so
+# running this script in an interactive console leaves the reordering in place
+# for that session. Narrowing the trigger to detect the broken chain would risk
+# skipping the fix on a chain this list does not anticipate, and the cost of
+# that is the install failing outright, against a session-lived module
+# precedence change here. See the matching note in install.ps1.
+if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {
+    $_UnslothSystemModules = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
+    if (Test-Path $_UnslothSystemModules) {
+        $_UnslothKept = @(
+            $env:PSModulePath -split ';' |
+                Where-Object { $_ -and ($_ -ne $_UnslothSystemModules) }
+        )
+        $env:PSModulePath = (@($_UnslothSystemModules) + $_UnslothKept) -join ';'
+    }
+}
+
 # --------------------------------------------------------------------------
 #  Maintainer-editable defaults
 #  Change these in the GitHub-hosted script so users get updated defaults.
@@ -104,7 +142,12 @@ function Refresh-Environment {
     foreach ($level in @('Machine', 'User')) {
         $vars = [System.Environment]::GetEnvironmentVariables($level)
         foreach ($key in $vars.Keys) {
-            if ($key -eq 'Path') { continue }
+            # PSModulePath joins Path as an exception. Reloading it from the
+            # registry would undo the normalization at the top of this file,
+            # and several callers of this function run before the uv installer
+            # (which loads Microsoft.PowerShell.Security), so the module path
+            # would be broken again exactly where it has to be right.
+            if ($key -eq 'Path' -or $key -eq 'PSModulePath') { continue }
             Set-Item -Path "Env:$key" -Value $vars[$key] -ErrorAction SilentlyContinue
         }
     }
@@ -4059,7 +4102,7 @@ if ($LocalLlamaCppLinked) {
                 step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "Red"
                 Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
             }
-        } else {
+        } elseif ($prebuiltExit -eq 2) {
             step "llama.cpp" "prebuilt install failed" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
@@ -4073,6 +4116,14 @@ if ($LocalLlamaCppLinked) {
                 substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
                 $NeedLlamaSourceBuild = $true
             }
+        } else {
+            step "llama.cpp" "prebuilt helper failed unexpectedly" "Red"
+            Write-LlamaFailureLog -Output $prebuiltOutput
+            if (Test-Path -LiteralPath $LlamaCppDir) {
+                substep "Existing install was restored or left unchanged" "Yellow"
+            }
+            substep "Source build was not started because it cannot repair an unexpected helper or permissions error" "Yellow"
+            Exit-SetupFailure "llama.cpp prebuilt helper failed unexpectedly (exit code $prebuiltExit). Check the error above and retry setup."
         }
 }
 
@@ -4851,5 +4902,17 @@ Write-Host ""
 # failure. Direct 'unsloth studio update' does not set SKIP_STUDIO_BASE,
 # so it keeps degraded installs successful.
 if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
-    Exit-SetupFailure "llama.cpp setup did not produce a usable server"
+    # Tauri mode reports instead of aborting, exactly as setup.sh does. install.ps1
+    # turns any non-zero status from here into Exit-InstallFailure, and install.rs
+    # turns that into "Installation failed", so on Windows too a single transient
+    # prebuilt download failure would throw away a first-launch install whose own
+    # footer just said complete. [TAURI:PROGRESS] (not [TAURI:STEP], which would
+    # push the frontend step counter past the seven INSTALL_STEPS entries) reaches
+    # the user as install-progress-detail text.
+    if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
+        [Console]::Out.WriteLine("[TAURI:PROGRESS] llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds")
+        [Console]::Out.Flush()
+    } else {
+        Exit-SetupFailure "llama.cpp setup did not produce a usable server"
+    }
 }

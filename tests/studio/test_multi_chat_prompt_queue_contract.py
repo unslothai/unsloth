@@ -272,6 +272,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "skipAdoptServerModel: true" in CHAT_ADAPTER
     assert "snapshotQueuedChatRunSettings(" in CHAT_ADAPTER
     assert "...visibleExternalSettings" in CHAT_ADAPTER
+    assert "activeLoadId: visibleActiveLoadId" in CHAT_ADAPTER
     assert "visibleState.activeThreadEpoch" in CHAT_ADAPTER
     assert "activeThreadEpoch ===" in CHAT_ADAPTER
     assert "visibleState.queuedSettingsEpoch" in CHAT_ADAPTER

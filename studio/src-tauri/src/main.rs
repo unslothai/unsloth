@@ -5,8 +5,10 @@ mod commands;
 mod desktop_auth;
 mod desktop_backend_owner;
 mod desktop_update_policy;
+mod desktop_updater;
 mod diagnostics;
 mod install;
+mod loopback_http;
 mod native_backend_lease;
 mod native_clipboard;
 mod native_file_dialogs;
@@ -90,6 +92,44 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     })?;
     window.set_decorations(false)?;
     Ok(())
+}
+
+/// A Tauri quit never fires beforeunload, so the frontend mirrors run state here.
+pub type TrainingActivityState = std::sync::Arc<std::sync::Mutex<bool>>;
+
+fn new_training_activity_state() -> TrainingActivityState {
+    std::sync::Arc::new(std::sync::Mutex::new(false))
+}
+
+#[tauri::command]
+fn set_training_active(state: tauri::State<'_, TrainingActivityState>, active: bool) {
+    if let Ok(mut running) = state.lock() {
+        *running = active;
+    }
+}
+
+/// Ask before quitting mid-training (true to proceed). Tray Quit only, as below.
+fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let Some(state) = app.try_state::<TrainingActivityState>() else {
+        return true;
+    };
+    if !state.lock().map(|running| *running).unwrap_or(false) {
+        return true;
+    }
+    app.dialog()
+        .message(
+            "Training is still running. Quitting now stops the run and the \
+             progress since the last checkpoint is lost.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Training in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep training".to_string(),
+        ))
+        .blocking_show()
 }
 
 /// Ask before quitting mid-install (true to proceed): `cleanup_child_processes` SIGTERMs the
@@ -211,6 +251,14 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Unsloth").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -224,12 +272,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .tooltip("Unsloth Studio (Desktop)")
         .icon(app.default_window_icon().unwrap().clone())
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            "open" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-            }
+            "open" => show_main_window(app),
             "toggle" => {
                 let _ = app.emit("tray-toggle-server", ());
             }
@@ -241,6 +284,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 let app_handle = app.clone();
                 std::thread::spawn(move || {
                     if !confirm_quit_during_install(&app_handle) {
+                        return;
+                    }
+                    if !confirm_quit_during_training(&app_handle) {
                         return;
                     }
                     cleanup_child_processes(&app_handle);
@@ -256,10 +302,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 ..
             } = event
             {
-                if let Some(window) = tray.app_handle().get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                show_main_window(tray.app_handle());
             }
         })
         .build(app)?;
@@ -279,11 +322,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
+            show_main_window(app);
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_process::init())
@@ -300,11 +339,13 @@ fn main() {
         )
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
+        .manage(new_training_activity_state())
         .manage(native_intents::new_native_intake_state())
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
         .invoke_handler(tauri::generate_handler![
+            set_training_active,
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
             app_layout::reset_app_window_layout_initialized,
@@ -325,6 +366,7 @@ fn main() {
             desktop_auth::desktop_auth,
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
+            desktop_updater::check_desktop_update,
             diagnostics::collect_support_diagnostics,
             native_clipboard::read_native_clipboard_files,
             native_clipboard::read_native_clipboard_png,
@@ -332,6 +374,7 @@ fn main() {
             native_file_dialogs::pick_native_chat_import,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
+            native_intents::register_native_attachment_path,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
             native_intents::consume_native_path_token,
@@ -356,6 +399,13 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Record real drops here, in Rust, so the renderer can only register paths the
+            // OS actually handed us (see native_intents::register_native_attachment_path).
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                window
+                    .state::<native_intents::NativeIntakeState>()
+                    .note_dropped_paths(paths);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Hide window instead of closing, because this is a tray app.
                 // Processes keep running so the backend stays available.
@@ -369,13 +419,19 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|app, event| match event {
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => show_main_window(app),
+            tauri::RunEvent::Exit => {
                 // Safety net for framework-driven exits. When another path already owns
                 // cleanup, this blocks the main event-loop thread until that path is
                 // done: worst case roughly 15s, waiting on the graceful-then-force stop
                 // of the installer (5s), the updater (5s) and the backend (5s).
                 cleanup_child_processes(app);
             }
+            _ => {}
         });
 }

@@ -21,6 +21,7 @@ export {
   listGgufVariants,
   listScanFolders,
   removeScanFolder,
+  useGgufVariantsCacheVersions,
 } from "./inventory";
 export {
   type HfModelResult,
@@ -41,8 +42,11 @@ export { looksLikeLocalPath } from "./lib/local-path";
 export { hubTokenHeader } from "./lib/hub-token-header";
 export {
   ggufVariantsMatch,
+  isOllamaLinkPath,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
+  publicModelId,
+  residentModelIdMatches,
 } from "./lib/model-identity";
 export { formatBytes, formatRelativeShort } from "./lib/format";
 export { ggufVariantDisplayLabel } from "./lib/gguf-variant-sort";
