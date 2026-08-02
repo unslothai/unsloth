@@ -50,6 +50,7 @@ export const hi = {
       compare: "तुलना करें",
       search: "खोजें",
       hub: "मॉडल हब",
+      projects: "प्रोजेक्ट",
       train: "ट्रेनिंग",
       recipes: "रेसिपी",
       export: "एक्सपोर्ट",
@@ -101,6 +102,8 @@ export const hi = {
       title: "सेटिंग्स",
       description: "अपनी Unsloth प्राथमिकताएं प्रबंधित करें।",
       closeAriaLabel: "सेटिंग्स बंद करें",
+      searchPlaceholder: "सेटिंग्स खोजें…",
+      searchNoResults: "कोई सेटिंग नहीं मिली।",
     },
     tabs: {
       general: "सामान्य",
@@ -111,6 +114,142 @@ export const hi = {
       connections: "कनेक्शन",
       apiKeys: "API",
       about: "परिचय",
+      data: "डेटा",
+      agents: "एजेंट",
+      voice: "आवाज़",
+    },
+    voice: {
+      title: "आवाज़",
+      description: "माइक्रोफ़ोन, डिक्टेशन, स्पीच-टू-टेक्स्ट और ज़ोर से पढ़ना",
+      dictation: {
+        sectionTitle: "डिक्टेशन",
+        engineLabel: "डिक्टेशन इंजन",
+        engineBrowser: "ब्राउज़र",
+        engineBrowserDescription:
+          "आपके ब्राउज़र की स्पीच सेवा से ऑडियो को टेक्स्ट में बदलता है। STT मॉडल उपयोग करने के लिए 'लोकल ट्रांसक्रिप्शन' चुनें।",
+        engineModel: "लोकल ट्रांसक्रिप्शन",
+        engineModelDescription:
+          "स्पीच-टू-टेक्स्ट (STT) मॉडल लोकली चलाता है और ऑफ़लाइन काम करता है। डाउनलोड करें, लोड करें; कुछ देर उपयोग न होने पर यह अनलोड हो जाता है।",
+        sttModelLabel: "स्पीच रिकग्निशन मॉडल",
+        sttModelDescription: "लोकली चलाने के लिए STT मॉडल चुनें या खोजें।",
+        sttModelSearchPlaceholder: "मॉडल खोजें",
+        sttModelSearching: "Hugging Face पर खोजा जा रहा है…",
+        sttModelValidating: "Whisper संगतता जाँची जा रही है…",
+        sttModelNoResults: "कोई Whisper मॉडल नहीं मिला",
+        sttModelInvalid: "इस रिपॉज़िटरी का उपयोग डिक्टेशन के लिए नहीं किया जा सकता",
+        sttModelFailed: "STT मॉडल लोड नहीं हो सका",
+        sttModelUnsupported: "इस ब्राउज़र में रिकॉर्डिंग समर्थित नहीं है",
+        sttChecking: "जाँच की जा रही है…",
+        sttOnDemand: "डाउनलोड हो चुका है",
+        sttLoadingModel: "मॉडल लोड हो रहा है…",
+        sttReady: "{device} पर लोड है",
+        sttLoaded: "लोड है",
+        sttUnavailable:
+          "इस सर्वर पर इंस्टॉल नहीं है। लोकल डिक्टेशन चालू करने के लिए `unsloth studio update` चलाएं।",
+        sttRetry: "फिर कोशिश करें",
+        sttDownloadChecking: "डाउनलोड स्थिति जाँची जा रही है…",
+        sttNotDownloaded: "डाउनलोड नहीं हुआ",
+        sttDownloadStatusFailed: "डाउनलोड स्थिति जाँची नहीं जा सकी",
+        sttDownload: "डाउनलोड करें",
+        sttDownloading: "डाउनलोड हो रहा है… {progress}%",
+        sttCancelDownload: "रद्द करें",
+        sttCancellingDownload: "रद्द हो रहा है…",
+        sttDownloadComplete: "स्पीच रिकग्निशन मॉडल डाउनलोड हो गया",
+        sttDownloadFailed: "स्पीच रिकग्निशन मॉडल डाउनलोड नहीं हो सका",
+        sttLoad: "लोड करें",
+        sttUnload: "अनलोड करें",
+        sttUnloading: "अनलोड हो रहा है…",
+        microphoneLabel: "माइक्रोफ़ोन",
+        microphoneDescription: "डिक्टेशन के लिए उपयोग होता है",
+        microphoneFallbackHint:
+          "डिक्टेशन के लिए उपयोग होता है। अगर ब्राउज़र का स्पीच इंजन इस डिवाइस का उपयोग नहीं कर पाता, तो सिस्टम डिफ़ॉल्ट पर चला जाता है",
+        microphoneGrantDescription:
+          "डिवाइस के नाम दिखाने के लिए माइक की अनुमति दें",
+        allowMicrophone: "माइक्रोफ़ोन की अनुमति दें",
+        micAccessBlocked:
+          "माइक्रोफ़ोन एक्सेस रोक दिया गया है। इस Unsloth पेज के लिए माइक्रोफ़ोन एक्सेस की अनुमति दें, फिर दोबारा कोशिश करें।",
+        micAccessUnsupported:
+          "इस ब्राउज़र या संदर्भ में माइक्रोफ़ोन एक्सेस समर्थित नहीं है।",
+        systemDefault: "सिस्टम डिफ़ॉल्ट",
+        savedMicDisconnected: "सहेजा गया माइक्रोफ़ोन (कनेक्ट नहीं है)",
+        languageLabel: "डिक्टेशन की भाषा",
+        languageDescription: "पहचानी जाने वाली भाषा",
+        languageAuto: "स्वतः (ब्राउज़र की भाषा)",
+      },
+      dictionary: {
+        sectionTitle: "डिक्टेशन शब्दकोश",
+        sectionDescription:
+          "तय करें कि डिक्टेशन कुछ खास शब्द या वाक्यांश कैसे लिखे",
+        manageLabel: "कस्टम वर्तनी",
+        manage: "प्रबंधित करें",
+        backToVoice: "आवाज़ पर वापस जाएं",
+        addEntry: "प्रविष्टि जोड़ें",
+      },
+      recents: {
+        sectionTitle: "डिक्टेशन इतिहास",
+        sectionDescription:
+          "हर डिक्टेशन यहाँ सहेजा जाता है ताकि आप टेक्स्ट वापस पा सकें",
+        manageLabel: "डिक्टेशन इतिहास",
+        manage: "प्रबंधित करें",
+        pageDescription:
+          "हर डिक्टेशन सहेजा जाता है। इन्हें देखें, कॉपी करें या हटाएं, या वह चैट खोलें जिसमें डिक्टेशन का उपयोग हुआ था।",
+        searchPlaceholder: "डिक्टेशन खोजें",
+        sortLabel: "डिक्टेशन क्रमबद्ध करें",
+        sortNewest: "नए पहले",
+        sortOldest: "पुराने पहले",
+        sortAlpha: "A से Z",
+        noMatches: "आपकी खोज से मेल खाता कोई डिक्टेशन नहीं मिला",
+        detailTitle: "सहेजा गया डिक्टेशन",
+        backToVoice: "आवाज़ पर वापस जाएं",
+        backToRecents: "हाल के डिक्टेशन पर वापस जाएं",
+        view: "पूरा डिक्टेशन देखें",
+        empty: "अभी तक कोई डिक्टेशन नहीं",
+        dictationColumn: "डिक्टेशन",
+        dateColumn: "बनाने की तारीख",
+        copy: "डिक्टेशन कॉपी करें",
+        copied: "क्लिपबोर्ड पर कॉपी हो गया",
+        copyFailed: "क्लिपबोर्ड पर कॉपी नहीं हो सका",
+        delete: "डिक्टेशन हटाएं",
+        deleteTitle: "डिक्टेशन हटाएं",
+        deleteDescription:
+          "यह सहेजा गया डिक्टेशन हटाएं? इसे पूर्ववत नहीं किया जा सकता।",
+        deleteLinkedDescription:
+          "यह सहेजा गया डिक्टेशन हटाएं? आप वह चैट भी हटा सकते हैं जिसमें इसका उपयोग हुआ था। इसे पूर्ववत नहीं किया जा सकता।",
+        deleteWithChat: "चैट और डिक्टेशन हटाएं",
+        deleteWithChatFailed: "चैट नहीं हटाई जा सकी",
+        clear: "इतिहास साफ़ करें",
+        clearTitle: "डिक्टेशन इतिहास साफ़ करें",
+        clearDescription:
+          "सभी सहेजे गए डिक्टेशन हटाएं? इसे पूर्ववत नहीं किया जा सकता।",
+        clearConfirm: "सब साफ़ करें",
+        showMore: "और दिखाएं ({count})",
+        openChat: "चैट खोलें",
+      },
+      readAloud: {
+        sectionTitle: "ज़ोर से पढ़ना",
+        buttonLabel: "ज़ोर से पढ़ने का बटन",
+        buttonDescription: "असिस्टेंट के जवाबों पर दिखाएं",
+        engineLabel: "TTS इंजन",
+        engineSystemDescription: "डिवाइस की अंतर्निहित आवाज़ें",
+        engineStudioDescription:
+          "लोड किए गए ऑडियो मॉडल का उपयोग करता है (जैसे Orpheus)",
+        engineSystem: "सिस्टम की आवाज़ें",
+        engineStudio: "TTS मॉडल लोड करें",
+        modelLabel: "TTS मॉडल",
+        modelDescription:
+          "मॉडल सिलेक्टर से एक ऑडियो मॉडल लोड करें (जैसे Orpheus TTS)",
+        voiceLabel: "आवाज़",
+        voiceDescription: "इस डिवाइस पर सबसे अच्छी आवाज़ें",
+        speedLabel: "गति",
+        pitchLabel: "पिच",
+        volumeLabel: "वॉल्यूम",
+        previewLabel: "आवाज़ सुनें",
+        previewDescription: "एक छोटा नमूना चलाएं",
+        previewAction: "सुनें",
+        stopAction: "रोकें",
+        ttsLabel: "टेक्स्ट-टू-स्पीच",
+        notSupported: "इस ब्राउज़र में समर्थित नहीं है",
+      },
     },
     general: {
       title: "सामान्य",
@@ -142,6 +281,7 @@ export const hi = {
         updating: "अपडेट हो रहा है...",
         updated: "पासवर्ड अपडेट हो गया।",
         updateFailed: "पासवर्ड अपडेट विफल रहा।",
+        newHasSpaces: "नए पासवर्ड में स्पेस नहीं हो सकते।",
       },
       chatDefaults: "चैट डिफ़ॉल्ट",
       autoTitleNewChats: "नई चैट को स्वतः शीर्षक दें",
@@ -172,6 +312,12 @@ export const hi = {
         loadError: "मॉडल ऑटो-स्विच सेटिंग्स लोड करने में विफल।",
         saveError: "मॉडल ऑटो-स्विच सेटिंग्स सहेजने में विफल।",
         idleError: "मॉडल को लोड रखने के लिए 0 दर्ज करें, या कम से कम 60 सेकंड।",
+        autoDownload: "अनुपलब्ध मॉडल डाउनलोड करें",
+        autoDownloadDescription:
+          "API अनुरोध में बताया गया ऐसा GGUF लाता है जो अभी डाउनलोड नहीं हुआ है। इसके बाद API key रखने वाला कोई भी व्यक्ति डिस्क और बैंडविड्थ खर्च कर सकता है।",
+        keepKv: "निष्क्रियता पर अनलोड होने के बाद भी चैट का संदर्भ बनाए रखें",
+        keepKvDescription:
+          "निष्क्रियता पर अनलोड होने से पहले KV कैश सहेजता है, ताकि दोबारा शुरू की गई चैट को इतिहास फिर से न पढ़ना पड़े। डिस्क पर 10 GB तक।",
       },
       previewSharing: {
         sectionTitle: "पूर्वावलोकन साझाकरण",
@@ -243,6 +389,12 @@ export const hi = {
           "केवल-स्थानीय प्राथमिकताएं साफ़ करता है और Unsloth को फिर से लोड करता है। चैट, API एक्सेस, और DB-समर्थित सेटिंग्स बनी रहती हैं।",
         confirmAction: "रीसेट करें और फिर से लोड करें",
       },
+      permissions: {
+        sectionTitle: "अनुमतियां",
+        bypassLabel: "टूल अनुमतियां",
+        bypassDescription:
+          "चैट के टूल कॉल (टर्मिनल, python, वेब, MCP) चलाने से पहले Unsloth उन्हें कैसे मंज़ूरी देता है। “Full access” मोड से मंज़ूरी और कोड सैंडबॉक्स बंद हो जाते हैं।",
+      },
     },
     profile: {
       title: "प्रोफ़ाइल",
@@ -266,6 +418,69 @@ export const hi = {
         "इस सत्र के लिए फोटो अपडेट की गई, लेकिन फिर से लोड करने के बाद शायद न रहे।",
       photoUpdateErrorTitle: "प्रोफ़ाइल फोटो अपडेट नहीं की जा सकी",
       imageUseError: "इस छवि का उपयोग नहीं किया जा सका।",
+      uploadPhoto: "फ़ोटो अपलोड करें",
+      removePhoto: "हटाएं",
+      pictureOptions: "प्रोफ़ाइल फ़ोटो विकल्प",
+      greetingSloth: "अभिवादन में sloth",
+      greetingSlothDescription: "चैट के अभिवादन में sloth दिखाएं।",
+      noPicture: "कोई प्रोफ़ाइल फ़ोटो नहीं",
+      noneLabel: "कोई नहीं",
+      stats: {
+        title: "आपके आँकड़े",
+        subtitle:
+          "नीचे सब कुछ आपके अपने इतिहास से गिना जाता है। कुछ भी इकट्ठा नहीं किया जाता और न ही Unsloth को भेजा जाता है।",
+        retry: "फिर कोशिश करें",
+        privacyNote:
+          "आँकड़े आपके Unsloth इंस्टॉल में मौजूद चैट और ट्रेनिंग इतिहास से गिने जाते हैं। कुछ भी इकट्ठा नहीं किया जाता, और Unsloth या किसी तीसरे पक्ष को कुछ नहीं भेजा जाता।",
+        emptyChats:
+          "अभी तक कोई चैट नहीं। बातचीत शुरू करें और आपके आँकड़े यहाँ दिखने लगेंगे।",
+        lifetimeTokens: "अब तक के कुल टोकन",
+        peakTokens: "सबसे व्यस्त दिन",
+        longestChat: "सबसे लंबी चैट",
+        currentStreak: "मौजूदा स्ट्रीक",
+        longestStreak: "सबसे लंबी स्ट्रीक",
+        activityTitle: "टोकन गतिविधि",
+        activityDescription: "अवधि: {weeks} · {total}",
+        mode: {
+          daily: "दैनिक",
+          weekly: "साप्ताहिक",
+          cumulative: "संचयी",
+        },
+        cellTooltip: "{date} · {tokens}, {messages}",
+        weekTooltip: "{date} वाला हफ़्ता · {tokens}",
+        less: "कम",
+        more: "ज़्यादा",
+        insightsTitle: "गतिविधि विश्लेषण",
+        totalChats: "कुल चैट",
+        totalMessages: "कुल संदेश",
+        tokensIn: "भेजे गए टोकन",
+        tokensOut: "बनाए गए टोकन",
+        cachedTokens: "कैश किए गए टोकन",
+        cachedValue: "{tokens} (इनपुट का {percent}%)",
+        avgTokensPerChat: "प्रति चैट औसत टोकन",
+        timeInChat: "चैट में बिताया समय",
+        activeDays: "सक्रिय दिन",
+        toolCalls: "टूल कॉल",
+        attachments: "संलग्न फ़ाइलें",
+        avgSpeed: "औसत गति",
+        bestSpeed: "सबसे तेज़ जवाब",
+        firstToken: "पहले टोकन तक औसत समय",
+        tokensPerSecond: "{value} tok/s",
+        topModelsTitle: "सबसे ज़्यादा उपयोग किए गए मॉडल",
+        topModelsDescription: "आदान-प्रदान किए गए टोकन के अनुसार",
+        modelSummary: "{tokens} · {messages}",
+        noModels: "अभी तक किसी मॉडल का उपयोग दर्ज नहीं हुआ।",
+        trainingTitle: "ट्रेनिंग",
+        trainingDescription: "इस वर्कस्पेस के फाइन-ट्यूनिंग रन",
+        trainingRuns: "रन",
+        trainingCompleted: "पूर्ण",
+        trainingSteps: "स्टेप",
+        trainingTokens: "ट्रेन किए गए टोकन",
+        trainingTime: "ट्रेनिंग का समय",
+        bestLoss: "सबसे अच्छा loss",
+        runSteps: "{steps}",
+        runLoss: "loss {loss}",
+      },
     },
     appearance: {
       title: "रूप-रंग",
@@ -278,6 +493,93 @@ export const hi = {
         light: "लाइट",
         dark: "डार्क",
       },
+      palette: {
+        label: "रंग पैलेट",
+        description: "लाइट और डार्क मोड में पूरे Unsloth में दिखने वाले रंग।",
+        standard: "मानक",
+        classic: "क्लासिक",
+        minimal: "मिनिमल",
+      },
+      custom: {
+        reset: "रीसेट करें",
+        resetAll: "कस्टमाइज़ेशन रीसेट करें",
+        preferencesTitle: "प्राथमिकताएं",
+        colors: {
+          lightGroup: "लाइट थीम",
+          darkGroup: "डार्क थीम",
+          accent: "एक्सेंट",
+          background: "पृष्ठभूमि",
+          foreground: "अग्रभूमि",
+        },
+        fontDefault: "डिफ़ॉल्ट",
+        fontBundledGroup: "बिल्ट-इन",
+        fontImportedGroup: "आयातित",
+        fontDeviceGroup: "इस डिवाइस पर",
+        fontFolderGroup: "फ़ोल्डर से",
+        fontDeviceLoading: "डिवाइस के फ़ॉन्ट खोजे जा रहे हैं…",
+        fontSearch: "फ़ॉन्ट खोजें…",
+        fontNoResults: "कोई फ़ॉन्ट नहीं मिला।",
+        colorPicker: {
+          hue: "ह्यू",
+          hex: "हेक्स रंग",
+          eyedropper: "स्क्रीन से रंग चुनें",
+        },
+        uiFont: {
+          label: "UI फ़ॉन्ट",
+        },
+        headingFont: {
+          label: "शीर्षक फ़ॉन्ट",
+        },
+        chatFont: {
+          label: "चैट फ़ॉन्ट",
+        },
+        codeFont: {
+          label: "कोड फ़ॉन्ट",
+        },
+        importFont: {
+          upload: "अपलोड करें",
+          scanFolder: "फ़ोल्डर चुनें",
+          alreadyAvailable:
+            "यह फ़ॉन्ट पहले से उपलब्ध है, इसलिए मौजूदा कॉपी का ही उपयोग होगा।",
+          folderNoFonts: "उस फ़ोल्डर में कोई फ़ॉन्ट फ़ाइल नहीं मिली।",
+          remove: "हटाएं",
+          errorInvalidType:
+            "असमर्थित फ़ाइल प्रकार। .woff2, .woff, .ttf, या .otf उपयोग करें।",
+          errorTooLarge: "फ़ॉन्ट फ़ाइल बहुत बड़ी है (अधिकतम 1.5 MB)।",
+          errorLimit: "आप अधिकतम 3 फ़ॉन्ट आयात कर सकते हैं।",
+          errorStorageFull:
+            "इस फ़ॉन्ट के लिए पर्याप्त लोकल स्टोरेज नहीं है। पहले कोई आयातित फ़ॉन्ट हटाएं।",
+          errorFailed: "यह फ़ॉन्ट फ़ाइल लोड नहीं हो सकी।",
+        },
+        uiFontSize: {
+          label: "UI फ़ॉन्ट का आकार",
+          description: "Unsloth UI के लिए उपयोग होने वाला आधार आकार समायोजित करें।",
+        },
+        codeFontSize: {
+          label: "कोड फ़ॉन्ट का आकार",
+          description: "कोड के लिए उपयोग होने वाला आधार आकार समायोजित करें।",
+        },
+        fontSmoothing: {
+          label: "फ़ॉन्ट स्मूदिंग",
+          description: "फ़ॉन्ट एंटी-एलियासिंग का उपयोग करें।",
+        },
+        contrast: {
+          label: "कंट्रास्ट",
+          description: "बॉर्डर और सेकंडरी टेक्स्ट की तीव्रता।",
+        },
+        reduceMotion: {
+          label: "एनिमेशन कम करें",
+          description: "एनिमेशन कम करें या सिस्टम सेटिंग का पालन करें।",
+          system: "सिस्टम",
+          on: "चालू",
+          off: "बंद",
+        },
+        pointerCursors: {
+          label: "पॉइंटर कर्सर उपयोग करें",
+          description:
+            "इंटरैक्टिव तत्वों पर होवर करने पर कर्सर को पॉइंटर में बदलें।",
+        },
+      },
       language: {
         title: "भाषा",
         label: "प्रदर्शन भाषा",
@@ -289,6 +591,13 @@ export const hi = {
         compactSidebar: "साइडबार को डिफ़ॉल्ट रूप से पिन करें",
         compactSidebarDescription:
           "साइडबार को आइकन में संक्षिप्त करने के बजाय विस्तारित रखें।",
+      },
+      sidebarMenu: {
+        title: "साइडबार मेन्यू",
+        description:
+          "साइडबार के प्रोफ़ाइल मेन्यू में आइटम दिखाएं, छिपाएं और क्रम बदलें। सेटिंग्स, सहायता, लॉग आउट और शटडाउन अपनी जगह पर तय रहते हैं।",
+        darkModeToggle: "डार्क मोड टॉगल",
+        dragToReorder: "क्रम बदलने के लिए खींचें",
       },
     },
     resources: {
@@ -332,6 +641,16 @@ export const hi = {
         copied: "पथ कॉपी किया गया",
         openError: "फ़ोल्डर नहीं खोला जा सका",
         copyError: "पथ कॉपी नहीं किया जा सका",
+        futureDownloads: "केवल नए डाउनलोड",
+        environmentManaged: "{variable} एनवायरनमेंट वेरिएबल द्वारा प्रबंधित।",
+        locationFree: "{free} खाली",
+        changeAction: "बदलें",
+        resetAction: "डिफ़ॉल्ट उपयोग करें",
+        chooseTitle: "मॉडल डाउनलोड की जगह चुनें",
+        chooseAction: "आगे के डाउनलोड के लिए उपयोग करें",
+        cacheSaved: "मॉडल डाउनलोड की जगह अपडेट हो गई",
+        cacheSaveError: "मॉडल डाउनलोड की जगह अपडेट नहीं हो सकी",
+        cachePickerError: "फ़ोल्डर चुनने वाला डायलॉग नहीं खुल सका",
       },
       environment: {
         title: "एनवायरनमेंट",
@@ -343,6 +662,104 @@ export const hi = {
         processMemory: "प्रोसेस मेमोरी",
         notInstalled: "इंस्टॉल नहीं है",
         unknown: "अज्ञात",
+      },
+    },
+    agents: {
+      title: "एजेंट",
+      description:
+        "unsloth start की मदद से Claude Code और Codex जैसे कोडिंग एजेंट को लोकल मॉडल से जोड़ें।",
+      intro:
+        "Claude Code, Codex, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
+      readDocs: "दस्तावेज़ पढ़ें",
+      copy: "कॉपी करें",
+      copied: "कॉपी हो गया",
+      commandBuilder: "कमांड बिल्डर",
+      agent: "कोडिंग एजेंट",
+      model: "मॉडल",
+      searchModels: "GGUF मॉडल खोजें...",
+      noModels: "कोई मेल खाता GGUF मॉडल नहीं।",
+      showingModels:
+        "{total} में से {shown} परिणाम दिखाए जा रहे हैं। सूची छोटी करने के लिए टाइप करते रहें।",
+      quantization: "क्वांटाइज़ेशन",
+      loadingQuantizations: "क्वांटाइज़ेशन लोड हो रहे हैं...",
+      noQuantizations: "अलग से कोई क्वांटाइज़ेशन नहीं",
+      recommended: "अनुशंसित",
+      downloaded: "डाउनलोड हो चुका",
+      quantizationLoadError:
+        "सभी क्वांटाइज़ेशन लोड नहीं हो सके। कमांड उपलब्ध मॉडल मान का उपयोग करेगा।",
+      generatedCommand: "बनाया गया कमांड",
+      docs: "दस्तावेज़",
+      agentDocs: "{agent} के सेटअप दस्तावेज़ खोलें",
+      copyGeneratedCommand: "बनाया गया कमांड कॉपी करें",
+      modelNote:
+        "Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल चाहिए। दूसरे एजेंट transformers-आधारित मॉडल भी उपयोग कर सकते हैं; Unsloth Studio में पहले से लोड किए गए मॉडल को उपयोग करने के लिए --model हटा दें।",
+      subagent: {
+        title: "लोकल मॉडल को सबएजेंट के रूप में उपयोग करें",
+        description:
+          "{agent} को उसके मौजूदा मॉडल पर ही रहने दें और चुने हुए काम इस लोकल Unsloth मॉडल को सौंपें।",
+        setupCommand: "सेटअप कमांड",
+        copySetupCommand: "सबएजेंट सेटअप कमांड कॉपी करें",
+        usagePrompt: "फिर {agent} में यह टाइप करें:",
+        copyUsagePrompt: "सबएजेंट उपयोग प्रॉम्प्ट कॉपी करें",
+        defaultPrompt: "इस फ़ंक्शन को लागू करने के लिए एक लोकल एजेंट चलाओ।",
+        opencodePrompt: "@unsloth इस टेस्ट के फेल होने की वजह ढूंढो",
+      },
+      quickstart: {
+        title: "कमांड बनाएं",
+        description:
+          "Studio में अभी लोड किए गए मॉडल के साथ एजेंट चलाएं। पहले एक मॉडल लोड करें, फिर claude की जगह नीचे दिए गए किसी भी समर्थित एजेंट का नाम रखें।",
+        noneDetected: "आपके PATH में कोई समर्थित एजेंट CLI नहीं मिला।",
+        installed: "इंस्टॉल है",
+      },
+      supportedAgents: {
+        title: "समर्थित एजेंट",
+        description: "हर एजेंट अपने कमांड से शुरू होता है:",
+        requiresGguf: "GGUF मॉडल चाहिए",
+      },
+      models: {
+        title: "मॉडल चुनना",
+        description:
+          "मॉडल और क्वांटाइज़ेशन चुनने के लिए --model और कॉन्टेक्स्ट विंडो सेट करने के लिए --context-length दें। क्वांटाइज़ेशन सफ़िक्स या स्पष्ट --gguf-variant फ़्लैग उपयोग करें।",
+        suffixLabel: "क्वांटाइज़ेशन सफ़िक्स के साथ",
+        variantLabel: "स्पष्ट वेरिएंट फ़्लैग के साथ",
+      },
+      options: {
+        title: "सामान्य विकल्प",
+        description:
+          "Unsloth के फ़्लैग पहले पढ़े जाते हैं; जो पहचान में नहीं आता वह सीधे एजेंट को भेज दिया जाता है।",
+        model:
+          "मॉडल चुनता है। --model न देने पर unsloth start वही मॉडल उपयोग करता है जो Studio में लोड है, और कोई लोड न हो तो त्रुटि देता है।",
+        contextLength:
+          "मांगी गई कॉन्टेक्स्ट लंबाई सेट करता है (उपनाम: --max-seq-length)।",
+        ggufVariant: "GGUF क्वांटाइज़ेशन वेरिएंट चुनता है।",
+        loadIn4bit:
+          "Hugging Face मॉडलों के लिए 4-बिट लोडिंग चालू या बंद करता है।",
+        tensorParallel: "कई GPU पर टेंसर पैरेललिज़्म चालू या बंद करता है।",
+        serve: "अपने आप चलने वाला लोकल सर्वर चालू या बंद करता है।",
+        launch: "एजेंट चलाता है, या सिर्फ़ कमांड और एनवायरनमेंट दिखाता है।",
+        persist:
+          "Unsloth द्वारा प्रबंधित एजेंट स्टोरेज को रनों के बीच बनाए रखता है।",
+        asSubagent:
+          "मूल एजेंट को उसके मौजूदा मॉडल पर रखता है और Unsloth को लोकल सबएजेंट के रूप में दर्ज करता है (Claude Code, Codex और OpenCode)।",
+        apiKey:
+          "आपकी Unsloth API key लेता है (या UNSLOTH_API_KEY सेट करें)।",
+        yolo:
+          "मंज़ूरी के प्रॉम्प्ट छोड़ देता है। केवल भरोसेमंद वातावरण में उपयोग करें।",
+      },
+      remote: {
+        title: "रिमोट Studio से जुड़ें",
+        description:
+          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Studio की ओर भेजें (या --api-key सीधे दें):",
+      },
+      passthrough: {
+        title: "एजेंट को आर्ग्युमेंट भेजना",
+        description:
+          "Unsloth के फ़्लैग के बाद दिए गए आर्ग्युमेंट सीधे एजेंट को भेजे जाते हैं, इसलिए resume जैसे एजेंट के अपने कमांड काम करते रहते हैं:",
+      },
+      dryRun: {
+        title: "चलाए बिना देखें",
+        description:
+          "एजेंट चलाने के बजाय एनवायरनमेंट और कमांड दिखाने के लिए --no-launch जोड़ें। अगर --model दिया गया है तो मॉडल फिर भी रिज़ॉल्व होकर लोड हो सकता है।",
       },
     },
     chat: {
@@ -416,6 +833,54 @@ export const hi = {
         "एक स्टोरेज साफ़ करना विफल रहा; {count} चैट शेष रह सकती हैं। कृपया पुनः प्रयास करें।",
       failedToClearChats: "चैट साफ़ करने में विफल",
     },
+    data: {
+      title: "डेटा",
+      description:
+        "इस डिवाइस पर सहेजे गए चैट इतिहास और अपलोड की गई फ़ाइलें प्रबंधित करें।",
+      archivedChats: "संग्रहित चैट",
+      archivedChatsDescription:
+        "आपने जो चैट संग्रहित की हैं उन्हें देखें और प्रबंधित करें।",
+      manageAction: "प्रबंधित करें",
+      exportArchivedChats: "एक्सपोर्ट करें",
+      exportingArchivedChats: "एक्सपोर्ट हो रहा है...",
+      exportedOneArchivedChat: "1 संग्रहित चैट एक्सपोर्ट की गई",
+      exportedArchivedChatCount: "{count} संग्रहित चैट एक्सपोर्ट की गईं",
+      noArchivedChatsToExport: "एक्सपोर्ट करने के लिए कोई संग्रहित चैट नहीं।",
+      failedToExportArchivedChats: "संग्रहित चैट एक्सपोर्ट नहीं हो सकीं",
+      archiveAllChats: "सभी चैट संग्रहित करें",
+      archiveAllChatsDescription:
+        "हाल के और प्रोजेक्ट में मौजूद हर चैट को संग्रह में ले जाता है।",
+      noChatsToArchive: "संग्रहित करने के लिए कोई चैट नहीं।",
+      archiveAllAction: "सभी संग्रहित करें",
+      archivingAction: "संग्रहित हो रहा है...",
+      archiveAllChatsTitle: "सभी चैट संग्रहित करें?",
+      archiveAllChatsConfirmDescription:
+        "इस डिवाइस की हर चैट को संग्रह में ले जाता है। संग्रहित चैट उपलब्ध रहती हैं और उन्हें कभी भी संग्रह से बाहर लाया जा सकता है।",
+      archivedAllChats: "सभी चैट संग्रहित कर दी गईं",
+      archivedOneChat: "1 चैट संग्रहित की गई",
+      archivedChatCount: "{count} चैट संग्रहित की गईं",
+      failedToArchiveChats: "चैट संग्रहित नहीं हो सकीं",
+      confirmBeforeDeleting: "हटाने से पहले पुष्टि करें",
+      confirmBeforeDeletingDescription:
+        "चैट हटाने से पहले पुष्टि मांगता है। तुरंत हटाने के लिए इसे बंद करें।",
+      filesSection: "फ़ाइलें",
+      uploadedFiles: "अपलोड की गई फ़ाइलें",
+      uploadedFilesDescription:
+        "चैट, प्रोजेक्ट और नॉलेज बेस में अपलोड की गई फ़ाइलें देखें और प्रबंधित करें।",
+      fineTuneExport: "चैट को ट्रेनिंग डेटा के रूप में उपयोग करें",
+      fineTuneExportDescription:
+        "अपनी चैट से फाइन-ट्यूनिंग के लिए JSONL डेटासेट बनाएं। इसे ट्रेनिंग में लोड करें, रेसिपी में सुधारें, या एक्सपोर्ट करें।",
+      fineTuneExportAction: "JSONL एक्सपोर्ट करें",
+      fineTuneRunAction: "चलाएं",
+      fineTuneExportingAction: "एक्सपोर्ट हो रहा है...",
+      fineTuneOpenRecipesAction: "रेसिपी में खोलें",
+      fineTuneOpeningRecipesAction: "खुल रहा है...",
+      fineTuneTrainAction: "ट्रेनिंग टैब में लोड करें",
+      fineTuneTrainingAction: "लोड हो रहा है...",
+      fineTuneExportFailed: "ट्रेनिंग डेटा एक्सपोर्ट नहीं हो सका",
+      fineTuneRecipeFailed: "चैट रेसिपी में नहीं खुल सकीं",
+      fineTuneTrainFailed: "ट्रेनिंग टैब में डेटासेट लोड नहीं हो सका",
+    },
     connections: {
       title: "कनेक्शन",
       description: "प्रदाता और बाहरी कनेक्शन प्रबंधित करें।",
@@ -482,6 +947,8 @@ export const hi = {
         "इस token का उपयोग करने वाले ऐप तुरंत एक्सेस खो देते हैं। इसे पूर्ववत नहीं किया जा सकता।",
       revokeAction: '"{name}" रद्द करें',
       revoking: "रद्द किया जा रहा है...",
+      usageNoModel:
+        "चलाने योग्य उदाहरण देखने के लिए कोई मॉडल लोड या डाउनलोड करें। इस सर्वर के पास अभी बताने को कोई मॉडल नहीं है।",
     },
     about: {
       title: "परिचय",
@@ -810,6 +1277,8 @@ export const hi = {
       enablePacking: "packing सक्षम करें",
       assistantCompletionsOnly: "केवल असिस्टेंट completions",
       readMore: "और पढ़ें",
+      optimizerTooltipMlx:
+        "ऑप्टिमाइज़ेशन एल्गोरिदम। डिफ़ॉल्ट AdamW है। Lion कम मेमोरी लेता है, पर आमतौर पर इसे कम लर्निंग रेट चाहिए।",
     },
     training: {
       title: "ट्रेनिंग",

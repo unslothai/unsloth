@@ -7,7 +7,7 @@ import {
   subscribeDictationLevel,
 } from "@/features/chat";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { CheckIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, SquareIcon } from "lucide-react";
 import { type FC, useEffect, useRef, useState } from "react";
 import { TooltipIconButton } from "./tooltip-icon-button";
 
@@ -35,14 +35,23 @@ function formatElapsed(ms: number): string {
 }
 
 /**
- * Recording UI shown in place of the composer input: a live waveform with
- * discard and confirm on the right. Confirm transcribes; discard keeps the
- * existing composer text.
+ * Recording UI shown in place of the composer input: a live waveform with stop
+ * and send on the right. Stop transcribes into the composer for editing; send
+ * transcribes and submits. Escape discards without transcribing, as does a
+ * second press of stop once transcription is under way.
  */
-export const ChatDictationBar: FC = () => {
+export const ChatDictationBar: FC<{
+  /** Transcribe, then submit the composer. Falls back to stop when absent. */
+  onSend?: () => void;
+  /** Send is unavailable (e.g. an attachment is still uploading). */
+  sendDisabled?: boolean;
+}> = ({ onSend, sendDisabled }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
-  const [transcribing, setTranscribing] = useState(false);
+  // Which button started transcription, so only it shows the spinner.
+  const [transcribing, setTranscribing] = useState<"stop" | "send" | null>(
+    null,
+  );
   const [elapsed, setElapsed] = useState(0);
   const transcribingRef = useRef(false);
   // Extra slot: newest sample lands here; the last visible bar slides toward it.
@@ -152,38 +161,73 @@ export const ChatDictationBar: FC = () => {
       unsub();
       cancelAnimationFrame(raf);
       transcribingRef.current = false;
-      setTranscribing(false);
+      setTranscribing(null);
       setElapsed(0);
       barsRef.current = new Array(BAR_COUNT + 1).fill(0);
     };
+  }, [isDictating]);
+
+  // No discard button, so Escape drops a recording without transcribing. It
+  // stays live while transcribing too, where cancel aborts the request.
+  useEffect(() => {
+    if (!isDictating) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      // defaultPrevented: an open dialog or menu already claimed this Escape.
+      if (event.key !== "Escape" || event.defaultPrevented) {
+        return;
+      }
+      cancelActiveStudioDictation();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, [isDictating]);
 
   if (!isDictating) {
     return null;
   }
 
-  const discard = () => {
-    cancelActiveStudioDictation();
+  // Freeze the timer + waveform while the transcription round trip runs.
+  const freeze = (source: "stop" | "send") => {
+    transcribingRef.current = true;
+    setTranscribing(source);
   };
 
-  const confirm = () => {
-    // Freeze the timer + waveform before the transcription round trip completes
-    // and the session ends.
-    transcribingRef.current = true;
-    setTranscribing(true);
+  // Transcript lands in the composer, ready to edit. A second press while
+  // transcribing discards it instead, as Compare's does: Escape is otherwise
+  // the only way out, which touch has no way to press.
+  const stop = () => {
+    if (transcribing !== null) {
+      cancelActiveStudioDictation();
+      return;
+    }
+    freeze("stop");
     aui.composer().stopDictation();
+  };
+
+  // Same transcription, then the message submits on its own.
+  const send = () => {
+    if (sendDisabled) return;
+    if (!onSend) {
+      stop();
+      return;
+    }
+    freeze("send");
+    onSend();
   };
 
   return (
     <fieldset
       // order-2 places the bar in the input's slot after the left "+" tools.
-      className="unsloth-dictation-bar order-2 m-0 flex min-w-0 flex-1 items-center gap-2 border-0 p-0"
+      // No row gap: the wave padding and the timer margin set the spacing.
+      className="unsloth-dictation-bar order-2 m-0 flex min-w-0 flex-1 items-center gap-0 border-0 p-0"
       aria-label="Voice recording"
     >
       <div
         ref={rowRef}
         aria-hidden="true"
-        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden px-2"
+        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden pl-4 pr-2"
         style={{
           gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(1px, 3px))`,
           justifyContent: "space-between",
@@ -196,33 +240,43 @@ export const ChatDictationBar: FC = () => {
           />
         ))}
       </div>
-      <span className="shrink-0 tabular-nums text-sm text-muted-foreground">
+      <span className="mr-4 shrink-0 tabular-nums text-sm text-muted-foreground">
         {formatElapsed(elapsed)}
       </span>
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 items-center gap-2.5">
         <TooltipIconButton
           type="button"
-          tooltip="Discard recording"
-          aria-label="Discard recording"
+          tooltip={
+            transcribing !== null ? "Cancel transcription" : "Stop recording"
+          }
+          aria-label={
+            transcribing !== null ? "Cancel transcription" : "Stop recording"
+          }
           variant="ghost"
-          onClick={discard}
-          className="size-8 rounded-full text-muted-foreground hover:text-foreground"
+          onClick={stop}
+          // Neutral grey in both themes: --secondary is brand green on the
+          // default light palette, and too close to --card on dark.
+          className="size-9 rounded-full bg-accent text-foreground hover:bg-accent/70 dark:bg-white/10 dark:hover:bg-white/[0.16]"
         >
-          <XIcon className="size-5" />
+          {transcribing === "stop" ? (
+            <Spinner className="size-3.5" />
+          ) : (
+            <SquareIcon className="size-3 fill-current" />
+          )}
         </TooltipIconButton>
         <TooltipIconButton
           type="button"
-          tooltip={transcribing ? "Transcribing…" : "Stop and transcribe"}
-          aria-label="Stop and transcribe"
+          tooltip={transcribing === "send" ? "Transcribing…" : "Send message"}
+          aria-label="Send message"
           variant="default"
-          onClick={confirm}
-          disabled={transcribing}
-          className="size-8 rounded-full"
+          onClick={send}
+          disabled={transcribing !== null || sendDisabled}
+          className="aui-composer-send size-9 rounded-full"
         >
-          {transcribing ? (
-            <Spinner className="size-4" />
+          {transcribing === "send" ? (
+            <Spinner className="size-[18px]" />
           ) : (
-            <CheckIcon className="size-5" />
+            <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
           )}
         </TooltipIconButton>
       </div>

@@ -10,6 +10,10 @@ import {
 } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
+import {
+  GPU_LAYERS_AUTO,
+  recoverDroppedDiffusionSplit,
+} from "../lib/gpu-placement";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
@@ -568,9 +572,8 @@ export function persistGpuMemoryModeOnLoad(
   if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);
 }
 
-// Manual-mode gpu_layers sentinel: -1 = Auto (hand layer + context sizing to
-// llama.cpp's --fit). The Manual default; "all on GPU" is the slider's max.
-export const GPU_LAYERS_AUTO = -1;
+// Re-exported from its dependency-free home so existing imports keep working.
+export { GPU_LAYERS_AUTO } from "../lib/gpu-placement";
 
 // Round real-valued shares to integers summing exactly to `total`, giving the
 // leftover units to the largest fractional parts (largest-remainder method).
@@ -677,6 +680,7 @@ export function loadedGpuMemoryFields(resp: {
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
   requested_gpu_ids?: number[] | null;
+  diffusion_requested_ngl?: number | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -721,6 +725,13 @@ export function loadedGpuMemoryFields(resp: {
   // once the shared system cache warms.
   const gpuIds =
     reportedGpuIds != null && gpuIndexKind !== null ? reportedGpuIds : null;
+  // A shim without --ngl reports Auto while the backend still holds the ask, so recover
+  // it: in-memory state survives a reload but not a refresh.
+  const droppedSplit = recoverDroppedDiffusionSplit(
+    resp.is_diffusion,
+    mode,
+    resp.diffusion_requested_ngl,
+  );
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
   // knobs with values it never applied. In manual, the server reports gpu_layers
@@ -743,17 +754,28 @@ export function loadedGpuMemoryFields(resp: {
           // loaded baseline) -- else a later switch back to Manual would snapshot
           // and send a previous model's stale gpuLayers/nCpuMoe/split that this
           // load never applied. Mirrors the non-GGUF branch above.
-          gpuLayers: GPU_LAYERS_AUTO,
+          // Diffusion excepted: an "auto" diffusion response may be an older shim
+          // DROPPING a manual split. Restore the ask when the response carries it (a
+          // refresh has none left in memory), else keep what is standing. Resetting the
+          // slider would turn the ask into manual/-1, unapplyable even after the
+          // unsloth_zoo upgrade that adds --ngl.
+          ...(resp.is_diffusion
+            ? droppedSplit != null
+              ? { gpuLayers: droppedSplit }
+              : {}
+            : { gpuLayers: GPU_LAYERS_AUTO }),
           nCpuMoe: 0,
           splitRatio: null,
         };
   return {
-    // A diffusion GGUF runs mode-agnostic (pins all layers on one GPU, reports
-    // "auto"), so adopt everything a chat GGUF does EXCEPT the live standing
-    // preference -- the next chat load must still honor the user's manual choice.
-    // The loaded baseline is still "auto", but the UI hides mode controls for a
-    // loaded diffusion model so it can't read as dirty against the preference.
-    ...(resp.is_diffusion ? {} : { gpuMemoryMode: mode }),
+    // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert standing
+    // manual preference must survive it. But "manual" means a split was actually applied
+    // (#7574): adopt it, or a refresh hydrates back to "auto" while the runner serves one.
+    ...(resp.is_diffusion && mode !== "manual"
+      ? droppedSplit != null
+        ? { gpuMemoryMode: "manual" as const }
+        : {}
+      : { gpuMemoryMode: mode }),
     loadedGpuMemoryMode: mode,
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
@@ -1105,6 +1127,9 @@ type ChatRuntimeStore = {
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
   loadingModelPick: LoadingModelPick | null;
+  // What the resident model loaded from, when that is not its id. A reload rebuilds its target
+  // from the checkpoint, so without this it goes back down the ref the pin avoided.
+  activeLoadId: string | null;
   activeNativePathToken: string | null;
   // Wall-clock expiry (ms) of the active native path token. The desktop host
   // prunes file leases after a TTL, so a reload checks this to prompt
@@ -1572,7 +1597,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedGpuIds: null,
   loadedGpuIndexKind: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
-  showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
+  // Off by default: On Device lists what is on disk, not the whole repo.
+  showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -1593,6 +1619,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsageByThreadId: {},
   modelLoading: false,
   loadingModelPick: null,
+  activeLoadId: null,
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
   hydratePersistedSettings: async () => {
@@ -1910,6 +1937,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       },
       activeGgufVariant: null,
       activeModelIsLocal: false,
+      activeLoadId: null,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
       ggufContextLength: null,

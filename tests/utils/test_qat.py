@@ -5,18 +5,20 @@ from typing import Dict
 import pytest
 import torch
 
-try:
-    from torchao.quantization.qat import FakeQuantizedLinear
-    from torchao.quantization.qat.fake_quantizer import (
-        FakeQuantizerBase,
-        Float8FakeQuantizer,
-        Int4WeightFakeQuantizer,
-        IntxFakeQuantizer,
-    )
-except ImportError:
-    print(
-        "Missing torchao import, please install or upgrade torchao with: pip install 'torchao>=0.15.0'"
-    )
+# torchao is an optional extra. Skip the module instead of printing and then failing
+# every test on NameError once the import did not land.
+pytest.importorskip(
+    "torchao.quantization.qat",
+    reason = "install or upgrade with: pip install 'torchao>=0.15.0'",
+)
+
+from torchao.quantization.qat import FakeQuantizedLinear
+from torchao.quantization.qat.fake_quantizer import (
+    FakeQuantizerBase,
+    Float8FakeQuantizer,
+    Int4WeightFakeQuantizer,
+    IntxFakeQuantizer,
+)
 
 
 class _CountingFakeQuantizer(torch.nn.Module):
