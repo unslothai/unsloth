@@ -4,14 +4,13 @@ Fixtures AST-extract the function from vision.py so logic tests run without
 the full unsloth import chain (triton/CUDA kernels).
 """
 
-import threading
-import time
 import ast
 import os
 import tempfile
+import threading
 import warnings
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -499,7 +498,6 @@ def _make_real_collator(real_collator_classes, formatting_func = None):
     collator = subclass.__new__(subclass)
     collator.formatting_func = formatting_func
     collator._checked_video_paths = set()
-    collator._formatting_lock = threading.Lock()
     return collator
 
 
@@ -572,50 +570,60 @@ def test_real_collator_restores_formatting_func_when_super_raises(
     assert collator.formatting_func is fmt
 
 
-def test_vision_collator_thread_safety(monkeypatch):
-    """
-    Ensure concurrent access to the same collator instance does not lose
-    formatter applications while temporarily disabling formatting_func
-    before delegating to the parent collator.
-    """
-    from unsloth.trainer import UnslothVisionDataCollator
+def test_vision_collator_thread_safety(real_collator_classes, monkeypatch):
+    """Concurrent callers must never see formatting_func blanked on the shared
+    instance. Patches the zoo base, so the real trainer.py __call__ runs."""
+    _, zoo_base = real_collator_classes
 
-    calls = 0
-    calls_lock = threading.Lock()
+    num_threads, num_examples = 32, 3
+    formatted, formatted_lock = [], threading.Lock()
+    base_saw, base_saw_lock = [], threading.Lock()
 
     def formatter(example):
-        nonlocal calls
-        with calls_lock:
-            calls += 1
+        with formatted_lock:
+            formatted.append(example["tag"])
         return example
 
-    collator = object.__new__(UnslothVisionDataCollator)
-    collator.formatting_func = formatter
-    collator._checked_video_paths = set()
-    collator._formatting_lock = threading.Lock()
+    leader_parked, release_leader = threading.Event(), threading.Event()
+    first_entry, entered = threading.Lock(), []
 
-    parent = UnslothVisionDataCollator
-
-    def fake_parent_call(self, examples):
-        if self.formatting_func is not None:
-            examples = [self.formatting_func(x) for x in examples]
-
-        time.sleep(0.001)
+    def fake_base(self, examples):
+        with base_saw_lock:
+            base_saw.append(self.formatting_func)
+        park = False
+        with first_entry:
+            if not entered:
+                entered.append(True)
+                park = True
+        if park:
+            # Hold the window open: unsynchronised code lets every follower
+            # read the temporary None and skip formatting entirely.
+            leader_parked.set()
+            release_leader.wait(10)
         return examples
 
-    monkeypatch.setattr(parent, "__call__", fake_parent_call)
+    monkeypatch.setattr(zoo_base, "__call__", fake_base)
+    collator = _make_real_collator(real_collator_classes, formatting_func = formatter)
 
-    examples = [{"x": 1}, {"x": 2}, {"x": 3}]
+    # Fresh examples per thread, so an in-place formatter races on collator
+    # state rather than on shared user data.
+    def work(thread_id):
+        return collator([{"tag": (thread_id, i)} for i in range(num_examples)])
 
-    num_threads = 32
-    expected_calls = num_threads * len(examples)
+    try:
+        with ThreadPoolExecutor(max_workers = num_threads) as executor:
+            leader = executor.submit(work, 0)
+            assert leader_parked.wait(10), "leader never reached the base collator"
+            followers = [executor.submit(work, i) for i in range(1, num_threads)]
+            release_leader.set()
+            leader.result(timeout = 30)
+            for future in followers:
+                future.result(timeout = 30)
+    finally:
+        release_leader.set()
 
-    def worker():
-        collator(examples)
-
-    with ThreadPoolExecutor(max_workers = num_threads) as executor:
-        futures = [executor.submit(worker) for _ in range(num_threads)]
-        for future in futures:
-            future.result()
-
-    assert calls == expected_calls
+    expected = num_threads * num_examples
+    assert len(formatted) == expected
+    assert len(set(formatted)) == expected  # each example formatted exactly once
+    assert base_saw == [None] * num_threads
+    assert collator.formatting_func is formatter
