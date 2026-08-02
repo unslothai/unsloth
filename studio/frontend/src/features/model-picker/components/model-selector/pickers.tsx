@@ -3084,51 +3084,49 @@ export function HubModelPicker({
             className={downloadedRowButtonClassName}
           />
         </div>
-        <span className="mr-1 flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100">
-          {onConfigure && (
-            <ModelLoadSettingsAction
-              ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
-              onConfigure={() => onConfigure(c.repo_id, selectMeta)}
-            />
-          )}
-          <ModelRowMenu
-            ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
-            iconClassName="size-3"
-            cachePath={{ repoId: c.repo_id, variant: variant.quant }}
-            pin={{
-              pinned: isPinned,
-              pinLabel: "Pin to top",
-              unpinLabel: "Unpin",
-              onToggle: () => togglePinned(c.repo_id, variant.quant),
-            }}
-            del={{
-              title: "Delete cached model?",
-              description: (
-                <>
-                  This will remove{" "}
-                  <span className="font-medium text-foreground">
-                    {c.repo_id} ({variant.quant})
-                  </span>{" "}
-                  from disk. You can re-download it later.
-                </>
-              ),
-              successMessage: `Deleted ${c.repo_id} ${variant.quant}`,
-              disabled: deleteDisabled,
-              onConfirm: async () => {
-                await deleteCachedModel(
-                  c.repo_id,
-                  variant.quant,
-                  hfToken || undefined,
-                  c.cache_path || undefined,
-                );
-                // The file is gone, so drop its pin too.
-                if (isPinned) togglePinned(c.repo_id, variant.quant);
-                prunePinnedQuantValidation(c.repo_id, variant.quant);
-                refreshCachedLists();
-              },
-            }}
+        {onConfigure && (
+          <ModelLoadSettingsAction
+            ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
+            onConfigure={() => onConfigure(c.repo_id, selectMeta)}
           />
-        </span>
+        )}
+        <ModelRowMenu
+          ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
+          buttonClassName="mr-1"
+          cachePath={{ repoId: c.repo_id, variant: variant.quant }}
+          pin={{
+            pinned: isPinned,
+            pinLabel: "Pin to top",
+            unpinLabel: "Unpin",
+            onToggle: () => togglePinned(c.repo_id, variant.quant),
+          }}
+          del={{
+            title: "Delete cached model?",
+            description: (
+              <>
+                This will remove{" "}
+                <span className="font-medium text-foreground">
+                  {c.repo_id} ({variant.quant})
+                </span>{" "}
+                from disk. You can re-download it later.
+              </>
+            ),
+            successMessage: `Deleted ${c.repo_id} ${variant.quant}`,
+            disabled: deleteDisabled,
+            onConfirm: async () => {
+              await deleteCachedModel(
+                c.repo_id,
+                variant.quant,
+                hfToken || undefined,
+                c.cache_path || undefined,
+              );
+              // The file is gone, so drop its pin too.
+              if (isPinned) togglePinned(c.repo_id, variant.quant);
+              prunePinnedQuantValidation(c.repo_id, variant.quant);
+              refreshCachedLists();
+            },
+          }}
+        />
       </div>
     );
   };
@@ -3173,7 +3171,8 @@ export function HubModelPicker({
               className={downloadedRowButtonClassName}
             />
           </div>
-          <span aria-hidden="true" className="mr-1 h-6 w-[26px] shrink-0" />
+          {/* Stands in for the other rows' buttons, so the tags line up. */}
+          <span aria-hidden="true" className="mr-1 h-6 w-[42px] shrink-0" />
         </div>
         {expanderOpen && (
           <GgufVariantExpander
