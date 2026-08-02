@@ -3257,6 +3257,27 @@ function Fast-Uninstall {
     & python -m pip uninstall -y @Args_ 2>&1
 }
 
+# Fetch a wheel without installing it, so a destructive step can be staged behind a download.
+# pip only: uv has no `pip download` (astral-sh/uv#3163). Same reason as Fast-Install's scrub,
+# minus the UV_* pip cannot read -- an inherited PIP_INDEX_URL or a user pip.conf would
+# otherwise outrank the pinned --index-url.
+function Fast-Download {
+    param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
+    $saved = @{}
+    foreach ($n in 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS', 'PIP_NO_INDEX', 'PIP_INDEX_URL', 'PIP_CONFIG_FILE') {
+        $saved[$n] = [Environment]::GetEnvironmentVariable($n)
+        Remove-Item "Env:$n" -ErrorAction SilentlyContinue
+    }
+    $env:PIP_CONFIG_FILE = 'nul'
+    try {
+        & python -m pip download @Args_ 2>&1
+    }
+    finally {
+        Remove-Item "Env:PIP_CONFIG_FILE" -ErrorAction SilentlyContinue
+        foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } }
+    }
+}
+
 # ── Check if Python deps need updating ──
 # Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
@@ -3801,18 +3822,57 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
     # torch is not the +xpu wheel this branch assumes, and doing nothing is the safe answer.
     if ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
         substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"
-        Fast-Uninstall "triton-windows" | Out-Null
-        if ($script:UnslothVerbose) {
-            Fast-Install --force-reinstall --no-deps $_tritonXpuSpec --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
-            $tritonXpuExit = $LASTEXITCODE
-            $tritonOutput = ""
-        } else {
-            $tritonOutput = Fast-Install --force-reinstall --no-deps $_tritonXpuSpec --index-url $XpuIndexUrl | Out-String
-            $tritonXpuExit = $LASTEXITCODE
-        }
-        if ($tritonXpuExit -ne 0) {
-            substep "[WARN] could not reinstall $_tritonXpuSpec (exit $tritonXpuExit); torch.compile may not work." "Yellow"
-            Write-Host (Redact-InstallOutput $tritonOutput) -ForegroundColor Yellow
+        # Fetch, THEN uninstall, THEN install the file. The uninstall cannot go last -- it drops
+        # the paths in triton-windows' OWN record, which are the shared ones -- so pre-fetching is
+        # what keeps a dead mirror from stranding the venv between the two steps. A local wheel
+        # installs with the network refused; uv has no `pip download`, hence Fast-Download.
+        $_tritonTmp = Join-Path ([System.IO.Path]::GetTempPath()) "unsloth_triton_xpu_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+        try {
+            New-Item -ItemType Directory -Force -Path $_tritonTmp -ErrorAction SilentlyContinue | Out-Null
+            if ($script:UnslothVerbose) {
+                Fast-Download --no-deps --only-binary=:all: -d $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                $tritonDlExit = $LASTEXITCODE
+                $tritonDlOutput = ""
+            } else {
+                $tritonDlOutput = Fast-Download --no-deps --only-binary=:all: -d $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | Out-String
+                $tritonDlExit = $LASTEXITCODE
+            }
+            # The exit code alone is not enough: no wheel on disk means nothing to install from.
+            $_tritonWheel = @(Get-ChildItem -LiteralPath $_tritonTmp -Filter "*.whl" -ErrorAction SilentlyContinue) | Select-Object -First 1 -ExpandProperty FullName
+            if ($tritonDlExit -ne 0 -or -not $_tritonWheel) {
+                substep "[WARN] could not fetch $_tritonXpuSpec (exit $tritonDlExit); triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
+                Write-Host (Redact-InstallOutput $tritonDlOutput) -ForegroundColor Yellow
+            } else {
+                Fast-Uninstall "triton-windows" | Out-Null
+                if ($script:UnslothVerbose) {
+                    Fast-Install --force-reinstall --no-deps $_tritonWheel | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                    $tritonXpuExit = $LASTEXITCODE
+                    $tritonOutput = ""
+                } else {
+                    $tritonOutput = Fast-Install --force-reinstall --no-deps $_tritonWheel | Out-String
+                    $tritonXpuExit = $LASTEXITCODE
+                }
+                if ($tritonXpuExit -ne 0) {
+                    # Off the network by now, so this is disk/permissions. triton-windows is
+                    # already gone and took the shared paths with it, so put SOME working triton
+                    # back rather than leave the venv unable to import one at all.
+                    Fast-Install --force-reinstall --no-deps "triton-windows<3.7" | Out-Null
+                    $tritonBackExit = $LASTEXITCODE
+                    Write-Host (Redact-InstallOutput $tritonOutput) -ForegroundColor Yellow
+                    if ($tritonBackExit -eq 0) {
+                        substep "[WARN] could not install $_tritonXpuSpec (exit $tritonXpuExit); restored triton-windows, so triton still imports -- but torch.compile will not use the XPU." "Yellow"
+                    } else {
+                        # Redacted: a mirror pin can carry a token, and this is the only place
+                        # setup.ps1 shows an index URL. A tokenless URL survives verbatim.
+                        $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
+                        Write-Host "[ERROR] triton-windows was removed and neither triton would reinstall -- torch.compile is broken." -ForegroundColor Red
+                        Write-Host "        Repair with: python -m pip install --force-reinstall --no-deps $_tritonXpuSpec --index-url $_tritonRepairUrl" -ForegroundColor Red
+                    }
+                }
+            }
+        } finally {
+            # The wheel is ~300 MB, so it never outlives the install.
+            Remove-Item -Recurse -Force -LiteralPath $_tritonTmp -ErrorAction SilentlyContinue
         }
     }
 }
