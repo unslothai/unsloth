@@ -2617,7 +2617,17 @@ extra_eos_tokens = None,
         part + '\n\n' + ollama_eos
 
     # HF Jinja Chat template
+    # Every piece of the caller's template below is concatenated into a Jinja
+    # '...' literal, so a single quote in it closes the literal early and a
+    # backslash is read as a Jinja escape. Escape the backslash first, or the
+    # one added for the quote gets doubled.
+    def escape_jinja_literal(text):
+        return text.replace("\\", "\\\\").replace("'", "\\'")
+
     def process(part, which, content = "message['content']"):
+        # Escape the literal text only, before the placeholder is swapped for the
+        # ' + message['content'] + ' concatenation, whose quotes must survive.
+        part = which.join(escape_jinja_literal(piece) for piece in part.split(which))
         if part.endswith(which):
             part = "'" + part[:part.find(which)] + f"' + {content}"
         elif part.startswith(which):
@@ -2640,7 +2650,7 @@ extra_eos_tokens = None,
             "{% endif %}"\
         "{% endfor %}"\
         "{% if add_generation_prompt %}"\
-            "{{ '" + output_part[:output_part.find("{OUTPUT}")] + "' }}"\
+            "{{ '" + escape_jinja_literal(output_part[:output_part.find("{OUTPUT}")]) + "' }}"\
         "{% endif %}"
 
     # Now add system prompt to jinja
@@ -2662,7 +2672,7 @@ extra_eos_tokens = None,
                 "{{ " + partial_system + " }}"\
                 "{% set loop_messages = messages[1:] %}"
         if default_system_message is not None:
-            full_system = system_part.replace("{SYSTEM}", default_system_message)
+            full_system = escape_jinja_literal(system_part.replace("{SYSTEM}", default_system_message))
             if "{SYSTEM}" in system_part:
                 modelfile += '\nSYSTEM "' + default_system_message + '"'
             partial_system += "{% else %}"\

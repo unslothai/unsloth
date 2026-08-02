@@ -113,7 +113,7 @@ _SYSTEM_CHAT_TEMPLATE = (
 )
 
 
-def _render(jinja_template, messages):
+def _render(jinja_template, messages, add_generation_prompt = False):
     from jinja2.sandbox import ImmutableSandboxedEnvironment
 
     env = ImmutableSandboxedEnvironment()
@@ -122,7 +122,7 @@ def _render(jinja_template, messages):
         messages = messages,
         bos_token = "<s>",
         eos_token = "</s>",
-        add_generation_prompt = False,
+        add_generation_prompt = add_generation_prompt,
     )
 
 
@@ -238,3 +238,43 @@ def test_input_boundary_prefers_the_longest_eos_token():
 
     rendered_user_turn = _render(jinja_template, [{"role": "user", "content": "Hi"}])
     assert rendered_user_turn == "### User: Hi</s>extra"
+
+
+_APOSTROPHE_CHAT_TEMPLATE = (
+    "{SYSTEM}\n"
+    "### User's turn: {INPUT}\n### Bot's reply: {OUTPUT}</s>"
+    "### User's turn: {INPUT}\n### Bot's reply: {OUTPUT}</s>"
+)
+
+
+@pytest.mark.parametrize(
+    "default_system_message",
+    [
+        "Answer the user's question.",
+        r"Put the answer in \boxed{}.",
+        r"Files live in C:\Users\me",
+    ],
+)
+def test_quotes_and_backslashes_survive_into_the_jinja_template(default_system_message):
+    """Template text is concatenated into Jinja `'...'` literals, so it has to be
+    escaped on the way in. An apostrophe used to close the literal early
+    (TemplateSyntaxError: expected token 'end of print statement'), and a backslash was
+    read as a Jinja escape, so `\\boxed` silently became a backspace character and
+    `C:\\Users` raised `truncated \\UXXXXXXXX escape`. Covers the system message and
+    the instruction/response sections, which are spliced by three separate call sites."""
+    _, jinja_template, _, _ = construct_chat_template(
+        tokenizer = _SuccessFakeTokenizer(),
+        chat_template = _APOSTROPHE_CHAT_TEMPLATE,
+        default_system_message = default_system_message,
+        extra_eos_tokens = ["</s>"],
+    )
+
+    rendered = _render(jinja_template, [{"role": "user", "content": "Hi"}])
+    assert default_system_message in rendered
+    assert "### User's turn: Hi" in rendered
+
+    # The generation prompt is spliced from its own literal, not through process().
+    prompted = _render(
+        jinja_template, [{"role": "user", "content": "Hi"}], add_generation_prompt = True,
+    )
+    assert prompted.endswith("### Bot's reply: ")
