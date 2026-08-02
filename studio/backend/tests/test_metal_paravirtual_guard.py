@@ -1023,15 +1023,21 @@ def test_the_split_mode_override_outlives_the_pass_through_extras():
 # ── the MTP slot clamp must follow the flags that actually launch ─────
 
 
-def test_a_stale_mtp_env_does_not_clamp_a_non_mtp_launch():
-    """LLAMA_ARG_SPEC_TYPE=draft-mtp with a user --spec-type ngram-mod launches
-    non-MTP (extras are appended last and win), so the slots must survive."""
+def test_an_inherited_mtp_env_still_clamps_the_slots():
+    """llama.cpp appends spec types rather than replacing them: --spec-type inserts,
+    --spec-default push_backs, and enablement is a find over the vector. So an
+    inherited LLAMA_ARG_SPEC_TYPE=draft-mtp launches MTP on its own and the clamp
+    has to read the env to catch it. (When extras also set a spec type,
+    _extra_args_requests_mtp gives the CLI precedence; that predates this change.)"""
     env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
-    assert llama_cpp._extra_args_requests_mtp(["--spec-type", "ngram-mod"], env) is False
-    # The pre-flight clamp reads extras only, so the env cannot reach it.
+    assert llama_cpp._extra_args_requests_mtp([], env) is True
+    assert llama_cpp._extra_args_requests_mtp(None, env) is True
+    # Negatives: nothing asks for MTP, so nothing is clamped.
     assert llama_cpp._extra_args_requests_mtp(None, {}) is False
+    assert llama_cpp._extra_args_requests_mtp(["--spec-type", "ngram-mod"], {}) is False
     src = _load_model_source()
-    assert "_extra_args_requests_mtp(extra_args, env = {})" in src
+    assert "_extra_args_requests_mtp(extra_args)" in src
+    assert "_extra_args_requests_mtp(extra_args, env = {})" not in src
 
 
 def test_the_backstop_defers_to_a_user_owned_spec_type():

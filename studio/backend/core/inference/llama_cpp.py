@@ -2014,23 +2014,29 @@ def _extra_args_requests_mtp(
 
 @functools.lru_cache(maxsize = 1)
 def _metal_device_is_paravirtual() -> bool:
-    """True when Metal is a virtualised Apple GPU, whose offload corrupts output.
+    """True when Metal is a virtualised Apple GPU, whose offload can corrupt output.
 
-    On GitHub's macos-14/15 runners ("Apple Paravirtual device") the same model and
-    binary emit `&#!56789:;<=>@ABCDEF...` with offload but coherent text at
-    gpu_layers=0, while MLX on the same machine stays correct. Parallels, UTM and
-    cloud Macs are affected too. Physical Apple Silicon never reports "Paravirtual",
-    so it keeps full offload.
+    Seen on our own macos-14/15 runners: offload returned an ordered walk through
+    the character set while gpu_layers=0 on the same model, quant and binary was
+    coherent, and MLX on that machine stayed correct. It does not reproduce on
+    every build or quant (gemma-3-270m Q4_K_M on b9000 and b10090 was byte
+    identical at gpu_layers 0 and 99), so UNSLOTH_ALLOW_PARAVIRTUAL_METAL=1 keeps
+    the GPU on a VM known to be good. Physical Apple Silicon never matches.
 
     Three probes, cheapest first. MLX names the device outright and costs about
     40 ms, but is not on every Mac. hw.model then answers for the headless case
     that matters most: measured on macos-14 and macos-15, SPDisplaysDataType
     returns zero bytes on a VM with no display, so it cannot see a cloud or CI
-    Mac at all, while hw.model still reports VirtualMac2,1 against Mac<n>,<n> on
-    real hardware. SPDisplaysDataType stays last for desktop VMs, which do have a
-    display and do name the paravirtual chipset.
+    Mac at all, while hw.model still reports VirtualMac2,1 or VMM-x86_64 against
+    Mac<n>,<n> on real hardware. SPDisplaysDataType stays last for desktop VMs,
+    which do have a display and do name the paravirtual chipset.
     """
     if sys.platform != "darwin":
+        return False
+    if os.environ.get("UNSLOTH_ALLOW_PARAVIRTUAL_METAL", "").strip().lower() in (
+        "1", "true", "yes",
+    ):
+        logger.info("UNSLOTH_ALLOW_PARAVIRTUAL_METAL set: keeping Metal offload.")
         return False
     name = ""
     try:
@@ -2040,8 +2046,10 @@ def _metal_device_is_paravirtual() -> bool:
         name = ""
     if "paravirtual" not in name.lower():
         for _probe_cmd, _match in (
-            (["sysctl", "-n", "hw.model"], "virtual"),
-            (["system_profiler", "SPDisplaysDataType"], "paravirtual"),
+            # VMM-x86_64 is the Intel-guest identifier and contains neither
+            # "virtual" nor "paravirtual"; upstream ships Metal on macOS x64 too.
+            (["sysctl", "-n", "hw.model"], ("virtual", "vmm-")),
+            (["system_profiler", "SPDisplaysDataType"], ("paravirtual",)),
         ):
             try:
                 probe = subprocess.run(
@@ -2054,14 +2062,16 @@ def _metal_device_is_paravirtual() -> bool:
                 )
             except Exception:
                 continue
-            if _match in (probe.stdout or "").lower():
+            _out = (probe.stdout or "").lower()
+            if any(m in _out for m in _match):
                 name = f"{name} {probe.stdout}".strip()
                 break
-    if "paravirtual" in name.lower() or "virtual" in name.lower():
+    _low = name.lower()
+    if "paravirtual" in _low or "virtual" in _low or "vmm-" in _low:
         logger.warning(
-            "Metal device looks virtualised (%s). llama.cpp GPU offload corrupts output "
-            "on paravirtual Apple GPUs, so GGUF inference will run on CPU. MLX is "
-            "unaffected.",
+            "Metal device looks virtualised (%s). Offload can return corrupt output on "
+            "paravirtual Apple GPUs, so GGUF inference will run on CPU. MLX is "
+            "unaffected. Set UNSLOTH_ALLOW_PARAVIRTUAL_METAL=1 to keep the GPU.",
             name.strip()[:120] or "unknown",
         )
         return True
@@ -2142,8 +2152,11 @@ def _paravirtual_strip_gpu_overrides(
     i = 0
     while i < len(args):
         tok = args[i]
+        # _flag_name mirrors llama.cpp's own underscore folding (arg.cpp does
+        # std::replace(_ -> -) before matching), so --override_tensor is the same
+        # flag to the child and has to be the same flag here.
         base, _, inline = tok.partition("=")
-        if base in _OVERRIDE_TENSOR_FLAGS:
+        if _flag_name(base) in _OVERRIDE_TENSOR_FLAGS:
             value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
             targets = [
                 part.rsplit("=", 1)[-1].strip().lower() for part in value.split(",") if "=" in part
@@ -7840,11 +7853,11 @@ class LlamaCppBackend:
             # token index, so slots read each other's rows, acceptance collapses and
             # MTP ends up slower than no speculation at all. Clamped beside the
             # --kv-unified clamp so the KV fit matches.
-            # env = {} on purpose: only an explicit --spec-type the user passed through
-            # is final here (extras are appended last, so they win at launch). A bare
-            # LLAMA_ARG_SPEC_TYPE is not -- Studio's own resolved spec flags override it
-            # -- so it is judged by the backstop after _build_speculative_flags instead.
-            if n_parallel > 1 and _extra_args_requests_mtp(extra_args, env = {}):
+            # The env counts. llama.cpp appends spec types rather than replacing them
+            # (--spec-type inserts, --spec-default push_backs, and enablement is a
+            # find over the vector), so an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp
+            # really does launch MTP and no later flag can clear it.
+            if n_parallel > 1 and _extra_args_requests_mtp(extra_args):
                 logger.warning(
                     "MTP speculative decoding (--spec-type draft-mtp) does not support "
                     "%d parallel slots; using 1. Load without MTP to serve chats in "
@@ -9624,6 +9637,12 @@ class LlamaCppBackend:
                 _pv_draft_cpu_pin: List[str] = []
                 _pv_mmproj_cpu_pin: List[str] = []
                 _pv_split_mode_pin: List[str] = []
+                # --gpu-layers 0 alone does not keep work off the device: with
+                # op_offload on (the default) ggml_backend_sched still sends ops
+                # whose weights sit in host buffers to a higher-priority backend,
+                # and Metal accepts them at batch >= 32. --device none drops the
+                # device from the list outright, which is the only way to be sure.
+                _pv_device_pin: List[str] = ["--device", "none"] if _paravirtual_cpu_forced else []
                 if (
                     _paravirtual_cpu_forced
                     and _extra_args_mtp_draft_path([*spec_flags, *(extra_args or [])]) is not None
@@ -9858,6 +9877,8 @@ class LlamaCppBackend:
                 # env block below decides whether this really is a zero-VRAM server.
                 if _pv_split_mode_pin:
                     cmd.extend(_pv_split_mode_pin)
+                if _pv_device_pin:
+                    cmd.extend(_pv_device_pin)
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
