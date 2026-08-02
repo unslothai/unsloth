@@ -11,6 +11,7 @@ import {
   partitionSoleQuants,
   soleQuantFingerprint,
   soleQuantKey,
+  takeDriftedRepos,
 } from "../src/features/model-picker/components/model-selector/sole-quant-cache.ts";
 
 const A = "unsloth/Qwen3-8B-GGUF";
@@ -18,8 +19,18 @@ const B = "unsloth/Llama-3.1-8B-Instruct-GGUF";
 
 /** Two listed repos, each at its own cache version. */
 const targetsAt = (versionA: string, versionB: string): SoleQuantTarget[] => [
-  { repoId: A, localSource: null, key: soleQuantKey(versionA, null) },
-  { repoId: B, localSource: null, key: soleQuantKey(versionB, null) },
+  {
+    repoId: A,
+    localSource: null,
+    fingerprint: "",
+    key: soleQuantKey(versionA, null),
+  },
+  {
+    repoId: B,
+    localSource: null,
+    fingerprint: "",
+    key: soleQuantKey(versionB, null),
+  },
 ];
 
 const settled = (
@@ -72,6 +83,7 @@ test("a repo pointed at another directory is re-read", () => {
     {
       repoId: A,
       localSource: "/other/cache",
+      fingerprint: "",
       key: soleQuantKey("1:0", "/other/cache"),
     },
     targets[1],
@@ -134,6 +146,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 const targetAt = (repoId: string, key: string): SoleQuantTarget => ({
   repoId,
   localSource: null,
+  fingerprint: "",
   key,
 });
 
@@ -230,9 +243,14 @@ test("a failed read commits as no sole quant", async () => {
 });
 
 test("bytes changing on disk moves the key, so the repo is read again", () => {
+  const beforePrint = soleQuantFingerprint({
+    size_bytes: 100,
+    last_modified: 10,
+  });
   const before = {
     repoId: A,
     localSource: null,
+    fingerprint: beforePrint,
     key: soleQuantKey(
       "1:0",
       null,
@@ -242,15 +260,16 @@ test("bytes changing on disk moves the key, so the repo is read again", () => {
   const entries = new Map([[A, { key: before.key, quant: "Q4_K_M" }]]);
 
   // Another tab replaced the quant: same cache version, different bytes.
+  const afterPrint = soleQuantFingerprint({
+    size_bytes: 250,
+    last_modified: 99,
+  });
   const after = [
     {
       repoId: A,
       localSource: null,
-      key: soleQuantKey(
-        "1:0",
-        null,
-        soleQuantFingerprint({ size_bytes: 250, last_modified: 99 }),
-      ),
+      fingerprint: afterPrint,
+      key: soleQuantKey("1:0", null, afterPrint),
     },
   ];
   const { quants, pending } = partitionSoleQuants(after, entries, {
@@ -268,6 +287,7 @@ test("unchanged bytes keep the repo settled", () => {
   const target = {
     repoId: A,
     localSource: null,
+    fingerprint,
     key: soleQuantKey("1:0", null, fingerprint),
   };
   const entries = new Map([[A, { key: target.key, quant: "Q4_K_M" }]]);
@@ -276,4 +296,56 @@ test("unchanged bytes keep the repo settled", () => {
   });
   assert.deepEqual([...quants], [[A, "Q4_K_M"]]);
   assert.deepEqual([...pending], []);
+});
+
+const targetWith = (
+  repoId: string,
+  fingerprint: string,
+  version: string,
+): SoleQuantTarget => ({
+  repoId,
+  localSource: null,
+  fingerprint,
+  key: soleQuantKey(version, null, fingerprint),
+});
+
+test("first sight records without asking for an invalidation", () => {
+  const seen = new Map<string, string>();
+  assert.deepEqual(
+    takeDriftedRepos([targetWith(A, "100:10", "1:0")], seen),
+    [],
+  );
+  assert.equal(seen.get(A), "100:10");
+});
+
+test("a version bump alone does not count as drift", () => {
+  const seen = new Map<string, string>();
+  takeDriftedRepos([targetWith(A, "100:10", "1:0")], seen);
+  // Dropping a listing bumps the version, which moves the key. Reacting to
+  // that would invalidate on its own effect forever.
+  assert.deepEqual(
+    takeDriftedRepos([targetWith(A, "100:10", "1:9")], seen),
+    [],
+  );
+});
+
+test("changed bytes drift once, not on every pass", () => {
+  const seen = new Map<string, string>();
+  takeDriftedRepos([targetWith(A, "100:10", "1:0")], seen);
+  assert.deepEqual(takeDriftedRepos([targetWith(A, "250:99", "1:0")], seen), [
+    A,
+  ]);
+  // The bump that follows the invalidation must not drift again.
+  assert.deepEqual(
+    takeDriftedRepos([targetWith(A, "250:99", "1:9")], seen),
+    [],
+  );
+});
+
+test("only the repo whose bytes moved drifts", () => {
+  const seen = new Map<string, string>();
+  const before = [targetWith(A, "100:10", "1:0"), targetWith(B, "7:1", "1:0")];
+  takeDriftedRepos(before, seen);
+  const after = [targetWith(A, "100:10", "1:0"), targetWith(B, "9:2", "1:0")];
+  assert.deepEqual(takeDriftedRepos(after, seen), [B]);
 });

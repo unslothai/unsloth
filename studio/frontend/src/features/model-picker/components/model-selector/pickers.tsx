@@ -133,6 +133,7 @@ import {
   partitionSoleQuants,
   soleQuantFingerprint,
   soleQuantKey,
+  takeDriftedRepos,
 } from "./sole-quant-cache";
 import type {
   DeletedModelRef,
@@ -763,14 +764,12 @@ function useSoleDownloadedQuants(
     const versions = variantsVersion.split(",");
     return repos.map((repo, index) => {
       const localSource = repo.load_id || repo.cache_path || null;
+      const fingerprint = soleQuantFingerprint(repo);
       return {
         repoId: repo.repo_id,
         localSource,
-        key: soleQuantKey(
-          versions[index],
-          localSource,
-          soleQuantFingerprint(repo),
-        ),
+        fingerprint,
+        key: soleQuantKey(versions[index], localSource, fingerprint),
       };
     });
   }, [repos, variantsVersion]);
@@ -789,12 +788,8 @@ function useSoleDownloadedQuants(
   // cached listing so the read, and every other reader, sees disk again.
   const fingerprintsRef = useRef(new Map<string, string>());
   useEffect(() => {
-    for (const target of targets) {
-      const seen = fingerprintsRef.current.get(target.repoId);
-      fingerprintsRef.current.set(target.repoId, target.key);
-      if (seen !== undefined && seen !== target.key) {
-        invalidateGgufVariantsCache(target.repoId);
-      }
+    for (const repoId of takeDriftedRepos(targets, fingerprintsRef.current)) {
+      invalidateGgufVariantsCache(repoId);
     }
   }, [targets]);
 

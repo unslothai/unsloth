@@ -63,7 +63,10 @@ test("a repo with nothing on disk lists nothing", () => {
 });
 
 test("variants missing the flags count as not on disk", () => {
-  const shown = visibleGgufVariants([{ quant: "Q2_K" }], {
+  // A backend that reports neither flag, as the older ones do.
+  const unflagged: { quant: string; downloaded?: boolean; partial?: boolean } =
+    { quant: "Q2_K" };
+  const shown = visibleGgufVariants([unflagged], {
     onDevice: true,
     showAll: false,
   });

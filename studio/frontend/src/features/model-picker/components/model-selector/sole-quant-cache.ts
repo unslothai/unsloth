@@ -6,10 +6,12 @@
 // invalidation leaves the rest of the list alone. No React/DOM deps so it
 // stays easy to test.
 
-/** A repo to probe, tagged with the cache version and location it reads at. */
+/** A repo to probe, tagged with the cache version and location it reads at,
+ *  and separately with the bytes on disk behind it. */
 export interface SoleQuantTarget {
   repoId: string;
   localSource: string | null;
+  fingerprint: string;
   key: string;
 }
 
@@ -113,4 +115,26 @@ export function createSoleQuantReader<T>({
       }
     },
   };
+}
+
+/** Repos whose bytes moved since they were last seen, recording what is seen
+ *  now. Their cached listing predates the change, so it should be dropped.
+ *
+ *  Compares the fingerprint alone, never the probe key: the key also carries
+ *  the variants cache version, and dropping a listing bumps that version, so
+ *  comparing keys would invalidate on its own effect forever. */
+export function takeDriftedRepos(
+  targets: readonly SoleQuantTarget[],
+  seen: Map<string, string>,
+): string[] {
+  const drifted: string[] = [];
+  for (const target of targets) {
+    const previous = seen.get(target.repoId);
+    seen.set(target.repoId, target.fingerprint);
+    // First sight records only: there is no earlier listing to drop.
+    if (previous !== undefined && previous !== target.fingerprint) {
+      drifted.push(target.repoId);
+    }
+  }
+  return drifted;
 }
