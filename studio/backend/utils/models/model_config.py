@@ -24,6 +24,7 @@ from utils.models.gguf_metadata import (
 )
 import structlog
 from loggers import get_logger
+import contextlib as _contextlib
 import os
 import re
 import subprocess
@@ -50,11 +51,39 @@ _OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def _env_offline() -> bool:
-    """True if an HF offline env var is truthy (canonical strip+lower parse, on/true/yes/1)."""
+    """True if an HF offline env var is truthy (strip+lower, on/true/yes/1).
+
+    An open force_hf_offline window counts even when the env momentarily disagrees: the
+    spawn window restores the user's values, and this gates detect_audio_type's raw
+    requests.get, which the patched hub constant does not cover. Function-local import
+    avoids a cycle; the env parse is the fallback.
+    """
+    try:
+        from utils.utils import hf_env_offline
+        return hf_env_offline()
+    except Exception:
+        pass
     return (
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
     )
+
+
+@_contextlib.contextmanager
+def _offline_while_reading(target: Optional[str]):
+    """Force offline while dereferencing a REMOTE model reached from a LOCAL one.
+
+    The load guard stands down for a local LoRA or GGUF, but its base can be a hub repo and
+    the lookups below fetch that base, so a "local" load would resume the retry backoff.
+    No-ops on a local target and refcounts when a window is already open.
+    """
+    try:
+        from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+    except Exception:
+        yield  # guard unavailable (worker context): behave as before
+        return
+    with _hf_offline_if_unreachable_for(target):
+        yield
 
 
 # ── Model size extraction ────────────────────────────────────
@@ -1431,6 +1460,10 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         for f in _iter_gguf_files(d):
             try:
                 resolved = f.resolve()
+                # Interrupted download: llama-server cannot open it, the inventory already reports
+                # such a row text-only, and it must not shadow a whole projector beside it.
+                if resolved.stat().st_size <= 0:
+                    continue
             except OSError:
                 continue
             if resolved in seen_resolved:
@@ -1667,7 +1700,54 @@ def detect_mtp_file(
     return None
 
 
-def detect_gguf_model(path: str) -> Optional[str]:
+def _registered_custom_model_root(path: str) -> Optional[Path]:
+    try:
+        from storage.studio_db import list_scan_folders
+        folders = list_scan_folders()
+    except Exception:
+        return None
+    candidate = Path(os.path.abspath(Path(path).expanduser()))
+    matches = []
+    for folder in folders:
+        raw = folder.get("path")
+        if not isinstance(raw, str) or not raw:
+            continue
+        root = Path(os.path.abspath(Path(normalize_path(raw)).expanduser()))
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        matches.append(root)
+    return max(matches, key = lambda root: len(root.parts), default = None)
+
+
+def _local_mtp_context(path: Path, model_root: Optional[Path], fallback: str) -> str:
+    if model_root is not None:
+        try:
+            return Path(os.path.abspath(path)).relative_to(model_root).as_posix()
+        except ValueError:
+            pass
+    return fallback
+
+
+def _is_terminal_gemma_mtp(name: str) -> bool:
+    stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", Path(name).stem.lower())
+    return stem.endswith("-mtp") and bool(re.search(r"(?:^|[-_])gemma[-_]?4(?:[-_]|$)", stem))
+
+
+def _is_local_mtp_drafter(path: Path, model_root: Optional[Path], fallback: str) -> bool:
+    context = _local_mtp_context(path, model_root, fallback)
+    if _is_mtp_drafter(context):
+        return True
+    return (
+        model_root is not None
+        and model_root.name.lower() == "mtp"
+        and "/" not in context
+        and _is_terminal_gemma_mtp(path.name)
+    )
+
+
+def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[str]:
     """Check if a local path is or contains a GGUF model file.
 
     Handles a direct .gguf path or a directory of .gguf files. Skips mmproj
@@ -1675,6 +1755,11 @@ def detect_gguf_model(path: str) -> Optional[str]:
     the .gguf path or None. For HF repos, use detect_gguf_model_remote().
     """
     p = Path(path)
+    root = (
+        Path(os.path.abspath(Path(model_root).expanduser()))
+        if model_root is not None
+        else _registered_custom_model_root(path)
+    )
 
     # Case 1: direct .gguf file
     if p.suffix.lower() == ".gguf":
@@ -1685,7 +1770,11 @@ def detect_gguf_model(path: str) -> Optional[str]:
         # (...-MTP.gguf) doesn't match the predicate's mtp- prefix.
         rel = f"{p.parent.name}/{p.name}"
         quant = _extract_quant_label(rel)
-        if _is_mmproj(p.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
+        if (
+            _is_mmproj(p.name)
+            or _is_local_mtp_drafter(p, root, rel)
+            or _is_big_endian_gguf_path(rel, quant)
+        ):
             return None
         # Extension is authoritative: don't gate on is_file()/exists(), which
         # can fail in the Windows lock window after llama-server is killed.
@@ -1705,7 +1794,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
             quant = _extract_quant_label(context_rel)
             if (
                 _is_mmproj(f.name)
-                or _is_mtp_drafter(context_rel)
+                or _is_local_mtp_drafter(f, root, context_rel)
                 or _is_big_endian_gguf_path(context_rel, quant)
             ):
                 continue
@@ -1891,6 +1980,23 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(search_dir)
 
 
+def _snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
+    """Order snapshots by mtime, then by resolved path.
+
+    Mirrors hub.utils.hf_cache_state.snapshot_selection_key (utils cannot import hub) and must change
+    in lockstep: mtime alone is not a total order, so a tie broken differently would let the
+    inventory row advertise one revision while the load reads the other.
+    """
+    try:
+        mtime = snapshot.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    try:
+        return mtime, str(snapshot.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return mtime, str(snapshot)
+
+
 def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = None):
     """Yield HF cache snapshot dirs for *repo_id*, newest first.
 
@@ -1933,14 +2039,15 @@ def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = Non
             continue
     if not snap_dirs:
         return
-    snap_dirs_with_mtime = []
+    ordered = []
     for snap_dir in snap_dirs:
         try:
-            snap_dirs_with_mtime.append((snap_dir.stat().st_mtime, snap_dir))
+            snap_dir.stat()
         except OSError:
             continue
-    snap_dirs_with_mtime.sort(key = lambda item: item[0], reverse = True)
-    yield from (snap_dir for _, snap_dir in snap_dirs_with_mtime)
+        ordered.append((_snapshot_selection_key(snap_dir), snap_dir))
+    ordered.sort(key = lambda item: item[0], reverse = True)
+    yield from (snap_dir for _key, snap_dir in ordered)
 
 
 def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
@@ -2069,7 +2176,9 @@ def _resolve_gguf_dir(p: Path) -> Optional[Path]:
     return None
 
 
-def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], bool]:
+def list_local_gguf_variants(
+    directory: str, model_root: Optional[str] = None
+) -> tuple[list[GgufVariantInfo], bool]:
     """List GGUF quant variants in a local directory.
 
     Like :func:`list_gguf_variants` but reads the filesystem. Aggregates shard
@@ -2081,6 +2190,11 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
         return [], False
+    root = (
+        Path(os.path.abspath(Path(model_root).expanduser()))
+        if model_root is not None
+        else _registered_custom_model_root(directory)
+    )
 
     quant_totals: dict[str, int] = {}
     quant_first_file: dict[str, str] = {}
@@ -2101,7 +2215,7 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
         # Use the relative path so ``BF16/foo.gguf`` and ``Q4_K_M/foo.gguf``
         # get distinct quant labels instead of collapsing on basename.
         rel = f.relative_to(p).as_posix()
-        if _is_mtp_drafter(rel):
+        if _is_local_mtp_drafter(f, root, rel):
             continue
         quant = _extract_quant_label(rel)
         if _is_big_endian_gguf_path(rel, quant):
@@ -2122,7 +2236,11 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
     return variants, has_vision
 
 
-def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
+def _find_local_gguf_by_variant(
+    directory: str,
+    variant: str,
+    model_root: Optional[str] = None,
+) -> Optional[str]:
     """Find the GGUF file in *directory* matching a quantization *variant*.
 
     For sharded GGUFs (multiple files sharing a quant label), returns the
@@ -2133,6 +2251,11 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
         return None
+    root = (
+        Path(os.path.abspath(Path(model_root).expanduser()))
+        if model_root is not None
+        else _registered_custom_model_root(directory)
+    )
 
     # Recurse so variants under a quant-named subdir (e.g.
     # ``BF16/foo-BF16-00001-of-00002.gguf``) are found. Match the relative
@@ -2141,10 +2264,11 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     matches = []
     for f in _iter_gguf_files(p, recursive = True):
         rel = f.relative_to(p).as_posix()
-        if _is_mmproj(f.name) or _is_mtp_drafter(rel):
+        if _is_mmproj(f.name) or _is_local_mtp_drafter(f, root, rel):
             continue
         quant = _extract_quant_label(rel)
-        if quant != variant or _is_big_endian_gguf_path(rel, quant):
+        fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
+        if variant not in (quant, fallback_variant) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)
     matches.sort()
@@ -2955,8 +3079,13 @@ class ModelConfig:
                     try:
                         meta = json.loads(meta_path.read_text(encoding = "utf-8-sig"))
                         base = meta.get("base_model")
-                        if base and is_vision_model(base, hf_token = hf_token):
-                            base_is_vision = True
+                        # Only when there IS a base to read: the exporter writes null for
+                        # a non-LoRA checkpoint, and guarding a lookup that never happens
+                        # would make a wholly local load pay the reachability probe.
+                        if base:
+                            with _offline_while_reading(base):
+                                base_is_vision = bool(is_vision_model(base, hf_token = hf_token))
+                        if base_is_vision:
                             logger.info(f"GGUF base model '{base}' is a vision model")
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
@@ -3101,8 +3230,9 @@ class ModelConfig:
         else:
             check_model = identifier
 
-        vision = is_vision_model(check_model, hf_token = hf_token)
-        audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
+        with _offline_while_reading(check_model):
+            vision = is_vision_model(check_model, hf_token = hf_token)
+            audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
         has_audio_in = is_audio_input_type(audio_type_val)
 
         display_name = Path(path).name if is_local else identifier.split("/")[-1]

@@ -171,6 +171,19 @@ def test_native_clipboard_bridge_is_bounded_and_registered():
     assert "native_clipboard::read_native_clipboard_png" in tauri_main
 
 
+def test_mac_dock_reopens_hidden_main_window():
+    source = TAURI_MAIN.read_text(encoding = "utf-8")
+    show_helper = source.split("fn show_main_window", 1)[1].split("\n}\n", 1)[0]
+    run_handler = source.split(".run(|app, event|", 1)[1]
+
+    for action in ("window.show()", "window.unminimize()", "window.set_focus()"):
+        assert action in show_helper
+    assert "tauri::RunEvent::Reopen" in run_handler
+    assert "has_visible_windows: false" in run_handler
+    reopen_handler = run_handler.split("tauri::RunEvent::Reopen", 1)[1].split("=>", 1)[1]
+    assert "show_main_window(app)" in reopen_handler
+
+
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
@@ -195,6 +208,21 @@ def test_full_app_layout_uses_its_own_initialized_marker():
     assert setup_layout.index(reset_call) < setup_layout.index("win.setSize")
     assert 'invoke("mark_app_window_layout_initialized")' in source
     assert "hasInitializedAppLayout && hasSavedState" in source
+
+
+def test_first_app_layout_survives_a_stale_setup_window_size():
+    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    minimum_helper = source.split("async function enforceMinimumWindowSize", 1)[1].split(
+        "async function applyAppWindowLayout", 1
+    )[0]
+    app_layout = source.split("async function applyAppWindowLayout", 1)[1].split(
+        "async function showWindowFallback", 1
+    )[0]
+
+    assert "requestedSize.width" in minimum_helper
+    assert "requestedSize.height" in minimum_helper
+    assert "requestedSize = { width: finalW, height: finalH };" in app_layout
+    assert "enforceMinimumWindowSize(win, LogicalSize, isCurrent, requestedSize)" in app_layout
 
 
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():

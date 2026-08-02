@@ -1184,7 +1184,9 @@ export function AppSidebar() {
       collapsible="icon"
       variant="sidebar"
       className={cn(
-        "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background",
+        // Rail background comes from --sidebar-surface (index.css) so the
+        // footer fade below can match it in every theme.
+        "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
         usesNativeMacTitlebar &&
           "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
       )}
@@ -1259,7 +1261,7 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="inline-flex h-[33px] w-[28px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="inline-flex size-[28px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
                       <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
@@ -1283,7 +1285,7 @@ export function AppSidebar() {
                       <button
                         type="button"
                         onClick={togglePinned}
-                        className="inline-flex h-[33px] w-[28px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        className="inline-flex size-[28px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
                         <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -1436,7 +1438,7 @@ export function AppSidebar() {
               />
               <NavItem
                 icon={Folder01Icon}
-                label="Projects"
+                label={t("shell.navigation.projects")}
                 active={
                   pathname === "/projects" || pathname.startsWith("/projects/")
                 }
@@ -1861,7 +1863,7 @@ export function AppSidebar() {
         <div
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar)] to-[rgb(from_var(--sidebar)_r_g_b/0)] transition-opacity duration-200",
+            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             // Shorter fade when the update card sits above the profile so the
             // list reads closer to it.
             showUpdateCard ? "h-3" : "h-10",

@@ -229,6 +229,22 @@ def _is_adapter_weight_name(name: str) -> bool:
     return lower.startswith("adapter_model") and lower.endswith((".safetensors", ".bin"))
 
 
+# Trainer state saved beside the weights, not the model. The .bin side is already an allow list.
+_TRAINING_ARTEFACT_PREFIXES = (
+    "optimizer",
+    "scheduler",
+    "rng_state",
+    "trainer_state",
+    "scaler",
+    "training_args",
+)
+
+
+def _is_training_artefact_name(name: str) -> bool:
+    """Whether *name* is trainer state rather than weights any row loads."""
+    return _weight_basename(name).startswith(_TRAINING_ARTEFACT_PREFIXES)
+
+
 def _is_transformers_safetensors_weight_name(name: str) -> bool:
     lower = _weight_basename(name)
     return lower.endswith(".safetensors") and lower.startswith(
@@ -248,6 +264,14 @@ def _is_checkpoint_weight_name(name: str) -> bool:
     if lower.endswith(".bin"):
         return _is_transformers_bin_weight_name(lower)
     return lower.endswith(_LOCAL_CHECKPOINT_EXTENSIONS)
+
+
+def _is_discoverable_ungrouped_weight_name(name: str) -> bool:
+    """Ungrouped payloads a runtime opens by name: diffusers components, single-file checkpoints."""
+    lower = _weight_basename(name)
+    if lower.endswith(".safetensors"):
+        return lower.startswith("diffusion_pytorch_model")
+    return _is_checkpoint_weight_name(lower)
 
 
 def _is_adapter_weight_file(path: Path) -> bool:

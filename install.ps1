@@ -20,6 +20,35 @@ function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
 
+    # Same fix as studio/setup.ps1, for the same reason. This script also runs
+    # astral's uv installer in-process (Invoke-Expression, below), and that
+    # installer calls Get-ExecutionPolicy out of Microsoft.PowerShell.Security.
+    # The desktop app reaches here as Tauri -> Rust -> powershell.exe
+    # (studio/src-tauri/src/install.rs), and PowerShell only rewrites
+    # PSModulePath for a direct pwsh -> powershell.exe hop, so the Rust process
+    # in between leaves Windows PowerShell 5.1 leading with PowerShell 7's
+    # module directories and unable to load its own copy of that module.
+    #
+    # Not restored afterwards, deliberately. $env: is the process environment,
+    # so running this script in an interactive console leaves the reordering in
+    # place for that session. A try/finally would not change that for the case
+    # it is raised about: the interactive path ends by running Studio in the
+    # foreground, so the finally would not fire until the user stops the server.
+    # Narrowing the trigger instead would risk skipping the fix on some chain
+    # this list does not anticipate, and the cost of that is the install failing
+    # outright, against a session-lived module precedence change here.
+    if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {
+        $_UnslothSystemModules = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
+        if (Test-Path $_UnslothSystemModules) {
+            # Prepended: the problem is precedence, not absence.
+            $_UnslothKept = @(
+                $env:PSModulePath -split ';' |
+                    Where-Object { $_ -and ($_ -ne $_UnslothSystemModules) }
+            )
+            $env:PSModulePath = (@($_UnslothSystemModules) + $_UnslothKept) -join ';'
+        }
+    }
+
     # ── Tauri structured output ──
     function Write-TauriLog {
         param([string]$Tag, [string]$Message)
@@ -2712,51 +2741,6 @@ exit 0
                 Write-Host "  [WARN] PyTorch is CPU-only but a $expectedTorchTag GPU build was expected for this machine." -ForegroundColor Yellow
                 Write-Host "  [WARN] Training and GPU inference will run on CPU until this is fixed." -ForegroundColor Yellow
                 Write-Host "  [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU." -ForegroundColor Yellow
-            }
-        }
-    }
-
-    # Overlay Tauri-bundled studio fixes that may be ahead of PyPI. Skipped
-    # for --local: the editable install above already makes _PACKAGE_ROOT in
-    # unsloth_cli/commands/studio.py resolve to the repo (PEP 660 __file__).
-    # Source paths match the Tauri bundle layout in studio/src-tauri/tauri.conf.json,
-    # which bundles install_python_stack.py at the bundle root next to install.ps1.
-    if ($TauriMode) {
-        $rawPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.ScriptName }
-        if ($rawPath) {
-            # Strip leading \\?\ extended-length prefix if the launcher passed one.
-            $scriptDir = Split-Path -Parent ($rawPath -replace '^\\\\\?\\', '')
-            $overlayMap = [ordered]@{
-                "install_python_stack.py" = "Lib\site-packages\studio\install_python_stack.py"
-            }
-            foreach ($rel in $overlayMap.Keys) {
-                $src = Join-Path $scriptDir $rel
-                $dst = Join-Path $VenvDir $overlayMap[$rel]
-                # -LiteralPath: $VenvDir derives from $StudioHome which may
-                # contain [ ] * ? when the user overrode UNSLOTH_STUDIO_HOME.
-                if (-not (Test-Path -LiteralPath $src)) { continue }
-                $dstParent = Split-Path -Parent $dst
-                if (-not (Test-Path -LiteralPath $dstParent)) {
-                    Write-Host "[WARN] Overlay target dir missing: $dstParent; studio setup may use stale bundled file" -ForegroundColor Yellow
-                    continue
-                }
-                try {
-                    if (-not (Test-Path -LiteralPath $dst)) {
-                        # Backfill: target file missing but parent dir exists.
-                        Copy-Item -LiteralPath $src -Destination $dst -Force
-                        substep ("backfilled bundled " + (Split-Path -Leaf $rel))
-                    } else {
-                        # Hash-compare so re-runs are no-ops when files already match.
-                        $srcHash = (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
-                        $dstHash = (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash
-                        if ($srcHash -ne $dstHash) {
-                            Copy-Item -LiteralPath $src -Destination $dst -Force
-                            substep ("applied bundled " + (Split-Path -Leaf $rel))
-                        }
-                    }
-                } catch {
-                    Write-Host "[WARN] Could not overlay $($rel): $($_.Exception.Message); studio setup may use stale bundled file" -ForegroundColor Yellow
-                }
             }
         }
     }
