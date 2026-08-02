@@ -178,13 +178,15 @@ def _loaded_diffusion(llama_cpp, *, recorded_layers, requested_ngl):
 
 
 def _in_target_state(llama_cpp, b, *, mode, layers):
-    return b.matches_load_intent(llama_cpp.GgufLoadIntent(
-        model_identifier = "unsloth/DiffusionGemma-GGUF",
-        n_ctx = 4096,
-        gpu_memory_mode = mode,
-        gpu_layers = layers,
-        gpu_ids = [0],
-    ))
+    return b.matches_load_intent(
+        llama_cpp.GgufLoadIntent(
+            model_identifier = "unsloth/DiffusionGemma-GGUF",
+            n_ctx = 4096,
+            gpu_memory_mode = mode,
+            gpu_layers = layers,
+            gpu_ids = [0],
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -363,7 +365,8 @@ def test_response_models_expose_the_requested_split():
     )
     tree = ast.parse(models_src)
     runtime = next(
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.ClassDef) and n.name == "_InferenceRuntimeFields"
     )
     fields = {

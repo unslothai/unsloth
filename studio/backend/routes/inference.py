@@ -5992,6 +5992,7 @@ async def _load_model_impl(
                     context_length = _positive_int_or_none(_model_info.get("context_length")),
                     chat_template = _chat_template,
                 )
+
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # Probe wrap so offline loads skip 30-60s of soft-failed network checks before
         # the worker starts. Off-loop: the guard can spend seconds on DNS plus a HEAD and
