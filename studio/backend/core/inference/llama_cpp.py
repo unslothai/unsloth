@@ -3569,10 +3569,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def reasoning_budget_settings_requested(
-        *,
-        extra_args: Optional[Iterable[str]],
-        reasoning_budget: int,
-        reasoning_budget_message: str,
+        *, extra_args: Optional[Iterable[str]], reasoning_budget: int, reasoning_budget_message: str
     ) -> tuple[bool, bool]:
         budget_override = parse_reasoning_budget_override(extra_args)
         message_override = parse_reasoning_budget_message_override(extra_args)
