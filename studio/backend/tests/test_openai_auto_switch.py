@@ -705,6 +705,31 @@ def test_auto_switch_applies_partial_override(monkeypatch):
     assert req.max_seq_length == 0  # untouched default
 
 
+def test_auto_switch_applies_reasoning_budget_override(monkeypatch):
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings,
+        "get_model_override",
+        lambda model_id: {
+            "reasoning_budget": 2048,
+            "reasoning_budget_message": "Conclude now",
+        },
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert req.reasoning_budget == 2048
+    assert req.reasoning_budget_message == "Conclude now"
+
+
 def _mock_override_store(monkeypatch):
     """Back the override read + atomic-merge write with an in-memory dict."""
     import storage.studio_db as db
@@ -770,6 +795,138 @@ def test_model_override_roundtrip(monkeypatch):
     settings.set_model_override("unsloth/B-GGUF", llama_extra_args = [], max_seq_length = None)
     assert settings.get_model_override("unsloth/B-GGUF") == {}
     assert settings.get_model_overrides() == {}
+
+
+def test_reasoning_budget_override_route_roundtrip(monkeypatch):
+    _mock_override_store(monkeypatch)
+
+    response = _put(
+        "unsloth/B-GGUF",
+        reasoning_budget = 2048,
+        reasoning_budget_message = "Conclude now",
+    )
+
+    assert response.overrides["unsloth/B-GGUF"] == {
+        "reasoning_budget": 2048,
+        "reasoning_budget_message": "Conclude now",
+    }
+    assert settings.model_override_load_kwargs(
+        response.overrides["unsloth/B-GGUF"], is_gguf = True
+    ) == {
+        "reasoning_budget": 2048,
+        "reasoning_budget_message": "Conclude now",
+    }
+
+
+def test_reasoning_resets_strip_only_matching_carried_flags(monkeypatch):
+    _mock_override_store(monkeypatch)
+    extras = [
+        "--reasoning-budget=2048",
+        "--reasoning-budget-message",
+        "Conclude now",
+        "--top-k",
+        "40",
+    ]
+    for suffix in ("budget", "message", "both", "fill"):
+        _put(f"unsloth/B-GGUF:{suffix}", llama_extra_args = extras)
+
+    budget = _put("unsloth/B-GGUF:budget", reasoning_budget = -1).overrides["unsloth/B-GGUF:budget"]
+    assert budget["llama_extra_args"] == [
+        "--reasoning-budget-message",
+        "Conclude now",
+        "--top-k",
+        "40",
+    ]
+    assert budget["reasoning_budget"] == -1
+
+    message = _put("unsloth/B-GGUF:message", reasoning_budget_message = "").overrides[
+        "unsloth/B-GGUF:message"
+    ]
+    assert message["llama_extra_args"] == ["--reasoning-budget=2048", "--top-k", "40"]
+    assert message["reasoning_budget_message"] == ""
+
+    both = _put(
+        "unsloth/B-GGUF:both",
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+    ).overrides["unsloth/B-GGUF:both"]
+    assert both["llama_extra_args"] == ["--top-k", "40"]
+    assert settings.model_override_load_kwargs(both, is_gguf = True) == {
+        "llama_extra_args": ["--top-k", "40"],
+        "reasoning_budget": -1,
+        "reasoning_budget_message": "",
+    }
+
+    filled = _put(
+        "unsloth/B-GGUF:fill",
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+        fill_absent_fields = True,
+    ).overrides["unsloth/B-GGUF:fill"]
+    assert filled["llama_extra_args"] == extras
+    assert "reasoning_budget" not in filled
+    assert "reasoning_budget_message" not in filled
+
+
+def test_reasoning_reset_tombstone_blocks_bare_and_legacy_fallbacks(monkeypatch):
+    _mock_override_store(monkeypatch)
+
+    _put("unsloth/B-GGUF", llama_extra_args = ["--reasoning-budget", "2048"])
+    qualified = _put("unsloth/B-GGUF:Q4_K_M", reasoning_budget = -1).overrides
+    assert qualified["unsloth/B-GGUF:Q4_K_M"] == {"reasoning_budget": -1}
+    assert qualified["unsloth/B-GGUF"]["llama_extra_args"] == ["--reasoning-budget", "2048"]
+    assert settings.model_override_load_kwargs(
+        settings.get_model_override("unsloth/B-GGUF:Q4_K_M"), is_gguf = True
+    ) == {"reasoning_budget": -1}
+
+    path = "/tmp/model-Q4_K_M.gguf"
+    _put(f"{path}:Q4_K_M", llama_extra_args = ["--reasoning-budget-message", "Stop"])
+    standalone = _put(path, reasoning_budget_message = "").overrides
+    assert standalone[path] == {"reasoning_budget_message": ""}
+    assert settings.model_override_load_kwargs(settings.get_model_override(path), is_gguf = True) == {
+        "reasoning_budget_message": ""
+    }
+
+
+@pytest.mark.parametrize("message", ["😀" * 2_049, "bad\0message"])
+def test_reasoning_budget_override_rejects_unsafe_argv(message):
+    import pydantic
+    import routes.settings as settings_route
+
+    with pytest.raises(pydantic.ValidationError):
+        settings_route.ModelOverridePayload(
+            model_id = "unsloth/B-GGUF", reasoning_budget_message = message
+        )
+    assert settings.normalize_model_override({"reasoning_budget_message": message}) == {}
+
+    from routes.chat_history import ChatPresetLoadConfig
+
+    with pytest.raises(pydantic.ValidationError):
+        ChatPresetLoadConfig(reasoningBudgetMessage = message)
+
+
+@pytest.mark.parametrize("message", ["😀" * 2_049, "bad\0message"])
+def test_unsafe_passthrough_is_rejected_before_backend_lookup(monkeypatch, message):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        inference_route.api_monitor, "record_lifecycle", lambda **kwargs: "load-event"
+    )
+    monkeypatch.setattr(inference_route.api_monitor, "fail_open", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: pytest.fail("backend lookup happened before argument rejection"),
+    )
+    request = LoadRequest(
+        model_path = "unsloth/B-GGUF",
+        llama_extra_args = ["--reasoning-budget-message", message],
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._load_model_impl(request, object(), "tester"))
+
+    assert excinfo.value.status_code == 400
 
 
 def test_override_route_rejects_managed_flag_and_removes(monkeypatch):

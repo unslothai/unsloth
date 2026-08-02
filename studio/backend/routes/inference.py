@@ -1022,7 +1022,13 @@ try:
         _tensor_parallel_matches_loaded,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
+        parse_reasoning_budget_message_override,
+        parse_reasoning_budget_override,
         parse_split_mode_override,
+        resolve_reasoning_budget,
+        resolve_reasoning_budget_message,
+        resolve_reasoning_budget_message_with_env,
+        resolve_reasoning_budget_with_env,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -1072,7 +1078,13 @@ except ImportError:
         _tensor_parallel_matches_loaded,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
+        parse_reasoning_budget_message_override,
+        parse_reasoning_budget_override,
         parse_split_mode_override,
+        resolve_reasoning_budget,
+        resolve_reasoning_budget_message,
+        resolve_reasoning_budget_message_with_env,
+        resolve_reasoning_budget_with_env,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -3557,6 +3569,7 @@ def _request_matches_loaded_settings(
     # stored extras stripped the way the reload strips them, so an extras-driven
     # tensor load isn't seen as a mismatch that needlessly reloads the server.
     backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    fields_set = getattr(request, "model_fields_set", set())
     effective_extra = (
         request.llama_extra_args
         if request.llama_extra_args is not None
@@ -3565,10 +3578,21 @@ def _request_matches_loaded_settings(
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
             strip_tensor_split = _should_strip_tensor_split(request),
             strip_offload = request.gpu_memory_mode == "manual",
+            strip_reasoning_budget = "reasoning_budget" in fields_set,
+            strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
         )
     )
     if not llama_backend.is_diffusion and llama_backend.swa_full != _swa_full_from_args_or_env(
         effective_extra
+    ):
+        return False
+    if not llama_backend.is_diffusion and (
+        llama_backend.reasoning_budget
+        != resolve_reasoning_budget_with_env(effective_extra, request.reasoning_budget)
+        or llama_backend.reasoning_budget_message
+        != resolve_reasoning_budget_message_with_env(
+            effective_extra, request.reasoning_budget_message
+        )
     ):
         return False
     if not _tensor_parallel_matches_loaded(
@@ -3671,6 +3695,8 @@ def _request_matches_loaded_settings(
                 strip_split_mode = _should_strip_split_mode(request, backend_extra),
                 strip_tensor_split = _should_strip_tensor_split(request),
                 strip_offload = request.gpu_memory_mode == "manual",
+                strip_reasoning_budget = "reasoning_budget" in fields_set,
+                strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
             )
             != backend_extra
         ):
@@ -5010,6 +5036,55 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     return True if name_says_diffusion else None
 
 
+async def _validate_reasoning_budget_preflight(
+    config: ModelConfig,
+    diffusion_kind: Optional[bool],
+    extra_args: Optional[list[str]],
+    request: LoadRequest | ValidateModelRequest,
+) -> None:
+    """Reject unsupported reasoning controls before any resident model is torn down."""
+    if not config.is_gguf:
+        return
+    effective_budget = resolve_reasoning_budget_with_env(extra_args, request.reasoning_budget)
+    effective_message = resolve_reasoning_budget_message_with_env(
+        extra_args, request.reasoning_budget_message
+    )
+    requested = any(
+        LlamaCppBackend.reasoning_budget_settings_requested(
+            extra_args = extra_args,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
+        )
+    )
+    if diffusion_kind and requested:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Reasoning Budget settings are not supported for DiffusionGemma models.",
+        )
+    if diffusion_kind is None and requested:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Reasoning Budget settings cannot be applied until this GGUF is "
+                "downloaded and its architecture can be verified. Load it once with "
+                "the default reasoning budget, then apply these settings."
+            ),
+        )
+    if not requested:
+        return
+    backend = get_llama_cpp_backend()
+    try:
+        await asyncio.to_thread(
+            backend.validate_reasoning_budget_capabilities,
+            backend._find_llama_server_binary(),
+            extra_args = extra_args,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
 async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
     """Whether a per-model GPU pin is usable on this machine right now.
 
@@ -5446,6 +5521,8 @@ def _resolve_inherited_extra_args(
             # must not last-wins-override it. auto leaves a user's inherited -ngl
             # alone. getattr: a validate request reuses this resolver, no offload fields.
             strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
+            strip_reasoning_budget = "reasoning_budget" in fields_set,
+            strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
         )
         try:
             extra_llama_args = validate_extra_args(stripped)
@@ -5872,6 +5949,14 @@ async def _load_model_impl(
             None if request.llama_extra_args is None else extra_llama_args
         )
 
+        _reasoning_updates = {}
+        _reasoning_budget_override = parse_reasoning_budget_override(extra_llama_args)
+        if _reasoning_budget_override is not None:
+            _reasoning_updates["reasoning_budget"] = _reasoning_budget_override
+        _reasoning_message_override = parse_reasoning_budget_message_override(extra_llama_args)
+        if _reasoning_message_override is not None:
+            _reasoning_updates["reasoning_budget_message"] = _reasoning_message_override
+
         # Manual mode owns the offload flags. Preserve an explicit layer count
         # by translating its last-wins value into the first-class field before
         # stripping the raw flags. This keeps CLI pass-through such as
@@ -5905,6 +5990,8 @@ async def _load_model_impl(
         # particular, the already-loaded comparator must not compare the raw
         # request's managed offload flags against the stripped launch state.
         request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
+        if _reasoning_updates:
+            request = request.model_copy(update = _reasoning_updates)
 
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "load-model")
@@ -6001,6 +6088,8 @@ async def _load_model_impl(
                     reasoning_style = llama_backend.reasoning_style,
                     reasoning_effort_levels = llama_backend.reasoning_effort_levels,
                     reasoning_always_on = llama_backend.reasoning_always_on,
+                    reasoning_budget = llama_backend.reasoning_budget,
+                    reasoning_budget_message = llama_backend.reasoning_budget_message,
                     supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                     supports_tools = llama_backend.supports_tools,
                     chat_template = llama_backend.chat_template,
@@ -6232,6 +6321,9 @@ async def _load_model_impl(
             # Decisive recheck, and the last thing that can reject this load, so it runs BEFORE the
             # cancel: rejecting after would stop every chat for nothing.
             _raise_if_sidecar_swap_in_progress()
+            await _validate_reasoning_budget_preflight(
+                config, diffusion_kind, extra_llama_args, request
+            )
 
             # Point of no return for the GGUF path: nothing left can reject this load, so stop the
             # chats the swap interrupts (or refuse, if the caller never opted in).
@@ -6276,6 +6368,8 @@ async def _load_model_impl(
                 tensor_split = request.tensor_split,
                 gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
                 n_parallel = _n_parallel,
+                reasoning_budget = request.reasoning_budget,
+                reasoning_budget_message = request.reasoning_budget_message,
                 # Issue #7164: explicit GPU pin resolved to physical ids above.
                 gpu_ids = gguf_gpu_ids,
             )
@@ -6476,6 +6570,8 @@ async def _load_model_impl(
                 reasoning_style = llama_backend.reasoning_style,
                 reasoning_effort_levels = llama_backend.reasoning_effort_levels,
                 reasoning_always_on = llama_backend.reasoning_always_on,
+                reasoning_budget = llama_backend.reasoning_budget,
+                reasoning_budget_message = llama_backend.reasoning_budget_message,
                 supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
@@ -7065,6 +7161,9 @@ async def validate_model(
             except Exception as e:
                 logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
+        await _validate_reasoning_budget_preflight(
+            config, diffusion_kind, effective_extra_args, request
+        )
         return ValidateModelResponse(
             valid = True,
             message = "Model identifier is valid.",
@@ -7858,6 +7957,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 reasoning_style = llama_backend.reasoning_style,
                 reasoning_effort_levels = llama_backend.reasoning_effort_levels,
                 reasoning_always_on = llama_backend.reasoning_always_on,
+                reasoning_budget = llama_backend.reasoning_budget,
+                reasoning_budget_message = llama_backend.reasoning_budget_message,
                 supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
                 chat_template = llama_backend.chat_template,

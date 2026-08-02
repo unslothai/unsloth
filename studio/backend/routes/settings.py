@@ -37,6 +37,7 @@ from utils.helper_precache_settings import (
     set_helper_precache_enabled,
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
+from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.openai_auto_switch_settings import (
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
@@ -173,6 +174,8 @@ class ModelOverridePayload(BaseModel):
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
+    reasoning_budget: Optional[int] = Field(default = None, ge = -1, le = 2_147_483_647)
+    reasoning_budget_message: Optional[str] = None
     tensor_parallel: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
@@ -201,11 +204,17 @@ class ModelOverridePayload(BaseModel):
             raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
+    @field_validator("reasoning_budget_message")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else validate_reasoning_budget_message(value)
+
     @field_validator(
         "max_seq_length",
         "custom_context_length",
         "spec_draft_n_max",
         "n_parallel",
+        "reasoning_budget",
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
@@ -496,7 +505,7 @@ def _serialized_override_write(func):
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import strip_shadowing_flags, validate_extra_args
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
@@ -542,6 +551,22 @@ def update_openai_auto_switch_override(
                         requested_extra_args = get_model_override(alias_id).get("llama_extra_args")
                         if requested_extra_args is not None:
                             break
+        fields_set = payload.model_fields_set
+        reset_reasoning_budget = "reasoning_budget" in fields_set and payload.reasoning_budget == -1
+        reset_reasoning_budget_message = (
+            "reasoning_budget_message" in fields_set and payload.reasoning_budget_message == ""
+        )
+        if not payload.fill_absent_fields and requested_extra_args:
+            requested_extra_args = strip_shadowing_flags(
+                requested_extra_args,
+                strip_context = False,
+                strip_cache = False,
+                strip_spec = False,
+                strip_template = False,
+                strip_split_mode = False,
+                strip_reasoning_budget = reset_reasoning_budget,
+                strip_reasoning_budget_message = reset_reasoning_budget_message,
+            )
         # Not validated on an explicit remove: a 400 would only leave the override in place.
         extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
         if payload.remove is True:
@@ -603,6 +628,16 @@ def update_openai_auto_switch_override(
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
                 n_parallel = payload.n_parallel,
+                reasoning_budget = (
+                    None
+                    if payload.fill_absent_fields and reset_reasoning_budget
+                    else payload.reasoning_budget
+                ),
+                reasoning_budget_message = (
+                    None
+                    if payload.fill_absent_fields and reset_reasoning_budget_message
+                    else payload.reasoning_budget_message
+                ),
                 tensor_parallel = payload.tensor_parallel,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,

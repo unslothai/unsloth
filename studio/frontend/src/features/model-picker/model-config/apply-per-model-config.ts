@@ -55,6 +55,10 @@ export function applyPerModelConfigToRuntime(
       readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
     nParallel: config.nParallel ?? null,
+    reasoningBudget: options.isDiffusion ? -1 : config.reasoningBudget,
+    reasoningBudgetMessage: options.isDiffusion
+      ? ""
+      : config.reasoningBudgetMessage,
     tensorParallel: options.isDiffusion
       ? false
       : (config.tensorParallel ?? false),
@@ -103,6 +107,8 @@ export function currentRuntimePerModelConfig(
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     nParallel: s.nParallel ?? null,
+    reasoningBudget: s.reasoningBudget,
+    reasoningBudgetMessage: s.reasoningBudgetMessage,
     tensorParallel: s.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous
@@ -129,6 +135,8 @@ export function perModelConfigsEqual(
       normalizeSpeculativeType(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
+    a.reasoningBudget === b.reasoningBudget &&
+    a.reasoningBudgetMessage === b.reasoningBudgetMessage &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&

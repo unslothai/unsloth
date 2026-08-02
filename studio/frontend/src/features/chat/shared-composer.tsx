@@ -93,7 +93,10 @@ import {
   loadModel,
   validateModel,
 } from "./api/chat-api";
-import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
+import {
+  resolveFitMaxSeqLength,
+  resolveManualAutoCtxPin,
+} from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
@@ -360,14 +363,12 @@ export function RegisterCompareHandle({
           .thread()
           .append({ role: "user", content, createdAt: new Date() } as never),
       appendMessage: (content) =>
-        aui
-          .thread()
-          .append({
-            role: "user",
-            content,
-            createdAt: new Date(),
-            startRun: false,
-          } as never),
+        aui.thread().append({
+          role: "user",
+          content,
+          createdAt: new Date(),
+          startRun: false,
+        } as never),
       startRun: () => {
         const msgs = aui.thread().getState().messages;
         const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
@@ -507,8 +508,7 @@ export function SharedComposer({
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
-    } catch {
-    }
+    } catch {}
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
@@ -597,9 +597,11 @@ export function SharedComposer({
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   // Empty until a compare run; gates Export chat off.
-  const exportThreadIds = [model1ThreadId, model2ThreadId, activeThreadId].filter(
-    (id): id is string => Boolean(id),
-  );
+  const exportThreadIds = [
+    model1ThreadId,
+    model2ThreadId,
+    activeThreadId,
+  ].filter((id): id is string => Boolean(id));
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
@@ -683,7 +685,8 @@ export function SharedComposer({
     effectiveReasoningStyle === "enable_thinking_effort" &&
     !supportsPreserveThinking;
   const thinkingActiveLook = isEffort
-    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
+    ? reasoningLockedOn ||
+      (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
   // Two-pill gating: Search lights up on a local tool runtime (supportsTools:
   // Code/python + local web_search) OR a provider-run server-side web_search
@@ -718,8 +721,7 @@ export function SharedComposer({
   // supportsBuiltinWebSearch). Don't let local `supportsTools` re-enable a
   // pill the Gemini backend silently drops: detect image-tier Gemini and
   // gate strictly on provider builtin support.
-  const isGeminiImageTier =
-    isExternalGemini && supportsBuiltinImageGeneration;
+  const isGeminiImageTier = isExternalGemini && supportsBuiltinImageGeneration;
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the + menu.
   const searchDisabled =
@@ -792,13 +794,18 @@ export function SharedComposer({
       return;
     }
     queueIndexRef.current = nextIndex;
-    setQueueProgress({ current: nextIndex + 1, total: queueRef.current.length });
+    setQueueProgress({
+      current: nextIndex + 1,
+      total: queueRef.current.length,
+    });
     const next = queueRef.current[nextIndex];
     toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
       description: next.length > 80 ? next.slice(0, 80) + "…" : next,
     });
     setText(next);
-    setTimeout(() => { sendRef.current?.(); }, 100);
+    setTimeout(() => {
+      sendRef.current?.();
+    }, 100);
   }
 
   // Compare mode: advance the queue on cycle end, but stop on a failed step so we
@@ -825,7 +832,8 @@ export function SharedComposer({
   useEffect(() => {
     const wasRunning = prevRunningRef.current;
     prevRunningRef.current = running;
-    if (!isQueueRunningRef.current || !wasRunning || running || comparing) return;
+    if (!isQueueRunningRef.current || !wasRunning || running || comparing)
+      return;
     advanceQueue();
   }, [running, comparing]);
 
@@ -857,7 +865,11 @@ export function SharedComposer({
         // Handle audio files
         if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
           fileToBase64(file).then((base64) => {
-            setPendingAudio({ name: file.name, base64, contentType: file.type });
+            setPendingAudio({
+              name: file.name,
+              base64,
+              contentType: file.type,
+            });
             setPendingAudioStore(base64, file.name);
           });
           continue;
@@ -895,7 +907,8 @@ export function SharedComposer({
         },
         () =>
           toast.error("Could not paste files.", {
-            description: "Compare supports images and audio within the attachment size limits.",
+            description:
+              "Compare supports images and audio within the attachment size limits.",
           }),
       );
     },
@@ -1189,6 +1202,12 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
+                reasoning_budget: resolvedIsDiffusion
+                  ? -1
+                  : ownConfig.reasoningBudget,
+                reasoning_budget_message: resolvedIsDiffusion
+                  ? ""
+                  : ownConfig.reasoningBudgetMessage,
               }
             : {}),
         });
@@ -1206,8 +1225,8 @@ export function SharedComposer({
           if (
             useTransformersUpgradeDialogStore
               .getState()
-              .consumeServerUnloadedChat()
-            && currentStore.params.checkpoint
+              .consumeServerUnloadedChat() &&
+            currentStore.params.checkpoint
           ) {
             upgradeUnloadedActive = true;
           }
@@ -1249,6 +1268,14 @@ export function SharedComposer({
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
+          reasoning_budget:
+            targetIsGguf && !resolvedIsDiffusion
+              ? ownConfig.reasoningBudget
+              : -1,
+          reasoning_budget_message:
+            targetIsGguf && !resolvedIsDiffusion
+              ? ownConfig.reasoningBudgetMessage
+              : "",
           tensor_parallel: effectiveTensorParallel,
           ...(targetIsGguf
             ? {
@@ -1306,6 +1333,24 @@ export function SharedComposer({
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
+          reasoningBudget:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
+              : -1,
+          loadedReasoningBudget:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
+              : -1,
+          reasoningBudgetMessage:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget_message ??
+                ownConfig.reasoningBudgetMessage)
+              : "",
+          loadedReasoningBudgetMessage:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget_message ??
+                ownConfig.reasoningBudgetMessage)
+              : "",
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
@@ -1329,7 +1374,9 @@ export function SharedComposer({
           customContextLength: targetIsGguf
             ? (ownConfig.customContextLength ?? keepCustomCtx)
             : null,
-          ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
+          ggufContextLength: resp.is_gguf
+            ? (resp.context_length ?? null)
+            : null,
           ggufNativeContextLength: resp.is_gguf
             ? (resp.native_context_length ?? null)
             : null,
@@ -1527,7 +1574,11 @@ export function SharedComposer({
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with Files
         {ragEnabled && !ragDisabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className="ml-auto"
+          />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -1540,7 +1591,11 @@ export function SharedComposer({
         <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
         MCP
         {mcpEnabledForChat ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className="ml-auto"
+          />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -1611,7 +1666,8 @@ export function SharedComposer({
                     await fn(id);
                   }
                 })().catch((error) => {
-                  if (!isDownloadCancelled(error)) toast.error("Export failed.");
+                  if (!isDownloadCancelled(error))
+                    toast.error("Export failed.");
                 });
               }}
             >
@@ -1630,7 +1686,11 @@ export function SharedComposer({
         <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
         Canvas
         {artifactsEnabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className="ml-auto"
+          />
         ) : null}
       </DropdownMenuItem>
     ) : null,
@@ -1716,10 +1776,15 @@ export function SharedComposer({
           setIsQueueRunning(true);
           setQueueProgress({ current: 1, total: filtered.length });
           toast(`Prompt 1 / ${filtered.length}`, {
-            description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
+            description:
+              filtered[0].length > 80
+                ? filtered[0].slice(0, 80) + "…"
+                : filtered[0],
           });
           setText(filtered[0]);
-          setTimeout(() => { sendRef.current?.(); }, 100);
+          setTimeout(() => {
+            sendRef.current?.();
+          }, 100);
         }}
       />
       {/* Gemini-style drop affordance, mirrored from the single composer. */}
@@ -1731,7 +1796,9 @@ export function SharedComposer({
           strokeWidth={2}
           className="size-6 text-primary"
         />
-        <span className="text-sm font-medium text-primary">Drop files here</span>
+        <span className="text-sm font-medium text-primary">
+          Drop files here
+        </span>
       </div>
       {(pendingImages.length > 0 || pendingAudio) && (
         <div className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1">
@@ -2144,8 +2211,8 @@ export function SharedComposer({
                           }}
                         >
                           <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                            icon={Tick02Icon}
+                            strokeWidth={2}
                             className={cn(
                               "unsloth-tick size-4",
                               effectiveReasoningVisualEnabled && "opacity-0",
@@ -2175,8 +2242,8 @@ export function SharedComposer({
                             }}
                           >
                             <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                              icon={Tick02Icon}
+                              strokeWidth={2}
                               className={cn(
                                 "unsloth-tick size-4",
                                 !(
@@ -2208,8 +2275,8 @@ export function SharedComposer({
                         }}
                       >
                         <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                          icon={Tick02Icon}
+                          strokeWidth={2}
                           className={cn(
                             "unsloth-tick size-4",
                             !effectiveReasoningEnabled && "opacity-0",
@@ -2234,8 +2301,8 @@ export function SharedComposer({
                       }}
                     >
                       <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                        icon={Tick02Icon}
+                        strokeWidth={2}
                         className={cn(
                           "unsloth-tick size-4",
                           !preserveThinking && "opacity-0",

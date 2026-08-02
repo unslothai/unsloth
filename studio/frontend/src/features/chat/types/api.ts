@@ -36,9 +36,9 @@ export interface ListLorasResponse {
 export interface LoadModelRequest {
   model_path: string;
   /**
-     * Stop any chats still generating instead of getting a 409: a load replaces the single
-     * llama-server they all decode on. Set only after the user confirms.
-     */
+   * Stop any chats still generating instead of getting a 409: a load replaces the single
+   * llama-server they all decode on. Set only after the user confirms.
+   */
   force_cancel_active?: boolean;
   nativePathLease?: string | null;
   hf_token: string | null;
@@ -70,6 +70,10 @@ export interface LoadModelRequest {
    * the launch default. The VRAM fitter may launch fewer to stay on GPU.
    */
   n_parallel?: number | null;
+  /** llama.cpp thinking token budget: -1 unrestricted, 0 end immediately, >0 token cap. */
+  reasoning_budget?: number;
+  /** Message emitted when the reasoning budget is exhausted. */
+  reasoning_budget_message?: string;
   /**
    * Split the model across GPUs by tensor (--split-mode tensor) instead
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
@@ -219,6 +223,8 @@ export interface LoadModelResponse {
   /** Slots the load was invoked with (else the --parallel default). Null for
    * non-GGUF loads. */
   requested_parallel_slots?: number | null;
+  reasoning_budget?: number;
+  reasoning_budget_message?: string;
   /** Slots llama-server actually runs, after any fit-time reduction. Null for
    * non-GGUF loads. */
   parallel_slots?: number | null;
@@ -291,6 +297,8 @@ export interface InferenceStatusResponse {
   /** Slots the active load was invoked with (else the --parallel default).
    * Null when no GGUF model is loaded. */
   requested_parallel_slots?: number | null;
+  reasoning_budget?: number;
+  reasoning_budget_message?: string;
   /** Slots llama-server actually runs, after any fit-time reduction. Null when
    * no GGUF model is loaded. */
   parallel_slots?: number | null;

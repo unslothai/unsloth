@@ -14,7 +14,9 @@ Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 from __future__ import annotations
 
 import os
-from typing import Iterable, Mapping, Optional
+from typing import Callable, Iterable, Mapping, Optional
+
+from utils.reasoning_budget import validate_reasoning_budget_message
 
 # Valid llama-server --parallel range, shared with LoadRequest.n_parallel.
 # Mirrored by callers that cannot import this: run.py and unsloth_cli/commands/
@@ -129,6 +131,8 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     parse_cache_override(out)
     parse_split_mode_override(out)
     parse_gpu_layers_override(out)
+    parse_reasoning_budget_override(out)
+    parse_reasoning_budget_message_override(out)
     return out
 
 
@@ -146,6 +150,9 @@ _CONTEXT_FLAGS: frozenset[str] = frozenset({"-c", "--ctx-size"})
 _CACHE_TYPE_K_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k"})
 _CACHE_TYPE_V_FLAGS: frozenset[str] = frozenset({"-ctv", "--cache-type-v"})
 _CACHE_FLAGS: frozenset[str] = _CACHE_TYPE_K_FLAGS | _CACHE_TYPE_V_FLAGS
+_REASONING_BUDGET_FLAGS: frozenset[str] = frozenset({"--reasoning-budget"})
+_REASONING_BUDGET_MESSAGE_FLAGS: frozenset[str] = frozenset({"--reasoning-budget-message"})
+_REASONING_BUDGET_MAX = 2_147_483_647
 _SPEC_FLAGS: frozenset[str] = frozenset(
     {
         "--spec-default",
@@ -278,7 +285,13 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
     return override if override is not None else fallback_n_ctx
 
 
-def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Optional[str]:
+def _last_flag_value(
+    args: Optional[Iterable[str]],
+    flags: frozenset[str],
+    *,
+    preserve_raw: bool = False,
+    validate_value: Optional[Callable[[str], object]] = None,
+) -> Optional[str]:
     """Return the last-wins string value among ``flags`` in extras, or None.
 
     Handles both ``--flag=value`` and ``--flag value`` forms and raises if a
@@ -307,10 +320,12 @@ def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Op
             raw_value = tokens[i + 1]
             i += 2
 
-        value = str(raw_value).strip()
-        if not value:
+        raw_value = str(raw_value)
+        if not raw_value.strip():
             raise ValueError(f"llama-server flag '{flag}' requires a non-empty value")
-        override = value
+        if validate_value is not None:
+            validate_value(raw_value)
+        override = raw_value if preserve_raw else raw_value.strip()
 
     return override
 
@@ -324,6 +339,80 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     Unsloth's KV estimate has a single cache_type_kv knob.
     """
     return _last_flag_value(args, _CACHE_FLAGS)
+
+
+def _validate_reasoning_budget_value(raw_value: str) -> int:
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("llama-server --reasoning-budget requires an integer value") from exc
+    if value < -1:
+        raise ValueError("llama-server --reasoning-budget requires a value of at least -1")
+    if value > _REASONING_BUDGET_MAX:
+        raise ValueError(
+            f"llama-server --reasoning-budget requires a value of at most {_REASONING_BUDGET_MAX}"
+        )
+    return value
+
+
+def parse_reasoning_budget_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``--reasoning-budget`` value."""
+    raw_value = _last_flag_value(
+        args, _REASONING_BUDGET_FLAGS, validate_value = _validate_reasoning_budget_value
+    )
+    return None if raw_value is None else int(raw_value)
+
+
+def parse_reasoning_budget_message_override(args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last user-supplied ``--reasoning-budget-message`` value."""
+    value = _last_flag_value(
+        args,
+        _REASONING_BUDGET_MESSAGE_FLAGS,
+        preserve_raw = True,
+        validate_value = validate_reasoning_budget_message,
+    )
+    return value
+
+
+def resolve_reasoning_budget(args: Optional[Iterable[str]], fallback: int) -> int:
+    override = parse_reasoning_budget_override(args)
+    return override if override is not None else fallback
+
+
+def resolve_reasoning_budget_message(args: Optional[Iterable[str]], fallback: str) -> str:
+    override = parse_reasoning_budget_message_override(args)
+    return override if override is not None else fallback
+
+
+def resolve_reasoning_budget_with_env(
+    args: Optional[Iterable[str]],
+    fallback: int,
+    env: Optional[Mapping[str, str]] = None,
+) -> int:
+    """Resolve CLI/first-class intent, then inherit llama.cpp's env default."""
+    override = parse_reasoning_budget_override(args)
+    if override is not None:
+        return override
+    if fallback != -1:
+        return fallback
+    raw_value = (env if env is not None else os.environ).get("LLAMA_ARG_THINK_BUDGET")
+    if raw_value is None:
+        return fallback
+    return _validate_reasoning_budget_value(raw_value)
+
+
+def resolve_reasoning_budget_message_with_env(
+    args: Optional[Iterable[str]],
+    fallback: str,
+    env: Optional[Mapping[str, str]] = None,
+) -> str:
+    """Resolve CLI/first-class intent, then inherit llama.cpp's env default."""
+    override = parse_reasoning_budget_message_override(args)
+    if override is not None:
+        return override
+    if fallback:
+        return fallback
+    return (env if env is not None else os.environ).get("LLAMA_ARG_THINK_BUDGET_MESSAGE", "")
 
 
 def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
@@ -482,6 +571,8 @@ def strip_shadowing_flags(
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
     strip_device: bool = False,
+    strip_reasoning_budget: bool = False,
+    strip_reasoning_budget_message: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
@@ -515,6 +606,10 @@ def strip_shadowing_flags(
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
     if strip_device:
         shadowing |= _DEVICE_FLAGS
+    if strip_reasoning_budget:
+        shadowing |= _REASONING_BUDGET_FLAGS
+    if strip_reasoning_budget_message:
+        shadowing |= _REASONING_BUDGET_MESSAGE_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []

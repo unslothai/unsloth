@@ -32,6 +32,10 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   n_parallel?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
+  reasoning_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  reasoning_budget_message?: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
   tensor_parallel?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   chat_template_override?: string;
@@ -100,6 +104,12 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.nParallel && config.nParallel > 0) {
     payload.n_parallel = config.nParallel;
   }
+  if (config.reasoningBudget !== -1) {
+    payload.reasoning_budget = config.reasoningBudget;
+  }
+  if (config.reasoningBudgetMessage) {
+    payload.reasoning_budget_message = config.reasoningBudgetMessage;
+  }
   if (config.tensorParallel) {
     payload.tensor_parallel = true;
   }
@@ -149,6 +159,9 @@ export interface PutModelOverrideOptions {
    * the page can neither show nor restore. The route drops the row once nothing is left in it.
    */
   keepLaunchFlags?: boolean;
+  /** Remove a legacy passthrough value only after this control was explicitly reset. */
+  resetReasoningBudget?: boolean;
+  resetReasoningBudgetMessage?: boolean;
 }
 
 export async function putModelOverride(
@@ -206,6 +219,20 @@ async function sendModelOverride(
           { llama_extra_args: [] }
         : {}),
       ...toApiOverride(config),
+      // Write-only reset markers let the backend remove legacy passthrough flags
+      // shadowing these controls. Fill-only migration must never delete stored flags.
+      ...(options?.resetReasoningBudget && config?.reasoningBudget === -1
+        ? {
+            // biome-ignore lint/style/useNamingConvention: API schema
+            reasoning_budget: -1,
+          }
+        : {}),
+      ...(options?.resetReasoningBudgetMessage && config?.reasoningBudgetMessage === ""
+        ? {
+            // biome-ignore lint/style/useNamingConvention: API schema
+            reasoning_budget_message: "",
+          }
+        : {}),
     }),
   });
   if (!res.ok) {

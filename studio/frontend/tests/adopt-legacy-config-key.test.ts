@@ -38,6 +38,8 @@ function config(
     speculativeType: null,
     specDraftNMax: null,
     nParallel: null,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     tensorParallel: false,
     chatTemplateOverride,
   };

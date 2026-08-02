@@ -27,8 +27,14 @@ parse_cache_override = _lsa.parse_cache_override
 parse_cache_override_per_axis = _lsa.parse_cache_override_per_axis
 parse_ctx_override = _lsa.parse_ctx_override
 parse_gpu_layers_override = _lsa.parse_gpu_layers_override
+parse_reasoning_budget_message_override = _lsa.parse_reasoning_budget_message_override
+parse_reasoning_budget_override = _lsa.parse_reasoning_budget_override
 parse_split_mode_override = _lsa.parse_split_mode_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
+resolve_reasoning_budget = _lsa.resolve_reasoning_budget
+resolve_reasoning_budget_message = _lsa.resolve_reasoning_budget_message
+resolve_reasoning_budget_message_with_env = _lsa.resolve_reasoning_budget_message_with_env
+resolve_reasoning_budget_with_env = _lsa.resolve_reasoning_budget_with_env
 resolve_tensor_parallel = _lsa.resolve_tensor_parallel
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 strip_split_mode_only = _lsa.strip_split_mode_only
@@ -523,6 +529,111 @@ def test_parse_gpu_layers_override_rejects_malformed_values(args):
 def test_validate_extra_args_rejects_malformed_gpu_layers_override():
     with pytest.raises(ValueError, match = "GPU layers"):
         validate_extra_args(["-ngl", "abc"])
+
+
+# ── reasoning budget first-class shadows ─────────────────────────────
+
+
+def test_reasoning_budget_overrides_are_last_wins():
+    args = [
+        "--reasoning-budget",
+        "32",
+        "--reasoning-budget=64",
+        "--reasoning-budget-message",
+        "first",
+        "--reasoning-budget-message=limit reached",
+    ]
+    assert parse_reasoning_budget_override(args) == 64
+    assert parse_reasoning_budget_message_override(args) == "limit reached"
+    assert resolve_reasoning_budget(args, -1) == 64
+    assert resolve_reasoning_budget_message(args, "") == "limit reached"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--reasoning-budget-message", "  PAD  "],
+        ["--reasoning-budget-message=  PAD  "],
+    ],
+)
+def test_reasoning_budget_message_preserves_verbatim_whitespace(args):
+    assert parse_reasoning_budget_message_override(args) == "  PAD  "
+    assert resolve_reasoning_budget_message(args, "fallback") == "  PAD  "
+
+
+def test_reasoning_budget_defaults_inherit_env_but_passthrough_still_wins():
+    env = {
+        "LLAMA_ARG_THINK_BUDGET": "512",
+        "LLAMA_ARG_THINK_BUDGET_MESSAGE": "from env",
+    }
+    assert resolve_reasoning_budget_with_env(None, -1, env) == 512
+    assert resolve_reasoning_budget_message_with_env(None, "", env) == "from env"
+    assert resolve_reasoning_budget_with_env(["--reasoning-budget", "-1"], -1, env) == -1
+    assert (
+        resolve_reasoning_budget_message_with_env(
+            ["--reasoning-budget-message", "  CLI  "], "", env
+        )
+        == "  CLI  "
+    )
+
+
+@pytest.mark.parametrize("unsafe", ["😀" * 2_049, "bad\0message"])
+def test_reasoning_budget_message_validates_every_occurrence(unsafe):
+    with pytest.raises(ValueError, match = "reasoning-budget-message"):
+        validate_extra_args(
+            [
+                "--reasoning-budget-message",
+                unsafe,
+                "--reasoning-budget-message",
+                "safe final value",
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--reasoning-budget"],
+        ["--reasoning-budget", "nope"],
+        ["--reasoning-budget=-2"],
+        ["--reasoning-budget=2147483648"],
+        ["--reasoning-budget-message"],
+        ["--reasoning-budget-message", "😀" * 2_049],
+        ["--reasoning-budget-message", "bad\0message"],
+    ],
+)
+def test_validate_extra_args_rejects_malformed_reasoning_overrides(args):
+    with pytest.raises(ValueError, match = "reasoning-budget"):
+        validate_extra_args(args)
+
+
+def test_strip_reasoning_shadows_is_granular():
+    args = [
+        "--reasoning-budget",
+        "64",
+        "--reasoning-budget-message",
+        "limit reached",
+        "--top-k",
+        "20",
+    ]
+    assert strip_shadowing_flags(
+        args,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_reasoning_budget = True,
+    ) == ["--reasoning-budget-message", "limit reached", "--top-k", "20"]
+    assert strip_shadowing_flags(
+        args,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_reasoning_budget_message = True,
+    ) == ["--reasoning-budget", "64", "--top-k", "20"]
 
 
 # ── parse_cache_override ─────────────────────────────────────────────

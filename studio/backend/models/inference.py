@@ -20,6 +20,7 @@ from pydantic import (
 
 from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+from utils.reasoning_budget import validate_reasoning_budget_message
 
 
 class LoadRequest(BaseModel):
@@ -205,6 +206,22 @@ class LoadRequest(BaseModel):
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
         ),
     )
+    reasoning_budget: int = Field(
+        -1,
+        ge = -1,
+        le = 2_147_483_647,
+        description = "llama-server reasoning token budget (-1 = model/default behavior).",
+    )
+    reasoning_budget_message: str = Field(
+        "",
+        description = "Message emitted by llama-server when the reasoning budget is exhausted.",
+    )
+
+    @field_validator("reasoning_budget_message")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: str) -> str:
+        return validate_reasoning_budget_message(value)
+
     force_cancel_active: bool = Field(
         False,
         description = (
@@ -299,6 +316,14 @@ class ValidateModelRequest(BaseModel):
             "server-wide --parallel default."
         ),
     )
+    reasoning_budget: int = Field(-1, ge = -1, le = 2_147_483_647)
+    reasoning_budget_message: str = ""
+
+    @field_validator("reasoning_budget_message")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: str) -> str:
+        return validate_reasoning_budget_message(value)
+
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -514,6 +539,10 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether reasoning is always on (hardcoded <think> tags, not toggleable)",
     )
+    reasoning_budget: int = Field(-1, description = "Effective llama-server reasoning token budget.")
+    reasoning_budget_message: str = Field(
+        "", description = "Effective llama-server reasoning-budget exhaustion message."
+    )
     supports_preserve_thinking: bool = Field(
         False,
         description = "Whether the template understands the optional preserve_thinking kwarg (Qwen3.6-style)",
@@ -695,6 +724,10 @@ class InferenceStatusResponse(BaseModel):
     )
     reasoning_always_on: bool = Field(
         False, description = "Whether reasoning is always on (not toggleable)"
+    )
+    reasoning_budget: int = Field(-1, description = "Effective llama-server reasoning token budget.")
+    reasoning_budget_message: str = Field(
+        "", description = "Effective llama-server reasoning-budget exhaustion message."
     )
     supports_preserve_thinking: bool = Field(
         False,

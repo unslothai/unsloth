@@ -53,7 +53,10 @@ import {
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
-import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
+import {
+  resolveFitMaxSeqLength,
+  resolveManualAutoCtxPin,
+} from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
@@ -326,7 +329,10 @@ function getNestedValue(
   values: Record<string, unknown>,
   path: string,
 ): unknown | undefined {
-  const parts = path.split(".").map((part) => part.trim()).filter(Boolean);
+  const parts = path
+    .split(".")
+    .map((part) => part.trim())
+    .filter(Boolean);
   if (parts.length === 0) {
     return undefined;
   }
@@ -546,8 +552,7 @@ function documentCitationToSource(
   // Anthropic numbers inline [N] per citation, not per source URL.
   // Fold citation type + position-bearing fields into the id so distinct
   // citations on the same source keep separate Sources entries.
-  const citationType =
-    typeof cit.type === "string" ? String(cit.type) : "";
+  const citationType = typeof cit.type === "string" ? String(cit.type) : "";
   const positionParts = [
     cit.search_result_index,
     cit.start_char_index,
@@ -921,9 +926,7 @@ export interface McpImageToolResult {
   images: { data: string; mimeType: string }[];
 }
 
-export function isMcpImageToolResult(
-  val: unknown,
-): val is McpImageToolResult {
+export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
   if (typeof val !== "object" || val === null) {
     return false;
   }
@@ -963,7 +966,8 @@ function serializeToolResultPart(
     // outputs still round-trip the follow-up turn to the provider.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (isMcpImageToolResult(result)) {
-    content = result.text.length > 0 ? result.text : JSON.stringify({ result: "" });
+    content =
+      result.text.length > 0 ? result.text : JSON.stringify({ result: "" });
   } else {
     try {
       content = JSON.stringify(result);
@@ -1411,10 +1415,14 @@ function findCachedRepo<T extends { repo_id: string }>(
   return repos.find((repo) => repo.repo_id.toLowerCase() === normalized);
 }
 
-function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
+function hasBigEndianGgufMarker(
+  filename: string,
+  quant?: string | null,
+): boolean {
   const normalized = filename.replace(/\\/g, "/").toLowerCase();
   const separatorIndex = normalized.lastIndexOf("/");
-  const basename = separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
+  const basename =
+    separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
   const parent = separatorIndex >= 0 ? normalized.slice(0, separatorIndex) : "";
   const stem = basename.replace(/\.[^.]*$/, "");
   const quantKey = quant?.trim().toLowerCase() || "";
@@ -1428,7 +1436,9 @@ function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolea
     if (quantIndex >= 0 && quantIndex < (match.index ?? 0)) {
       return true;
     }
-    const tail = stem.slice((match.index ?? 0) + match[0].length).replace(/^[._-]+/, "");
+    const tail = stem
+      .slice((match.index ?? 0) + match[0].length)
+      .replace(/^[._-]+/, "");
     if (!tail || !GGUF_KNOWN_QUANT_RE.test(tail)) {
       return !quantInParentOnly;
     }
@@ -1546,6 +1556,8 @@ async function autoLoadSmallestModel(): Promise<{
     gpu_memory_mode?: "auto" | "manual";
     cache_type_kv?: string | null;
     tensor_parallel?: boolean | null;
+    reasoning_budget?: number;
+    reasoning_budget_message?: string;
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1667,9 +1679,7 @@ async function autoLoadSmallestModel(): Promise<{
         })
       ).isDiffusion;
     }
-    const effectiveTensorParallel = isDiffusion
-      ? false
-      : config.tensorParallel;
+    const effectiveTensorParallel = isDiffusion ? false : config.tensorParallel;
     const effectiveGpuIds =
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(
@@ -1713,12 +1723,20 @@ async function autoLoadSmallestModel(): Promise<{
               // split (0 especially) must not be refused as a full-GGUF occupant.
               gpu_layers: effectiveGpuLayers,
               n_parallel: config.nParallel ?? null,
+              reasoning_budget: isDiffusion ? -1 : config.reasoningBudget,
+              reasoning_budget_message: isDiffusion
+                ? ""
+                : config.reasoningBudgetMessage,
             }
           : {}),
       }))
     ) {
       skippedAutoLoadCandidates.add(
-        autoLoadCandidateKey(candidate.kind, candidate.id, candidate.ggufVariant),
+        autoLoadCandidateKey(
+          candidate.kind,
+          candidate.id,
+          candidate.ggufVariant,
+        ),
       );
       return false;
     }
@@ -1735,6 +1753,12 @@ async function autoLoadSmallestModel(): Promise<{
       cache_type_kv: config.kvCacheDtype,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
+      reasoning_budget:
+        candidate.kind === "gguf" && !isDiffusion ? config.reasoningBudget : -1,
+      reasoning_budget_message:
+        candidate.kind === "gguf" && !isDiffusion
+          ? config.reasoningBudgetMessage
+          : "",
       tensor_parallel: effectiveTensorParallel,
       // GGUF-only: the safetensors fallback loads via HF auto-placement (no
       // explicit pins). The split ratio is deliberately never remembered
@@ -1783,7 +1807,7 @@ async function autoLoadSmallestModel(): Promise<{
         : { maxSeqLength: effectiveMaxSeqLength }),
       maxTokens:
         candidate.kind === "gguf"
-          ? loadResp.context_length ?? 131072
+          ? (loadResp.context_length ?? 131072)
           : effectiveMaxSeqLength,
     });
     const autoModel: ChatModelSummary = {
@@ -1811,9 +1835,8 @@ async function autoLoadSmallestModel(): Promise<{
       );
       // Slots this auto-load committed. Diffusion ignores --parallel, so a count
       // there would mint a phantom override a saved preset carries onto a GGUF.
-      const committedSlots = (loadResp.is_diffusion ?? false)
-        ? null
-        : (config.nParallel ?? null);
+      const committedSlots =
+        (loadResp.is_diffusion ?? false) ? null : (config.nParallel ?? null);
       useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:
@@ -1831,6 +1854,24 @@ async function autoLoadSmallestModel(): Promise<{
         // Click-time value, not the resolved backend echo (see performLoad).
         nParallel: committedSlots,
         loadedNParallel: committedSlots,
+        reasoningBudget:
+          (loadResp.is_diffusion ?? false)
+            ? -1
+            : (loadResp.reasoning_budget ?? config.reasoningBudget),
+        loadedReasoningBudget:
+          (loadResp.is_diffusion ?? false)
+            ? -1
+            : (loadResp.reasoning_budget ?? config.reasoningBudget),
+        reasoningBudgetMessage:
+          (loadResp.is_diffusion ?? false)
+            ? ""
+            : (loadResp.reasoning_budget_message ??
+              config.reasoningBudgetMessage),
+        loadedReasoningBudgetMessage:
+          (loadResp.is_diffusion ?? false)
+            ? ""
+            : (loadResp.reasoning_budget_message ??
+              config.reasoningBudgetMessage),
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
@@ -1861,6 +1902,10 @@ async function autoLoadSmallestModel(): Promise<{
         // a model that cannot use it.
         nParallel: null,
         loadedNParallel: null,
+        reasoningBudget: -1,
+        loadedReasoningBudget: -1,
+        reasoningBudgetMessage: "",
+        loadedReasoningBudgetMessage: "",
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
@@ -1932,7 +1977,11 @@ async function autoLoadSmallestModel(): Promise<{
           } catch {
             hadNonTrustFailure = true;
             skippedAutoLoadCandidates.add(
-              autoLoadCandidateKey("gguf", repo.repo_id, lastLoaded.ggufVariant),
+              autoLoadCandidateKey(
+                "gguf",
+                repo.repo_id,
+                lastLoaded.ggufVariant,
+              ),
             );
           }
         }
@@ -2114,6 +2163,8 @@ async function autoLoadSmallestModel(): Promise<{
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
+        reasoning_budget: -1,
+        reasoning_budget_message: "",
         // GPU Memory mode is a standing preference, so honor it on auto-load.
         // The layer/MoE/split knobs and the context pin are per-model: the live
         // store may hold edits drafted for a staged pick, and a fresh default
@@ -2166,6 +2217,10 @@ async function autoLoadSmallestModel(): Promise<{
         // preset would read as applied and be re-sent by the next Apply.
         nParallel: null,
         loadedNParallel: null,
+        reasoningBudget: -1,
+        loadedReasoningBudget: -1,
+        reasoningBudgetMessage: "",
+        loadedReasoningBudgetMessage: "",
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
@@ -2258,13 +2313,16 @@ export function createOpenAIStreamAdapter(
           }
         }
         runtime = useChatRuntimeStore.getState();
-        if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
+        if (!resolvedThreadId)
+          throw new Error("Research requires a saved chat.");
         if (!unstable_assistantMessageId) {
           throw new Error(
             "Deep research could not bind its assistant message. Please retry the send.",
           );
         }
-        const userMessage = [...messages].reverse().find((m) => m.role === "user");
+        const userMessage = [...messages]
+          .reverse()
+          .find((m) => m.role === "user");
         if (!userMessage) throw new Error("Research requires a user message.");
         const userMessageIndex = messages.indexOf(userMessage);
         const userMessageParentId =
@@ -2289,7 +2347,11 @@ export function createOpenAIStreamAdapter(
         ) {
           inferenceRequest.temperature = params.temperature;
         }
-        if (Number.isFinite(params.topP) && params.topP > 0 && params.topP <= 1) {
+        if (
+          Number.isFinite(params.topP) &&
+          params.topP > 0 &&
+          params.topP <= 1
+        ) {
           inferenceRequest.topP = params.topP;
         }
         if (Number.isFinite(params.maxTokens) && params.maxTokens > 0) {
@@ -2331,10 +2393,10 @@ export function createOpenAIStreamAdapter(
             ? runtime.ragEnabled && runtime.ragSource.type === "kb"
               ? {
                   kb_id: runtime.ragSource.kbId,
-                   default_top_k: runtime.ragTopK,
-                   mode: runtime.ragMode,
-                   autoinject: runtime.ragAutoInject,
-                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                  default_top_k: runtime.ragTopK,
+                  mode: runtime.ragMode,
+                  autoinject: runtime.ragAutoInject,
+                  autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
               : {
                   ...(runtime.ragEnabled
@@ -2343,10 +2405,10 @@ export function createOpenAIStreamAdapter(
                   ...(projectRagEnabled && researchProjectId
                     ? { project_id: researchProjectId }
                     : {}),
-                   default_top_k: runtime.ragTopK,
-                   mode: runtime.ragMode,
-                   autoinject: runtime.ragAutoInject,
-                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                  default_top_k: runtime.ragTopK,
+                  mode: runtime.ragMode,
+                  autoinject: runtime.ragAutoInject,
+                  autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
             : undefined;
 
@@ -2364,7 +2426,9 @@ export function createOpenAIStreamAdapter(
           }
         };
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
-        runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
+        runtime.setThreadRunning(threadKey, true, {
+          owner: researchServerCancel,
+        });
         let report = "";
         let releaseResearchFollow: (() => void) | null = null;
         const researchFollowController = new AbortController();
@@ -2374,13 +2438,15 @@ export function createOpenAIStreamAdapter(
         const forwardAdapterAbort = () => {
           researchFollowController.abort(abortSignal.reason);
         };
-        abortSignal.addEventListener("abort", forwardAdapterAbort, { once: true });
+        abortSignal.addEventListener("abort", forwardAdapterAbort, {
+          once: true,
+        });
         try {
           // The normal history adapter persists messages after model execution,
           // but research validates the user message before it can start.
-          const storedUserMessage = (await listStoredChatMessages(resolvedThreadId)).find(
-            (message) => message.id === userMessage.id,
-          );
+          const storedUserMessage = (
+            await listStoredChatMessages(resolvedThreadId)
+          ).find((message) => message.id === userMessage.id);
           await saveStoredChatMessage({
             id: userMessage.id,
             threadId: resolvedThreadId,
@@ -2397,7 +2463,9 @@ export function createOpenAIStreamAdapter(
             userMessageId: userMessage.id,
             assistantMessageId: unstable_assistantMessageId,
             inferenceRequest,
-            ...(researchInstructions ? { instructions: researchInstructions } : {}),
+            ...(researchInstructions
+              ? { instructions: researchInstructions }
+              : {}),
             ...(ragScope ? { ragScope } : {}),
             websitePolicy: {
               allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
@@ -2463,14 +2531,19 @@ export function createOpenAIStreamAdapter(
             };
           }
         } catch (error) {
-          if (!abortSignal.aborted && !researchFollowController.signal.aborted) {
+          if (
+            !abortSignal.aborted &&
+            !researchFollowController.signal.aborted
+          ) {
             throw error;
           }
         } finally {
           abortSignal.removeEventListener("abort", forwardAdapterAbort);
           releaseResearchFollow?.();
           runtime.clearThreadServerCancel(threadKey, researchServerCancel);
-          runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
+          runtime.setThreadRunning(threadKey, false, {
+            owner: researchServerCancel,
+          });
         }
         return;
       }
@@ -3281,9 +3354,7 @@ export function createOpenAIStreamAdapter(
             params.checkpoint ||
             "Unknown model",
           responseModelId:
-            responseModelId ||
-            externalSelection?.modelId ||
-            params.checkpoint,
+            responseModelId || externalSelection?.modelId || params.checkpoint,
           ...(externalProvider?.id ? { providerId: externalProvider.id } : {}),
           providerName:
             externalProvider?.name ??
@@ -3584,7 +3655,11 @@ export function createOpenAIStreamAdapter(
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
+                  : {
+                      thinking: {
+                        type: reasoningEnabled ? "enabled" : "disabled",
+                      },
+                    }
                 : {}),
             };
           }
@@ -3695,13 +3770,16 @@ export function createOpenAIStreamAdapter(
                             ? { whole_doc: false }
                             : {}),
                           context_length:
-                            runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
+                            runtime.ggufContextLength ??
+                            params.maxSeqLength ??
+                            undefined,
                         },
                       }
                     : {}),
                   auto_heal_tool_calls:
                     useChatRuntimeStore.getState().autoHealToolCalls,
-                  nudge_tool_calls: useChatRuntimeStore.getState().nudgeToolCalls,
+                  nudge_tool_calls:
+                    useChatRuntimeStore.getState().nudgeToolCalls,
                   max_tool_calls_per_message:
                     useChatRuntimeStore.getState().maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
@@ -3754,9 +3832,7 @@ export function createOpenAIStreamAdapter(
               const reasoningMs = (
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
-              if (
-                reasoningDurationTracker.recordServerDuration(reasoningMs)
-              ) {
+              if (reasoningDurationTracker.recordServerDuration(reasoningMs)) {
                 continue;
               }
 
@@ -3930,8 +4006,7 @@ export function createOpenAIStreamAdapter(
                       ? `${toolConfirmationScopeId}:${approvalId}`
                       : backendToolCallId
                         ? resolveToolPartId(backendToolCallId)
-                        : approvalId ||
-                          `${toolEvent.tool_name}_${Date.now()}`;
+                        : approvalId || `${toolEvent.tool_name}_${Date.now()}`;
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
@@ -4047,7 +4122,8 @@ export function createOpenAIStreamAdapter(
                           text: rawResult.slice(0, mcpImgIdx),
                           images,
                         };
-                        if (isMcpImageToolResult(candidate)) mcpImages = candidate;
+                        if (isMcpImageToolResult(candidate))
+                          mcpImages = candidate;
                       } catch {
                         // Not a valid envelope; fall through below.
                       }
@@ -4234,10 +4310,8 @@ export function createOpenAIStreamAdapter(
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
               // Normalize structured delta.content (mistral magistral).
-              const {
-                text: delta,
-                structuredReasoningContinues,
-              } = extractDeltaText(rawDelta);
+              const { text: delta, structuredReasoningContinues } =
+                extractDeltaText(rawDelta);
               // Latest Gemini text-part thoughtSignature for next-turn replay.
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
@@ -4435,8 +4509,7 @@ export function createOpenAIStreamAdapter(
               const parsedReasoningGroupCount =
                 countReasoningGroups(assistantContent);
               if (
-                parsedReasoningGroupCount >
-                reasoningDurationTracker.groupCount
+                parsedReasoningGroupCount > reasoningDurationTracker.groupCount
               ) {
                 reasoningDurationTracker.startGroup(
                   parsedReasoningGroupCount - 1,

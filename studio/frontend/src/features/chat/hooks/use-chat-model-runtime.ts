@@ -59,19 +59,14 @@ import {
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
-import {
-  isMultimodalResponse,
-} from "../types/api";
+import { isMultimodalResponse } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import {
   applyPerModelConfigToRuntime,
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker";
-import type {
-  ChatLoraSummary,
-  ChatModelSummary,
-} from "../types/runtime";
+import type { ChatLoraSummary, ChatModelSummary } from "../types/runtime";
 
 export type SelectedModelInput = {
   id: string;
@@ -135,7 +130,10 @@ function parseTrailingEpoch(input: string): number | undefined {
 }
 
 function stripTrailingEpoch(input: string): string {
-  const cleaned = input.replace(LORA_SUFFIX_RE, "").replace(/[_-]+$/, "").trim();
+  const cleaned = input
+    .replace(LORA_SUFFIX_RE, "")
+    .replace(/[_-]+$/, "")
+    .trim();
   return cleaned || input;
 }
 
@@ -503,13 +501,15 @@ export function useChatModelRuntime() {
       const ggufVariant =
         typeof selection === "string" ? undefined : selection.ggufVariant;
       const forceReload =
-        typeof selection === "string" ? false : selection.forceReload ?? false;
+        typeof selection === "string"
+          ? false
+          : (selection.forceReload ?? false);
       const nativePathToken =
         typeof selection === "string" ? undefined : selection.nativePathToken;
       const nativePathExpiresAtMs =
         typeof selection === "string"
           ? null
-          : selection.nativePathExpiresAtMs ?? null;
+          : (selection.nativePathExpiresAtMs ?? null);
       const explicitIsGguf =
         typeof selection === "string" ? undefined : selection.isGguf;
       let isDiffusion =
@@ -517,17 +517,25 @@ export function useChatModelRuntime() {
       const restorePreviousConfig = () => {
         if (typeof selection !== "string" && selection.previousConfig) {
           applyPerModelConfigToRuntime(selection.previousConfig, {
-            isDiffusion:
-              useChatRuntimeStore.getState().loadedIsDiffusion,
+            isDiffusion: useChatRuntimeStore.getState().loadedIsDiffusion,
           });
         }
       };
       const throwOnError =
-        typeof selection === "string" ? false : selection.throwOnError ?? false;
+        typeof selection === "string"
+          ? false
+          : (selection.throwOnError ?? false);
       const keepSpeculative =
-        typeof selection === "string" ? false : selection.keepSpeculative ?? false;
+        typeof selection === "string"
+          ? false
+          : (selection.keepSpeculative ?? false);
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
-      if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
+      if (
+        !forceReload &&
+        (!modelId ||
+          (params.checkpoint === modelId &&
+            (ggufVariant ?? null) === (currentVariant ?? null)))
+      ) {
         restorePreviousConfig();
         return;
       }
@@ -623,9 +631,13 @@ export function useChatModelRuntime() {
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
       const extraLoadingDescription =
-        typeof selection === "string" ? undefined : selection.loadingDescription;
+        typeof selection === "string"
+          ? undefined
+          : selection.loadingDescription;
       const isDownloaded =
-        typeof selection === "string" ? false : selection.isDownloaded ?? false;
+        typeof selection === "string"
+          ? false
+          : (selection.isDownloaded ?? false);
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
       // A native path-token selection is a local GGUF by construction (the
@@ -638,14 +650,16 @@ export function useChatModelRuntime() {
           nativePathToken != null ||
           model?.isGguf === true);
       const loraIsAdapter = lora?.exportType === "lora";
-      const isLora =
-        explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
+      const isLora = explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
       const displayName = model?.name || lora?.name || modelId;
       const toastDisplayName = shortModelLabel(displayName);
       const loadAttemptId = ++loadAttemptRef.current;
       primeNativeNotificationPermission().catch(() => undefined);
       const notificationModelKey = `${modelId}:${ggufVariant ?? ""}:${loadAttemptId}`;
-      const safeModelName = safeNotificationLabel(toastDisplayName, "The model");
+      const safeModelName = safeNotificationLabel(
+        toastDisplayName,
+        "The model",
+      );
       const currentCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
       const previousCheckpoint = currentCheckpoint;
@@ -661,14 +675,16 @@ export function useChatModelRuntime() {
         ? loras.find((entry) => entry.id === previousCheckpoint)
         : undefined;
       const previousIsLora =
-        previousModel?.isLora ?? (previousLora?.exportType === "lora");
+        previousModel?.isLora ?? previousLora?.exportType === "lora";
       const isLocal = isLocalModelPath(modelId);
       const isCachedLora = isLora && isLocal;
       const loadingDescription = [
         currentCheckpoint ? "Switching models." : null,
         extraLoadingDescription ?? null,
         isDownloaded ? "Loading cached model into memory." : null,
-        !isDownloaded && isCachedLora ? "Loading trained model into memory." : null,
+        !isDownloaded && isCachedLora
+          ? "Loading trained model into memory."
+          : null,
       ]
         .filter(Boolean)
         .join(" ");
@@ -710,6 +726,14 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nParallel ?? null)
               : useChatRuntimeStore.getState().nParallel;
+          const previousReasoningBudget =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig.reasoningBudget
+              : useChatRuntimeStore.getState().reasoningBudget;
+          const previousReasoningBudgetMessage =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig.reasoningBudgetMessage
+              : useChatRuntimeStore.getState().reasoningBudgetMessage;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do (and as
             // the compare path does): the Hub rejects an invalid Authorization
@@ -740,7 +764,8 @@ export function useChatModelRuntime() {
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
           const stateBeforeUnload = useChatRuntimeStore.getState();
-          let trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
+          let trustRemoteCode =
+            stateBeforeUnload.params.trustRemoteCode ?? false;
           let approvedRemoteCodeFingerprint: string | null = null;
           const maxSeqLength =
             normalizeMaxSeqLength(pendingLoadConfig?.maxSeqLength) ??
@@ -749,10 +774,10 @@ export function useChatModelRuntime() {
             stateBeforeUnload.activeNativePathToken;
           const previousActiveLoadId = stateBeforeUnload.activeLoadId;
           const previousIsGguf =
-            previousModel?.isGguf === true
-            || previousVariant != null
-            || previousActiveNativePathToken != null
-            || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+            previousModel?.isGguf === true ||
+            previousVariant != null ||
+            previousActiveNativePathToken != null ||
+            (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
           // Roll back to the previous model's own context. previousConfig was
           // snapshotted before this load pre-applied the next model's config, so
           // params.maxSeqLength may already be the next model's; use it only when
@@ -839,11 +864,22 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.specDraftNMax ?? stateBeforeUnload.specDraftNMax;
           let loadNParallel =
             pendingLoadConfig?.nParallel ?? stateBeforeUnload.nParallel;
+          let loadReasoningBudget =
+            pendingLoadConfig?.reasoningBudget ??
+            stateBeforeUnload.reasoningBudget;
+          let loadReasoningBudgetMessage =
+            pendingLoadConfig?.reasoningBudgetMessage ??
+            stateBeforeUnload.reasoningBudgetMessage;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
             const validateNativePathLease = nativePathToken
-              ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
+              ? (
+                  await consumeNativePathToken(
+                    nativePathToken,
+                    "validate-model",
+                  )
+                ).nativePathLease
               : undefined;
             // Validate with the same effective context /load uses: a GGUF native
             // context can exceed maxSeqLength, so sizing on raw maxSeqLength could
@@ -874,6 +910,12 @@ export function useChatModelRuntime() {
             const validateNParallel = resetsPerModelSettings
               ? (pendingLoadConfig?.nParallel ?? null)
               : loadNParallel;
+            const validateReasoningBudget = resetsPerModelSettings
+              ? (pendingLoadConfig?.reasoningBudget ?? -1)
+              : loadReasoningBudget;
+            const validateReasoningBudgetMessage = resetsPerModelSettings
+              ? (pendingLoadConfig?.reasoningBudgetMessage ?? "")
+              : loadReasoningBudgetMessage;
             const validateMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
               loadGpuMemoryMode,
@@ -909,6 +951,12 @@ export function useChatModelRuntime() {
                     // split 409s during training even when it fits.
                     gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
+                    reasoning_budget: targetIsDiffusion
+                      ? -1
+                      : validateReasoningBudget,
+                    reasoning_budget_message: targetIsDiffusion
+                      ? ""
+                      : validateReasoningBudgetMessage,
                   }
                 : {}),
             });
@@ -930,13 +978,15 @@ export function useChatModelRuntime() {
               if (
                 useTransformersUpgradeDialogStore
                   .getState()
-                  .consumeServerUnloadedChat()
-                && currentCheckpoint
+                  .consumeServerUnloadedChat() &&
+                currentCheckpoint
               ) {
                 previousWasUnloaded = true;
               }
               if (!upgraded) {
-                throw new Error(getTransformersUpgradeRequiredMessage(displayName));
+                throw new Error(
+                  getTransformersUpgradeRequiredMessage(displayName),
+                );
               }
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -944,8 +994,8 @@ export function useChatModelRuntime() {
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
             // worker requires a matching fingerprint that only the dialog produces.
             if (
-              validation.requires_trust_remote_code
-              || validation.requires_security_review
+              validation.requires_trust_remote_code ||
+              validation.requires_security_review
             ) {
               const approved = await confirmRemoteCodeIfNeeded({
                 modelName: modelId,
@@ -962,7 +1012,8 @@ export function useChatModelRuntime() {
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             const loadNativePathLease = nativePathToken
-              ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
+              ? (await consumeNativePathToken(nativePathToken, "load-model"))
+                  .nativePathLease
               : undefined;
 
             if (currentCheckpoint) {
@@ -997,6 +1048,10 @@ export function useChatModelRuntime() {
                 // unless its staged config overrides it.
                 nParallel: null,
                 loadedNParallel: null,
+                reasoningBudget: -1,
+                loadedReasoningBudget: null,
+                reasoningBudgetMessage: "",
+                loadedReasoningBudgetMessage: null,
                 // Per-model GPU knobs must not follow onto a different model
                 // (gpuMemoryMode is a standing preference and is kept).
                 selectedGpuIds: null,
@@ -1014,6 +1069,9 @@ export function useChatModelRuntime() {
                   : persistedSpeculativeType;
               loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
               loadNParallel = pendingLoadConfig?.nParallel ?? null;
+              loadReasoningBudget = pendingLoadConfig?.reasoningBudget ?? -1;
+              loadReasoningBudgetMessage =
+                pendingLoadConfig?.reasoningBudgetMessage ?? "";
               // Keep the click-time snapshot in lock-step with the store reset so
               // the load below sizes against the cleared per-model knobs, not the
               // previous model's (gpuMemoryMode is standing, so left as captured).
@@ -1069,7 +1127,9 @@ export function useChatModelRuntime() {
               effectiveMaxSeqLength,
             );
             const effectiveChatTemplateOverride =
-              loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
+              loadChatTemplateOverride?.trim()
+                ? loadChatTemplateOverride
+                : null;
             const loadResponse = await loadModel({
               model_path: loadPath,
               nativePathLease: loadNativePathLease,
@@ -1086,6 +1146,10 @@ export function useChatModelRuntime() {
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
+              reasoning_budget:
+                isGguf && !targetIsDiffusion ? loadReasoningBudget : -1,
+              reasoning_budget_message:
+                isGguf && !targetIsDiffusion ? loadReasoningBudgetMessage : "",
               tensor_parallel: loadTensorParallel,
               gpu_memory_mode: loadGpuMemoryMode,
               gpu_layers: loadGpuLayers,
@@ -1178,7 +1242,8 @@ export function useChatModelRuntime() {
               loadCustomContextLength,
             );
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
-            const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
+            const reasoningStyle =
+              loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;
             const supportsTools = loadResponse.supports_tools ?? false;
             // GLM-5.2-style models report their own effort levels (e.g.
@@ -1188,7 +1253,8 @@ export function useChatModelRuntime() {
               loadResponse.reasoning_effort_levels.length > 0
                 ? (loadResponse.reasoning_effort_levels as ReasoningEffort[])
                 : (["low", "medium", "high"] as const);
-            const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
+            const existingReasoningEffort =
+              useChatRuntimeStore.getState().reasoningEffort;
             const clampedReasoningEffort =
               reasoningStyle === "enable_thinking_effort" ||
               reasoningStyle === "reasoning_effort"
@@ -1219,7 +1285,8 @@ export function useChatModelRuntime() {
               supportsReasoningOff: reasoningStyle !== "reasoning_effort",
               reasoningEffortLevels,
               reasoningEffort: clampedReasoningEffort,
-              supportsPreserveThinking: loadResponse.supports_preserve_thinking ?? false,
+              supportsPreserveThinking:
+                loadResponse.supports_preserve_thinking ?? false,
               supportsTools,
               ...(reloadingSameModel && supportsTools
                 ? {
@@ -1240,6 +1307,28 @@ export function useChatModelRuntime() {
               // adopting it would pin a blank "server default" control.
               nParallel: committedSlots,
               loadedNParallel: committedSlots,
+              reasoningBudget:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
+                  : -1,
+              loadedReasoningBudget:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
+                  : -1,
+              reasoningBudgetMessage:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget_message ??
+                    loadReasoningBudgetMessage)
+                  : "",
+              loadedReasoningBudgetMessage:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget_message ??
+                    loadReasoningBudgetMessage)
+                  : "",
               customContextLength: keepCustomCtx,
               loadedCustomContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
@@ -1272,18 +1361,14 @@ export function useChatModelRuntime() {
                       topP: 0.95,
                       topK: 20,
                       minP: 0.0,
-                      ...(needsPresencePenalty
-                        ? { presencePenalty: 1.5 }
-                        : {}),
+                      ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}),
                     }
                   : {
                       temperature: 0.7,
                       topP: 0.8,
                       topK: 20,
                       minP: 0.0,
-                      ...(needsPresencePenalty
-                        ? { presencePenalty: 1.5 }
-                        : {}),
+                      ...(needsPresencePenalty ? { presencePenalty: 1.5 } : {}),
                     };
                 store.setParams({ ...store.params, ...p });
               }
@@ -1315,7 +1400,10 @@ export function useChatModelRuntime() {
               if (previousActiveNativePathToken) {
                 try {
                   rollbackNativePathLease = (
-                    await consumeNativePathToken(previousActiveNativePathToken, "load-model")
+                    await consumeNativePathToken(
+                      previousActiveNativePathToken,
+                      "load-model",
+                    )
                   ).nativePathLease;
                 } catch {
                   throw new Error(
@@ -1341,17 +1429,22 @@ export function useChatModelRuntime() {
                   chat_template_override:
                     stateBeforeUnload.loadedChatTemplateOverride,
                   cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,
-                  speculative_type:
-                    stateBeforeUnload.loadedSpeculativeType,
-                  spec_draft_n_max:
-                    stateBeforeUnload.loadedSpecDraftNMax,
+                  speculative_type: stateBeforeUnload.loadedSpeculativeType,
+                  spec_draft_n_max: stateBeforeUnload.loadedSpecDraftNMax,
                   n_parallel: stateBeforeUnload.loadedNParallel,
+                  reasoning_budget:
+                    stateBeforeUnload.loadedReasoningBudget ?? -1,
+                  reasoning_budget_message:
+                    stateBeforeUnload.loadedReasoningBudgetMessage ?? "",
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
-                  tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  tensor_parallel:
+                    stateBeforeUnload.loadedTensorParallel ?? false,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
-                  gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
-                  gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+                  gpu_memory_mode:
+                    stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
+                  gpu_layers:
+                    stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
@@ -1372,11 +1465,18 @@ export function useChatModelRuntime() {
                     : null,
                   // Restore the editable speculative knobs to the rolled-back
                   // model's; the loaded baselines below come from its reload echo.
-                  speculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
+                  speculativeType:
+                    stateBeforeUnload.loadedSpeculativeType ?? null,
                   specDraftNMax: stateBeforeUnload.loadedSpecDraftNMax ?? null,
                   // Control keeps its intent; only the baseline takes the echo.
                   nParallel: previousNParallel,
                   loadedNParallel: stateBeforeUnload.loadedNParallel ?? null,
+                  reasoningBudget: previousReasoningBudget,
+                  loadedReasoningBudget:
+                    rollbackResponse.reasoning_budget ?? -1,
+                  reasoningBudgetMessage: previousReasoningBudgetMessage,
+                  loadedReasoningBudgetMessage:
+                    rollbackResponse.reasoning_budget_message ?? "",
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
@@ -1402,8 +1502,12 @@ export function useChatModelRuntime() {
         }
 
         const isCachedLoad = isDownloaded || isCachedLora;
-        const toastTitle = isCachedLoad ? "Starting model…" : "Downloading model…";
-        const modelLoadToastOptions = (description: ReturnType<typeof renderLoadDescription>) => ({
+        const toastTitle = isCachedLoad
+          ? "Starting model…"
+          : "Downloading model…";
+        const modelLoadToastOptions = (
+          description: ReturnType<typeof renderLoadDescription>,
+        ) => ({
           description,
           duration: Infinity,
           closeButton: true,
@@ -1437,7 +1541,7 @@ export function useChatModelRuntime() {
         // model..." doesn't look frozen for minutes on large MoE models.
         let progressInterval: ReturnType<typeof setInterval> | null = null;
         const expectedBytes =
-          typeof selection !== "string" ? selection.expectedBytes ?? 0 : 0;
+          typeof selection !== "string" ? (selection.expectedBytes ?? 0) : 0;
 
         // Rolling window of byte samples for rate/ETA estimation, shared
         // across download + mmap phases so it survives phase flips.
@@ -1509,7 +1613,11 @@ export function useChatModelRuntime() {
           try {
             const prog =
               ggufVariant && expectedBytes > 0
-                ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
+                ? await getGgufDownloadProgress(
+                    modelId,
+                    ggufVariant,
+                    expectedBytes,
+                  )
                 : await getDownloadProgress(modelId);
             if (!loadingModelRef.current) return;
 
@@ -1557,8 +1665,7 @@ export function useChatModelRuntime() {
               hasShownProgress = true;
               const dlGb = prog.downloaded_bytes / 1e9;
               const est = estimate(dlSamples, prog.downloaded_bytes, 0);
-              const rateSuffix =
-                est.stable ? ` • ${formatRate(est.rate)}` : "";
+              const rateSuffix = est.stable ? ` • ${formatRate(est.rate)}` : "";
               // Inline-status-only state; skip the chat-page re-render unless it's shown.
               if (loadToastDismissedRef.current) {
                 setLoadProgress({
@@ -1622,11 +1729,17 @@ export function useChatModelRuntime() {
             const loadedGb = prog.bytes_loaded / 1e9;
             const totalGb = prog.bytes_total / 1e9;
             const pct = Math.min(99, Math.round(prog.fraction * 100));
-            const est = estimate(mmapSamples, prog.bytes_loaded, prog.bytes_total);
+            const est = estimate(
+              mmapSamples,
+              prog.bytes_loaded,
+              prog.bytes_total,
+            );
             const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB in memory`;
             const label = est.stable
               ? `${base} • ${formatRate(est.rate)}${
-                  formatEta(est.eta) !== "--" ? ` • ${formatEta(est.eta)} left` : ""
+                  formatEta(est.eta) !== "--"
+                    ? ` • ${formatEta(est.eta)} left`
+                    : ""
                 }`
               : base;
             // Inline-status-only state (see pollDownload): while the toast is
@@ -1713,7 +1826,10 @@ export function useChatModelRuntime() {
             notifyNative({
               key: `model-load-failed:${notificationModelKey}`,
               title: "Model failed to load",
-              body: sanitizeNotificationBody(message, "The model failed to load."),
+              body: sanitizeNotificationBody(
+                message,
+                "The model failed to load.",
+              ),
               requestPermission: false,
             }).catch(() => undefined);
           }

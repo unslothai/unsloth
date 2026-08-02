@@ -50,6 +50,8 @@ function config(maxSeqLength: number, kvCacheDtype: string | null = null) {
     speculativeType: null,
     specDraftNMax: null,
     nParallel: null,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     tensorParallel: false,
     chatTemplateOverride: null,
   };
@@ -142,7 +144,10 @@ test("a shared filename or folder name never marks a row resident", () => {
   const loaded = "/srv/models/alpha/model.gguf";
   const other = "/srv/models/beta/model.gguf";
   assert.equal(publicModelId(loaded), publicModelId(other));
-  assert.equal(residentModelIdMatches(publicModelId(loaded), other, other), false);
+  assert.equal(
+    residentModelIdMatches(publicModelId(loaded), other, other),
+    false,
+  );
   // The loadable identifier names exactly one of them.
   assert.equal(residentModelIdMatches(loaded, loaded, loaded), true);
   assert.equal(residentModelIdMatches(loaded, other, other), false);
@@ -170,7 +175,9 @@ test("a shared filename or folder name never marks a row resident", () => {
 test("Ollama link paths are recognised the way the resolver excludes them", () => {
   // core/inference/local_model_resolver.py refuses any path with these segments.
   assert.equal(
-    isOllamaLinkPath("/home/u/.ollama/models/.studio_links/q/qwen3-Q4_K_M.gguf"),
+    isOllamaLinkPath(
+      "/home/u/.ollama/models/.studio_links/q/qwen3-Q4_K_M.gguf",
+    ),
     true,
   );
   assert.equal(
@@ -278,9 +285,18 @@ const CASES: [string, [string, string] | null][] = [
   ["org/Repo-GGUF:UD-Q4_K_XL", ["org/Repo-GGUF", "UD-Q4_K_XL"]],
   // A .gguf with no quant token is labelled by its stem, lowercased in storage while
   // the scanner keeps the filename's casing.
-  ["/models/CustomModel.gguf:custommodel", ["/models/CustomModel.gguf", "custommodel"]],
-  ["/models/CustomModel.gguf:CustomModel", ["/models/CustomModel.gguf", "CustomModel"]],
-  ["C:\\models\\CustomModel.gguf:custommodel", ["C:\\models\\CustomModel.gguf", "custommodel"]],
+  [
+    "/models/CustomModel.gguf:custommodel",
+    ["/models/CustomModel.gguf", "custommodel"],
+  ],
+  [
+    "/models/CustomModel.gguf:CustomModel",
+    ["/models/CustomModel.gguf", "CustomModel"],
+  ],
+  [
+    "C:\\models\\CustomModel.gguf:custommodel",
+    ["C:\\models\\CustomModel.gguf", "custommodel"],
+  ],
   // A shard suffix is not part of the label.
   [
     "/models/Custom-00001-of-00003.gguf:custom",
@@ -290,7 +306,10 @@ const CASES: [string, [string, string] | null][] = [
   // An extensionless .gguf still has a label.
   ["/models/.gguf:gguf", ["/models/.gguf", "gguf"]],
   // A quant token inside the filename wins over the stem.
-  ["/models/tinyllama-Q4_K_M.gguf:q4_k_m", ["/models/tinyllama-Q4_K_M.gguf", "q4_k_m"]],
+  [
+    "/models/tinyllama-Q4_K_M.gguf:q4_k_m",
+    ["/models/tinyllama-Q4_K_M.gguf", "q4_k_m"],
+  ],
   ["/models/tinyllama-Q4_K_M.gguf:tinyllama-q4_k_m", null],
   // Only the basename is labelled, never the directories above it.
   [
