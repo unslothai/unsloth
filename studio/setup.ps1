@@ -353,6 +353,25 @@ function Get-PathDenialDetail {
     return " (it is a link)"
 }
 
+# One stop for every unreadable install tree. Nothing downstream (validate,
+# replace, junction, source build, swap) can work without this access, and the
+# folder outlives an app reinstall, so retrying cannot help.
+function Exit-PathAccessDenied {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    step "permissions" "$Label at $Path cannot be read: access is denied$(Get-PathDenialDetail -Path $Path)" "Red"
+    substep "This folder lives outside the app, so reinstalling Unsloth Studio, to any drive, reuses it and fails the same way" "Yellow"
+    substep "Simplest fix: close Unsloth, delete or rename $Path, then re-run setup (it is a managed cache and gets reinstalled)" "Yellow"
+    substep "If deleting is also denied, run these two in an elevated PowerShell, then re-run setup:" "Yellow"
+    substep "takeown /F `"$Path`" /R /D Y" "Yellow"
+    substep "icacls `"$Path`" /reset /T" "Yellow"
+    substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
+    Exit-SetupFailure "Access denied reading the existing $Label at $Path. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
+}
+
 function Get-InstalledLlamaPrebuiltRelease {
     param([string]$InstallDir)
 
@@ -2886,16 +2905,20 @@ function Assert-StudioOwnedOrAbsent {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Label
     )
-    if (-not (Test-PathQuiet $Path "Container")) { return }
-    # Both branches stay gated on $StudioHomeIsCustom, as before: a default-home
-    # denial is reported by the prebuilt phase instead.
+    # Denied is not Absent: a root we cannot read cannot be proven ours, and
+    # returning here would let the caller replace it. Both stops stay gated on
+    # $StudioHomeIsCustom, as before; a default-home denial is reported by the
+    # phase that owns the path.
+    $pathState = Get-PathState -Path $Path -PathType Container
+    if ($pathState -ne "Present") {
+        if ($StudioHomeIsCustom -and $pathState -eq "Denied") {
+            Exit-PathAccessDenied -Path $Path -Label $Label
+        }
+        return
+    }
     $markerState = Get-PathState -Path (Join-Path $Path $StudioOwnedMarker) -PathType Leaf
     if ($StudioHomeIsCustom -and $markerState -eq "Denied") {
-        # Ownership is unknowable while the tree is unreadable, so report the
-        # denial rather than claiming the path is not ours.
-        Write-Host "[ERROR] $Path exists but cannot be read: access is denied$(Get-PathDenialDetail -Path $Path)." -ForegroundColor Red
-        Write-Host "        Delete or rename it (Unsloth reinstalls this $Label), or restore access with takeown/icacls, then re-run." -ForegroundColor Yellow
-        Exit-SetupFailure "Access denied reading the existing $Label at $Path. Delete or rename that folder, or restore access with takeown/icacls, then re-run setup."
+        Exit-PathAccessDenied -Path $Path -Label $Label
     }
     if ($StudioHomeIsCustom -and $markerState -ne "Present") {
         if (Test-StudioOwnedAdoptable $Path) {
@@ -4013,24 +4036,23 @@ if ($LocalLlamaCppLinked) {
     substep "Skipping prebuilt install -- falling back to source build" "Yellow"
 } else {
     Write-Host ""
-    if (Test-Path -LiteralPath $LlamaCppDir) {
+    # Denied on the dir itself means an unreadable parent; Denied on the file
+    # below means an unreadable install. Either way nothing here can proceed,
+    # and the bare probes used to die under "Stop" with a raw
+    # "Test-Path : Access is denied" and exit 1.
+    $llamaDirState = Get-PathState -Path $LlamaCppDir
+    if ($llamaDirState -eq "Denied") {
+        Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install"
+    }
+    if ($llamaDirState -eq "Present") {
         substep "Existing llama.cpp install detected -- validating staged prebuilt update before replacement"
         # If the existing install is the wrong kind (e.g. windows-cpu on a ROCm
         # machine that should have windows-rocm), remove it so the installer is
         # forced to download the correct variant rather than skipping on tag match.
         $existingMetaPath = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
-        # An unreadable tree cannot be validated, replaced or built over, and it
-        # outlives an app reinstall, so retrying cannot help. Say so instead of
-        # dying on the bare probe with "Test-Path : Access is denied" and exit 1.
         $existingMetaState = Get-PathState -Path $existingMetaPath -PathType Leaf
         if ($existingMetaState -eq "Denied") {
-            $denialDetail = Get-PathDenialDetail -Path $LlamaCppDir
-            step "llama.cpp" "existing install cannot be read: access to $LlamaCppDir is denied$denialDetail" "Red"
-            substep "This folder lives outside the app, so reinstalling Unsloth Studio -- to any drive -- reuses it and fails the same way" "Yellow"
-            substep "Simplest fix: close Unsloth, delete or rename $LlamaCppDir, then re-run setup (it is a managed cache and gets reinstalled)" "Yellow"
-            substep "If deleting is also denied, restore access from an elevated PowerShell: takeown /F `"$LlamaCppDir`" /R /D Y then icacls `"$LlamaCppDir`" /reset /T" "Yellow"
-            substep "Antivirus or Controlled folder access can deny this path too -- allow or exclude it, then retry" "Yellow"
-            Exit-SetupFailure "Access denied reading the existing llama.cpp install at $LlamaCppDir. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
+            Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install"
         }
         if ($existingMetaState -eq "Present") {
             try {
@@ -4589,7 +4611,15 @@ if ($LocalLlamaCppLinked) {
 
     $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
 
-    if (Test-PathQuiet (Join-Path $LlamaCppDir ".git")) {
+    # Denied must not read as "no checkout here": the fresh-clone branch ends in
+    # a swap that recursively removes this tree and moves the temp one over it,
+    # under "Continue" and unchecked, so an unreadable child would leave a
+    # half-deleted install behind. Stop while that is still avoidable.
+    $llamaGitState = Get-PathState -Path (Join-Path $LlamaCppDir ".git")
+    if ($llamaGitState -eq "Denied") {
+        Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install"
+    }
+    if ($llamaGitState -eq "Present") {
         # why: in-place git mutation (remote set-url, checkout -B, clean -fdx)
         # rewrites $LlamaCppDir; mirror the prebuilt and temp-dir-swap guards
         # so an unrelated workspace .git tree is never silently overwritten.

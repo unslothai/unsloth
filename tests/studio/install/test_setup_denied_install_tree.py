@@ -40,17 +40,40 @@ def test_prebuilt_metadata_probe_cannot_terminate_setup():
     assert '$existingMetaState -eq "Present"' in SETUP_PS1
 
 
+def test_every_denial_route_reports_instead_of_proceeding():
+    """An unreadable parent dir, metadata file, .git checkout, or ownership root
+    must all stop. Treating any of them as absent lets the caller replace or
+    delete a tree it cannot read."""
+    assert "$llamaDirState = Get-PathState -Path $LlamaCppDir" in SETUP_PS1
+    assert '$llamaDirState -eq "Denied"' in SETUP_PS1
+    assert '$llamaGitState = Get-PathState -Path (Join-Path $LlamaCppDir ".git")' in SETUP_PS1
+    assert '$llamaGitState -eq "Denied"' in SETUP_PS1
+    assert "$pathState = Get-PathState -Path $Path -PathType Container" in SETUP_PS1
+    assert '$StudioHomeIsCustom -and $pathState -eq "Denied"' in SETUP_PS1
+    assert SETUP_PS1.count("Exit-PathAccessDenied -Path") == 5
+
+
 def test_denied_install_reports_an_actionable_failure():
-    assert 'step "llama.cpp" "existing install cannot be read' in SETUP_PS1
+    body = SETUP_PS1.split("function Exit-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
+    assert "cannot be read: access is denied" in body
     # The reporter reinstalled to a different drive and hit the same line; the
     # message has to say why that cannot help.
-    assert "reinstalling Unsloth Studio -- to any drive -- reuses it" in SETUP_PS1
-    assert "delete or rename $LlamaCppDir" in SETUP_PS1
-    assert "takeown /F" in SETUP_PS1
-    assert "icacls" in SETUP_PS1
-    assert "Controlled folder access" in SETUP_PS1
-    assert 'Exit-SetupFailure "Access denied reading the existing llama.cpp install' in SETUP_PS1
-    assert "Reinstalling the app does not reset it." in SETUP_PS1
+    assert "reinstalling Unsloth Studio, to any drive, reuses it" in body
+    assert "delete or rename $Path" in body
+    assert "Controlled folder access" in body
+    assert 'Exit-SetupFailure "Access denied reading the existing $Label' in body
+    assert "Reinstalling the app does not reset it." in body
+
+
+def test_recovery_commands_are_separately_runnable():
+    """On one line "then" is not a PowerShell separator: takeown would take the
+    rest as arguments and icacls would never run."""
+    body = SETUP_PS1.split("function Exit-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
+    command_lines = [
+        line for line in body.splitlines() if "takeown /F" in line or "/reset /T" in line
+    ]
+    assert len(command_lines) == 2, command_lines
+    assert not any("takeown" in line and "icacls" in line for line in command_lines), command_lines
 
 
 def test_failure_reaches_the_desktop_ui():
@@ -68,10 +91,11 @@ def test_ownership_guard_distinguishes_denied_from_unowned():
         in guard
     )
     assert '$markerState -eq "Denied"' in guard
-    assert "cannot be read: access is denied" in guard
     # The old wording blamed ownership, which is unknowable while the tree is
     # unreadable; it must stay for the genuinely-unowned case only.
     assert "is not marked as an Unsloth-owned $Label" in guard
+    # Both stops stay gated, so default-home installs behave exactly as before.
+    assert guard.count("$StudioHomeIsCustom -and") == 3
 
 
 def test_no_bare_test_path_probes_inside_the_llama_install_tree():

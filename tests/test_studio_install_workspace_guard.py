@@ -379,8 +379,8 @@ def test_setup_helpers_gate_on_canonical_custom_root():
 def test_setup_ps1_inplace_git_sync_marks_studio_owned():
     """setup.ps1 in-place git-sync branch must Mark-StudioOwned after a successful sync."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
-    # Probed with Test-PathQuiet so an ACL-denied tree cannot terminate setup.
-    inplace_idx = src.index('Test-PathQuiet (Join-Path $LlamaCppDir ".git")')
+    # Three-state probe so an ACL-denied tree stops instead of cloning over it.
+    inplace_idx = src.index('if ($llamaGitState -eq "Present") {')
     # The in-place branch ends just before the temp-dir clone branch.
     clone_idx = src.index("Cloning llama.cpp @", inplace_idx)
     inplace_block = src[inplace_idx:clone_idx]
@@ -395,8 +395,8 @@ def test_setup_ps1_inplace_git_sync_marks_studio_owned():
 def test_setup_ps1_inplace_git_sync_asserts_studio_owned_before_mutation():
     """setup.ps1 in-place git-sync must Assert-StudioOwnedOrAbsent before any destructive git op."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
-    # Probed with Test-PathQuiet so an ACL-denied tree cannot terminate setup.
-    inplace_idx = src.index('Test-PathQuiet (Join-Path $LlamaCppDir ".git")')
+    # Three-state probe so an ACL-denied tree stops instead of cloning over it.
+    inplace_idx = src.index('if ($llamaGitState -eq "Present") {')
     clone_idx = src.index("Cloning llama.cpp @", inplace_idx)
     inplace_block = src[inplace_idx:clone_idx]
     assert (

@@ -36,9 +36,20 @@ Check "prebuilt metadata probe goes through Get-PathState" (
     $setupText -match '\$existingMetaState = Get-PathState -Path \$existingMetaPath -PathType Leaf')
 Check "a denied llama.cpp install fails with an actionable message" (
     $setupText -match '\$existingMetaState -eq "Denied"' -and
-    $setupText -match 'Exit-SetupFailure "Access denied reading the existing llama\.cpp install')
+    $setupText -match 'Exit-SetupFailure "Access denied reading the existing \$Label')
+# Every denial route reports instead of proceeding: an unreadable parent dir, an
+# unreadable metadata file, an unreadable .git checkout, and the ownership guard.
+Check "the prebuilt phase stops on a denied llama.cpp dir" (
+    $setupText -match '\$llamaDirState = Get-PathState -Path \$LlamaCppDir' -and
+    $setupText -match '\$llamaDirState -eq "Denied"')
+Check "the source-build .git probe stops on a denied checkout" (
+    $setupText -match '\$llamaGitState = Get-PathState -Path \(Join-Path \$LlamaCppDir "\.git"\)' -and
+    $setupText -match '\$llamaGitState -eq "Denied"')
+Check "the ownership guard stops on a denied root instead of returning" (
+    $setupText -match '\$pathState = Get-PathState -Path \$Path -PathType Container' -and
+    $setupText -match '\$StudioHomeIsCustom -and \$pathState -eq "Denied"')
 Check "guidance says an app reinstall does not reset the folder" (
-    $setupText -match 'reinstalling Unsloth Studio -- to any drive -- reuses it' -and
+    $setupText -match 'reinstalling Unsloth Studio, to any drive, reuses it' -and
     $setupText -match 'Reinstalling the app does not reset it\.')
 Check "guidance names the concrete recovery commands" (
     $setupText -match 'takeown /F' -and $setupText -match 'icacls .* /reset /T')
@@ -105,24 +116,21 @@ try {
 }
 
 # ── The desktop app must receive the reason, not just "exit code 1" ──
-# The real Denied branch, sliced out of setup.ps1, with the real
-# Exit-SetupFailure in Tauri mode: install.rs prefers a [TAURI:ERROR] line over
-# its generic exit-code message, so this is what the user reads.
-$deniedStart = $setupText.IndexOf('if ($existingMetaState -eq "Denied") {')
-Check "the Denied branch is present in setup.ps1" ($deniedStart -ge 0)
-if ($deniedStart -ge 0) {
-    $deniedEnd = $setupText.IndexOf("`n        }", $deniedStart)
-    $deniedBlock = $setupText.Substring($deniedStart, $deniedEnd - $deniedStart + 10)
-    $exitSrc = Get-FunctionSource -Path $setupPath -Name Exit-SetupFailure
+# The real Exit-PathAccessDenied with the real Exit-SetupFailure in Tauri mode:
+# install.rs prefers a [TAURI:ERROR] line over its generic exit-code message, so
+# this is what the user reads.
+$exitDeniedSrc = Get-FunctionSource -Path $setupPath -Name Exit-PathAccessDenied
+$exitSetupSrc = Get-FunctionSource -Path $setupPath -Name Exit-SetupFailure
+Check "setup.ps1 defines Exit-PathAccessDenied" ($null -ne $exitDeniedSrc)
+if ($exitDeniedSrc) {
     $harness = @"
 `$ErrorActionPreference = "Stop"
 function step { param([string]`$Label, [string]`$Value, [string]`$Color = "Green") Write-Host "  `$Label  `$Value" }
 function substep { param([string]`$Message, [string]`$Color = "DarkGray") Write-Host "    `$Message" }
-$exitSrc
-`$LlamaCppDir = "C:\Users\test\.unsloth\llama.cpp"
-`$existingMetaState = "Denied"
 function Get-PathDenialDetail { param([string]`$Path) return "" }
-$deniedBlock
+$exitSetupSrc
+$exitDeniedSrc
+Exit-PathAccessDenied -Path "C:\Users\test\.unsloth\llama.cpp" -Label "llama.cpp install"
 Write-Host "REACHED_UNREACHABLE"
 "@
     $harnessFile = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_denied_" + [guid]::NewGuid().ToString("N") + ".ps1")
@@ -139,12 +147,20 @@ Write-Host "REACHED_UNREACHABLE"
         else { $env:UNSLOTH_TAURI_MODE = $savedMode }
         Remove-Item -LiteralPath $harnessFile -ErrorAction SilentlyContinue
     }
-    Check "the denied branch stops setup (exit 1)" ($code -eq 1)
-    Check "the denied branch does not fall through to the install" ($out -notmatch "REACHED_UNREACHABLE")
+    Check "the denial stops setup (exit 1)" ($code -eq 1)
+    Check "the denial does not fall through to the install" ($out -notmatch "REACHED_UNREACHABLE")
     Check "the desktop app gets a [TAURI:ERROR] reason, not a bare exit code" (
         $out -match '\[TAURI:ERROR\] Access denied reading the existing llama\.cpp install')
     Check "the reason names the folder to remove" ($out -match [regex]::Escape('C:\Users\test\.unsloth\llama.cpp'))
     Check "the reason says a reinstall will not help" ($out -match 'Reinstalling the app does not reset it')
+    # takeown and icacls must be copy-pasteable. On one line, "then" is not a
+    # PowerShell separator and takeown would swallow the rest as arguments.
+    $takeownLines = @($out -split "`r?`n" | Where-Object { $_ -match 'takeown /F' })
+    Check "takeown is printed on its own line" ($takeownLines.Count -eq 1)
+    Check "icacls is not appended to the takeown line" (
+        $takeownLines.Count -eq 1 -and $takeownLines[0] -notmatch 'icacls')
+    Check "icacls is printed on its own line" (
+        @($out -split "`r?`n" | Where-Object { $_ -match 'icacls .* /reset /T' }).Count -eq 1)
 }
 
 # ── Denial classification ──
