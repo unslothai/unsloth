@@ -8,9 +8,11 @@ native-chat-template fallback used by the transformers and MLX backends.
 """
 
 import copy
+import functools
 import json
 import logging
 import re
+import weakref
 from dataclasses import dataclass
 from typing import Optional
 
@@ -240,6 +242,74 @@ _TTS_MARKUP_DEFAULT = re.compile(
 )
 
 
+# A delimiter-shaped token: "<...>" or "[...]" with no whitespace inside, which is the
+# only shape any template in this module uses as structure. Ordinary added tokens such as a
+# plain word or a "\u2581" piece are not delimiters and are left alone.
+_DELIMITER_SHAPED = re.compile(r"\A(?:<[^\s<>]{1,60}>|\[[^\s\[\]]{1,40}\])\Z")
+# The same shapes, for harvesting literals a template writes out that are not vocab entries.
+_TEMPLATE_DELIMITERS = re.compile(r"<[^\s<>]{1,60}>|\[[^\s\[\]]{1,40}\]")
+
+
+def delimiter_shaped_tokens(tokens) -> list:
+    """The delimiter-shaped entries of a vocabulary, for a caller that cannot keep it all."""
+    return [t for t in tokens or () if isinstance(t, str) and _DELIMITER_SHAPED.match(t)]
+
+
+class ModelMarkup:
+    """The markers one model actually treats as structure, and the patterns for them.
+
+    Built from the model's own chat template and token list rather than from the curated
+    patterns below, because a vocabulary is authoritative where a hand-written list cannot
+    be: it covers a sentinel this module never enumerated, and it leaves alone one that
+    belongs to some other family. A Llama-3 checkpoint has no "</think>" in either place,
+    so a user pasting a script that contains one keeps their text byte-for-byte (#7066).
+    """
+
+    __slots__ = ("control", "boundary", "markers", "rewrite_control", "rewrite_boundary")
+
+    def __init__(self, markers: set):
+        self.markers = markers
+        self.control = _alternation(markers)
+        # Which of the model's own markers open a turn. The curated patterns hold the one
+        # thing a vocabulary cannot say: whether the ASSISTANT legitimately emits a marker.
+        # A marker this module does not recognise at all is treated as a boundary, since a
+        # replayed assistant turn is client text and a forged turn costs more than a spaced
+        # one in history it should not have contained.
+        boundary = {
+            marker
+            for marker in markers
+            if _TURN_BOUNDARY_MARKUP.search(marker) or not _CONTROL_MARKUP.search(marker)
+        }
+        self.boundary = _alternation(boundary)
+        # Bound once per profile, not per call: a fresh partial each time would be a fresh
+        # identity, so a sweep cache keyed on the callable would never hit and would grow
+        # one entry per message instead.
+        self.rewrite_control = functools.partial(neutralize_control_markup, markup = self)
+        self.rewrite_boundary = functools.partial(neutralize_turn_boundary_markup, markup = self)
+
+
+def _alternation(markers: set):
+    """A pattern matching any of *markers*, longest first so no prefix shadows a longer one."""
+    if not markers:
+        return None
+    return re.compile("|".join(re.escape(m) for m in sorted(markers, key = len, reverse = True)))
+
+
+def model_markup(chat_template: Optional[str], tokens = None) -> Optional[ModelMarkup]:
+    """Profile one model's structural markers, or None when nothing is known about it.
+
+    None means "sweep everything the curated patterns know", which is the safe direction
+    for a model whose template and vocabulary could not be read.
+    """
+    markers: set = set()
+    for token in tokens or ():
+        if isinstance(token, str) and _DELIMITER_SHAPED.match(token):
+            markers.add(token)
+    if chat_template:
+        markers.update(_TEMPLATE_DELIMITERS.findall(chat_template))
+    return ModelMarkup(markers) if markers else None
+
+
 def _spaced_out(pattern, text: str) -> str:
     """Insert one space after every marker opener *pattern* found."""
     if not text or ("<" not in text and "[" not in text):
@@ -247,17 +317,31 @@ def _spaced_out(pattern, text: str) -> str:
     return pattern.sub(r"\g<0> ", text)
 
 
-def neutralize_control_markup(text: str) -> str:
+def _spaced_out_markers(pattern, text: str) -> str:
+    """Insert one space after the opener of every whole marker *pattern* matches."""
+    if not text or ("<" not in text and "[" not in text):
+        return text
+    return pattern.sub(lambda m: m.group(0)[0] + " " + m.group(0)[1:], text)
+
+
+def neutralize_control_markup(text: str, markup: "ModelMarkup" = None) -> str:
     """Break control markup in free text by spacing out the opener (#7066).
 
     "</think>" -> "< /think>", "[/INST]" -> "[ /INST]": readable, but no longer a
     delimiter to the template, the think extractor or the stop-sequence matcher. A plain
-    space, because every tokenizer vocabulary has one; U+2060 can fall back to byte junk."""
+    space, because every tokenizer vocabulary has one; U+2060 can fall back to byte junk.
+
+    With a *markup* profile only that model's own markers are broken, so text naming some
+    other family's sentinel is left exactly as the caller wrote it."""
+    if markup is not None:
+        return _spaced_out_markers(markup.control, text) if markup.control else text
     return _spaced_out(_CONTROL_MARKUP, text)
 
 
-def neutralize_turn_boundary_markup(text: str) -> str:
+def neutralize_turn_boundary_markup(text: str, markup: "ModelMarkup" = None) -> str:
     """Break only the turn-boundary sentinels, for replayed assistant text (#7066)."""
+    if markup is not None:
+        return _spaced_out_markers(markup.boundary, text) if markup.boundary else text
     return _spaced_out(_TURN_BOUNDARY_MARKUP, text)
 
 
@@ -493,12 +577,13 @@ def _differs(new, old) -> bool:
         return True
 
 
-def _neutralize_argument_leaves(value):
+def _neutralize_argument_leaves(value, markup = None):
     """Break control markup in every string leaf (keys included) of *value*."""
-    return _neutralize_leaves(value, neutralize_control_markup, warn_on_key_collision = True)
+    rewrite = neutralize_control_markup if markup is None else markup.rewrite_control
+    return _neutralize_leaves(value, rewrite, warn_on_key_collision = True)
 
 
-def _neutralized_arguments(arguments):
+def _neutralized_arguments(arguments, markup = None):
     """Neutralize a replayed call's ``arguments``, or None when already clean.
 
     OpenAI ships ``arguments`` as JSON *text*, and every consumer decodes it back to an
@@ -512,7 +597,7 @@ def _neutralized_arguments(arguments):
         decoded = safe = _UNPARSED
         try:
             decoded = json.loads(arguments)
-            safe = _neutralize_argument_leaves(decoded)
+            safe = _neutralize_argument_leaves(decoded, markup)
         # RecursionError as well as a parse error: json.loads and the walk both blow the
         # stack near 1000 levels, so a valid '[' * 1000 + '0' + ']' * 1000 would 500 a
         # request the server used to forward. Fall through to the text rewrite, which cannot
@@ -530,7 +615,7 @@ def _neutralized_arguments(arguments):
                 return json.dumps(safe, ensure_ascii = True)
             # Parsed clean: the text itself cannot hold a marker the decode would show.
             return None
-    new_arguments = _neutralize_argument_leaves(arguments)
+    new_arguments = _neutralize_argument_leaves(arguments, markup)
     # Same guard for arguments that arrived already decoded, which never passed through
     # json.loads and so were never depth-limited by it.
     return new_arguments if _differs(new_arguments, arguments) else None
@@ -550,7 +635,7 @@ def _replayed_ids(msg: dict):
                     yield call_id
 
 
-def _injective_id_map(messages: list) -> dict:
+def _injective_id_map(messages: list, markup = None) -> dict:
     """Map each replayed tool-call id to a swept id that is still unique.
 
     The sweep is not injective: "call<|end|>" and "call< |end|>" both break to
@@ -567,7 +652,7 @@ def _injective_id_map(messages: list) -> dict:
             if value not in seen:
                 seen.add(value)
                 originals.append(value)
-    swept = {original: neutralize_control_markup(original) for original in originals}
+    swept = {original: neutralize_control_markup(original, markup) for original in originals}
     # Reserved first: an id the sweep leaves alone keeps its own spelling, so a rewritten
     # one must never be handed that value.
     taken = {original for original in originals if swept[original] == original}
@@ -591,7 +676,7 @@ def _injective_id_map(messages: list) -> dict:
     return mapping
 
 
-def _neutralize_replayed_tool_call(tool_calls: list, id_map: dict = None) -> list:
+def _neutralize_replayed_tool_call(tool_calls: list, id_map: dict = None, markup = None) -> list:
     """Neutralize a replayed tool call's name, arguments and id, in every shape it carries.
 
     Gemma-4 renders "<|tool_call>call:NAME{key:<|"|>value<|"|>}<tool_call|>", so a name or
@@ -611,7 +696,7 @@ def _neutralize_replayed_tool_call(tool_calls: list, id_map: dict = None) -> lis
         updates: dict = {}
         name = source.get("name")
         if isinstance(name, str) and name:
-            new_name = neutralize_control_markup(name)
+            new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
         # Harmony concatenates "content_type" straight before "<|message|>"
@@ -619,12 +704,12 @@ def _neutralize_replayed_tool_call(tool_calls: list, id_map: dict = None) -> lis
         # closes the commentary call and opens an assistant channel (#7066).
         content_type = source.get("content_type")
         if isinstance(content_type, str) and content_type:
-            new_content_type = neutralize_control_markup(content_type)
+            new_content_type = neutralize_control_markup(content_type, markup)
             if new_content_type != content_type:
                 updates["content_type"] = new_content_type
         arguments = source.get("arguments")
         if arguments is not None:
-            new_arguments = _neutralized_arguments(arguments)
+            new_arguments = _neutralized_arguments(arguments, markup)
             if new_arguments is not None:
                 updates["arguments"] = new_arguments
         return updates
@@ -691,7 +776,7 @@ def _memoized(rewrite, cache: dict):
     return cached
 
 
-def neutralize_control_markup_in_messages(messages: list, cache: dict = None) -> list:
+def neutralize_control_markup_in_messages(messages: list, cache: dict = None, markup = None) -> list:
     """Neutralize control markup in message content and tool-result names (#7066).
 
     User / system / tool turns lose every marker; assistant turns lose only turn boundaries
@@ -705,7 +790,7 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None) ->
         return messages
     changed = False
     out: list = []
-    id_map = _injective_id_map(messages)
+    id_map = _injective_id_map(messages, markup)
     for msg in messages:
         if not isinstance(msg, dict):
             out.append(msg)
@@ -715,12 +800,13 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None) ->
         # A non-string is simply not "assistant", so it takes the full rewrite.
         raw_role_value = msg.get("role")
         role = raw_role_value.strip().lower() if isinstance(raw_role_value, str) else ""
-        rewrite = (
-            neutralize_turn_boundary_markup
-            if role in _ASSISTANT_ROLES
-            else neutralize_control_markup
-        )
+        assistant = role in _ASSISTANT_ROLES
+        if markup is None:
+            rewrite = neutralize_turn_boundary_markup if assistant else neutralize_control_markup
+        else:
+            rewrite = markup.rewrite_boundary if assistant else markup.rewrite_control
         if cache is not None:
+            # Keyed by the bound rewrite, so two models in one process cannot share an entry.
             rewrite = _memoized(rewrite, cache)
         updates: dict = {}
         dropped_keys: set = set()
@@ -731,7 +817,7 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None) ->
         # using a role this code does not know still works.
         raw_role = msg.get("role")
         if isinstance(raw_role, str) and raw_role:
-            new_role = neutralize_control_markup(raw_role)
+            new_role = neutralize_control_markup(raw_role, markup)
             # "Assistant" and " assistant " mean assistant here but not to a template, which
             # compares case-sensitively. That gap let a padded spelling take the lenient
             # assistant treatment while still rendering as one, so a known role is
@@ -746,7 +832,7 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None) ->
             # padded: a template that trims the role would undo a space (#7066).
             elif role not in _SCHEMA_ROLES:
                 wrapped = f"<|{new_role}|>"
-                if neutralize_control_markup(wrapped) != wrapped:
+                if neutralize_control_markup(wrapped, markup) != wrapped:
                     logger.warning(
                         "Rewriting role %r to 'user': a template that wraps a role in its "
                         "own delimiters would render it as a turn boundary.",
@@ -765,7 +851,7 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None) ->
                 updates["tool_call_id"] = new_result_id
         name = msg.get("name")
         if role == "tool" and isinstance(name, str) and name:
-            new_name = neutralize_control_markup(name)
+            new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
         # A separate reasoning field is the INNER text of a thought block the template wraps
@@ -779,7 +865,7 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None) ->
         for field in ("reasoning", "reasoning_content", "thinking"):
             value = msg.get(field)
             if isinstance(value, str) and value:
-                new_value = neutralize_control_markup(value)
+                new_value = neutralize_control_markup(value, markup)
                 if new_value != value:
                     updates[field] = new_value
         # Gemma-4's legacy assistant-level "tool_responses": format_tool_response_block
@@ -798,7 +884,9 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None) ->
             )
             dropped_keys.add("tool_responses")
         elif isinstance(tool_responses, list) and tool_responses:
-            new_tool_responses = _neutralize_leaves(tool_responses, neutralize_control_markup)
+            new_tool_responses = _neutralize_leaves(
+                tool_responses, neutralize_control_markup if markup is None else markup.rewrite_control
+            )
             if _differs(new_tool_responses, tool_responses):
                 updates["tool_responses"] = new_tool_responses
         content = msg.get("content")
@@ -835,7 +923,7 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None) ->
             )
             dropped_keys.add("tool_calls")
         elif isinstance(tool_calls, list) and tool_calls:
-            new_tool_calls = _neutralize_replayed_tool_call(tool_calls, id_map)
+            new_tool_calls = _neutralize_replayed_tool_call(tool_calls, id_map, markup)
             if _differs(new_tool_calls, tool_calls):
                 updates["tool_calls"] = new_tool_calls
         if updates or dropped_keys:
@@ -849,7 +937,7 @@ def neutralize_control_markup_in_messages(messages: list, cache: dict = None) ->
     return out if changed else messages
 
 
-def neutralize_tool_descriptions(tools, cache: dict = None):
+def neutralize_tool_descriptions(tools, cache: dict = None, markup = None):
     """Neutralize a rendered tool catalog, dropping any tool with an unsafe name.
 
     Every string in a declaration is prompt text: Gemma-4 interpolates the description into
@@ -890,7 +978,7 @@ def neutralize_tool_descriptions(tools, cache: dict = None):
         function = tool.get("function")
         target = function if isinstance(function, dict) else tool
         name = target.get("name")
-        if isinstance(name, str) and neutralize_control_markup(name) != name:
+        if isinstance(name, str) and neutralize_control_markup(name, markup) != name:
             logger.warning(
                 "Dropping tool %r from the catalog: function.name carries chat "
                 "control markup, which templates render as a turn boundary.",
@@ -900,7 +988,7 @@ def neutralize_tool_descriptions(tools, cache: dict = None):
             continue
         # Both levels: OpenAI nests the schema under "function", MCP carries
         # "input_schema" on the entry itself.
-        unsafe = _unsafe_schema_identifier(_schema_roots(tool) + _schema_roots(target))
+        unsafe = _unsafe_schema_identifier(_schema_roots(tool) + _schema_roots(target), markup)
         if unsafe is not None:
             logger.warning(
                 "Dropping tool %r from the catalog: the schema identifier %r carries chat "
@@ -994,18 +1082,18 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
 )
 
 
-def _first_unsafe_leaf(value):
+def _first_unsafe_leaf(value, markup = None):
     """The first string leaf, dict key included, that the rewrite would change."""
     stack = [value]
     seen = {id(value)}
     while stack:
         node = stack.pop()
         if isinstance(node, str):
-            if neutralize_control_markup(node) != node:
+            if neutralize_control_markup(node, markup) != node:
                 return node
         elif isinstance(node, dict):
             for key, item in node.items():
-                if isinstance(key, str) and neutralize_control_markup(key) != key:
+                if isinstance(key, str) and neutralize_control_markup(key, markup) != key:
                     return key
                 if id(item) not in seen:
                     seen.add(id(item))
@@ -1049,7 +1137,7 @@ def _schema_roots(target):
 _SCHEMA_INSTANCE_KEYS = frozenset({"examples", "example"})
 
 
-def _unsafe_schema_identifier(value):
+def _unsafe_schema_identifier(value, markup = None):
     """Return the first schema identifier the rewrite would change, or None."""
     stack = [value]
     seen = {id(value)}
@@ -1059,13 +1147,13 @@ def _unsafe_schema_identifier(value):
             for key, item in node.items():
                 if key in _SCHEMA_KEYED_IDENTIFIERS and isinstance(item, dict):
                     for name, dependents in item.items():
-                        if isinstance(name, str) and neutralize_control_markup(name) != name:
+                        if isinstance(name, str) and neutralize_control_markup(name, markup) != name:
                             return name
                         if key in _SCHEMA_KEYED_LIST_IDENTIFIERS and isinstance(dependents, list):
                             for dependent in dependents:
                                 if (
                                     isinstance(dependent, str)
-                                    and neutralize_control_markup(dependent) != dependent
+                                    and neutralize_control_markup(dependent, markup) != dependent
                                 ):
                                     return dependent
                     # The keys of this map are names, so only its VALUES are subschemas.
@@ -1081,7 +1169,7 @@ def _unsafe_schema_identifier(value):
                     # Every leaf, not just a top-level string: an enum entry or const can be
                     # any value, so "enum": [["<s>"]] and "const": {"tag": "</think>"} are
                     # literals the model must reproduce exactly.
-                    unsafe = _first_unsafe_leaf(item)
+                    unsafe = _first_unsafe_leaf(item, markup)
                     if unsafe is not None:
                         return unsafe
                 if key in _SCHEMA_INSTANCE_KEYS:
@@ -1492,6 +1580,42 @@ def _split_parallel_tool_calls(messages: list) -> list:
     return out
 
 
+_MARKUP_BY_TOKENIZER: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def markup_for_tokenizer(tokenizer) -> Optional[ModelMarkup]:
+    """Profile the loaded tokenizer's own structural markers, cached per tokenizer.
+
+    Returns None when the template and vocabulary cannot be read, which falls back to the
+    curated patterns: an unreadable model stays fully swept rather than unprotected."""
+    if tokenizer is None:
+        return None
+    try:
+        cached = _MARKUP_BY_TOKENIZER.get(tokenizer)
+    except TypeError:  # not weak-referenceable
+        cached = None
+    if cached is not None:
+        return cached[0]
+    template = getattr(tokenizer, "chat_template", None)
+    tokens = None
+    added = getattr(tokenizer, "added_tokens_decoder", None)
+    if isinstance(added, dict):
+        tokens = [getattr(v, "content", v) for v in added.values()]
+    if tokens is None:
+        vocab = getattr(tokenizer, "get_vocab", None)
+        if callable(vocab):
+            try:
+                tokens = list(vocab())
+            except Exception:
+                tokens = None
+    profile = model_markup(template if isinstance(template, str) else None, tokens)
+    try:
+        _MARKUP_BY_TOKENIZER[tokenizer] = (profile,)
+    except TypeError:
+        pass
+    return profile
+
+
 def apply_chat_template_for_generation(
     tokenizer,
     messages: list,
@@ -1504,9 +1628,11 @@ def apply_chat_template_for_generation(
     """Render the chat prompt. Try richest kwargs first; drop one
     group at a time on TypeError. Jinja / missing-variable errors
     propagate."""
-    # Shared choke point for the transformers and MLX backends (#7066).
-    messages = neutralize_control_markup_in_messages(messages)
-    tools = neutralize_tool_descriptions(tools)
+    # Shared choke point for the transformers and MLX backends (#7066). Gated on the
+    # loaded model's own markers, so text naming another family's sentinel is left alone.
+    _markup = markup_for_tokenizer(tokenizer)
+    messages = neutralize_control_markup_in_messages(messages, None, _markup)
+    tools = neutralize_tool_descriptions(tools, None, _markup)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:
         reasoning_kwargs["enable_thinking"] = enable_thinking
