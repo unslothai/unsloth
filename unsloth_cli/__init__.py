@@ -91,6 +91,12 @@ def main(
             # Name the folder and hand back a runnable fix: users get here via
             # "Run as administrator", so the directory is the last thing they suspect.
             _home = _os.environ.get("USERPROFILE") or _os.path.expanduser("~")
+            # Quote it, or C:\Users\Jane Doe reaches Set-Location as two arguments and
+            # the one line we hand out does not run. PowerShell single quotes are
+            # verbatim ('' escapes an apostrophe, C:\Users\O'Brien); cmd needs double
+            # quotes once extensions are off. " is not legal in a Windows path.
+            _home_ps = "'" + _home.replace("'", "''") + "'"
+            _home_cmd = '"' + _home + '"'
             _argv = " ".join((f'"{_arg}"' if " " in _arg else _arg) for _arg in _sys.argv[1:])
             _retry = ("unsloth " + _argv).rstrip()
             typer.secho(
@@ -102,8 +108,8 @@ def main(
                 "this one, which is how most people end up here.\n"
                 "\n"
                 "Change to a normal folder and run the command again:\n"
-                f"    cd {_home}          (PowerShell)\n"
-                f"    cd /d {_home}       (cmd.exe)\n"
+                f"    cd {_home_ps}          (PowerShell)\n"
+                f"    cd /d {_home_cmd}       (cmd.exe)\n"
                 f"    {_retry}",
                 fg = "red",
                 err = True,

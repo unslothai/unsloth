@@ -1138,9 +1138,10 @@ exit 0
     # run (unsloth_cli/__init__.py) only after PyTorch has downloaded, then rolls back.
     # Relocate rather than fail: nothing here reads the caller's directory ($RepoRoot
     # comes from $PSCommandPath, $StudioHome from the environment, both resolved above),
-    # so only a relative --with-llama-cpp-dir needs pinning first. Not restored at the
-    # end, same reason as the PSModulePath fix at the top: the interactive path ends
-    # running Studio in the foreground, so a finally would not fire until it stops.
+    # so --with-llama-cpp-dir is the only consumer input needing a rebase first. Not
+    # restored at the end, same reason as the PSModulePath fix at the top: the
+    # interactive path ends running Studio in the foreground, so a finally would not
+    # fire until it stops.
     $SystemRootDir = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
     $SystemRootDir = [System.IO.Path]::GetFullPath($SystemRootDir).TrimEnd('\')
     $CurrentDir = $null
@@ -1162,7 +1163,9 @@ exit 0
             $WithLlamaCppDir = Join-Path $CurrentDir $WithLlamaCppDir
         }
         # SYSTEM's profile is C:\Windows\System32\config\systemprofile, so a candidate
-        # under the Windows directory is no better than where we already are.
+        # under the Windows directory is no better than where we already are. Prefix
+        # match with no trailing separator, deliberately: it also skips a sibling like
+        # C:\Windows.old, and losing a candidate is safe where accepting one is not.
         $SafeDirCandidates = @($env:USERPROFILE, $HOME, $env:PUBLIC, $env:TEMP) |
             Where-Object {
                 $_ -and (Test-Path -LiteralPath $_ -PathType Container) -and

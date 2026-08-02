@@ -51,9 +51,9 @@ def test_install_ps1_guard_covers_the_whole_windows_directory():
     idx = src.index("$SystemRootDir = if ($env:SystemRoot)")
     block = src[idx : idx + 2500]
     assert '{ "C:\\Windows" }' in block, "SystemRoot must fall back to C:\\Windows"
-    assert (
-        "Get-Location -PSProvider FileSystem" in block
-    ), "the guard must read the filesystem location so a caller parked on HKLM:\\ is still checked"
+    assert "Get-Location -PSProvider FileSystem" in block, (
+        "the guard must read the filesystem location so a caller parked on HKLM:\\ is still checked"
+    )
     assert "OrdinalIgnoreCase" in block, "Windows paths compare case-insensitively"
 
 
@@ -64,9 +64,9 @@ def test_install_ps1_guard_relocates_and_keeps_relative_llama_cpp_dir():
     assert "Set-Location -LiteralPath $candidate" in block, "the guard must relocate, not just warn"
     llama_idx = block.index("$WithLlamaCppDir = Join-Path $CurrentDir $WithLlamaCppDir")
     set_loc_idx = block.index("Set-Location -LiteralPath $candidate")
-    assert (
-        llama_idx < set_loc_idx
-    ), "a relative --with-llama-cpp-dir must be pinned to the original directory before Set-Location"
+    assert llama_idx < set_loc_idx, (
+        "a relative --with-llama-cpp-dir must be pinned to the original directory before Set-Location"
+    )
 
 
 def test_install_ps1_guard_rejects_candidates_inside_the_windows_directory():
@@ -74,9 +74,9 @@ def test_install_ps1_guard_rejects_candidates_inside_the_windows_directory():
     src = _install_ps1()
     idx = src.index("$SafeDirCandidates = @(")
     block = src[idx : idx + 700]
-    assert (
-        "StartsWith(" in block and "$SystemRootDir" in block
-    ), "candidate directories under %SystemRoot% must be filtered out"
+    assert "StartsWith(" in block and "$SystemRootDir" in block, (
+        "candidate directories under %SystemRoot% must be filtered out"
+    )
 
 
 def test_install_ps1_guard_failure_message_is_actionable():
@@ -202,9 +202,9 @@ def test_relocation_block_moves_out_and_rebases_relative_llama_cpp_dir(tmp_path)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
     assert f"CWD:{home}" in res.stdout, f"must relocate to the home directory; got {res.stdout!r}"
     assert "Windows system folder" in res.stdout, "the user must be told why the directory changed"
-    assert (
-        f"LLAMA:{current_dir / 'llama.cpp'}" in res.stdout
-    ), "a relative --with-llama-cpp-dir must still resolve against the original directory"
+    assert f"LLAMA:{current_dir / 'llama.cpp'}" in res.stdout, (
+        "a relative --with-llama-cpp-dir must still resolve against the original directory"
+    )
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
@@ -230,7 +230,11 @@ class _FakeExit(Exception):
         self.code = code
 
 
-def _run_cli_guard(cwd: str, argv: list[str] | None = None) -> tuple[str | None, int | None]:
+def _run_cli_guard(
+    cwd: str,
+    argv: list[str] | None = None,
+    userprofile: str = r"C:\Users\me",
+) -> tuple[str | None, int | None]:
     """Exec the CLI's win32 guard block with ntpath semantics; returns (message, exit code)."""
     src = CLI_INIT.read_text(encoding = "utf-8")
     start = src.index('    if (\n        _sys.platform == "win32"\n    ):')
@@ -253,7 +257,7 @@ def _run_cli_guard(cwd: str, argv: list[str] | None = None) -> tuple[str | None,
         path = ntpath,
         sep = "\\",
         getcwd = lambda: cwd,
-        environ = {"WINDIR": r"C:\Windows", "USERPROFILE": r"C:\Users\me"},
+        environ = {"WINDIR": r"C:\Windows", "USERPROFILE": userprofile},
     )
     fake_sys = types.SimpleNamespace(platform = "win32", argv = argv or ["unsloth", "studio", "setup"])
 
@@ -292,9 +296,57 @@ def test_cli_guard_message_names_the_folder_and_the_fix():
     assert message is not None
     assert r"C:\Windows\System32" in message, "the message must name the offending directory"
     assert "Run as administrator" in message, "explain how the user got here"
-    assert r"cd C:\Users\me" in message, "hand back a cd the user can paste"
+    assert r"cd 'C:\Users\me'" in message, "hand back a cd the user can paste"
     assert "cmd.exe" in message, "cmd needs cd /d, PowerShell does not"
     assert "unsloth studio setup" in message, "repeat the command being retried"
+
+
+def _cd_line(message: str, shell: str) -> str:
+    """The pasteable `cd ...` out of the recovery block, minus its `(shell)` label."""
+    line = next(line for line in message.splitlines() if line.strip().endswith(f"({shell})"))
+    return line.strip()[: -len(f"({shell})")].strip()
+
+
+@pytest.mark.parametrize(
+    "profile_name",
+    [
+        "me",
+        "Jane Doe",  # a space: `cd C:\Users\Jane Doe` binds 'Doe' as a second argument
+        "O'Brien",  # an apostrophe: single quotes must be escaped by doubling
+    ],
+)
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_cli_guard_cd_line_actually_runs_in_powershell(profile_name: str, tmp_path):
+    """The advertised recovery command must survive a paste, not just read well.
+
+    Set-Location takes one -Path, so an unquoted profile with a space fails with
+    "A positional parameter cannot be found that accepts argument 'Doe'".
+    """
+    profile = tmp_path / profile_name
+    profile.mkdir()
+    message, _ = _run_cli_guard(r"C:\Windows\System32", userprofile = str(profile))
+    assert message is not None
+    command = _cd_line(message, "PowerShell")
+    result = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", f"{command}; (Get-Location).Path"],
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert result.returncode == 0, f"{command!r} failed: {result.stderr!r}"
+    assert str(profile) in result.stdout, f"{command!r} landed in {result.stdout!r}"
+
+
+@pytest.mark.parametrize("profile_name", ["me", "Jane Doe", "O'Brien"])
+def test_cli_guard_cd_lines_are_quoted(profile_name: str):
+    """Both shells get a quoted path; " is not legal in a Windows path, so cmd's
+    double quotes cannot be broken out of, and PowerShell's single quotes are
+    verbatim (no $var expansion) with '' escaping an embedded apostrophe."""
+    profile = "C:\\Users\\" + profile_name
+    message, _ = _run_cli_guard(r"C:\Windows\System32", userprofile = profile)
+    assert message is not None
+    assert _cd_line(message, "PowerShell") == "cd '" + profile.replace("'", "''") + "'"
+    assert _cd_line(message, "cmd.exe") == 'cd /d "' + profile + '"'
 
 
 def test_cli_guard_message_repeats_the_actual_command():
@@ -302,6 +354,6 @@ def test_cli_guard_message_repeats_the_actual_command():
         r"C:\Windows\System32", argv = ["unsloth", "train", "--model", "my model"]
     )
     assert message is not None
-    assert (
-        'unsloth train --model "my model"' in message
-    ), "the retry line must reproduce the invoked command, re-quoting arguments with spaces"
+    assert 'unsloth train --model "my model"' in message, (
+        "the retry line must reproduce the invoked command, re-quoting arguments with spaces"
+    )
