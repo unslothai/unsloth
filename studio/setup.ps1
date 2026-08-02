@@ -1628,13 +1628,29 @@ if (-not $HasNvidiaSmi) {
     }
 }
 
+# gfx arches AMD publishes Windows ROCm wheels for (repo.amd.com/rocm/whl/<family>). Hoisted
+# above the Intel scan because both it and the stale-venv check below need it: an arch that is
+# NOT listed gets CPU torch, so it must not outrank a usable Arc card. Kept in sync with
+# $archFamilyMap further down (enforced by tests/studio/install/test_rocm_arch_table_parity.py).
+$_rocmWheelArches = @(
+    "gfx1201", "gfx1200",           # RDNA 4
+    "gfx1151", "gfx1150", "gfx1152",  # RDNA 3.5 (Strix Halo/Point, Krackan Point)
+    "gfx1103", "gfx1102", "gfx1101", "gfx1100",  # RDNA 3
+    "gfx1036", "gfx1035", "gfx1034", "gfx1033", "gfx1032", "gfx1031", "gfx1030",  # RDNA 2 (RX 6000)
+    "gfx90a", "gfx908"              # MI200 / MI100
+)
+# "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are true on
+# unmapped arches (Vega, RDNA1) too, and those install CPU torch.
+$AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
+
 # Mirrors the Intel scan in install.ps1 so setup does not report "none (chat-only)" right
 # after install.ps1 reported a usable Arc GPU. Self-contained: setup.ps1 also runs standalone
-# (studio update), where no signal from install.ps1 exists. Same gates, same Arc / Data Center
+# (studio update), where no signal from install.ps1 exists. Same gate ($AmdHasGpuWheels, so an
+# Arc card wins over an AMD host that is heading for CPU torch anyway), same Arc / Data Center
 # match; Get-CimInstance because Get-WmiObject is absent in PowerShell 7.
 $script:IsIntelXpu = $false
 $IntelGpuLabel = $null
-if (-not $HasNvidiaSmi -and -not $HasROCm -and -not $script:ROCmGfxArch) {
+if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
     try {
         $xpuGpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match "(?i)Intel.*(Arc|Data Center GPU)" } | Select-Object -First 1
@@ -1644,17 +1660,20 @@ if (-not $HasNvidiaSmi -and -not $HasROCm -and -not $script:ROCmGfxArch) {
 
 if ($HasNvidiaSmi) {
     step "gpu" "NVIDIA GPU detected"
-} elseif ($HasROCm) {
-    step "gpu" $ROCmGpuLabel
-    $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
-    substep "HIP SDK: $hipSdkPath"
-    if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
 } elseif ($script:IsIntelXpu) {
+    # Ranks above every AMD branch: it can only be true when AMD gets no GPU wheel
+    # ($AmdHasGpuWheels gates the scan above), so those branches would all end on CPU
+    # torch. Report what the install below actually selects.
     Write-Host ""
     step "gpu" "Intel GPU detected" "Green"
     substep "$IntelGpuLabel"
     substep "PyTorch XPU (SYCL) wheels provide training and GPU inference on this GPU." "Cyan"
     Write-Host ""
+} elseif ($HasROCm) {
+    step "gpu" $ROCmGpuLabel
+    $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
+    substep "HIP SDK: $hipSdkPath"
+    if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
 } elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
     # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
     $sdkVer = if ($script:ROCmVersionFull) { " (HIP $script:ROCmVersionFull)" } else { "" }
@@ -2909,6 +2928,10 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                     # Any +rocm / gfx wheel -> generic "rocm" flavor (the exact version is
                     # repaired later by install_python_stack.py; here we only need the flavor).
                     $installedTorchTag = "rocm"
+                } elseif ($torchVer -match '\+xpu') {
+                    # Intel XPU (SYCL) build. Without this arm it read as "cpu" and an Arc
+                    # venv looked correct while being CPU-only. Matches ConvertTo-TorchFlavorTag.
+                    $installedTorchTag = "xpu"
                 } elseif ($torchVer -match '\+cpu') {
                     $installedTorchTag = "cpu"
                 } else {
@@ -2941,9 +2964,10 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                 $_rocmTags = Get-RocmPinStaleTags -PinLeaf $_pinLeaf -TorchVersion $torchVer
                 $expectedTorchTag  = $_rocmTags.Expected
                 $installedTorchTag = $_rocmTags.Installed
-            } elseif ((Test-CudaFamilyLeaf $_pinLeaf) -or $_pinLeaf -eq 'cpu') {
-                # cu*/cpu leaves stay specific so a cu126-vs-cu128 mismatch rebuilds;
-                # /custom and /current fall through to the unknown-index branch below.
+            } elseif ((Test-CudaFamilyLeaf $_pinLeaf) -or $_pinLeaf -eq 'cpu' -or $_pinLeaf -eq 'xpu') {
+                # cu*/cpu/xpu leaves stay specific so a cu126-vs-cu128 (or cpu-vs-xpu)
+                # mismatch is caught; /custom and /current fall through to the unknown-index
+                # branch below. Matches install.ps1's Get-ExpectedTorchFlavorTag.
                 $expectedTorchTag = $_pinLeaf
             } else {
                 # Custom index whose leaf is not a torch flavor (a /simple mirror): the
@@ -2953,19 +2977,19 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             }
         } elseif ($HasNvidiaSmi) {
             $expectedTorchTag = Get-PytorchCudaTag
+        } elseif ($script:IsIntelXpu) {
+            # Arc / Data Center host: the install below selects the xpu index. Checked BEFORE
+            # the AMD arm -- both can be true on an unmapped-arch AMD box, and xpu is what gets
+            # installed there. A CPU wheel is not wiped (the xpu install force-reinstalls over
+            # it in place), so expect "cpu" for that case; a cu*/rocm wheel still rebuilds.
+            $expectedTorchTag = if ($installedTorchTag -eq "cpu") { "cpu" } else { "xpu" }
         } elseif ($HasROCm -or $script:ROCmGfxArch) {
             # AMD/ROCm host with no explicit pin: an existing +rocm wheel is correct (gfx arch
             # counts even when $HasROCm is false). But only the arches the install path maps to a
             # repo.amd.com index get ROCm torch; an unmapped arch installs CPU, so expect "cpu"
             # for those or a correct CPU venv rebuilds every update.
-            $_rocmWheelArches = @(
-                "gfx1201", "gfx1200",           # RDNA 4
-                "gfx1151", "gfx1150", "gfx1152",  # RDNA 3.5 (Strix Halo/Point, Krackan Point)
-                "gfx1103", "gfx1102", "gfx1101", "gfx1100",  # RDNA 3
-                "gfx1036", "gfx1035", "gfx1034", "gfx1033", "gfx1032", "gfx1031", "gfx1030",  # RDNA 2 (RX 6000)
-                "gfx90a", "gfx908"              # MI200 / MI100
-            )
-            if ($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch)) {
+            # $_rocmWheelArches is defined above the Intel scan (that gate needs it too).
+            if ($AmdHasGpuWheels) {
                 # A correct +rocm wheel is not stale. A CPU wheel on a supported AMD arch is
                 # NOT wiped either (the AMD Windows ROCm override below upgrades it in place);
                 # expect "cpu" for that case. A wrong CUDA wheel still rebuilds.
@@ -3269,6 +3293,11 @@ if ($PinnedTorchIndexUrl) {
     $CuTag = Get-TorchIndexLeaf $PinnedTorchIndexUrl
 } elseif ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
+} elseif ($script:IsIntelXpu) {
+    # Arc / Data Center GPU: XPU (SYCL) wheels ship under the /xpu leaf, so $TorchInstallIndexUrl
+    # below resolves to <mirror>/xpu. Mirrors install.ps1's XPU reroute; a pin above still wins,
+    # and the AMD reroute below is skipped because it requires $CuTag -eq "cpu".
+    $CuTag = "xpu"
 } else {
     $CuTag = "cpu"
 }
@@ -3426,7 +3455,42 @@ if ($ROCmIndexUrl) {
     }
 }
 
-if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
+# ── Intel XPU (SYCL) ─────────────────────────────────────────────────────────
+# Its own index leaf, so it must not fall into the CUDA branch below ("CUDA support (xpu)").
+# Reached on an Arc / Data Center host and on an explicit xpu pin.
+$XpuIndexUrl = $null
+$XpuCpuFallback = $false
+if (-not $ROCmIndexUrl -and $CuTag -eq "xpu") { $XpuIndexUrl = $TorchInstallIndexUrl }
+if ($XpuIndexUrl) {
+    substep "installing PyTorch (Intel XPU)..."
+    # Bounded like install.ps1's XPU install: the xpu index serves torch past what Unsloth
+    # supports, so a bare trio could resolve out of range.
+    $_xpuTrio = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0")
+    if ($WinArm64NoAudio) { $_xpuTrio = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0") }
+    # --force-reinstall like the ROCm branch: an installed CPU wheel already satisfies
+    # torch>=2.4,<2.11.0, so uv would keep it and the venv would never migrate to XPU.
+    if ($script:UnslothVerbose) {
+        Fast-Install @_xpuTrio --force-reinstall --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+        $torchInstallExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install @_xpuTrio --force-reinstall --index-url $XpuIndexUrl | Out-String
+        $torchInstallExit = $LASTEXITCODE
+    }
+    if ($torchInstallExit -ne 0) {
+        # Transient XPU-index failure: fall back to a CPU base rather than leaving no torch
+        # (same shape as the ROCm fallback above).
+        Write-Host "[WARN] Intel XPU PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
+        Write-Host (Redact-InstallOutput $output) -ForegroundColor Yellow
+        $XpuIndexUrl = $null
+        $XpuCpuFallback = $true
+        $TorchInstallIndexUrl = "$PyTorchWhlBase/cpu"
+    } else {
+        substep "GPU XPU PyTorch installed -- training and GPU inference will use the GPU" "Cyan"
+    }
+}
+
+if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback -or $XpuCpuFallback)) {
     substep "installing PyTorch (CPU-only)..."
     # After an AMD ROCm fallback, force-reinstall so a partial ROCm torch (which satisfies the
     # CPU torch>= range) is replaced by the CPU build; skip on a genuine CPU host to stay fast.
@@ -3435,6 +3499,9 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     # enumerate char-by-char.
     $cpuForce = @()
     if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }
+    # Same reason after an Intel XPU fallback: a partial +xpu torch satisfies the CPU
+    # torch>= range, so uv would keep it and only swap companions.
+    if ($XpuCpuFallback) { $cpuForce = @("--force-reinstall") }
     # --force-reinstall on a pin change: a stale +cu / +rocm wheel still satisfies the CPU
     # torch>= range, so uv would keep it and only swap companions.
     if ($script:PinChangedForceReinstall) { $cpuForce = @("--force-reinstall") }
@@ -3443,6 +3510,13 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     # land an unsupported version. Unpinned CPU hosts keep the bare trio (pre-pin behavior).
     $cpuTorchSpec = "torch"; $cpuVisionSpec = "torchvision"; $cpuAudioSpec = "torchaudio"
     if ($TorchIndexPinned) {
+        $cpuTorchSpec  = "torch>=2.4,<2.12.0"
+        $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
+        $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
+    }
+    # Bound an XPU fallback too, even unpinned: this host is not the plain CPU box the bare
+    # trio was preserved for, and it arrives with a partial +xpu trio to overwrite.
+    if ($XpuCpuFallback) {
         $cpuTorchSpec  = "torch>=2.4,<2.12.0"
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
@@ -3462,7 +3536,7 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         Exit-SetupFailure "PyTorch installation failed (exit code $torchInstallExit)"
     }
-} elseif (-not $ROCmIndexUrl) {
+} elseif (-not $ROCmIndexUrl -and -not $XpuIndexUrl) {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     # --force-reinstall on a pin change: an installed cuXXX wheel satisfies the bare torch

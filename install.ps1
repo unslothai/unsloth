@@ -2165,6 +2165,27 @@ exit 0
         } catch {}
     }
 
+    # ── AMD gfx arch → AMD pip index family (repo.amd.com/rocm/whl/<family>) ──
+    # Hoisted above the Intel scan because the scan has to know whether AMD actually
+    # gets a GPU wheel: an arch missing from this map has no ROCm wheels and falls back
+    # to CPU torch, so it must not outrank a usable Arc card. Consumed unchanged by the
+    # AMD reroute further down.
+    $archFamilyMap = @{
+        "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
+        "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"       # RDNA 3.5 (Strix Halo/Point)
+        "gfx1152" = "gfx1152"                                  # RDNA 3.5 (Krackan Point)
+        "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"   # RDNA 3
+        "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+        "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"   # RDNA 2 (RX 6000)
+        "gfx1034" = "gfx103X-all"; "gfx1033" = "gfx103X-all"
+        "gfx1032" = "gfx103X-all"; "gfx1031" = "gfx103X-all"
+        "gfx1030" = "gfx103X-all"
+        "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
+    }
+    # "AMD gets GPU wheels here", which is NOT the same as "an AMD GPU is present":
+    # $HasROCm / $ROCmGfxArch are true on unmapped arches too, and those install CPU torch.
+    $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
+
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
     # Runs BEFORE the report chain, not inside its final else: an AMD adapter that is only
     # WMI-named (ROCmGpuLabel set, no usable ROCm) would otherwise take that chain and hide
@@ -2176,8 +2197,14 @@ exit 0
     # Get-CimInstance, not Get-WmiObject: the latter does not exist in PowerShell 7.
     $HasIntelGpu = $false
     $IntelGpuLabel = $null
-    # Excluding $ROCmGfxArch keeps a usable AMD host out of the XPU reroute below.
-    if (-not $HasNvidiaSmi -and -not $HasROCm -and -not $ROCmGfxArch) {
+    # Reset every invocation: under the documented "irm ... | iex" path $script: is the
+    # caller's session scope, so a second run in the same session would inherit a stale
+    # $true, skip the scan on a now-NVIDIA host, and still reroute to the xpu index.
+    $script:IsIntelXpu = $false
+    # Excluding $AmdHasGpuWheels keeps a WHEEL-SERVED AMD host out of the XPU reroute below.
+    # An AMD host with no wheels (unmapped arch, or arch unknown) is heading for CPU torch,
+    # so an Arc card next to it should win instead of both ending up on CPU.
+    if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
         try {
             $intelGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -match "(?i)Intel" })
@@ -2207,17 +2234,18 @@ exit 0
 
     if ($HasNvidiaSmi) {
         step "gpu" "NVIDIA GPU detected"
+    } elseif ($script:IsIntelXpu) {
+        # Ranks above every AMD branch: it can only be true when AMD gets no GPU wheel
+        # ($AmdHasGpuWheels gates the scan above), so the AMD branches below would all
+        # end on CPU torch. Report what actually gets installed.
+        step "gpu" "Intel GPU detected" "Green"
+        substep "$IntelGpuLabel"
+        # Reroute below prints the index: only it knows the mirror URL and any pin override.
     } elseif ($HasROCm) {
         step "gpu" $ROCmGpuLabel
         $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
         substep "HIP SDK: $hipSdkPath"
         if ($ROCmVersionFull) { substep "hipconfig: $ROCmVersionFull" }
-    } elseif ($script:IsIntelXpu) {
-        # Ranks above the two "AMD present but unusable" branches below; it cannot reach
-        # here when ROCm or a mapped gfx arch is usable, since those gate the scan above.
-        step "gpu" "Intel GPU detected" "Green"
-        substep "$IntelGpuLabel"
-        # Reroute below prints the index: only it knows the mirror URL and any pin override.
     } elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
         # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
         $sdkVer = if ($ROCmVersionFull) { " (HIP $ROCmVersionFull)" } else { "" }
@@ -2409,18 +2437,7 @@ exit 0
     $PinnedRocmAudioSpec = $null
     if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
         $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
-        $archFamilyMap = @{
-            "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
-            "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"       # RDNA 3.5 (Strix Halo/Point)
-            "gfx1152" = "gfx1152"                                  # RDNA 3.5 (Krackan Point)
-            "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"   # RDNA 3
-            "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
-            "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"   # RDNA 2 (RX 6000)
-            "gfx1034" = "gfx103X-all"; "gfx1033" = "gfx103X-all"
-            "gfx1032" = "gfx103X-all"; "gfx1031" = "gfx103X-all"
-            "gfx1030" = "gfx103X-all"
-            "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
-        }
+        # $archFamilyMap is defined above the Intel scan (the scan needs it too).
         # gfx120X (RDNA 4) and gfx1151/gfx1150 (Strix) have a null-pointer bug in
         # torch._C._grouped_mm on torch <2.11.0 (rocm7.12 and rocm7.1 respectively).
         # TheRock issues #5284 and #3284. Force torch>=2.11.0 so pip never resolves
