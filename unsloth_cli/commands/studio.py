@@ -3069,7 +3069,10 @@ def update(
         # a cause unrelated to the lock is not hidden behind it.
         if exe_lock_err is not None:
             _note_self_exe_locked(
-                exe_lock_err, repo_root = repo_root, package = package, verify = verify,
+                exe_lock_err,
+                repo_root = repo_root,
+                package = package,
+                verify = verify,
             )
         raise
     # On Windows clear the .deleteme orphan now that pip wrote a fresh
