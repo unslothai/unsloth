@@ -2617,7 +2617,15 @@ extra_eos_tokens = None,
         part + '\n\n' + ollama_eos
 
     # HF Jinja Chat template
+    # Caller text is spliced into Jinja '...' literals, where a bare quote closes
+    # the literal and a backslash is read as an escape, and \r is normalised to \n
+    # before unescaping. Backslash first, else it re-escapes the ones added after.
+    def escape_jinja_literal(text):
+        return text.replace("\\", "\\\\").replace("'", "\\'").replace("\r", "\\r")
+
     def process(part, which, content = "message['content']"):
+        # Escape the literal pieces only; the placeholder becomes Jinja syntax below.
+        part = which.join(escape_jinja_literal(piece) for piece in part.split(which))
         if part.endswith(which):
             part = "'" + part[:part.find(which)] + f"' + {content}"
         elif part.startswith(which):
@@ -2640,11 +2648,14 @@ extra_eos_tokens = None,
             "{% endif %}"\
         "{% endfor %}"\
         "{% if add_generation_prompt %}"\
-            "{{ '" + output_part[:output_part.find("{OUTPUT}")] + "' }}"\
+            "{{ '" + escape_jinja_literal(output_part[:output_part.find("{OUTPUT}")]) + "' }}"\
         "{% endif %}"
 
     # Now add system prompt to jinja
     if len(system_part) != 0:
+        # Strip the BOS while raw: an escaped bos_token no longer matches.
+        if has_bos_token:
+            system_part = system_part.replace(tokenizer.bos_token, "", 1)
         partial_system = process(system_part, "{SYSTEM}", "messages[0]['content']")
         partial_system = partial_system.replace("{SYSTEM}", "")
 
@@ -2652,17 +2663,12 @@ extra_eos_tokens = None,
             if default_system_message is None:
                 raise RuntimeError("Unsloth: Please specify a default system message!")
 
-        # Separate the BOS
-        if has_bos_token:
-            partial_system = partial_system.replace(tokenizer.bos_token, "", 1)
-            system_part    = system_part   .replace(tokenizer.bos_token, "", 1)
-
         partial_system = \
             "{% if messages[0]['role'] == 'system' %}"\
                 "{{ " + partial_system + " }}"\
                 "{% set loop_messages = messages[1:] %}"
         if default_system_message is not None:
-            full_system = system_part.replace("{SYSTEM}", default_system_message)
+            full_system = escape_jinja_literal(system_part.replace("{SYSTEM}", default_system_message))
             if "{SYSTEM}" in system_part:
                 modelfile += '\nSYSTEM "' + default_system_message + '"'
             partial_system += "{% else %}"\
