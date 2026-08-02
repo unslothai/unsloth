@@ -455,6 +455,32 @@ def delete_variant_incomplete_blobs_result(
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
+def _snapshot_scope_for_request(repo_id: str, local_path: Optional[str]) -> Optional[Path]:
+    """The one snapshot *local_path* names, when it names one of *repo_id*'s.
+
+    A row pinned to a snapshot loads out of that directory and nothing else, so readiness has to be
+    counted there: a quant sitting in a sibling revision is not one this row can resolve. The
+    answer carries the requested repo's identity, so the directory has to be that repo's cache;
+    any cache root will do, since the same repo is cached under the same name in each.
+    """
+    if not local_path:
+        return None
+    try:
+        local = Path(local_path).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if local.parent.name != "snapshots" or not local.is_dir():
+        return None
+    expected = repo_cache_dir_name("model", repo_id).lower()
+    return local if local.parent.parent.name.lower() == expected else None
+
+
+def pinned_snapshot_for_request(repo_id: str, local_path: Optional[str]) -> Optional[str]:
+    """The snapshot *local_path* pins, for callers outside this module that must read that copy."""
+    scope = _snapshot_scope_for_request(repo_id, local_path)
+    return str(scope) if scope is not None else None
+
+
 def _repo_cache_dir_for_request(repo_id: str, local_path: Optional[str]) -> Path:
     """Resolve the one Hub repo cache represented by this variant request."""
     expected_name = repo_cache_dir_name("model", repo_id).lower()
@@ -503,6 +529,18 @@ def _mark_empty_dir_cleanables(
     return response.model_copy(update = {"variants": variants})
 
 
+def _complete_quants_under(snapshot: str):
+    """Quants whose shards are all present under *snapshot*, or None if unknown.
+
+    None on any error, so every row reports downloaded as before: a scan problem must not mark a
+    working folder unusable.
+    """
+    try:
+        return hf_cache_scan.complete_snapshot_variants(snapshot)
+    except Exception:
+        return None
+
+
 async def get_gguf_variants_response(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -524,13 +562,28 @@ async def get_gguf_variants_response(
             None if is_local_path(repo_id) else _repo_cache_dir_for_request(repo_id, local_path)
         )
         hub_cache = repo_cache_dir.parent if repo_cache_dir is not None else None
+        snapshot_scope = _snapshot_scope_for_request(repo_id, local_path)
 
         def _local_response(
-            response_repo_id: str, variants, has_vision: bool
+            response_repo_id: str,
+            variants,
+            has_vision: bool,
+            complete = None,
         ) -> GgufVariantsResponse:
-            filenames = [v.filename for v in variants]
-            best = pick_best_gguf(filenames)
+            """*complete* is the set of quants whose shards are all on disk; None reports every row
+            downloaded. A quant short a shard stays listed to resume or delete, but is not offered
+            as ready, since the loader would ask llama-server for files that are not there.
+            """
+
+            def _downloaded(v) -> bool:
+                # An unlabelled quant cannot be judged, so it is kept as ready.
+                return complete is None or not v.quant or v.quant in complete
+
+            # The default comes from the ready rows; with none ready every row is the fallback.
+            ready = [v for v in variants if _downloaded(v)]
+            best = pick_best_gguf([v.filename for v in (ready or variants)])
             default_variant = extract_quant_label(best) if best else None
+
             return GgufVariantsResponse(
                 repo_id = response_repo_id,
                 variants = [
@@ -540,7 +593,8 @@ async def get_gguf_variants_response(
                         display_label = v.display_label,
                         size_bytes = v.size_bytes,
                         download_size_bytes = v.size_bytes,
-                        downloaded = True,
+                        downloaded = _downloaded(v),
+                        partial = not _downloaded(v),
                     )
                     for v in variants
                 ],
@@ -580,24 +634,42 @@ async def get_gguf_variants_response(
         # Local directory path (e.g. LM Studio models) — scan filesystem
         if is_local_path(repo_id):
             variants, has_vision = list_local_gguf_variants(repo_id)
-
-            return _local_response(repo_id, variants, has_vision)
+            # The load id is this path, so a quant offered here has to resolve here.
+            return _local_response(repo_id, variants, has_vision, _complete_quants_under(repo_id))
 
         # Reject invalid remote repo_ids up front (like download/delete) so a
         # malformed id returns 400 instead of a 500 from the HF client.
         if not _is_valid_repo_id(repo_id):
             raise HTTPException(status_code = 400, detail = f"Invalid repo_id: {repo_id!r}")
 
+        def _scoped_local_response():
+            """The pinned snapshot's own answer, or None when it holds nothing."""
+            if snapshot_scope is None:
+                return None
+            variants, has_vision = list_local_gguf_variants(str(snapshot_scope))
+            if not (variants or has_vision):
+                return None
+            return _local_response(
+                repo_id, variants, has_vision, _complete_quants_under(str(snapshot_scope))
+            )
+
         local_only = prefer_local_cache or offline
         if local_only:
+            scoped_response = _scoped_local_response()
+            if scoped_response is not None:
+                return scoped_response
             cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision = cached
-                return _local_response(repo_id, variants, has_vision)
+                variants, has_vision, complete = cached
+                # The lister leaves torn quants in: they stay listed for management, but not ready.
+                return _local_response(repo_id, variants, has_vision, complete)
             if local_path and is_local_path(local_path):
                 variants, has_vision = list_local_gguf_variants(local_path)
                 if variants or has_vision:
-                    return _local_response(repo_id, variants, has_vision)
+                    # Same reason as the is_local_path branch above.
+                    return _local_response(
+                        repo_id, variants, has_vision, _complete_quants_under(local_path)
+                    )
             partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
             if partial is not None:
                 variants, has_vision = partial
@@ -618,10 +690,14 @@ async def get_gguf_variants_response(
         try:
             variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
         except Exception:
+            scoped_response = _scoped_local_response()
+            if scoped_response is not None:
+                return scoped_response
             cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision = cached
-                return _local_response(repo_id, variants, has_vision)
+                variants, has_vision, complete = cached
+                # Same reason as the local_only branch above.
+                return _local_response(repo_id, variants, has_vision, complete)
             partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
             if partial is not None:
                 variants, has_vision = partial
@@ -639,7 +715,13 @@ async def get_gguf_variants_response(
         cached_filenames_by_snapshot: list[dict[str, int]] = []
         cached_quant_bytes_by_snapshot: list[dict[str, int]] = []
         if _is_valid_repo_id(repo_id):
-            for snap in iter_hf_cache_snapshots(repo_id, root = hub_cache):
+            # A pinned row resolves inside one directory, so nothing else counts as downloaded.
+            scoped_snapshots = (
+                [snapshot_scope]
+                if snapshot_scope is not None
+                else iter_hf_cache_snapshots(repo_id, root = hub_cache)
+            )
+            for snap in scoped_snapshots:
                 try:
                     gguf_paths = list(_iter_gguf_paths(snap))
                 except (OSError, RuntimeError, ValueError) as e:
@@ -761,11 +843,28 @@ async def get_gguf_variants_response(
         except Exception as e:
             logger.warning(f"Failed to compute partial GGUF variants for {repo_id}: {e}")
             incomplete_hashes = set()
-        scan_snapshot_dir = hf_cache_scan.resolve_snapshot_dir_for_scan(
+        scan_snapshot_dir = snapshot_scope or hf_cache_scan.resolve_snapshot_dir_for_scan(
             "model",
             repo_id,
             repo_cache_dir,
         )
+        # A marker or manifest carries no revision, so attribute it like the inventory row.
+        repo_signal_applies = hf_cache_scan.repo_signal_applies_to_snapshot(
+            repo_cache_dir, scan_snapshot_dir
+        )
+        # The excuse is that this snapshot holds the quant whole, so a quant it lacks stays the
+        # cancelled download and keeps its resume and delete affordances.
+        excused_quants = (
+            frozenset()
+            if repo_signal_applies or scan_snapshot_dir is None
+            else frozenset(
+                q.lower() for q in (_complete_quants_under(str(scan_snapshot_dir)) or ())
+            )
+        )
+
+        def _repo_signals_apply_to(quant: str) -> bool:
+            return repo_signal_applies or quant.lower() not in excused_quants
+
         # Manifest + marker + main incomplete-blob check: catches variants whose
         # download was cancelled or whose expected shards are missing/undersized.
         for variant in variants:
@@ -787,6 +886,7 @@ async def get_gguf_variants_response(
                     incomplete_blob_hashes = incomplete_hashes,
                     variant_blob_hashes = variant_hashes,
                     repo_cache_dir = repo_cache_dir,
+                    repo_signal_applies = _repo_signals_apply_to(variant.quant),
                 ):
                     partial_quants.add(variant.quant)
                     partial_quant_transports[variant.quant] = _partial_transport_for_variant(
@@ -798,10 +898,11 @@ async def get_gguf_variants_response(
                 logger.warning(
                     f"Manifest-based partial check failed for " f"{repo_id}/{variant.quant}: {e}"
                 )
+        # Same attribution as above: a pinned snapshot is not judged by a newer attempt's blobs.
         if incomplete_hashes:
             for variant in variants:
                 requirement = requirements_by_quant.get(variant.quant.lower())
-                if requirement is None:
+                if requirement is None or not _repo_signals_apply_to(variant.quant):
                     continue
                 # companion_hashes adds the MTP drafter (mmproj_hashes covers
                 # every mmproj precision in the repo, not just the planned one).

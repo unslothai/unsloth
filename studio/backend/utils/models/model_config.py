@@ -612,7 +612,24 @@ def _build_detection_sets():
         )
 
 
-_VLM_MODEL_TYPES, _VLM_CLASS_NAMES, _AUDIO_ONLY_MODEL_TYPES = _build_detection_sets()
+# Reading the registry imports transformers, hence torch: most of `import main` on a GPU
+# host, spent before the port can bind. Only the capability checks need the sets, so build
+# on first use, double-checked. _build_detection_sets() never raises (curated fallback).
+_DETECTION_SETS: Optional[Tuple[frozenset, frozenset, frozenset]] = None
+_DETECTION_SETS_LOCK = threading.Lock()
+
+
+def _detection_sets() -> Tuple[frozenset, frozenset, frozenset]:
+    """(vlm_model_types, vlm_class_names, audio_model_types), built once."""
+    global _DETECTION_SETS
+    sets = _DETECTION_SETS
+    if sets is None:
+        with _DETECTION_SETS_LOCK:
+            sets = _DETECTION_SETS
+            if sets is None:
+                sets = _DETECTION_SETS = _build_detection_sets()
+    return sets
+
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses the Gemma 4 5.5 sidecar for existing Gemma 4 architectures.
@@ -623,6 +640,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 
 def _is_vlm(config) -> bool:
+    vlm_types, vlm_classes, audio_types = _detection_sets()
     architectures = getattr(config, "architectures", None) or []
     model_type = getattr(config, "model_type", None)
     explicit_vision = (
@@ -632,13 +650,13 @@ def _is_vlm(config) -> bool:
         or hasattr(config, "projector_config")
     )
     # Audio-only models are vision only if they carry an explicit vision sub-config.
-    if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:
+    if model_type in audio_types and not explicit_vision:
         return False
     return (
         explicit_vision
-        or any(x in _VLM_CLASS_NAMES for x in architectures)
+        or any(x in vlm_classes for x in architectures)
         or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
-        or model_type in _VLM_MODEL_TYPES
+        or model_type in vlm_types
     )
 
 
@@ -670,14 +688,15 @@ def _raw_config_has_vision_config(
             or "image_token_index" in config
             or "projector_config" in config
         )
+        vlm_types, vlm_classes, audio_types = _detection_sets()
         # Audio-only models are vision only if they carry an explicit vision sub-config.
-        if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:
+        if model_type in audio_types and not explicit_vision:
             return False
         return (
             explicit_vision
-            or any(isinstance(x, str) and x in _VLM_CLASS_NAMES for x in architectures)
+            or any(isinstance(x, str) and x in vlm_classes for x in architectures)
             or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
-            or model_type in _VLM_MODEL_TYPES
+            or model_type in vlm_types
         )
     except Exception as exc:
         logger.warning("Could not read config.json for '%s': %s", model_name, exc)
@@ -686,34 +705,39 @@ def _raw_config_has_vision_config(
 
 # why: inline _is_vlm and constants are prepended so the subprocess stays
 # self-contained and does not import the parent backend module graph.
-_VISION_CHECK_INLINE_HELPERS = (
-    "_VLM_ARCH_SUFFIXES = " + repr(tuple(_VLM_ARCH_SUFFIXES)) + "\n"
-    "_VLM_MODEL_TYPES = " + repr(set(_VLM_MODEL_TYPES)) + "\n"
-    "_VLM_CLASS_NAMES = " + repr(set(_VLM_CLASS_NAMES)) + "\n"
-    "_AUDIO_ONLY_MODEL_TYPES = " + repr(set(_AUDIO_ONLY_MODEL_TYPES)) + "\n"
-    "def _is_vlm(config):\n"
-    "    architectures = getattr(config, 'architectures', None) or []\n"
-    "    model_type = getattr(config, 'model_type', None)\n"
-    "    explicit_vision = (\n"
-    "        hasattr(config, 'vision_config')\n"
-    "        or hasattr(config, 'img_processor')\n"
-    "        or hasattr(config, 'image_token_index')\n"
-    "        or hasattr(config, 'projector_config')\n"
-    "    )\n"
-    "    if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:\n"
-    "        return False\n"
-    "    return (\n"
-    "        explicit_vision\n"
-    "        or any(x in _VLM_CLASS_NAMES for x in architectures)\n"
-    "        or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)\n"
-    "        or model_type in _VLM_MODEL_TYPES\n"
-    "    )\n"
-)
+# Built on demand: interpolating the sets eagerly forces the registry read this module defers.
+def _build_vision_check_inline_helpers() -> str:
+    vlm_types, vlm_classes, audio_types = _detection_sets()
+    return (
+        "_VLM_ARCH_SUFFIXES = " + repr(tuple(_VLM_ARCH_SUFFIXES)) + "\n"
+        "_VLM_MODEL_TYPES = " + repr(set(vlm_types)) + "\n"
+        "_VLM_CLASS_NAMES = " + repr(set(vlm_classes)) + "\n"
+        "_AUDIO_ONLY_MODEL_TYPES = " + repr(set(audio_types)) + "\n"
+        "def _is_vlm(config):\n"
+        "    architectures = getattr(config, 'architectures', None) or []\n"
+        "    model_type = getattr(config, 'model_type', None)\n"
+        "    explicit_vision = (\n"
+        "        hasattr(config, 'vision_config')\n"
+        "        or hasattr(config, 'img_processor')\n"
+        "        or hasattr(config, 'image_token_index')\n"
+        "        or hasattr(config, 'projector_config')\n"
+        "    )\n"
+        "    if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:\n"
+        "        return False\n"
+        "    return (\n"
+        "        explicit_vision\n"
+        "        or any(x in _VLM_CLASS_NAMES for x in architectures)\n"
+        "        or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)\n"
+        "        or model_type in _VLM_MODEL_TYPES\n"
+        "    )\n"
+    )
+
 
 # Subprocess script run with transformers 5.x active. Takes model_name and
 # token via argv, prints JSON result to stdout.
-_VISION_CHECK_SCRIPT = (
-    r"""
+def _build_vision_check_script() -> str:
+    return (
+        r"""
 import sys, os, json
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -728,8 +752,8 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 """
-    + _VISION_CHECK_INLINE_HELPERS
-    + r"""
+        + _build_vision_check_inline_helpers()
+        + r"""
 try:
     from transformers import AutoConfig
 
@@ -768,7 +792,36 @@ except Exception as exc:
     print(json.dumps({"error": str(exc)}))
     sys.exit(1)
 """
-)
+    )
+
+
+# PEP 562 keeps the two script strings and three detection sets reachable under their
+# original module-level names, including `from ... import _VLM_...`. Memoised so
+# repeated access does not rebuild the ~40 KB script.
+_LAZY_MODULE_ATTRS = {
+    "_VLM_MODEL_TYPES": lambda: _detection_sets()[0],
+    "_VLM_CLASS_NAMES": lambda: _detection_sets()[1],
+    "_AUDIO_ONLY_MODEL_TYPES": lambda: _detection_sets()[2],
+    "_VISION_CHECK_INLINE_HELPERS": _build_vision_check_inline_helpers,
+    "_VISION_CHECK_SCRIPT": _build_vision_check_script,
+}
+_LAZY_MODULE_CACHE: Dict[str, Any] = {}
+_LAZY_MODULE_LOCK = threading.Lock()
+
+
+def _lazy_module_attr(name: str) -> Any:
+    """Build-once accessor. Also for in-module callers, where a bare global read would
+    not reach PEP 562."""
+    with _LAZY_MODULE_LOCK:
+        if name not in _LAZY_MODULE_CACHE:
+            _LAZY_MODULE_CACHE[name] = _LAZY_MODULE_ATTRS[name]()
+        return _LAZY_MODULE_CACHE[name]
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _LAZY_MODULE_ATTRS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return _lazy_module_attr(name)
 
 
 def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
@@ -796,7 +849,7 @@ def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None)
             [
                 sys.executable,
                 "-c",
-                _VISION_CHECK_SCRIPT,
+                _lazy_module_attr("_VISION_CHECK_SCRIPT"),
                 sidecar_dir,
                 _BACKEND_DIR,
                 model_name,
@@ -1460,6 +1513,10 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
         for f in _iter_gguf_files(d):
             try:
                 resolved = f.resolve()
+                # Interrupted download: llama-server cannot open it, the inventory already reports
+                # such a row text-only, and it must not shadow a whole projector beside it.
+                if resolved.stat().st_size <= 0:
+                    continue
             except OSError:
                 continue
             if resolved in seen_resolved:
@@ -1696,7 +1753,54 @@ def detect_mtp_file(
     return None
 
 
-def detect_gguf_model(path: str) -> Optional[str]:
+def _registered_custom_model_root(path: str) -> Optional[Path]:
+    try:
+        from storage.studio_db import list_scan_folders
+        folders = list_scan_folders()
+    except Exception:
+        return None
+    candidate = Path(os.path.abspath(Path(path).expanduser()))
+    matches = []
+    for folder in folders:
+        raw = folder.get("path")
+        if not isinstance(raw, str) or not raw:
+            continue
+        root = Path(os.path.abspath(Path(normalize_path(raw)).expanduser()))
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        matches.append(root)
+    return max(matches, key = lambda root: len(root.parts), default = None)
+
+
+def _local_mtp_context(path: Path, model_root: Optional[Path], fallback: str) -> str:
+    if model_root is not None:
+        try:
+            return Path(os.path.abspath(path)).relative_to(model_root).as_posix()
+        except ValueError:
+            pass
+    return fallback
+
+
+def _is_terminal_gemma_mtp(name: str) -> bool:
+    stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", Path(name).stem.lower())
+    return stem.endswith("-mtp") and bool(re.search(r"(?:^|[-_])gemma[-_]?4(?:[-_]|$)", stem))
+
+
+def _is_local_mtp_drafter(path: Path, model_root: Optional[Path], fallback: str) -> bool:
+    context = _local_mtp_context(path, model_root, fallback)
+    if _is_mtp_drafter(context):
+        return True
+    return (
+        model_root is not None
+        and model_root.name.lower() == "mtp"
+        and "/" not in context
+        and _is_terminal_gemma_mtp(path.name)
+    )
+
+
+def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[str]:
     """Check if a local path is or contains a GGUF model file.
 
     Handles a direct .gguf path or a directory of .gguf files. Skips mmproj
@@ -1704,6 +1808,11 @@ def detect_gguf_model(path: str) -> Optional[str]:
     the .gguf path or None. For HF repos, use detect_gguf_model_remote().
     """
     p = Path(path)
+    root = (
+        Path(os.path.abspath(Path(model_root).expanduser()))
+        if model_root is not None
+        else _registered_custom_model_root(path)
+    )
 
     # Case 1: direct .gguf file
     if p.suffix.lower() == ".gguf":
@@ -1714,7 +1823,11 @@ def detect_gguf_model(path: str) -> Optional[str]:
         # (...-MTP.gguf) doesn't match the predicate's mtp- prefix.
         rel = f"{p.parent.name}/{p.name}"
         quant = _extract_quant_label(rel)
-        if _is_mmproj(p.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
+        if (
+            _is_mmproj(p.name)
+            or _is_local_mtp_drafter(p, root, rel)
+            or _is_big_endian_gguf_path(rel, quant)
+        ):
             return None
         # Extension is authoritative: don't gate on is_file()/exists(), which
         # can fail in the Windows lock window after llama-server is killed.
@@ -1734,7 +1847,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
             quant = _extract_quant_label(context_rel)
             if (
                 _is_mmproj(f.name)
-                or _is_mtp_drafter(context_rel)
+                or _is_local_mtp_drafter(f, root, context_rel)
                 or _is_big_endian_gguf_path(context_rel, quant)
             ):
                 continue
@@ -1920,6 +2033,23 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(search_dir)
 
 
+def _snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
+    """Order snapshots by mtime, then by resolved path.
+
+    Mirrors hub.utils.hf_cache_state.snapshot_selection_key (utils cannot import hub) and must change
+    in lockstep: mtime alone is not a total order, so a tie broken differently would let the
+    inventory row advertise one revision while the load reads the other.
+    """
+    try:
+        mtime = snapshot.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    try:
+        return mtime, str(snapshot.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return mtime, str(snapshot)
+
+
 def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = None):
     """Yield HF cache snapshot dirs for *repo_id*, newest first.
 
@@ -1962,14 +2092,15 @@ def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = Non
             continue
     if not snap_dirs:
         return
-    snap_dirs_with_mtime = []
+    ordered = []
     for snap_dir in snap_dirs:
         try:
-            snap_dirs_with_mtime.append((snap_dir.stat().st_mtime, snap_dir))
+            snap_dir.stat()
         except OSError:
             continue
-    snap_dirs_with_mtime.sort(key = lambda item: item[0], reverse = True)
-    yield from (snap_dir for _, snap_dir in snap_dirs_with_mtime)
+        ordered.append((_snapshot_selection_key(snap_dir), snap_dir))
+    ordered.sort(key = lambda item: item[0], reverse = True)
+    yield from (snap_dir for _key, snap_dir in ordered)
 
 
 def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
@@ -2098,7 +2229,9 @@ def _resolve_gguf_dir(p: Path) -> Optional[Path]:
     return None
 
 
-def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], bool]:
+def list_local_gguf_variants(
+    directory: str, model_root: Optional[str] = None
+) -> tuple[list[GgufVariantInfo], bool]:
     """List GGUF quant variants in a local directory.
 
     Like :func:`list_gguf_variants` but reads the filesystem. Aggregates shard
@@ -2110,6 +2243,11 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
         return [], False
+    root = (
+        Path(os.path.abspath(Path(model_root).expanduser()))
+        if model_root is not None
+        else _registered_custom_model_root(directory)
+    )
 
     quant_totals: dict[str, int] = {}
     quant_first_file: dict[str, str] = {}
@@ -2130,7 +2268,7 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
         # Use the relative path so ``BF16/foo.gguf`` and ``Q4_K_M/foo.gguf``
         # get distinct quant labels instead of collapsing on basename.
         rel = f.relative_to(p).as_posix()
-        if _is_mtp_drafter(rel):
+        if _is_local_mtp_drafter(f, root, rel):
             continue
         quant = _extract_quant_label(rel)
         if _is_big_endian_gguf_path(rel, quant):
@@ -2151,7 +2289,11 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
     return variants, has_vision
 
 
-def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
+def _find_local_gguf_by_variant(
+    directory: str,
+    variant: str,
+    model_root: Optional[str] = None,
+) -> Optional[str]:
     """Find the GGUF file in *directory* matching a quantization *variant*.
 
     For sharded GGUFs (multiple files sharing a quant label), returns the
@@ -2162,6 +2304,11 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
         return None
+    root = (
+        Path(os.path.abspath(Path(model_root).expanduser()))
+        if model_root is not None
+        else _registered_custom_model_root(directory)
+    )
 
     # Recurse so variants under a quant-named subdir (e.g.
     # ``BF16/foo-BF16-00001-of-00002.gguf``) are found. Match the relative
@@ -2170,10 +2317,11 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     matches = []
     for f in _iter_gguf_files(p, recursive = True):
         rel = f.relative_to(p).as_posix()
-        if _is_mmproj(f.name) or _is_mtp_drafter(rel):
+        if _is_mmproj(f.name) or _is_local_mtp_drafter(f, root, rel):
             continue
         quant = _extract_quant_label(rel)
-        if quant != variant or _is_big_endian_gguf_path(rel, quant):
+        fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
+        if variant not in (quant, fallback_variant) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)
     matches.sort()

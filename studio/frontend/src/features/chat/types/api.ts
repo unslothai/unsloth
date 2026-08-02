@@ -96,6 +96,9 @@ export interface ValidateModelResponse {
   display_name?: string | null;
   is_gguf?: boolean;
   is_diffusion?: boolean;
+  /** The diffusion check was inconclusive, so `is_diffusion: false` above means
+   *  "not known to be diffusion", not "known to be ordinary". */
+  diffusion_unknown?: boolean;
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
@@ -167,6 +170,10 @@ export interface LoadModelResponse {
   is_gguf?: boolean;
   is_local_model?: boolean;
   is_diffusion?: boolean;
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
+   *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while
+   *  this carries the standing request. */
+  diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -231,6 +238,10 @@ export interface InferenceStatusResponse {
   is_gguf?: boolean;
   is_local_model?: boolean;
   is_diffusion?: boolean;
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
+   *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while
+   *  this carries the standing request. */
+  diffusion_requested_ngl?: number | null;
   gguf_variant?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
