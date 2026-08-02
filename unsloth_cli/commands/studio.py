@@ -3066,7 +3066,10 @@ def update(
     # ModuleNotFoundError. Hand over to the launcher while that is still avoidable.
     if exe_lock_err is not None:
         _refuse_update_that_would_break_the_install(
-            exe_lock_err, repo_root = repo_root, package = package, verify = verify,
+            exe_lock_err,
+            repo_root = repo_root,
+            package = package,
+            verify = verify,
         )
     try:
         _run_setup_script(verbose = verbose, repo_root = repo_root)

@@ -106,9 +106,7 @@ def test_a_locked_copy_stops_before_pip_runs(monkeypatch, tmp_path, capsys):
     assert "unsloth.exe" in err, "the reason has to travel with the refusal"
 
 
-def test_without_a_launcher_it_goes_on_rather_than_stranding_the_user(
-    monkeypatch, tmp_path
-):
+def test_without_a_launcher_it_goes_on_rather_than_stranding_the_user(monkeypatch, tmp_path):
     """With no launcher there is no better path to send anyone down, and stopping
     would leave them unable to update at all."""
     scripts = _scripts(tmp_path)
