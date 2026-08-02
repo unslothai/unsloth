@@ -324,7 +324,9 @@ function NavItem({
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
           {spinner && (
-            <Spinner className="ml-auto size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+            // mr-1.5 over the row's pr-2.5 = 16px, matching the chat rows'
+            // pr-4 so nav and Recents spinners share one column.
+            <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
           )}
         </SidebarMenuButton>
         {spinner && (
