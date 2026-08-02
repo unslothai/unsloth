@@ -12,6 +12,7 @@ import atexit
 import contextlib
 import functools
 import json
+import logging
 import math
 import os
 import re
@@ -10591,6 +10592,17 @@ class LlamaCppBackend:
         self._diffusion_requested_ngl = None
         if self._process is None:
             return
+        # Not every _process is a Popen. Tests stand one in to mean "a server is
+        # loaded" without spawning anything, and a backend torn down mid-start can
+        # hold whatever __init__ got as far as. Terminating what cannot be
+        # terminated is not an error worth reporting -- the state still has to be
+        # cleared either way, which the finally below does.
+        if not hasattr(self._process, "terminate"):
+            logger.debug("no terminable llama-server process to kill; clearing state")
+            self._process = None
+            self._clear_server_pid()
+            self._healthy = False
+            return
         try:
             self._process.terminate()
             self._process.wait(timeout = 5)
@@ -11006,8 +11018,25 @@ class LlamaCppBackend:
         return killed
 
     def _cleanup(self):
-        """atexit handler to ensure llama-server is terminated."""
-        self._kill_process()
+        """atexit handler to ensure llama-server is terminated.
+
+        Nothing here may report a failure through the logging machinery. By the
+        time atexit runs, the streams the handlers write to can already be closed,
+        and logging then prints its own traceback about that on top of whatever it
+        was trying to say -- so a warning about a kill that did not work turns into
+        several unrelated tracebacks after the test summary, which is how this was
+        found. raiseExceptions is the switch logging provides for exactly this, and
+        the process is ending, so restoring it is a formality rather than a need.
+        """
+        raise_exceptions = logging.raiseExceptions
+        logging.raiseExceptions = False
+        try:
+            self._kill_process()
+        except Exception:
+            # atexit swallows this anyway, and there is nowhere left to report it.
+            pass
+        finally:
+            logging.raiseExceptions = raise_exceptions
 
     @staticmethod
     def _fit_off_retry_eligible(cmd: "list[str]", use_fit: bool) -> bool:
