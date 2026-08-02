@@ -4642,7 +4642,9 @@ def test_the_attribute_opener_matches_any_render_time_name_and_spacing():
 
 
 def test_a_model_without_the_attribute_form_leaves_it_alone():
-    markup = model_markup("{%- for m in messages %}<|im_start|>{{ m['content'] }}{%- endfor %}", None)
+    markup = model_markup(
+        "{%- for m in messages %}<|im_start|>{{ m['content'] }}{%- endfor %}", None
+    )
     text = '<function name="pay">'
     assert markup.rewrite_control(text) == text
 

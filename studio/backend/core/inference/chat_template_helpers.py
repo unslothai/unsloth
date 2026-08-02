@@ -258,7 +258,7 @@ _DELIMITER_SHAPED = re.compile(r"\A(?:<[^\s<>]{1,60}>|\[[^\s\[\]]{1,40}\])\Z")
 # only the closing "</function>" -- leaving client text free to open a tool-call envelope
 # on exactly the models that honour it (#7066).
 _TEMPLATE_DELIMITERS = re.compile(
-    "<[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\s+[A-Za-z_][A-Za-z0-9_.\\-]{0,38}=\"[^\"<>]{0,60}\">"
+    '<[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\s+[A-Za-z_][A-Za-z0-9_.\\-]{0,38}="[^"<>]{0,60}">'
     "|<[^\\s<>'\"]{1,60}>"
     "|\\[/?[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\]"
 )
@@ -286,9 +286,7 @@ def _marker_pattern_source(marker: str) -> str:
     if attr:
         # Whitespace stays loose: a template may render one space where a client sends
         # several, and both open the same envelope.
-        return (
-            "<" + re.escape(attr.group(1)) + "\\s+" + re.escape(attr.group(2)) + '="[^"<>]*">'
-        )
+        return "<" + re.escape(attr.group(1)) + "\\s+" + re.escape(attr.group(2)) + '="[^"<>]*">'
     return re.escape(marker)
 
 
