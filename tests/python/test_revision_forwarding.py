@@ -20,6 +20,7 @@ LLAMA = REPO / "unsloth" / "models" / "llama.py"
 LOADER = REPO / "unsloth" / "models" / "loader.py"
 VISION = REPO / "unsloth" / "models" / "vision.py"
 TOKENIZER_UTILS = REPO / "unsloth" / "tokenizer_utils.py"
+LOADER_UTILS = REPO / "unsloth" / "models" / "loader_utils.py"
 
 
 def _tree(path):
@@ -208,25 +209,104 @@ def test_the_gate_warns_exactly_once_when_it_drops_a_revision():
     assert "use_exact_model_name" in message
 
 
-@pytest.mark.parametrize("function_name", ["from_pretrained"])
-def test_both_loader_paths_gate_the_revision_they_dispatch(function_name):
-    """Both public entry points must run the gate and pass its result on, while the
-    adapter load keeps the caller's original `revision` for old_model_name."""
+def test_both_loader_paths_gate_before_and_after_resolution():
+    """The gate has to run before the AutoConfig / PeftConfig probes, or a pinned 4bit
+    load fails against the mirror instead of warning, and again after the last remap."""
     tree = _tree(LOADER)
     for class_name in ("FastLanguageModel", "FastModel"):
-        function = _function(tree, function_name, class_name)
-        gate_calls = _calls(function, "_revision_for_resolved_repo")
-        assert len(gate_calls) == 1, f"{class_name} must gate revision exactly once"
-        assigned = [
-            n
-            for n in ast.walk(function)
-            if isinstance(n, ast.Assign)
-            and any(getattr(t, "id", None) == "base_revision" for t in n.targets)
+        function = _function(tree, "from_pretrained", class_name)
+        gates = _calls(function, "_revision_for_resolved_repo")
+        assert len(gates) == 2, f"{class_name} needs an early and a late gate, found {len(gates)}"
+        early, late = sorted(gates, key = lambda c: c.lineno)
+
+        probes = [
+            c for c in _calls(function, "from_pretrained")
+            if ast.unparse(c.func).split(".")[0] in ("AutoConfig", "PeftConfig")
         ]
-        assert assigned, f"{class_name} must keep the gated value separate from revision"
-        used = [
-            n
-            for n in ast.walk(function)
-            if isinstance(n, ast.Name) and n.id == "base_revision" and isinstance(n.ctx, ast.Load)
+        assert probes, f"{class_name} has no config probe"
+        gated = 0
+        for probe in probes:
+            assert probe.lineno > early.lineno, "the gate must precede the config probes"
+            keyword = _revision_kwarg(probe)
+            if keyword is None:
+                continue  # the PEFT base-model probe deliberately pins nothing
+            assert getattr(keyword.value, "id", None) == "base_revision", (
+                f"probe at line {probe.lineno} uses the ungated revision"
+            )
+            gated += 1
+        assert gated >= 2, f"{class_name} must gate its AutoConfig and PeftConfig probes"
+
+        # The late gate feeds on base_revision so an already-dropped one warns only once.
+        assert getattr(late.args[0], "id", None) == "base_revision"
+
+
+def test_the_late_gate_is_skipped_for_peft():
+    """On a PEFT load model_name is necessarily the base model, so the remap warning
+    would fire for every versioned adapter while PeftModel loads the ref correctly."""
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        late = sorted(_calls(function, "_revision_for_resolved_repo"), key = lambda c: c.lineno)[-1]
+        guards = [
+            n for n in ast.walk(function)
+            if isinstance(n, ast.If)
+            and ast.unparse(n.test).replace(" ", "") == "notis_peft"
+            and n.lineno <= late.lineno <= n.end_lineno
         ]
-        assert used, f"{class_name} computes base_revision but never dispatches it"
+        assert guards, f"{class_name}'s late gate must sit under `if not is_peft`"
+
+
+def test_the_adapter_load_keeps_the_callers_revision():
+    """`revision` names the adapter repo, so PeftModel must get the ungated value."""
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        peft_loads = [
+            c for c in _calls(function, "from_pretrained")
+            if ast.unparse(c.func).startswith("PeftModel")
+        ]
+        assert peft_loads, f"{class_name} has no PeftModel load"
+        for call in peft_loads:
+            keyword = _revision_kwarg(call)
+            assert keyword is not None and getattr(keyword.value, "id", None) == "revision"
+
+
+@pytest.mark.parametrize("path, flag", [(LLAMA, "revision"), (VISION, "_revision")])
+def test_a_pinned_load_does_not_mix_refs_with_vllm(path, flag):
+    """load_vllm takes no revision, so vLLM fetches the default branch. Pinning only the
+    config and tokenizer would put two refs in one model, so the pin is dropped instead."""
+    source = path.read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    name = "FastLlamaModel" if path is LLAMA else "FastBaseModel"
+    function = _function(tree, "from_pretrained", name)
+    clears = [
+        n for n in ast.walk(function)
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == flag for t in n.targets)
+        and isinstance(n.value, ast.Constant) and n.value.value is None
+    ]
+    assert clears, f"{path.name} never drops the revision on the vLLM path"
+    # It must happen before the config load, or the config is pinned and the weights are not.
+    configs = [
+        c for c in _calls(function, "from_pretrained")
+        if ast.unparse(c.func).startswith("AutoConfig")
+    ]
+    assert configs
+    assert min(c.lineno for c in clears) < min(c.lineno for c in configs)
+
+
+def test_local_snapshot_resolution_takes_the_revision():
+    """A local snapshot dir cannot be re-pointed by a revision handed to from_pretrained,
+    so the cache resolution itself has to select the requested ref."""
+    tree = _tree(LOADER_UTILS)
+    for name in ("_resolve_hub_repo_local_dir", "_hub_repo_or_local_path"):
+        function = _function(tree, name)
+        assert "revision" in _params(function), f"{name} must accept revision"
+    resolver = _function(tree, "_resolve_hub_repo_local_dir")
+    downloads = _calls(resolver, "hf_hub_download")
+    assert downloads, "expected the cache probe download"
+    for call in downloads:
+        assert _revision_kwarg(call) is not None
+    wrapper = _function(tree, "_hub_repo_or_local_path")
+    inner = _calls(wrapper, "_resolve_hub_repo_local_dir")
+    assert inner and all(_revision_kwarg(c) is not None for c in inner)

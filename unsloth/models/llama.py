@@ -2338,6 +2338,14 @@ class FastLlamaModel:
                 raise RuntimeError(
                     "Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!"
                 )
+            if revision is not None:
+                # load_vllm takes no revision, so vLLM fetches the default branch. Pinning
+                # only the config and tokenizer would mix two refs in one model.
+                logger.warning_once(
+                    f"Unsloth: Ignoring revision = `{revision}` since vLLM loads weights from "
+                    "the default branch. Use `fast_inference = False` to load a pinned revision."
+                )
+                revision = None
 
         token = hf_login(token)
         if model_patcher is None:

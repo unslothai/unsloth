@@ -681,6 +681,7 @@ def _construct_vlm_processor_fallback(
             token = token,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
+            revision = revision,
         )
         # Load image processor
         image_processor = AutoImageProcessor.from_pretrained(
@@ -870,6 +871,15 @@ class FastBaseModel:
         # Read revision from kwargs, not the signature: the weight load below forwards
         # **kwargs, so binding it would drop it there. Pin its repo before any remap.
         _revision = kwargs.get("revision")
+        if _revision is not None and fast_inference and is_vLLM_available():
+            # load_vllm takes no revision, so vLLM fetches the default branch. Pinning only
+            # the config and tokenizer would mix two refs in one model.
+            logger.warning_once(
+                f"Unsloth: Ignoring revision = `{_revision}` since vLLM loads weights from "
+                "the default branch. Use `fast_inference = False` to load a pinned revision."
+            )
+            _revision = None
+            kwargs.pop("revision", None)
         _revision_repo = model_name
 
         # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent;
@@ -1664,6 +1674,7 @@ class FastBaseModel:
                     token = token,
                     cache_dir = kwargs.get("cache_dir"),
                     local_files_only = lfo,
+                    revision = _tokenizer_revision,
                 )
                 try:
                     return _AutoTokenizer.from_pretrained(
