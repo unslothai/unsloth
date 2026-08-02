@@ -2002,15 +2002,16 @@ def _effective_spec_type(
     return (os.environ if env is None else env).get("LLAMA_ARG_SPEC_TYPE")
 
 
-def _extra_args_requests_mtp(
+def _accumulated_spec_types(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
-) -> bool:
-    """True if MTP lands in llama.cpp's spec-type vector, so the budget must
-    reserve for it and the slots must clamp.
+) -> set:
+    """Every speculative type a launch ends up carrying, lowercased.
 
-    Types accumulate rather than replace: the env is applied first through the
-    same handler, every --spec-type inserts at the end, and enablement is a find
-    over the vector. So MTP counts if ANY source names it, not just the last."""
+    Types accumulate rather than replace: llama.cpp applies the env first through
+    the same handler and every --spec-type inserts at the end, so a later flag
+    cannot clear an earlier one. Even --spec-type none only appends NONE. Callers
+    therefore have to look at all of them, not just the last.
+    """
     values = []
     args = [str(a) for a in extra_args] if extra_args else []
     for i, raw in enumerate(args):
@@ -2020,7 +2021,17 @@ def _extra_args_requests_mtp(
     env_value = (os.environ if env is None else env).get("LLAMA_ARG_SPEC_TYPE")
     if env_value:
         values.append(env_value)
-    return any(p.strip().lower() in ("mtp", "draft-mtp") for v in values for p in v.split(","))
+    return {p.strip().lower() for v in values for p in v.split(",") if p.strip()}
+
+
+def _extra_args_requests_mtp(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True if MTP lands in llama.cpp's spec-type vector, so the budget must
+    reserve for it and the slots must clamp.
+
+    See _accumulated_spec_types: MTP counts if ANY source names it."""
+    return bool(_accumulated_spec_types(extra_args, env) & {"mtp", "draft-mtp"})
 
 
 @functools.lru_cache(maxsize = 1)
@@ -2316,11 +2327,14 @@ def _extra_args_requests_separate_draft(
 ) -> bool:
     """True if the effective --spec-type selects a non-MTP model draft mode
     (draft-simple/draft-eagle3), which loads a separate draft model the budget
-    must reserve (draft-mtp -> _extra_args_requests_mtp; ngram-* load no model)."""
-    value = _effective_spec_type(extra_args, env)
-    if not value:
-        return False
-    return any(p.strip().lower() in ("draft-simple", "draft-eagle3") for p in value.split(","))
+    must reserve (draft-mtp -> _extra_args_requests_mtp; ngram-* load no model).
+
+    Accumulating for the same reason as _extra_args_requests_mtp: a later
+    --spec-default or --spec-type cannot clear an inherited draft-simple, so
+    reading only the last one under-reserved the separate model it still loads."""
+    return bool(
+        _accumulated_spec_types(extra_args, env) & {"draft-simple", "draft-eagle3"}
+    )
 
 
 def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optional[int]:

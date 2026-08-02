@@ -462,41 +462,43 @@ class TestExtraArgsMtpDetection:
         assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "none"}) is False
 
     def test_requests_mtp_effective_spec_type(self):
-        # llama.cpp uses the LAST CLI --spec-type and ignores the env when any CLI
-        # --spec-type is present. The reserve must track that effective value, not
-        # any earlier/MTP-ish one, or it over-reserves a drafter the launch won't
-        # load (Finding B).
+        # llama.cpp ACCUMULATES spec types: the env is applied first through the
+        # same handler and each --spec-type inserts at the end, so nothing later
+        # clears an earlier MTP and the reserve has to count every source. Even
+        # --spec-type none only appends NONE.
         env_mtp = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
-        # Later CLI value overrides an earlier MTP one (last-wins).
         assert (
             _extra_args_requests_mtp(
                 ["--spec-type", "draft-mtp", "--spec-type", "ngram-mod"], env = {}
             )
-            is False
+            is True
         )
-        # A non-MTP CLI flag overrides a stale MTP env.
-        assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = env_mtp) is False
-        assert _extra_args_requests_mtp(["--spec-type", "none"], env = env_mtp) is False
-        # A later MTP CLI value still engages.
+        assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = env_mtp) is True
+        assert _extra_args_requests_mtp(["--spec-type", "none"], env = env_mtp) is True
         assert (
             _extra_args_requests_mtp(
                 ["--spec-type", "ngram-mod", "--spec-type", "draft-mtp"], env = {}
             )
             is True
         )
-        # Same precedence for separate (draft-simple/eagle3) detection.
+        # The negative that still has to hold: no source names MTP.
+        assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = {}) is False
+        # Separate (draft-simple/eagle3) detection accumulates the same way: the
+        # draft model still loads, so the budget must still reserve for it.
         assert (
             _extra_args_requests_separate_draft(
                 ["--spec-type", "draft-simple", "--spec-type", "ngram-mod"], env = {}
             )
-            is False
+            is True
         )
         assert (
             _extra_args_requests_separate_draft(
                 ["--spec-type", "ngram-mod"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
             )
-            is False
+            is True
         )
+        # And the negative: ngram-* alone loads no separate model.
+        assert _extra_args_requests_separate_draft(["--spec-type", "ngram-mod"], env = {}) is False
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -561,18 +563,20 @@ class TestExtraArgsMtpDetection:
         assert '_mtp_canonical=="off"' in compact  # the env-reaches-child gate
         assert "_extra_args_requests_mtp(extra_args,env=_spec_env)" in compact
 
-    def test_spec_default_overrides_env_mtp(self):
-        # --spec-default is a CLI spec flag (resolves to the model default,
-        # non-MTP) that overrides a stale LLAMA_ARG_SPEC_TYPE env, so the reserve
-        # must not treat it as MTP (reviewer.py R4).
+    def test_spec_default_does_not_clear_an_inherited_spec_type(self):
+        # --spec-default push_backs NGRAM_MOD rather than replacing the vector, so
+        # it cannot clear an inherited type and the reserve must still count it.
         env_mtp = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
-        assert _extra_args_requests_mtp(["--spec-default"], env = env_mtp) is False
+        assert _extra_args_requests_mtp(["--spec-default"], env = env_mtp) is True
         assert (
             _extra_args_requests_separate_draft(
                 ["--spec-default"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
             )
-            is False
+            is True
         )
+        # With nothing inherited it stays non-MTP and loads no separate model.
+        assert _extra_args_requests_mtp(["--spec-default"], env = {}) is False
+        assert _extra_args_requests_separate_draft(["--spec-default"], env = {}) is False
         # A later --spec-type still wins over an earlier --spec-default.
         assert (
             _extra_args_requests_mtp(["--spec-default", "--spec-type", "draft-mtp"], env = {}) is True
