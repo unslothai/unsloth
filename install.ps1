@@ -1335,8 +1335,15 @@ exit 0
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
                     if ($out -match "Python (3\.1[1-3])\.\d+") {
-                        if (-not $preferX64) { return @{ Version = $Matches[1]; Path = $cmd.Source; Arch = "" } }
-                        $candidates += @{ Version = $Matches[1]; Path = $cmd.Source }
+                        $ver = $Matches[1]
+                        # PATH entries can be launchers (for example pyenv-win's
+                        # python.bat shim). Give uv the real CPython executable so
+                        # the venv does not depend on wrapper re-resolution.
+                        $resolvedExe = (& $cmd.Source -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                        if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
+                            if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
+                            $candidates += @{ Version = $ver; Path = $resolvedExe }
+                        }
                     }
                 } catch {}
             }
@@ -1677,6 +1684,23 @@ exit 0
     $script:StudioVenvRollbackTarget = $VenvDir
     $script:StudioVenvRollbackActive = $false
 
+    function Test-VenvPythonReady {
+        param([Parameter(Mandatory = $true)][string]$PythonExe)
+        if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
+
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $global:LASTEXITCODE = -1
+            $null = & $PythonExe -c "import sys; sys.exit(0)" 2>$null
+            return ($LASTEXITCODE -eq 0)
+        } catch {
+            return $false
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -1883,6 +1907,14 @@ exit 0
     } else {
         step "venv" "using migrated environment"
         substep "$VenvDir"
+    }
+
+    if (-not (Test-VenvPythonReady -PythonExe $VenvPython)) {
+        Write-Host "[ERROR] The managed Python interpreter is missing or cannot be launched." -ForegroundColor Red
+        Write-Host "        Managed Python: $VenvPython" -ForegroundColor Yellow
+        Write-Host "        Selected base Python: $($DetectedPython.Path)" -ForegroundColor Yellow
+        Write-Host "        Restore or reinstall the selected base Python, then re-run install.ps1." -ForegroundColor Yellow
+        return (Exit-InstallFailure "Managed Python is unavailable at $VenvPython (selected base: $($DetectedPython.Path))")
     }
 
     # Mark the freshly-created venv as Unsloth-owned so a partial install can be
