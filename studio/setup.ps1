@@ -2940,6 +2940,15 @@ function Get-StudioAdoptableState {
         }
     }
     if ($denied) { return "Denied" }
+    # Windows reports a MISSING child of an unreadable directory as absent, so the
+    # probes above cannot tell "no markers here" from "cannot look". Listing the
+    # directory itself can. Without this a denied tree reads as unowned and the
+    # caller reports the wrong cause, fatally, on the platform this all targets.
+    try { $null = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1) }
+    catch {
+        if (Test-AccessDeniedError $_) { return "Denied" }
+        # Anything else was not adoptable before either; this must not throw.
+    }
     return "No"
 }
 # Boolean view for callers that only gate a cosmetic cleanup on adoption.

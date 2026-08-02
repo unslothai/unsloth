@@ -310,21 +310,28 @@ if ($assertSrc -and $markSrc) {
             # this cannot go through the marker probe there and has to be caught
             # by the adoptable-state read instead. Either route is fine; anything
             # other than Denied is not.
-            $nfBare = Join-Path $nfRoot "bare"
-            New-Item -ItemType Directory -Force -Path (Join-Path $nfBare "sub") | Out-Null
+            # Two shapes. chmod 000 blocks the child probes outright; chmod 111
+            # allows stat of a named child but forbids listing, which is exactly
+            # what Windows does and the only shape that reaches the directory
+            # listing in Get-StudioAdoptableState.
             $bareWho = "$env:USERDOMAIN\$env:USERNAME"
-            if ($onWindows) { icacls $nfBare /deny "${bareWho}:(OI)(CI)(RX)" *>$null }
-            else { chmod 000 $nfBare }
-            try {
-                $out = $null
-                $threw = $false
-                try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfBare -Label "whisper.cpp install" -NonFatal) }
-                catch { $threw = $true }
-                Check "-NonFatal hands back a denied tree that has no marker" (
-                    -not $threw -and $out.Count -eq 1 -and $out[0] -eq "Denied")
-            } finally {
-                if ($onWindows) { icacls $nfBare /remove:d "$bareWho" *>$null }
-                else { chmod 755 $nfBare }
+            $bareModes = if ($onWindows) { @("acl") } else { @("000", "111") }
+            foreach ($mode in $bareModes) {
+                $nfBare = Join-Path $nfRoot "bare_$mode"
+                New-Item -ItemType Directory -Force -Path (Join-Path $nfBare "sub") | Out-Null
+                if ($mode -eq "acl") { icacls $nfBare /deny "${bareWho}:(OI)(CI)(RX)" *>$null }
+                else { chmod $mode $nfBare }
+                try {
+                    $out = $null
+                    $threw = $false
+                    try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfBare -Label "whisper.cpp install" -NonFatal) }
+                    catch { $threw = $true }
+                    Check "-NonFatal hands back a denied tree that has no marker ($mode)" (
+                        -not $threw -and $out.Count -eq 1 -and $out[0] -eq "Denied")
+                } finally {
+                    if ($mode -eq "acl") { icacls $nfBare /remove:d "$bareWho" *>$null }
+                    else { chmod 755 $nfBare }
+                }
             }
         }
         # -NonFatal rescues the denial only: someone else's folder must still stop.
