@@ -2617,14 +2617,14 @@ extra_eos_tokens = None,
         part + '\n\n' + ollama_eos
 
     # HF Jinja Chat template
-    # Caller text is concatenated into Jinja '...' literals, where a quote closes
-    # the literal early, a backslash is read as an escape, and a raw \r is
-    # rewritten to \n. Backslash first, or the quote's own escape gets doubled.
+    # Caller text is spliced into Jinja '...' literals, where a bare quote closes
+    # the literal and a backslash is read as an escape, and \r is normalised to \n
+    # before unescaping. Backslash first, else it re-escapes the ones added after.
     def escape_jinja_literal(text):
         return text.replace("\\", "\\\\").replace("'", "\\'").replace("\r", "\\r")
 
     def process(part, which, content = "message['content']"):
-        # Escape before the placeholder becomes a concatenation whose quotes must survive.
+        # Escape the literal pieces only; the placeholder becomes Jinja syntax below.
         part = which.join(escape_jinja_literal(piece) for piece in part.split(which))
         if part.endswith(which):
             part = "'" + part[:part.find(which)] + f"' + {content}"

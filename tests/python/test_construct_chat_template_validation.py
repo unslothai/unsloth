@@ -258,7 +258,7 @@ _APOSTROPHE_CHAT_TEMPLATE = (
         "Answer the user's question.",
         r"Put the answer in \boxed{}.",
         r"Files live in C:\Users\me",
-        # Windows CRLF: Jinja rewrites a raw \r to \n before unescaping.
+        # Windows CRLF: Jinja rewrites a raw \r to \n.
         "Answer briefly.\r\nBe polite.",
     ],
 )
@@ -280,7 +280,7 @@ def test_quotes_and_backslashes_survive_into_the_jinja_template(default_system_m
     assert default_system_message in rendered
     assert "### User's turn: Hi" in rendered
 
-    # The generation prompt is spliced from its own literal, not through process().
+    # The generation prompt uses its own literal, not process().
     prompted = _render(
         jinja_template,
         [{"role": "user", "content": "Hi"}],
