@@ -137,6 +137,14 @@ LLAMA_SERVER_NOT_FOUND_DETAIL = (
 )
 
 # Shared by the pre-teardown and post-metadata rejections (#7205).
+_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR = (
+    "This Mac's Metal device is virtualised, where offloaded layers can return "
+    "corrupt output, and the installed unsloth_zoo diffusion shim has no --ngl, "
+    "so the zero-layer CPU pin cannot be applied and the runner would use Metal "
+    "anyway. Run 'unsloth studio update' to get a shim with --ngl, or set "
+    "UNSLOTH_ALLOW_PARAVIRTUAL_METAL=1 to keep the GPU on a VM you have verified."
+)
+
 _VULKAN_DIFFUSION_GPU_IDS_ERROR = (
     "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
     "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
@@ -6336,6 +6344,13 @@ class LlamaCppBackend:
         # (#7574). An older shim has no --ngl, so drop it rather than die in argparse.
         manual_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
         if manual_ngl is not None and not _shim_supports_ngl(shim_cmd):
+            # Dropping a zero-layer split on a virtualised Metal device undoes the
+            # CPU pin: cpu_only below is torch.cuda only, so it reads 0 on a Mac and
+            # the empty --gpu token still leaves the runner free to use Metal. Only
+            # the split keeps the weights off it, so refuse rather than serve output
+            # that may be corrupt.
+            if manual_ngl == 0 and _metal_device_is_paravirtual():
+                raise ValueError(_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR)
             logger.warning(
                 "DiffusionGemma: ignoring the %d GPU-layer split; the installed "
                 "unsloth_zoo shim has no --ngl. Upgrade unsloth_zoo to set the split.",
@@ -7973,6 +7988,17 @@ class LlamaCppBackend:
                     gguf_path,
                     model_identifier,
                 )
+            # Same idea for the unpinnable diffusion split: _start_diffusion_server
+            # enforces it for every path, but it runs after the teardown, so settle
+            # the local case here and leave the running server alone.
+            if (
+                _paravirtual_cpu_forced
+                and gguf_path
+                and not hf_repo
+                and self._gguf_path_is_diffusion(gguf_path, model_identifier)
+                and not self.diffusion_split_supported()
+            ):
+                raise ValueError(_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR)
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
             with self._lock:

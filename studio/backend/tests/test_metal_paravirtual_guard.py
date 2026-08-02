@@ -877,6 +877,32 @@ def test_the_training_guard_sizes_the_cpu_pin_not_the_raw_request():
     )
 
 
+def test_a_diffusion_split_that_cannot_be_pinned_is_refused():
+    """An older shim without --ngl drops the zero-layer split, and nothing else
+    keeps the diffusion runner off Metal: cpu_only is torch.cuda only, so it reads
+    0 on a Mac and the empty --gpu token still leaves Metal available. Refuse
+    rather than serve output that may be corrupt."""
+    src = inspect.getsource(llama_cpp.LlamaCppBackend._start_diffusion_server)
+    drop_at = src.index("not _shim_supports_ngl(shim_cmd)")
+    guard = src[drop_at : drop_at + 700]
+    assert "_metal_device_is_paravirtual()" in guard
+    assert "_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR" in guard
+    # Only the zero-layer pin: a non-zero manual split is the user's own placement.
+    assert "manual_ngl == 0" in guard
+    # And it is raised before the warning that would otherwise carry on.
+    assert guard.index("raise ValueError") < guard.index("logger.warning")
+    # The message has to say how to get out of it.
+    msg = llama_cpp._PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR
+    assert "unsloth studio update" in msg
+    assert "UNSLOTH_ALLOW_PARAVIRTUAL_METAL=1" in msg
+    # The local case settles above the teardown, so a refusal leaves the running
+    # server alone rather than killing it first.
+    load_src = _load_model_source()
+    assert load_src.index("_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR") < load_src.index(
+        "self._kill_process()"
+    )
+
+
 def test_a_pinnable_drafter_survives_on_the_same_hardware():
     """The negative that matters most: a build WITH a draft-layer flag keeps its
     drafter, because --spec-draft-ngl 0 puts it on the CPU where it is correct."""
