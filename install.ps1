@@ -1133,24 +1133,20 @@ exit 0
     }
 
     # ── Leave Windows system directories before installing ──
-    # "Run as administrator" opens PowerShell in C:\Windows\System32, so `irm ... | iex`
-    # installs from there, and `unsloth studio setup` below inherits it and refuses to
-    # run (unsloth_cli/__init__.py) only after PyTorch has downloaded, then rolls back.
-    # Relocate rather than fail: nothing here reads the caller's directory ($RepoRoot
-    # comes from $PSCommandPath, $StudioHome from the environment, both resolved above),
-    # so --with-llama-cpp-dir is the only consumer input needing a rebase first. Not
-    # restored at the end, same reason as the PSModulePath fix at the top: the
-    # interactive path ends running Studio in the foreground, so a finally would not
-    # fire until it stops.
+    # "Run as administrator" starts in C:\Windows\System32, so `irm ... | iex` installs
+    # from there and `unsloth studio setup` refuses only after PyTorch has downloaded,
+    # then rolls back. Relocating is safe: nothing here reads the caller's directory
+    # ($RepoRoot from $PSCommandPath, $StudioHome from the environment), so only
+    # --with-llama-cpp-dir needs a rebase first. Not restored at the end, same reason as
+    # the PSModulePath fix at the top: the interactive path ends running Studio in the
+    # foreground, so a finally would not fire until it stops.
     $SystemRootDir = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
     $SystemRootDir = [System.IO.Path]::GetFullPath($SystemRootDir).TrimEnd('\')
-    # Every containment test below compares against this, never the bare root: a prefix
-    # without the separator also swallows siblings like C:\Windows.old and C:\WindowsStudio.
+    # Separator included, or siblings like C:\Windows.old and C:\WindowsStudio match too.
     $SystemRootPrefix = $SystemRootDir + [System.IO.Path]::DirectorySeparatorChar
     $CurrentDir = $null
     try {
-        # -PSProvider FileSystem: a caller on HKLM:\ still has the filesystem
-        # location that child processes inherit.
+        # FileSystem provider: a caller parked on HKLM:\ still has the location children inherit.
         $CurrentDir = [System.IO.Path]::GetFullPath(
             (Get-Location -PSProvider FileSystem -ErrorAction Stop).ProviderPath
         ).TrimEnd('\')
@@ -1167,11 +1163,10 @@ exit 0
     $InSystemDir = Test-UnderSystemRoot $CurrentDir
     if ($InSystemDir) {
         if ($WithLlamaCppDir) {
-            # Anchor to the location the user typed it against. Covers the partially
-            # qualified forms (C:llama.cpp, \llama.cpp) that IsPathRooted calls rooted
-            # while Set-Location still moves them, and not [System.IO.Path]::GetFullPath,
-            # which resolves against [Environment]::CurrentDirectory -- a different
-            # directory that Set-Location never updates.
+            # Anchor to the directory the user typed it against, including the partially
+            # qualified forms (C:llama.cpp, \llama.cpp). Not [System.IO.Path]::GetFullPath,
+            # which resolves against [Environment]::CurrentDirectory, a separate location
+            # that Set-Location never updates.
             try {
                 $WithLlamaCppDir =
                     $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WithLlamaCppDir)
@@ -1180,7 +1175,7 @@ exit 0
             }
         }
         # SYSTEM's profile is C:\Windows\System32\config\systemprofile, so a candidate
-        # under the Windows directory is no better than where we already are.
+        # inside the Windows directory is no better than where we already are.
         $SafeDirCandidates = @($env:USERPROFILE, $HOME, $env:PUBLIC, $env:TEMP) |
             Where-Object {
                 $_ -and (Test-Path -LiteralPath $_ -PathType Container) -and
@@ -1196,11 +1191,10 @@ exit 0
                 continue
             }
         }
-        # $StudioHome came from USERPROFILE, resolved long before this block, so a SYSTEM
-        # account would keep installing into C:\Windows\System32\config\systemprofile while
-        # we report having escaped. Rebasing it would orphan the install -- the runtime
-        # resolvers recompute the root from USERPROFILE -- so stop, which is what happened
-        # before this block existed, only with a reason attached.
+        # $StudioHome came from USERPROFILE far above, so a SYSTEM account would keep
+        # installing into C:\Windows\System32\config\systemprofile while we report having
+        # escaped. Rebasing it would orphan the install (the runtime resolvers recompute
+        # the root from USERPROFILE), so stop instead.
         $StudioHomeFull = ""
         try { $StudioHomeFull = [System.IO.Path]::GetFullPath($StudioHome).TrimEnd('\') } catch {}
         if ($SafeDir -and (Test-UnderSystemRoot $StudioHomeFull)) {
@@ -1228,9 +1222,8 @@ exit 0
             Write-Host "        working directory, which Windows blocks there." -ForegroundColor Yellow
             Write-Host "        'Run as administrator' opens PowerShell in System32, which is how" -ForegroundColor Yellow
             Write-Host "        most people land here." -ForegroundColor Yellow
-            # USERPROFILE was one of the candidates just rejected, so naming it here would
-            # send the user back into the same tree. A service or SYSTEM account is the
-            # usual reason nothing qualified, and its profile is where Studio would install.
+            # USERPROFILE was just rejected as a candidate, so naming it here would send
+            # the user back into the same tree.
             Write-Host "        Nothing outside $SystemRootDir was usable either (USERPROFILE," -ForegroundColor Yellow
             Write-Host "        HOME, PUBLIC, TEMP), which normally means a service or the SYSTEM" -ForegroundColor Yellow
             Write-Host "        account. Sign in as a normal user, open PowerShell there, and run" -ForegroundColor Yellow

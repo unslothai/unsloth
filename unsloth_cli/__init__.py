@@ -88,11 +88,9 @@ def main(
         _cwd_raw = _os.getcwd()
         _cwd = _os.path.normcase(_os.path.normpath(_cwd_raw))
         if any(_cwd == _dir or _cwd.startswith(_dir + _os.sep) for _dir in _system_dirs):
-            # Name the folder and hand back a runnable fix: users get here via
-            # "Run as administrator", so the directory is the last thing they suspect.
-            # SYSTEM's USERPROFILE is C:\Windows\System32\config\systemprofile, which
-            # would send the user straight back here, so take the first home outside the
-            # Windows tree and print none rather than a bad one (install.ps1 does the same).
+            # Users land here via "Run as administrator", so name the folder and hand back
+            # a runnable fix. SYSTEM's USERPROFILE is under System32 and would send them
+            # straight back, so take the first home outside the Windows tree, or none.
             _windir_norm = _os.path.normcase(_os.path.normpath(_windir))
             _home = None
             for _candidate in (
@@ -105,10 +103,9 @@ def main(
                     _home = _candidate
                     break
             if _home:
-                # Quote it, or C:\Users\Jane Doe reaches Set-Location as two arguments and
-                # the one line we hand out does not run. PowerShell single quotes are
-                # verbatim ('' escapes an apostrophe, C:\Users\O'Brien); cmd needs double
-                # quotes once extensions are off. " is not legal in a Windows path.
+                # Quote it, or C:\Users\Jane Doe reaches Set-Location as two arguments.
+                # PowerShell single quotes are verbatim ('' escapes an apostrophe); cmd
+                # needs double quotes once extensions are off. " is not legal in a path.
                 _home_ps = "'" + _home.replace("'", "''") + "'"
                 _home_cmd = '"' + _home + '"'
                 _cd_lines = (

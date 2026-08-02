@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for the System32 working-directory guards: install.ps1 must leave C:\\Windows before it
-spends minutes on PyTorch (elevated PowerShell starts in System32, so `irm ... | iex` used to fail there with
-"unsloth studio setup failed (exit code 1)" plus a rollback), and the CLI guard must say which folder and how
-to get out of it."""
+"""Regression tests for the System32 working-directory guards: elevated PowerShell starts in System32, so
+install.ps1 must leave C:\\Windows before spending minutes on PyTorch (it used to fail there only after the
+download, then roll back), and the CLI guard must name the folder and how to get out of it."""
 
 from __future__ import annotations
 
@@ -84,7 +83,7 @@ def test_install_ps1_guard_rejects_candidates_inside_the_windows_directory():
 
 
 def test_install_ps1_guard_failure_message_is_actionable():
-    """With nowhere safe to go, the error must say where the user is, why, and what to type."""
+    """With nowhere safe to go, say where the user is, why, and what to type."""
     src = _install_ps1()
     idx = src.index("[ERROR] Unsloth cannot be installed from $CurrentDir.")
     block = src[idx : src.index("\n        }\n", idx)]
@@ -116,7 +115,7 @@ def _extract_helper() -> str:
         (r"C:\Windows\SysWOW64", "True"),
         (r"C:\Windows", "True"),
         (r"C:\Users\me", "False"),
-        # Siblings sharing the prefix. Rejecting these would abort an install with a
+        # Siblings sharing the prefix: rejecting these would abort an install with a
         # supported absolute UNSLOTH_STUDIO_HOME override.
         (r"C:\Windows2", "False"),
         (r"C:\WindowsApps\stuff", "False"),
@@ -125,8 +124,7 @@ def _extract_helper() -> str:
     ],
 )
 def test_install_ps1_under_system_root(path: str, expected: str):
-    """Windows-shaped paths through the real helper; the separator is injected, since a
-    pwsh on Linux reports / for DirectorySeparatorChar."""
+    """The separator is injected because pwsh on Linux reports / for DirectorySeparatorChar."""
     script = (
         "$SystemRootDir = 'C:\\Windows'\n"
         "$SystemRootPrefix = 'C:\\Windows\\'\n"
@@ -190,9 +188,9 @@ def _run_relocation_block(
         + '\nWrite-Host "CWD:$((Get-Location).ProviderPath)"\n'
         + 'Write-Host "LLAMA:$WithLlamaCppDir"\n'
     )
-    # Inherit the real environment (pwsh needs PATH and SystemRoot on Windows) and point
-    # every home-ish variable at the fixture. HOMEDRIVE/HOMEPATH too: that pair is where
-    # PowerShell gets $HOME on Windows, and a stale one would look like a safe directory.
+    # Inherit the real environment (pwsh needs PATH and SystemRoot) and repoint every
+    # home-ish variable at the fixture. HOMEDRIVE/HOMEPATH too: PowerShell builds $HOME
+    # from that pair on Windows, and a stale one would look like a safe directory.
     env = dict(os.environ)
     drive, tail = os.path.splitdrive(str(home_env))
     env.update(
@@ -252,8 +250,8 @@ def test_relocation_block_leaves_a_fully_qualified_llama_cpp_dir_alone(tmp_path)
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_relocation_block_refuses_a_studio_home_under_the_system_root(tmp_path):
-    """Relocating the CWD does not move $StudioHome, which SYSTEM resolves to
-    C:\\Windows\\System32\\config\\systemprofile\\.unsloth\\studio: fail rather than install there."""
+    """Relocating the CWD does not move $StudioHome, which SYSTEM resolves under
+    System32\\config\\systemprofile: fail rather than install there."""
     system_root = tmp_path / "Windows"
     current_dir = system_root / "System32"
     current_dir.mkdir(parents = True)
@@ -289,7 +287,7 @@ def test_relocation_block_allows_a_studio_home_beside_the_system_root(tmp_path):
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(tmp_path):
-    """No safe directory (SYSTEM account: profile lives under System32) must fail before any install work."""
+    """A SYSTEM account's profile lives under System32, so nothing qualifies: fail before any install work."""
     system_root = tmp_path / "Windows"
     current_dir = system_root / "System32"
     current_dir.mkdir(parents = True)
@@ -337,8 +335,8 @@ def _run_cli_guard(
     if public is not None:
         environ["PUBLIC"] = public
     fake_typer = types.SimpleNamespace(secho = _secho, Exit = _FakeExit)
-    # ntpath for the path semantics, but expanduser has to be pinned: the real one reads
-    # the host's HOME, and on Windows "~" is USERPROFILE, SYSTEM's included.
+    # ntpath for the path semantics, with expanduser pinned: the real one reads the host's
+    # HOME, and on Windows "~" is USERPROFILE, SYSTEM's included.
     fake_path = types.SimpleNamespace(
         normcase = ntpath.normcase,
         normpath = ntpath.normpath,
@@ -403,17 +401,14 @@ def _cd_line(message: str, shell: str) -> str:
     "profile_name",
     [
         "me",
-        "Jane Doe",  # a space: `cd C:\Users\Jane Doe` binds 'Doe' as a second argument
-        "O'Brien",  # an apostrophe: single quotes must be escaped by doubling
+        "Jane Doe",  # space: `cd C:\Users\Jane Doe` binds 'Doe' as a second argument
+        "O'Brien",  # apostrophe: single quotes must be escaped by doubling
     ],
 )
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 def test_cli_guard_cd_line_actually_runs_in_powershell(profile_name: str, tmp_path):
-    """The advertised recovery command must survive a paste, not just read well.
-
-    Set-Location takes one -Path, so an unquoted profile with a space fails with
-    "A positional parameter cannot be found that accepts argument 'Doe'".
-    """
+    """The advertised recovery command must survive a paste: Set-Location takes one -Path,
+    so an unquoted profile with a space fails."""
     profile = tmp_path / profile_name
     profile.mkdir()
     message, _ = _run_cli_guard(r"C:\Windows\System32", userprofile = str(profile))
@@ -431,9 +426,8 @@ def test_cli_guard_cd_line_actually_runs_in_powershell(profile_name: str, tmp_pa
 
 @pytest.mark.parametrize("profile_name", ["me", "Jane Doe", "O'Brien"])
 def test_cli_guard_cd_lines_are_quoted(profile_name: str):
-    """Both shells get a quoted path; " is not legal in a Windows path, so cmd's
-    double quotes cannot be broken out of, and PowerShell's single quotes are
-    verbatim (no $var expansion) with '' escaping an embedded apostrophe."""
+    """Both shells get a quoted path: cmd's double quotes cannot be broken out of (" is not
+    legal in a Windows path) and PowerShell's are verbatim, with '' escaping an apostrophe."""
     profile = "C:\\Users\\" + profile_name
     message, _ = _run_cli_guard(r"C:\Windows\System32", userprofile = profile)
     assert message is not None
