@@ -729,6 +729,87 @@ def test_the_drop_takes_a_user_owned_drafter_with_it():
     assert out == ["--top-k", "40"]
 
 
+def test_a_drafter_free_spec_mode_keeps_the_speculation_it_asked_for():
+    """A sibling mtp-*.gguf on disk is not a drafter the launch loads. The user owns
+    --spec-type, so _build_speculative_flags returns before it can emit --model-draft
+    for it, and n-gram speculation loads no model of its own -- nothing reaches the
+    virtualised device. Dropping here would cost the user the very mode they asked
+    for (--spec-type and the ngram knobs are one strip group) to protect a drafter
+    that was never going to launch."""
+    extras = [
+        "--spec-type",
+        "ngram-mod",
+        "--spec-ngram-mod-n-max",
+        "5",
+        "--spec-ngram-mod-n-min",
+        "2",
+        "--top-k",
+        "40",
+    ]
+    drafter, out, warnings = _drafter_gate(paravirtual = True, caps = {}, extra_args = extras)
+    assert drafter == "/models/mtp-gemma.gguf"
+    assert out == extras
+    assert warnings == []
+
+
+def test_a_sibling_drafter_still_goes_when_unsloth_owns_the_spec_block():
+    """The negative for the case above: with no user --spec-type the resolver is free
+    to emit --model-draft for the sibling, so it is a real placement and still drops."""
+    drafter, out, warnings = _drafter_gate(
+        paravirtual = True, caps = {}, extra_args = ["--top-k", "40"]
+    )
+    assert drafter is None
+    assert out == ["--top-k", "40"]
+    assert warnings
+
+
+def test_a_drafter_requiring_mode_still_loses_its_drafter():
+    """draft-simple/draft-eagle3 name a separate model the child really loads, so a
+    user-owned spec type is no exemption: the drafter (and the type that needs it)
+    still go, sibling on disk or not."""
+    for mode in ("draft-simple", "draft-eagle3"):
+        extras = ["--spec-type", mode, "--model-draft", "/models/d.gguf", "--top-k", "40"]
+        drafter, out, warnings = _drafter_gate(paravirtual = True, caps = {}, extra_args = extras)
+        assert drafter is None
+        assert out == ["--top-k", "40"]
+        assert warnings
+
+
+def test_a_drafter_free_mode_that_names_its_own_drafter_still_drops_it():
+    """llama.cpp loads the draft model whenever its path is set, so a --model-draft
+    passed alongside ngram-mod is placed on the corrupt device all the same. The
+    exemption is for a sibling the launch never emits, not for an explicit drafter."""
+    extras = ["--spec-type", "ngram-mod", "--model-draft", "/models/d.gguf"]
+    drafter, out, warnings = _drafter_gate(paravirtual = True, caps = {}, extra_args = extras)
+    assert drafter is None
+    assert llama_cpp._extra_args_mtp_draft_path(out, {}) is None
+    assert warnings
+
+
+def test_an_inherited_drafter_env_is_not_exempted_by_a_drafter_free_mode(monkeypatch):
+    """Same reasoning through the env the child reads directly: the drafter is loaded
+    whatever --spec-type says, so it cannot ride out the drop on the mode alone."""
+    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/models/env.gguf")
+    drafter, _out, warnings = _drafter_gate(
+        paravirtual = True,
+        caps = {},
+        drafter = None,
+        extra_args = ["--spec-type", "ngram-mod"],
+    )
+    assert drafter is None
+    assert warnings
+
+
+def test_a_real_mac_keeps_the_sibling_and_the_mode_alike():
+    """The exemption changes nothing off the virtualised device: physical Apple
+    Silicon keeps both halves, as it did before there was an exemption."""
+    extras = ["--spec-type", "ngram-mod", "--model-draft", "/models/d.gguf"]
+    drafter, out, warnings = _drafter_gate(paravirtual = False, caps = {}, extra_args = extras)
+    assert drafter == "/models/mtp-gemma.gguf"
+    assert out == extras
+    assert warnings == []
+
+
 def test_the_env_the_child_inherits_is_dropped_too():
     """argv cannot un-set LLAMA_ARG_SPEC_DRAFT_MODEL: llama.cpp reads it directly,
     and it appends spec types rather than replacing them, so an inherited

@@ -9533,10 +9533,22 @@ class LlamaCppBackend:
                 # draft-layer flag, and a missing one means the probe failed. On an
                 # unanswered probe fall back to that legacy spelling and pin rather
                 # than drop, so a failed probe costs nothing.
+                # Keyed on the drafter the launch really loads, not on one that merely
+                # exists: a user-owned --spec-type returns early from
+                # _build_speculative_flags, so Unsloth's resolved sibling never
+                # becomes --model-draft and only the user's own drafter can be
+                # placed. Keying on the sibling there would strip a drafter-free
+                # mode (--spec-type ngram-mod and its knobs) for a drafter that was
+                # never going to launch. Their own --model-draft/--spec-draft-hf, or
+                # the inherited env, still counts: llama.cpp loads a draft model
+                # whenever its path is set, whatever the spec type asks for.
                 _pv_draft_unpinnable = bool(
                     _paravirtual_cpu_forced
                     and not _paravirtual_draft_ngl_flag(server_caps)
-                    and (launch_mtp_draft_path or _extra_args_mtp_draft_path(extra_args))
+                    and (
+                        _extra_args_mtp_draft_path(extra_args)
+                        or (launch_mtp_draft_path and not _extra_args_set_spec_type(extra_args))
+                    )
                     and not _extra_args_draft_offloaded_to_cpu(extra_args)
                 )
                 if _pv_draft_unpinnable:
