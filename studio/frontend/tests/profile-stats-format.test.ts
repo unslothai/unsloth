@@ -74,6 +74,8 @@ test("profile counts follow the selected locale's plural rules", () => {
   assert.equal(formatProfileCount(2, "message", "it"), "2 messaggi");
   assert.equal(formatProfileCount(2, "token", "it"), "2 token");
   assert.equal(formatProfileCount(2, "step", "it"), "2 step");
+  assert.equal(formatProfileCount(5, "token", "en", "$&"), "$& tokens");
+  assert.equal(formatProfileCount(5, "token", "en", "$'"), "$' tokens");
 
   assert.equal(formatProfileCount(1, "step", "ru"), "1 шаг");
   assert.equal(formatProfileCount(2, "step", "ru"), "2 шага");
