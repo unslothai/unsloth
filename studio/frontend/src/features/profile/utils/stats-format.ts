@@ -106,6 +106,11 @@ const PROFILE_COUNT_TEMPLATES = {
     message: { one: "{value} Nachricht", other: "{value} Nachrichten" },
     step: { one: "{value} Schritt", other: "{value} Schritte" },
   },
+  it: {
+    token: { one: "{value} token", other: "{value} token" },
+    message: { one: "{value} messaggio", other: "{value} messaggi" },
+    step: { one: "{value} step", other: "{value} step" },
+  },
   ru: {
     token: {
       one: "{value} токен",

@@ -53,6 +53,8 @@ test("durations read the way the header does", () => {
 test("day counts follow each locale's plural rules", () => {
   assert.equal(formatDayCount(1, "en"), "1 day");
   assert.equal(formatDayCount(2, "en"), "2 days");
+  assert.equal(formatDayCount(1, "it"), "1 giorno");
+  assert.equal(formatDayCount(2, "it"), "2 giorni");
   assert.equal(formatDayCount(1, "ar"), "يوم");
   assert.equal(formatDayCount(2, "ar"), "يومان");
   assert.equal(formatDayCount(3, "ar"), "3 أيام");
@@ -65,6 +67,13 @@ test("profile counts follow the selected locale's plural rules", () => {
   assert.equal(formatProfileCount(2, "step", "en"), "2 steps");
   assert.equal(formatProfileCount(1, "week", "es"), "1 semana");
   assert.equal(formatProfileCount(2, "week", "es"), "2 semanas");
+
+  assert.equal(formatProfileCount(1, "week", "it"), "1 settimana");
+  assert.equal(formatProfileCount(2, "week", "it"), "2 settimane");
+  assert.equal(formatProfileCount(1, "message", "it"), "1 messaggio");
+  assert.equal(formatProfileCount(2, "message", "it"), "2 messaggi");
+  assert.equal(formatProfileCount(2, "token", "it"), "2 token");
+  assert.equal(formatProfileCount(2, "step", "it"), "2 step");
 
   assert.equal(formatProfileCount(1, "step", "ru"), "1 шаг");
   assert.equal(formatProfileCount(2, "step", "ru"), "2 шага");
