@@ -178,6 +178,56 @@ def test_hf_dataset_preflight_accepts_usable_selected_cache(tmp_path):
         route._preflight_hf_dataset_request(request)
 
 
+def test_streaming_dataset_preflight_bypasses_generic_cache():
+    route = _load_route_module("training_route_streaming_dataset_preflight")
+    request = _request(dataset_streaming = True, max_steps = 10)
+    calls: list[tuple[str, float]] = []
+
+    class FakeApi:
+        def __init__(self, token = None):
+            assert token is False
+
+        def dataset_info(self, repo_id, *, timeout):
+            calls.append((repo_id, timeout))
+            return object()
+
+    with (
+        patch(
+            "hub.utils.dataset_cache.training_dataset_cache_pin",
+            side_effect = AssertionError("streaming must not inspect the local cache"),
+        ),
+        patch.object(route, "hf_env_offline", return_value = False),
+        patch.dict(sys.modules, _fake_hf_modules(FakeApi)),
+    ):
+        route._preflight_hf_dataset_request(request)
+
+    assert calls == [("org/dataset", route._REMOTE_DATASET_METADATA_TIMEOUT_SECONDS)]
+
+
+def test_streaming_dataset_preflight_rejects_offline_before_cache_lookup():
+    route = _load_route_module("training_route_streaming_dataset_offline")
+    request = _request(dataset_streaming = True, max_steps = 10)
+
+    class UnexpectedApi:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("unexpected Hub call")
+
+    with (
+        patch(
+            "hub.utils.dataset_cache.training_dataset_cache_pin",
+            side_effect = AssertionError("streaming must not inspect the local cache"),
+        ),
+        patch.object(route, "hf_env_offline", return_value = True),
+        patch.dict(sys.modules, _fake_hf_modules(UnexpectedApi)),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        route._preflight_hf_dataset_request(request)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "hf_dataset_streaming_offline"
+    assert "disable streaming" in exc_info.value.detail["message"].lower()
+
+
 def test_hf_dataset_preflight_rejects_before_backend_start():
     route = _load_route_module("training_route_dataset_preflight_before_start")
     request = _request()
@@ -972,6 +1022,32 @@ def test_streaming_rejects_cached_dataset_hints(cache_overrides):
     assert exc_info.value.status_code == 422
     assert "local" in exc_info.value.detail
     assert "cache" in exc_info.value.detail
+
+
+@pytest.mark.parametrize(
+    ("request_overrides", "expected"),
+    [
+        ({"training_type": "Continued Pretraining"}, "Continued Pretraining"),
+        ({"is_embedding": True}, "Embedding model training"),
+        ({"use_loftq": True}, "LoftQ"),
+        ({"use_dora": True}, "DoRA"),
+    ],
+)
+def test_mlx_start_rejects_unsupported_training_config(request_overrides, expected):
+    from utils.hardware import hardware
+
+    route = _load_route_module(f"training_route_mlx_reject_{expected}")
+    request = _request(**request_overrides)
+
+    with (
+        patch.object(route, "get_training_backend", return_value = _refusing_backend()),
+        patch.object(hardware, "DEVICE", hardware.DeviceType.MLX),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        _start(route, request)
+
+    assert exc_info.value.status_code == 400
+    assert expected in exc_info.value.detail
 
 
 def test_route_forwards_cache_reference_fields():

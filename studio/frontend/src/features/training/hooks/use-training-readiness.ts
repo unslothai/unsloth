@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import { useMemo } from "react";
 import {
   type StartValidationResult,
@@ -25,8 +26,9 @@ export interface TrainingReadiness {
 
 function deriveTrainingReadiness(
   state: TrainingConfigState,
+  deviceType: string,
 ): TrainingReadiness {
-  const configValidation = validateTrainingConfig(state);
+  const configValidation = validateTrainingConfig(state, deviceType);
   const hasModel = !!state.selectedModel;
   const hasDataset =
     state.datasetSource === "upload"
@@ -84,7 +86,7 @@ function readinessEqual(
   );
 }
 
-function createTrainingReadinessSelector() {
+function createTrainingReadinessSelector(deviceType: string) {
   let cachedReadiness: Readonly<TrainingReadiness> | null = null;
   let cachedState: TrainingConfigState | null = null;
 
@@ -92,7 +94,7 @@ function createTrainingReadinessSelector() {
     if (state === cachedState && cachedReadiness) {
       return cachedReadiness;
     }
-    const next = deriveTrainingReadiness(state);
+    const next = deriveTrainingReadiness(state, deviceType);
     if (!(cachedReadiness && readinessEqual(cachedReadiness, next))) {
       cachedReadiness = Object.freeze(next);
     }
@@ -102,6 +104,10 @@ function createTrainingReadinessSelector() {
 }
 
 export function useTrainingReadiness(): Readonly<TrainingReadiness> {
-  const selector = useMemo(() => createTrainingReadinessSelector(), []);
+  const deviceType = usePlatformStore((state) => state.deviceType);
+  const selector = useMemo(
+    () => createTrainingReadinessSelector(deviceType),
+    [deviceType],
+  );
   return useTrainingConfigStore(selector);
 }

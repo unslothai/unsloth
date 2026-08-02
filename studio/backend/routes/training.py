@@ -387,7 +387,6 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
     if not dataset_id:
         return
 
-    from hub.utils.dataset_cache import training_dataset_cache_pin
     from huggingface_hub.utils import HFValidationError, validate_repo_id
 
     try:
@@ -402,14 +401,26 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
             ),
         ) from error
 
-    cached_path, _ = training_dataset_cache_pin(
-        dataset_id,
-        request.dataset_snapshot_path or request.dataset_local_path,
-    )
-    if cached_path is not None:
-        return
+    if not request.dataset_streaming:
+        from hub.utils.dataset_cache import training_dataset_cache_pin
+
+        cached_path, _ = training_dataset_cache_pin(
+            dataset_id,
+            request.dataset_snapshot_path or request.dataset_local_path,
+        )
+        if cached_path is not None:
+            return
 
     if hf_env_offline():
+        if request.dataset_streaming:
+            raise _hf_preflight_error(
+                409,
+                "hf_dataset_streaming_offline",
+                (
+                    "Streaming requires access to the Hugging Face Hub, which cannot be "
+                    "reached while offline. Disable streaming to use a cached dataset."
+                ),
+            )
         raise _hf_preflight_error(
             409,
             "hf_dataset_not_cached_offline",
@@ -652,6 +663,33 @@ def _reject_untrainable_model_request(
         status_code = 400,
         detail = "The selected local model does not contain trainable weights.",
     )
+
+
+def _validate_training_platform(request: TrainingStartRequest) -> None:
+    from utils.hardware import hardware
+
+    if hardware.DEVICE != hardware.DeviceType.MLX:
+        return
+    if request.training_type == "Continued Pretraining":
+        raise HTTPException(
+            status_code = 400,
+            detail = "Continued Pretraining is not supported for MLX training yet.",
+        )
+    if request.is_embedding:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Embedding model training is not supported for MLX training yet.",
+        )
+    if request.use_loftq:
+        raise HTTPException(
+            status_code = 400,
+            detail = "LoftQ is not supported for MLX training yet.",
+        )
+    if request.use_dora:
+        raise HTTPException(
+            status_code = 400,
+            detail = "DoRA is not supported for MLX training yet.",
+        )
 
 
 _RESUME_DATASET_DEFAULTS = {
@@ -998,6 +1036,8 @@ async def start_training(
             request.local_eval_datasets = _validate_local_dataset_paths(
                 request.local_eval_datasets, "Local eval dataset"
             )
+
+        _validate_training_platform(request)
 
         # Validate streaming-mode compatibility before any expensive work.
         # Streaming is supported only for Hugging Face text datasets.

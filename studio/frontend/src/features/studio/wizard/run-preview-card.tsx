@@ -338,8 +338,8 @@ export function RunPreviewCard({
   const hasToken = !!hfToken && hfToken.trim().length > 0;
   const { isReady, hasModel, hasDataset } = useTrainingReadiness();
   const resourceNotices = useTrainingResourceNotices();
-  const nonDefaultAdvancedSettings = useTrainingConfigStore(
-    countNonDefaultAdvancedSettings,
+  const nonDefaultAdvancedSettings = useTrainingConfigStore((state) =>
+    countNonDefaultAdvancedSettings(state, state.advancedSettingsBaseline),
   );
   const resourceDisplayNames = useTrainingResourceDisplayNames({
     selectedModel,

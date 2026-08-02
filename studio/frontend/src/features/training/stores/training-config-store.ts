@@ -419,6 +419,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             set({
               ...patch,
               ...cptOverrides,
+              advancedSettingsBaseline: shouldApplyTrainingDefaults
+                ? { ...patch, ...cptOverrides }
+                : get().advancedSettingsBaseline,
               modelType: inferredModelType,
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
@@ -442,6 +445,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 if (
                   !method ||
                   methodWasEdited ||
+                  !canApplyTrainingDefaults() ||
                   get().trainingMethod === "cpt"
                 ) {
                   set({ isLoadingModelDefaults: false });
@@ -748,6 +752,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           isAudioModel?: boolean;
           isEmbeddingModel?: boolean;
           modelDefaultsAppliedFor?: string | null;
+          advancedSettingsBaseline?: null;
         } = {
           selectedModel,
           modelDefaultsError: null,
@@ -771,6 +776,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           patch.isEmbeddingModel =
             options?.isEmbedding ?? effectiveModelType === "embeddings";
           patch.modelDefaultsAppliedFor = null;
+          patch.advancedSettingsBaseline = null;
         }
         setUserEdit(patch);
 
@@ -786,6 +792,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isLoadingModelDefaults: false,
             modelDefaultsError: null,
             modelDefaultsAppliedFor: null,
+            advancedSettingsBaseline: null,
           });
           return;
         }
@@ -822,6 +829,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isLoadingModelDefaults: false,
             modelDefaultsError: null,
             modelDefaultsAppliedFor: null,
+            advancedSettingsBaseline: null,
           });
         },
         setSelectedModel: (selectedModel) => {
@@ -1271,6 +1279,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (!selectedModel) return;
           setUserEdit({
             modelDefaultsAppliedFor: null,
+            advancedSettingsBaseline: null,
             visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
           });
           loadAndApplyModelDefaults(selectedModel);

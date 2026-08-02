@@ -88,6 +88,7 @@ function validateDatasetSelection(
 
 export function validateTrainingConfig(
   config: TrainingConfigState,
+  deviceType?: string,
 ): StartValidationResult {
   if (!config.selectedModel) {
     return {
@@ -116,6 +117,21 @@ export function validateTrainingConfig(
           ? "studio.modelPicker.reasonGguf"
           : "studio.modelPicker.reasonAdapter",
     };
+  }
+
+  if (deviceType === "mac") {
+    if (config.trainingMethod === "cpt") {
+      return {
+        ok: false,
+        errorKey: "studio.params.notSupportedAppleSilicon",
+      };
+    }
+    if (config.isEmbeddingModel || config.modelType === "embeddings") {
+      return {
+        ok: false,
+        errorKey: "studio.params.notSupportedAppleSilicon",
+      };
+    }
   }
 
   if (!Number.isFinite(config.learningRate) || config.learningRate <= 0) {

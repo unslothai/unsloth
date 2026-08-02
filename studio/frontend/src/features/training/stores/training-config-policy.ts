@@ -83,6 +83,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
   isLoadingModelDefaults: false,
   modelDefaultsError: null,
   modelDefaultsAppliedFor: null,
+  advancedSettingsBaseline: null,
   isCheckingDataset: false,
   isDatasetImage: null,
   isDatasetAudio: false,

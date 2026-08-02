@@ -111,6 +111,7 @@ export interface TrainingConfigState {
   isLoadingModelDefaults: boolean;
   modelDefaultsError: string | null;
   modelDefaultsAppliedFor: string | null;
+  advancedSettingsBaseline: AdvancedSettingsBaseline | null;
   isCheckingDataset: boolean;
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;
@@ -126,6 +127,32 @@ export interface TrainingConfigState {
   visionImageSize: number | null;
   s3Config: S3Config | null;
 }
+
+export type AdvancedSettingsBaseline = Partial<
+  Pick<
+    TrainingConfigState,
+    | "optimizerType"
+    | "lrSchedulerType"
+    | "weightDecay"
+    | "warmupSteps"
+    | "saveSteps"
+    | "evalSteps"
+    | "randomSeed"
+    | "packing"
+    | "trainOnCompletions"
+    | "gradientCheckpointing"
+    | "visionImageSize"
+    | "finetuneVisionLayers"
+    | "finetuneLanguageLayers"
+    | "finetuneAttentionModules"
+    | "finetuneMLPModules"
+    | "loraRank"
+    | "loraAlpha"
+    | "loraDropout"
+    | "loraVariant"
+    | "targetModules"
+  >
+>;
 
 export interface TrainingConfigActions {
   setStep: (step: StepNumber) => void;

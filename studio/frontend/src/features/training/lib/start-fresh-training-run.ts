@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { getHfToken, useHfTokenStore } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
@@ -252,7 +253,10 @@ export async function startFreshTrainingRun(): Promise<boolean> {
     return false;
   }
 
-  const validation = validateTrainingConfig(attempt.config);
+  const validation = validateTrainingConfig(
+    attempt.config,
+    usePlatformStore.getState().deviceType,
+  );
   if (!validation.ok) {
     return attempt.cancel(translate(validation.errorKey));
   }
@@ -454,7 +458,10 @@ async function submitFreshTrainingRun(
   attempt: FreshTrainingStartAttempt,
   hfToken: string | null,
 ): Promise<boolean> {
-  const validation = validateTrainingConfig(attempt.config);
+  const validation = validateTrainingConfig(
+    attempt.config,
+    usePlatformStore.getState().deviceType,
+  );
   if (!validation.ok) {
     return attempt.cancel(translate(validation.errorKey));
   }

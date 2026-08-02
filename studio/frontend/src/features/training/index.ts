@@ -39,7 +39,11 @@ export {
   uploadTrainingDataset,
 } from "./api/datasets-api";
 export type { CheckFormatResponse } from "./types/datasets";
-export type { LoraVariant } from "./types/config";
+export type {
+  AdvancedSettingsBaseline,
+  LoraVariant,
+  TrainingConfigState,
+} from "./types/config";
 export { getModelConfig, listLocalModels } from "./api/models-api";
 export type { LocalModelInfo, ModelConfigResponse } from "./api/models-api";
 export type {

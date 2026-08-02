@@ -15,6 +15,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
 import { HfTokenIndicator } from "@/features/hub";
 import { useSettingsDialogStore } from "@/features/settings";
 import { TrainModelSelector } from "@/features/train-model-picker";
@@ -154,6 +155,7 @@ function TrainingMethodSelect() {
   const t = useT();
   const trainingMethod = useTrainingConfigStore((s) => s.trainingMethod);
   const setTrainingMethod = useTrainingConfigStore((s) => s.setTrainingMethod);
+  const isMac = usePlatformStore((state) => state.deviceType === "mac");
   const activeMeta = TRAINING_METHOD_META[trainingMethod];
   const activeLabel = activeMeta ? t(activeMeta.labelKey) : trainingMethod;
   return (
@@ -191,10 +193,11 @@ function TrainingMethodSelect() {
       >
         {TRAINING_METHOD_ORDER.map((method) => {
           const meta = TRAINING_METHOD_META[method];
+          const unsupportedOnMlx = isMac && method === "cpt";
           return (
             <Tooltip key={method} delayDuration={300}>
               <TooltipTrigger asChild={true} disableClickToggle={true}>
-                <SelectItem value={method}>
+                <SelectItem value={method} disabled={unsupportedOnMlx}>
                   <span className="flex items-center gap-2">
                     <span
                       aria-hidden="true"
@@ -204,6 +207,11 @@ function TrainingMethodSelect() {
                       )}
                     />
                     {t(meta.labelKey)}
+                    {unsupportedOnMlx && (
+                      <span className="text-ui-10 text-muted-foreground">
+                        · {t("studio.params.notSupportedAppleSilicon")}
+                      </span>
+                    )}
                   </span>
                 </SelectItem>
               </TooltipTrigger>
@@ -212,7 +220,9 @@ function TrainingMethodSelect() {
                 sideOffset={10}
                 className="max-w-[220px] text-ui-11p5 leading-snug"
               >
-                {t(meta.hintKey)}
+                {unsupportedOnMlx
+                  ? t("studio.params.notSupportedAppleSilicon")
+                  : t(meta.hintKey)}
               </TooltipContent>
             </Tooltip>
           );

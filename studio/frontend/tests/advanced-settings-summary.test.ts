@@ -72,3 +72,23 @@ test("advanced settings summary uses method-aware LoRA defaults", () => {
     0,
   );
 });
+
+test("advanced settings summary uses applied model defaults as its baseline", () => {
+  const modelDefaults = {
+    loraRank: 32,
+    loraAlpha: 32,
+    saveSteps: 30,
+    trainOnCompletions: true,
+    targetModules: [...DEFAULT_HYPERPARAMS.targetModules, "shared_mlp"],
+  };
+  const modelState = { ...defaultState, ...modelDefaults };
+
+  assert.equal(countNonDefaultAdvancedSettings(modelState, modelDefaults), 0);
+  assert.equal(
+    countNonDefaultAdvancedSettings(
+      { ...modelState, saveSteps: 60 },
+      modelDefaults,
+    ),
+    1,
+  );
+});

@@ -25,6 +25,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "isLoadingModelDefaults",
     "modelDefaultsError",
     "modelDefaultsAppliedFor",
+    "advancedSettingsBaseline",
     "isCheckingDataset",
     "isDatasetImage",
     "isDatasetAudio",
