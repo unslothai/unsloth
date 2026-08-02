@@ -1066,14 +1066,37 @@ def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
         {"_spec_draft_n_max": 4},
         {
             "_requested_spec_mode": "mtp",
-            "_speculative_type": "default",
-            "_spec_draft_n_max": 4,
+            "_speculative_type": None,
+            "_spec_draft_n_max": None,
+            "_spec_fallback_reason": "runtime_error",
         },
     ],
 )
 def test_mtp_draft_n_max_mismatch_survives_runtime_state(backend_kwargs):
     backend = _mtp_backend(**backend_kwargs)
     assert not _matches(
+        backend,
+        gguf_path = None,
+        model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = "mtp",
+        spec_draft_n_max = 8,
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+    )
+
+
+def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
+    backend = _mtp_backend(
+        _requested_spec_mode = "mtp",
+        _speculative_type = "default",
+        _spec_draft_n_max = None,
+        _spec_fallback_reason = "binary_no_mtp",
+    )
+    assert _matches(
         backend,
         gguf_path = None,
         model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
