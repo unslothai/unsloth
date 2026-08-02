@@ -110,7 +110,9 @@ def test_the_guard_runs_from_the_workflow_it_guards():
     """No pytest workflow filters on this file, so the job must run the guard itself."""
     workflow = yaml.safe_load(_WORKFLOW.read_text(encoding = "utf-8"))
     on = workflow.get("on") or workflow.get(True)
-    assert str(_WORKFLOW.relative_to(REPO_ROOT)) in on["pull_request"]["paths"]
+    # as_posix(), not str(): this runs on windows-latest, where str() would give
+    # backslashes and never match the forward-slash paths in the YAML.
+    assert _WORKFLOW.relative_to(REPO_ROOT).as_posix() in on["pull_request"]["paths"]
     steps = workflow["jobs"]["pester"]["steps"]
     assert any(
         Path(__file__).name in (s.get("run") or "") for s in steps
