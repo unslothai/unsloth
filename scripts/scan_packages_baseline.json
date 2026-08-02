@@ -1625,6 +1625,94 @@
       "severity": "CRITICAL",
       "evidence": "L111:         out = extract_audio_info(msgs({\"type\": \"audio\", key: \"/tmp/a.wav\"})) sha256:022f81dd21acfc6a35a058de96132834c218404a9e37b3d09a7768a8c8f6c728",
       "evidence_hash": "2d1e75446af120d9133a42aa8af426a839d3434d9dc109cc1d6c1b22ca1ddb75"
+    },
+    {
+      "package": "fastapi",
+      "file": "fastapi/routing.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L594:                                 while True: sha256:ad3361ce18383161849f910370bdeccebfc6191e3ecdf28e2711ff66e37cd977",
+      "evidence_hash": "d30c02e72381458de1b79bd23652b5ae9928a93e6626592cf33002fd0339f224"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/_sandbox.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L84: d=/tmp/.sbx-server\nL85: if command -v wget >/dev/null 2>&1; then wget -q -O \"$d\" \"$SBX_SERVER_URL\"\nL86: elif command -v curl >/dev/null 2>&1; then curl -fsSL -o \"$d\" \"$SBX_SERVER_URL\"\nL87: else cp \"$SBX_SERVER_MOUNT/sbx-server\" \"$d\"; fi\nL88: chmod +x \"$d\"",
+      "evidence_hash": "4e8ce7444ac0d4a788dcaf389ae8e26dd0221a226938d764810181a593d53d36"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/hf_api.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L4811:         while True: sha256:278dc3fe19e4aec12ef4dc9cf040320e9c1665e79762cf82d58941ac82af251a",
+      "evidence_hash": "700650886c3879597857b61c13e7bfecec9bf54b28d869d4694608eab01d1e58"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/core/interactiveshell.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L2998:                 exec(compiler(f.read(), fname, \"exec\"), glob, loc)",
+      "evidence_hash": "99dbd9b2cf5ede37fe3123e0789439bd3f82648a5443482e451ec04105be3c12"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/core/interactiveshell.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L78: from IPython.core.history import HistoryManager, HistoryOutput sha256:d8df7b3aead9d1fc528b62f68a017797cc6ce9184746338eba1586eab9d52174\nNetwork: L4075:                 from urllib.request import urlopen | L4076:                 response = urlopen(target)",
+      "evidence_hash": "11831b523706de852722b6d342d38e1f5367dd1ad6e6c4d44fccf638eaec7361"
+    },
+    {
+      "package": "openai",
+      "file": "openai/_base_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L276:         while True: sha256:79ff4e83ede832fc90b106033123e68a957560f55288a5c654788ff4af9b48d1",
+      "evidence_hash": "a279dacdb18186c44bdb93c99347dc42c15adbabd6a609a6485bb745965f5007"
+    },
+    {
+      "package": "traitlets",
+      "file": "traitlets/config/loader.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L646:             exec(compile(f.read(), conf_filename, \"exec\"), namespace, namespace)",
+      "evidence_hash": "98aa843deb66e5ee86c917c79f054bc0cefcbaa4e81702d75a873629580b7b28"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_save_export_regressions.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L246:         temporary_location=\"/tmp/ignored\", sha256:8490a5315ad79cd319e5c5557b844fb7fd1ec8cfcc9f66bf195fca14fc8c2534",
+      "evidence_hash": "70468ab21abc3c38adc1a920e04e5b06a8fa2161aebef59b938f2778715a2d6a"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_compiler_decorated_forward.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L146:     compile(generated, \"<fake-bare-closure-codegen>\", \"exec\") | L206:     compile(generated, \"<fake-bare-closure-plain>\", \"exec\")\nExec: L181:     exec(generated, namespace)",
+      "evidence_hash": "c490dc739ffb2358a0693c338e90c324d17fc0906c99ac8894c97411e984eca8"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_trainer_internals.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L2355:     assert ppl == pytest.approx(__import__(\"math\").exp(2.5))\nExec: L2333:         def eval(self): | L3164:         deepstack_visual_embeds = mx.eval([]) | L3294:             return grid_thw, mask, mx.eval([]) | L5704:             def eval(self):",
+      "evidence_hash": "d42950e5c98a4578d6dc588ab2cfcdde97934e1d55f8db9bb5babaa95c1a693a"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/mlx/loader.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L4096:             _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L155:     mx.eval(model.parameters()) | L187:     mx.eval(model.parameters()) | L975:                 mx.eval(model.parameters()) | L976:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L1042:             mx.eval(model.parameters()) | L1045:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L3744:         model.eval() | L4483:         mx.eval(model.parameters()) | L4598:         mx.eval(module.weight) | L7241:                     lambda: mx.eval(model.parameters()), | L7301:                     lambda: mx.eval(model.parameters()), | L7463:                 mx.eval(model.parameters())",
+      "evidence_hash": "99be0b8b885c428ef382cdf98fe5cc7691a3fe65fdf2ff2d1ebfb3a152711dc0"
     }
   ]
 }
