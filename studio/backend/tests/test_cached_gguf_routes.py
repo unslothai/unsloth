@@ -2101,6 +2101,7 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
         "hub.utils.hf_cache_state.hf_cache_root",
         lambda create = False, root = None: (root if root is not None else active),
     )
+
     # Disk-only means disk-only: a remote listing here would be the bug this route avoids.
     def _no_remote(*args, **kwargs):
         raise AssertionError("remote listing attempted")
@@ -2108,9 +2109,7 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     monkeypatch.setattr(GV, "list_gguf_variants", _no_remote)
 
     # Control: nothing cancelled, so the repo holds one quant and nothing else.
-    only_complete = asyncio.run(
-        GV.get_gguf_variants_response("Org/Quant", prefer_local_cache = True)
-    )
+    only_complete = asyncio.run(GV.get_gguf_variants_response("Org/Quant", prefer_local_cache = True))
     assert [(v.quant, v.downloaded) for v in only_complete.variants] == [("Q4_K_M", True)]
 
     from hub.utils import download_manifest
