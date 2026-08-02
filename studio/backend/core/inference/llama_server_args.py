@@ -363,9 +363,7 @@ def parse_reasoning_budget_override(args: Optional[Iterable[str]]) -> Optional[i
     return None if raw_value is None else int(raw_value)
 
 
-def parse_reasoning_budget_message_override(
-    args: Optional[Iterable[str]],
-) -> Optional[str]:
+def parse_reasoning_budget_message_override(args: Optional[Iterable[str]]) -> Optional[str]:
     """Return the last user-supplied ``--reasoning-budget-message`` value."""
     value = _last_flag_value(
         args,
