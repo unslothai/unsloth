@@ -32,6 +32,10 @@ on:
       # runs them. Scoped to *.ps1 so python-only changes under tests/studio do
       # not pull in the GGUF smoke jobs.
       - 'tests/studio/*.ps1'
+      # The guard runs on windows-latest, so editing it must run this job. Without
+      # this, a Windows-only break in the guard lands and only shows up later, on an
+      # unrelated PR.
+      - 'tests/studio/test_pester_bootstrap_hardening.py'
       - '.github/workflows/studio-windows-inference-smoke.yml'
   push:
     branches: [main, pip]

@@ -112,7 +112,13 @@ def test_the_guard_runs_from_the_workflow_it_guards():
     on = workflow.get("on") or workflow.get(True)
     # as_posix(), not str(): this runs on windows-latest, where str() would give
     # backslashes and never match the forward-slash paths in the YAML.
-    assert _WORKFLOW.relative_to(REPO_ROOT).as_posix() in on["pull_request"]["paths"]
+    paths = on["pull_request"]["paths"]
+    assert _WORKFLOW.relative_to(REPO_ROOT).as_posix() in paths
+    # `tests/studio/*.ps1` does not cover this file, so editing the guard alone used
+    # to skip the job that runs it, which is how a Windows-only break got merged.
+    assert (
+        Path(__file__).resolve().relative_to(REPO_ROOT).as_posix() in paths
+    ), "editing this guard must run the Windows job it guards"
     steps = workflow["jobs"]["pester"]["steps"]
     assert any(
         Path(__file__).name in (s.get("run") or "") for s in steps
