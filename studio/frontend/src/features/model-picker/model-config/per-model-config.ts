@@ -214,20 +214,34 @@ function canUseStorage(): boolean {
 // quant. Closed until asked for.
 export const ADVANCED_SETTINGS_OPEN_KEY = "unsloth_model_advanced_settings";
 
-export function readAdvancedSettingsOpen(): boolean {
+function loadAdvancedSettingsOpen(): boolean | null {
   if (!canUseStorage()) {
-    return false;
+    return null;
   }
   try {
-    return localStorage.getItem(ADVANCED_SETTINGS_OPEN_KEY) === "true";
+    const raw = localStorage.getItem(ADVANCED_SETTINGS_OPEN_KEY);
+    return raw === "true" ? true : raw === "false" ? false : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
+// Memory is the source of truth. A browser that refuses the write still gets a
+// working switch, it just forgets the choice next launch. undefined = unread.
+let advancedOpen: boolean | null | undefined;
 const advancedOpenListeners = new Set<() => void>();
 
+/** null until the switch is used, so an untouched panel is free to open the
+ *  section for a model that carries non-default advanced values. */
+export function readAdvancedSettingsOpen(): boolean | null {
+  if (advancedOpen === undefined) {
+    advancedOpen = loadAdvancedSettingsOpen();
+  }
+  return advancedOpen;
+}
+
 export function saveAdvancedSettingsOpen(open: boolean): void {
+  advancedOpen = open;
   if (canUseStorage()) {
     try {
       localStorage.setItem(ADVANCED_SETTINGS_OPEN_KEY, open ? "true" : "false");
@@ -256,6 +270,7 @@ export function subscribeAdvancedSettingsOpen(
   const onStorage = (event: StorageEvent) => {
     // A null key is a clear(), which drops this preference too.
     if (event.key === null || event.key === ADVANCED_SETTINGS_OPEN_KEY) {
+      advancedOpen = loadAdvancedSettingsOpen();
       onChange();
     }
   };

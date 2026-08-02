@@ -768,18 +768,14 @@ export function ModelConfigPage({
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
     readAdvancedSettingsOpen,
-    () => false,
+    () => null,
   );
-  // A model carrying non-default advanced values opens the section on its own
-  // so those stay visible, until the switch is used.
-  const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
-    hasNonDefaultAdvanced(config),
-  );
-  const showAdvanced = advancedPreference || autoOpenAdvanced;
-  const toggleAdvanced = (open: boolean) => {
-    setAutoOpenAdvanced(false);
-    saveAdvancedSettingsOpen(open);
-  };
+  // Until the switch is used anywhere, a model carrying non-default advanced
+  // values opens the section on its own so those stay visible. Frozen at mount
+  // so editing a field back to its default cannot close the section underfoot.
+  const [autoOpenAdvanced] = useState(() => hasNonDefaultAdvanced(config));
+  const showAdvanced = advancedPreference ?? autoOpenAdvanced;
+  const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
   const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);

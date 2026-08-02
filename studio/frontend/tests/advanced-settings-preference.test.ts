@@ -10,7 +10,7 @@ import {
 } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { store } = installLocalStorageFake();
+const { store, storage } = installLocalStorageFake();
 
 // The preference subscribes to cross-tab writes, so the fake window needs the
 // listener pair a browser has.
@@ -42,88 +42,112 @@ const {
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
 
-test("a fresh profile keeps the advanced section closed", () => {
-  store.delete(ADVANCED_SETTINGS_OPEN_KEY);
-  assert.equal(readAdvancedSettingsOpen(), false);
+/** Subscribed so the cross-tab handler is registered, as a mounted panel is. */
+function mounted(): { changes: () => number; unmount: () => void } {
+  let seen = 0;
+  const stop = subscribeAdvancedSettingsOpen(() => {
+    seen += 1;
+  });
+  return { changes: () => seen, unmount: stop };
+}
+
+test("an untouched profile leaves the section to the model", () => {
+  // null, not false: a model carrying non-default advanced values may still
+  // open the section for itself.
+  assert.equal(readAdvancedSettingsOpen(), null);
 });
 
-test("opening it once is remembered", () => {
+test("opening it is remembered", () => {
   saveAdvancedSettingsOpen(true);
-  // What the next model, quant, or reload reads.
   assert.equal(readAdvancedSettingsOpen(), true);
+  assert.equal(store.get(ADVANCED_SETTINGS_OPEN_KEY), "true");
 });
 
-test("closing it again is remembered too", () => {
-  saveAdvancedSettingsOpen(true);
+test("closing it is remembered as closed, not as untouched", () => {
   saveAdvancedSettingsOpen(false);
+  // The difference that stops a non-default model reopening it.
   assert.equal(readAdvancedSettingsOpen(), false);
 });
 
-test("an unreadable value falls back to closed", () => {
+test("a value it cannot parse counts as untouched", () => {
+  const panel = mounted();
   store.set(ADVANCED_SETTINGS_OPEN_KEY, "yes");
-  assert.equal(readAdvancedSettingsOpen(), false);
+  fromAnotherTab(ADVANCED_SETTINGS_OPEN_KEY);
+  assert.equal(readAdvancedSettingsOpen(), null);
+  panel.unmount();
+});
+
+test("a refused write still moves the switch", () => {
+  // Storage disabled, sandboxed or full. The choice is not remembered next
+  // launch, but the controls have to stay reachable this session.
+  const setItem = storage.setItem;
+  storage.setItem = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    saveAdvancedSettingsOpen(true);
+    assert.equal(readAdvancedSettingsOpen(), true);
+    saveAdvancedSettingsOpen(false);
+    assert.equal(readAdvancedSettingsOpen(), false);
+  } finally {
+    storage.setItem = setItem;
+  }
 });
 
 test("every mounted panel hears a toggle made on another surface", () => {
   // The sidebar copy stays mounted while collapsed, so a toggle in the picker
   // has to reach it rather than leave it on its mount-time snapshot.
-  let sidebar = 0;
-  let hub = 0;
-  const stopSidebar = subscribeAdvancedSettingsOpen(() => {
-    sidebar += 1;
-  });
-  const stopHub = subscribeAdvancedSettingsOpen(() => {
-    hub += 1;
-  });
+  const sidebar = mounted();
+  const hub = mounted();
 
   saveAdvancedSettingsOpen(true);
-  assert.equal(sidebar, 1);
-  assert.equal(hub, 1);
+  assert.equal(sidebar.changes(), 1);
+  assert.equal(hub.changes(), 1);
   assert.equal(readAdvancedSettingsOpen(), true);
 
-  stopSidebar();
-  stopHub();
+  // Closing on one surface closes it on the other, including a panel that
+  // opened itself for a non-default model: an explicit choice outranks that.
+  saveAdvancedSettingsOpen(false);
+  assert.equal(sidebar.changes(), 2);
+  assert.equal(hub.changes(), 2);
+  assert.equal(readAdvancedSettingsOpen(), false);
+
+  sidebar.unmount();
+  hub.unmount();
 });
 
 test("an unmounted panel stops hearing them", () => {
-  let calls = 0;
-  const stop = subscribeAdvancedSettingsOpen(() => {
-    calls += 1;
-  });
-  stop();
-  saveAdvancedSettingsOpen(false);
-  assert.equal(calls, 0);
+  const panel = mounted();
+  panel.unmount();
+  saveAdvancedSettingsOpen(true);
+  assert.equal(panel.changes(), 0);
 });
 
 test("a toggle in another tab reaches mounted panels", () => {
-  let calls = 0;
-  const stop = subscribeAdvancedSettingsOpen(() => {
-    calls += 1;
-  });
+  const panel = mounted();
 
-  store.set(ADVANCED_SETTINGS_OPEN_KEY, "true");
+  store.set(ADVANCED_SETTINGS_OPEN_KEY, "false");
   fromAnotherTab(ADVANCED_SETTINGS_OPEN_KEY);
-  assert.equal(calls, 1);
-  assert.equal(readAdvancedSettingsOpen(), true);
+  assert.equal(panel.changes(), 1);
+  assert.equal(readAdvancedSettingsOpen(), false);
 
   // A cleared profile drops this key too, so it counts.
+  store.delete(ADVANCED_SETTINGS_OPEN_KEY);
   fromAnotherTab(null);
-  assert.equal(calls, 2);
+  assert.equal(panel.changes(), 2);
+  assert.equal(readAdvancedSettingsOpen(), null);
 
   // An unrelated key does not.
   fromAnotherTab("unsloth_model_configs");
-  assert.equal(calls, 2);
+  assert.equal(panel.changes(), 2);
 
-  stop();
+  panel.unmount();
 });
 
 test("unsubscribing detaches the cross-tab listener too", () => {
   const before = storageHandlers.size;
-  const noop = () => {
-    // only its registration matters here
-  };
-  const stop = subscribeAdvancedSettingsOpen(noop);
+  const panel = mounted();
   assert.equal(storageHandlers.size, before + 1);
-  stop();
+  panel.unmount();
   assert.equal(storageHandlers.size, before);
 });
