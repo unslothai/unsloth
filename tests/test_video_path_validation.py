@@ -489,6 +489,10 @@ def real_collator_classes():
         )
     except Exception as exc:  # noqa: BLE001 - skip on any import failure
         pytest.skip(f"full unsloth import unavailable: {exc!r}")
+    # On Apple Silicon MLX, unsloth.trainer is a shim and this name is a
+    # placeholder whose __call__ raises, not the zoo subclass under test.
+    if not issubclass(UnslothVisionDataCollator, ZooBase):
+        pytest.skip("MLX placeholder collator, not the torch subclass")
     return UnslothVisionDataCollator, ZooBase
 
 
