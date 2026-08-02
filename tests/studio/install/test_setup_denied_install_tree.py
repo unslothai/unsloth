@@ -257,7 +257,7 @@ def test_the_temp_dir_swap_checks_both_of_its_destructive_steps():
     it, so setup would report a build it never installed."""
     swap = SETUP_PS1.split("# Swap temp build dir into final location", 1)[1]
     swap = swap.split("} elseif (-not $BuildOk", 1)[0]
-    assert '$swapState = Get-PathState -Path $OriginalLlamaCppDir' in swap, swap
+    assert "$swapState = Get-PathState -Path $OriginalLlamaCppDir" in swap, swap
     assert '$swapState -eq "Denied"' in swap, swap
     # Stop before the move runs, while the temp build is still whole.
     move = "Move-Item -LiteralPath $LlamaCppDir"
