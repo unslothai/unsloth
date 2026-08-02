@@ -39,7 +39,6 @@ def _can_deny() -> bool:
     """Probe rather than infer. Guessing from euid silently drops the only
     behavioural test in any root container, which is most CI images."""
     import tempfile
-
     with tempfile.TemporaryDirectory() as tmp:
         locked = Path(tmp) / "locked"
         locked.mkdir()
