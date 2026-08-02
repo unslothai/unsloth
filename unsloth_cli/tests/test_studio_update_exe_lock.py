@@ -150,7 +150,7 @@ def test_cleanup_does_not_delete_the_only_copy(monkeypatch, tmp_path):
     scripts.mkdir(parents = True)
     exe = scripts / "unsloth.exe"
     stale = scripts / "unsloth.exe.deleteme"
-    stale.write_bytes(b"MZ the only copy")   # renamed aside, pip wrote nothing back
+    stale.write_bytes(b"MZ the only copy")  # renamed aside, pip wrote nothing back
     _as_windows(monkeypatch, scripts)
 
     studio._cleanup_self_exe_lock_windows()
