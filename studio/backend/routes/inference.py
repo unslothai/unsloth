@@ -3735,9 +3735,7 @@ def _request_matches_loaded_settings(
     # returns the resolved blob.
     if req_mode in ("auto", "mtp", "mtp+ngram") and llama_backend.gguf_path:
         effective_extras = (
-            _req_extra_args
-            if _req_extra_args is not None
-            else llama_backend.requested_extra_args
+            _req_extra_args if _req_extra_args is not None else llama_backend.requested_extra_args
         )
         if not _extra_args_set_spec_type(effective_extras):
             companion_root = _local_gguf_companion_search_root(

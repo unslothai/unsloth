@@ -2115,9 +2115,7 @@ _OVERRIDE_TENSOR_FLAGS: frozenset = frozenset(
 
 
 def _paravirtual_strip_gpu_overrides(
-    extra_args: Optional[Iterable[str]],
-    *,
-    log_dropped: bool = True,
+    extra_args: Optional[Iterable[str]], *, log_dropped: bool = True
 ) -> Optional[List[str]]:
     """Drop --override-tensor entries that place weights back on the corrupt device.
 

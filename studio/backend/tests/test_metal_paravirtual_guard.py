@@ -1345,7 +1345,6 @@ def _routes():
     """routes/inference.py, imported lazily so this file's cheap AST tests do not
     pay for FastAPI."""
     from routes import inference as routes_inference
-
     return routes_inference
 
 
@@ -1480,7 +1479,13 @@ def test_a_real_mac_keeps_its_tensor_override_on_a_manual_cpu_load(monkeypatch):
     assert seen["n_cpu_moe"] == 8
 
 
-def _cpu_server(monkeypatch, tmp_path, *, launched_extras, requested_extras = None):
+def _cpu_server(
+    monkeypatch,
+    tmp_path,
+    *,
+    launched_extras,
+    requested_extras = None,
+):
     """A healthy paravirtual CPU server that recorded a normalized placement."""
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0)
@@ -1523,9 +1528,7 @@ def _load_request(gguf, **overrides):
     return LoadRequest(**fields)
 
 
-def test_a_repeat_auto_request_with_extras_matches_the_cpu_server_it_left(
-    monkeypatch, tmp_path
-):
+def test_a_repeat_auto_request_with_extras_matches_the_cpu_server_it_left(monkeypatch, tmp_path):
     """F6/F9 on both comparators. An API client, a second tab or a saved preset
     keeps sending Auto: the browser adopting the normalized echo does not cover
     them, and it never covers the extras box, which the UI does not round-trip."""
@@ -1710,9 +1713,12 @@ def test_a_user_owned_spec_type_survives_the_drafter_drop():
     """F2. The drop removed --spec-type before _build_speculative_flags saw the
     list, so the backend recorded "auto" while the caller's own extras still mean
     "the user owns it" (None) -- and the spec-mode compare mismatched forever."""
-    assert _restore_requested_spec_mode(
-        requested_extras = ["--spec-type", "draft-simple", "--model-draft", "/m/d.gguf"]
-    ) is None
+    assert (
+        _restore_requested_spec_mode(
+            requested_extras = ["--spec-type", "draft-simple", "--model-draft", "/m/d.gguf"]
+        )
+        is None
+    )
 
 
 def test_the_restore_is_scoped_to_a_drop_that_owned_spec_type():
