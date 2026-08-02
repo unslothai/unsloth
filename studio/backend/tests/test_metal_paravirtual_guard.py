@@ -305,7 +305,89 @@ def test_gpu_companions_are_pinned_to_cpu_too():
     assert (
         '"--spec-draft-ngl", "0"' not in src
     ), "hardcoding the flag defeats the capability probe on builds that only have -ngld"
-    assert 'server_caps["spec_draft_ngl_flag"]' in src
+    assert "_paravirtual_draft_ngl_flag(server_caps)" in src
+
+
+@pytest.mark.parametrize(
+    "caps, drops, pins",
+    [
+        # Conclusive probe, flag genuinely absent: drop, as before.
+        ({"supports_no_mmproj_offload": False, "mtp_probe_inconclusive": False}, True, False),
+        # Conclusive probe, flag present: pin, as before.
+        ({"supports_no_mmproj_offload": True, "mtp_probe_inconclusive": False}, False, True),
+        # Probe never answered: must NOT drop. --no-mmproj-offload is llama.cpp
+        # b5178 and the base argv already needs b6325, so a build that can start
+        # here always has it; a false capability means the probe failed, and
+        # dropping vision for that would be a self-inflicted outage.
+        ({"supports_no_mmproj_offload": False, "mtp_probe_inconclusive": True}, False, True),
+    ],
+)
+def test_a_failed_probe_does_not_cost_the_user_their_projector(caps, drops, pins):
+    mmproj, vision, _warnings = _mmproj_gate(
+        paravirtual = True, caps = caps, mmproj = "/m/mmproj-F32.gguf", is_vision = True
+    )
+    assert (mmproj is None) is drops
+    assert (vision is False) is drops
+    assert llama_cpp._paravirtual_mmproj_pinnable(caps) is pins
+
+
+@pytest.mark.parametrize(
+    "caps, expected",
+    [
+        ({"spec_draft_ngl_flag": "--spec-draft-ngl", "mtp_probe_inconclusive": False},
+         "--spec-draft-ngl"),
+        ({"spec_draft_ngl_flag": "--gpu-layers-draft", "mtp_probe_inconclusive": False},
+         "--gpu-layers-draft"),
+        # Unanswered probe falls back to the 2023 spelling rather than reading as
+        # unpinnable, so a failed probe costs speculation nothing.
+        ({"spec_draft_ngl_flag": None, "mtp_probe_inconclusive": True}, "--gpu-layers-draft"),
+        # Conclusive and genuinely absent stays unpinnable.
+        ({"spec_draft_ngl_flag": None, "mtp_probe_inconclusive": False}, None),
+    ],
+)
+def test_the_drafter_pin_falls_back_before_it_gives_up(caps, expected):
+    assert llama_cpp._paravirtual_draft_ngl_flag(caps) == expected
+
+
+def test_a_failed_probe_does_not_cost_the_user_their_drafter():
+    """The drop half of the same decision: an unanswered probe must not drop."""
+    drafter, _extras, _warnings = _drafter_gate(
+        paravirtual = True,
+        caps = {"spec_draft_ngl_flag": None, "mtp_probe_inconclusive": True},
+        drafter = "/m/mtp-model.gguf",
+        extra_args = None,
+    )
+    assert drafter == "/m/mtp-model.gguf"
+
+
+@pytest.mark.parametrize(
+    "extras, kept",
+    [
+        # A GPU-bound override survives --gpu-layers 0: llama.cpp applies it while
+        # picking each weight's buffer type, before any layer is assigned.
+        (["-ot", ".*=Metal"], False),
+        (["-ot=.*=Metal"], False),
+        (["-otd", ".*=Metal"], False),
+        (["--override-tensor", "blk.*=Metal"], False),
+        (["-ot", "exps=CPU,attn=Metal"], False),
+        # Negatives: a CPU target moves weights the same way this fallback does,
+        # so stripping it would slow the load it is meant to rescue.
+        (["-ot", "exps=CPU"], True),
+        (["--override-tensor", "blk.*=CPU"], True),
+        (["--top-k", "40"], True),
+    ],
+)
+def test_only_gpu_bound_tensor_overrides_are_dropped(extras, kept):
+    out = llama_cpp._paravirtual_strip_gpu_overrides(extras)
+    assert (out == list(extras)) is kept
+
+
+def test_the_override_strip_leaves_other_extras_alone():
+    """Negative: stripping must not disturb neighbouring arguments."""
+    out = llama_cpp._paravirtual_strip_gpu_overrides(
+        ["--top-k", "40", "-ot", ".*=Metal", "--temp", "0.7"]
+    )
+    assert out == ["--top-k", "40", "--temp", "0.7"]
 
 
 def _load_model_tree() -> ast.AST:
@@ -459,7 +541,10 @@ def _mmproj_gate(
             break
     assert body is not None, "the projector-resolution block moved out of load_model"
     log = _FakeLogger()
+    # Seed from the real module so module-level helpers resolve, rather than
+    # each harness re-listing them by hand and breaking when one is added.
     scope = {
+        **vars(llama_cpp),
         "extra_args": None,
         "extra_args_disable_mmproj": lambda _a: False,
         "self": types.SimpleNamespace(
@@ -574,7 +659,10 @@ def _drafter_gate(
             break
     assert body is not None, "the unpinnable-drafter block moved out of load_model"
     log = _FakeLogger()
+    # Seed from the real module so module-level helpers resolve, rather than
+    # each harness re-listing them by hand and breaking when one is added.
     scope = {
+        **vars(llama_cpp),
         "_paravirtual_cpu_forced": paravirtual,
         "server_caps": caps,
         "launch_mtp_draft_path": drafter,
@@ -643,11 +731,15 @@ def test_the_env_the_child_inherits_is_dropped_too():
     draft-simple would outlive the model that was just removed."""
     src = _load_model_source()
     gate_at = src.index("if _pv_draft_unpinnable:\n                    for _pv_spec_var in (")
-    block = src[gate_at : gate_at + 400]
+    block = src[gate_at : gate_at + 900]
     for var in (
         "LLAMA_ARG_SPEC_DRAFT_MODEL",
         "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
         "LLAMA_ARG_SPEC_TYPE",
+        # Pre-b8955 spellings, live on any build between the launchable floor and
+        # the rename; without them the drop leaves the drafter in the child env.
+        "LLAMA_ARG_MODEL_DRAFT",
+        "LLAMA_ARG_HFD_REPO",
     ):
         assert var in block, f"{var} survives the drafter drop into the child env"
     assert "env.pop(_pv_spec_var, None)" in block
@@ -740,7 +832,9 @@ def test_the_drafter_drop_precedes_the_flags_it_feeds():
     assert gate_at < src.index("cmd.extend(str(a) for a in _emit_extra_args)")
     # The CPU pin is the other half of the same decision, so it can only be reached
     # on a build that advertises a flag to pin with.
-    assert gate_at < src.index('_pv_draft_cpu_pin = [str(server_caps["spec_draft_ngl_flag"]), "0"]')
+    assert gate_at < src.index(
+        '_pv_draft_cpu_pin = [str(_paravirtual_draft_ngl_flag(server_caps)), "0"]'
+    )
 
 
 # ── a pass-through GPU split mode must not fail the CPU-only load ────

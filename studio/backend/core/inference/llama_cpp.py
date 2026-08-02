@@ -2067,6 +2067,97 @@ def _metal_device_is_paravirtual() -> bool:
     return False
 
 
+def _paravirtual_probe_answered(server_caps: Mapping[str, object]) -> bool:
+    """False when the --help probe failed, so every capability read as absent.
+
+    Both companion flags predate the oldest build Studio can launch at all
+    (--no-mmproj-offload is llama.cpp b5178, --gpu-layers-draft is from 2023, and
+    the base argv already requires b6325), so "capability missing" never really
+    means the build lacks it. It means the probe did not answer, which is easy:
+    one malformed inherited LLAMA_ARG_* makes llama-server --help exit non-zero,
+    and the all-false result is cached for the rest of the process. Dropping the
+    projector or the drafter on that would be a self-inflicted outage, so the
+    drops require a conclusive probe and the pins cover the unanswered case.
+    """
+    return not server_caps.get("mtp_probe_inconclusive")
+
+
+def _paravirtual_draft_ngl_flag(server_caps: Mapping[str, object]) -> Optional[str]:
+    """The draft-layer flag to pin with, or None only when the build truly lacks one."""
+    flag = server_caps.get("spec_draft_ngl_flag")
+    if flag:
+        return str(flag)
+    # Unanswered probe: fall back to the spelling every launchable build has had
+    # since 2023 rather than treating the drafter as unpinnable.
+    if not _paravirtual_probe_answered(server_caps):
+        return "--gpu-layers-draft"
+    return None
+
+
+def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
+    """True when --no-mmproj-offload can be emitted, including on an unanswered probe."""
+    return bool(
+        server_caps.get("supports_no_mmproj_offload")
+        or not _paravirtual_probe_answered(server_caps)
+    )
+
+
+_OVERRIDE_TENSOR_FLAGS: frozenset = frozenset({
+    "-ot", "--override-tensor",
+    "-otd", "--override-tensor-draft", "--spec-draft-override-tensor",
+})
+
+
+def _paravirtual_strip_gpu_overrides(
+    extra_args: Optional[Iterable[str]],
+) -> Optional[List[str]]:
+    """Drop --override-tensor entries that place weights back on the corrupt device.
+
+    ``-ot`` is the one placement flag ``--gpu-layers 0`` cannot answer: llama.cpp
+    applies the override while selecting each weight's buffer type, before any
+    layer is assigned to a device, so ``-ot ".*=Metal"`` puts weights on the
+    virtualised GPU no matter what the layer count says. It also accumulates
+    rather than replacing, so appending a later flag cannot neutralise it; the
+    entry has to go. ``-otd`` does the same for the drafter and would defeat the
+    draft-layer pin.
+
+    Only non-CPU targets are dropped. ``-ot exps=CPU`` is the common and useful
+    spelling, it moves weights the same way this fallback does, and stripping it
+    would slow the very load it is meant to rescue.
+    """
+    if not extra_args:
+        return extra_args if extra_args is None else list(extra_args)
+    args = [str(a) for a in extra_args]
+    out: List[str] = []
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        base, _, inline = tok.partition("=")
+        if base in _OVERRIDE_TENSOR_FLAGS:
+            value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
+            targets = [
+                part.rsplit("=", 1)[-1].strip().lower()
+                for part in value.split(",")
+                if "=" in part
+            ]
+            if targets and all(t == "cpu" for t in targets):
+                out.append(tok)
+                if not inline and i + 1 < len(args):
+                    out.append(args[i + 1])
+            else:
+                logger.warning(
+                    "Dropping %s %s: this Mac's Metal device is virtualised, so an "
+                    "override that keeps weights on it would return corrupt output.",
+                    base,
+                    value,
+                )
+            i += 1 if inline else 2
+            continue
+        out.append(tok)
+        i += 1
+    return out
+
+
 def _paravirtual_split_mode_pin(extra_args: Optional[Iterable[str]]) -> List[str]:
     """Flags that neutralise a pass-through ``--split-mode`` on a virtualised Mac.
 
@@ -2170,7 +2261,15 @@ def _extra_args_mtp_draft_path(
     if found is not None:
         return found
     e = os.environ if env is None else env
-    return e.get("LLAMA_ARG_SPEC_DRAFT_MODEL") or e.get("LLAMA_ARG_SPEC_DRAFT_HF_REPO") or None
+    return (
+        e.get("LLAMA_ARG_SPEC_DRAFT_MODEL")
+        or e.get("LLAMA_ARG_SPEC_DRAFT_HF_REPO")
+        # Pre-b8955 spellings, still live on builds between the launchable floor
+        # (2025-08-30) and the rename (2026-04-28).
+        or e.get("LLAMA_ARG_MODEL_DRAFT")
+        or e.get("LLAMA_ARG_HFD_REPO")
+        or None
+    )
 
 
 def _extra_args_draft_cache_types(
@@ -7541,6 +7640,10 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                             strip_offload = True,
                         )
+                        # strip_offload only covers the layer-count family; an
+                        # --override-tensor aimed at Metal survives it and places
+                        # weights before any layer assignment happens.
+                        _pv_stripped = _paravirtual_strip_gpu_overrides(_pv_stripped)
                         if _pv_stripped != list(extra_args):
                             logger.warning(
                                 "Dropping offload flags from extra args on a "
@@ -8013,9 +8116,18 @@ class LlamaCppBackend:
                 # projector on the corrupt device or no projector, so drop it: this
                 # fallback exists to stop corrupt output, and silently encoding every
                 # image from garbage is the failure it is meant to prevent.
+                # Only when the probe actually answered. --no-mmproj-offload is from
+                # llama.cpp b5178 and the base argv already needs b6325, so a build
+                # that can start here always has it: a false capability means the
+                # --help probe failed, not that the flag is missing. Dropping vision
+                # on a failed probe would be a self-inflicted outage, and the probe
+                # is easy to fail (one malformed inherited LLAMA_ARG_* makes --help
+                # exit non-zero, and the all-false result is cached for the process).
+                # The pin below covers that case instead.
                 _pv_mmproj_unpinnable = bool(
                     launch_mmproj_path
                     and _paravirtual_cpu_forced
+                    and _paravirtual_probe_answered(server_caps)
                     and not server_caps.get("supports_no_mmproj_offload")
                 )
                 if _pv_mmproj_unpinnable:
@@ -9309,9 +9421,14 @@ class LlamaCppBackend:
                 # already pinned the drafter themselves keeps it: the probe only
                 # decides whether Unsloth can emit the flag, and their -ngld 0 /
                 # --spec-draft-device cpu puts the drafter on the CPU regardless.
+                # Same reasoning as the projector drop: --gpu-layers-draft has
+                # existed since 2023, so no build that can start here truly lacks a
+                # draft-layer flag, and a missing one means the probe failed. On an
+                # unanswered probe fall back to that legacy spelling and pin rather
+                # than drop, so a failed probe costs nothing.
                 _pv_draft_unpinnable = bool(
                     _paravirtual_cpu_forced
-                    and not server_caps.get("spec_draft_ngl_flag")
+                    and not _paravirtual_draft_ngl_flag(server_caps)
                     and (launch_mtp_draft_path or _extra_args_mtp_draft_path(extra_args))
                     and not _extra_args_draft_offloaded_to_cpu(extra_args)
                 )
@@ -9378,9 +9495,9 @@ class LlamaCppBackend:
                 if (
                     _paravirtual_cpu_forced
                     and _extra_args_mtp_draft_path([*spec_flags, *(extra_args or [])]) is not None
-                    and server_caps.get("spec_draft_ngl_flag")
+                    and _paravirtual_draft_ngl_flag(server_caps)
                 ):
-                    _pv_draft_cpu_pin = [str(server_caps["spec_draft_ngl_flag"]), "0"]
+                    _pv_draft_cpu_pin = [str(_paravirtual_draft_ngl_flag(server_caps)), "0"]
                     logger.warning(
                         "Pinning the speculative drafter to CPU: this Mac's Metal "
                         "device is virtualised."
@@ -9502,12 +9619,14 @@ class LlamaCppBackend:
                     # true. So on a virtualised Metal device the vision encoder
                     # would keep running the corrupt path the CPU pin above exists
                     # to avoid, and every image would be encoded from garbage.
-                    # Probe-gated, and a build without the flag never gets here: the
+                    # A build that conclusively lacks the flag never gets here: the
                     # projector is dropped up front rather than served on the corrupt
-                    # device. Deferred past the pass-through extras like the drafter
-                    # pin, since --mmproj-offload is a real positive flag a user can
-                    # pass and llama.cpp is last-wins.
-                    if _paravirtual_cpu_forced and server_caps.get("supports_no_mmproj_offload"):
+                    # device. An inconclusive probe still pins, since every build that
+                    # can start here has had the flag since b5178. Deferred past the
+                    # pass-through extras like the drafter pin, since --mmproj-offload
+                    # is a real positive flag a user can pass and llama.cpp is
+                    # last-wins.
+                    if _paravirtual_cpu_forced and _paravirtual_mmproj_pinnable(server_caps):
                         _pv_mmproj_cpu_pin = ["--no-mmproj-offload"]
                         logger.warning(
                             "Disabling mmproj GPU offload: this Mac's Metal device "
@@ -9662,6 +9781,11 @@ class LlamaCppBackend:
                         "LLAMA_ARG_SPEC_DRAFT_MODEL",
                         "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
                         "LLAMA_ARG_SPEC_TYPE",
+                        # Pre-b8955 spellings. Those names arrived 2026-04-28 and the
+                        # launchable floor is 2025-08-30, so a build in that window
+                        # reads these instead and would keep the drafter.
+                        "LLAMA_ARG_MODEL_DRAFT",
+                        "LLAMA_ARG_HFD_REPO",
                     ):
                         env.pop(_pv_spec_var, None)
 
@@ -9674,8 +9798,19 @@ class LlamaCppBackend:
                 # on the command line (with --no-mmproj-offload), so on this device an
                 # inherited one is only ever the corrupt path.
                 if _paravirtual_cpu_forced:
+                    # LLAMA_ARG_OVERRIDE_TENSOR is the one placement var --gpu-layers 0
+                    # cannot answer: the override is applied during weight-buft
+                    # selection, before any layer is assigned to a device, so it puts
+                    # weights back on the corrupt Metal buffer on its own.
                     for _pv_mmproj_var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
                         env.pop(_pv_mmproj_var, None)
+                    # Same CPU-target rule as the argv strip, so an inherited
+                    # exps=CPU override keeps working and only a GPU-bound one goes.
+                    _pv_env_ot = env.get("LLAMA_ARG_OVERRIDE_TENSOR")
+                    if _pv_env_ot and not _paravirtual_strip_gpu_overrides(
+                        ["-ot", str(_pv_env_ot)]
+                    ):
+                        env.pop("LLAMA_ARG_OVERRIDE_TENSOR", None)
 
                 # Windows + full offload: PASSIVE OMP + 2 threads stop
                 # spin-wait burning CPU. CPU/partial offload keeps default
