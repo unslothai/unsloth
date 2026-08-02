@@ -1357,6 +1357,9 @@ export const hi = {
       endPlaceholder: "समाप्त",
       clear: "साफ़ करें",
       dropFileOrClick: "यहां 1 फ़ाइल छोड़ें या अपलोड करने के लिए क्लिक करें",
+      uploadDetails: "अपलोड विवरण",
+      uploadDetailsTooltip:
+        "प्रति फ़ाइल अधिकतम {limit}। PDF, DOCX और TXT ट्रेनिंग के लिए तैयार डेटासेट नहीं हैं, इसलिए पहले उन्हें रेसिपी में बदलें।",
       viewDataset: "डेटासेट देखें",
       uploadFailed: "अपलोड विफल",
       unknownError: "अज्ञात त्रुटि",

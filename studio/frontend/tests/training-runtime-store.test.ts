@@ -24,3 +24,46 @@ test("an unconfirmed start remains pending without inventing a job id", () => {
   assert.equal(pending.isStarting, false);
   assert.equal(isTrainingStartPending(pending), true);
 });
+
+test("start-pending protection spans start synchronization and active phases", () => {
+  assert.equal(
+    isTrainingStartPending({
+      phase: "idle",
+      isStarting: false,
+      isTrainingRunning: false,
+    }),
+    false,
+  );
+  assert.equal(
+    isTrainingStartPending({
+      phase: "idle",
+      isStarting: true,
+      isTrainingRunning: false,
+    }),
+    true,
+  );
+  assert.equal(
+    isTrainingStartPending({
+      phase: "configuring",
+      isStarting: false,
+      isTrainingRunning: false,
+    }),
+    true,
+  );
+  assert.equal(
+    isTrainingStartPending({
+      phase: "training",
+      isStarting: false,
+      isTrainingRunning: false,
+    }),
+    true,
+  );
+  assert.equal(
+    isTrainingStartPending({
+      phase: "error",
+      isStarting: false,
+      isTrainingRunning: false,
+    }),
+    false,
+  );
+});

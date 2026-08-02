@@ -1365,6 +1365,9 @@ export const ptBR = {
       endPlaceholder: "Fim",
       clear: "Limpar",
       dropFileOrClick: "Solte 1 arquivo aqui ou clique para fazer upload",
+      uploadDetails: "Detalhes do upload",
+      uploadDetailsTooltip:
+        "Até {limit} por arquivo. PDF, DOCX e TXT não são datasets prontos para treinamento; converta-os primeiro em Receitas.",
       viewDataset: "Visualizar dataset",
       uploadFailed: "Falha no envio",
       unknownError: "Erro desconhecido",

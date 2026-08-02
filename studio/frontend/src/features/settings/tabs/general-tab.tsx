@@ -15,7 +15,10 @@ import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
-import { emitTrainingRunsChanged } from "@/features/training";
+import {
+  emitTrainingRunsChanged,
+  TRAINING_UI_PREFERENCE_KEYS,
+} from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
   useShowLlamaUpdateBanner,
@@ -110,6 +113,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_training_config_v1",
   "unsloth_prev_max_steps",
   "unsloth_prev_save_steps",
+  ...TRAINING_UI_PREFERENCE_KEYS,
   // Profile personalization
   "unsloth_user_profile",
   // Guided tour flags

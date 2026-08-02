@@ -94,7 +94,7 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// A Tauri quit never fires beforeunload, so the frontend mirrors run state here.
+/// A Tauri quit never fires beforeunload, so the frontend mirrors quit protection here.
 pub type TrainingActivityState = std::sync::Arc<std::sync::Mutex<bool>>;
 
 fn new_training_activity_state() -> TrainingActivityState {
@@ -108,7 +108,7 @@ fn set_training_active(state: tauri::State<'_, TrainingActivityState>, active: b
     }
 }
 
-/// Ask before quitting mid-training (true to proceed). Tray Quit only, as below.
+/// Ask before quitting while training is starting or active (true to proceed).
 fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -120,8 +120,8 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     }
     app.dialog()
         .message(
-            "Training is still running. Quitting now stops the run and the \
-             progress since the last checkpoint is lost.",
+            "Training is starting or still running. Quitting now can stop the \
+             run and lose progress since the last checkpoint.",
         )
         .kind(MessageDialogKind::Warning)
         .title("Training in progress")

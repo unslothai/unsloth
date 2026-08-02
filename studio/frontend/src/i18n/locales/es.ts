@@ -1388,6 +1388,9 @@ export const es = {
       endPlaceholder: "Fin",
       clear: "Borrar",
       dropFileOrClick: "Suelta 1 archivo aquí o haz clic para subir",
+      uploadDetails: "Detalles de la subida",
+      uploadDetailsTooltip:
+        "Hasta {limit} por archivo. Los archivos PDF, DOCX y TXT no son conjuntos de datos listos para entrenar, así que conviértelos primero en Recetas.",
       viewDataset: "Ver conjunto de datos",
       uploadFailed: "La subida falló",
       unknownError: "Error desconocido",

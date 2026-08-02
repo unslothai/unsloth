@@ -1312,6 +1312,8 @@ export const ja = {
       endPlaceholder: "終了行",
       clear: "クリア",
       dropFileOrClick: "ここにファイルをドロップするか、クリックしてアップロード",
+      uploadDetails: "アップロードの詳細",
+      uploadDetailsTooltip: "1ファイルあたり最大 {limit}。PDF、DOCX、TXT はそのままではトレーニング用データセットとして使用できないため、先にレシピで変換してください。",
       viewDataset: "データセットを表示",
       uploadFailed: "アップロードに失敗しました",
       unknownError: "不明なエラー",

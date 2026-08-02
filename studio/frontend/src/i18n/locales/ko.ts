@@ -1350,6 +1350,9 @@ export const ko = {
       endPlaceholder: "끝",
       clear: "지우기",
       dropFileOrClick: "파일 1개를 여기에 놓거나 클릭하여 업로드하세요",
+      uploadDetails: "업로드 세부정보",
+      uploadDetailsTooltip:
+        "파일당 최대 {limit}입니다. PDF, DOCX 및 TXT는 바로 학습할 수 있는 데이터셋이 아니므로 먼저 레시피에서 변환하세요.",
       viewDataset: "데이터셋 보기",
       uploadFailed: "업로드에 실패했습니다",
       unknownError: "알 수 없는 오류",

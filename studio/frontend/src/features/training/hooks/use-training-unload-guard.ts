@@ -3,6 +3,7 @@
 
 import { isTauri } from "@/lib/api-base";
 import { useEffect } from "react";
+import { subscribeToTrainingActivity } from "../lib/training-activity";
 import {
   isTrainingStartPending,
   useTrainingRuntimeStore,
@@ -19,7 +20,7 @@ function publishTrainingActive(active: boolean): void {
 }
 
 /**
- * Mounts a beforeunload guard that warns the user if training is running.
+ * Mounts a beforeunload guard that warns while training is starting or active.
  * Call once at the app root.
  */
 export function useTrainingUnloadGuard() {
@@ -42,12 +43,7 @@ export function useTrainingUnloadGuard() {
   }, []);
 
   useEffect(() => {
-    publishTrainingActive(useTrainingRuntimeStore.getState().isTrainingRunning);
-    return useTrainingRuntimeStore.subscribe((state, previous) => {
-      if (state.isTrainingRunning !== previous.isTrainingRunning) {
-        publishTrainingActive(state.isTrainingRunning);
-      }
-    });
+    return subscribeToTrainingActivity(publishTrainingActive);
   }, []);
 }
 

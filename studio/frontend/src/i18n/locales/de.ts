@@ -1396,6 +1396,9 @@ export const de = {
       endPlaceholder: "Ende",
       clear: "Leeren",
       dropFileOrClick: "1 Datei hier ablegen oder zum Hochladen klicken",
+      uploadDetails: "Upload-Details",
+      uploadDetailsTooltip:
+        "Bis zu {limit} pro Datei. PDF-, DOCX- und TXT-Dateien sind keine trainingsfertigen Datensätze; konvertieren Sie sie daher zuerst in den Lernrezepten.",
       viewDataset: "Datensatz ansehen",
       uploadFailed: "Upload fehlgeschlagen",
       unknownError: "Unbekannter Fehler",

@@ -1366,6 +1366,9 @@ export const ru = {
       endPlaceholder: "Конец",
       clear: "Очистить",
       dropFileOrClick: "Перетащите 1 файл сюда или нажмите для загрузки",
+      uploadDetails: "Сведения о загрузке",
+      uploadDetailsTooltip:
+        "До {limit} на файл. PDF, DOCX и TXT не являются готовыми датасетами для обучения, поэтому сначала преобразуйте их в разделе «Рецепты».",
       viewDataset: "Просмотреть датасет",
       uploadFailed: "Загрузка не удалась",
       unknownError: "Неизвестная ошибка",

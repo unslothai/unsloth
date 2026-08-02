@@ -1397,6 +1397,9 @@ export const fr = {
       endPlaceholder: "Fin",
       clear: "Effacer",
       dropFileOrClick: "Déposez 1 fichier ici ou cliquez pour téléverser",
+      uploadDetails: "Détails du téléversement",
+      uploadDetailsTooltip:
+        "Jusqu’à {limit} par fichier. Les fichiers PDF, DOCX et TXT ne sont pas des jeux de données prêts pour l’entraînement ; convertissez-les d’abord dans les Recettes.",
       viewDataset: "Voir le jeu de données",
       uploadFailed: "Échec du téléversement",
       unknownError: "Erreur inconnue",

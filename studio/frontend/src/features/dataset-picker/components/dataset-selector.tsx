@@ -32,6 +32,7 @@ import {
 } from "@/features/hub";
 import {
   cacheLocalPathMatchesSelection,
+  TRAINING_DATASET_PICKER_TAB_STORAGE_KEY,
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
@@ -47,8 +48,6 @@ import {
   DatasetDeviceList,
   DatasetHubList,
 } from "./dataset-selector-lists";
-
-const DATASET_PICKER_TAB_STORAGE_KEY = "unsloth.studio.train.datasetPickerTab";
 
 function resolveExactDatasetDeviceItem(
   query: string,
@@ -94,7 +93,7 @@ export function DatasetSelector() {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const picker = usePickerState({
-    storageKey: DATASET_PICKER_TAB_STORAGE_KEY,
+    storageKey: TRAINING_DATASET_PICKER_TAB_STORAGE_KEY,
     hfToken,
     online,
   });

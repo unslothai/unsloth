@@ -1349,6 +1349,9 @@ export const ar = {
       endPlaceholder: "النهاية",
       clear: "مسح",
       dropFileOrClick: "أفلت ملفًا واحدًا هنا أو انقر للتحميل",
+      uploadDetails: "تفاصيل التحميل",
+      uploadDetailsTooltip:
+        "حتى {limit} لكل ملف. ملفات PDF وDOCX وTXT ليست مجموعات بيانات جاهزة للتدريب، لذا حوّلها أولًا في وصفات التعلّم.",
       viewDataset: "عرض مجموعة البيانات",
       uploadFailed: "فشل التحميل",
       unknownError: "خطأ غير معروف",

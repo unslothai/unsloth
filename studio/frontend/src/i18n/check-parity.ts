@@ -133,6 +133,8 @@ const requiredOverlayPrefixes = [
 const requiredOverlayKeys = new Set([
   "studio.dataset.sourceAriaLabel",
   "studio.dataset.streamingInfoAriaLabel",
+  "studio.dataset.uploadDetails",
+  "studio.dataset.uploadDetailsTooltip",
 ]);
 
 function requiresOverlay(key: string): boolean {

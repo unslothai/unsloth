@@ -46,6 +46,7 @@ import {
   inferTrainingModelTypeFromFlags,
   isLocalTrainingModelSelection,
   isTrainingModelTypeSupportedOnDevice,
+  TRAINING_MODEL_PICKER_TAB_STORAGE_KEY,
   trainingModelMatchesTypeConstraint,
   trainingModelTypeFlagsFromMetadata,
   useTrainingConfigStore,
@@ -83,8 +84,6 @@ import {
   toCachedTrainModelDeviceItem,
   toLocalTrainModelDeviceItem,
 } from "./train-model-picker-view-model";
-
-const MODEL_PICKER_TAB_STORAGE_KEY = "unsloth.studio.train.modelPickerTab";
 
 function explicitLocalPath(path: string): string {
   const trimmed = path.trim();
@@ -318,7 +317,7 @@ export function TrainModelSelector({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const picker = usePickerState({
-    storageKey: MODEL_PICKER_TAB_STORAGE_KEY,
+    storageKey: TRAINING_MODEL_PICKER_TAB_STORAGE_KEY,
     hfToken,
     online,
   });

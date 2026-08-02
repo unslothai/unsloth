@@ -1305,6 +1305,9 @@ export const zhCN = {
       endPlaceholder: "结束",
       clear: "清除",
       dropFileOrClick: "拖放 1 个文件到此处，或点击上传",
+      uploadDetails: "上传详情",
+      uploadDetailsTooltip:
+        "每个文件最大 {limit}。PDF、DOCX 和 TXT 不是可直接用于训练的数据集，请先在配方中进行转换。",
       viewDataset: "查看数据集",
       uploadFailed: "上传失败",
       unknownError: "未知错误",
