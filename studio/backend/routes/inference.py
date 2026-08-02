@@ -15307,15 +15307,39 @@ async def chat_count_tokens(
     )
     # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
     _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
-    # Never on a count: _select_request_tools would reach get_enabled_mcp_tools, which can spawn
-    # stdio MCP servers, write cache and cooloff state, and block for a whole probe timeout on a
-    # server that is down. A background count must not do host work a completion did not ask for.
-    # The cost is that MCP schemas go unpriced, so the bar undercounts while MCP tools are on.
+    # Same rule the completion path resolves, so the two agree on whether MCP schemas are part of
+    # the prompt at all. MCP alone turns tools on there, hence the widened branch below.
+    from state.tool_policy import get_tool_policy as _get_tool_policy_ct
+
+    _mcp_on = (
+        not _client_disabled_tool_calls
+        and bool(getattr(payload, "mcp_enabled", False))
+        and _get_tool_policy_ct() is not False
+    )
+    # Never discovery on a count: get_enabled_mcp_tools spawns stdio MCP servers, writes cache and
+    # cool-off state, and blocks for a whole probe timeout on a server that is down. A background
+    # count must not do host work a completion did not ask for. So the schemas come from the cache
+    # that path fills, and a count that cannot see all of them is declined rather than published
+    # short, because an undercount tells the user room exists that the next request will not find.
+    # _mcp_allowed stays False for exactly that reason: it is what would reach the network.
     _mcp_allowed = False
-    if not _takes_passthrough and _tools_on and llama_backend.supports_tools:
+    _mcp_tools: list[dict] = []
+    if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
+        from core.inference.tools import cached_mcp_tools
+
+        _mcp_tools, _mcp_complete = cached_mcp_tools()
+        if not _mcp_complete:
+            raise HTTPException(
+                status_code = 503,
+                detail = "Cannot count tokens until enabled MCP tools have been discovered.",
+            )
+    if not _takes_passthrough and (_tools_on or _mcp_on) and llama_backend.supports_tools:
         tools_to_use = await _select_request_tools(
             payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
         )
+        # Appended, not passed through mcp_allowed, and in that same position, so the rendered
+        # order matches what _select_request_tools would have produced.
+        tools_to_use = tools_to_use + _mcp_tools
         if tools_to_use:
             openai_tools = tools_to_use
             openai_messages = _append_to_system_message(

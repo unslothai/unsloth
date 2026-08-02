@@ -3548,6 +3548,114 @@ def test_chat_count_tokens_refuses_a_generation_that_starts_mid_count(monkeypatc
     assert counted == {}, "the tokenizer must not be reached"
 
 
+def _enabled_mcp_server(tmp_path, monkeypatch, *, cached = None, cooloff = False):
+    """One enabled MCP server, with its discovery cache in a known state.
+
+    Both cache dicts are module globals shared across the whole test session, so they are
+    replaced rather than mutated: a leftover entry would make an "undiscovered" case look
+    discovered and quietly pass.
+    """
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "S", url = "http://mcp.test/sse", is_enabled = True
+    )
+    if cached is not None:
+        mcp_client.cache_tools("s1", cached)
+    if cooloff:
+        mcp_client.record_probe_failure("s1")
+    # Any probe at all is a failure of the whole design: a count must not reach the network.
+    async def _no_probes(**_kwargs):
+        raise AssertionError("a count must never probe an MCP server")
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", _no_probes)
+
+
+MCP_TOOL_PAYLOAD = [{"name": "lookup", "description": "d", "inputSchema": {"type": "object"}}]
+
+
+def test_cached_mcp_tools_reads_the_cache_without_probing(tmp_path, monkeypatch):
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch, cached = MCP_TOOL_PAYLOAD)
+    specs, complete = cached_mcp_tools()
+    assert complete is True
+    assert [spec["function"]["name"] for spec in specs] == ["mcp__s1__lookup"]
+
+
+def test_cached_mcp_tools_reports_an_undiscovered_server_as_incomplete(tmp_path, monkeypatch):
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    specs, complete = cached_mcp_tools()
+    assert specs == []
+    assert complete is False, (
+        "a completion would probe this server and render its schemas, so a count that skips "
+        "them is short, not exact"
+    )
+
+
+def test_cached_mcp_tools_counts_a_cooloff_server_as_complete(tmp_path, monkeypatch):
+    # The completion path skips a server in its post-failure cool-off too, so rendering nothing
+    # for it matches the prompt exactly. Declining here would blank the bar over an agreement.
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch, cooloff = True)
+    specs, complete = cached_mcp_tools()
+    assert specs == []
+    assert complete is True
+
+
+def test_chat_count_tokens_declines_an_undiscovered_mcp_server(tmp_path, monkeypatch):
+    # Undercounting is the dangerous direction: it tells the user room exists that the next
+    # request will not find. Discovery is not an option on this path, so decline instead.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    payload = _count_request([{"role": "user", "content": "hello"}], mcp_enabled = True)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "mcp" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached with a short tool list"
+
+
+def test_chat_count_tokens_prices_cached_mcp_schemas(tmp_path, monkeypatch):
+    # MCP alone turns tools on for the completion, so the count has to render them even with the
+    # built-in tools off, or the bar is short by a whole catalog.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch, cached = MCP_TOOL_PAYLOAD)
+    payload = _count_request(
+        [{"role": "user", "content": "hello"}], mcp_enabled = True, enabled_tools = []
+    )
+    body = _counted_body(payload)
+    assert body["input_tokens"] == 1234
+    names = [tool["function"]["name"] for tool in (counted.get("tools") or [])]
+    assert "mcp__s1__lookup" in names, (
+        "a cached MCP schema is in the completion's prompt, so it must be in the count"
+    )
+
+
+def test_chat_count_tokens_ignores_an_mcp_server_the_request_did_not_enable(tmp_path, monkeypatch):
+    # Control: the decline keys on the request asking for MCP, not on a server merely existing.
+    # Without mcp_enabled the completion renders no MCP schemas, so nothing is missing.
+    #
+    # tool_choice "none" would NOT be a control here: _explicit_studio_tool_loop_requested treats
+    # mcp_enabled as an explicit ask, so it does not disable tool calls and the completion still
+    # renders the catalog.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    body = _counted_body(_count_request([{"role": "user", "content": "hello"}]))
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must still be reached"
+
+
 def test_chat_count_tokens_refuses_image_messages(monkeypatch):
     # Images become a short /apply-template marker: refuse rather than undercount, before the switch.
     switched, counted = _count_tokens_backend(monkeypatch, count = 1234)

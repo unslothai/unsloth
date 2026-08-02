@@ -176,6 +176,10 @@ __STORE_REDUCERS__
 
 export const useChatRuntimeStore: any = {
   getState: () => ({ ...state, ...actions }),
+  // The sliced load paths write straight to the store as zustand allows, so the fake needs the
+  // same door. Merge, like the real setState: a replacing one would drop the seeded fixture.
+  setState: (patch: any) =>
+    Object.assign(state, typeof patch === "function" ? patch(state) : patch),
 };
 
 export function seed(patch: any): void {
@@ -303,6 +307,7 @@ export function renderNewChatSwitch(props: any): void {
   const checkpoint = state.params.checkpoint;
   const ggufContextLength = state.ggufContextLength;
   const modelLoading = state.modelLoading;
+  const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
   const scope: any = {
     aui,
     isLoading,
@@ -310,6 +315,7 @@ export function renderNewChatSwitch(props: any): void {
     checkpoint,
     ggufContextLength,
     modelLoading,
+    runActive,
   };
   const effects: any[] = [
 __EFFECTS__
@@ -956,6 +962,50 @@ def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_tota
     assert (out["contextUsage"] or {}).get(
         "totalTokens"
     ) == expected_total, "a total for a branch that has since been emptied must not reach the bar"
+
+
+def test_a_new_chat_recount_is_retried_after_a_background_run_ends():
+    """New Chat during a background generation is a supported flow: the outgoing conversation
+    keeps streaming and only its own Stop button ends it. refreshContextUsage declines while
+    anything is running, and ThreadContextUsageRecount cannot pick the count up afterwards
+    because an unpersisted New Chat has no activeThreadId to key on. So this effect has to
+    observe the run itself, or the empty chat's bar stays blank for good once the run lands."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderNewChatSwitch, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{ runningByThreadId: {{ "thread-a": true }} }});
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const during = {{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }};
+
+            // The background run lands. In the app that store write re-renders the component.
+            seed({{ runningByThreadId: {{}} }});
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            console.log(JSON.stringify({{
+              during,
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["during"]["counts"] == 0, (
+        "a New Chat must not count while the outgoing conversation is still generating"
+    )
+    assert out["during"]["contextUsage"] is None
+    assert out["counts"] == 1, (
+        "the run ending must re-fire this effect: nothing else can, so without it the count is "
+        "not deferred but lost"
+    )
+    assert (out["contextUsage"] or {}).get("totalTokens") == 12
 
 
 @pytest.mark.parametrize(

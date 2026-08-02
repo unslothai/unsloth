@@ -1391,6 +1391,11 @@ function ThreadNewChatSwitch({
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  // Only the recount below reads this. New Chat itself leaves the outgoing thread running, and
+  // whether it is still going must not change what New Chat does.
+  const runActive = useChatRuntimeStore((s) =>
+    Object.values(s.runningByThreadId).some(Boolean),
+  );
   // The outgoing thread is not read here: New Chat leaves it running.
   useEffect(() => {
     if (isLoading) {
@@ -1410,14 +1415,24 @@ function ThreadNewChatSwitch({
   // the model too because on a RELOAD of /chat?new=<uuid> neither the checkpoint nor the window is
   // known until /api/inference/status answers. Only into a blank bar on an unpersisted thread.
   useEffect(() => {
-    if (isLoading || modelLoading || !checkpoint || ggufContextLength == null) {
+    if (
+      isLoading ||
+      modelLoading ||
+      runActive ||
+      !checkpoint ||
+      ggufContextLength == null
+    ) {
       return;
     }
     const store = useChatRuntimeStore.getState();
     if (store.activeThreadId != null || store.contextUsage != null) return;
     void refreshContextUsage();
     // nonce: a fresh New Chat click re-runs the effect above, which blanks the bar again.
-  }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce]);
+    // runActive: New Chat during a background run is a supported flow, and refreshContextUsage
+    // declines while anything is generating. ThreadContextUsageRecount cannot pick this up
+    // afterwards because an unpersisted New Chat has no activeThreadId, so without the run here
+    // the empty chat's bar would stay blank for good once the run ended.
+  }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce, runActive]);
 
   return null;
 }
