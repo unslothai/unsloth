@@ -316,3 +316,28 @@ def test_local_snapshot_resolution_takes_the_revision():
     wrapper = _function(tree, "_hub_repo_or_local_path")
     inner = _calls(wrapper, "_resolve_hub_repo_local_dir")
     assert inner and all(_revision_kwarg(c) is not None for c in inner)
+
+
+def test_the_vllm_drop_re_checks_fast_inference():
+    """`fast_inference` is turned off in that same block when vLLM is missing or the GPU
+    is too old, and the in-process load that then runs can honour the revision."""
+    function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")
+    clears = [
+        n
+        for n in ast.walk(function)
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == "revision" for t in n.targets)
+        and isinstance(n.value, ast.Constant)
+        and n.value.value is None
+    ]
+    assert clears, "the vLLM revision drop is gone"
+    for clear in clears:
+        guards = [
+            n
+            for n in ast.walk(function)
+            if isinstance(n, ast.If)
+            and n.lineno <= clear.lineno <= n.end_lineno
+            and "fast_inference" in ast.unparse(n.test)
+            and "revision" in ast.unparse(n.test)
+        ]
+        assert guards, "the drop must re-check fast_inference, not just the enclosing block"

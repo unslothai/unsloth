@@ -2338,7 +2338,9 @@ class FastLlamaModel:
                 raise RuntimeError(
                     "Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!"
                 )
-            if revision is not None:
+            # `fast_inference` may have just been turned off above, and the in-process
+            # load that then runs can honour the revision, so re-check it here.
+            if fast_inference and revision is not None:
                 # load_vllm takes no revision, so vLLM fetches the default branch. Pinning
                 # only the config and tokenizer would mix two refs in one model.
                 logger.warning_once(
