@@ -1749,6 +1749,19 @@ jobs:
         with:
           persist-credentials: false
 
+      # This workflow is in its own `paths` filter, so editing the bootstrap below
+      # always runs this job. No pytest workflow filters on this file, so running the
+      # guard here is what makes it fire on a workflow-only change.
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Guard the Pester bootstrap
+        shell: bash
+        run: |
+          python -m pip install --quiet pyyaml pytest
+          python -m pytest tests/studio/test_pester_bootstrap_hardening.py -q
+
       - name: Install Pester v5
         shell: pwsh
         run: |

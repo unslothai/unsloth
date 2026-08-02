@@ -49,23 +49,37 @@ def test_bootstrap_step_exists_and_runs_under_pwsh():
 def test_registration_failures_are_never_silenced():
     """The exact regression: a swallowed Register-PSRepository hid the real error."""
     run = _bootstrap_step()["run"]
+    seen = set()
     for line in run.splitlines():
         stripped = line.strip()
-        if stripped.startswith(("Register-PSRepository", "Register-PSResourceRepository")):
+        for cmd in ("Register-PSRepository", "Register-PSResourceRepository"):
+            if not stripped.startswith(cmd):
+                continue
+            seen.add(cmd)
             assert "SilentlyContinue" not in stripped, (
                 "registering the gallery must fail loudly, not silently leave it unregistered: "
                 f"{stripped}"
             )
+    # Without this, deleting both registrations would leave the loop with nothing
+    # to inspect and the test would pass on an unregistered-PSGallery runner.
+    assert seen == {"Register-PSRepository", "Register-PSResourceRepository"}, (
+        f"both registration paths must stay present, found {sorted(seen)}"
+    )
     assert "$ErrorActionPreference = 'Stop'" in run
 
 
 def test_psresourceget_is_preferred_over_the_nuget_bootstrap():
     run = _bootstrap_step()["run"]
-    assert "Install-PSResource" in run
+    # Match the invocation, not the `Get-Command Install-PSResource` probe: the probe
+    # alone would satisfy a bare substring check even with the branch deleted.
+    assert "Install-PSResource -Name" in run, "the PSResourceGet branch must actually install"
+    assert "$usePSResourceGet = $hasPSResourceGet" in run, (
+        "PSResourceGet must be the initial choice, not just a reachable fallback"
+    )
     # The legacy path may remain as a fallback, but must not be the only option.
-    assert run.index("Install-PSResource") < run.index(
-        "Install-Module"
-    ), "PSResourceGet must be tried before the nuget.exe-backed Install-Module path"
+    assert run.index("Install-PSResource -Name") < run.index("Install-Module "), (
+        "PSResourceGet must be tried before the nuget.exe-backed Install-Module path"
+    )
 
 
 def test_install_is_retried_and_then_fails_loudly():
@@ -78,17 +92,28 @@ def test_install_is_retried_and_then_fails_loudly():
 def test_a_failing_client_is_swapped_rather_than_retried_three_times():
     """PSGallery has served 500s to PSResourceGet while Install-Module kept working."""
     run = _bootstrap_step()["run"]
-    assert (
-        "if ($hasPSResourceGet) { $usePSResourceGet = -not $usePSResourceGet }" in run
-    ), "a failed attempt must swap install clients, not retry the same one"
+    assert "if ($hasPSResourceGet) { $usePSResourceGet = -not $usePSResourceGet }" in run, (
+        "a failed attempt must swap install clients, not retry the same one"
+    )
 
 
 def test_module_presence_is_verified_after_install():
     run = _bootstrap_step()["run"]
     assert "failed to import" in run, "expected a post-import version assertion"
-    assert (
-        "still not present after install" in run
-    ), "an install that reports success but leaves no usable module must fail"
+    assert "still not present after install" in run, (
+        "an install that reports success but leaves no usable module must fail"
+    )
+
+
+def test_the_guard_runs_from_the_workflow_it_guards():
+    """No pytest workflow filters on this file, so the job must run the guard itself."""
+    workflow = yaml.safe_load(_WORKFLOW.read_text(encoding = "utf-8"))
+    on = workflow.get("on") or workflow.get(True)
+    assert str(_WORKFLOW.relative_to(REPO_ROOT)) in on["pull_request"]["paths"]
+    steps = workflow["jobs"]["pester"]["steps"]
+    assert any(Path(__file__).name in (s.get("run") or "") for s in steps), (
+        "the pester job must run this guard, or a workflow-only edit skips it entirely"
+    )
 
 
 def test_network_is_skipped_when_the_image_already_satisfies_the_minimum():
