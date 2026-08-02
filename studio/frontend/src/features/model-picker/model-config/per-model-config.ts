@@ -225,15 +225,45 @@ export function readAdvancedSettingsOpen(): boolean {
   }
 }
 
+const advancedOpenListeners = new Set<() => void>();
+
 export function saveAdvancedSettingsOpen(open: boolean): void {
+  if (canUseStorage()) {
+    try {
+      localStorage.setItem(ADVANCED_SETTINGS_OPEN_KEY, open ? "true" : "false");
+    } catch {
+      // ignore
+    }
+  }
+  // Run Settings is mounted on several surfaces at once, and the sidebar copy
+  // stays mounted while collapsed, so tell them all rather than let them keep
+  // a snapshot taken at mount.
+  for (const listener of [...advancedOpenListeners]) {
+    listener();
+  }
+}
+
+/** Follow the preference while mounted, including a change from another tab. */
+export function subscribeAdvancedSettingsOpen(
+  onChange: () => void,
+): () => void {
+  advancedOpenListeners.add(onChange);
   if (!canUseStorage()) {
-    return;
+    return () => {
+      advancedOpenListeners.delete(onChange);
+    };
   }
-  try {
-    localStorage.setItem(ADVANCED_SETTINGS_OPEN_KEY, open ? "true" : "false");
-  } catch {
-    // ignore
-  }
+  const onStorage = (event: StorageEvent) => {
+    // A null key is a clear(), which drops this preference too.
+    if (event.key === null || event.key === ADVANCED_SETTINGS_OPEN_KEY) {
+      onChange();
+    }
+  };
+  window.addEventListener("storage", onStorage);
+  return () => {
+    advancedOpenListeners.delete(onChange);
+    window.removeEventListener("storage", onStorage);
+  };
 }
 
 function serializedByteLength(value: string): number {

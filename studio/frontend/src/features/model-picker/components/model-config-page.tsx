@@ -40,6 +40,7 @@ import {
   useId,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { syncModelOverride } from "../api/model-overrides";
 import {
@@ -69,6 +70,7 @@ import {
   resolveInitialConfig,
   saveAdvancedSettingsOpen,
   savePerModelConfig,
+  subscribeAdvancedSettingsOpen,
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
@@ -761,13 +763,21 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
-  // Follows the standing preference, and still opens on its own for a model
-  // carrying non-default advanced values so those stay visible.
-  const [showAdvanced, setShowAdvanced] = useState(
-    () => readAdvancedSettingsOpen() || hasNonDefaultAdvanced(config),
+  // Read live, not snapshotted at mount: the sidebar copy of Run Settings stays
+  // mounted while collapsed, so it has to follow a toggle made in the picker.
+  const advancedPreference = useSyncExternalStore(
+    subscribeAdvancedSettingsOpen,
+    readAdvancedSettingsOpen,
+    () => false,
   );
+  // A model carrying non-default advanced values opens the section on its own
+  // so those stay visible, until the switch is used.
+  const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
+    hasNonDefaultAdvanced(config),
+  );
+  const showAdvanced = advancedPreference || autoOpenAdvanced;
   const toggleAdvanced = (open: boolean) => {
-    setShowAdvanced(open);
+    setAutoOpenAdvanced(false);
     saveAdvancedSettingsOpen(open);
   };
   const contextInputRef = useRef<NumericValueInputHandle>(null);
