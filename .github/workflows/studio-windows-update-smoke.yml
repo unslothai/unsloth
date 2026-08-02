@@ -323,7 +323,7 @@ jobs:
           }
           echo "an update that replaces the unsloth package works through the launcher"
 
-      - name: The same update from the venv copy leaves a working CLI (issue #7697)
+      - name: The same update from the venv copy hands over to the launcher (issue #7697)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
@@ -346,12 +346,12 @@ jobs:
           export STUDIO_LOCAL_REPO
           test -f "$PWD/pyproject.toml" || { echo "::error::not a checkout: $PWD"; exit 1; }
 
-          # Not asserted to succeed: pip has to replace the entry this process is
-          # running from, and that is the failure the PR explains rather than
-          # removes. What is asserted is that either outcome leaves a usable CLI --
-          # a failure here runs _restore_self_exe_lock_windows, which nothing else
-          # in this workflow exercises, and getting that wrong strands the user
-          # with no unsloth at all.
+          # Before this PR the venv-launched update was destructive, not merely
+          # failing: pip uninstalls before it installs, so it removed unsloth_cli
+          # and only then hit the locked stub, leaving an unsloth.exe that starts
+          # and raises ModuleNotFoundError. The update now hands over to the
+          # launcher at the point the rename fails, while nothing has been removed
+          # yet, so this must succeed.
           set +e
           "$SCRIPTS/unsloth.exe" studio update --local > logs/update_venv.log 2>&1
           RC=$?
@@ -359,33 +359,30 @@ jobs:
           echo "venv-launched update exited $RC"
           tail -40 logs/update_venv.log
 
-          # This step is only meaningful if the update actually ran. Exiting at an
-          # argument guard would satisfy every assertion below while testing none
-          # of them, which is how the first version of this step passed for the
-          # wrong reason.
+          # Guard against the step passing for the wrong reason: exiting at an
+          # argument guard would satisfy the assertions below while testing none
+          # of them.
           if grep -q "needs an Unsloth checkout to install from" logs/update_venv.log; then
             echo "::error::the update never started; this step proved nothing."
             exit 1
           fi
-          if ! grep -qE "setup|install|update" logs/update_venv.log; then
-            echo "::error::no update output at all; this step proved nothing."
+          if ! grep -q "Re-running through the launcher instead" logs/update_venv.log; then
+            echo "::error::the update did not hand over to the launcher."
+            echo "Either the rename unexpectedly succeeded, in which case this step"
+            echo "no longer covers the lock, or the hand-off is broken."
             exit 1
           fi
-
           if [ "$RC" -ne 0 ]; then
-            # It must say why. The whole point of the PR is that this stops being
-            # reported as a bare permissions problem with no cause named.
-            if ! grep -q "this update is running from" logs/update_venv.log; then
-              echo "::error::the update failed without the note explaining the lock."
-              exit 1
-            fi
-            echo "the failure carried the explanation"
+            echo "::error::the update failed even after handing over to the launcher."
+            exit 1
           fi
           if [ ! -s "$SCRIPTS/unsloth.exe" ]; then
-            echo "::error::no usable unsloth.exe left behind (restore path is broken)."
+            echo "::error::no usable unsloth.exe left behind."
             ls -la "$SCRIPTS" | grep -i unsloth || true
             exit 1
           fi
+          # The exact wreckage this prevents: the stub survives a partial pip
+          # uninstall, so it starts and then cannot import its own package.
           CAPS="$("$SCRIPTS/unsloth.exe" studio desktop-capabilities --json)" || {
             echo "::error::the CLI does not run after a venv-launched update."
             exit 1
@@ -394,13 +391,12 @@ jobs:
             echo "::error::the CLI runs but reports the install as damaged."
             exit 1
           }
-          # Whichever way it went, no orphan may survive into the next update.
           if ls "$SCRIPTS"/*.deleteme >/dev/null 2>&1; then
             echo "::error::a .deleteme orphan survived."
             ls -la "$SCRIPTS"/*.deleteme
             exit 1
           fi
-          echo "a venv-launched replacement leaves a working CLI either way"
+          echo "a venv-launched replacement hands over and leaves a working CLI"
 
       - name: Boot Unsloth briefly to confirm the install is still usable
         run: |

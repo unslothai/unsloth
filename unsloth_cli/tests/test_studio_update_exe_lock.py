@@ -12,6 +12,8 @@ successful update never deletes the only copy.
 """
 
 import errno
+
+import pytest
 from pathlib import Path
 
 from unsloth_cli.commands import studio
@@ -72,6 +74,119 @@ def test_other_platforms_are_untouched(monkeypatch, tmp_path):
     monkeypatch.setattr(studio.os, "replace", _sharing_violation)
 
     assert studio._release_self_exe_lock_windows() is None
+
+
+# ── handing over to the launcher ─────────────────────────────────────
+
+
+def _shimmed(monkeypatch, tmp_path):
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    shim = tmp_path / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+    return scripts, shim
+
+
+def test_a_locked_copy_hands_over_to_the_launcher(monkeypatch, tmp_path):
+    """Continuing is not just a failed update. pip uninstalls before it installs,
+    so it removes unsloth_cli and only then hits the locked stub, leaving an exe
+    that starts and raises ModuleNotFoundError. Nothing destructive has happened
+    at this point, so hand over while that is still true."""
+    _scripts_dir, shim = _shimmed(monkeypatch, tmp_path)
+    seen = {}
+
+    def fake_run(argv, env = None):
+        seen["argv"] = argv
+        seen["env"] = env
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(studio.subprocess, "run", fake_run)
+
+    with pytest.raises(studio.typer.Exit):
+        studio._reexec_through_launcher_windows(
+            local = True, package = "unsloth", verbose = False, verify = False,
+        )
+
+    assert seen["argv"][0] == str(shim), "the child did not run through the launcher"
+    assert "--local" in seen["argv"] and "--no-verify" in seen["argv"]
+    assert seen["env"][studio._REEXEC_ENV] == "1"
+
+
+def test_the_hand_over_happens_once(monkeypatch, tmp_path):
+    """If the launcher resolves back to this same entry the child hits the same
+    lock, and without the guard it would do so forever."""
+    _shimmed(monkeypatch, tmp_path)
+    monkeypatch.setenv(studio._REEXEC_ENV, "1")
+
+    def explode(*a, **k):
+        raise AssertionError("re-executed twice")
+
+    monkeypatch.setattr(studio.subprocess, "run", explode)
+
+    studio._reexec_through_launcher_windows(
+        local = False, package = "unsloth", verbose = False, verify = True,
+    )
+
+
+def test_the_childs_exit_code_is_this_processs_exit_code(monkeypatch, tmp_path):
+    _shimmed(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        studio.subprocess, "run",
+        lambda argv, env = None: type("R", (), {"returncode": 3})(),
+    )
+
+    with pytest.raises(studio.typer.Exit) as excinfo:
+        studio._reexec_through_launcher_windows(
+            local = False, package = "unsloth", verbose = False, verify = True,
+        )
+    assert excinfo.value.exit_code == 3
+
+
+def test_no_launcher_means_carry_on_and_report(monkeypatch, tmp_path):
+    """Returning lets the caller reach the failure it can at least explain. A
+    broken hand-off must not become a second failure mode on top of the first."""
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)  # no bin/unsloth.exe
+    _as_windows(monkeypatch, scripts)
+    monkeypatch.setattr(
+        studio.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+
+    studio._reexec_through_launcher_windows(
+        local = False, package = "unsloth", verbose = False, verify = True,
+    )
+
+
+def test_a_launcher_that_will_not_start_is_not_handed_to(monkeypatch, tmp_path):
+    _shimmed(monkeypatch, tmp_path)
+
+    def boom(*a, **k):
+        raise OSError("cannot exec")
+
+    monkeypatch.setattr(studio.subprocess, "run", boom)
+
+    # Returns rather than raising: the caller still owns the real failure.
+    studio._reexec_through_launcher_windows(
+        local = False, package = "unsloth", verbose = False, verify = True,
+    )
+
+
+def test_other_platforms_never_hand_over(monkeypatch, tmp_path):
+    _shimmed(monkeypatch, tmp_path)
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        studio.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+
+    studio._reexec_through_launcher_windows(
+        local = False, package = "unsloth", verbose = False, verify = True,
+    )
 
 
 # ── the note on a later failure ──────────────────────────────────────

@@ -3059,6 +3059,15 @@ def update(
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
     exe_lock_err = _release_self_exe_lock_windows()
+    # A failed rename means the entry is locked, and nothing destructive has
+    # happened yet. Going on from here is not merely a failed update: pip
+    # uninstalls before it installs, so it removes unsloth_cli and only then hits
+    # the locked stub, leaving an unsloth.exe that starts and immediately raises
+    # ModuleNotFoundError. Hand over to the launcher while that is still avoidable.
+    if exe_lock_err is not None:
+        _reexec_through_launcher_windows(
+            local = local, package = package, verbose = verbose, verify = verify,
+        )
     try:
         _run_setup_script(verbose = verbose, repo_root = repo_root)
     except BaseException:
@@ -3167,6 +3176,77 @@ def _ps_single_quote(value: str) -> str:
     unescaped one ends the string early and the pasted command is a syntax error.
     """
     return "'{}'".format(str(value).replace("'", "''"))
+
+
+_REEXEC_ENV = "UNSLOTH_UPDATE_REEXEC"
+
+
+def _reexec_through_launcher_windows(
+    local: bool,
+    package: str,
+    verbose: bool,
+    verify: bool,
+) -> None:
+    """Re-run this update through the launcher, and exit with its result.
+
+    Only reached when the rename failed, which is the evidence that this process
+    holds the entry pip has to replace. The launcher is a separate directory entry
+    to the same binary, and Windows locks the entry rather than the file, so the
+    child can move this copy aside even though we cannot.
+
+    Returns normally when there is nothing better to do -- no launcher, or already
+    re-executed once -- and the caller then proceeds to the failure it can at least
+    explain. Never raises for its own reasons: a broken hand-off must not become a
+    second failure mode on top of the one being avoided.
+    """
+    if platform.system() != "Windows":
+        return
+    # One hop only. If the launcher somehow resolves back to this same entry the
+    # child hits the identical lock, and without this it would do so forever.
+    if os.environ.get(_REEXEC_ENV) == "1":
+        return
+    shim = STUDIO_HOME / "bin" / "unsloth.exe"
+    if not _is_usable_launcher(shim):
+        return
+    try:
+        running = Path(sys.executable).resolve().parent / "unsloth.exe"
+        # By path, not samefile(): the shim is normally a hardlink to this very
+        # file, so samefile() is True exactly when the hand-off is worth making.
+        if str(shim.resolve()).lower() == str(running).lower():
+            return
+    except OSError:
+        return
+    argv = [str(shim), "studio", "update"]
+    if local:
+        argv.append("--local")
+    if verbose:
+        argv.append("--verbose")
+    if not verify:
+        argv.append("--no-verify")
+    if package and package != "unsloth":
+        argv += ["--package", package]
+    env = dict(os.environ)
+    env[_REEXEC_ENV] = "1"
+    typer.echo("", err = True)
+    typer.echo(f"This copy is in use, so the update cannot replace it: {_exe_lock_hint()}", err = True)
+    typer.echo(f"Re-running through the launcher instead: {shim}", err = True)
+    typer.echo("", err = True)
+    try:
+        result = subprocess.run(argv, env = env)
+    except OSError as e:
+        # The launcher did not start. Fall through and let the caller report the
+        # real failure rather than replacing it with this one.
+        typer.echo(f"  could not run {shim}: {e}", err = True)
+        return
+    raise typer.Exit(result.returncode)
+
+
+def _exe_lock_hint() -> str:
+    """The venv copy this process runs from, for messages. Best effort."""
+    try:
+        return str(Path(sys.executable).resolve().parent / "unsloth.exe")
+    except OSError:
+        return "unsloth.exe"
 
 
 def _is_usable_launcher(shim: Path) -> bool:
