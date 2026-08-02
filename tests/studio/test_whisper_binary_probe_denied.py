@@ -35,9 +35,28 @@ def _is_runnable():
     raise AssertionError("_is_runnable not found in stt_ggml_sidecar.py")
 
 
+def _can_deny() -> bool:
+    """Probe rather than infer. Guessing from euid silently drops the only
+    behavioural test in any root container, which is most CI images."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        locked = Path(tmp) / "locked"
+        locked.mkdir()
+        (locked / "probe").write_text("", encoding = "utf-8")
+        locked.chmod(0o000)
+        try:
+            (locked / "probe").is_file()
+            return False
+        except OSError:
+            return True
+        finally:
+            locked.chmod(0o755)
+
+
 denial_capable = pytest.mark.skipif(
-    sys.platform == "win32" or os.geteuid() == 0,
-    reason = "chmod 000 does not deny root, and POSIX modes do not model NTFS ACLs",
+    sys.platform == "win32" or not _can_deny(),
+    reason = "this host cannot produce a read denial, so the check would pass vacuously",
 )
 
 

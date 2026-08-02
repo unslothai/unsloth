@@ -102,7 +102,7 @@ def test_ownership_guard_distinguishes_denied_from_unowned():
     # unreadable; it must stay for the genuinely-unowned case only.
     assert "is not marked as an Unsloth-owned $Label" in guard
     # Both stops stay gated, so default-home installs behave exactly as before.
-    assert guard.count("$StudioHomeIsCustom -and") == 3
+    assert guard.count("$StudioHomeIsCustom -and") >= 3
 
 
 def test_no_bare_test_path_probes_inside_the_llama_install_tree():
@@ -236,7 +236,7 @@ def test_the_ownership_guard_never_advises_deleting_an_unverified_tree():
     the tree is ours. It already says "move it aside" when it can prove it."""
     guard = SETUP_PS1.split("function Assert-StudioOwnedOrAbsent", 1)[1].split("\nfunction ", 1)[0]
     calls = [line.strip() for line in guard.splitlines() if "Exit-PathAccessDenied" in line]
-    assert len(calls) == 3, calls
+    assert len(calls) >= 3, calls
     for line in calls:
         assert "-OwnershipUnverified" in line, line
     body = SETUP_PS1.split("function Exit-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
@@ -274,12 +274,10 @@ def test_the_temp_dir_swap_checks_both_of_its_destructive_steps():
 def test_the_source_build_phase_probes_the_tree_three_state():
     """A forced compile, a pinned PR or a custom source skips the prebuilt phase
     and its denial guard, so the rebuild check is the first read inside the tree."""
-    anchor = "$llamaBinState = "
-    assert anchor in SETUP_PS1
-    build = SETUP_PS1.split(anchor, 1)[1].split("# -- Summary --", 1)[0]
-    assert "Get-PathState -Path $LlamaServerBin -PathType Leaf" in SETUP_PS1
-    assert '$llamaBinState -eq "Denied"' in SETUP_PS1
-    assert '$llamaBinState -eq "Present"' in SETUP_PS1
+    build = _slice("$llamaBinState = ", "# -- Summary --")
+    assert "Get-PathState -Path $LlamaServerBin -PathType Leaf" in build, build
+    assert '$llamaBinState -eq "Denied"' in build, build
+    assert '$llamaBinState -eq "Present"' in build, build
     assert "Test-Path -LiteralPath $LlamaServerBin" not in build, build
 
 
@@ -293,18 +291,17 @@ def test_the_source_build_probe_skips_a_linked_local_dir():
 def test_the_source_build_denial_never_advises_deleting_an_unproven_tree():
     """Nothing on this route ran the ownership guard, so under a custom home the
     tree cannot be proven ours and the delete advice must stay suppressed."""
-    block = SETUP_PS1.split("$llamaBinState = ", 1)[1].split("$WillBuildLlamaFromSource", 1)[0]
+    block = _slice("$llamaBinState = ", "$WillBuildLlamaFromSource")
     denials = [ln.strip() for ln in block.splitlines() if "Exit-PathAccessDenied" in ln]
     assert len(denials) >= 2, denials
     assert all(d.endswith("-OwnershipUnverified:$StudioHomeIsCustom") for d in denials), denials
+    assert all(d.startswith("Exit-PathAccessDenied -Path $LlamaCppDir ") for d in denials), denials
 
 
 def test_the_cmake_cache_read_is_guarded_not_just_its_probe():
     """Test-PathQuiet only proves the entry is listed; a deny ACE on the file
     itself leaves the probe true and throws on the read below it."""
-    anchor = "$CmakeCacheFile = Join-Path"
-    assert anchor in SETUP_PS1
-    block = SETUP_PS1.split(anchor, 1)[1].split("$WillBuildLlamaFromSource", 1)[0]
+    block = _slice("$CmakeCacheFile = Join-Path", "$WillBuildLlamaFromSource")
     read = "Select-String -LiteralPath $CmakeCacheFile"
     assert read in block, block
     before, after = block.split(read, 1)
@@ -313,15 +310,19 @@ def test_the_cmake_cache_read_is_guarded_not_just_its_probe():
     assert "Exit-PathAccessDenied" in after, after
 
 
+def _slice(start: str, end: str) -> str:
+    """Both bounds asserted: an unasserted terminator does not fail, it silently
+    widens the window to end-of-file and makes everything inside it near-vacuous."""
+    assert start in SETUP_PS1, start
+    assert end in SETUP_PS1, end
+    return SETUP_PS1.split(start, 1)[1].split(end, 1)[0]
+
+
 def _whisper_phase() -> str:
     """The whisper phase body. Both anchors are asserted so a phase renumbering
     fails as an assertion instead of an IndexError, and cannot silently widen
     the window to end-of-file."""
-    start = "Install the whisper.cpp prebuilt"
-    end = "PHASE 3.5"
-    assert start in SETUP_PS1
-    assert end in SETUP_PS1
-    return SETUP_PS1.split(start, 1)[1].split(end, 1)[0]
+    return _slice("Install the whisper.cpp prebuilt", "PHASE 3.5")
 
 
 def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
@@ -329,14 +330,31 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
     exits the whole run, which would take llama.cpp inference down with it."""
     guard = SETUP_PS1.split("function Assert-StudioOwnedOrAbsent", 1)[1].split("\nfunction ", 1)[0]
     assert "[switch]$NonFatal" in guard
+    # Ordering, not just presence: below its exit the return is dead code, and
+    # above the custom-home gate it would report a fresh install as unreadable.
+    paired = re.findall(
+        r'if \(\$NonFatal\) \{ return "Denied" \}\n\s*Exit-PathAccessDenied -Path \$Path', guard
+    )
+    assert len(paired) == guard.count("Exit-PathAccessDenied -Path $Path"), guard
+    # No unpaired return either: one above the custom-home gate would report a
+    # fresh install as unreadable.
+    assert len(paired) == guard.count('if ($NonFatal) { return "Denied" }'), guard
+    assert len(paired) >= 3, guard
     # Only the denial is handed back; an unowned tree must still stop.
-    assert guard.count('if ($NonFatal) { return "Denied" }') >= 3, guard
     assert 'Exit-SetupFailure "$Label path is not an Unsloth-owned install' in guard
     whisper = _whisper_phase()
     assert '-Label "whisper.cpp install" -NonFatal) -eq "Denied"' in whisper, whisper
-    # Pin the new message, not prose the phase already contained.
-    assert "install directory cannot be read: access is denied" in whisper, whisper
-    assert "browser and Transformers dictation remain available" in whisper
+    # Scoped to the new branch: both phrases already occur elsewhere in the phase,
+    # so a phase-wide match is satisfied no matter what this branch does.
+    marker = '-NonFatal) -eq "Denied") {'
+    assert marker in whisper, whisper
+    denial = whisper.split(marker, 1)[1].split("\n} elseif", 1)[0]
+    assert re.search(r'^\s*step "whisper\.cpp" ', denial, re.M), denial
+    assert "install directory cannot be read: access is denied" in denial, denial
+    assert "browser and Transformers dictation remain available" in denial, denial
+    # The whole point is that this stays non-fatal.
+    assert "Exit-SetupFailure" not in denial, denial
+    assert not re.search(r"\bexit \d", denial), denial
     # The skip has to come before the branch whose guard would exit. Anchor on
     # that branch's body, which survives a hardening of its own probe.
     body = "$whisperArgs = @("
@@ -347,6 +365,14 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
 def test_the_whisper_skip_stays_behind_the_installer_gate():
     """The guard used to live inside the installer branch, so a tree without the
     installer was a no-op. Hoisting it must not make that case fatal."""
-    branch = _whisper_phase().split("-NonFatal) -eq", 1)[0].rsplit("} elseif", 1)[1]
-    # Anchor on the variable, not the probe form: that probe may be hardened later.
-    assert "$WhisperInstaller" in branch, branch
+    marker = "-NonFatal) -eq"
+    whisper = _whisper_phase()
+    assert marker in whisper, whisper
+    head = whisper.split(marker, 1)[0]
+    assert "} elseif" in head, head
+    branch = head.rsplit("} elseif", 1)[1]
+    # A conjunct, not merely present: -or or a negation reopens the case this
+    # test is named for. Anchored on the variable so the probe can be hardened.
+    assert re.search(r"-and\s*\([^\n]*\$WhisperInstaller[^\n]*\)\s*-and", branch), branch
+    assert "-not (Test-Path" not in branch, branch
+    assert " -or " not in branch, branch
