@@ -462,10 +462,10 @@ class TestExtraArgsMtpDetection:
         assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "none"}) is False
 
     def test_requests_mtp_effective_spec_type(self):
-        # llama.cpp ACCUMULATES spec types: the env is applied first through the
-        # same handler and each --spec-type inserts at the end, so nothing later
-        # clears an earlier MTP and the reserve has to count every source. Even
-        # --spec-type none only appends NONE.
+        # llama.cpp ACCUMULATES spec types: the env is applied first through the same
+        # handler and each --spec-type inserts at the end, so nothing later clears an
+        # earlier MTP (even --spec-type none only appends NONE) and the reserve has to
+        # count every source.
         env_mtp = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
         assert (
             _extra_args_requests_mtp(
@@ -483,8 +483,8 @@ class TestExtraArgsMtpDetection:
         )
         # The negative that still has to hold: no source names MTP.
         assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = {}) is False
-        # Separate (draft-simple/eagle3) detection accumulates the same way: the
-        # draft model still loads, so the budget must still reserve for it.
+        # Separate (draft-simple/eagle3) detection accumulates the same way: the draft
+        # model still loads, so the budget must still reserve for it.
         assert (
             _extra_args_requests_separate_draft(
                 ["--spec-type", "draft-simple", "--spec-type", "ngram-mod"], env = {}
@@ -554,12 +554,11 @@ class TestExtraArgsMtpDetection:
         assert _extra_args_mtp_draft_path([], env = dict(os.environ)) == "/large.gguf"
 
     def test_the_fit_reads_the_env_only_when_the_extras_own_the_spec_type(self):
-        # An emitted --spec-type/--spec-default cannot override the env, since
-        # llama.cpp appends. So the launch scrubs LLAMA_ARG_SPEC_TYPE whenever
-        # Unsloth owns the spec block, and the reserve consults the env only in
-        # the one case it still reaches the child: the extras own --spec-type, and
-        # their flags and the env accumulate. Whitespace-stripped so the check
-        # survives formatter line-wrapping.
+        # An emitted --spec-type/--spec-default cannot override the env, since llama.cpp
+        # appends. So the launch scrubs LLAMA_ARG_SPEC_TYPE whenever Unsloth owns the
+        # spec block, and the reserve consults the env only where it still reaches the
+        # child: the extras own --spec-type, and their flags and the env accumulate.
+        # Whitespace-stripped so the check survives formatter line-wrapping.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_spec_env:Mapping[str,str]=_child_spec_env(extra_args)" in compact
         assert "_extra_args_requests_mtp(extra_args,env=_spec_env)" in compact
@@ -568,8 +567,8 @@ class TestExtraArgsMtpDetection:
         assert "env.pop(_pv_spec_var,None)" in compact
 
     def test_spec_default_does_not_clear_an_inherited_spec_type(self):
-        # --spec-default push_backs NGRAM_MOD rather than replacing the vector, so
-        # it cannot clear an inherited type and the reserve must still count it.
+        # --spec-default push_backs NGRAM_MOD rather than replacing the vector, so it
+        # cannot clear an inherited type and the reserve must still count it.
         env_mtp = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
         assert _extra_args_requests_mtp(["--spec-default"], env = env_mtp) is True
         assert (
@@ -589,8 +588,8 @@ class TestExtraArgsMtpDetection:
     def test_load_model_drafter_budget_precedence(self):
         # The budget sizes the drafter the launch actually loads: CLI extras win,
         # then Unsloth's emitted mtp_draft_path (overrides LLAMA_ARG_SPEC_DRAFT_MODEL),
-        # then the env drafter -- and only when the env survives the launch scrub,
-        # else it reserves for a model the child never loads (reviewer.py R3).
+        # then the env drafter, and only when the env survives the launch scrub, else it
+        # reserves for a model the child never loads.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})" in compact
         assert "_env_draft_for_budget=_extra_args_mtp_draft_path([],env=_spec_env)" in compact

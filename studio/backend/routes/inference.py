@@ -3522,13 +3522,12 @@ def _request_matches_loaded_settings(
 
     ``requested_parallel_slots`` is the resolved count the load would use
     (per-load ``n_parallel``, else the server-wide default); None skips it."""
-    # A virtualised Metal device corrupts every offloaded layer, so load_model
-    # rewrites the placement to CPU and records THAT. This check runs before any
-    # of it, so compare the rewritten request: a browser adopts the normalized
-    # echo, but an API client, a second tab or a saved preset keeps sending Auto
-    # and would mismatch on every call, tearing down a healthy CPU server (and
-    # 409-ing or cancelling a live generation). The rewrite is applied only to
-    # the compared values -- the raw request still drives _should_strip_*, which
+    # A virtualised Metal device corrupts every offloaded layer, so load_model rewrites
+    # the placement to CPU and records THAT. This check runs first, so compare the
+    # rewritten request: a browser adopts the normalized echo, but an API client, second
+    # tab or saved preset keeps sending Auto and would mismatch on every call, tearing
+    # down a healthy CPU server (and 409-ing or cancelling a live generation). Applied
+    # to the compared values only -- the raw request still drives _should_strip_*, which
     # must keep describing what the reload's inheritance resolver would do.
     _pv_forced = _metal_device_is_paravirtual()
     _pv = (
@@ -3581,8 +3580,8 @@ def _request_matches_loaded_settings(
         )
     )
     if _pv_forced and effective_extra:
-        # The inherit branch above describes the shadow strip only; the reload
-        # would run the CPU pin over it as well.
+        # The inherit branch above covers the shadow strip only; the reload would run
+        # the CPU pin over it too.
         effective_extra = paravirtual_normalized_request(
             extra_args = effective_extra, log_dropped = False
         ).extra_args
@@ -3591,9 +3590,9 @@ def _request_matches_loaded_settings(
     ):
         return False
     # Nothing launches a tensor split on a virtualised Metal device (CPU pin, and
-    # --split-mode is overridden with the default layer split), so judge the
-    # normalized request there: an extras `-sm tensor`, which the pin deliberately
-    # leaves in place, would otherwise never match the stored False.
+    # --split-mode is overridden with the default layer split), so judge the normalized
+    # request there: an extras `-sm tensor`, which the pin deliberately leaves in place,
+    # would otherwise never match the stored False.
     if _pv_forced:
         if llama_backend.tensor_parallel:
             return False
@@ -3702,10 +3701,9 @@ def _request_matches_loaded_settings(
         ):
             return False
     else:
-        # Compare against what the last load was INVOKED with, not what it
-        # launched: a rewrite the caller cannot see (the virtualised-Metal
-        # drafter drop strips the whole spec group) would otherwise never
-        # match the list the client keeps sending.
+        # Compare against what the last load was INVOKED with, not what it launched: a
+        # rewrite the caller cannot see (the virtualised-Metal drafter drop strips the
+        # whole spec group) would never match the list the client keeps sending.
         _strip_dev = bool(request.gpu_ids)
         _request_extra = (
             strip_shadowing_flags(
@@ -3762,8 +3760,8 @@ def _request_matches_loaded_settings(
                         accept = _usable,
                     )
             # A drafter the load deliberately suppressed (virtualised Metal with no
-            # draft-layer flag) counts as the stored one: it is still on disk, so
-            # detecting it again must not read as a settings change and reload.
+            # draft-layer flag) counts as stored: it is still on disk, so detecting it
+            # again must not read as a settings change and reload.
             stored = llama_backend.mtp_draft_path or llama_backend.mtp_draft_suppressed_path
             try:
                 detected_resolved = Path(detected).resolve() if detected else None
@@ -5239,10 +5237,10 @@ def _guard_chat_load_against_training(
     from core.inference.llama_cpp import _diffusion_manual_ngl, _scale_diffusion_required_gb
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    # load_model rewrites a GGUF placement to CPU on a virtualised Metal device, so
-    # guard what will run rather than what was asked: sized as the raw Auto request,
-    # a CPU-only chat load can be refused for competing over VRAM it never takes.
-    # Same helper the launch and both duplicate-load comparators use.
+    # load_model rewrites a GGUF placement to CPU on a virtualised Metal device, so guard
+    # what will run, not what was asked: sized as the raw Auto request, a CPU-only chat
+    # load can be refused for competing over VRAM it never takes. Same helper the launch
+    # and both duplicate-load comparators use.
     if is_gguf and _metal_device_is_paravirtual():
         _pv = paravirtual_normalized_request(
             gpu_memory_mode = gpu_memory_mode,
@@ -5313,13 +5311,13 @@ def _guard_chat_load_against_training(
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
             n_parallel = 1
-        # MTP is deliberately NOT clamped here even though the launch clamps it to
-        # one slot. _estimate_gguf_required_gb counts the drafter file and the main
-        # KV, but not the draft KV, the duplicated target context MLA keeps, or the
-        # draft compute reserve, all of which load_model does budget. Sizing this
-        # for one slot would drop the slot KV without replacing it with those, and
-        # a guard that under-sizes evicts the training run it exists to protect.
-        # The spare slots stand in for what is not modelled.
+        # MTP is deliberately NOT clamped here even though the launch clamps it to one
+        # slot. _estimate_gguf_required_gb counts the drafter file and the main KV, but
+        # not the draft KV, the duplicated target context MLA keeps, or the draft compute
+        # reserve, all of which load_model does budget. Sizing for one slot would drop
+        # the slot KV without replacing it with those, and a guard that under-sizes
+        # evicts the training run it exists to protect: the spare slots stand in for
+        # what is not modelled.
         else:
             try:
                 caps = LlamaCppBackend.probe_server_capabilities()

@@ -43,10 +43,9 @@ def llama_cpp():
         # (utils, state, models, hub, auth, storage) for every later test.
         if sys.path and sys.path[0] == backend:
             sys.path.pop(0)
-    # The dedupe comparators consult the Metal device, so on a Mac (and on the
-    # macos runners, which are paravirtual) they would normalize the request to
-    # the CPU pin and stop matching these fixtures. This module is a private
-    # copy, so pinning it here cannot leak into the app.
+    # The dedupe comparators consult the Metal device, so on a Mac (and on the macos
+    # runners, which are paravirtual) they would normalize the request to the CPU pin and
+    # stop matching these fixtures. A private copy, so pinning cannot leak into the app.
     module._metal_device_is_paravirtual = lambda: False
     return module
 
@@ -221,8 +220,8 @@ def test_route_dedup_compares_the_requested_split():
     for node in ast.walk(route_tree):
         if isinstance(node, ast.FunctionDef) and node.name == "_request_matches_loaded_settings":
             body = ast.get_source_segment(route_src, node) or ""
-            # The fields are read through the paravirtual-normalized locals, which
-            # fall back to the request itself off a virtualised Metal device.
+            # Read through the paravirtual-normalized locals, which fall back to the
+            # request itself off a virtualised Metal device.
             assert "_diffusion_manual_ngl(_req_gpu_memory_mode, _req_gpu_layers)" in body
             assert (
                 "_req_gpu_memory_mode = _pv.gpu_memory_mode if _pv else request.gpu_memory_mode"

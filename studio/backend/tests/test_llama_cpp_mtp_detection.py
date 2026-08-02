@@ -30,15 +30,13 @@ _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# Real httpx wins when it is installed: setdefault only checks whether httpx is
-# already imported, not whether it exists, so the stub used to shadow the real
-# module for the rest of the session. Files importing later then found a working
-# httpx and kept it, and this stub is a subset (no Response), so routes/inference
-# blew up in any combined run. find_spec rather than an import, so installing the
-# stub stays this module's only side effect on sys.modules. sys.modules is tested
-# first because find_spec raises ValueError on a module already there without a
-# spec, which is every bare-ModuleType httpx stub in this tree, and raising here
-# would be a collection error rather than one failed test.
+# Real httpx wins when installed: setdefault only checks whether httpx is already
+# imported, not whether it exists, so the stub used to shadow the real module for the
+# rest of the session, and it is a subset (no Response) that blew routes/inference up in
+# combined runs. find_spec rather than an import, so installing the stub stays this
+# module's only side effect on sys.modules. sys.modules is tested first because find_spec
+# raises ValueError on a module already there without a spec (every bare-ModuleType httpx
+# stub in this tree), which would be a collection error rather than one failed test.
 if "httpx" not in sys.modules and _find_spec("httpx") is None:
     _httpx_stub = _types.ModuleType("httpx")
     for _exc in (
@@ -2218,10 +2216,9 @@ _LEGACY_DRAFT_NGL_HELP = """usage: llama-server [options]
 
 @_NEEDS_BASH
 def test_probe_reports_the_draft_ngl_alias_the_build_actually_has(tmp_path):
-    """--spec-draft-ngl only exists from llama.cpp b8955. Answering a plain "yes"
-    for either alias would make the paravirtual drafter pin emit a name an older
-    build does not know, and the server would refuse to start -- which is exactly
-    the failure the capability gate exists to prevent."""
+    """--spec-draft-ngl only exists from llama.cpp b8955, so a plain "yes" for either
+    alias would make the paravirtual drafter pin emit a name an older build does not
+    know and the server would refuse to start."""
     modern = _make_fake_llama_server(tmp_path / "modern", _MODERN_DRAFT_NGL_HELP)
     _clear_caps_cache()
     assert LlamaCppBackend.probe_server_capabilities(str(modern))["spec_draft_ngl_flag"] == (

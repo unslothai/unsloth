@@ -518,10 +518,10 @@ def test_training_guard_sizes_every_slot_when_kv_unified_exists(monkeypatch, tmp
 
 def test_training_guard_keeps_the_asked_slots_for_an_explicit_mtp_load(monkeypatch, tmp_path):
     # load_model does clamp MTP to a single slot, but this estimate counts only the
-    # drafter file and the main KV: not the draft KV, the duplicated target context
-    # MLA keeps, or the draft compute reserve. Sizing for one slot would drop the
-    # slot KV without adding those back, and a guard that under-sizes evicts the
-    # training run it protects, so it keeps the larger number instead.
+    # drafter file and the main KV: not the draft KV, the duplicated target context MLA
+    # keeps, or the draft compute reserve. Sizing for one slot would drop the slot KV
+    # without adding those back, and a guard that under-sizes evicts the training run it
+    # protects, so it keeps the larger number.
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     mtp = ["--spec-type", "draft-mtp"]
     new = {"found": True, "supports_kv_unified": True}
@@ -535,11 +535,10 @@ def test_training_guard_keeps_the_asked_slots_for_an_explicit_mtp_load(monkeypat
 
 
 def test_training_guard_keeps_slots_when_the_launch_scrubs_the_mtp_env(monkeypatch, tmp_path):
-    # An inherited LLAMA_ARG_SPEC_TYPE=draft-mtp really would launch MTP, since
-    # llama.cpp appends spec types rather than replacing them. But the extras do
-    # not own --spec-type here, so the launch scrubs the env and the server runs
-    # the slots that were asked for. Flattening the budget to one would under-size
-    # the estimate and let a load squeeze past the guard.
+    # An inherited LLAMA_ARG_SPEC_TYPE=draft-mtp really would launch MTP, since llama.cpp
+    # appends spec types rather than replacing them. But the extras do not own
+    # --spec-type here, so the launch scrubs the env and the server runs the slots asked
+    # for; flattening the budget to one would under-size and let a load past the guard.
     monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "draft-mtp")
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     new = {"found": True, "supports_kv_unified": True}
