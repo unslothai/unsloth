@@ -9642,9 +9642,7 @@ class LlamaCppBackend:
                     _paravirtual_cpu_forced
                     and not _paravirtual_draft_ngl_flag(server_caps)
                     and (
-                        _extra_args_mtp_draft_path(
-                            extra_args, env = _child_spec_env(extra_args)
-                        )
+                        _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
                         or (launch_mtp_draft_path and not _extra_args_set_spec_type(extra_args))
                     )
                     and not _extra_args_draft_offloaded_to_cpu(extra_args)
