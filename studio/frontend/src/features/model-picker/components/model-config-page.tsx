@@ -1191,6 +1191,10 @@ export function ModelConfigPage({
                   aria-label="Context Length"
                 />
               ) : null}
+              <p className="text-ui-11 leading-relaxed text-muted-foreground">
+                By default, Unsloth uses the model's full context, lowering it
+                only if it will not fit your device's memory.
+              </p>
               {isActiveModel &&
                 loadedMaxContextLength != null &&
                 contextValue > loadedMaxContextLength && (
