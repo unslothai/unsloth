@@ -7949,8 +7949,13 @@ class LlamaCppBackend:
             # Classify before killing the healthy server (#7205); Phase 2 reuses this
             # path. Diffusion changes the meaning or validity of requested placement,
             # so both the remote and the local branch settle it above the teardown.
+            # A zero-layer diffusion pin this shim cannot apply is refused; probe
+            # once here so the HF case can be settled above the teardown as well.
+            _pv_diffusion_unpinnable = bool(
+                _paravirtual_cpu_forced and not self.diffusion_split_supported()
+            )
             _preflight_model_path = None
-            if hf_repo and (_vulkan_ordinal_pin or _cpu_only_pin):
+            if hf_repo and (_vulkan_ordinal_pin or _cpu_only_pin or _pv_diffusion_unpinnable):
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
                 if _resolved_repo != hf_repo:
                     logger.info(
@@ -7971,6 +7976,8 @@ class LlamaCppBackend:
                 if _preflight_is_diffusion:
                     if _vulkan_ordinal_pin:
                         raise ValueError(_VULKAN_DIFFUSION_GPU_IDS_ERROR)
+                    if _pv_diffusion_unpinnable:
+                        raise ValueError(_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR)
                 elif _cpu_only_pin:
                     raise ValueError(
                         f"Requested gpu_ids {list(gpu_ids)} but the llama.cpp build has "
@@ -7992,11 +7999,10 @@ class LlamaCppBackend:
             # enforces it for every path, but it runs after the teardown, so settle
             # the local case here and leave the running server alone.
             if (
-                _paravirtual_cpu_forced
+                _pv_diffusion_unpinnable
                 and gguf_path
                 and not hf_repo
                 and self._gguf_path_is_diffusion(gguf_path, model_identifier)
-                and not self.diffusion_split_supported()
             ):
                 raise ValueError(_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR)
 
@@ -9627,14 +9633,18 @@ class LlamaCppBackend:
                 # becomes --model-draft and only the user's own drafter can be
                 # placed. Keying on the sibling there would strip a drafter-free
                 # mode (--spec-type ngram-mod and its knobs) for a drafter that was
-                # never going to launch. Their own --model-draft/--spec-draft-hf, or
-                # the inherited env, still counts: llama.cpp loads a draft model
-                # whenever its path is set, whatever the spec type asks for.
+                # never going to launch. Their own --model-draft/--spec-draft-hf
+                # counts, and the inherited env only where it survives to the child:
+                # the launch scrubs LLAMA_ARG_SPEC_DRAFT_* unless the extras own
+                # --spec-type, so reading os.environ here would drop a drafter that
+                # never loads and strip the caller's spec tuning with it.
                 _pv_draft_unpinnable = bool(
                     _paravirtual_cpu_forced
                     and not _paravirtual_draft_ngl_flag(server_caps)
                     and (
-                        _extra_args_mtp_draft_path(extra_args)
+                        _extra_args_mtp_draft_path(
+                            extra_args, env = _child_spec_env(extra_args)
+                        )
                         or (launch_mtp_draft_path and not _extra_args_set_spec_type(extra_args))
                     )
                     and not _extra_args_draft_offloaded_to_cpu(extra_args)
@@ -12231,6 +12241,16 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                         )
                     self.load_model(**snapshot)
+                    # Same reason the mode is restored below: the replay launched a
+                    # stripped list, but the caller keeps sending the original, and a
+                    # comparator that saw only the stripped one would miss and reload
+                    # the very MTP configuration that just crashed.
+                    if snapshot.get("extra_args") is not _ea:
+                        self._requested_extra_args = (
+                            self._strip_device_extra_args(_ea)
+                            if snapshot.get("gpu_ids") is not None
+                            else list(_ea)
+                        )
                     # Restore the requested mode + reason load_model("off") cleared,
                     # so /status shows the user's mode + note (like the startup fallback).
                     self._requested_spec_mode = _canonicalize_spec_mode(requested_mode)

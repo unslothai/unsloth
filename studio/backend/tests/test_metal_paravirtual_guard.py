@@ -713,10 +713,23 @@ def test_a_drafter_that_cannot_be_pinned_is_dropped(monkeypatch):
     # warning must not claim the output was wrong.
     assert not any("corrupt output" in w for w in warnings), warnings
     assert any("only costs speed" in w for w in warnings), warnings
-    # An env-only drafter is the same launch, so it takes the same exit.
+    # An env-only drafter needs no drop: with no extras owning --spec-type the
+    # launch scrubs LLAMA_ARG_SPEC_DRAFT_*, so it never loads. Dropping on it
+    # anyway would strip the caller's own speculative tuning for nothing.
     monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/models/env.gguf")
-    drafter, _extras, warnings = _drafter_gate(paravirtual = True, caps = {}, drafter = None)
-    assert warnings, "an inherited LLAMA_ARG_SPEC_DRAFT_MODEL drafter went unnoticed"
+    tuning = ["--spec-draft-n-max", "6"]
+    drafter, extras, warnings = _drafter_gate(
+        paravirtual = True, caps = {}, drafter = None, extra_args = tuning
+    )
+    assert warnings == []
+    assert extras == tuning
+    # But an env drafter the extras DO keep alive still takes the drop, because
+    # their --spec-type is what stops the scrub.
+    owned = ["--spec-type", "draft-simple"]
+    drafter, _extras, warnings = _drafter_gate(
+        paravirtual = True, caps = {}, drafter = None, extra_args = owned
+    )
+    assert any("draft-layer flag" in w for w in warnings), warnings
 
 
 def test_the_drop_takes_a_user_owned_drafter_with_it():
@@ -901,6 +914,35 @@ def test_a_diffusion_split_that_cannot_be_pinned_is_refused():
     assert load_src.index("_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR") < load_src.index(
         "self._kill_process()"
     )
+
+
+def test_the_hf_diffusion_refusal_also_lands_above_the_teardown():
+    """The local path settled this before Phase 1, but an HF load has no gguf_path
+    there, so the refusal used to fire only after the healthy server was killed and
+    the model downloaded. The shim probe is cheap, so it gates the preflight too."""
+    src = _load_model_source()
+    probe_at = src.index("_pv_diffusion_unpinnable = bool(")
+    kill_at = src.index("self._kill_process()")
+    assert probe_at < kill_at
+    # The HF branch raises from the preflight classification, above the teardown.
+    hf_raise = src.index("if _pv_diffusion_unpinnable:\n                        raise ValueError(")
+    assert hf_raise < kill_at
+    # And the preflight download is reached for this case at all.
+    assert "or _pv_diffusion_unpinnable" in src[: src.index("_preflight_is_diffusion =")]
+
+
+def test_the_crash_replay_keeps_the_extras_the_caller_still_sends():
+    """The replay launches a stripped list, but the caller keeps sending the
+    original. A comparator that saw only the stripped one would miss and reload the
+    MTP configuration that just crashed."""
+    src = inspect.getsource(llama_cpp.LlamaCppBackend._maybe_recover_from_mtp_crash)
+    load_at = src.index("self.load_model(**snapshot)")
+    restore_at = src.index("self._requested_extra_args = (")
+    assert load_at < restore_at
+    # Only when the strip actually rewrote the list.
+    assert 'snapshot.get("extra_args") is not _ea' in src
+    # Device-stripped the same way the launch records it, so both sides match.
+    assert "self._strip_device_extra_args(_ea)" in src
 
 
 def test_a_pinnable_drafter_survives_on_the_same_hardware():
