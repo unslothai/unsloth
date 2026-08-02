@@ -1202,6 +1202,12 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
+                reasoning_budget: resolvedIsDiffusion
+                  ? -1
+                  : ownConfig.reasoningBudget,
+                reasoning_budget_message: resolvedIsDiffusion
+                  ? ""
+                  : ownConfig.reasoningBudgetMessage,
               }
             : {}),
         });

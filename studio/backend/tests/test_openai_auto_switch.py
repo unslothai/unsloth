@@ -818,6 +818,81 @@ def test_reasoning_budget_override_route_roundtrip(monkeypatch):
     }
 
 
+def test_reasoning_resets_strip_only_matching_carried_flags(monkeypatch):
+    _mock_override_store(monkeypatch)
+    extras = [
+        "--reasoning-budget=2048",
+        "--reasoning-budget-message",
+        "Conclude now",
+        "--top-k",
+        "40",
+    ]
+    for suffix in ("budget", "message", "both", "fill"):
+        _put(f"unsloth/B-GGUF:{suffix}", llama_extra_args = extras)
+
+    budget = _put("unsloth/B-GGUF:budget", reasoning_budget = -1).overrides[
+        "unsloth/B-GGUF:budget"
+    ]
+    assert budget["llama_extra_args"] == [
+        "--reasoning-budget-message",
+        "Conclude now",
+        "--top-k",
+        "40",
+    ]
+    assert budget["reasoning_budget"] == -1
+
+    message = _put("unsloth/B-GGUF:message", reasoning_budget_message = "").overrides[
+        "unsloth/B-GGUF:message"
+    ]
+    assert message["llama_extra_args"] == ["--reasoning-budget=2048", "--top-k", "40"]
+    assert message["reasoning_budget_message"] == ""
+
+    both = _put(
+        "unsloth/B-GGUF:both",
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+    ).overrides["unsloth/B-GGUF:both"]
+    assert both["llama_extra_args"] == ["--top-k", "40"]
+    assert settings.model_override_load_kwargs(both, is_gguf = True) == {
+        "llama_extra_args": ["--top-k", "40"],
+        "reasoning_budget": -1,
+        "reasoning_budget_message": "",
+    }
+
+    filled = _put(
+        "unsloth/B-GGUF:fill",
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+        fill_absent_fields = True,
+    ).overrides["unsloth/B-GGUF:fill"]
+    assert filled["llama_extra_args"] == extras
+    assert "reasoning_budget" not in filled
+    assert "reasoning_budget_message" not in filled
+
+
+def test_reasoning_reset_tombstone_blocks_bare_and_legacy_fallbacks(monkeypatch):
+    _mock_override_store(monkeypatch)
+
+    _put("unsloth/B-GGUF", llama_extra_args = ["--reasoning-budget", "2048"])
+    qualified = _put("unsloth/B-GGUF:Q4_K_M", reasoning_budget = -1).overrides
+    assert qualified["unsloth/B-GGUF:Q4_K_M"] == {"reasoning_budget": -1}
+    assert qualified["unsloth/B-GGUF"]["llama_extra_args"] == [
+        "--reasoning-budget",
+        "2048",
+    ]
+    assert settings.model_override_load_kwargs(
+        settings.get_model_override("unsloth/B-GGUF:Q4_K_M"), is_gguf = True
+    ) == {"reasoning_budget": -1}
+
+    path = "/tmp/model-Q4_K_M.gguf"
+    _put(f"{path}:Q4_K_M", llama_extra_args = ["--reasoning-budget-message", "Stop"])
+    standalone = _put(path, reasoning_budget_message = "").overrides
+    assert standalone[path] == {"reasoning_budget_message": ""}
+    assert settings.model_override_load_kwargs(
+        settings.get_model_override(path), is_gguf = True
+    ) == {"reasoning_budget_message": ""}
+
+
 @pytest.mark.parametrize("message", ["😀" * 2_049, "bad\0message"])
 def test_reasoning_budget_override_rejects_unsafe_argv(message):
     import pydantic

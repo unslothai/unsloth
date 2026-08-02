@@ -216,6 +216,20 @@ async function sendModelOverride(
           { llama_extra_args: [] }
         : {}),
       ...toApiOverride(config),
+      // Write-only reset markers let the backend remove legacy passthrough flags
+      // shadowing these controls. Fill-only migration must never delete stored flags.
+      ...(!options?.fillAbsentFields && config?.reasoningBudget === -1
+        ? {
+            // biome-ignore lint/style/useNamingConvention: API schema
+            reasoning_budget: -1,
+          }
+        : {}),
+      ...(!options?.fillAbsentFields && config?.reasoningBudgetMessage === ""
+        ? {
+            // biome-ignore lint/style/useNamingConvention: API schema
+            reasoning_budget_message: "",
+          }
+        : {}),
     }),
   });
   if (!res.ok) {

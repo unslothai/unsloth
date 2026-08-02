@@ -1411,6 +1411,39 @@ def test_evicted_local_configs_drop_their_server_overrides():
     assert "modelIdFromStorageKey(" in store and "ggufVariantFromStorageKey(" in store
 
 
+def test_reasoning_resets_reach_the_server_without_making_backfill_destructive():
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "!options?.fillAbsentFields && config?.reasoningBudget === -1" in api
+    assert "reasoning_budget: -1" in api
+    assert '!options?.fillAbsentFields && config?.reasoningBudgetMessage === ""' in api
+    assert 'reasoning_budget_message: ""' in api
+
+    route = _read_backend("routes/settings.py")
+    assert "fields_set = payload.model_fields_set" in route
+    assert '"reasoning_budget" in fields_set and payload.reasoning_budget == -1' in route
+    assert '"reasoning_budget_message" in fields_set and payload.reasoning_budget_message == ""' in route
+    assert "if not payload.fill_absent_fields and requested_extra_args:" in route
+
+
+def test_validate_sends_reasoning_controls_before_the_runtime_unloads():
+    api = _read("features/chat/api/chat-api.ts")
+    validate_body = api.split("export async function validateModel", 1)[1].split(
+        "export async function", 1
+    )[0]
+    assert "reasoning_budget: payload.reasoning_budget ?? -1" in validate_body
+    assert 'reasoning_budget_message: payload.reasoning_budget_message ?? ""' in validate_body
+
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    validation = runtime.index("const validation = await validateModel({")
+    unload = runtime.index("await unloadModel(", validation)
+    assert validation < unload
+    validate_payload = runtime[validation:unload]
+    assert "reasoning_budget:" in validate_payload
+    assert "validateReasoningBudget" in validate_payload
+    assert "reasoning_budget_message:" in validate_payload
+    assert "validateReasoningBudgetMessage" in validate_payload
+
+
 def test_backfill_compares_server_keys_by_normalized_identity():
     """app_settings has no schema version, so an install predating identity normalization
     holds rows keyed by whatever id was typed, e.g."""

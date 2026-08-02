@@ -505,7 +505,7 @@ def _serialized_override_write(func):
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import strip_shadowing_flags, validate_extra_args
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
@@ -551,6 +551,24 @@ def update_openai_auto_switch_override(
                         requested_extra_args = get_model_override(alias_id).get("llama_extra_args")
                         if requested_extra_args is not None:
                             break
+        fields_set = payload.model_fields_set
+        reset_reasoning_budget = (
+            "reasoning_budget" in fields_set and payload.reasoning_budget == -1
+        )
+        reset_reasoning_budget_message = (
+            "reasoning_budget_message" in fields_set and payload.reasoning_budget_message == ""
+        )
+        if not payload.fill_absent_fields and requested_extra_args:
+            requested_extra_args = strip_shadowing_flags(
+                requested_extra_args,
+                strip_context = False,
+                strip_cache = False,
+                strip_spec = False,
+                strip_template = False,
+                strip_split_mode = False,
+                strip_reasoning_budget = reset_reasoning_budget,
+                strip_reasoning_budget_message = reset_reasoning_budget_message,
+            )
         # Not validated on an explicit remove: a 400 would only leave the override in place.
         extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
         if payload.remove is True:
@@ -612,8 +630,16 @@ def update_openai_auto_switch_override(
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
                 n_parallel = payload.n_parallel,
-                reasoning_budget = payload.reasoning_budget,
-                reasoning_budget_message = payload.reasoning_budget_message,
+                reasoning_budget = (
+                    None
+                    if payload.fill_absent_fields and reset_reasoning_budget
+                    else payload.reasoning_budget
+                ),
+                reasoning_budget_message = (
+                    None
+                    if payload.fill_absent_fields and reset_reasoning_budget_message
+                    else payload.reasoning_budget_message
+                ),
                 tensor_parallel = payload.tensor_parallel,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,

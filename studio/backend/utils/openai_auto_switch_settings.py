@@ -359,10 +359,12 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
     reasoning_budget = _bounded_int(
         payload.get("reasoning_budget"), minimum = -1, maximum = 2_147_483_647
     )
-    if reasoning_budget is not None and reasoning_budget != -1:
+    # Keep defaults as tombstones: a qualified override must remain present after
+    # resetting a legacy passthrough flag, or a bare/legacy fallback can revive it.
+    if reasoning_budget is not None:
         entry["reasoning_budget"] = reasoning_budget
     reasoning_budget_message = payload.get("reasoning_budget_message")
-    if isinstance(reasoning_budget_message, str) and reasoning_budget_message:
+    if isinstance(reasoning_budget_message, str):
         try:
             entry["reasoning_budget_message"] = validate_reasoning_budget_message(
                 reasoning_budget_message

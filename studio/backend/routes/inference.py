@@ -5006,6 +5006,51 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     return True if name_says_diffusion else None
 
 
+async def _validate_reasoning_budget_preflight(
+    config: ModelConfig,
+    diffusion_kind: Optional[bool],
+    extra_args: Optional[list[str]],
+    request: LoadRequest | ValidateModelRequest,
+) -> None:
+    """Reject unsupported reasoning controls before any resident model is torn down."""
+    if not config.is_gguf:
+        return
+    backend = get_llama_cpp_backend()
+    requested = any(
+        backend.reasoning_budget_settings_requested(
+            extra_args = extra_args,
+            reasoning_budget = request.reasoning_budget,
+            reasoning_budget_message = request.reasoning_budget_message,
+        )
+    )
+    if diffusion_kind and requested:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Reasoning Budget settings are not supported for DiffusionGemma models.",
+        )
+    if diffusion_kind is None and requested:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Reasoning Budget settings cannot be applied until this GGUF is "
+                "downloaded and its architecture can be verified. Load it once with "
+                "the default reasoning budget, then apply these settings."
+            ),
+        )
+    if not requested:
+        return
+    try:
+        await asyncio.to_thread(
+            backend.validate_reasoning_budget_capabilities,
+            backend._find_llama_server_binary(),
+            extra_args = extra_args,
+            reasoning_budget = request.reasoning_budget,
+            reasoning_budget_message = request.reasoning_budget_message,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
 async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
     """Whether a per-model GPU pin is usable on this machine right now.
 
@@ -6116,38 +6161,9 @@ async def _load_model_impl(
         # Invalid GPU IDs must fail before the training coexistence guard.
         gguf_gpu_ids: Optional[List[int]] = None
         if config.is_gguf:
-            _reasoning_requested = any(
-                llama_backend.reasoning_budget_settings_requested(
-                    extra_args = extra_llama_args,
-                    reasoning_budget = request.reasoning_budget,
-                    reasoning_budget_message = request.reasoning_budget_message,
-                )
+            await _validate_reasoning_budget_preflight(
+                config, diffusion_kind, extra_llama_args, request
             )
-            if diffusion_kind and _reasoning_requested:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Reasoning Budget settings are not supported for DiffusionGemma models.",
-                )
-            if diffusion_kind is None and _reasoning_requested:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "Reasoning Budget settings cannot be applied until this GGUF is "
-                        "downloaded and its architecture can be verified. Load it once with "
-                        "the default reasoning budget, then apply these settings."
-                    ),
-                )
-            if not diffusion_kind:
-                try:
-                    await asyncio.to_thread(
-                        llama_backend.validate_reasoning_budget_capabilities,
-                        llama_backend._find_llama_server_binary(),
-                        extra_args = extra_llama_args,
-                        reasoning_budget = request.reasoning_budget,
-                        reasoning_budget_message = request.reasoning_budget_message,
-                    )
-                except ValueError as exc:
-                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
             (
                 gguf_gpu_ids,
                 gpu_ids_are_vulkan_ordinals,
@@ -6898,6 +6914,9 @@ async def validate_model(
         gpu_ids_are_vulkan_ordinals = False
         diffusion_kind = _classify_diffusion_gguf(config) if config.is_gguf else False
         if config.is_gguf:
+            await _validate_reasoning_budget_preflight(
+                config, diffusion_kind, effective_extra_args, request
+            )
             (
                 validated_gpu_ids,
                 gpu_ids_are_vulkan_ordinals,

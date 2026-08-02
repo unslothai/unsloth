@@ -19,6 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi import HTTPException
+
 from models.inference import ValidateModelRequest
 
 
@@ -43,11 +45,16 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
         *,
         diffusion_kind,
         is_gguf = True,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+        capability_error = None,
     ):
         # Mirrors the real staged-metadata preflight; also skips the training guard.
         request = ValidateModelRequest(
             model_path = "someone/repacked-gguf",
             include_context_length = True,
+            reasoning_budget = reasoning_budget,
+            reasoning_budget_message = reasoning_budget_message,
         )
         config = SimpleNamespace(
             identifier = "someone/repacked-gguf",
@@ -56,6 +63,18 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
             is_lora = False,
             is_vision = False,
             gguf_file = None,
+        )
+
+        def _validate_capabilities(*_args, **_kwargs):
+            if capability_error:
+                raise capability_error
+
+        backend = SimpleNamespace(
+            reasoning_budget_settings_requested = (
+                route.LlamaCppBackend.reasoning_budget_settings_requested
+            ),
+            _find_llama_server_binary = lambda: "/server",
+            validate_reasoning_budget_capabilities = _validate_capabilities,
         )
         with (
             patch.object(
@@ -68,6 +87,7 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
             patch.object(route, "_classify_diffusion_gguf", return_value = diffusion_kind),
             patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
             patch.object(route, "_effective_load_in_4bit", return_value = True),
+            patch.object(route, "get_llama_cpp_backend", return_value = backend),
         ):
             return asyncio.run(route.validate_model(request, current_subject = "test-user"))
 
@@ -108,6 +128,31 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
 
         resp = ValidateModelResponse(valid = True, message = "ok")
         self.assertFalse(resp.diffusion_unknown)
+
+    def test_explicit_budget_is_rejected_during_validate_before_unload(self):
+        route = _load_route_module("inf_route_reasoning_validate_1")
+        with self.assertRaises(HTTPException) as raised:
+            self._validate(
+                route,
+                diffusion_kind = False,
+                reasoning_budget = 2048,
+                capability_error = ValueError(
+                    "llama-server does not support --reasoning-budget"
+                ),
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("--reasoning-budget", raised.exception.detail)
+
+    def test_explicit_message_is_rejected_for_unknown_diffusion_kind(self):
+        route = _load_route_module("inf_route_reasoning_validate_2")
+        with self.assertRaises(HTTPException) as raised:
+            self._validate(
+                route,
+                diffusion_kind = None,
+                reasoning_budget_message = "Conclude now",
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("cannot be applied until", raised.exception.detail)
 
 
 if __name__ == "__main__":

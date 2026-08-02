@@ -323,7 +323,7 @@ def test_route_checks_reasoning_budget_capabilities_before_teardown():
     route_source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
         encoding = "utf-8"
     )
-    preflight = route_source.index("llama_backend.validate_reasoning_budget_capabilities")
+    preflight = route_source.index("backend.validate_reasoning_budget_capabilities")
     diffusion_rejection = route_source.index(
         "Reasoning Budget settings are not supported for DiffusionGemma models."
     )

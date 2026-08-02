@@ -316,6 +316,14 @@ class ValidateModelRequest(BaseModel):
             "server-wide --parallel default."
         ),
     )
+    reasoning_budget: int = Field(-1, ge = -1, le = 2_147_483_647)
+    reasoning_budget_message: str = ""
+
+    @field_validator("reasoning_budget_message")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: str) -> str:
+        return validate_reasoning_budget_message(value)
+
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "

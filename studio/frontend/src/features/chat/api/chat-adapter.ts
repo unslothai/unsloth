@@ -1556,6 +1556,8 @@ async function autoLoadSmallestModel(): Promise<{
     gpu_memory_mode?: "auto" | "manual";
     cache_type_kv?: string | null;
     tensor_parallel?: boolean | null;
+    reasoning_budget?: number;
+    reasoning_budget_message?: string;
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1721,6 +1723,10 @@ async function autoLoadSmallestModel(): Promise<{
               // split (0 especially) must not be refused as a full-GGUF occupant.
               gpu_layers: effectiveGpuLayers,
               n_parallel: config.nParallel ?? null,
+              reasoning_budget: isDiffusion ? -1 : config.reasoningBudget,
+              reasoning_budget_message: isDiffusion
+                ? ""
+                : config.reasoningBudgetMessage,
             }
           : {}),
       }))

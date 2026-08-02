@@ -913,6 +913,12 @@ export function useChatModelRuntime() {
             const validateNParallel = resetsPerModelSettings
               ? (pendingLoadConfig?.nParallel ?? null)
               : loadNParallel;
+            const validateReasoningBudget = resetsPerModelSettings
+              ? (pendingLoadConfig?.reasoningBudget ?? -1)
+              : loadReasoningBudget;
+            const validateReasoningBudgetMessage = resetsPerModelSettings
+              ? (pendingLoadConfig?.reasoningBudgetMessage ?? "")
+              : loadReasoningBudgetMessage;
             const validateMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
               loadGpuMemoryMode,
@@ -948,6 +954,12 @@ export function useChatModelRuntime() {
                     // split 409s during training even when it fits.
                     gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
+                    reasoning_budget: targetIsDiffusion
+                      ? -1
+                      : validateReasoningBudget,
+                    reasoning_budget_message: targetIsDiffusion
+                      ? ""
+                      : validateReasoningBudgetMessage,
                   }
                 : {}),
             });

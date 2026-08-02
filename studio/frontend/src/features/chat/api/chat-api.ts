@@ -243,6 +243,8 @@ export async function validateModel(
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
+      reasoning_budget: payload.reasoning_budget ?? -1,
+      reasoning_budget_message: payload.reasoning_budget_message ?? "",
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
