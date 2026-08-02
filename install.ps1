@@ -2195,13 +2195,11 @@ exit 0
         substep "https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
     } else {
         # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
-        # PyTorch publishes XPU (SYCL) wheels at download.pytorch.org/whl/xpu that ship
-        # their own oneAPI runtime. Windows also needs the Intel GPU driver (and Unsloth
-        # additionally documents oneAPI + Level Zero), so an Intel adapter alone is not
-        # proof of a usable XPU: $HasIntelGpu is "an Intel GPU is present",
-        # $script:IsIntelXpu is "XPU wheels are appropriate for it".
-        # Get-CimInstance, not Get-WmiObject: the latter does not exist in PowerShell 7.
+        # XPU (SYCL) wheels bundle their own oneAPI runtime, but Windows still needs the Intel
+        # driver (Unsloth also documents oneAPI + Level Zero), so an Intel adapter alone proves
+        # nothing: $HasIntelGpu is "one is present", $script:IsIntelXpu is "XPU wheels suit it".
         # Only Arc / Data Center parts are XPU-capable; UHD / HD / Iris Xe are not.
+        # Get-CimInstance, not Get-WmiObject: the latter does not exist in PowerShell 7.
         $HasIntelGpu = $false
         $IntelGpuLabel = $null
         try {
@@ -2214,8 +2212,7 @@ exit 0
                 if ($xpuGpu) { $script:IsIntelXpu = $true }
             }
         } catch {}
-        # torch.xpu.is_available() is authoritative when torch is already installed
-        # (migrated env), so let it both confirm and veto the name match above.
+        # An installed torch (migrated env) is authoritative: it confirms or vetoes the match.
         if (Test-Path -LiteralPath $VenvPython) {
             try {
                 $xpuCheck = & $VenvPython -c "import torch; print(torch.xpu.is_available())" 2>$null | Out-String
@@ -2231,8 +2228,7 @@ exit 0
         if ($script:IsIntelXpu) {
             step "gpu" "Intel GPU detected" "Green"
             substep "$IntelGpuLabel"
-            # The wheel-index message lives with the reroute below: only that point
-            # knows whether a pin or --no-torch overrode XPU, and the real mirror URL.
+            # Reroute below prints the index: only it knows the mirror URL and any pin override.
         } else {
             step "gpu" "none (chat-only / GGUF)" "Yellow"
             if ($HasIntelGpu) { substep "Detected: $IntelGpuLabel (not XPU-capable)" "Yellow" }
@@ -2254,8 +2250,8 @@ exit 0
         return $value.Substring(0, $idx).TrimEnd('/') + $value.Substring($idx)
     }
 
-    # Index leaf (cpu / cu128 / xpu / gfx1201), query and fragment stripped so a
-    # token-authenticated mirror still classifies by family. Shared by the callers below.
+    # Index leaf (cpu / cu128 / xpu / gfx1201), ?query and #fragment stripped so a
+    # token-authenticated mirror still classifies by family. Shared.
     function Get-TorchIndexLeafName {
         param([string]$Url)
         if ([string]::IsNullOrWhiteSpace($Url)) { return "" }
@@ -2383,8 +2379,8 @@ exit 0
                         (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     $TorchIndexUrl = Get-TorchIndexUrl
 
-    # Intel XPU reroute. Must run AFTER Get-TorchIndexUrl or it would be overwritten;
-    # an explicit pin still wins, exactly like the AMD ROCm reroute below.
+    # Intel XPU reroute. Must run AFTER the Get-TorchIndexUrl call above, or that call
+    # overwrites it. An explicit pin still wins, like the AMD ROCm reroute below.
     if ($script:IsIntelXpu -and -not $TorchIndexPinned -and -not $SkipTorch) {
         $XpuBaseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
         $TorchIndexUrl = "$XpuBaseUrl/xpu"
@@ -2628,13 +2624,13 @@ exit 0
             }
         } elseif ($script:IsIntelXpu -and (Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
             # ── Intel Arc / XPU PyTorch install ──
-            # XPU wheels ship their own oneAPI runtime (intel-sycl-rt et al.) and
-            # are published at https://download.pytorch.org/whl/xpu under PEP 503.
+            # XPU wheels carry their own oneAPI runtime (intel-sycl-rt et al.) and are
+            # published under PEP 503 at https://download.pytorch.org/whl/xpu.
             Write-TauriLog "STEP" "Installing PyTorch (Intel XPU)"
             substep "installing PyTorch from $(Remove-IndexUrlCredentials $TorchIndexUrl)..."
-            # Bound the trio exactly like every other index: the XPU index serves torch
-            # past Unsloth's ceiling (2.13.0), and torchaudio dropped its exact torch pin,
-            # so bare names resolve a mismatched pair and drag unsloth back to an old release.
+            # Bound the trio like every other index: the XPU index serves torch up to 2.13.0,
+            # past our ceiling, and torchaudio dropped its exact torch pin, so bare names
+            # resolve a mismatched pair and drag unsloth back to an old release.
             $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 # Transient XPU-index failure: fall back to CPU base.
@@ -2645,8 +2641,7 @@ exit 0
                     Write-Host "[ERROR] Failed to install PyTorch (XPU and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
                 }
-                # CPU base is in; drop the XPU expectation so the flavor-repair block
-                # below won't retry the index that just failed (mirrors the ROCm path).
+                # Drop the XPU expectation so flavor-repair below skips the failed index (as ROCm does).
                 $script:IsIntelXpu = $false
                 $TorchIndexUrl = $CpuFallbackIndexUrl
             }
