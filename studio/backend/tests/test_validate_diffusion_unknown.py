@@ -136,9 +136,7 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
                 route,
                 diffusion_kind = False,
                 reasoning_budget = 2048,
-                capability_error = ValueError(
-                    "llama-server does not support --reasoning-budget"
-                ),
+                capability_error = ValueError("llama-server does not support --reasoning-budget"),
             )
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("--reasoning-budget", raised.exception.detail)

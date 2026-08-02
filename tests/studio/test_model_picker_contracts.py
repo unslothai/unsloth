@@ -1421,7 +1421,10 @@ def test_reasoning_resets_reach_the_server_without_making_backfill_destructive()
     route = _read_backend("routes/settings.py")
     assert "fields_set = payload.model_fields_set" in route
     assert '"reasoning_budget" in fields_set and payload.reasoning_budget == -1' in route
-    assert '"reasoning_budget_message" in fields_set and payload.reasoning_budget_message == ""' in route
+    assert (
+        '"reasoning_budget_message" in fields_set and payload.reasoning_budget_message == ""'
+        in route
+    )
     assert "if not payload.fill_absent_fields and requested_extra_args:" in route
 
 

@@ -552,9 +552,7 @@ def update_openai_auto_switch_override(
                         if requested_extra_args is not None:
                             break
         fields_set = payload.model_fields_set
-        reset_reasoning_budget = (
-            "reasoning_budget" in fields_set and payload.reasoning_budget == -1
-        )
+        reset_reasoning_budget = "reasoning_budget" in fields_set and payload.reasoning_budget == -1
         reset_reasoning_budget_message = (
             "reasoning_budget_message" in fields_set and payload.reasoning_budget_message == ""
         )

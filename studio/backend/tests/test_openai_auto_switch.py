@@ -830,9 +830,7 @@ def test_reasoning_resets_strip_only_matching_carried_flags(monkeypatch):
     for suffix in ("budget", "message", "both", "fill"):
         _put(f"unsloth/B-GGUF:{suffix}", llama_extra_args = extras)
 
-    budget = _put("unsloth/B-GGUF:budget", reasoning_budget = -1).overrides[
-        "unsloth/B-GGUF:budget"
-    ]
+    budget = _put("unsloth/B-GGUF:budget", reasoning_budget = -1).overrides["unsloth/B-GGUF:budget"]
     assert budget["llama_extra_args"] == [
         "--reasoning-budget-message",
         "Conclude now",
@@ -876,10 +874,7 @@ def test_reasoning_reset_tombstone_blocks_bare_and_legacy_fallbacks(monkeypatch)
     _put("unsloth/B-GGUF", llama_extra_args = ["--reasoning-budget", "2048"])
     qualified = _put("unsloth/B-GGUF:Q4_K_M", reasoning_budget = -1).overrides
     assert qualified["unsloth/B-GGUF:Q4_K_M"] == {"reasoning_budget": -1}
-    assert qualified["unsloth/B-GGUF"]["llama_extra_args"] == [
-        "--reasoning-budget",
-        "2048",
-    ]
+    assert qualified["unsloth/B-GGUF"]["llama_extra_args"] == ["--reasoning-budget", "2048"]
     assert settings.model_override_load_kwargs(
         settings.get_model_override("unsloth/B-GGUF:Q4_K_M"), is_gguf = True
     ) == {"reasoning_budget": -1}
@@ -888,9 +883,9 @@ def test_reasoning_reset_tombstone_blocks_bare_and_legacy_fallbacks(monkeypatch)
     _put(f"{path}:Q4_K_M", llama_extra_args = ["--reasoning-budget-message", "Stop"])
     standalone = _put(path, reasoning_budget_message = "").overrides
     assert standalone[path] == {"reasoning_budget_message": ""}
-    assert settings.model_override_load_kwargs(
-        settings.get_model_override(path), is_gguf = True
-    ) == {"reasoning_budget_message": ""}
+    assert settings.model_override_load_kwargs(settings.get_model_override(path), is_gguf = True) == {
+        "reasoning_budget_message": ""
+    }
 
 
 @pytest.mark.parametrize("message", ["😀" * 2_049, "bad\0message"])
