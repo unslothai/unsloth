@@ -251,9 +251,7 @@ _DELIMITER_SHAPED = re.compile(r"\A(?:<[^\s<>]{1,60}>|\[[^\s\[\]]{1,40}\])\Z")
 # with "message['content']" and "messages[0]", which are implementation syntax that never
 # reaches the prompt, and harvesting them would rewrite ordinary code containing
 # "['content']" -- the exact cross-family mangling this profiling removes (#7066).
-_TEMPLATE_DELIMITERS = re.compile(
-    "<[^\\s<>'\"]{1,60}>|\\[/?[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\]"
-)
+_TEMPLATE_DELIMITERS = re.compile("<[^\\s<>'\"]{1,60}>|\\[/?[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\]")
 # A marker whose name is filled in at render time, so a template only ever shows one
 # example. "<function=pay>" must break on a model whose template spells
 # "<function=example>", which an alternation over literals alone cannot do.

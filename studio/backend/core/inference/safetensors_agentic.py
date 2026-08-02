@@ -566,9 +566,7 @@ def run_safetensors_tool_loop(
     # *markup* is the same profile the renderer uses, so a tool is never dropped from the
     # controller over a marker this model does not treat as structure (#7066).
     tool_controller = ToolLoopController(
-        tools = (
-            None if unrestricted_tools else neutralize_tool_descriptions(tools, None, markup)
-        ),
+        tools = (None if unrestricted_tools else neutralize_tool_descriptions(tools, None, markup)),
         auto_heal_tool_calls = auto_heal_tool_calls,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).

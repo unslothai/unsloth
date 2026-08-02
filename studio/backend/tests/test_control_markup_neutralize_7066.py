@@ -4535,9 +4535,12 @@ def test_the_catalog_leaf_rewrite_uses_the_profile():
 @pytest.mark.parametrize(
     "source_file,needle",
     [
-        ("routes/inference.py", "markup = getattr(llama_backend, \"markup_profile\", None),"),
+        ("routes/inference.py", 'markup = getattr(llama_backend, "markup_profile", None),'),
         ("routes/inference.py", "_sf_neutralize_tools(payload.tools, None, _sf_markup)"),
-        ("core/inference/safetensors_agentic.py", "neutralize_tool_descriptions(tools, None, markup)"),
+        (
+            "core/inference/safetensors_agentic.py",
+            "neutralize_tool_descriptions(tools, None, markup)",
+        ),
     ],
 )
 def test_every_sweep_site_receives_the_profile(source_file, needle):
