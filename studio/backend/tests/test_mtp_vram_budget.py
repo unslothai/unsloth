@@ -565,7 +565,7 @@ class TestExtraArgsMtpDetection:
         assert "_extra_args_requests_mtp(extra_args,env=_spec_env)" in compact
         # The other half: the launch really does clear it for a managed block.
         assert "ornot_extra_args_set_spec_type(extra_args):" in compact
-        assert 'env.pop(_pv_spec_var,None)' in compact
+        assert "env.pop(_pv_spec_var,None)" in compact
 
     def test_spec_default_does_not_clear_an_inherited_spec_type(self):
         # --spec-default push_backs NGRAM_MOD rather than replacing the vector, so
