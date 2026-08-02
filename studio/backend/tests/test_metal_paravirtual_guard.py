@@ -1088,7 +1088,9 @@ def test_the_clamp_judges_the_env_the_child_will_actually_get():
     assert llama_cpp._extra_args_requests_mtp([], llama_cpp._child_spec_env([])) is False
     # Extras own the spec type: their flags and the env accumulate and both launch.
     extras = ["--spec-type", "ngram-mod"]
-    assert llama_cpp._extra_args_requests_mtp(extras, llama_cpp._child_spec_env(extras, env)) is True
+    assert (
+        llama_cpp._extra_args_requests_mtp(extras, llama_cpp._child_spec_env(extras, env)) is True
+    )
     src = _load_model_source()
     assert "_child_spec_env(extra_args)" in src
     assert "_extra_args_requests_mtp(extra_args, env = {})" not in src
