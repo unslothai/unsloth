@@ -558,10 +558,7 @@ def test_check_format_rejects_invalid_path_as_400():
     assert exc_info.value.status_code == 400
 
 
-def test_check_format_returns_stable_code_for_missing_selected_cache(
-    monkeypatch,
-    tmp_path,
-):
+def test_check_format_returns_stable_code_for_missing_selected_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(
         formatting,
         "resolve_dataset_path",
