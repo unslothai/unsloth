@@ -2830,7 +2830,11 @@ exit 0
     # which would unpin the bounded trio, and it carries the bitsandbytes preview wheel uv
     # refuses ("Wheel version does not match filename"), which would fail the whole command.
     # Best-effort: 4-bit is one feature, so a failure warns instead of aborting the install.
-    if (-not $SkipTorch -and $script:IsIntelXpu -and (Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
+    # Keyed off the index leaf alone, not $script:IsIntelXpu: an explicit FAMILY=xpu pin on a
+    # non-Intel host skips the XPU branch above but still installs the trio from the xpu index,
+    # so torch is +xpu and needs the same floor. The CPU fallback there rewrites $TorchIndexUrl,
+    # so a failed XPU install reads as "cpu" here and this stays quiet.
+    if (-not $SkipTorch -and (Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
         substep "installing bitsandbytes with Intel XPU kernels..."
         $bnbXpuExit = Invoke-InstallCommandRetry -Label "install bitsandbytes (Intel XPU)" { uv pip install --python $VenvPython --no-deps "bitsandbytes>=0.50.0" }
         if ($bnbXpuExit -ne 0) {

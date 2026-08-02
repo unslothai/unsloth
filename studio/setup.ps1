@@ -3704,6 +3704,38 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
+
+# ── Intel XPU: bitsandbytes must carry XPU kernels ──
+# unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 when device_type is
+# "xpu"; only bitsandbytes' XPU library exports those, so a wheel without it turns 4-bit
+# QLoRA off. win_amd64 first ships one in 0.49.0, but the floor is 0.50.0 -- the same one
+# the AMD paths use, since <=0.49.2 NaNs at 4-bit decode on AMD and an Arc card can sit
+# next to a Radeon. unsloth's own floor (>=0.45.5) is low enough that a MIGRATED venv keeps
+# its old wheel: the stack above upgrades unsloth / unsloth-zoo alone. Runs after it so it
+# is the last word on both the fresh and the migrated path. --no-deps (torch and numpy are
+# in already), and never the curated unsloth[intel-gpu-torch*] extra: it pins torch to one
+# +xpu wheel URL, which would unpin the bounded trio above, and it carries a bitsandbytes
+# preview wheel uv refuses ("Wheel version does not match filename").
+# $XpuIndexUrl is the "the venv ended up on XPU" flag: the CPU fallback above clears it, and
+# no-torch mode never assigns it. Still inside the -not $SkipPythonDeps pass, so the fast
+# "up to date" escape (which installs nothing) does not reach here either.
+# Best-effort: 4-bit is one feature, so a failure warns instead of failing setup.
+if ($stackExit -eq 0 -and $XpuIndexUrl) {
+    substep "installing bitsandbytes with Intel XPU kernels..."
+    if ($script:UnslothVerbose) {
+        Fast-Install --no-deps "bitsandbytes>=0.50.0" | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+        $bnbXpuExit = $LASTEXITCODE
+        $bnbOutput = ""
+    } else {
+        $bnbOutput = Fast-Install --no-deps "bitsandbytes>=0.50.0" | Out-String
+        $bnbXpuExit = $LASTEXITCODE
+    }
+    if ($bnbXpuExit -ne 0) {
+        substep "[WARN] could not install an XPU-capable bitsandbytes (exit $bnbXpuExit); 4-bit QLoRA may be unavailable." "Yellow"
+        Write-Host (Redact-InstallOutput $bnbOutput) -ForegroundColor Yellow
+    }
+}
+
 # Restore ErrorActionPreference after pip/python work
 $ErrorActionPreference = $prevEAP
 if ($stackExit -ne 0) {
