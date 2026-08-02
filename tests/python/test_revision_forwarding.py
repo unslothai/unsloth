@@ -545,7 +545,8 @@ def _simulate_loader():
     tree = ast.parse(LOADER.read_text(encoding = "utf-8"))
     namespace = {"logger": types.SimpleNamespace(warning_once = lambda *a, **k: None)}
     functions = [
-        n for n in tree.body
+        n
+        for n in tree.body
         if isinstance(n, ast.FunctionDef)
         and n.name in ("_revision_for_resolved_repo", "_revision_for_tokenizer_repo")
     ]
@@ -572,26 +573,68 @@ def _simulate_loader():
     " expected_model, expected_tokenizer",
     [
         ("plain pinned load", "org/m", "org/m", False, None, "v2", False, "v2", "v2"),
-        ("remapped to a prequant mirror",
-         "org/m", "unsloth/m-bnb-4bit", False, None, "v2", True, None, None),
+        (
+            "remapped to a prequant mirror",
+            "org/m",
+            "unsloth/m-bnb-4bit",
+            False,
+            None,
+            "v2",
+            True,
+            None,
+            None,
+        ),
         # The adapter's ref is not the base repo's, and the tokenizer follows the base.
         ("PEFT, remote adapter", "org/ad", "org/base", True, None, "v2", False, None, None),
         # ... unless the tokenizer is the adapter itself, which the caller did pin.
-        ("PEFT, adapter-hosted tokenizer",
-         "org/ad", "org/base", True, "org/ad", "v2", False, None, "v2"),
-        ("plain load, third-party tokenizer",
-         "org/m", "org/m", False, "other/tok", "v2", False, "v2", None),
+        (
+            "PEFT, adapter-hosted tokenizer",
+            "org/ad",
+            "org/base",
+            True,
+            "org/ad",
+            "v2",
+            False,
+            None,
+            "v2",
+        ),
+        (
+            "plain load, third-party tokenizer",
+            "org/m",
+            "org/m",
+            False,
+            "other/tok",
+            "v2",
+            False,
+            "v2",
+            None,
+        ),
         # Naming the requested repo back does not survive the remap: the weights moved.
-        ("remapped, tokenizer named as the requested repo",
-         "org/m", "unsloth/m-bnb-4bit", False, "org/m", "v2", True, None, None),
-        ("no revision at all",
-         "org/m", "unsloth/m-bnb-4bit", False, None, None, True, None, None),
+        (
+            "remapped, tokenizer named as the requested repo",
+            "org/m",
+            "unsloth/m-bnb-4bit",
+            False,
+            "org/m",
+            "v2",
+            True,
+            None,
+            None,
+        ),
+        ("no revision at all", "org/m", "unsloth/m-bnb-4bit", False, None, None, True, None, None),
     ],
     ids = lambda v: v if isinstance(v, str) and " " in v else None,
 )
 def test_the_revision_decision_matrix(
-    label, old_model_name, model_name, is_peft, tokenizer_name, revision, mapper_moved_name,
-    expected_model, expected_tokenizer,
+    label,
+    old_model_name,
+    model_name,
+    is_peft,
+    tokenizer_name,
+    revision,
+    mapper_moved_name,
+    expected_model,
+    expected_tokenizer,
 ):
     """One table for the whole contract: which repo each pin is allowed to reach."""
     run = _simulate_loader()
@@ -635,9 +678,9 @@ def test_the_fp8_cache_name_is_revision_specific():
         for n in ast.walk(function)
         if isinstance(n, ast.AugAssign) and getattr(n.target, "id", None) == "cache_name"
     ]
-    assert any("revision" in ast.unparse(n) for n in writes), (
-        "two revisions of one repo would share a cache entry"
-    )
+    assert any(
+        "revision" in ast.unparse(n) for n in writes
+    ), "two revisions of one repo would share a cache entry"
 
 
 def test_both_loaders_hand_the_fp8_quantizer_the_revision():
@@ -649,9 +692,9 @@ def test_both_loaders_hand_the_fp8_quantizer_the_revision():
         for call in calls:
             keyword = _revision_kwarg(call)
             assert keyword is not None
-            assert getattr(keyword.value, "id", None) == "revision", (
-                "the fp8 source is still the caller's own repo here"
-            )
+            assert (
+                getattr(keyword.value, "id", None) == "revision"
+            ), "the fp8 source is still the caller's own repo here"
 
 
 def test_a_pinned_config_is_not_handed_to_the_vllm_path():
@@ -668,9 +711,9 @@ def test_a_pinned_config_is_not_handed_to_the_vllm_path():
         keyword = next((k for k in call.keywords if k.arg == "auto_config"), None)
         assert keyword is not None
         name = getattr(keyword.value, "id", None)
-        assert name is not None and name != "model_config", (
-            "the probed config must go through the vLLM gate first"
-        )
+        assert (
+            name is not None and name != "model_config"
+        ), "the probed config must go through the vLLM gate first"
         guards = [
             n
             for n in ast.walk(function)

@@ -175,7 +175,12 @@ def _revision_for_resolved_repo(
 
 
 def _revision_for_tokenizer_repo(
-    tokenizer_name, model_name, old_model_name, revision, model_revision, is_peft = False
+    tokenizer_name,
+    model_name,
+    old_model_name,
+    revision,
+    model_revision,
+    is_peft = False,
 ):
     """Pick the revision for whichever repo the tokenizer is actually read from.
 
