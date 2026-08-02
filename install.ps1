@@ -1207,11 +1207,16 @@ exit 0
             Write-Host "        working directory, which Windows blocks there." -ForegroundColor Yellow
             Write-Host "        'Run as administrator' opens PowerShell in System32, which is how" -ForegroundColor Yellow
             Write-Host "        most people land here." -ForegroundColor Yellow
-            Write-Host "        Change to a normal folder and run the installer again:" -ForegroundColor Yellow
-            Write-Host "          cd `$env:USERPROFILE" -ForegroundColor Cyan
+            # USERPROFILE was one of the candidates just rejected, so naming it here would
+            # send the user back into the same tree. A service or SYSTEM account is the
+            # usual reason nothing qualified, and its profile is where Studio would install.
+            Write-Host "        Nothing outside $SystemRootDir was usable either (USERPROFILE," -ForegroundColor Yellow
+            Write-Host "        HOME, PUBLIC, TEMP), which normally means a service or the SYSTEM" -ForegroundColor Yellow
+            Write-Host "        account. Sign in as a normal user, open PowerShell there, and run" -ForegroundColor Yellow
+            Write-Host "        the installer again:" -ForegroundColor Yellow
             Write-Host "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
             Write-Host ""
-            return (Exit-InstallFailure "Refusing to install from the Windows system directory $CurrentDir. cd to a normal folder (for example `$env:USERPROFILE) and re-run the installer.")
+            return (Exit-InstallFailure "Refusing to install from the Windows system directory $CurrentDir, and no folder outside $SystemRootDir was usable. Run the installer from a normal user account.")
         }
     }
 
