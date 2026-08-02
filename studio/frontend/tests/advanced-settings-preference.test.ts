@@ -93,6 +93,47 @@ test("a refused write still moves the switch", () => {
   }
 });
 
+test("a newer choice elsewhere takes over from a refused write", () => {
+  // The quota frees up and another tab writes. Storage now holds a choice made
+  // after the one this tab could not persist, so it wins.
+  const setItem = storage.setItem;
+  storage.setItem = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    saveAdvancedSettingsOpen(true);
+    assert.equal(readAdvancedSettingsOpen(), true);
+  } finally {
+    storage.setItem = setItem;
+  }
+
+  // No storage event and nothing mounted to hear one: the next read still has
+  // to notice, since events are not replayed.
+  store.set(ADVANCED_SETTINGS_OPEN_KEY, "false");
+  assert.equal(readAdvancedSettingsOpen(), false);
+
+  // And it stays handed back to storage rather than flipping around.
+  store.delete(ADVANCED_SETTINGS_OPEN_KEY);
+  assert.equal(readAdvancedSettingsOpen(), null);
+});
+
+test("a refused write holds while storage stays put", () => {
+  store.set(ADVANCED_SETTINGS_OPEN_KEY, "false");
+  const setItem = storage.setItem;
+  storage.setItem = () => {
+    throw new Error("QuotaExceededError");
+  };
+  try {
+    saveAdvancedSettingsOpen(true);
+    // Nobody else wrote, so the fallback is still the newest choice there is.
+    assert.equal(readAdvancedSettingsOpen(), true);
+    assert.equal(readAdvancedSettingsOpen(), true);
+  } finally {
+    storage.setItem = setItem;
+    store.delete(ADVANCED_SETTINGS_OPEN_KEY);
+  }
+});
+
 test("every mounted panel hears a toggle made on another surface", () => {
   // The sidebar copy stays mounted while collapsed, so a toggle in the picker
   // has to reach it rather than leave it on its mount-time snapshot.

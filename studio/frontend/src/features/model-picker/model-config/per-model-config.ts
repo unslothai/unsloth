@@ -228,8 +228,9 @@ function loadAdvancedSettingsOpen(): boolean | null {
 
 // Set only when a write is refused, so the switch keeps working in a browser
 // with storage disabled, sandboxed or full. Cleared by the next write that
-// sticks, which puts storage back in charge.
-let unpersisted: { open: boolean } | null = null;
+// sticks, which puts storage back in charge. `stored` is what storage held at
+// the time, the one signal that tells a later write by someone else apart.
+let unpersisted: { open: boolean; stored: boolean | null } | null = null;
 const advancedOpenListeners = new Set<() => void>();
 
 /** null until the switch is used, so an untouched panel is free to open the
@@ -239,7 +240,18 @@ const advancedOpenListeners = new Set<() => void>();
  *  while every panel was unmounted has no listener to catch it, and its
  *  storage event is not replayed on the next mount. */
 export function readAdvancedSettingsOpen(): boolean | null {
-  return unpersisted ? unpersisted.open : loadAdvancedSettingsOpen();
+  const stored = loadAdvancedSettingsOpen();
+  if (!unpersisted) {
+    return stored;
+  }
+  // Storage moved since the refused write, so someone made a newer choice and
+  // it outranks the fallback. Checked on read, not on the storage event, so it
+  // still holds for an event that landed while nothing was mounted.
+  if (stored !== unpersisted.stored) {
+    unpersisted = null;
+    return stored;
+  }
+  return unpersisted.open;
 }
 
 /** True when the choice reached storage. */
@@ -256,7 +268,9 @@ function writeAdvancedSettingsOpen(open: boolean): boolean {
 }
 
 export function saveAdvancedSettingsOpen(open: boolean): void {
-  unpersisted = writeAdvancedSettingsOpen(open) ? null : { open };
+  unpersisted = writeAdvancedSettingsOpen(open)
+    ? null
+    : { open, stored: loadAdvancedSettingsOpen() };
   // Run Settings is mounted on several surfaces at once, and the sidebar copy
   // stays mounted while collapsed, so tell them all rather than let them keep
   // a snapshot taken at mount.
