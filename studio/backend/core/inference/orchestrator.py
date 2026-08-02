@@ -35,6 +35,7 @@ from utils.hf_xet_fallback import DownloadStallError
 
 logger = get_logger(__name__)
 
+
 def _mapped_chat_template(model_info: dict, active_model_name):
     """The template the generate-time mapper will install, resolved once and cached.
 

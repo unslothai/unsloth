@@ -48,6 +48,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
+
 def _mapped_chat_template(model_info: dict, active_model_name):
     """The template the generate-time mapper will install, resolved once and cached.
 
@@ -73,7 +74,6 @@ def _mapped_chat_template(model_info: dict, active_model_name):
         return None  # unresolved, so retry next turn rather than pinning None
     model_info["mapped_chat_template"] = mapped
     return mapped
-
 
 
 class HarmonyTextStreamer:

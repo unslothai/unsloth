@@ -287,7 +287,14 @@ _DYNAMIC_PIPE_ROLE = re.compile(r"""['"]<\|['"]\s*\+|\+\s*['"]\|>['"]""")
 # The roles a chat template can interpolate. Closed on purpose: this adds exactly what the
 # construction can emit, rather than re-enabling a match on any "<|word|>".
 _ROLE_NAMES = (
-    "system", "user", "assistant", "tool", "ipython", "function", "developer", "human",
+    "system",
+    "user",
+    "assistant",
+    "tool",
+    "ipython",
+    "function",
+    "developer",
+    "human",
 )
 # A marker whose name is filled in at render time, so a template only ever shows one
 # example. "<function=pay>" must break on a model whose template spells
@@ -429,7 +436,11 @@ def _alternation(markers: set):
     )
 
 
-def model_markup(chat_template, tokens = None, tools = None) -> Optional[ModelMarkup]:
+def model_markup(
+    chat_template,
+    tokens = None,
+    tools = None,
+) -> Optional[ModelMarkup]:
     """Profile one model's structural markers, or None when nothing is known about it.
 
     None means "sweep everything the curated patterns know", which is the safe direction
@@ -1877,7 +1888,11 @@ def _split_parallel_tool_calls(messages: list) -> list:
 _MARKUP_BY_TOKENIZER: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
-def markup_for_tokenizer(tokenizer, tools = None, template = None) -> Optional[ModelMarkup]:
+def markup_for_tokenizer(
+    tokenizer,
+    tools = None,
+    template = None,
+) -> Optional[ModelMarkup]:
     """Profile the loaded tokenizer's own structural markers, cached per tokenizer.
 
     Returns None when the template and vocabulary cannot be read, which falls back to the
