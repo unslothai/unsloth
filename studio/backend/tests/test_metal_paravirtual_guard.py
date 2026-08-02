@@ -334,10 +334,14 @@ def test_a_failed_probe_does_not_cost_the_user_their_projector(caps, drops, pins
 @pytest.mark.parametrize(
     "caps, expected",
     [
-        ({"spec_draft_ngl_flag": "--spec-draft-ngl", "mtp_probe_inconclusive": False},
-         "--spec-draft-ngl"),
-        ({"spec_draft_ngl_flag": "--gpu-layers-draft", "mtp_probe_inconclusive": False},
-         "--gpu-layers-draft"),
+        (
+            {"spec_draft_ngl_flag": "--spec-draft-ngl", "mtp_probe_inconclusive": False},
+            "--spec-draft-ngl",
+        ),
+        (
+            {"spec_draft_ngl_flag": "--gpu-layers-draft", "mtp_probe_inconclusive": False},
+            "--gpu-layers-draft",
+        ),
         # Unanswered probe falls back to the 2023 spelling rather than reading as
         # unpinnable, so a failed probe costs speculation nothing.
         ({"spec_draft_ngl_flag": None, "mtp_probe_inconclusive": True}, "--gpu-layers-draft"),

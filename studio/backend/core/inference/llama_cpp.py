@@ -2102,15 +2102,18 @@ def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
     )
 
 
-_OVERRIDE_TENSOR_FLAGS: frozenset = frozenset({
-    "-ot", "--override-tensor",
-    "-otd", "--override-tensor-draft", "--spec-draft-override-tensor",
-})
+_OVERRIDE_TENSOR_FLAGS: frozenset = frozenset(
+    {
+        "-ot",
+        "--override-tensor",
+        "-otd",
+        "--override-tensor-draft",
+        "--spec-draft-override-tensor",
+    }
+)
 
 
-def _paravirtual_strip_gpu_overrides(
-    extra_args: Optional[Iterable[str]],
-) -> Optional[List[str]]:
+def _paravirtual_strip_gpu_overrides(extra_args: Optional[Iterable[str]]) -> Optional[List[str]]:
     """Drop --override-tensor entries that place weights back on the corrupt device.
 
     ``-ot`` is the one placement flag ``--gpu-layers 0`` cannot answer: llama.cpp
@@ -2136,9 +2139,7 @@ def _paravirtual_strip_gpu_overrides(
         if base in _OVERRIDE_TENSOR_FLAGS:
             value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
             targets = [
-                part.rsplit("=", 1)[-1].strip().lower()
-                for part in value.split(",")
-                if "=" in part
+                part.rsplit("=", 1)[-1].strip().lower() for part in value.split(",") if "=" in part
             ]
             if targets and all(t == "cpu" for t in targets):
                 out.append(tok)
