@@ -23,20 +23,21 @@ from unsloth.chat_templates import (
 
 # Discovered, not hardcoded, so a new predefined template is covered on arrival.
 TEMPLATES_WITH_SYSTEM_MESSAGE = sorted(
-    name for name, entry in CHAT_TEMPLATES.items()
+    name
+    for name, entry in CHAT_TEMPLATES.items()
     if isinstance(entry[0], str) and "{system_message}" in entry[0]
 )
 
 MESSAGES = [
-    ("apostrophe",  "Answer the user's question."),
-    ("double",      'He said "hi" today.'),
+    ("apostrophe", "Answer the user's question."),
+    ("double", 'He said "hi" today.'),
     ("both_quotes", """mix ' and " here"""),
-    ("latex",       r"Put it in \boxed{\frac{1}{2}}."),
-    ("windows",     r"C:\Users\me"),
-    ("trailing",    "ends with a backslash \\"),
-    ("crlf",        "line one\r\nline two"),
-    ("group_ref",   r"use \1 for the group"),
-    ("jinja",       "{{ 7*6 }} and {% raw %}x{% endraw %}"),
+    ("latex", r"Put it in \boxed{\frac{1}{2}}."),
+    ("windows", r"C:\Users\me"),
+    ("trailing", "ends with a backslash \\"),
+    ("crlf", "line one\r\nline two"),
+    ("group_ref", r"use \1 for the group"),
+    ("jinja", "{{ 7*6 }} and {% raw %}x{% endraw %}"),
 ]
 
 
@@ -77,7 +78,9 @@ def test_default_system_message_renders_verbatim(name):
 @pytest.mark.parametrize("name", ["vicuna", "vicuna_old", "vicuna old"])
 def test_vicuna_default_has_a_plain_apostrophe(name):
     assert "\\" not in DEFAULT_SYSTEM_MESSAGE[name]
-    assert "'s questions." in _render(_change_system_message(CHAT_TEMPLATES[name][0], name, None)[0])
+    assert "'s questions." in _render(
+        _change_system_message(CHAT_TEMPLATES[name][0], name, None)[0]
+    )
 
 
 @pytest.mark.parametrize("quote", ["'", '"'])
