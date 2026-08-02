@@ -16,7 +16,9 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import inspect
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -193,6 +195,136 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
             "missing": [],
             "reason": f"studio_install_check_failed:{type(exc).__name__}",
         }
+
+
+def _scan_paths() -> Dict[str, list]:
+    """`path=` kwarg limiting a distribution scan to this interpreter's own tree.
+
+    Empty when the interpreter's site-packages cannot be resolved, which leaves
+    the scan at its default of the whole sys.path: over-scanning is the safe
+    direction here, since the alternative is looking at nothing.
+    """
+    import sysconfig
+
+    paths = []
+    for key in ("purelib", "platlib"):
+        try:
+            entry = sysconfig.get_paths().get(key)
+        except Exception:
+            continue
+        if entry and entry not in paths and os.path.isdir(entry):
+            paths.append(entry)
+    return {"path": paths} if paths else {}
+
+
+def damaged_installed_files(limit: int = 8) -> List[str]:
+    """Installed files that are gone, or shorter than pip recorded.
+
+    pip treats a distribution with intact metadata as already satisfied, so an
+    update reinstalls nothing when a package's FILES are damaged: it reports
+    success and the backend then dies on import at boot. A missing-package check
+    cannot see this, because the damaged module still imports; the observed
+    failure was `cannot import name 'Depends' from 'fastapi'`, not a missing
+    fastapi. Comparing each RECORD entry against the filesystem does see it, and
+    since nothing is imported it costs well under a second even with torch
+    installed.
+
+    Only shrinkage and disappearance count, and only for paths a single
+    distribution claims. When two claim one path (descript-audio-codec ships a
+    top-level tests/__init__.py that another package overwrites) whichever copy
+    landed is the one on disk, so its size says nothing about either RECORD --
+    in EITHER direction. Sizes are therefore compared after the whole scan, once
+    multiply-owned paths are known, rather than during it.
+
+    Scanned over the interpreter's own site-packages rather than all of
+    sys.path. distributions() searches every sys.path entry, so a damaged
+    distribution reachable only through an inherited PYTHONPATH would otherwise
+    fail every update while sitting outside the installation, where neither
+    printed repair command can reach it.
+
+    RECORD is parsed here rather than read through Distribution.files, which
+    drops entries whose file no longer exists and so can never report a deletion.
+
+    Describes this interpreter's environment. Callers that may be running
+    outside the managed venv should check first; see install_state().
+    """
+    import csv
+    import io
+    from importlib.metadata import distributions
+
+    entries: List[tuple] = []
+    owners: Dict[str, int] = {}
+    for dist in distributions(**_scan_paths()):
+        try:
+            name = dist.metadata["Name"] or "?"
+            record = dist.read_text("RECORD")
+        except Exception:
+            # An unreadable or absent RECORD says nothing about damage: editable
+            # installs and system packages legitimately have none.
+            continue
+        if not record:
+            continue
+        for row in csv.reader(io.StringIO(record)):
+            rel = row[0] if row else ""
+            # A trailing slash is a directory entry, which has nothing to check.
+            if not rel or rel.endswith("/"):
+                continue
+            # Installer-owned metadata is rewritten in place and drifts from the
+            # size recorded inside itself; .pyc is regenerated from source.
+            if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
+                continue
+            # The size field is optional and real wheels do leave it blank. Keep
+            # the row anyway with an unknown size: existence is still checkable,
+            # and dropping the row meant a deletion went unreported.
+            recorded: Optional[int] = None
+            if len(row) >= 3 and row[2]:
+                try:
+                    recorded = int(row[2])
+                except ValueError:
+                    recorded = None
+            try:
+                target = dist.locate_file(rel)
+            except Exception:
+                continue
+            key = os.path.normcase(str(target))
+            owners[key] = owners.get(key, 0) + 1
+            entries.append((name, rel, recorded, target, key))
+
+    found: List[str] = []
+    for name, rel, recorded, target, key in entries:
+        try:
+            info = target.stat()
+        except OSError:
+            # Multiple ownership makes the recorded SIZES ambiguous; it cannot
+            # explain the file being gone, so this branch runs for shared paths
+            # too.
+            found.append(f"{name}: {rel} is missing")
+        else:
+            if not stat.S_ISREG(info.st_mode):
+                # A directory standing in for a recorded module still imports as
+                # something else, and on POSIX its st_size (commonly 4096) can
+                # sail past the shrinkage test.
+                found.append(f"{name}: {rel} is not a regular file")
+            elif owners[key] == 1 and recorded is not None and info.st_size < recorded:
+                found.append(f"{name}: {rel} is {info.st_size} bytes, expected {recorded}")
+        if len(found) >= limit:
+            return found
+    return found
+
+
+def running_outside_managed_venv(extra_roots: Sequence[Path] = ()) -> bool:
+    """True when this interpreter is not the managed venv the caller means.
+
+    A pip-installed CLI can drive an update into a venv it does not live in, and
+    anything answered from this interpreter would then describe the wrong tree.
+    """
+    if not (Path(sys.prefix) / "pyvenv.cfg").is_file():
+        # Not a venv at all. On Colab setup.sh deliberately installs the backend
+        # into the system Python, whose distro-packaged RECORDs legitimately list
+        # files the distro never installed (PEP 627), so a file check here
+        # describes the distro rather than Studio.
+        return True
+    return _managed_root(extra_roots) is not None
 
 
 def _missing_studio_packages() -> List[str]:

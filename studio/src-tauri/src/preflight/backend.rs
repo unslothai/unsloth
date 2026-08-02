@@ -170,10 +170,7 @@ struct DesktopLoginProbe<'a> {
 }
 
 pub(super) async fn probe_ownerless_spawned_backend(port: u16) -> BackendProbe {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
         Err(_) => return BackendProbe::Missing,
     };
@@ -294,10 +291,7 @@ pub(super) async fn backend_desktop_auth_status(
 }
 
 pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendProbe {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
         Err(_) => return BackendProbe::Missing,
     };
