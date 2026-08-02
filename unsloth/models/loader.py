@@ -175,19 +175,19 @@ def _revision_for_resolved_repo(
 
 
 def _revision_for_tokenizer_repo(
-    tokenizer_name, model_name, old_model_name, revision, base_revision
+    tokenizer_name, model_name, old_model_name, revision, model_revision
 ):
     """Pick the revision for whichever repo the tokenizer is actually read from.
 
-    It is not always the base model's: a PEFT load keeps the caller's repo when
-    tokenizer_name points at the adapter, while an unset tokenizer_name follows the
-    resolved model_name and so follows the gated revision.
+    It is not always the base model's: an adapter-hosted tokenizer keeps the caller's ref,
+    while an unset tokenizer_name follows the resolved model_name and so takes whatever the
+    model load itself uses (None on a PEFT load, whose ref belongs to the adapter).
     """
     repo = tokenizer_name if tokenizer_name else model_name
     if repo == old_model_name:
         return revision
     if repo == model_name:
-        return base_revision
+        return model_revision
     return None
 
 
@@ -906,6 +906,8 @@ class FastLanguageModel(FastLlamaModel):
             base_revision = _revision_for_resolved_repo(
                 base_revision, model_name, old_model_name, mapper_moved_name
             )
+        # On a PEFT load model_name is the base model, which the caller's ref is not for.
+        model_revision = base_revision if not is_peft else None
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit
@@ -933,9 +935,9 @@ class FastLanguageModel(FastLlamaModel):
             model_patcher = dispatch_model,
             tokenizer_name = tokenizer_name,
             trust_remote_code = trust_remote_code,
-            revision = base_revision if not is_peft else None,
+            revision = model_revision,
             tokenizer_revision = _revision_for_tokenizer_repo(
-                tokenizer_name, model_name, old_model_name, revision, base_revision
+                tokenizer_name, model_name, old_model_name, revision, model_revision
             ),
             fast_inference = fast_inference,
             gpu_memory_utilization = gpu_memory_utilization,
@@ -1872,6 +1874,8 @@ class FastModel(FastBaseModel):
             base_revision = _revision_for_resolved_repo(
                 base_revision, model_name, old_model_name, mapper_moved_name
             )
+        # On a PEFT load model_name is the base model, which the caller's ref is not for.
+        model_revision = base_revision if not is_peft else None
 
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
@@ -1884,9 +1888,9 @@ class FastModel(FastBaseModel):
             token = token,
             device_map = device_map,
             trust_remote_code = trust_remote_code,
-            revision = base_revision if not is_peft else None,
+            revision = model_revision,
             tokenizer_revision = _revision_for_tokenizer_repo(
-                tokenizer_name, model_name, old_model_name, revision, base_revision
+                tokenizer_name, model_name, old_model_name, revision, model_revision
             ),
             model_types = model_types,
             tokenizer_name = tokenizer_name,

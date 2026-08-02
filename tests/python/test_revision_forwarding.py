@@ -427,3 +427,95 @@ def test_vision_pops_the_tokenizer_revision_before_the_weight_load():
     ]
     assert weight_loads
     assert pops[0].lineno < min(c.lineno for c in weight_loads)
+
+
+def _load_tokenizer_gate():
+    source = LOADER.read_text(encoding = "utf-8")
+    function = _function(ast.parse(source), "_revision_for_tokenizer_repo")
+    namespace = {}
+    module = ast.Module(body = [function], type_ignores = [])
+    ast.fix_missing_locations(module)
+    exec(compile(module, str(LOADER), "exec"), namespace)
+    return namespace["_revision_for_tokenizer_repo"]
+
+
+def test_an_adapter_ref_never_reaches_the_base_tokenizer():
+    """On a PEFT load the late gate is skipped, so the gated value still names the
+    adapter. The base repo's tokenizer must take the model load's ref, which is None."""
+    gate = _load_tokenizer_gate()
+    # Remote adapter, no explicit tokenizer_name: the tokenizer follows the base model.
+    assert gate(None, "org/base", "org/adapter", "v2", None) is None
+
+
+def test_an_adapter_hosted_tokenizer_keeps_the_callers_ref():
+    gate = _load_tokenizer_gate()
+    assert gate("org/adapter", "org/base", "org/adapter", "v2", None) == "v2"
+
+
+def test_a_plain_load_gives_the_tokenizer_the_model_ref():
+    gate = _load_tokenizer_gate()
+    assert gate(None, "org/model", "org/model", "v2", "v2") == "v2"
+    # A third-party tokenizer repo is pinned by neither.
+    assert gate("other/tok", "org/model", "org/model", "v2", "v2") is None
+
+
+def test_both_dispatches_share_one_model_revision():
+    """The value handed to the base load and the one the tokenizer resolution sees have
+    to be the same, or the PEFT case leaks the adapter ref into the base repo."""
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        assert [
+            n for n in ast.walk(function)
+            if isinstance(n, ast.Assign)
+            and any(getattr(t, "id", None) == "model_revision" for t in n.targets)
+        ], f"{class_name} must derive one model_revision"
+        dispatch = next(
+            c for c in _calls(function, "from_pretrained")
+            if any(k.arg == "tokenizer_revision" for k in c.keywords)
+        )
+        model_kw = _revision_kwarg(dispatch)
+        assert getattr(model_kw.value, "id", None) == "model_revision"
+        tok_kw = next(k for k in dispatch.keywords if k.arg == "tokenizer_revision")
+        assert "model_revision" in ast.unparse(tok_kw.value)
+
+
+def test_a_direct_llama_call_still_pins_its_tokenizer():
+    """FastLlamaModel is exported and the architecture wrappers forward only `revision`,
+    so tokenizer_revision has to fall back to it when the repos are the same."""
+    function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")
+    fallbacks = [
+        n for n in ast.walk(function)
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == "tokenizer_revision" for t in n.targets)
+        and getattr(n.value, "id", None) == "revision"
+    ]
+    assert fallbacks, "no fallback from revision to tokenizer_revision"
+    warms = _calls(function, "maybe_prefetch_hf_snapshot")
+    tokenizer_warms = [
+        c for c in warms
+        if any(k.arg == "revision" and getattr(k.value, "id", None) == "tokenizer_revision"
+               for k in c.keywords)
+    ]
+    assert tokenizer_warms, "the tokenizer warm should use the same pin"
+    # The fallback must precede the warm, or the warm fetches the wrong ref.
+    assert fallbacks[0].lineno < min(c.lineno for c in tokenizer_warms)
+
+
+@pytest.mark.parametrize(
+    "path, cls, name",
+    [(LLAMA, "FastLlamaModel", "tokenizer_revision"),
+     (VISION, "FastBaseModel", "_tokenizer_revision_arg")],
+)
+def test_the_vllm_drop_clears_the_tokenizer_pin_too(path, cls, name):
+    """Clearing only the model pin left vLLM on the default branch while the tokenizer
+    stayed on the requested ref."""
+    function = _function(ast.parse(path.read_text(encoding = "utf-8")), "from_pretrained", cls)
+    clears = [
+        n for n in ast.walk(function)
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == name for t in n.targets)
+        and isinstance(n.value, ast.Constant)
+        and n.value.value is None
+    ]
+    assert clears, f"{path.name} never clears {name} on the vLLM path"

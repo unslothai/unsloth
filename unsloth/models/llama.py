@@ -2350,6 +2350,12 @@ class FastLlamaModel:
                     "the default branch. Use `fast_inference = False` to load a pinned revision."
                 )
                 revision = None
+                tokenizer_revision = None
+
+        if tokenizer_revision is None and tokenizer_name in (None, model_name):
+            # A direct FastLlamaModel call, or an architecture wrapper forwarding only
+            # `revision`, leaves this unset while the config and weights are pinned.
+            tokenizer_revision = revision
 
         token = hf_login(token)
         if model_patcher is None:

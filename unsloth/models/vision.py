@@ -880,6 +880,7 @@ class FastBaseModel:
                 "the default branch. Use `fast_inference = False` to load a pinned revision."
             )
             _revision = None
+            _tokenizer_revision_arg = None
             kwargs.pop("revision", None)
         _revision_repo = model_name
 
