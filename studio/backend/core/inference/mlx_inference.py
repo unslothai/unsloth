@@ -167,16 +167,13 @@ def _classify_mlx_audio_type(
     """
 
     def _probe_says_no():
-        # Ran, answered: authoritative for audio_vlm, silent on everything else.
+        # Authoritative for audio_vlm only; anything else passes through.
         return None if config_audio_type == "audio_vlm" else config_audio_type
 
     if not is_vision or processor is None:
         return config_audio_type
-    # Everything below runs inside the guard, including the capability call and
-    # its result: this is a probe, and a model load must never fail on one. The
-    # dependency promises totality, but it is pinned by a floor rather than a
-    # version, so its promise is not ours to assume. BaseException for the same
-    # reason the dependency uses it — an escape here aborts the load.
+    # All of it inside the guard: a model load must never fail on a probe.
+    # BaseException because any escape here aborts the load.
     try:
         from unsloth_zoo.mlx.utils import (
             audio_extractor_sampling_rate,
@@ -1301,8 +1298,7 @@ class MLXInferenceBackend:
 
         from mlx_vlm import stream_generate as vlm_stream
 
-        # Only the CURRENT user turn may caption the audio; an audio-only turn
-        # takes the transcribe default rather than borrowing older history.
+        # Only the CURRENT user turn may caption the audio; never older history.
         user_text = ""
         for msg in reversed(messages or []):
             if isinstance(msg, dict) and msg.get("role") == "user":
@@ -1331,9 +1327,8 @@ class MLXInferenceBackend:
             )
 
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
-        # Hold the adapter state for the whole stream, as the text and vision
-        # paths do: Base-vs-LoRA compare sends use_adapter alongside the audio,
-        # so without this both sides would run the loaded adapter.
+        # Hold the adapter state for the whole stream, as text and vision do,
+        # so Base-vs-LoRA compare doesn't run the adapter on both sides.
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):
             final_response = None
             try:

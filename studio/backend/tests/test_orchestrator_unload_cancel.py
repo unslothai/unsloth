@@ -348,10 +348,9 @@ def test_worker_drain_skip_emits_cancelled_gen_done_when_draining():
 
 
 def test_worker_generate_branches_check_drain_before_clearing_cancel():
-    # The guarded branches consult the drain skip before clearing cancel_event
-    # and again after, so a queued command can't erase an unload's cancel and
-    # run the outgoing model. Three are guarded today: the MLX loop's generate
-    # and generate_audio_input, and the GPU loop's generate.
+    # Guarded branches check the drain skip before clearing cancel_event and
+    # again after, so a queued command can't erase an unload's cancel. Three
+    # today: MLX generate + generate_audio_input, and GPU generate.
     import inspect
 
     from core.inference import worker

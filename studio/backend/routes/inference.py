@@ -9629,8 +9629,7 @@ async def openai_chat_completions(
                     min_p = payload.min_p,
                     max_new_tokens = _effective_max_tokens(payload) or 2048,
                     repetition_penalty = payload.repetition_penalty,
-                    # Base-vs-LoRA compare sends audio_base64 and use_adapter in
-                    # the same body, so the audio path has to honor it like chat.
+                    # Compare sends audio_base64 and use_adapter in one body.
                     use_adapter = payload.use_adapter,
                     cancel_event = cancel_event,
                 )

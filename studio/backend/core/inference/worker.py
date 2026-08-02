@@ -714,8 +714,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
 
         if audio_type == "whisper":
             if not hasattr(backend, "generate_whisper_response"):
-                # MLX has no ASR path. Without this the user sees a raw
-                # AttributeError for a limitation we already know about.
+                # MLX has no ASR path; report it instead of a raw AttributeError.
                 raise RuntimeError("Whisper transcription is not supported on the MLX backend yet.")
             generator = backend.generate_whisper_response(
                 audio_array = audio_array,
@@ -734,8 +733,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 "repetition_penalty": cmd.get("repetition_penalty", 1.0),
                 "cancel_event": cancel_event,
             }
-            # Forward only when present, as the "generate" branch does, so the
-            # backend signature can evolve independently of the wire format.
+            # Forward only when present, as the "generate" branch does.
             use_adapter = cmd.get("use_adapter")
             if use_adapter is not None:
                 audio_kwargs["use_adapter"] = use_adapter
@@ -983,10 +981,8 @@ def run_inference_process(
                         continue
                     _handle_generate_audio_input(backend, cmd, resp_queue, cancel_event)
                 elif cmd_type == "generate_audio":
-                    # No TTS on this backend. Say so now: the parent blocks for
-                    # 120s on a reply it would otherwise never get, and a codec
-                    # checkpoint (snac/dac/bicodec/csm) reaches this loop because
-                    # dispatch is by device, not by modality.
+                    # No TTS here, but codec checkpoints still reach this loop
+                    # (dispatch is by device). Answer, or the parent waits 120s.
                     _send_response(
                         resp_queue,
                         {
@@ -1025,8 +1021,8 @@ def run_inference_process(
                 elif cmd_type == "shutdown":
                     return
                 else:
-                    # Same terminal branch the GPU loop has: an unhandled command
-                    # dropped in silence costs the caller its whole timeout.
+                    # As in the GPU loop: dropping a command silently costs the
+                    # caller its whole timeout.
                     logger.warning("Unknown MLX command type: %s", cmd_type)
                     _send_response(
                         resp_queue,

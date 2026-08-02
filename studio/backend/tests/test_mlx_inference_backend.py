@@ -1524,8 +1524,7 @@ def test_mlx_audio_classification(monkeypatch, processor, renders, capable, expe
     assert audio_type == expected
     # audio_vlm keeps is_audio (the TTS flag) False → TTS redirect can't fire.
     assert (audio_type is not None and audio_type != "audio_vlm") is False
-    # The capability call is probed with OUR rendered prompt, so a family whose
-    # marker only its own template emits is judged on the real thing.
+    # The capability call is probed with OUR rendered prompt.
     if expected == "audio_vlm":
         assert seen["texts"] == "P<audio>"
 

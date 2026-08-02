@@ -121,8 +121,8 @@ function ensureActiveModelInStoreList(
   };
   const existing = store.models.find((model) => model.id === checkpointId);
   if (existing) {
-    // Backend post-load capability outranks catalog metadata, and adoption has
-    // no later syncModelCapabilities call. Write only on an actual change.
+    // Backend capability outranks catalog metadata, and adoption has no later
+    // syncModelCapabilities call. Write only on an actual change.
     if (Object.entries(caps).some(([k, v]) => existing[k as keyof typeof caps] !== v)) {
       store.setModels(
         store.models.map((m) => (m.id === checkpointId ? { ...m, ...caps } : m)),

@@ -1701,8 +1701,8 @@ async function autoLoadSmallestModel(): Promise<{
           ? loadResp.context_length ?? 131072
           : effectiveMaxSeqLength,
     });
-    // Upsert: a catalog entry predating the load carries no backend-derived
-    // audio capability, and the load response is the authority on it.
+    // Upsert: a pre-load catalog entry has no backend-derived audio
+    // capability, and the load response is the authority on it.
     syncModelCapabilities(loadedModelId, {
       ...loadResp,
       display_name: loadResp.display_name ?? candidate.id,

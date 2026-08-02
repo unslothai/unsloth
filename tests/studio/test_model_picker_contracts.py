@@ -75,8 +75,7 @@ def test_autoload_records_backend_loaded_model_identity():
     autoload = autoload.split("\n  try {", 1)[0]
     assert "const loadedModelId = loadResp.model || modelPath" in autoload
     assert "setCheckpoint(loadedModelId," in autoload
-    # The summary is upserted through syncModelCapabilities, which keys off the
-    # id it is handed and matches with `m.id === modelId` internally.
+    # syncModelCapabilities upserts the summary, matching on the id it is handed.
     assert "syncModelCapabilities(loadedModelId," in autoload
 
 

@@ -1475,10 +1475,8 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
-                        # Same contract as the text path: apply the request's
-                        # adapter selection under the lock, so Base-vs-LoRA
-                        # compare over audio does not run the adapter on both
-                        # sides. _apply_adapter_state is a no-op for None.
+                        # As in the text path: apply under the lock so Base-vs-LoRA
+                        # compare doesn't run the adapter on both sides (None = no-op).
                         self._apply_adapter_state(use_adapter)
                         model.generate(**generation_kwargs)
                     except Exception as e:

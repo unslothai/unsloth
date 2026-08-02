@@ -2022,8 +2022,7 @@ class InferenceOrchestrator:
                 "max_new_tokens": max_new_tokens,
                 "repetition_penalty": repetition_penalty,
             }
-            # Mirrors the text path: sent only when the caller asked, so the key
-            # stays absent for every request that does not select an adapter.
+            # As in the text path: key stays absent unless the caller selected one.
             if use_adapter is not None:
                 cmd["use_adapter"] = use_adapter
 
