@@ -4731,14 +4731,6 @@ def test_every_direct_renderer_carries_the_profile():
         assert "neutralize_control_markup_in_messages(chat_messages)" not in source
 
 
-
-
-
-
-
-
-
-
 def test_block_metadata_markers_stay_out_of_a_profile():
     """'[ARGS]' and '[CALL_ID]' are metadata WITHIN a block, never its opener, and the
     curated pattern documents leaving them alone: '[ARGS]' is the standard CLI-synopsis

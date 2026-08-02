@@ -545,7 +545,11 @@ _OPAQUE_PART_KEYS = frozenset(
 )
 
 
-def _redistribute_swept(texts: list, rewrite, contiguous = None):
+def _redistribute_swept(
+    texts: list,
+    rewrite,
+    contiguous = None,
+):
     """Sweep the joined *texts* and hand each carrier back its own share, or None.
 
     Every carrier keeps its own text in its own position: nothing is moved past a
@@ -1392,7 +1396,11 @@ def _vocabulary_of(tokenizer) -> Optional[list]:
 
 
 def renderable_tool_catalog(
-    tools, tokenizer, model_info, cache = None, active_model_name = None
+    tools,
+    tokenizer,
+    model_info,
+    cache = None,
+    active_model_name = None,
 ):
     """The catalog that survives EVERY template this request could render with.
 
@@ -1919,7 +1927,11 @@ def apply_chat_template_for_generation(
         raise
 
 
-def resolve_native_chat_template(model_info: dict, active_model_name, hf_token = None):
+def resolve_native_chat_template(
+    model_info: dict,
+    active_model_name,
+    hf_token = None,
+):
     """The model's native chat template, fetched once and cached on *model_info*.
 
     Returns False when the repo has none and None when the fetch failed, so a failure is
@@ -1946,9 +1958,7 @@ def resolve_native_chat_template(model_info: dict, active_model_name, hf_token =
         )
         native_tpl = nt.chat_template or False
     except Exception as exc:
-        logger.warning(
-            "Could not load native chat template for '%s': %s", template_source, exc
-        )
+        logger.warning("Could not load native chat template for '%s': %s", template_source, exc)
         # A failed fetch is not "no template": leave the sentinel unset so the next call
         # retries (caching False would pin the tool-dropping override).
         return None
