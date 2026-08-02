@@ -59,6 +59,28 @@ def pytest_addoption(parser):
 
 
 @pytest.fixture(autouse = True)
+def _isolate_xet_health_state(tmp_path_factory, monkeypatch):
+    """Keep the persisted Xet health verdict out of the developer's real HF home.
+
+    The verdict is deliberately sticky across sessions -- two consecutive Xet failures pin a machine
+    to HTTP for 24h -- which also means any machine that has genuinely had a Xet stall would start
+    the ladder on HTTP inside a test that expects it to start on Xet. That reproduced here: the
+    verdict file said ``http`` and `test_shim_injects_studio_prepare_on_http_retry` saw the fallback
+    happen without the Xet attempt it was asserting. Clean CI runners hide it, developer machines
+    do not.
+    """
+    monkeypatch.setenv("HF_HOME", str(tmp_path_factory.mktemp("xet_health_home")))
+    try:
+        from unsloth_zoo import hf_xet_health
+    except Exception:  # noqa: BLE001 - degraded unsloth_zoo: nothing to isolate
+        yield
+        return
+    hf_xet_health.clear_xet_health()
+    yield
+    hf_xet_health.clear_xet_health()
+
+
+@pytest.fixture(autouse = True)
 def _no_background_model_scan(monkeypatch):
     """Keep the /v1 admission hook from scanning the real HF cache during tests.
 
