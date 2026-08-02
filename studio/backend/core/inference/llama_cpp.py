@@ -57,6 +57,8 @@ from core.inference.llama_server_args import (
     resolve_requested_ctx,
     resolve_reasoning_budget,
     resolve_reasoning_budget_message,
+    resolve_reasoning_budget_message_with_env,
+    resolve_reasoning_budget_with_env,
     strip_shadowing_flags,
     strip_split_mode_only,
 )
@@ -2279,7 +2281,7 @@ def _build_reasoning_budget_flags(
 ) -> list[str]:
     """Build only the reasoning flags advertised by this llama-server."""
     flags: list[str] = []
-    if caps.get("supports_reasoning_budget"):
+    if reasoning_budget != -1 and caps.get("supports_reasoning_budget"):
         flags.extend(["--reasoning-budget", str(reasoning_budget)])
     if reasoning_budget_message and caps.get("supports_reasoning_budget_message"):
         flags.extend(["--reasoning-budget-message", reasoning_budget_message])
@@ -3536,10 +3538,14 @@ class LlamaCppBackend:
         reasoning_budget_message: str,
     ) -> dict[str, object]:
         """Reject configured reasoning flags before replacing a live server."""
+        effective_budget = resolve_reasoning_budget_with_env(extra_args, reasoning_budget)
+        effective_message = resolve_reasoning_budget_message_with_env(
+            extra_args, reasoning_budget_message
+        )
         needs_budget, needs_message = cls.reasoning_budget_settings_requested(
             extra_args = extra_args,
-            reasoning_budget = reasoning_budget,
-            reasoning_budget_message = reasoning_budget_message,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
         )
         if not needs_budget and not needs_message:
             return cls.probe_server_capabilities(binary) if binary else {}
@@ -3565,6 +3571,31 @@ class LlamaCppBackend:
                 f"llama-server at {binary} {verdict} {', '.join(missing)}. "
                 "Update llama.cpp or clear the Reasoning Budget settings."
             )
+        if needs_budget and effective_budget > 0:
+            value_key = f"supports_reasoning_budget_value:{effective_budget}"
+            if value_key not in caps:
+                probe_env = cls._llama_server_env_for_binary(binary)
+                probe_env.pop("LLAMA_ARG_THINK_BUDGET", None)
+                probe_env.pop("LLAMA_ARG_THINK_BUDGET_MESSAGE", None)
+                try:
+                    result = subprocess.run(
+                        [binary, "--reasoning-budget", str(effective_budget), "--help"],
+                        capture_output = True,
+                        text = True,
+                        encoding = "utf-8",
+                        errors = "replace",
+                        timeout = 10,
+                        check = False,
+                        env = probe_env,
+                    )
+                    caps[value_key] = result.returncode == 0
+                except (OSError, subprocess.SubprocessError):
+                    caps[value_key] = False
+            if not caps[value_key]:
+                raise ValueError(
+                    f"llama-server at {binary} does not accept positive reasoning budgets. "
+                    "Update llama.cpp, use 0 or -1, or clear the Reasoning Budget setting."
+                )
         return caps
 
     @staticmethod
@@ -8987,6 +9018,7 @@ class LlamaCppBackend:
                     cmd.extend(["-c", "0"])
 
                 server_caps = self.probe_server_capabilities(binary)
+                env = self._llama_server_env_for_binary(binary)
 
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
@@ -9291,6 +9323,18 @@ class LlamaCppBackend:
                         server_caps, reasoning_budget, reasoning_budget_message
                     )
                 )
+                reasoning_budget = (
+                    resolve_reasoning_budget_with_env(extra_args, reasoning_budget, env)
+                    if server_caps.get("supports_reasoning_budget")
+                    else reasoning_budget
+                )
+                reasoning_budget_message = (
+                    resolve_reasoning_budget_message_with_env(
+                        extra_args, reasoning_budget_message, env
+                    )
+                    if server_caps.get("supports_reasoning_budget_message")
+                    else reasoning_budget_message
+                )
                 self._reasoning_budget = reasoning_budget
                 self._reasoning_budget_message = reasoning_budget_message
 
@@ -9385,12 +9429,6 @@ class LlamaCppBackend:
                 logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
-                env = self._llama_server_env_for_binary(binary)
-                # These launch settings are first-class and always have explicit
-                # defaults, so inherited llama.cpp env values must not contradict
-                # the command or the state echoed through /load and /status.
-                env.pop("LLAMA_ARG_THINK_BUDGET", None)
-                env.pop("LLAMA_ARG_THINK_BUDGET_MESSAGE", None)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(env)
                 # Omitting --threads relies on llama.cpp's physical-core default, so
@@ -10406,9 +10444,11 @@ class LlamaCppBackend:
 
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
             return False
-        if self._reasoning_budget != resolve_reasoning_budget(extra_args, reasoning_budget):
+        if self._reasoning_budget != resolve_reasoning_budget_with_env(
+            extra_args, reasoning_budget
+        ):
             return False
-        if self._reasoning_budget_message != resolve_reasoning_budget_message(
+        if self._reasoning_budget_message != resolve_reasoning_budget_message_with_env(
             extra_args, reasoning_budget_message
         ):
             return False

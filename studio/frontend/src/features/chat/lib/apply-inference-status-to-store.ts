@@ -404,8 +404,7 @@ export function applyActiveModelStatusToStore(
     // re-sends it. /status omits the echo for non-GGUF and sends an explicit
     // null for diffusion, so an absent field on a GGUF is an older backend.
     ...(seedLoadParams &&
-      (status.is_gguf === false ||
-        status.requested_parallel_slots === null) && {
+      (status.is_gguf === false || status.requested_parallel_slots === null) && {
         loadedNParallel: null,
       }),
     // Per-model: a change underneath this tab blanks the control like

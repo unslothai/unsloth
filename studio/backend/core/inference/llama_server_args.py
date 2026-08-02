@@ -384,6 +384,33 @@ def resolve_reasoning_budget_message(args: Optional[Iterable[str]], fallback: st
     return override if override is not None else fallback
 
 
+def resolve_reasoning_budget_with_env(
+    args: Optional[Iterable[str]], fallback: int, env: Optional[Mapping[str, str]] = None
+) -> int:
+    """Resolve CLI/first-class intent, then inherit llama.cpp's env default."""
+    override = parse_reasoning_budget_override(args)
+    if override is not None:
+        return override
+    if fallback != -1:
+        return fallback
+    raw_value = (env if env is not None else os.environ).get("LLAMA_ARG_THINK_BUDGET")
+    if raw_value is None:
+        return fallback
+    return _validate_reasoning_budget_value(raw_value)
+
+
+def resolve_reasoning_budget_message_with_env(
+    args: Optional[Iterable[str]], fallback: str, env: Optional[Mapping[str, str]] = None
+) -> str:
+    """Resolve CLI/first-class intent, then inherit llama.cpp's env default."""
+    override = parse_reasoning_budget_message_override(args)
+    if override is not None:
+        return override
+    if fallback:
+        return fallback
+    return (env if env is not None else os.environ).get("LLAMA_ARG_THINK_BUDGET_MESSAGE", "")
+
+
 def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     """Return the last user-supplied GPU layer count from extras.
 

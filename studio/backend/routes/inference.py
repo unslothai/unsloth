@@ -1027,6 +1027,8 @@ try:
         parse_split_mode_override,
         resolve_reasoning_budget,
         resolve_reasoning_budget_message,
+        resolve_reasoning_budget_message_with_env,
+        resolve_reasoning_budget_with_env,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -1081,6 +1083,8 @@ except ImportError:
         parse_split_mode_override,
         resolve_reasoning_budget,
         resolve_reasoning_budget_message,
+        resolve_reasoning_budget_message_with_env,
+        resolve_reasoning_budget_with_env,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -3584,9 +3588,11 @@ def _request_matches_loaded_settings(
         return False
     if not llama_backend.is_diffusion and (
         llama_backend.reasoning_budget
-        != resolve_reasoning_budget(effective_extra, request.reasoning_budget)
+        != resolve_reasoning_budget_with_env(effective_extra, request.reasoning_budget)
         or llama_backend.reasoning_budget_message
-        != resolve_reasoning_budget_message(effective_extra, request.reasoning_budget_message)
+        != resolve_reasoning_budget_message_with_env(
+            effective_extra, request.reasoning_budget_message
+        )
     ):
         return False
     if not _tensor_parallel_matches_loaded(
@@ -5039,12 +5045,15 @@ async def _validate_reasoning_budget_preflight(
     """Reject unsupported reasoning controls before any resident model is torn down."""
     if not config.is_gguf:
         return
-    backend = get_llama_cpp_backend()
+    effective_budget = resolve_reasoning_budget_with_env(extra_args, request.reasoning_budget)
+    effective_message = resolve_reasoning_budget_message_with_env(
+        extra_args, request.reasoning_budget_message
+    )
     requested = any(
-        backend.reasoning_budget_settings_requested(
+        LlamaCppBackend.reasoning_budget_settings_requested(
             extra_args = extra_args,
-            reasoning_budget = request.reasoning_budget,
-            reasoning_budget_message = request.reasoning_budget_message,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
         )
     )
     if diffusion_kind and requested:
@@ -5063,13 +5072,14 @@ async def _validate_reasoning_budget_preflight(
         )
     if not requested:
         return
+    backend = get_llama_cpp_backend()
     try:
         await asyncio.to_thread(
             backend.validate_reasoning_budget_capabilities,
             backend._find_llama_server_binary(),
             extra_args = extra_args,
-            reasoning_budget = request.reasoning_budget,
-            reasoning_budget_message = request.reasoning_budget_message,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
         )
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
@@ -6197,9 +6207,6 @@ async def _load_model_impl(
         # Invalid GPU IDs must fail before the training coexistence guard.
         gguf_gpu_ids: Optional[List[int]] = None
         if config.is_gguf:
-            await _validate_reasoning_budget_preflight(
-                config, diffusion_kind, extra_llama_args, request
-            )
             (
                 gguf_gpu_ids,
                 gpu_ids_are_vulkan_ordinals,
@@ -6314,6 +6321,9 @@ async def _load_model_impl(
             # Decisive recheck, and the last thing that can reject this load, so it runs BEFORE the
             # cancel: rejecting after would stop every chat for nothing.
             _raise_if_sidecar_swap_in_progress()
+            await _validate_reasoning_budget_preflight(
+                config, diffusion_kind, extra_llama_args, request
+            )
 
             # Point of no return for the GGUF path: nothing left can reject this load, so stop the
             # chats the swap interrupts (or refuse, if the caller never opted in).
@@ -6952,9 +6962,6 @@ async def validate_model(
         gpu_ids_are_vulkan_ordinals = False
         diffusion_kind = _classify_diffusion_gguf(config) if config.is_gguf else False
         if config.is_gguf:
-            await _validate_reasoning_budget_preflight(
-                config, diffusion_kind, effective_extra_args, request
-            )
             (
                 validated_gpu_ids,
                 gpu_ids_are_vulkan_ordinals,
@@ -7154,6 +7161,9 @@ async def validate_model(
             except Exception as e:
                 logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
+        await _validate_reasoning_budget_preflight(
+            config, diffusion_kind, effective_extra_args, request
+        )
         return ValidateModelResponse(
             valid = True,
             message = "Model identifier is valid.",

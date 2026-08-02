@@ -1425,8 +1425,7 @@ export function useChatModelRuntime() {
                     previousModelRequiresTrustRemoteCode || trustRemoteCode,
                   // Resend the previous model's pinned approval so restoring it is not re-blocked.
                   approved_remote_code_fingerprint:
-                    approvedRemoteCodeFingerprints.get(previousCheckpoint) ??
-                    null,
+                    approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null,
                   chat_template_override:
                     stateBeforeUnload.loadedChatTemplateOverride,
                   cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,

@@ -159,6 +159,9 @@ export interface PutModelOverrideOptions {
    * the page can neither show nor restore. The route drops the row once nothing is left in it.
    */
   keepLaunchFlags?: boolean;
+  /** Remove a legacy passthrough value only after this control was explicitly reset. */
+  resetReasoningBudget?: boolean;
+  resetReasoningBudgetMessage?: boolean;
 }
 
 export async function putModelOverride(
@@ -218,13 +221,13 @@ async function sendModelOverride(
       ...toApiOverride(config),
       // Write-only reset markers let the backend remove legacy passthrough flags
       // shadowing these controls. Fill-only migration must never delete stored flags.
-      ...(!options?.fillAbsentFields && config?.reasoningBudget === -1
+      ...(options?.resetReasoningBudget && config?.reasoningBudget === -1
         ? {
             // biome-ignore lint/style/useNamingConvention: API schema
             reasoning_budget: -1,
           }
         : {}),
-      ...(!options?.fillAbsentFields && config?.reasoningBudgetMessage === ""
+      ...(options?.resetReasoningBudgetMessage && config?.reasoningBudgetMessage === ""
         ? {
             // biome-ignore lint/style/useNamingConvention: API schema
             reasoning_budget_message: "",

@@ -785,13 +785,50 @@ def test_reasoning_budget_command_flags_follow_capabilities():
         "supports_reasoning_budget": True,
         "supports_reasoning_budget_message": True,
     }
-    assert _build_reasoning_budget_flags(caps, -1, "") == ["--reasoning-budget", "-1"]
+    assert _build_reasoning_budget_flags(caps, -1, "") == []
     assert _build_reasoning_budget_flags(caps, 64, "  PAD  ") == [
         "--reasoning-budget",
         "64",
         "--reasoning-budget-message",
         "  PAD  ",
     ]
+
+
+@_NEEDS_BASH
+def test_reasoning_budget_capability_gate_rejects_legacy_positive_range(tmp_path, monkeypatch):
+    fake = tmp_path / "llama-server"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "--reasoning-budget" && "$2" != "0" && "$2" != "-1" ]]; then\n'
+        "  exit 1\n"
+        "fi\n"
+        "printf '%s\\n' '--reasoning-budget N' '--reasoning-budget-message TEXT'\n"
+    )
+    fake.chmod(0o755)
+    _clear_caps_cache()
+
+    with pytest.raises(ValueError, match = "does not accept positive reasoning budgets"):
+        LlamaCppBackend.validate_reasoning_budget_capabilities(
+            str(fake),
+            extra_args = None,
+            reasoning_budget = 512,
+            reasoning_budget_message = "",
+        )
+    monkeypatch.setenv("LLAMA_ARG_THINK_BUDGET", "512")
+    with pytest.raises(ValueError, match = "does not accept positive reasoning budgets"):
+        LlamaCppBackend.validate_reasoning_budget_capabilities(
+            str(fake),
+            extra_args = None,
+            reasoning_budget = -1,
+            reasoning_budget_message = "",
+        )
+    monkeypatch.delenv("LLAMA_ARG_THINK_BUDGET")
+    LlamaCppBackend.validate_reasoning_budget_capabilities(
+        str(fake),
+        extra_args = None,
+        reasoning_budget = 0,
+        reasoning_budget_message = "",
+    )
 
 
 @pytest.mark.parametrize(

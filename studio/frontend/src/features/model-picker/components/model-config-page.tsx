@@ -1156,6 +1156,16 @@ export function ModelConfigPage({
         configId,
         target.ggufVariant,
         remember ? normalizedRuntimeConfig : null,
+        remember
+          ? {
+              resetReasoningBudget:
+                baseline.reasoningBudget !== -1 &&
+                normalizedRuntimeConfig.reasoningBudget === -1,
+              resetReasoningBudgetMessage:
+                baseline.reasoningBudgetMessage !== "" &&
+                normalizedRuntimeConfig.reasoningBudgetMessage === "",
+            }
+          : undefined,
       );
     }
     // Saving can push the local map over budget and drop other models, whose server

@@ -1420,9 +1420,9 @@ def test_evicted_local_configs_drop_their_server_overrides():
 
 def test_reasoning_resets_reach_the_server_without_making_backfill_destructive():
     api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
-    assert "!options?.fillAbsentFields && config?.reasoningBudget === -1" in api
+    assert "options?.resetReasoningBudget && config?.reasoningBudget === -1" in api
     assert "reasoning_budget: -1" in api
-    assert '!options?.fillAbsentFields && config?.reasoningBudgetMessage === ""' in api
+    assert 'options?.resetReasoningBudgetMessage && config?.reasoningBudgetMessage === ""' in api
     assert 'reasoning_budget_message: ""' in api
 
     route = _read_backend("routes/settings.py")
@@ -1433,6 +1433,12 @@ def test_reasoning_resets_reach_the_server_without_making_backfill_destructive()
         in route
     )
     assert "if not payload.fill_absent_fields and requested_extra_args:" in route
+
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "baseline.reasoningBudget !== -1" in page
+    assert "normalizedRuntimeConfig.reasoningBudget === -1" in page
+    assert 'baseline.reasoningBudgetMessage !== ""' in page
+    assert 'normalizedRuntimeConfig.reasoningBudgetMessage === ""' in page
 
 
 def test_validate_sends_reasoning_controls_before_the_runtime_unloads():

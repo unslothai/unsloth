@@ -2355,10 +2355,7 @@ export function createOpenAIStreamAdapter(
           inferenceRequest.topP = params.topP;
         }
         if (Number.isFinite(params.maxTokens) && params.maxTokens > 0) {
-          inferenceRequest.maxTokens = Math.min(
-            8192,
-            Math.floor(params.maxTokens),
-          );
+          inferenceRequest.maxTokens = Math.min(8192, Math.floor(params.maxTokens));
         }
         const reasoningRequested =
           runtime.reasoningAlwaysOn ||

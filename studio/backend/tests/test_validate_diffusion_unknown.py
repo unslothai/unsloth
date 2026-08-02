@@ -13,7 +13,9 @@ split from that answer, and /load may then apply it to a diffusion runner: an in
 """
 
 import asyncio
+import importlib
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,10 +30,17 @@ _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_route_module(name: str):
+    # Some direct llama_cpp tests install a tiny httpx stub during collection.
+    # Latest inference.py imports llama_http, which needs the real package.
+    sys.modules.pop("httpx", None)
+    sys.modules["httpx"] = importlib.import_module("httpx")
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / "routes/inference.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+_ROUTE = _load_route_module("inf_route_diffusion_unknown")
 
 
 async def _noop_gpu_ids(_config, gpu_ids, **_kwargs):
@@ -93,7 +102,7 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
 
     def test_unclassifiable_gguf_is_reported_unknown_not_ordinary(self):
         """The bug: None must not look identical to a confirmed ordinary GGUF."""
-        route = _load_route_module("inf_route_diffusion_unknown_1")
+        route = _ROUTE
         resp = self._validate(route, diffusion_kind = None)
         self.assertFalse(resp.is_diffusion)
         self.assertTrue(
@@ -104,20 +113,20 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
         )
 
     def test_confirmed_ordinary_gguf_is_not_unknown(self):
-        route = _load_route_module("inf_route_diffusion_unknown_2")
+        route = _ROUTE
         resp = self._validate(route, diffusion_kind = False)
         self.assertFalse(resp.is_diffusion)
         self.assertFalse(resp.diffusion_unknown)
 
     def test_confirmed_diffusion_gguf_is_not_unknown(self):
-        route = _load_route_module("inf_route_diffusion_unknown_3")
+        route = _ROUTE
         resp = self._validate(route, diffusion_kind = True)
         self.assertTrue(resp.is_diffusion)
         self.assertFalse(resp.diffusion_unknown)
 
     def test_non_gguf_is_never_unknown(self):
         """A transformers model is definitively not a diffusion GGUF."""
-        route = _load_route_module("inf_route_diffusion_unknown_4")
+        route = _ROUTE
         resp = self._validate(route, diffusion_kind = False, is_gguf = False)
         self.assertFalse(resp.is_diffusion)
         self.assertFalse(resp.diffusion_unknown)
@@ -130,7 +139,7 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
         self.assertFalse(resp.diffusion_unknown)
 
     def test_explicit_budget_is_rejected_during_validate_before_unload(self):
-        route = _load_route_module("inf_route_reasoning_validate_1")
+        route = _ROUTE
         with self.assertRaises(HTTPException) as raised:
             self._validate(
                 route,
@@ -142,7 +151,7 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
         self.assertIn("--reasoning-budget", raised.exception.detail)
 
     def test_explicit_message_is_rejected_for_unknown_diffusion_kind(self):
-        route = _load_route_module("inf_route_reasoning_validate_2")
+        route = _ROUTE
         with self.assertRaises(HTTPException) as raised:
             self._validate(
                 route,
