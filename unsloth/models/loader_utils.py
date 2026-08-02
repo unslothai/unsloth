@@ -363,9 +363,8 @@ def _offline_quantize_to_fp8(
     # Cache text-only and full-VLM artifacts separately so neither reuses the other. #5816
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
     if revision is not None:
-        # Slashes and dots would escape the temp dir, so the readable half is sanitized and
-        # therefore lossy: `release/v1` and `release.v1` collapse to one name. A digest of
-        # the raw ref rides along so two refs never share (and silently reuse) an artifact.
+        # Sanitizing is lossy (`release/v1` and `release.v1` collapse), so a digest of the
+        # raw ref rides along and two refs never share an artifact.
         digest = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
         readable = re.sub(r"[^0-9A-Za-z_-]", "_", revision)[:40]
         cache_name += "-rev-" + readable + "-" + digest
@@ -898,10 +897,8 @@ _LOCAL_FILES_ONLY_ATTR = "_unsloth_local_files_only"
 # The load's cache_dir travels with it too: saving derives one from HF_HUB_CACHE /
 # HF_HOME, which does not see a caller-supplied cache.
 _LOADED_CACHE_DIR_ATTR = "_unsloth_loaded_cache_dir"
-# So does the ref it was read at. Saving restores sentencepiece assets from
-# tokenizer.name_or_path, which names the repo but not the branch, so without this stamp a
-# merged export copies the default branch's tokenizer.model beside pinned metadata, or
-# misses the file when it only exists on the pinned ref.
+# So does the ref it was read at: saving restores sentencepiece assets from
+# tokenizer.name_or_path, which names the repo but not the branch.
 _LOADED_REVISION_ATTR = "_unsloth_loaded_revision"
 
 
@@ -917,7 +914,7 @@ def _mark_loaded_revision(result, revision):
         for target in targets:
             if target is None:
                 continue
-            # Objects that reject new attributes (__slots__) are skipped.
+            # Skip objects that reject new attributes (__slots__).
             try:
                 setattr(target, _LOADED_REVISION_ATTR, str(revision))
             except Exception:

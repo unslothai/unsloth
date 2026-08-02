@@ -2253,8 +2253,7 @@ def _vllm_will_load_weights(fast_inference, num_labels = None):
     """
     if not fast_inference or num_labels is not None:
         return False
-    # from_pretrained clears fast_inference when vLLM is missing and then re-enables it on
-    # hip, so hip ends up True either way.
+    # from_pretrained clears fast_inference when vLLM is missing but re-enables it on hip.
     if DEVICE_TYPE == "hip":
         return True
     if not is_vLLM_available():
@@ -2359,13 +2358,11 @@ class FastLlamaModel:
                 raise RuntimeError(
                     "Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!"
                 )
-            # Only vLLM cannot take a revision. fast_inference may have just been turned
-            # off above, and a num_labels load goes in-process regardless; both of those
-            # can honour the pin, so use the same predicate as the prefetch warm below.
-            # Through the helper, which the loader also uses to gate its config probe.
+            # Only vLLM cannot take a revision; fast_inference may have just been cleared
+            # above, and a num_labels load stays in-process, so both can honour the pin.
             if _vllm_will_load_weights(fast_inference, num_labels) and revision is not None:
-                # load_vllm takes no revision, so vLLM fetches the default branch. Pinning
-                # only the config and tokenizer would mix two refs in one model.
+                # vLLM fetches the default branch, so pinning only the config and tokenizer
+                # would mix two refs in one model.
                 logger.warning_once(
                     f"Unsloth: Ignoring revision = `{revision}` since vLLM loads weights from "
                     "the default branch. Use `fast_inference = False` to load a pinned revision."
@@ -2374,8 +2371,7 @@ class FastLlamaModel:
                 tokenizer_revision = None
 
         if tokenizer_revision is None and tokenizer_name in (None, model_name):
-            # A direct FastLlamaModel call, or an architecture wrapper forwarding only
-            # `revision`, leaves this unset while the config and weights are pinned.
+            # A direct call, or a wrapper forwarding only `revision`, leaves this unset.
             tokenizer_revision = revision
 
         token = hf_login(token)
@@ -2471,7 +2467,7 @@ class FastLlamaModel:
 
         # Prefetch the repo (killable child) so the weight load is a cache hit. Runs after the
         # AutoConfig/model-class check so an unsupported repo fails on its small config fetch.
-        # Warm the same revision the load uses, or the repo downloads twice.
+        # Warm the revision the load uses, or the repo downloads twice.
         _prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,

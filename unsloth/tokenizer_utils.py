@@ -716,9 +716,8 @@ def load_correct_tokenizer(
         pass
 
     tokenizer.chat_template = chat_template
-    # Saving restores sentencepiece assets from the repo name alone, which does not carry
-    # the branch this was read at, so stamp it for the save path to find. Imported here:
-    # models.loader_utils pulls in models._utils, which imports this module at load time.
+    # Saving restores sentencepiece assets from the repo name alone, which carries no
+    # branch, so stamp it for the save path. Imported late to break a circular import.
     from .models.loader_utils import _mark_loaded_revision
 
     _mark_loaded_revision(tokenizer, revision)

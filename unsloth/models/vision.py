@@ -869,13 +869,13 @@ class FastBaseModel:
         if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
             os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
-        # Read revision from kwargs, not the signature: the weight load below forwards
-        # **kwargs, so binding it would drop it there. Pin its repo before any remap.
+        # Read from kwargs, not the signature: the weight load below forwards **kwargs, so
+        # binding it would drop it there.
         _revision = kwargs.get("revision")
         _tokenizer_revision_arg = kwargs.pop("tokenizer_revision", None)
         if _revision is not None and fast_inference and is_vLLM_available():
-            # load_vllm takes no revision, so vLLM fetches the default branch. Pinning only
-            # the config and tokenizer would mix two refs in one model.
+            # vLLM fetches the default branch, so pinning only the config and tokenizer
+            # would mix two refs in one model.
             logger.warning_once(
                 f"Unsloth: Ignoring revision = `{_revision}` since vLLM loads weights from "
                 "the default branch. Use `fast_inference = False` to load a pinned revision."
@@ -883,7 +883,7 @@ class FastBaseModel:
             _revision = None
             _tokenizer_revision_arg = None
             kwargs.pop("revision", None)
-        _revision_repo = model_name
+        _revision_repo = model_name  # The repo the pin names, captured before any remap.
 
         # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent;
         # skip the vision tower only for families with their own text decoder (Gemma 3). #5816
@@ -1133,7 +1133,7 @@ class FastBaseModel:
             and _tokenizer_repo != model_name
         )
         if _warm_tokenizer_repo:
-            # No revision: this only runs when the repo differs from the revision's repo.
+            # No revision: this only runs when the repo differs from the pinned one.
             maybe_prefetch_hf_snapshot(
                 _tokenizer_repo,
                 token = token,
@@ -1461,8 +1461,8 @@ class FastBaseModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
-        # Resolved by the loader, which knows whether the tokenizer repo is the caller's
-        # (a PEFT adapter) or the resolved base model. Falls back for a direct call.
+        # The loader resolves this (caller's adapter repo vs resolved base model); the
+        # fallback below covers a direct call.
         _tokenizer_revision = _tokenizer_revision_arg
         if _tokenizer_revision is None and tokenizer_name == _revision_repo:
             _tokenizer_revision = _revision
@@ -1776,9 +1776,8 @@ class FastBaseModel:
         for _ in range(3):
             gc.collect()
             clean_gpu_cache()
-        # Saving restores sentencepiece assets from the repo name alone, which does not
-        # carry the branch this was read at. Stamped here rather than at each of the
-        # processor branches above, so a patch fallback cannot lose it.
+        # Saving restores sentencepiece assets from the repo name alone, which carries no
+        # branch. Stamped here, not per processor branch, so a fallback cannot lose it.
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         return model, tokenizer
 

@@ -615,19 +615,17 @@ class FastLanguageModel(FastLlamaModel):
             from modelscope import snapshot_download
             model_name = snapshot_download(model_name)
 
-        # Gate before the probe below, or a pinned 4bit load fails against the mirror
-        # instead of warning. Kept separate: `revision` still names the adapter repo.
+        # Gate before the probe below, or a pinned 4bit load fails against the mirror.
         base_revision = _revision_for_resolved_repo(
             revision, model_name, old_model_name, mapper_moved_name
         )
-        # The PeftConfig probe below reads the adapter repo, which peft loads in-process, so
-        # it keeps the ref even when vLLM takes the base model's away just after.
+        # The PeftConfig probe reads the adapter repo, which peft loads in-process, so it
+        # keeps the ref even when vLLM takes the base model's away just after.
         adapter_revision = base_revision
-        # vLLM takes no revision and fetches the default branch, so this pin is already dead
-        # for the weights. Drop it before the probe: model_types picks the architecture class
-        # off that config, and reading it at a ref the weights will not be at dispatches the
-        # wrong one. The predicate lives in llama.py, which also falls back in-process on
-        # pre-Volta GPUs and for a num_labels load; both of those can still honour the pin.
+        # vLLM fetches the default branch, so the pin is dead for the weights. Drop it before
+        # the probe: model_types picks the architecture class off that config, so a ref the
+        # weights are not at dispatches the wrong one. llama.py's predicate spares the
+        # in-process pre-Volta and num_labels fallbacks, which can still honour the pin.
         if base_revision is not None and _vllm_will_load_weights(
             fast_inference, kwargs.get("num_labels")
         ):
@@ -936,7 +934,6 @@ class FastLanguageModel(FastLlamaModel):
             base_revision = _revision_for_resolved_repo(
                 base_revision, model_name, old_model_name, mapper_moved_name
             )
-        # On a PEFT load model_name is the base model, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
 
         load_in_4bit_kwargs = load_in_4bit
@@ -1373,19 +1370,17 @@ class FastModel(FastBaseModel):
             from modelscope import snapshot_download
             model_name = snapshot_download(model_name)
 
-        # Gate before the probe below, or a pinned 4bit load fails against the mirror
-        # instead of warning. Kept separate: `revision` still names the adapter repo.
+        # Gate before the probe below, or a pinned 4bit load fails against the mirror.
         base_revision = _revision_for_resolved_repo(
             revision, model_name, old_model_name, mapper_moved_name
         )
-        # The PeftConfig probe below reads the adapter repo, which peft loads in-process, so
-        # it keeps the ref even when vLLM takes the base model's away just after.
+        # The PeftConfig probe reads the adapter repo, which peft loads in-process, so it
+        # keeps the ref even when vLLM takes the base model's away just after.
         adapter_revision = base_revision
-        # vLLM takes no revision and fetches the default branch, so this pin is already dead
-        # for the weights. Drop it here rather than at the dispatch: model_types, auto_model
-        # and the text-only decision all come off the config probed below, and reading that
-        # at a ref the weights will not be at picks the dispatch for the wrong model. Same
-        # predicate FastBaseModel uses, so its own guard is a no-op on this path.
+        # vLLM fetches the default branch, so the pin is dead for the weights. Drop it here,
+        # not at dispatch: model_types, auto_model and the text-only decision all come off the
+        # config probed below, so a ref the weights are not at dispatches the wrong model.
+        # Same predicate as FastBaseModel, whose own guard is then a no-op here.
         if base_revision is not None and fast_inference and is_vLLM_available():
             logger.warning_once(
                 f"Unsloth: Ignoring revision = `{base_revision}` since vLLM loads weights "
@@ -1921,7 +1916,6 @@ class FastModel(FastBaseModel):
             base_revision = _revision_for_resolved_repo(
                 base_revision, model_name, old_model_name, mapper_moved_name
             )
-        # On a PEFT load model_name is the base model, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
 
         model, tokenizer = FastBaseModel.from_pretrained(
