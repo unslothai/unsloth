@@ -448,8 +448,18 @@ def test_an_adapter_ref_never_reaches_the_base_tokenizer():
 
 
 def test_an_adapter_hosted_tokenizer_keeps_the_callers_ref():
+    """An adapter is a separate repo with its own history, so the caller's ref still
+    names it even though the base model it sits on cannot answer to it."""
     gate = _load_tokenizer_gate()
-    assert gate("org/adapter", "org/base", "org/adapter", "v2", None) == "v2"
+    assert gate("org/adapter", "org/base", "org/adapter", "v2", None, True) == "v2"
+
+
+def test_a_remapped_plain_load_drops_the_tokenizer_pin_too():
+    """Naming the requested repo as tokenizer_name must not smuggle the ref back in: the
+    weights now come off a mirror's default branch, and a pinned tokenizer beside them is
+    the ref mismatch the gate exists to prevent. Only a PEFT adapter is a separate repo."""
+    gate = _load_tokenizer_gate()
+    assert gate("org/model", "unsloth/model-bnb-4bit", "org/model", "v2", None) is None
 
 
 def test_a_plain_load_gives_the_tokenizer_the_model_ref():
@@ -528,3 +538,152 @@ def test_the_vllm_drop_clears_the_tokenizer_pin_too(path, cls, name):
         and n.value.value is None
     ]
     assert clears, f"{path.name} never clears {name} on the vLLM path"
+
+
+def _simulate_loader():
+    """Run the loader's two revision decisions the way from_pretrained sequences them."""
+    tree = ast.parse(LOADER.read_text(encoding = "utf-8"))
+    namespace = {"logger": types.SimpleNamespace(warning_once = lambda *a, **k: None)}
+    functions = [
+        n for n in tree.body
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("_revision_for_resolved_repo", "_revision_for_tokenizer_repo")
+    ]
+    module = ast.Module(body = functions, type_ignores = [])
+    ast.fix_missing_locations(module)
+    exec(compile(module, str(LOADER), "exec"), namespace)
+    gate = namespace["_revision_for_resolved_repo"]
+    tokenizer_gate = namespace["_revision_for_tokenizer_repo"]
+
+    def run(old_model_name, model_name, is_peft, tokenizer_name, revision, mapper_moved_name):
+        base_revision = gate(revision, model_name, old_model_name, mapper_moved_name)
+        if not is_peft:
+            base_revision = gate(base_revision, model_name, old_model_name, mapper_moved_name)
+        model_revision = base_revision if not is_peft else None
+        return model_revision, tokenizer_gate(
+            tokenizer_name, model_name, old_model_name, revision, model_revision, is_peft
+        )
+
+    return run
+
+
+@pytest.mark.parametrize(
+    "label, old_model_name, model_name, is_peft, tokenizer_name, revision, mapper_moved_name,"
+    " expected_model, expected_tokenizer",
+    [
+        ("plain pinned load", "org/m", "org/m", False, None, "v2", False, "v2", "v2"),
+        ("remapped to a prequant mirror",
+         "org/m", "unsloth/m-bnb-4bit", False, None, "v2", True, None, None),
+        # The adapter's ref is not the base repo's, and the tokenizer follows the base.
+        ("PEFT, remote adapter", "org/ad", "org/base", True, None, "v2", False, None, None),
+        # ... unless the tokenizer is the adapter itself, which the caller did pin.
+        ("PEFT, adapter-hosted tokenizer",
+         "org/ad", "org/base", True, "org/ad", "v2", False, None, "v2"),
+        ("plain load, third-party tokenizer",
+         "org/m", "org/m", False, "other/tok", "v2", False, "v2", None),
+        # Naming the requested repo back does not survive the remap: the weights moved.
+        ("remapped, tokenizer named as the requested repo",
+         "org/m", "unsloth/m-bnb-4bit", False, "org/m", "v2", True, None, None),
+        ("no revision at all",
+         "org/m", "unsloth/m-bnb-4bit", False, None, None, True, None, None),
+    ],
+    ids = lambda v: v if isinstance(v, str) and " " in v else None,
+)
+def test_the_revision_decision_matrix(
+    label, old_model_name, model_name, is_peft, tokenizer_name, revision, mapper_moved_name,
+    expected_model, expected_tokenizer,
+):
+    """One table for the whole contract: which repo each pin is allowed to reach."""
+    run = _simulate_loader()
+    model_revision, tokenizer_revision = run(
+        old_model_name, model_name, is_peft, tokenizer_name, revision, mapper_moved_name
+    )
+    assert model_revision == expected_model, label
+    assert tokenizer_revision == expected_tokenizer, label
+
+
+def test_the_processor_fallback_carries_the_tokenizer_revision():
+    """get_auto_processor runs when AutoProcessor raises, so it is a real load path: an
+    unpinned one there hands back a default-branch processor beside pinned weights."""
+    function = _function(_tree(VISION), "from_pretrained", "FastBaseModel")
+    fallbacks = _calls(function, "get_auto_processor")
+    assert fallbacks, "the processor fallback must still exist"
+    for call in fallbacks:
+        keyword = _revision_kwarg(call)
+        assert keyword is not None, "the fallback needs the revision too"
+        assert getattr(keyword.value, "id", None) == "_tokenizer_revision"
+
+
+def test_the_fp8_quantizer_takes_the_requested_revision():
+    """Its output path replaces model_name, so the gate downstream drops the pin. If it
+    did not quantize the pinned ref itself, that ref never reaches the weights at all."""
+    function = _function(_tree(LOADER_UTILS), "_offline_quantize_to_fp8")
+    assert "revision" in _params(function)
+    for callee in ("from_pretrained",):
+        loads = _calls(function, callee)
+        assert loads
+        for call in loads:
+            assert _revision_kwarg(call) is not None, ast.unparse(call.func)
+
+
+def test_the_fp8_cache_name_is_revision_specific():
+    """A shared temp dir keyed only on the repo name would serve one ref's artifact to
+    another, and the artifact outlives the process that built it."""
+    function = _function(_tree(LOADER_UTILS), "_offline_quantize_to_fp8")
+    writes = [
+        n
+        for n in ast.walk(function)
+        if isinstance(n, ast.AugAssign) and getattr(n.target, "id", None) == "cache_name"
+    ]
+    assert any("revision" in ast.unparse(n) for n in writes), (
+        "two revisions of one repo would share a cache entry"
+    )
+
+
+def test_both_loaders_hand_the_fp8_quantizer_the_revision():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        calls = _calls(function, "_offline_quantize_to_fp8")
+        assert calls, f"{class_name} must still quantize on the fly"
+        for call in calls:
+            keyword = _revision_kwarg(call)
+            assert keyword is not None
+            assert getattr(keyword.value, "id", None) == "revision", (
+                "the fp8 source is still the caller's own repo here"
+            )
+
+
+def test_a_pinned_config_is_not_handed_to_the_vllm_path():
+    """FastBaseModel skips its config load while auto_config is set, so passing one read
+    at the pinned ref would pair it with the default-branch weights vLLM fetches."""
+    function = _function(_tree(LOADER), "from_pretrained", "FastModel")
+    dispatches = [
+        c
+        for c in _calls(function, "from_pretrained")
+        if ast.unparse(c.func).startswith("FastBaseModel")
+    ]
+    assert dispatches
+    for call in dispatches:
+        keyword = next((k for k in call.keywords if k.arg == "auto_config"), None)
+        assert keyword is not None
+        name = getattr(keyword.value, "id", None)
+        assert name is not None and name != "model_config", (
+            "the probed config must go through the vLLM gate first"
+        )
+        guards = [
+            n
+            for n in ast.walk(function)
+            if isinstance(n, ast.If)
+            and any(
+                isinstance(b, ast.Assign)
+                and any(getattr(t, "id", None) == name for t in b.targets)
+                and isinstance(b.value, ast.Constant)
+                and b.value.value is None
+                for b in n.body
+            )
+        ]
+        assert guards, f"{name} is never withheld"
+        test = ast.unparse(guards[0].test)
+        for token in ("fast_inference", "is_vLLM_available", "user_config", "revision"):
+            assert token in test, token

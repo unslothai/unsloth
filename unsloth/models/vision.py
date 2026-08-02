@@ -1544,6 +1544,7 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             cache_dir = kwargs.get("cache_dir"),
                             local_files_only = lfo,
+                            revision = _tokenizer_revision,
                         )
                     except Exception:
                         # Swallow so the manual fallback / entry-point retry can run.

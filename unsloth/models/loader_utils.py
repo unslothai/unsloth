@@ -314,11 +314,16 @@ def _offline_quantize_to_fp8(
     fp8_mode: str,
     *,
     text_only: bool = False,
+    revision: str = None,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path.
 
     For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via
     hf_overrides={"quantization_config_file": "torchao_config.json"}).
+
+    The caller's revision has to reach the source loads, and the cache name has to name it
+    too: the returned path replaces model_name, so the revision gate downstream drops the
+    pin, and two refs of one repo would otherwise share (and reuse) a single artifact.
     """
     from transformers import (
         AutoModelForCausalLM,
@@ -329,7 +334,7 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name)
+    config = AutoConfig.from_pretrained(model_name, revision = revision)
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -356,6 +361,9 @@ def _offline_quantize_to_fp8(
     temp_dir = tempfile.gettempdir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other. #5816
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
+    if revision is not None:
+        # Slashes and dots would escape the temp dir; a branch name may hold both.
+        cache_name += "-rev-" + re.sub(r"[^0-9A-Za-z_-]", "_", revision)
     if text_config is not None:
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)
@@ -375,9 +383,10 @@ def _offline_quantize_to_fp8(
         model = auto_model.from_pretrained(
             model_name,
             config = config,
+            revision = revision,
             **load_kwargs,
         )
-        tokenizer = auto_processor.from_pretrained(model_name)
+        tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):

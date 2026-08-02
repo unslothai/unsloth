@@ -175,16 +175,22 @@ def _revision_for_resolved_repo(
 
 
 def _revision_for_tokenizer_repo(
-    tokenizer_name, model_name, old_model_name, revision, model_revision
+    tokenizer_name, model_name, old_model_name, revision, model_revision, is_peft = False
 ):
     """Pick the revision for whichever repo the tokenizer is actually read from.
 
-    It is not always the base model's: an adapter-hosted tokenizer keeps the caller's ref,
-    while an unset tokenizer_name follows the resolved model_name and so takes whatever the
-    model load itself uses (None on a PEFT load, whose ref belongs to the adapter).
+    It is not always the base model's: an adapter-hosted tokenizer is a separate repo with
+    its own history, so it keeps the caller's ref even though the base model does not. An
+    unset tokenizer_name follows the resolved model_name and so takes whatever the model
+    load itself uses (None on a PEFT load, whose ref belongs to the adapter).
+
+    On a plain load the tokenizer belongs to the same model as the weights, so it follows
+    model_revision even when the caller named its repo directly: a remap has already dropped
+    the pin off the weights, and a pinned tokenizer beside a mirror's default-branch weights
+    is the ref mismatch this whole gate exists to avoid.
     """
     repo = tokenizer_name if tokenizer_name else model_name
-    if repo == old_model_name:
+    if is_peft and repo == old_model_name:
         return revision
     if repo == model_name:
         return model_revision
@@ -571,7 +577,10 @@ class FastLanguageModel(FastLlamaModel):
                     load_in_8bit,
                     load_in_16bit,
                 )
-                model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
+                # Still the caller's repo here, so their ref is the one to quantize from.
+                model_name = _offline_quantize_to_fp8(
+                    model_name, fp8_mode, text_only = text_only, revision = revision
+                )
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
@@ -937,7 +946,7 @@ class FastLanguageModel(FastLlamaModel):
             trust_remote_code = trust_remote_code,
             revision = model_revision,
             tokenizer_revision = _revision_for_tokenizer_repo(
-                tokenizer_name, model_name, old_model_name, revision, model_revision
+                tokenizer_name, model_name, old_model_name, revision, model_revision, is_peft
             ),
             fast_inference = fast_inference,
             gpu_memory_utilization = gpu_memory_utilization,
@@ -1309,7 +1318,10 @@ class FastModel(FastBaseModel):
                     load_in_8bit,
                     load_in_16bit,
                 )
-                model_name = _offline_quantize_to_fp8(model_name, fp8_mode, text_only = text_only)
+                # Still the caller's repo here, so their ref is the one to quantize from.
+                model_name = _offline_quantize_to_fp8(
+                    model_name, fp8_mode, text_only = text_only, revision = revision
+                )
             else:
                 assert new_model_name is not None
                 model_name = new_model_name
@@ -1877,6 +1889,20 @@ class FastModel(FastBaseModel):
         # On a PEFT load model_name is the base model, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
 
+        # vLLM takes no revision and fetches the default branch, so FastBaseModel drops the
+        # pin. The config probed above was read at that pin, and handing it down would skip
+        # the reload and pair a pinned config with default-branch weights. A config the
+        # caller passed in is theirs either way, so only withhold one we read ourselves.
+        dispatch_config = model_config
+        if (
+            dispatch_config is not None
+            and user_config is None
+            and model_revision is not None
+            and fast_inference
+            and is_vLLM_available()
+        ):
+            dispatch_config = None
+
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
@@ -1890,7 +1916,7 @@ class FastModel(FastBaseModel):
             trust_remote_code = trust_remote_code,
             revision = model_revision,
             tokenizer_revision = _revision_for_tokenizer_repo(
-                tokenizer_name, model_name, old_model_name, revision, model_revision
+                tokenizer_name, model_name, old_model_name, revision, model_revision, is_peft
             ),
             model_types = model_types,
             tokenizer_name = tokenizer_name,
@@ -1899,7 +1925,7 @@ class FastModel(FastBaseModel):
             supports_sdpa = supports_sdpa,
             whisper_language = whisper_language,
             whisper_task = whisper_task,
-            auto_config = model_config,
+            auto_config = dispatch_config,
             offload_embedding = offload_embedding,
             float32_mixed_precision = float32_mixed_precision,
             # Pass vLLM/inference parameters
