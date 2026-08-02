@@ -34,6 +34,7 @@ import {
   TrainIcon,
   TransportConflictDialog,
   deleteCachedModel,
+  invalidateGgufVariantsCache,
   listGgufVariants as listGgufVariantsCached,
   useGgufVariantsCacheVersions,
   useHubInfiniteScroll,
@@ -128,7 +129,9 @@ import { parseMetaTokens, splitRepoLabel } from "./row-meta";
 import {
   type SoleQuantEntry,
   type SoleQuantTarget,
+  createSoleQuantReader,
   partitionSoleQuants,
+  soleQuantFingerprint,
   soleQuantKey,
 } from "./sole-quant-cache";
 import type {
@@ -763,7 +766,11 @@ function useSoleDownloadedQuants(
       return {
         repoId: repo.repo_id,
         localSource,
-        key: soleQuantKey(versions[index], localSource),
+        key: soleQuantKey(
+          versions[index],
+          localSource,
+          soleQuantFingerprint(repo),
+        ),
       };
     });
   }, [repos, variantsVersion]);
@@ -777,9 +784,24 @@ function useSoleDownloadedQuants(
     [targets, entries, enabled],
   );
 
-  // Reads outlive a re-render, so they are tracked in refs: a settled repo is
-  // never re-read, and an in-flight one is never read twice.
-  const inFlightRef = useRef(new Map<string, string>());
+  // A change outside this tab, another window or the CLI, moves the row's
+  // bytes without touching this instance's variants cache. Drop that repo's
+  // cached listing so the read, and every other reader, sees disk again.
+  const fingerprintsRef = useRef(new Map<string, string>());
+  useEffect(() => {
+    for (const target of targets) {
+      const seen = fingerprintsRef.current.get(target.repoId);
+      fingerprintsRef.current.set(target.repoId, target.key);
+      if (seen !== undefined && seen !== target.key) {
+        invalidateGgufVariantsCache(target.repoId);
+      }
+    }
+  }, [targets]);
+
+  // Reads outlive a render, so they run outside it. The token is read at call
+  // time, so a change to it does not strand the reader.
+  const hfTokenRef = useRef(hfToken);
+  hfTokenRef.current = hfToken;
   const mountedRef = useRef(true);
   useEffect(() => {
     // Set on setup, not just cleared on teardown: StrictMode replays effects,
@@ -790,38 +812,27 @@ function useSoleDownloadedQuants(
     };
   }, []);
 
-  useEffect(() => {
-    const queue = stale.filter(
-      (target) => inFlightRef.current.get(target.repoId) !== target.key,
-    );
-    if (queue.length === 0) return;
-    for (const target of queue) {
-      inFlightRef.current.set(target.repoId, target.key);
-    }
-
-    const readNext = async () => {
-      while (queue.length > 0) {
-        const target = queue.shift();
-        if (!target) return;
-        const quant = await readSoleQuant(target, hfToken);
-        if (inFlightRef.current.get(target.repoId) === target.key) {
-          inFlightRef.current.delete(target.repoId);
-        }
+  const readerRef = useRef<ReturnType<
+    typeof createSoleQuantReader<SoleDownloadedQuant>
+  > | null>(null);
+  if (readerRef.current === null) {
+    readerRef.current = createSoleQuantReader<SoleDownloadedQuant>({
+      workers: SOLE_QUANT_WORKERS,
+      read: (target) => readSoleQuant(target, hfTokenRef.current),
+      commit: (target, quant) => {
         if (!mountedRef.current) return;
         setEntries((prev) => {
           const next = new Map(prev);
           next.set(target.repoId, { key: target.key, quant });
           return next;
         });
-      }
-    };
+      },
+    });
+  }
 
-    void Promise.all(
-      Array.from({ length: Math.min(SOLE_QUANT_WORKERS, queue.length) }, () =>
-        readNext(),
-      ),
-    );
-  }, [hfToken, stale]);
+  useEffect(() => {
+    if (stale.length > 0) readerRef.current?.start(stale);
+  }, [stale]);
 
   return { quants, pending };
 }

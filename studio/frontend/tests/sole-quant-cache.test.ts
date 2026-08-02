@@ -7,7 +7,9 @@ import test from "node:test";
 import {
   type SoleQuantEntry,
   type SoleQuantTarget,
+  createSoleQuantReader,
   partitionSoleQuants,
+  soleQuantFingerprint,
   soleQuantKey,
 } from "../src/features/model-picker/components/model-selector/sole-quant-cache.ts";
 
@@ -116,4 +118,162 @@ test("a global invalidation moves every repo's key", () => {
   });
   assert.deepEqual([...quants], []);
   assert.deepEqual([...pending], [A, B]);
+});
+
+/** A read whose completion the test controls. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+const targetAt = (repoId: string, key: string): SoleQuantTarget => ({
+  repoId,
+  localSource: null,
+  key,
+});
+
+test("a superseded read never overwrites the fresher result", async () => {
+  const reads = new Map<string, ReturnType<typeof deferred<string | null>>>();
+  const committed: [string, string | null][] = [];
+  const reader = createSoleQuantReader<string>({
+    workers: 4,
+    read: (target) => {
+      const pending = deferred<string | null>();
+      reads.set(target.key, pending);
+      return pending.promise;
+    },
+    commit: (target, quant) => committed.push([target.key, quant]),
+  });
+
+  // First read is still running when the repo is invalidated.
+  reader.start([targetAt(A, "v1")]);
+  await flush();
+  reader.start([targetAt(A, "v2")]);
+  await flush();
+
+  // The newer read lands first, then the stale one.
+  reads.get("v2")?.resolve("Q8_0");
+  await flush();
+  reads.get("v1")?.resolve("Q4_K_M");
+  await flush();
+
+  assert.deepEqual(committed, [["v2", "Q8_0"]]);
+});
+
+test("a repo already being read at the same key is not read again", async () => {
+  let calls = 0;
+  const pending = deferred<string | null>();
+  const reader = createSoleQuantReader<string>({
+    workers: 4,
+    read: () => {
+      calls += 1;
+      return pending.promise;
+    },
+    commit: () => {},
+  });
+
+  reader.start([targetAt(A, "v1")]);
+  reader.start([targetAt(A, "v1")]);
+  await flush();
+  assert.equal(calls, 1);
+  pending.resolve(null);
+});
+
+test("reads are capped at the worker count", async () => {
+  let open = 0;
+  let peak = 0;
+  const gates: ((value: string | null) => void)[] = [];
+  const reader = createSoleQuantReader<string>({
+    workers: 2,
+    read: () => {
+      open += 1;
+      peak = Math.max(peak, open);
+      const gate = deferred<string | null>();
+      gates.push((value) => {
+        open -= 1;
+        gate.resolve(value);
+      });
+      return gate.promise;
+    },
+    commit: () => {},
+  });
+
+  reader.start(
+    ["r1", "r2", "r3", "r4", "r5"].map((repoId) => targetAt(repoId, "v1")),
+  );
+  await flush();
+  assert.equal(peak, 2);
+
+  while (gates.length > 0) {
+    gates.shift()?.(null);
+    await flush();
+  }
+  assert.equal(peak, 2);
+});
+
+test("a failed read commits as no sole quant", async () => {
+  const committed: [string, string | null][] = [];
+  const reader = createSoleQuantReader<string>({
+    workers: 1,
+    read: () => Promise.reject(new Error("offline")),
+    commit: (target, quant) => committed.push([target.repoId, quant]),
+  });
+
+  reader.start([targetAt(A, "v1")]);
+  await flush();
+  assert.deepEqual(committed, [[A, null]]);
+});
+
+test("bytes changing on disk moves the key, so the repo is read again", () => {
+  const before = {
+    repoId: A,
+    localSource: null,
+    key: soleQuantKey(
+      "1:0",
+      null,
+      soleQuantFingerprint({ size_bytes: 100, last_modified: 10 }),
+    ),
+  };
+  const entries = new Map([[A, { key: before.key, quant: "Q4_K_M" }]]);
+
+  // Another tab replaced the quant: same cache version, different bytes.
+  const after = [
+    {
+      repoId: A,
+      localSource: null,
+      key: soleQuantKey(
+        "1:0",
+        null,
+        soleQuantFingerprint({ size_bytes: 250, last_modified: 99 }),
+      ),
+    },
+  ];
+  const { quants, pending } = partitionSoleQuants(after, entries, {
+    enabled: true,
+  });
+  assert.deepEqual([...quants], []);
+  assert.deepEqual([...pending], [A]);
+});
+
+test("unchanged bytes keep the repo settled", () => {
+  const fingerprint = soleQuantFingerprint({
+    size_bytes: 100,
+    last_modified: 10,
+  });
+  const target = {
+    repoId: A,
+    localSource: null,
+    key: soleQuantKey("1:0", null, fingerprint),
+  };
+  const entries = new Map([[A, { key: target.key, quant: "Q4_K_M" }]]);
+  const { quants, pending } = partitionSoleQuants([target], entries, {
+    enabled: true,
+  });
+  assert.deepEqual([...quants], [[A, "Q4_K_M"]]);
+  assert.deepEqual([...pending], []);
 });

@@ -21,12 +21,23 @@ export interface SoleQuantEntry<T> {
 }
 
 /** Identity of one repo's probe. Moves when that repo's variants cache is
- *  invalidated or the row points at another directory. */
+ *  invalidated, the row points at another directory, or the bytes on disk
+ *  change under us. */
 export function soleQuantKey(
   version: string | undefined,
   localSource: string | null,
+  fingerprint = "",
 ): string {
-  return `${version ?? ""}::${localSource ?? ""}`;
+  return `${version ?? ""}::${localSource ?? ""}::${fingerprint}`;
+}
+
+/** What the inventory reports about a repo's files. A change here means disk
+ *  moved, including from outside this tab, so the cached listing is suspect. */
+export function soleQuantFingerprint(repo: {
+  size_bytes?: number;
+  last_modified?: number;
+}): string {
+  return `${repo.size_bytes ?? ""}:${repo.last_modified ?? ""}`;
 }
 
 /** Split the listed repos into resolved rows, repos still being read, and
@@ -54,4 +65,52 @@ export function partitionSoleQuants<T>(
     if (entry.quant) quants.set(target.repoId, entry.quant);
   }
   return { quants, pending, stale };
+}
+
+/** Runs the reads. Kept apart from React so the ordering rules below can be
+ *  exercised directly: a repo is read once per key, and a read whose repo has
+ *  since moved on is dropped rather than committed over the newer result. */
+export function createSoleQuantReader<T>({
+  workers,
+  read,
+  commit,
+}: {
+  workers: number;
+  read: (target: SoleQuantTarget) => Promise<T | null>;
+  commit: (target: SoleQuantTarget, quant: T | null) => void;
+}): { start: (targets: readonly SoleQuantTarget[]) => void } {
+  const inFlight = new Map<string, string>();
+  const queue: SoleQuantTarget[] = [];
+  let active = 0;
+
+  const owns = (target: SoleQuantTarget) =>
+    inFlight.get(target.repoId) === target.key;
+
+  const drain = async () => {
+    while (queue.length > 0) {
+      const target = queue.shift();
+      // Superseded before it started, so there is nothing to read.
+      if (!(target && owns(target))) continue;
+      const quant = await read(target).catch(() => null);
+      // Superseded while reading: the newer read owns this repo now.
+      if (!owns(target)) continue;
+      inFlight.delete(target.repoId);
+      commit(target, quant);
+    }
+    active -= 1;
+  };
+
+  return {
+    start(targets) {
+      for (const target of targets) {
+        if (owns(target)) continue;
+        inFlight.set(target.repoId, target.key);
+        queue.push(target);
+      }
+      while (active < workers && queue.length > 0) {
+        active += 1;
+        void drain();
+      }
+    },
+  };
 }
