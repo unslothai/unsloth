@@ -77,9 +77,9 @@ def test_mlx_loop_refuses_a_tts_command_instead_of_dropping_it(monkeypatch):
 
     errors = [m for m in sent if m.get("type") in ("audio_error", "error")]
     assert errors, f"the TTS command produced no reply at all: {sent}"
-    assert errors[0]["request_id"] == "r1", (
-        "the reply must carry the request_id or the direct-reader mailbox drops it"
-    )
+    assert (
+        errors[0]["request_id"] == "r1"
+    ), "the reply must carry the request_id or the direct-reader mailbox drops it"
     assert "MLX" in errors[0]["error"]
 
 
