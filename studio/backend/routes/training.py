@@ -680,6 +680,11 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
         )
+    if request.is_dataset_audio:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Audio dataset training is not yet supported on Apple Silicon.",
+        )
     if request.use_loftq:
         raise HTTPException(
             status_code = 400,
@@ -1040,12 +1045,11 @@ async def start_training(
                 request.local_eval_datasets, "Local eval dataset"
             )
 
-        _validate_training_platform(request)
-
-        # Validate streaming-mode compatibility before any expensive work.
-        # Streaming is supported only for Hugging Face text datasets.
         from utils.hardware import hardware as _hw
         from utils.hardware import ensure_hardware_detected
+
+        await asyncio.to_thread(ensure_hardware_detected)
+        _validate_training_platform(request)
 
         if request.dataset_streaming:
             if not request.hf_dataset:
@@ -1063,10 +1067,6 @@ async def start_training(
                     status_code = 400,
                     detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
                 )
-            # The warm fills DEVICE shortly after the socket binds, so a start in that window
-            # would read None, skip the MLX rejection, and hand a streaming dataset to the MLX
-            # loader (which materializes it whole). Detect first, off-loop: it imports torch.
-            await asyncio.to_thread(ensure_hardware_detected)
             if _hw.DEVICE == _hw.DeviceType.MLX:
                 raise HTTPException(
                     status_code = 400,
@@ -1116,11 +1116,6 @@ async def start_training(
                         "dataset cache; disable streaming to train from the cached copy."
                     ),
                 )
-        else:
-            # The synchronous backend start builds its worker config with get_device().
-            # Detect off-loop first so an early start cannot stall login or health.
-            await asyncio.to_thread(ensure_hardware_detected)
-
         model_preflight = await asyncio.to_thread(
             _reject_untrainable_model_request,
             request,

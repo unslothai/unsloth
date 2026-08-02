@@ -45,6 +45,7 @@ import {
   buildLocalTrainingModelLookup,
   inferTrainingModelTypeFromFlags,
   isLocalTrainingModelSelection,
+  isTrainingModelTypeSupportedOnDevice,
   trainingModelMatchesTypeConstraint,
   trainingModelTypeFlagsFromMetadata,
   useTrainingConfigStore,
@@ -160,6 +161,7 @@ function trainingModelTaskFilter(requiredModelType: ModelType | undefined) {
 
 function commitTrainingModelPick({
   closePicker,
+  deviceType,
   id,
   inferredFlags,
   mismatchDescription,
@@ -167,8 +169,10 @@ function commitTrainingModelPick({
   options,
   requiredModelType,
   selectTrainingModel,
+  unsupportedOnDeviceDescription,
 }: {
   closePicker: () => void;
+  deviceType: string;
   id: string;
   inferredFlags: ModelTypeCapabilityFlags;
   mismatchDescription: string;
@@ -180,12 +184,17 @@ function commitTrainingModelPick({
     modelType: ModelType,
     options: TrainingModelPickOptions & ModelTypeCapabilityFlags,
   ) => void;
+  unsupportedOnDeviceDescription: string;
 }) {
   const next = id.trim();
   if (!next) {
     return;
   }
   const inferredModelType = inferTrainingModelTypeFromFlags(inferredFlags);
+  if (!isTrainingModelTypeSupportedOnDevice(inferredModelType, deviceType)) {
+    toast.error(mismatchTitle, { description: unsupportedOnDeviceDescription });
+    return;
+  }
   if (
     !trainingModelMatchesTypeConstraint(
       inferredModelType,
@@ -561,6 +570,7 @@ export function TrainModelSelector({
   ) {
     commitTrainingModelPick({
       closePicker: picker.closePicker,
+      deviceType,
       id,
       inferredFlags,
       mismatchDescription: t("studio.modelPicker.reasonTypeMismatch"),
@@ -568,6 +578,9 @@ export function TrainModelSelector({
       options,
       requiredModelType,
       selectTrainingModel,
+      unsupportedOnDeviceDescription: t(
+        "studio.params.notSupportedAppleSilicon",
+      ),
     });
   }
 

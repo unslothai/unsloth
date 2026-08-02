@@ -27,6 +27,8 @@ const validConfig = {
   isVisionModel: false,
   isEmbeddingModel: false,
   isAudioModel: false,
+  isDatasetAudio: false,
+  loraVariant: "rslora" as const,
   trainingMethod: "qlora" as const,
 } as TrainingConfigState;
 
@@ -109,6 +111,54 @@ test("training validation rejects MLX-incompatible training modes", () => {
   );
 });
 
+test("training validation rejects audio training on MLX", () => {
+  assert.deepEqual(
+    validateTrainingConfig(
+      {
+        ...validConfig,
+        modelType: "audio",
+        isAudioModel: true,
+        isDatasetAudio: true,
+      },
+      "mac",
+    ),
+    {
+      ok: false,
+      errorKey: "studio.params.notSupportedAppleSilicon",
+    },
+  );
+  assert.deepEqual(
+    validateTrainingConfig({ ...validConfig, isDatasetAudio: true }, "mac"),
+    {
+      ok: false,
+      errorKey: "studio.params.notSupportedAppleSilicon",
+    },
+  );
+});
+
+test("training validation rejects unsupported LoRA variants on MLX", () => {
+  for (const loraVariant of ["loftq", "dora"] as const) {
+    assert.deepEqual(
+      validateTrainingConfig({ ...validConfig, loraVariant }, "mac"),
+      {
+        ok: false,
+        errorKey: "studio.params.notSupportedAppleSilicon",
+      },
+    );
+    assert.deepEqual(
+      validateTrainingConfig({ ...validConfig, loraVariant }, "linux"),
+      { ok: true, errorKey: null },
+    );
+  }
+  assert.deepEqual(
+    validateTrainingConfig(
+      { ...validConfig, trainingMethod: "full", loraVariant: "dora" },
+      "mac",
+    ),
+    { ok: true, errorKey: null },
+  );
+});
+
 test("training validation keeps CPT and embedding training available off MLX", () => {
   assert.deepEqual(
     validateTrainingConfig({ ...validConfig, trainingMethod: "cpt" }, "linux"),
@@ -117,6 +167,18 @@ test("training validation keeps CPT and embedding training available off MLX", (
   assert.deepEqual(
     validateTrainingConfig(
       { ...validConfig, modelType: "embeddings", isEmbeddingModel: true },
+      "linux",
+    ),
+    { ok: true, errorKey: null },
+  );
+  assert.deepEqual(
+    validateTrainingConfig(
+      {
+        ...validConfig,
+        modelType: "audio",
+        isAudioModel: true,
+        isDatasetAudio: true,
+      },
       "linux",
     ),
     { ok: true, errorKey: null },

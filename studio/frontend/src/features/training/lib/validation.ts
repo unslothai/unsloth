@@ -6,11 +6,44 @@ import type { TranslationKey } from "@/i18n";
 import type { TrainingConfigState } from "../types/config";
 import { isLocalTrainingModelSelection } from "./model-selection";
 import { isUntrainableModelFormat } from "./model-support";
-import { isTrainingMethodSupportedOnDevice } from "./training-methods";
+import {
+  isTrainingLoraVariantSupportedOnDevice,
+  isTrainingMethodSupportedOnDevice,
+  isTrainingModelTypeSupportedOnDevice,
+} from "./training-methods";
 
 export type StartValidationResult =
   | { ok: true; errorKey: null }
   | { ok: false; errorKey: TranslationKey };
+
+function isTrainingConfigSupportedOnDevice(
+  config: TrainingConfigState,
+  deviceType?: string,
+): boolean {
+  if (!isTrainingMethodSupportedOnDevice(config.trainingMethod, deviceType)) {
+    return false;
+  }
+  if (!isTrainingModelTypeSupportedOnDevice(config.modelType, deviceType)) {
+    return false;
+  }
+  if (
+    !isTrainingLoraVariantSupportedOnDevice(
+      config.loraVariant,
+      config.trainingMethod,
+      deviceType,
+    )
+  ) {
+    return false;
+  }
+  if (deviceType !== "mac") {
+    return true;
+  }
+  return !(
+    config.isEmbeddingModel ||
+    config.isAudioModel ||
+    config.isDatasetAudio === true
+  );
+}
 
 export function hasIncompatibleTrainingModalities(
   config: TrainingConfigState,
@@ -120,19 +153,11 @@ export function validateTrainingConfig(
     };
   }
 
-  if (!isTrainingMethodSupportedOnDevice(config.trainingMethod, deviceType)) {
+  if (!isTrainingConfigSupportedOnDevice(config, deviceType)) {
     return {
       ok: false,
       errorKey: "studio.params.notSupportedAppleSilicon",
     };
-  }
-  if (deviceType === "mac") {
-    if (config.isEmbeddingModel || config.modelType === "embeddings") {
-      return {
-        ok: false,
-        errorKey: "studio.params.notSupportedAppleSilicon",
-      };
-    }
   }
 
   if (!Number.isFinite(config.learningRate) || config.learningRate <= 0) {

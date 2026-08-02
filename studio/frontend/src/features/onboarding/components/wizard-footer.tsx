@@ -6,7 +6,9 @@ import { usePlatformStore } from "@/config/env";
 import { STEPS } from "@/config/training";
 import { markOnboardingDone } from "@/features/auth";
 import {
+  isTrainingLoraVariantSupportedOnDevice,
   isTrainingMethodSupportedOnDevice,
+  isTrainingModelTypeSupportedOnDevice,
   useTrainingConfigStore,
 } from "@/features/training";
 import { ArrowLeft02Icon, ArrowRight02Icon } from "@hugeicons/core-free-icons";
@@ -21,18 +23,33 @@ export function WizardFooter({
   onBackToSplash: () => void;
 }) {
   const deviceType = usePlatformStore((state) => state.deviceType);
-  const { currentStep, prevStep, nextStep, trainingMethod, canProceedForStep } =
-    useTrainingConfigStore(
-      useShallow((s) => ({
-        currentStep: s.currentStep,
-        prevStep: s.prevStep,
-        nextStep: s.nextStep,
-        trainingMethod: s.trainingMethod,
-        canProceedForStep: s.canProceed(),
-      })),
-    );
+  const {
+    currentStep,
+    prevStep,
+    nextStep,
+    loraVariant,
+    modelType,
+    trainingMethod,
+    canProceedForStep,
+  } = useTrainingConfigStore(
+    useShallow((s) => ({
+      currentStep: s.currentStep,
+      prevStep: s.prevStep,
+      nextStep: s.nextStep,
+      loraVariant: s.loraVariant,
+      modelType: s.modelType,
+      trainingMethod: s.trainingMethod,
+      canProceedForStep: s.canProceed(),
+    })),
+  );
   const canProceed =
     canProceedForStep &&
+    isTrainingModelTypeSupportedOnDevice(modelType, deviceType) &&
+    isTrainingLoraVariantSupportedOnDevice(
+      loraVariant,
+      trainingMethod,
+      deviceType,
+    ) &&
     (currentStep === 1 ||
       isTrainingMethodSupportedOnDevice(trainingMethod, deviceType));
   const isFirst = currentStep === 1;
@@ -77,7 +94,10 @@ export function WizardFooter({
           ) : (
             <Button
               onClick={() => {
-                if (currentStep === 1 && sessionStorage.getItem("unsloth_chat_only") === "1") {
+                if (
+                  currentStep === 1 &&
+                  sessionStorage.getItem("unsloth_chat_only") === "1"
+                ) {
                   sessionStorage.removeItem("unsloth_chat_only");
                   markOnboardingDone();
                   window.location.assign("/chat");

@@ -9,9 +9,14 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
 import { MODEL_TYPES } from "@/config/training";
+import {
+  isTrainingModelTypeSupportedOnDevice,
+  useTrainingConfigStore,
+} from "@/features/training";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { useTrainingConfigStore } from "@/features/training";
 import type { ModelType } from "@/types/training";
 import {
   BubbleChatIcon,
@@ -41,7 +46,23 @@ const TYPE_TOOLTIPS: Record<ModelType, string> = {
 
 const COMING_SOON: ModelType[] = [];
 
+function getDisabledLabel(
+  modelType: ModelType,
+  deviceType: string,
+  unsupportedOnDeviceLabel: string,
+): string | null {
+  if (COMING_SOON.includes(modelType)) {
+    return "Coming Soon";
+  }
+  if (!isTrainingModelTypeSupportedOnDevice(modelType, deviceType)) {
+    return unsupportedOnDeviceLabel;
+  }
+  return null;
+}
+
 export function ModelTypeStep(): ReactElement {
+  const t = useT();
+  const deviceType = usePlatformStore((state) => state.deviceType);
   const { modelType, setModelType } = useTrainingConfigStore(
     useShallow((s) => ({
       modelType: s.modelType,
@@ -49,13 +70,20 @@ export function ModelTypeStep(): ReactElement {
     })),
   );
   const [chatOnlySelected, setChatOnlySelected] = useState(false);
+  const selectedModelType = chatOnlySelected ? null : modelType;
+  const selectChatOnly = () => {
+    setChatOnlySelected(true);
+    setModelType("text");
+    sessionStorage.setItem("unsloth_chat_only", "1");
+  };
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h2 className="text-lg font-semibold">Welcome to Unsloth Studio</h2>
         <p className="text-sm text-muted-foreground">
-          Choose a path - fine-tune LLMs, vision, embedding, audio models or just chat.{" "}
+          Choose a path - fine-tune LLMs, vision, embedding, audio models or
+          just chat.{" "}
           <a
             href="https://unsloth.ai/docs/new/studio/start"
             target="_blank"
@@ -67,7 +95,7 @@ export function ModelTypeStep(): ReactElement {
         </p>
       </div>
       <RadioGroup
-        value={chatOnlySelected ? "" : (modelType ?? "")}
+        value={selectedModelType ?? ""}
         onValueChange={(v) => {
           if (!COMING_SOON.includes(v as ModelType)) {
             setChatOnlySelected(false);
@@ -79,8 +107,14 @@ export function ModelTypeStep(): ReactElement {
       >
         {MODEL_TYPES.map((type) => {
           const Icon = TYPE_ICONS[type.value];
-          const isSelected = !chatOnlySelected && modelType === type.value;
-          const isDisabled = COMING_SOON.includes(type.value);
+          const isSelected = selectedModelType === type.value;
+          const disabledLabel = getDisabledLabel(
+            type.value,
+            deviceType,
+            t("studio.params.notSupportedAppleSilicon"),
+          );
+          const isDisabled = disabledLabel !== null;
+          const isActive = isSelected && !isDisabled;
           const inputId = `model-type-${type.value}`;
 
           return (
@@ -98,8 +132,7 @@ export function ModelTypeStep(): ReactElement {
                   isDisabled && "opacity-50 bg-muted/50",
                   !isDisabled &&
                     "hover:ring-ring hover:-translate-y-0.5 hover:shadow-sm",
-                  isSelected &&
-                    !isDisabled &&
+                  isActive &&
                     "ring-1 ring-ring-strong -translate-y-0.5 shadow-sm",
                 )}
               >
@@ -108,7 +141,7 @@ export function ModelTypeStep(): ReactElement {
                     variant="secondary"
                     className="absolute top-2 right-2 text-ui-10"
                   >
-                    Coming Soon
+                    {disabledLabel}
                   </Badge>
                 )}
                 <CardContent className="flex items-center gap-4 py-4">
@@ -123,9 +156,7 @@ export function ModelTypeStep(): ReactElement {
                       "size-10 rounded-xl corner-squircle flex items-center justify-center shrink-0",
                       "transition-all duration-100 ease-out",
                       isDisabled && "bg-muted/50 text-muted-foreground/50",
-                      !isDisabled &&
-                        isSelected &&
-                        "bg-primary/10 text-primary scale-105",
+                      isActive && "bg-primary/10 text-primary scale-105",
                       !(isDisabled || isSelected) &&
                         "bg-muted text-muted-foreground",
                     )}
@@ -134,9 +165,9 @@ export function ModelTypeStep(): ReactElement {
                       icon={Icon}
                       className={cn(
                         "size-5 transition-transform duration-100 ease-out",
-                        isSelected && !isDisabled && "scale-110",
+                        isActive && "scale-110",
                       )}
-                      strokeWidth={isSelected && !isDisabled ? 2.5 : 2}
+                      strokeWidth={isActive ? 2.5 : 2}
                     />
                   </div>
                   <div className="flex flex-col gap-0.5 flex-1">
@@ -175,20 +206,18 @@ export function ModelTypeStep(): ReactElement {
             </label>
           );
         })}
-        <div
-          className="cursor-pointer"
-          onClick={() => {
-            setChatOnlySelected(true);
-            setModelType("text" as ModelType);
-            sessionStorage.setItem("unsloth_chat_only", "1");
-          }}
+        <button
+          type="button"
+          className="cursor-pointer text-left"
+          onClick={selectChatOnly}
         >
           <Card
             size="sm"
             className={cn(
               "relative shadow-primary/30 transition-all duration-150 ease-out",
               "hover:ring-ring hover:-translate-y-0.5 hover:shadow-sm",
-              chatOnlySelected && "ring-1 ring-ring-strong -translate-y-0.5 shadow-sm",
+              chatOnlySelected &&
+                "ring-1 ring-ring-strong -translate-y-0.5 shadow-sm",
             )}
           >
             <CardContent className="flex items-center gap-4 py-4">
@@ -217,19 +246,16 @@ export function ModelTypeStep(): ReactElement {
                   <span className="font-medium">Chat</span>
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
-                      <button
-                        type="button"
-                        className="text-muted-foreground/50 hover:text-muted-foreground"
-                        onClick={(e) => e.stopPropagation()}
-                      >
+                      <span className="text-muted-foreground/50 hover:text-muted-foreground">
                         <HugeiconsIcon
                           icon={InformationCircleIcon}
                           className="size-3.5"
                         />
-                      </button>
+                      </span>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Chat with any model. Has tool calling, web search and more.
+                      Chat with any model. Has tool calling, web search and
+                      more.
                     </TooltipContent>
                   </Tooltip>
                 </div>
@@ -239,7 +265,7 @@ export function ModelTypeStep(): ReactElement {
               </div>
             </CardContent>
           </Card>
-        </div>
+        </button>
       </RadioGroup>
     </div>
   );

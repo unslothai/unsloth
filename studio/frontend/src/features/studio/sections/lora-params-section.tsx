@@ -9,7 +9,10 @@ import {
 } from "@/components/ui/collapsible";
 import { usePlatformStore } from "@/config/env";
 import { CPT_TARGET_MODULES, TARGET_MODULES } from "@/config/training";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  isTrainingLoraVariantSupportedOnDevice,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { isAdapterMethod } from "@/types/training";
@@ -21,7 +24,7 @@ import { selectableOptionStateClassName } from "./params-section-styles";
 
 export function LoraParamsSection(): ReactElement | null {
   const t = useT();
-  const isMac = usePlatformStore((state) => state.deviceType === "mac");
+  const deviceType = usePlatformStore((state) => state.deviceType);
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       trainingMethod: state.trainingMethod,
@@ -238,8 +241,11 @@ export function LoraParamsSection(): ReactElement | null {
                 },
               ] as const
             ).map((option) => {
-              const unsupportedOnMlx =
-                isMac && (option.value === "loftq" || option.value === "dora");
+              const unsupportedOnMlx = !isTrainingLoraVariantSupportedOnDevice(
+                option.value,
+                store.trainingMethod,
+                deviceType,
+              );
               return (
                 <button
                   key={option.value}
