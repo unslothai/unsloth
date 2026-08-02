@@ -1311,7 +1311,7 @@ exit 0
                     if ($out -match "Python (3\.1[1-3])\.\d+") {
                         $ver = $Matches[1]
                         # Resolve the actual executable path and verify it is not conda-based
-                        $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                        $resolvedExe = (& $pyLauncher.Source "-$minor" -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsCondaPython $resolvedExe)) {
                             if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
@@ -1339,7 +1339,7 @@ exit 0
                         # PATH entries can be launchers (for example pyenv-win's
                         # python.bat shim). Give uv the real CPython executable so
                         # the venv does not depend on wrapper re-resolution.
-                        $resolvedExe = (& $cmd.Source -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                        $resolvedExe = (& $cmd.Source -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
                             if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
@@ -1701,6 +1701,21 @@ exit 0
         }
     }
 
+    function Get-VenvBaseHome {
+        param([Parameter(Mandatory = $true)][string]$VenvRoot)
+        $configPath = Join-Path $VenvRoot "pyvenv.cfg"
+        if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { return $null }
+
+        try {
+            foreach ($line in [System.IO.File]::ReadAllLines($configPath)) {
+                if ($line -match '^\s*home\s*=\s*(.*?)\s*$') {
+                    return $Matches[1].Trim()
+                }
+            }
+        } catch {}
+        return $null
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -1909,19 +1924,24 @@ exit 0
         substep "$VenvDir"
     }
 
-    if (-not (Test-VenvPythonReady -PythonExe $VenvPython)) {
-        Write-Host "[ERROR] The managed Python interpreter is missing or cannot be launched." -ForegroundColor Red
-        Write-Host "        Managed Python: $VenvPython" -ForegroundColor Yellow
-        Write-Host "        Selected base Python: $($DetectedPython.Path)" -ForegroundColor Yellow
-        Write-Host "        Restore or reinstall the selected base Python, then re-run install.ps1." -ForegroundColor Yellow
-        return (Exit-InstallFailure "Managed Python is unavailable at $VenvPython (selected base: $($DetectedPython.Path))")
-    }
-
-    # Mark the freshly-created venv as Unsloth-owned so a partial install can be
-    # repaired by re-running install.ps1; the env-mode deletion guard above
-    # accepts this marker as the primary sentinel.
+    # Mark the managed venv before probing it so an installer-created but
+    # unlaunchable environment remains eligible for replacement on rerun.
     if (Test-Path -LiteralPath $VenvDir -PathType Container) {
         try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
+    }
+
+    if (-not (Test-VenvPythonReady -PythonExe $VenvPython)) {
+        $recordedBaseHome = Get-VenvBaseHome -VenvRoot $VenvDir
+        Write-Host "[ERROR] The managed Python interpreter is missing or cannot be launched." -ForegroundColor Red
+        Write-Host "        Managed Python: $VenvPython" -ForegroundColor Yellow
+        if ($recordedBaseHome) {
+            Write-Host "        Recorded base Python home: $recordedBaseHome" -ForegroundColor Yellow
+        } else {
+            Write-Host "        Recorded base Python home: unavailable" -ForegroundColor Yellow
+        }
+        Write-Host "        Restore the Python installation referenced by this environment, or move" -ForegroundColor Yellow
+        Write-Host "        $VenvDir aside and re-run install.ps1." -ForegroundColor Yellow
+        return (Exit-InstallFailure "Managed Python is unavailable at $VenvPython (recorded base home: $recordedBaseHome)")
     }
 
     # ── Helper: run amd-smi without triggering a UAC elevation prompt ──

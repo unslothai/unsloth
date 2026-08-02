@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -43,8 +44,16 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
 def test_path_python_wrapper_resolves_to_real_executable(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     finder = _extract(r"    function Find-CompatiblePython \{.*?\n    \}\n", source)
-    wrapper = tmp_path / "python.bat"
-    wrapper.write_text(f'@"{sys.executable}" %*\n', encoding = "utf-8")
+    (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding = "utf-8")
+    if os.name == "nt":
+        wrapper = tmp_path / "python.bat"
+        wrapper.write_text(f'@"{sys.executable}" %*\n', encoding = "utf-8")
+    else:
+        wrapper = tmp_path / "python-wrapper"
+        wrapper.write_text(
+            f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n", encoding = "utf-8"
+        )
+        wrapper.chmod(0o755)
 
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -67,7 +76,26 @@ Write-Output $found.Path
 """
     env = os.environ.copy()
     env["TEST_PYTHON_WRAPPER"] = str(wrapper)
+    env["PYTHONPATH"] = str(tmp_path)
     assert Path(_run_powershell(shell, script, env)).resolve() == Path(sys.executable).resolve()
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_venv_base_home_comes_from_pyvenv_config(tmp_path: Path, shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    reader = _extract(r"    function Get-VenvBaseHome \{.*?\n    \}\n", source)
+    expected = tmp_path / "removed-base-python"
+    (tmp_path / "pyvenv.cfg").write_text(f"home = {expected}\n", encoding = "utf-8")
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{reader}
+Write-Output (Get-VenvBaseHome -VenvRoot $env:TEST_VENV_ROOT)
+"""
+    env = os.environ.copy()
+    env["TEST_VENV_ROOT"] = str(tmp_path)
+    assert _run_powershell(shell, script, env) == str(expected)
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
@@ -97,10 +125,11 @@ Write-Output (Test-VenvPythonReady -PythonExe $env:TEST_MANAGED_PYTHON)
 def test_readiness_gate_precedes_installs_and_names_both_interpreters():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     gate = source.index("if (-not (Test-VenvPythonReady -PythonExe $VenvPython))")
+    marker = source.index('[System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "")')
     first_uv_pip = source.index("uv pip install --python $VenvPython")
     gpu_detection = source.index("function Invoke-AmdSmiNoElevate")
 
-    assert gate < gpu_detection < first_uv_pip
+    assert marker < gate < gpu_detection < first_uv_pip
     assert 'Write-Host "        Managed Python: $VenvPython"' in source
-    assert 'Write-Host "        Selected base Python: $($DetectedPython.Path)"' in source
+    assert 'Write-Host "        Recorded base Python home: $recordedBaseHome"' in source
     assert 'return (Exit-InstallFailure "Managed Python is unavailable' in source
