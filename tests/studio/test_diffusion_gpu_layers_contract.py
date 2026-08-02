@@ -135,9 +135,17 @@ def test_no_gpu_and_no_pick_masks_the_child(llama_cpp):
 
 
 def test_diffusion_load_passes_the_users_split_through():
-    body = "".join(_body("load_model").split())
-    assert "gpu_memory_mode=gpu_memory_mode" in body
-    assert "gpu_layers=gpu_layers" in body
+    call = next(
+        node
+        for node in ast.walk(_function("load_model"))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_start_diffusion_server"
+    )
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    for name in ("gpu_memory_mode", "gpu_layers"):
+        assert isinstance(keywords.get(name), ast.Name)
+        assert keywords[name].id == name
 
 
 def test_diffusion_no_longer_hardcodes_auto_over_the_users_choice():
