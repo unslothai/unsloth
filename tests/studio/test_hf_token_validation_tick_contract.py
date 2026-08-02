@@ -17,9 +17,7 @@ TRAINING_ACTIONS = REPO / "studio/frontend/src/features/training/hooks/use-train
 FRESH_TRAINING_START = (
     REPO / "studio/frontend/src/features/training/lib/start-fresh-training-run.ts"
 )
-TRAINING_START_INPUTS = (
-    REPO / "studio/frontend/src/features/training/lib/training-start-inputs.ts"
-)
+TRAINING_START_INPUTS = REPO / "studio/frontend/src/features/training/lib/training-start-inputs.ts"
 RESUME_TRAINING_START = REPO / "studio/frontend/src/features/training/lib/resume-training-run.ts"
 TRAINING_RUNTIME_STORE = (
     REPO / "studio/frontend/src/features/training/stores/training-runtime-store.ts"

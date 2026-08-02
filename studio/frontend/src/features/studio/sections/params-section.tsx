@@ -26,6 +26,7 @@ import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { FieldHint } from "./field-hint";
 import { LoraParamsSection } from "./lora-params-section";
 import { TrainingHyperparametersSection } from "./training-hyperparameters-section";
 import { useMlxTrainingConfigPolicy } from "./use-mlx-training-config-policy";
@@ -116,292 +117,139 @@ export function ParamsSection({
 
   return (
     <div className="min-w-0">
-      <div className="flex flex-col gap-4">
-        <div className="flex flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            {t("studio.params.projectName")}
-            <span className="text-ui-10 font-normal text-muted-foreground/70">
-              {t("studio.params.optional")}
-            </span>
-          </span>
-          <Input
-            value={store.projectName || ""}
-            onChange={(event) => store.setProjectName(event.target.value)}
-            placeholder="customer-support-lora"
-            maxLength={80}
-          />
-          <p className="text-ui-10 text-muted-foreground">
-            {t("studio.params.projectNameDescription")}
-          </p>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <div
-            key={useEpochs ? "epochs" : "steps"}
-            className="flex flex-col gap-2 animate-in fade-in-0 slide-in-from-bottom-1 duration-200"
-          >
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                {useEpochs
-                  ? t("studio.params.epochs")
-                  : t("studio.params.maxSteps")}
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="text-foreground/70 hover:text-foreground"
-                    >
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-3"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {useEpochs
-                      ? t("studio.params.epochsTooltip")
-                      : t("studio.params.maxStepsTooltip")}{" "}
-                    <a
-                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary underline"
-                    >
-                      {t("studio.params.readMore")}
-                    </a>
-                  </TooltipContent>
-                </Tooltip>
+      <div className="flex flex-col gap-5">
+        <div className="grid grid-cols-1 items-start gap-4 @xl/train-section:grid-cols-2 @xl/train-section:gap-x-6 @xl/train-section:gap-y-5">
+          <div className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              {t("studio.params.projectName")}
+              <span className="text-ui-10 font-normal text-muted-foreground/70">
+                {t("studio.params.optional")}
               </span>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={toggleUseEpochs}
-                  className="text-xs text-primary underline cursor-pointer"
-                >
+              <FieldHint
+                text={t("studio.params.projectNameDescription")}
+                label={t("studio.params.projectName")}
+              />
+            </span>
+            <Input
+              value={store.projectName || ""}
+              onChange={(event) => store.setProjectName(event.target.value)}
+              placeholder="customer-support-lora"
+              maxLength={80}
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <div
+              key={useEpochs ? "epochs" : "steps"}
+              className="flex flex-col gap-2 animate-in fade-in-0 slide-in-from-bottom-1 duration-200"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   {useEpochs
-                    ? t("studio.params.useMaxSteps")
-                    : t("studio.params.useEpochs")}
-                </button>
-                <input
-                  type="number"
-                  value={durationInput}
-                  onChange={(event) => {
-                    const raw = event.target.value;
-                    setDurationDraft({
-                      key: durationKey,
-                      committedValue: durationValue,
-                      value: raw,
-                    });
-                    const value = Number(raw);
-                    if (raw === "" || !Number.isFinite(value) || value < 1) {
-                      return;
-                    }
-                    if (useEpochs) {
-                      store.setEpochs(value);
-                    } else {
-                      store.setMaxSteps(value);
-                    }
-                    setDurationDraft({
-                      key: durationKey,
-                      committedValue: value,
-                      value: raw,
-                    });
-                  }}
-                  onBlur={() => {
-                    const value = Number(durationInput);
-                    if (
-                      durationInput === "" ||
-                      !Number.isFinite(value) ||
-                      value < 1
-                    ) {
+                    ? t("studio.params.epochs")
+                    : t("studio.params.maxSteps")}
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {useEpochs
+                        ? t("studio.params.epochsTooltip")
+                        : t("studio.params.maxStepsTooltip")}{" "}
+                      <a
+                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary underline"
+                      >
+                        {t("studio.params.readMore")}
+                      </a>
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={toggleUseEpochs}
+                    className="text-xs text-primary underline cursor-pointer"
+                  >
+                    {useEpochs
+                      ? t("studio.params.useMaxSteps")
+                      : t("studio.params.useEpochs")}
+                  </button>
+                  <input
+                    type="number"
+                    value={durationInput}
+                    onChange={(event) => {
+                      const raw = event.target.value;
                       setDurationDraft({
                         key: durationKey,
                         committedValue: durationValue,
-                        value: String(durationValue),
+                        value: raw,
                       });
-                    }
-                  }}
-                  min={1}
-                  max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
-                  step={1}
-                  className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
-                />
+                      const value = Number(raw);
+                      if (raw === "" || !Number.isFinite(value) || value < 1) {
+                        return;
+                      }
+                      if (useEpochs) {
+                        store.setEpochs(value);
+                      } else {
+                        store.setMaxSteps(value);
+                      }
+                      setDurationDraft({
+                        key: durationKey,
+                        committedValue: value,
+                        value: raw,
+                      });
+                    }}
+                    onBlur={() => {
+                      const value = Number(durationInput);
+                      if (
+                        durationInput === "" ||
+                        !Number.isFinite(value) ||
+                        value < 1
+                      ) {
+                        setDurationDraft({
+                          key: durationKey,
+                          committedValue: durationValue,
+                          value: String(durationValue),
+                        });
+                      }
+                    }}
+                    min={1}
+                    max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
+                    step={1}
+                    className="w-14 shrink-0 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
+                  />
+                </div>
               </div>
-            </div>
-            <Slider
-              value={[
-                useEpochs
-                  ? Math.min(epochsSliderMax, Math.max(1, store.epochs))
-                  : Math.min(maxStepsSliderMax, Math.max(1, store.maxSteps)),
-              ]}
-              onValueChange={([value]) =>
-                useEpochs ? store.setEpochs(value) : store.setMaxSteps(value)
-              }
-              min={1}
-              max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
-              step={1}
-            />
-            <p className="text-ui-10 text-muted-foreground">
-              {useEpochs
-                ? t("studio.params.epochsDescription")
-                : t("studio.params.maxStepsDescription")}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            {t("studio.params.contextLength")}
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  className="text-foreground/70 hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {t("studio.params.contextLengthTooltip")}{" "}
-                <a
-                  href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary underline"
-                >
-                  {t("studio.params.readMore")}
-                </a>
-              </TooltipContent>
-            </Tooltip>
-          </span>
-          <div ref={contextAnchorRef}>
-            <Combobox
-              items={contextItems}
-              filteredItems={contextItems}
-              filter={null}
-              value={String(store.contextLength)}
-              onValueChange={(value) => {
-                if (value && trySetContextLength(value)) {
-                  setContextInput(value);
+              <Slider
+                value={[
+                  useEpochs
+                    ? Math.min(epochsSliderMax, Math.max(1, store.epochs))
+                    : Math.min(maxStepsSliderMax, Math.max(1, store.maxSteps)),
+                ]}
+                onValueChange={([value]) =>
+                  useEpochs ? store.setEpochs(value) : store.setMaxSteps(value)
                 }
-              }}
-              onInputValueChange={setContextInput}
-              itemToStringValue={(id) => Number(id).toLocaleString()}
-              autoHighlight={false}
-            >
-              <ComboboxInput
-                placeholder={String(store.contextLength)}
-                className="w-full font-mono"
-                onBlur={() => {
-                  trySetContextLength(contextInput);
-                  setContextInput(String(store.contextLength));
-                }}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter") {
-                    return;
-                  }
-                  const value = trySetContextLength(contextInput);
-                  if (value === null) {
-                    return;
-                  }
-                  if (!contextItems.includes(contextInput.trim())) {
-                    event.stopPropagation();
-                    event.preventDefault();
-                  }
-                  setContextInput(String(value));
-                }}
+                min={1}
+                max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
+                step={1}
               />
-              <ComboboxContent anchor={contextAnchorRef}>
-                <ComboboxEmpty>
-                  {t("studio.params.customContextLength")}
-                </ComboboxEmpty>
-                <ComboboxList className="p-1">
-                  {(id: string) => (
-                    <ComboboxItem key={id} value={id} className="font-mono">
-                      {Number(id).toLocaleString()}
-                    </ComboboxItem>
-                  )}
-                </ComboboxList>
-              </ComboboxContent>
-            </Combobox>
+            </div>
           </div>
-          <p className="text-ui-10 text-muted-foreground">
-            {t("studio.params.contextLengthDescription")}
-          </p>
-        </div>
 
-        <div className="flex flex-col gap-2">
-          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            {t("studio.params.learningRate")}
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  className="text-foreground/70 hover:text-foreground"
-                >
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3"
-                  />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {t("studio.params.learningRateTooltip")}{" "}
-                <a
-                  href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary underline"
-                >
-                  {t("studio.params.readMore")}
-                </a>
-              </TooltipContent>
-            </Tooltip>
-          </span>
-          <Input
-            type="number"
-            step="0.00001"
-            min="0"
-            value={learningRateInput}
-            onChange={(event) => {
-              const input = event.target.value;
-              setLearningRateDraft({
-                learningRate: store.learningRate,
-                value: input,
-              });
-              const learningRate = Number(input);
-              if (input !== "" && Number.isFinite(learningRate)) {
-                store.setLearningRate(learningRate);
-                setLearningRateDraft({ learningRate, value: input });
-              }
-            }}
-            onBlur={() => {
-              const learningRate = Number(learningRateInput);
-              if (
-                learningRateInput === "" ||
-                !Number.isFinite(learningRate) ||
-                learningRate <= 0
-              ) {
-                setLearningRateDraft({
-                  learningRate: store.learningRate,
-                  value: String(store.learningRate),
-                });
-              }
-            }}
-            className="w-full font-mono"
-          />
-          <p className="text-ui-10 text-muted-foreground">
-            {t("studio.params.learningRateDescription")}
-          </p>
-        </div>
-
-        {isCpt && (
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              {t("studio.params.embeddingLearningRate")}
+              {t("studio.params.contextLength")}
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -415,7 +263,97 @@ export function ParamsSection({
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  {t("studio.params.embeddingLearningRateTooltip")}
+                  {t("studio.params.contextLengthTooltip")}{" "}
+                  <a
+                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline"
+                  >
+                    {t("studio.params.readMore")}
+                  </a>
+                </TooltipContent>
+              </Tooltip>
+            </span>
+            <div ref={contextAnchorRef}>
+              <Combobox
+                items={contextItems}
+                filteredItems={contextItems}
+                filter={null}
+                value={String(store.contextLength)}
+                onValueChange={(value) => {
+                  if (value && trySetContextLength(value)) {
+                    setContextInput(value);
+                  }
+                }}
+                onInputValueChange={setContextInput}
+                itemToStringValue={(id) => Number(id).toLocaleString()}
+                autoHighlight={false}
+              >
+                <ComboboxInput
+                  placeholder={String(store.contextLength)}
+                  className="w-full font-mono"
+                  onBlur={() => {
+                    trySetContextLength(contextInput);
+                    setContextInput(String(store.contextLength));
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") {
+                      return;
+                    }
+                    const value = trySetContextLength(contextInput);
+                    if (value === null) {
+                      return;
+                    }
+                    if (!contextItems.includes(contextInput.trim())) {
+                      event.stopPropagation();
+                      event.preventDefault();
+                    }
+                    setContextInput(String(value));
+                  }}
+                />
+                <ComboboxContent anchor={contextAnchorRef}>
+                  <ComboboxEmpty>
+                    {t("studio.params.customContextLength")}
+                  </ComboboxEmpty>
+                  <ComboboxList className="p-1">
+                    {(id: string) => (
+                      <ComboboxItem key={id} value={id} className="font-mono">
+                        {Number(id).toLocaleString()}
+                      </ComboboxItem>
+                    )}
+                  </ComboboxList>
+                </ComboboxContent>
+              </Combobox>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              {t("studio.params.learningRate")}
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <button
+                    type="button"
+                    className="text-foreground/70 hover:text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  {t("studio.params.learningRateTooltip")}{" "}
+                  {t("studio.params.learningRateDescription")}{" "}
+                  <a
+                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline"
+                  >
+                    {t("studio.params.readMore")}
+                  </a>
                 </TooltipContent>
               </Tooltip>
             </span>
@@ -423,27 +361,80 @@ export function ParamsSection({
               type="number"
               step="0.00001"
               min="0"
-              max="1"
-              placeholder={`auto (${(store.learningRate / 10).toExponential(1)})`}
-              value={store.embeddingLearningRate ?? ""}
+              value={learningRateInput}
               onChange={(event) => {
-                const raw = event.target.value;
-                if (raw === "") {
-                  store.setEmbeddingLearningRate(null);
-                  return;
+                const input = event.target.value;
+                setLearningRateDraft({
+                  learningRate: store.learningRate,
+                  value: input,
+                });
+                const learningRate = Number(input);
+                if (input !== "" && Number.isFinite(learningRate)) {
+                  store.setLearningRate(learningRate);
+                  setLearningRateDraft({ learningRate, value: input });
                 }
-                const value = Number(raw);
-                store.setEmbeddingLearningRate(
-                  Number.isFinite(value) ? value : null,
-                );
+              }}
+              onBlur={() => {
+                const learningRate = Number(learningRateInput);
+                if (
+                  learningRateInput === "" ||
+                  !Number.isFinite(learningRate) ||
+                  learningRate <= 0
+                ) {
+                  setLearningRateDraft({
+                    learningRate: store.learningRate,
+                    value: String(store.learningRate),
+                  });
+                }
               }}
               className="w-full font-mono"
             />
-            <p className="text-ui-10 text-muted-foreground">
-              {t("studio.params.embeddingLearningRateDescription")}
-            </p>
           </div>
-        )}
+
+          {isCpt && (
+            <div className="flex flex-col gap-2">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                {t("studio.params.embeddingLearningRate")}
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <button
+                      type="button"
+                      className="text-foreground/70 hover:text-foreground"
+                    >
+                      <HugeiconsIcon
+                        icon={InformationCircleIcon}
+                        className="size-3"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {t("studio.params.embeddingLearningRateTooltip")}
+                  </TooltipContent>
+                </Tooltip>
+              </span>
+              <Input
+                type="number"
+                step="0.00001"
+                min="0"
+                max="1"
+                placeholder={`auto (${(store.learningRate / 10).toExponential(1)})`}
+                value={store.embeddingLearningRate ?? ""}
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  if (raw === "") {
+                    store.setEmbeddingLearningRate(null);
+                    return;
+                  }
+                  const value = Number(raw);
+                  store.setEmbeddingLearningRate(
+                    Number.isFinite(value) ? value : null,
+                  );
+                }}
+                className="w-full font-mono"
+              />
+            </div>
+          )}
+        </div>
 
         {showAdvanced && <LoraParamsSection />}
         {showAdvanced && (

@@ -1056,6 +1056,9 @@ export const ar = {
       modelLabel: "النموذج",
       methodLabel: "الطريقة",
       datasetLabel: "مجموعة البيانات",
+      modelTooltip: "النموذج الأساسي الذي تريد ضبطه.",
+      methodTooltip: "طريقة تدريب النموذج. يحدّث LoRA وQLoRA محوّلات صغيرة بدلاً من جميع الأوزان.",
+      datasetTooltip: "بيانات التدريب المستخدمة لضبط النموذج.",
       hfTokenLabel: "رمز Hugging Face",
       hfTokenDescription:
         "مطلوب للنماذج ومجموعات البيانات المقيّدة أو الخاصة.",

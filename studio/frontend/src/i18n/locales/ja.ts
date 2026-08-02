@@ -1018,6 +1018,9 @@ export const ja = {
       modelLabel: "モデル",
       methodLabel: "手法",
       datasetLabel: "データセット",
+      modelTooltip: "ファインチューニングするベースモデルです。",
+      methodTooltip: "モデルの学習方法です。LoRA と QLoRA はすべての重みではなく小さなアダプターを更新します。",
+      datasetTooltip: "モデルのファインチューニングに使う学習データです。",
       hfTokenLabel: "Hugging Face トークン",
       hfTokenDescription:
         "アクセス制限付きまたは非公開のモデルとデータセットに必要です。",

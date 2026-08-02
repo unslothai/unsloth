@@ -36,6 +36,8 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import type { CSSProperties, ReactNode } from "react";
 import { DatasetPanel } from "../sections/dataset-section";
+import { DatasetSourceToggleAction } from "../sections/dataset-source-toggle";
+import { FieldHint } from "../sections/field-hint";
 import { ParamsSection } from "../sections/params-section";
 import { ConfigActions } from "./config-actions";
 import type { ParamMode } from "./training-param-mode";
@@ -60,7 +62,7 @@ function SectionBox({
   return (
     <section
       data-tour={dataTour}
-      className="@container/train-card elevated-card flex flex-col gap-4 bg-card p-5"
+      className="@container/train-card elevated-card flex flex-col gap-7 bg-card p-5 pb-7"
     >
       {title && (
         <div className="flex flex-col items-stretch gap-3 @md/train-card:flex-row @md/train-card:items-center @md/train-card:justify-between">
@@ -128,7 +130,7 @@ function ParamModeToggle({
         options={options}
         ariaLabel={t("studio.params.mode.ariaLabel")}
         size="compact"
-        className="@md/train-card:w-[170px]"
+        className="@md/train-card:w-[180px]"
       />
     </Tabs>
   );
@@ -136,15 +138,18 @@ function ParamModeToggle({
 
 function SetupField({
   label,
+  hint,
   children,
 }: {
   label: string;
+  hint?: string;
   children: ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
+      <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
         {label}
+        {hint ? <FieldHint text={hint} label={label} /> : null}
       </span>
       <div className="min-w-0">{children}</div>
     </div>
@@ -238,19 +243,28 @@ function ModelPanel() {
   return (
     <div className="grid grid-cols-1 gap-4 @md/train-section:grid-cols-2 @2xl/train-section:grid-cols-[minmax(0,1fr)_180px_200px]">
       <div className="@md/train-section:col-span-2 @2xl/train-section:col-span-1">
-        <SetupField label={t("studio.wizard.modelLabel")}>
+        <SetupField
+          label={t("studio.wizard.modelLabel")}
+          hint={t("studio.wizard.modelTooltip")}
+        >
           <TrainModelSelector />
         </SetupField>
       </div>
-      <SetupField label={t("studio.wizard.methodLabel")}>
+      <SetupField
+        label={t("studio.wizard.methodLabel")}
+        hint={t("studio.wizard.methodTooltip")}
+      >
         <TrainingMethodSelect />
       </SetupField>
-      <div className="flex h-full min-w-0 items-end">
+      <SetupField
+        label={t("picker.hfToken.label")}
+        hint={t("studio.wizard.hfTokenDescription")}
+      >
         <HfTokenIndicator
           showLabel={true}
           onOpenSettings={() => openSettings("general")}
         />
-      </div>
+      </SetupField>
     </div>
   );
 }
@@ -264,7 +278,7 @@ export function TrainingWizard({
 }) {
   const t = useT();
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-6">
       <SectionBox
         title={t("studio.wizard.modelTitle")}
         description={t("studio.wizard.modelDescription")}
@@ -281,6 +295,7 @@ export function TrainingWizard({
         icon={Database02Icon}
         chipTint="var(--chart-4)"
         dataTour="studio-dataset"
+        titleAction={<DatasetSourceToggleAction />}
       >
         <DatasetPanel />
       </SectionBox>

@@ -105,7 +105,8 @@ export function TrainingHyperparametersSection({
       setRandomSeed: state.setRandomSeed,
     })),
   );
-  const [open, setOpen] = useState(false);
+  // Only mounted in advanced mode, so start expanded when the user switches to it.
+  const [open, setOpen] = useState(true);
   const [tab, setTab] = useState<HyperparameterTab>("optimization");
   const isMac = platformDeviceType === "mac";
   const optimizerOptions = isMac ? MLX_OPTIMIZER_OPTIONS : OPTIMIZER_OPTIONS;
@@ -129,18 +130,20 @@ export function TrainingHyperparametersSection({
         />
         {t("studio.params.trainingHyperparameters")}
       </CollapsibleTrigger>
-      <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
+      <CollapsibleContent className="mt-5 data-[state=open]:overflow-visible">
         <Tabs
           value={tab}
           onValueChange={(value) => setTab(value as HyperparameterTab)}
           className="w-full"
         >
-          <SegmentedTabsList
-            value={tab}
-            options={tabs}
-            ariaLabel={t("studio.params.trainingHyperparameters")}
-            size="compact"
-          />
+          <div className="flex justify-center">
+            <SegmentedTabsList
+              value={tab}
+              options={tabs}
+              ariaLabel={t("studio.params.trainingHyperparameters")}
+              className="w-full max-w-[520px] [&>button]:px-6"
+            />
+          </div>
 
           <TabsContent
             value="optimization"

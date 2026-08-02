@@ -1063,6 +1063,9 @@ export const hi = {
       modelLabel: "मॉडल",
       methodLabel: "विधि",
       datasetLabel: "डेटासेट",
+      modelTooltip: "वह बेस मॉडल जिसे आप फ़ाइन-ट्यून करना चाहते हैं।",
+      methodTooltip: "मॉडल को कैसे ट्रेन किया जाता है। LoRA और QLoRA सभी वेट्स के बजाय छोटे अडैप्टर अपडेट करते हैं।",
+      datasetTooltip: "मॉडल को फ़ाइन-ट्यून करने के लिए उपयोग किया जाने वाला ट्रेनिंग डेटा।",
       hfTokenLabel: "Hugging Face टोकन",
       hfTokenDescription:
         "गेटेड या निजी मॉडल और डेटासेट के लिए आवश्यक।",

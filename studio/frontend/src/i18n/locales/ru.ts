@@ -1066,6 +1066,9 @@ export const ru = {
       modelLabel: "Модель",
       methodLabel: "Метод",
       datasetLabel: "Датасет",
+      modelTooltip: "Базовая модель, которую вы хотите дообучить.",
+      methodTooltip: "Как обучается модель. LoRA и QLoRA обновляют небольшие адаптеры вместо всех весов.",
+      datasetTooltip: "Обучающие данные для дообучения модели.",
       hfTokenLabel: "Токен Hugging Face",
       hfTokenDescription:
         "Необходим для моделей и наборов данных с ограниченным или закрытым доступом.",

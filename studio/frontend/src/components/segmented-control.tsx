@@ -10,6 +10,18 @@ export interface SegmentedControlOption<T extends string> {
   disabled?: boolean;
 }
 
+/** Shared sizing so segmented controls and tabs stay in step. */
+export type SegmentedSize = "compact" | "default";
+
+export const segmentedTrackHeight: Record<SegmentedSize, string> = {
+  compact: "h-8",
+  default: "h-9",
+};
+
+/** One line only: a wrapped label breaks the pill height and indicator. */
+export const segmentedSegmentLabel =
+  "whitespace-nowrap px-3 text-ui-12p5" as const;
+
 export function SegmentedControlIndicator({
   activeIndex,
   optionCount,
@@ -43,6 +55,7 @@ export function SegmentedControl<T extends string>({
   options,
   onValueChange,
   ariaLabel,
+  size = "default",
   className,
 }: {
   value: T;
@@ -53,6 +66,7 @@ export function SegmentedControl<T extends string>({
   ];
   onValueChange: (value: T) => void;
   ariaLabel: string;
+  size?: SegmentedSize;
   className?: string;
 }) {
   const name = useId();
@@ -66,7 +80,8 @@ export function SegmentedControl<T extends string>({
       role="radiogroup"
       aria-label={ariaLabel}
       className={cn(
-        "hub-tab-toggle relative inline-flex h-9 w-full min-w-0 items-stretch rounded-full",
+        "hub-tab-toggle relative inline-flex w-full min-w-0 items-stretch rounded-full",
+        segmentedTrackHeight[size],
         className,
       )}
     >
@@ -96,7 +111,8 @@ export function SegmentedControl<T extends string>({
             />
             <span
               className={cn(
-                "inline-flex h-full w-full select-none items-center justify-center rounded-full px-3 text-ui-12p5 font-medium transition-colors peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-inset peer-focus-visible:ring-ring",
+                "inline-flex h-full w-full select-none items-center justify-center rounded-full font-medium transition-colors peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-inset peer-focus-visible:ring-ring",
+                segmentedSegmentLabel,
                 active
                   ? "text-foreground"
                   : "text-muted-foreground hover:text-foreground",

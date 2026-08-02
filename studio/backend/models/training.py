@@ -17,9 +17,7 @@ from utils.training_runs import normalize_project_name
 # ASCII integer, optional single sign. Rejects "++512" and Unicode digits
 # ("５１２") that slip through str.isdigit() + int().
 _INT_RE = re.compile(r"[+-]?[0-9]+")
-_HF_DATASET_ID_SEGMENT_RE = re.compile(
-    r"[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?"
-)
+_HF_DATASET_ID_SEGMENT_RE = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?")
 
 
 _MAX_BATCH_SIZE = 4096
@@ -236,10 +234,7 @@ class TrainingStartRequest(BaseModel):
             raise ValueError("hf_dataset is too long (max 256 chars)")
         if ".." in v:
             raise ValueError("hf_dataset must not contain '..'")
-        if any(
-            _HF_DATASET_ID_SEGMENT_RE.fullmatch(segment) is None
-            for segment in v.split("/")
-        ):
+        if any(_HF_DATASET_ID_SEGMENT_RE.fullmatch(segment) is None for segment in v.split("/")):
             raise ValueError("hf_dataset contains invalid characters or path segments")
         return v
 
@@ -641,9 +636,7 @@ class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
 
     job_id: str = Field(..., description = "Unique training job identifier")
-    status: Literal["pending", "queued", "error"] = Field(
-        ..., description = "Initial job status"
-    )
+    status: Literal["pending", "queued", "error"] = Field(..., description = "Initial job status")
     message: str = Field(..., description = "Human-readable status message")
     error: Optional[str] = Field(None, description = "Error details if status is 'error'")
     error_code: Optional[str] = Field(None, description = "Stable error code if status is 'error'")
