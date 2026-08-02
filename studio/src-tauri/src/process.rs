@@ -397,10 +397,33 @@ fn find_unsloth_launcher_in_studio_dir(studio: &std::path::Path) -> Option<std::
     #[cfg(windows)]
     let shim = studio.join("bin").join("unsloth.exe");
 
-    match std::fs::metadata(&shim) {
-        Ok(meta) if meta.is_file() && meta.len() > 0 => Some(shim),
-        _ => None,
+    let meta = std::fs::metadata(&shim).ok()?;
+    if !meta.is_file() || meta.len() == 0 {
+        return None;
     }
+    // Runnable, not merely present. Preferring a shim that cannot be executed
+    // would turn a working venv binary into a spawn failure, which is worse than
+    // the bug this ordering exists to fix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o111 == 0 {
+            return None;
+        }
+    }
+    #[cfg(windows)]
+    {
+        // Windows has no execute bit; the loader decides. The cheapest real check
+        // is the image header, which also rejects the truncated or half-written
+        // file a Copy-Item fallback can leave behind.
+        use std::io::Read;
+        let mut magic = [0u8; 2];
+        let mut f = std::fs::File::open(&shim).ok()?;
+        if f.read_exact(&mut magic).is_err() || &magic != b"MZ" {
+            return None;
+        }
+    }
+    Some(shim)
 }
 
 /// The binary to run `studio update` with: the shim first, the venv copy second.
@@ -496,12 +519,35 @@ mod tests {
 
         fs::create_dir_all(shim.parent().unwrap()).unwrap();
         fs::write(&shim, "MZ").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Not executable yet: a shim that cannot run is worse than the venv
+            // copy, because preferring it turns a working update into a spawn
+            // failure.
+            fs::set_permissions(&shim, fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(find_unsloth_launcher_in_studio_dir(&temp), None);
+            fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         assert_eq!(find_unsloth_launcher_in_studio_dir(&temp), Some(shim.clone()));
 
         // install.ps1 downgrades a shim it could not write to a warning and carries
         // on, so a truncated one is reachable and is not a working image.
         fs::write(&shim, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         assert_eq!(find_unsloth_launcher_in_studio_dir(&temp), None);
+
+        // Windows has no execute bit, so the image header stands in for it: a
+        // half-written Copy-Item fallback is not something to hand to spawn.
+        #[cfg(windows)]
+        {
+            fs::write(&shim, "not an executable").unwrap();
+            assert_eq!(find_unsloth_launcher_in_studio_dir(&temp), None);
+        }
 
         fs::remove_dir_all(temp).unwrap();
     }

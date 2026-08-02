@@ -271,6 +271,66 @@ def test_cleanup_does_not_delete_the_only_copy(monkeypatch, tmp_path):
     assert not stale.exists()
 
 
+def test_cleanup_keeps_the_backup_when_the_restore_could_not_run(monkeypatch, tmp_path):
+    """os.replace can fail transiently -- antivirus or another process holding the
+    destination for a moment is enough -- and the restore reports rather than
+    raises. Deleting the backup then is the one outcome with no way back."""
+    scripts = _scripts(tmp_path)
+    stale = scripts / "unsloth.exe.deleteme"
+    stale.write_bytes(b"MZ the only copy")
+    _as_windows(monkeypatch, scripts)
+    monkeypatch.setattr(studio.os, "replace", _sharing_violation)
+
+    studio._cleanup_self_exe_lock_windows()
+
+    assert stale.is_file(), "the only remaining copy was deleted"
+    assert stale.read_bytes() == b"MZ the only copy"
+
+
+def test_cleanup_keeps_the_backup_when_the_exe_is_still_zero_byte(monkeypatch, tmp_path):
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"")
+    stale = scripts / "unsloth.exe.deleteme"
+    stale.write_bytes(b"MZ the working one")
+    _as_windows(monkeypatch, scripts)
+    monkeypatch.setattr(studio.os, "replace", _sharing_violation)
+
+    studio._cleanup_self_exe_lock_windows()
+
+    assert stale.is_file(), "the backup went while the destination was still torn"
+
+
+def test_no_verify_survives_into_the_retry(monkeypatch, tmp_path, capsys):
+    """Turning the scan off is a deliberate choice made because the install has
+    files it reports and cannot repair, so a retry that turns it back on fails
+    after the update it was meant to complete has already succeeded."""
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    shim = tmp_path / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"), verify = False)
+
+    assert "--no-verify" in capsys.readouterr().err
+
+
+def test_verify_on_is_not_spelled_out(monkeypatch, tmp_path, capsys):
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    shim = tmp_path / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"), verify = True)
+
+    assert "--no-verify" not in capsys.readouterr().err
+
+
 def test_cleanup_still_clears_the_orphan_when_pip_wrote_a_new_one(monkeypatch, tmp_path):
     """The case it was written for: a fresh binary is there, so the old one goes."""
     scripts = _scripts(tmp_path)

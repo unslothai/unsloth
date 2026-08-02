@@ -3068,7 +3068,9 @@ def update(
         # A note, never a replacement: the original failure keeps its own error, so
         # a cause unrelated to the lock is not hidden behind it.
         if exe_lock_err is not None:
-            _note_self_exe_locked(exe_lock_err, repo_root = repo_root, package = package)
+            _note_self_exe_locked(
+                exe_lock_err, repo_root = repo_root, package = package, verify = verify,
+            )
         raise
     # On Windows clear the .deleteme orphan now that pip wrote a fresh
     # unsloth.exe; on next update os.replace would overwrite it anyway,
@@ -3184,6 +3186,7 @@ def _note_self_exe_locked(
     err: OSError,
     repo_root: "Optional[Path]" = None,
     package: "Optional[str]" = None,
+    verify: bool = True,
 ) -> None:
     """Add the cause behind a setup failure this process cannot avoid.
 
@@ -3227,7 +3230,12 @@ def _note_self_exe_locked(
         # --package likewise: update exports it as STUDIO_PACKAGE_NAME, so dropping
         # it resets the retry to `unsloth` and updates something else, and the
         # manifest then records that package for later verification.
+        # --no-verify too: someone who turned the scan off did it because their
+        # install has files it reports and cannot repair, so a retry that turns it
+        # back on fails after the update it was meant to complete has succeeded.
         local_flag = " --local" if repo_root is not None else ""
+        if not verify:
+            local_flag += " --no-verify"
         custom_package = package is not None and package != "unsloth"
         if platform.system() == "Windows":
             prefix = ""
@@ -3301,7 +3309,19 @@ def _cleanup_self_exe_lock_windows() -> None:
         venv_scripts = Path(sys.executable).resolve().parent
     except OSError:
         return
-    stale = (venv_scripts / "unsloth.exe").with_suffix(".exe.deleteme")
+    exe = venv_scripts / "unsloth.exe"
+    stale = exe.with_suffix(".exe.deleteme")
+    # Only once there is something to fall back on. The restore above can fail --
+    # antivirus or another process holding the destination for a moment is enough,
+    # and it reports rather than raises -- and deleting the backup then is the one
+    # outcome with no way back: the update leaves no CLI at all while a working
+    # copy was sitting right there. A surviving .deleteme is harmless by
+    # comparison; the next update's rename overwrites it.
+    try:
+        if exe.stat().st_size <= 0:
+            return
+    except OSError:
+        return
     try:
         stale.unlink(missing_ok = True)
     except OSError:
