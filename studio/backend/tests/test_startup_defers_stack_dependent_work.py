@@ -3,13 +3,11 @@
 
 """Stack-dependent startup work must not run before the socket binds.
 
-Two pieces of work import the ML stack: the MLX availability probe (the MLX runtime)
-and the RAG embedder warm (sentence-transformers/transformers/torch). Uvicorn binds
-only once the lifespan yields, so doing either on the lifespan thread, or on a thread
-early enough to race the warm for the GIL and the import locks, puts that import back
-in front of the login screen.
-
-Both now run on the post-warm thread, which joins the warm first.
+Two pieces of work import the ML stack: the MLX availability probe (the MLX runtime) and
+the RAG embedder warm (sentence-transformers/transformers/torch). Uvicorn binds only once
+the lifespan yields, so doing either on the lifespan thread, or on a thread early enough to
+race the warm for the GIL and the import locks, puts that import back in front of the login
+screen. Both now run on the post-warm thread, which joins the warm first.
 """
 
 from __future__ import annotations
@@ -98,12 +96,10 @@ def test_post_warm_thread_joins_the_warm_before_doing_stack_work():
 def test_post_warm_work_honours_the_coordinated_warm_kill_switch():
     """The switch must gate the torch-dependent work, and only that.
 
-    It used to be the first statement, which also skipped MLX autorepair. That one is
-    not torch, has its own UNSLOTH_DISABLE_MLX_AUTOREPAIR opt-out, and ran
-    unconditionally before the deferral, so skipping it left a broken-MLX Mac chat-only
-    for good. The ordering against autorepair is pinned in
-    test_warm_window_review_fixes.py.
-    """
+    It used to be the first statement, which also skipped MLX autorepair. That one is not
+    torch, has its own UNSLOTH_DISABLE_MLX_AUTOREPAIR opt-out, and ran unconditionally
+    before the deferral, so skipping it left a broken-MLX Mac chat-only for good. Ordering
+    against autorepair is pinned in test_warm_window_review_fixes.py."""
     body = _post_warm_body()
     guards = [
         node
@@ -131,12 +127,9 @@ def test_post_warm_work_honours_the_coordinated_warm_kill_switch():
 
 
 def test_post_warm_thread_is_started_by_the_lifespan():
-    """The lifespan must still put the thread up, now through a helper.
-
-    The old inline Thread was untracked, so a shutdown landing while it was parked in
-    the warm join could not stop it and a second lifespan stacked another. Follow the
-    indirection rather than pinning the inline form.
-    """
+    """The lifespan must still put the thread up, now through a helper. The old inline Thread
+    was untracked, so a shutdown landing while it was parked in the warm join could not stop
+    it and a second lifespan stacked another. Follow the indirection, not the inline form."""
     referenced = _names_called(_lifespan_body())
     assert "_start_post_warm_thread" in referenced or (
         "_post_warm_background_work" in referenced
@@ -156,11 +149,9 @@ def test_post_warm_thread_is_started_by_the_lifespan():
 
 
 def test_post_warm_actually_runs_both_pieces_of_work(monkeypatch):
-    """Deferring must not become dropping.
-
-    The lexical tests above would still pass if the deferred work never ran at all,
-    silently ending MLX self-healing and leaving the RAG embedder cold.
-    """
+    """Deferring must not become dropping. The lexical tests above would still pass if the
+    deferred work never ran at all, silently ending MLX self-healing and leaving the RAG
+    embedder cold."""
     import main as main_mod
     import utils.mlx_repair as mlx_mod
 

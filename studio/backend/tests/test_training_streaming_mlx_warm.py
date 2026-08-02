@@ -6,16 +6,14 @@
 ``hardware.DEVICE`` used to be set before uvicorn bound the socket. The warm thread
 fills it in now, so for the first moment of serving it still holds ``None``.
 
-``start_training`` rejects ``dataset_streaming`` on Apple Silicon by comparing
-``DEVICE == DeviceType.MLX``. Against the default that is False, the rejection is
-skipped, and the request runs on to ``_build_training_worker_config``, which detects
-MLX only after validation and hands a streaming dataset to a loader that materializes
-the whole thing. The guard must force detection first, and off the event loop, since
-detection imports torch.
+``start_training`` rejects ``dataset_streaming`` on Apple Silicon by comparing ``DEVICE ==
+DeviceType.MLX``. Against the default that is False, the rejection is skipped, and the
+request runs on to ``_build_training_worker_config``, which detects MLX only after
+validation and hands a streaming dataset to a loader that materializes the whole thing. The
+guard must force detection first, and off the event loop, since detection imports torch.
 
-The lexical half of this invariant is in
-``test_startup_defers_torch.py::test_first_paint_routes_do_not_block_the_event_loop``;
-this file covers the behaviour. CPU-only, no network, no GPU, no weights.
+The lexical half is in ``test_startup_defers_torch.py``; this file covers the behaviour.
+CPU-only, no network, no GPU, no weights.
 """
 
 from __future__ import annotations

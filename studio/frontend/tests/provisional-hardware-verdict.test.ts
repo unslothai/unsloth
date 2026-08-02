@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// /api/health answers before the backend has measured the host: until the background
-// torch import lands, health reports its conservative pre-detection default,
-// chat_only: true, with hardware_detecting set and no device_type.
-//
-// __root.tsx's beforeLoad awaits fetchDeviceType then redirects on isChatOnly(), so
-// storing that provisional reply sends the first load to /chat with Train hidden on a
-// machine that has GPUs.
+// /api/health answers before the backend has measured the host: until the background torch
+// import lands it reports its pre-detection default, chat_only: true, with
+// hardware_detecting set and no device_type. __root.tsx's beforeLoad awaits fetchDeviceType
+// then redirects on isChatOnly(), so storing that sends a GPU host's first load to /chat.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -97,9 +94,8 @@ test("a deferred verdict is provisional but must not be waited on", () => {
 });
 
 test("a deferred verdict falls back to the backend's conservative default", () => {
-  // Nothing settles while the kill switch is on, so keeping the previous value would
-  // leave the browser-platform default (chatOnly false off macOS) in place all session
-  // and offer Train on a CPU-only Linux host.
+  // Nothing settles while the kill switch is on, so keeping the previous value would leave
+  // the browser-platform default (chatOnly false off macOS) up all session on a CPU host.
   const deferred = {
     chat_only: true,
     hardware_detecting: true,
@@ -144,9 +140,8 @@ test("an actively detecting reply is not deferred", () => {
 });
 
 // The bounded re-read in config/env.ts is spent at most once per page load: a slow host
-// leaves the reply provisional and `fetched` false, so an unguarded loop would repeat the
-// full wait on every navigation. Asserted on source, since env.ts reaches import.meta.env
-// through api-base.ts and cannot be imported outside vite.
+// leaves the reply provisional and `fetched` false, so an unguarded loop repeats the full
+// wait on every navigation. Asserted on source: env.ts is not importable outside vite.
 test("the bounded hardware wait is spent at most once per page load", async () => {
   const { readFile } = await import("node:fs/promises");
   const src = await readFile(
@@ -274,10 +269,9 @@ test("a rejected token stops the wait instead of polling it out", async () => {
   );
 });
 
-// Breaking early on a rejected token must not consume the once-per-page-load window.
-// A user who signs in before detection settles gets the first authenticated read of
-// that page load; spending the latch on a token the backend refused leaves the route
-// guard and sidebar on provisional local defaults until a navigation or refresh.
+// Breaking early on a rejected token must not consume the once-per-page-load window. A
+// user who signs in before detection settles gets the first authenticated read; spending
+// the latch on a refused token leaves the route guard on local defaults until a refresh.
 test("a rejected token does not consume the once-per-load window", async () => {
   const { readFile } = await import("node:fs/promises");
   const src = await readFile(

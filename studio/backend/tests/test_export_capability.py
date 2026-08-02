@@ -157,13 +157,10 @@ def test_export_capability_reads_no_torch_helper():
 
 
 def test_a_failed_detection_is_reported_as_such(monkeypatch):
-    """Do not send the user to fix something that is not wrong.
-
-    ensure_hardware_detected() records CPU + "detection_failed" when the probe
-    raises, so the host looks CPU-only to export_capability. Reporting
-    no_accelerator (or pytorch_not_installed) there points the remediation at
-    hardware or an install that may both be fine.
-    """
+    """Do not send the user to fix something that is not wrong. ensure_hardware_detected()
+    records CPU + "detection_failed" when the probe raises, so the host looks CPU-only to
+    export_capability; reporting no_accelerator (or pytorch_not_installed) there points the
+    remediation at hardware or an install that may both be fine."""
     from utils.hardware import hardware as hw
 
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)

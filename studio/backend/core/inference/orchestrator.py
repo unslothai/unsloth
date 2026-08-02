@@ -153,10 +153,9 @@ class InferenceOrchestrator:
         self.loading_models: set = set()
         from core.inference.defaults import get_default_models
 
-        # The list depends on detection (chat-only hosts get the GGUF set), and the MLX
-        # self-heal re-detects, so without a staleness check a repaired Mac serves the
-        # chat-only list forever. Stamp read BEFORE the list: a re-detection between the
-        # two would otherwise tag the old list with the new generation.
+        # The list depends on detection (chat-only hosts get the GGUF set) and the MLX
+        # self-heal re-detects, so unchecked a repaired Mac serves the chat-only list
+        # forever. Stamp read BEFORE the list, or a re-detect tags the old list as new.
         import utils.hardware.hardware as _hw_mod
 
         self._static_models_generation = _hw_mod.DETECTION_GENERATION
@@ -171,9 +170,8 @@ class InferenceOrchestrator:
         atexit.register(self._cleanup)
         logger.info("InferenceOrchestrator initialized (subprocess mode)")
 
-        # Deliberately NOT started here: construction now runs on the startup warm
-        # thread, so fetching from __init__ would be an unprompted call to
-        # huggingface.co on every boot. The first reader of the ranking starts it.
+        # Deliberately NOT started here: construction now runs on the startup warm thread, so
+        # fetching from __init__ would call huggingface.co on every boot. First reader starts it.
         self._top_models_started = False
 
     # ------------------------------------------------------------------
@@ -205,17 +203,15 @@ class InferenceOrchestrator:
     def _start_top_models_fetch(self) -> None:
         """Kick the remote ranking fetch once, on first read of the model list.
 
-        Guarded by the construction lock, so two concurrent first-readers cannot each
-        put up a thread. Skipped when the host asked for no outbound calls: the fetch
-        is a raw httpx.get, so HF_HUB_OFFLINE does not reach it on its own. Read via
-        hf_env_offline() rather than a literal "1" test, since HF_HUB_OFFLINE=true/on
-        and TRANSFORMERS_OFFLINE mean offline everywhere else here.
+        Guarded by the construction lock, so two concurrent first-readers cannot each put up
+        a thread. Skipped when the host asked for no outbound calls: the fetch is a raw
+        httpx.get, so HF_HUB_OFFLINE does not reach it on its own. Via hf_env_offline(), not
+        a literal "1" test, since HF_HUB_OFFLINE=true/on and TRANSFORMERS_OFFLINE count too.
         """
         if self._top_models_started:
             return
-        # Checked before the latch: claiming it while offline would retire the fetch for
-        # the life of the process, so an offline boot or a temporary force_hf_offline()
-        # scope could never pick the ranking up later.
+        # Checked before the latch: claiming it while offline would retire the fetch for the
+        # process, so an offline boot or a temporary force_hf_offline() could never recover.
         if hf_env_offline():
             logger.info("offline mode requested; skipping the remote top-models ranking")
             return
@@ -508,9 +504,8 @@ class InferenceOrchestrator:
         message, so long-running operations (large downloads, slow loads)
         survive as long as the subprocess keeps reporting progress.
         """
-        # Local: resolving this name runs the shim's lazy unsloth_zoo load, which pulls
-        # torch. The shim caches its pick, so this site and the `except` in load_model()
-        # see the same class.
+        # Local: resolving this name runs the shim's lazy unsloth_zoo load, which pulls torch.
+        # The shim caches its pick, so this site and load_model()'s `except` see one class.
         from utils.hf_xet_fallback import DownloadStallError
 
         deadline = time.monotonic() + timeout
@@ -2172,19 +2167,17 @@ class InferenceOrchestrator:
 
 # ========== GLOBAL INSTANCE ==========
 _inference_backend = None
-# Guards the lazy construction below. The first build runs hardware detection, which
-# takes seconds cold, and first-paint routes call this getter from executor threads.
-# Unlocked, several would see None and each build their own orchestrator, leaving all
-# but the last orphaned along with any load started on them.
+# Guards the lazy construction below. The first build runs hardware detection, seconds cold,
+# and first-paint routes call this getter from executor threads. Unlocked, several would see
+# None and each build an orchestrator, orphaning all but the last plus any load on them.
 _inference_backend_lock = threading.Lock()
 
 
 def peek_inference_backend() -> Optional["InferenceOrchestrator"]:
     """The orchestrator if one exists, else None. Never constructs one.
 
-    For callers that only describe what is already loaded. Constructing reaches
-    get_default_models() -> get_device(), which blocks on the torch import during the
-    startup warm; a caller that would answer "nothing is loaded" need not pay that.
+    For callers that only describe what is already loaded: constructing reaches
+    get_default_models() -> get_device(), which blocks on the torch import during the warm.
     """
     return _inference_backend
 
@@ -2192,8 +2185,7 @@ def peek_inference_backend() -> Optional["InferenceOrchestrator"]:
 def get_inference_backend() -> InferenceOrchestrator:
     """Global inference backend instance (orchestrator)."""
     global _inference_backend
-    # Double-checked: the cheap read keeps the hot path lock-free, the recheck under the
-    # lock decides who constructs.
+    # Double-checked: the cheap read keeps the hot path lock-free, the recheck picks a builder.
     if _inference_backend is None:
         with _inference_backend_lock:
             if _inference_backend is None:

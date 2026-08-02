@@ -24,11 +24,8 @@ export function isProvisionalVerdict(data: HealthVerdict): boolean {
 }
 
 /** True when the backend deferred detection rather than started it.
- *
- * UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 stops health kicking detection at all, so
- * nothing settles until a hardware-dependent operation runs. Waiting for a
- * measurement that is not coming would stall every load, /login included.
- */
+ * UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 stops health kicking detection at all, so nothing
+ * settles until a hardware-dependent operation runs, and waiting would stall every load. */
 export function isDetectionDeferred(data: HealthVerdict): boolean {
   return data.hardware_detection_deferred === true;
 }
@@ -41,10 +38,9 @@ export function resolveVerdict(
   previous: ResolvedVerdict,
 ): ResolvedVerdict {
   if (isDetectionDeferred(data)) {
-    // Nothing will settle, so keeping `previous` would leave the browser-platform
-    // default (chatOnly false off macOS) in place all session and offer Train on a
-    // CPU-only host. Take the backend's conservative pre-detection chat_only instead,
-    // and keep any reason already being explained.
+    // Nothing will settle, so keeping `previous` would leave the browser-platform default
+    // (chatOnly false off macOS) in place all session and offer Train on a CPU-only host.
+    // Take the backend's conservative chat_only, keeping any reason already explained.
     return {
       chatOnly: data.chat_only ?? true,
       chatOnlyReason: data.chat_only_reason ?? previous.chatOnlyReason,

@@ -579,8 +579,7 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     try:
         from core.inference.orchestrator import peek_inference_backend
 
-        # Peek, never construct: no orchestrator means nothing to protect, and building one
-        # to learn that reaches get_default_models() -> get_device(), importing torch.
+        # Peek, never construct: building one just to learn nothing is loaded imports torch.
         backend = peek_inference_backend()
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")

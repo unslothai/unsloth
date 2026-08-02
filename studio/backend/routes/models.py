@@ -2482,9 +2482,8 @@ async def delete_finetuned_model(
         ) from e
 
     try:
-        # Peek: no orchestrator means no standard model is loading or active, so nothing
-        # below can block this delete. Building one to learn that reaches
-        # get_default_models() -> get_device() and imports torch for a metadata-only op.
+        # Peek: no orchestrator means nothing below can block this delete, and building one
+        # to learn that reaches get_device() -- a torch import for a metadata-only op.
         from core.inference.orchestrator import peek_inference_backend
         inference_backend = peek_inference_backend()
         if inference_backend is not None:

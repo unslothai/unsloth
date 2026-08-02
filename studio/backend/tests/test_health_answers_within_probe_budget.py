@@ -6,13 +6,11 @@ detected hardware or not.
 
 studio/src-tauri/src/preflight/backend.rs probes with a 2s client timeout right after
 TAURI_PORT is emitted, and a timeout is not retried: it falls through to
-"desktop_owned_backend_starting", a dead end the user has to clear by hand.
-
-That was safe while the lifespan detected inline, since TAURI_PORT came after
-detection. Detection runs on the warm thread now and TAURI_PORT precedes it, so an
-unbounded wait inside health puts a cold `import torch` in front of that deadline.
-
-Nothing the launcher reads from health depends on detection; only chat_only does.
+"desktop_owned_backend_starting", a dead end the user has to clear by hand. That was safe
+while the lifespan detected inline, since TAURI_PORT came after detection; detection runs on
+the warm thread now and TAURI_PORT precedes it, so an unbounded wait inside health puts a
+cold `import torch` in front of that deadline. Nothing the launcher reads from health
+depends on detection, only chat_only does.
 
 CPU-only, no network, no GPU, no weights: the subprocess tests stub detection.
 """
@@ -213,14 +211,12 @@ print("RESULT" + json.dumps({
 def test_an_unsettled_pass_is_never_published_as_training_capable():
     """chat_only with no snapshot must be the literal True, not the live global.
 
-    Every accelerator branch of _detect_hardware_locked assigns CHAT_ONLY = False and
-    then keeps probing (torch.xpu.get_device_name, the MLX stack check), and a raise
-    there degrades the host to CPU. DETECTION_COMPLETE is still clear throughout, so
-    the reply is marked provisional; with the kill switch on it is also marked
-    hardware_detection_deferred, and hardware-verdict.ts stores data.chat_only verbatim
-    for deferred replies. Reading the global therefore flashes Train and Export on a
-    host that ends up chat-only.
-    """
+    Every accelerator branch of _detect_hardware_locked assigns CHAT_ONLY = False and then
+    keeps probing (torch.xpu.get_device_name, the MLX stack check), and a raise there
+    degrades the host to CPU. DETECTION_COMPLETE stays clear throughout, so the reply is
+    marked provisional; with the kill switch on it is also marked deferred, and
+    hardware-verdict.ts stores data.chat_only verbatim for those. Reading the global
+    therefore flashes Train and Export on a host that ends up chat-only."""
     proc = _run(_MID_PASS_SNIPPET)
     assert (
         proc.returncode == 0
@@ -238,11 +234,9 @@ def test_an_unsettled_pass_is_never_published_as_training_capable():
 
 
 def test_health_answers_within_the_budget_while_detection_is_slow():
-    """The regression: detection outlasts the probe, health must not.
-
-    Against an unbounded `await asyncio.to_thread(ensure_hardware_detected)` this
-    returns in ~10s and the desktop launch dead-ends.
-    """
+    """The regression: detection outlasts the probe, health must not. Against an unbounded
+    `await asyncio.to_thread(ensure_hardware_detected)` this returns in ~10s and the desktop
+    launch dead-ends."""
     budget = _main_constant("_HEALTH_DETECT_BUDGET_S")
     result = _probe(10.0)
 
@@ -273,11 +267,9 @@ def test_health_still_waits_when_detection_finishes_inside_the_budget():
 
 
 def test_health_does_not_await_detection_unbounded():
-    """Static guard: health_check must go through the bounded helper.
-
-    `await asyncio.to_thread(ensure_hardware_detected)` reads like the obvious fix and
-    passes every test that pins DEVICE first. It only fails on a cold desktop launch.
-    """
+    """Static guard: health_check must go through the bounded helper. `await
+    asyncio.to_thread(ensure_hardware_detected)` reads like the obvious fix and passes every
+    test that pins DEVICE first; it only fails on a cold desktop launch."""
     tree = ast.parse(_MAIN_SRC.read_text(encoding = "utf-8"))
     health = next(
         node
@@ -304,11 +296,10 @@ def test_a_provisional_reply_is_not_cacheable_by_the_frontend():
     """The provisional reply must not look authoritative to config/env.ts.
 
     fetchDeviceType() sets ``fetched = data.device_type !== undefined`` and every later
-    non-forced call short-circuits on ``fetched``, so a provisional authed reply
-    carrying device_type pins chat_only=true for the rest of the SPA session: Train
-    hidden, /studio redirected to /chat, on a GPU host. The sidebar's recovery poll
-    does not save it either, running only for chat_only_reason === "mlx_unavailable".
-    """
+    non-forced call short-circuits on ``fetched``, so a provisional authed reply carrying
+    device_type pins chat_only=true for the rest of the SPA session on a GPU host: Train
+    hidden, /studio redirected to /chat. The sidebar's recovery poll runs only for
+    chat_only_reason === "mlx_unavailable", so it does not save it either."""
     result = _probe(10.0)
 
     assert result["authed_hardware_detecting"] is True, "expected a provisional reply"
@@ -333,13 +324,10 @@ def test_a_measured_reply_still_carries_the_authoritative_fields():
 
 
 def test_a_mid_detection_assignment_is_not_treated_as_finished():
-    """DEVICE goes non-None before detection has settled.
-
-    The XPU branch assigns DEVICE and CHAT_ONLY=False, then calls
-    torch.xpu.get_device_name(0); if that raises, the host degrades to CPU/chat-only. A
-    waiter keyed on "DEVICE is not None" would have published the intermediate value, so
-    health could report training available on a host that ends up chat-only.
-    """
+    """DEVICE goes non-None before detection has settled. The XPU branch assigns DEVICE and
+    CHAT_ONLY=False, then calls torch.xpu.get_device_name(0); if that raises, the host
+    degrades to CPU/chat-only. A waiter keyed on "DEVICE is not None" would have published
+    the intermediate value, reporting training available on a chat-only host."""
     import importlib
     import threading
 

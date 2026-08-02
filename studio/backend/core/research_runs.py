@@ -628,10 +628,10 @@ def _positive_int_or_none(value: object) -> int | None:
 def _peek_inference_backend() -> Any:
     """The orchestrator if one already exists, else None. Never constructs one.
 
-    A resumed durable run probes these on uvicorn's loop, and constructing reaches
-    get_default_models() -> get_device(), so a cold probe would block the loop on the
-    torch import just to answer "nothing is loaded". A patched core.inference getter
-    still wins: that is the seam these probes are injected through.
+    A resumed durable run probes on uvicorn's loop, and constructing reaches
+    get_default_models() -> get_device(), so a cold probe would block the loop on the torch
+    import just to answer "nothing is loaded". A patched core.inference getter still wins:
+    that is the seam these probes are injected through.
     """
     from core.inference import get_inference_backend
 

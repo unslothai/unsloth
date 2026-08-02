@@ -5,18 +5,16 @@
 when several threads reach it at once.
 
 The first call is expensive: ``__init__`` runs ``get_default_models()``, which calls
-``hw.get_device()`` and so blocks on the torch warm, ~2.9s on a cold GPU host. That is
-why the first-paint routes call it through ``asyncio.to_thread``.
+``hw.get_device()`` and so blocks on the torch warm, ~2.9s on a cold GPU host. That is why
+the first-paint routes call it through ``asyncio.to_thread``.
 
-Off-loop means genuinely parallel, though, and the getter used to be a plain
-check-then-set on a module global. Concurrent first-paint requests all observed
-``None`` inside that window, each built an orchestrator, and the last assignment won.
-Orchestrator state is per-instance (subprocess handle, ``loading_models``,
-``active_model_name``), so a load started on a loser became invisible to every later
-call, which read the survivor.
+Off-loop means genuinely parallel, though, and the getter used to be a plain check-then-set
+on a module global. Concurrent first-paint requests all observed ``None`` inside that
+window, each built an orchestrator, and the last assignment won. Orchestrator state is
+per-instance (subprocess handle, ``loading_models``, ``active_model_name``), so a load
+started on a loser became invisible to every later call.
 
-The orchestrator is stubbed out here: these exercise the getter's locking, not the
-constructor.
+The orchestrator is stubbed here: these exercise the getter's locking, not the constructor.
 """
 
 from __future__ import annotations
@@ -39,11 +37,8 @@ _THREADS = 8
 
 @pytest.fixture
 def fresh_singleton(monkeypatch):
-    """Reset the module global and restore it afterwards.
-
-    Set directly, not via monkeypatch.setattr, so the getter's ``global`` write is what
-    the test observes.
-    """
+    """Reset the module global and restore it afterwards. Set directly, not via
+    monkeypatch.setattr, so the getter's ``global`` write is what the test observes."""
     saved = orch._inference_backend
     orch._inference_backend = None
     try:
@@ -73,12 +68,10 @@ def stub_orchestrator(monkeypatch):
 
 
 def test_concurrent_first_calls_build_exactly_one_orchestrator(fresh_singleton, stub_orchestrator):
-    """The regression: N threads entering a cold getter together.
-
-    Unlocked, every thread observes None inside the construction window and builds its
-    own. Asserts both that one is built and that every caller gets that same one: an
-    orphan handed to even one caller is the bug.
-    """
+    """The regression: N threads entering a cold getter together. Unlocked, every thread
+    observes None inside the construction window and builds its own. Asserts both that one
+    is built and that every caller gets that same one: an orphan handed to any caller is
+    the bug."""
     handed_out: list[object] = []
     handed_lock = threading.Lock()
     errors: list[BaseException] = []
@@ -119,11 +112,8 @@ def test_concurrent_first_calls_build_exactly_one_orchestrator(fresh_singleton, 
 
 
 def test_warm_path_does_not_take_the_lock(fresh_singleton, stub_orchestrator):
-    """Once built, the getter must not serialize on the lock.
-
-    Every request path reaches it, so a single ``with`` around the whole body would
-    funnel all of them through one mutex.
-    """
+    """Once built, the getter must not serialize on the lock. Every request path reaches it,
+    so a single ``with`` around the whole body would funnel all of them through one mutex."""
     first = orch.get_inference_backend()
     assert len(stub_orchestrator.built) == 1
 
@@ -141,11 +131,9 @@ def test_warm_path_does_not_take_the_lock(fresh_singleton, stub_orchestrator):
 
 
 def test_getter_constructs_under_a_module_level_lock():
-    """Static guard: construction must stay inside a ``with`` on the lock.
-
-    A refactor back to the bare ``if _inference_backend is None: ...`` reads fine and
-    passes every single-threaded test, so pin the shape.
-    """
+    """Static guard: construction must stay inside a ``with`` on the lock. A refactor back to
+    the bare ``if _inference_backend is None: ...`` reads fine and passes every
+    single-threaded test, so pin the shape."""
     tree = ast.parse(_ORCHESTRATOR_SRC.read_text(encoding = "utf-8"))
 
     assigns_lock = [

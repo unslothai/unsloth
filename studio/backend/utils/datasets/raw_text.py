@@ -3,8 +3,8 @@
 
 """Shared helpers for raw-text dataset preparation."""
 
-# `Dataset` is annotation-only, and importing `datasets` at module scope drags torch
-# in via datasets.formatting.torch_formatter.
+# `Dataset` is annotation-only: a module-scope `datasets` import drags torch in via
+# datasets.formatting.torch_formatter.
 from __future__ import annotations
 
 from dataclasses import dataclass

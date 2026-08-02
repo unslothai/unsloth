@@ -328,17 +328,15 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
     try:
         from utils.hardware import hardware as hw
 
-        # The repair is a pip install, so shutdown can land anywhere inside it. Scoped
-        # to the epoch read before start(), the re-detect below is discarded when that
-        # happens instead of republishing a verdict for the lifespan that ended.
+        # A pip install, so shutdown can land anywhere inside it. Scoping to the epoch read
+        # before start() discards the re-detect rather than republish for a dead lifespan.
         with hw.owning_detection_epoch(epoch):
             hw.detect_hardware()  # flips CHAT_ONLY / DEVICE now that mlx imports
         if epoch is not None and hw.current_detection_epoch() != epoch:
             # The scoped pass declined: this repair outlived its lifespan. The install
-            # still succeeded though, so whatever is running now holds a verdict measured
-            # before mlx existed, and the process-wide _attempted latch stops any later
-            # repair from revisiting it. Left alone, a Mac that is now perfectly capable
-            # stays chat-only until a restart. Re-detect under the live epoch instead.
+            # still succeeded, so the live lifespan holds a verdict measured before mlx
+            # existed and the _attempted latch blocks any later repair. Re-detect under
+            # the live epoch, or a now-capable Mac stays chat-only until a restart.
             hw.detect_hardware()
         logger.info(
             "MLX self-heal succeeded; Train/Export enabled (reload the page). chat_only=%s",
@@ -371,8 +369,8 @@ def start_mlx_autorepair_if_needed() -> bool:
         "Set %s=1 to disable.",
         DISABLE_ENV_VAR,
     )
-    # Read before start(): start() releases the GIL and this thread may not run for a
-    # while, so reading the epoch inside it would bind the pass to a later shutdown.
+    # Read before start(): the thread may not run for a while, so reading the epoch
+    # inside it would bind the pass to a later shutdown.
     from utils.hardware import hardware as _hw
 
     threading.Thread(

@@ -96,17 +96,14 @@ export async function fetchDeviceType(options?: {
       typeof window === "undefined"
         ? null
         : localStorage.getItem("unsloth_auth_token");
-    // Re-read while the backend is still measuring: chat_only is its pre-detection
-    // default until then, and __root.tsx's beforeLoad acts on what this returns,
-    // sending a GPU host to /chat with Train hidden. The window is only the torch
-    // import, so a bounded re-read lands the measurement without stalling boot.
+    // Re-read while the backend is still measuring: chat_only is its pre-detection default
+    // until then, and __root.tsx's beforeLoad acts on what this returns, sending a GPU host
+    // to /chat with Train hidden. The window is only the torch import, so bound the re-read.
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
     // Wait only when a measurement can arrive, and only once. /api/health reports
-    // device_type to authed callers only, so an unauthenticated poll stays provisional
-    // and only holds /login (beforeLoad awaits this) behind the torch import. `fetched`
-    // stays false without device_type, so the latch stops every later navigation
-    // spending the window again; claim it after the wait, or a concurrent caller skips
-    // a window nobody has finished.
+    // device_type to authed callers only, so an unauthenticated poll stays provisional and
+    // would just hold /login (beforeLoad awaits this) behind the torch import. Claim the
+    // latch after the wait, or a concurrent caller skips a window nobody has finished.
     const spendWait = Boolean(token) && !hardwareWaitSpent;
     const deadline = spendWait ? Date.now() + HARDWARE_DETECT_WAIT_MS : 0;
     let tokenRejected = false;
@@ -119,10 +116,9 @@ export async function fetchDeviceType(options?: {
       };
       // Deferred is not "in progress": nothing will settle, so do not wait.
       if (!isProvisionalVerdict(peek) || isDetectionDeferred(peek)) break;
-      // A stored token the backend rejects gets the unauthenticated body, which never
-      // carries device_type however long we poll. `version` is authed-only, so its
-      // absence means this wait can only ever time out, holding /login for the full
-      // window on a cold boot.
+      // A rejected token gets the unauthenticated body, which never carries device_type.
+      // `version` is authed-only, so its absence means this wait can only time out,
+      // holding /login for the full window on a cold boot.
       if (peek.version === undefined) {
         tokenRejected = true;
         break;

@@ -245,10 +245,9 @@ async def start_training(
                     status_code = 400,
                     detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
                 )
-            # The warm fills DEVICE shortly after the socket binds, so a start landing
-            # in that window would read None, skip the MLX rejection, and hand a
-            # streaming dataset to the MLX loader (which materializes it whole). Detect
-            # first, off-loop because it imports torch.
+            # The warm fills DEVICE shortly after the socket binds, so a start in that window
+            # would read None, skip the MLX rejection, and hand a streaming dataset to the MLX
+            # loader (which materializes it whole). Detect first, off-loop: it imports torch.
             await asyncio.to_thread(ensure_hardware_detected)
             if _hw.DEVICE == _hw.DeviceType.MLX:
                 raise HTTPException(

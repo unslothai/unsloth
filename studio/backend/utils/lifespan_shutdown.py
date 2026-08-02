@@ -46,21 +46,18 @@ async def run_lifespan_shutdown(
             logger.warning("terminate_downloads failed at shutdown: %s", exc)
 
     try:
-        # Retire any detection still inside the torch import first, so it cannot
-        # publish over the reset below.
+        # Retire any detection still inside the torch import, so it cannot publish over the reset.
         invalidate = getattr(hw_module, "invalidate_detection", None)
         if invalidate is not None:
             invalidate()
         hw_module.DEVICE = None
-        # /api/health reads a set event as "DEVICE is authoritative", so a set event
-        # over a cleared DEVICE would make the next lifespan publish a device that is
-        # gone. getattr: tests inject a stub.
+        # /api/health reads a set event as "DEVICE is authoritative", so leaving it set over
+        # a cleared DEVICE would publish a device that is gone. getattr: tests inject a stub.
         detection_complete = getattr(hw_module, "DETECTION_COMPLETE", None)
         if detection_complete is not None:
             detection_complete.clear()
-        # Health falls back to a bare CHAT_ONLY read while the event is clear, so a GPU
-        # run leaving it False would show Train and Export on an unknown host. True is
-        # the conservative direction: hidden until detection says otherwise.
+        # Health falls back to a bare CHAT_ONLY read while the event is clear, so leaving it
+        # False would show Train and Export on an unknown host. Hidden until detection says so.
         hw_module.CHAT_ONLY = True
         hw_module.CHAT_ONLY_REASON = None
         hw_module.IS_ROCM = False

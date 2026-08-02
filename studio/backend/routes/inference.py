@@ -3249,10 +3249,9 @@ def _monitor_anthropic_response(
 def _peek_inference_backend() -> Any:
     """The orchestrator if one already exists, else None. Never constructs one.
 
-    Constructing reaches get_default_models() -> get_device(), so during the warm a
-    caller that only describes what is loaded would block uvicorn on the torch import
-    to answer "nothing". A patched module getter still wins: that is this module's
-    injection seam, relied on by the monitor tests.
+    Constructing reaches get_default_models() -> get_device(), so during the warm a caller
+    that only describes what is loaded would block uvicorn on the torch import to answer
+    "nothing". A patched module getter still wins: that is this module's injection seam.
     """
     from core.inference import orchestrator as _orch
 
@@ -4426,9 +4425,8 @@ async def _reject_unservable_model(
         # so match on the path too. Quants of one repo share a directory, so the path
         # alone cannot tell them apart: without the variant check an explicit :Q8_0
         # would be answered by a resident Q4_K_M.
-        # Off-loop: reads the Transformers singleton, and the llama.cpp short-circuits
-        # above skip the two offloaded reads before it, so on a restart this was what
-        # built the singleton on the event-loop thread.
+        # Off-loop: reads the Transformers singleton, and the llama.cpp short-circuits above
+        # skip the offloaded reads, so on a restart this built the singleton on the loop.
         if (
             resolved is not None
             and await asyncio.to_thread(_resolves_to_resident, resolved[0], llama_only = quantified)
@@ -5028,9 +5026,8 @@ async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
         from utils.hardware import DeviceType, get_device
         from utils.hardware.hardware import resolve_requested_gpu_ids
 
-        # One hop for the whole device-dependent block: resolve_requested_gpu_ids()
-        # reaches get_device() itself, so both wait on the detection lock while the warm
-        # imports torch.
+        # One hop for the whole device-dependent block: resolve_requested_gpu_ids() reaches
+        # get_device() itself, so both wait on the detection lock during the warm.
         def _device_and_resolution() -> tuple[object, bool, list]:
             is_vulkan = LlamaCppBackend._is_vulkan_backend()
             return (
@@ -5102,8 +5099,7 @@ async def _resolve_gguf_gpu_ids_for_request(
         diffusion_kind = _classify_diffusion_gguf(config)
     confirmed_diffusion = diffusion_kind is True
     definitively_non_diffusion = diffusion_kind is False
-    # Off-loop: get_device() waits on the detection lock, so a load or validate in the
-    # warm window would block on the cold torch import.
+    # Off-loop: get_device() waits on the detection lock, i.e. the cold torch import.
     device = await asyncio.to_thread(get_device)
     lacks_gpu_lib = getattr(llama_backend, "_backend_lacks_gpu_lib", None)
 
@@ -6095,9 +6091,8 @@ async def _load_model_impl(
                     gguf_variant = request.gguf_variant,
                 )
 
-        # Guard and call go to the worker together: from_identifier can import
-        # transformers to build the detection registry, and the guard's probe is a
-        # network round trip.
+        # Guard and call go to the worker together: from_identifier can import transformers
+        # to build the detection registry, and the guard's probe is a network round trip.
         config = await asyncio.to_thread(_resolve_config)
 
         if not config:
@@ -6844,8 +6839,7 @@ async def validate_model(
         # The frontend validates before it loads, so this needs the same guard as
         # /load; otherwise the stall just moves here and /load is never reached.
         # Off-loop twice over: the guard is a network round trip, and the first
-        # from_identifier builds the detection registry, which imports transformers or
-        # blocks on _DETECTION_SETS_LOCK while the warm holds it.
+        # from_identifier builds the detection registry (transformers, or the warm's lock).
         def _resolve_config():
             with _hf_offline_if_unreachable_for(model_identifier):
                 return ModelConfig.from_identifier(
@@ -7892,9 +7886,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_latest_tag = _latest_tag,
             )
 
-        # Otherwise report Unsloth backend status. Peek rather than build: the chat UI
-        # polls this from first paint, and no singleton means nothing is loaded, so
-        # constructing one to say so would import torch on a warm-disabled host.
+        # Otherwise report Unsloth backend status. Peek rather than build: no singleton means
+        # nothing is loaded, and the chat UI polls this from first paint.
         backend = _peek_inference_backend()
         if backend is None:
             return InferenceStatusResponse(
@@ -12694,9 +12687,8 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
-    # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose
-    # cold build waits on hardware detection. Inline, an early GET /v1/models held the
-    # event-loop thread for the rest of the torch import.
+    # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
+    # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
 

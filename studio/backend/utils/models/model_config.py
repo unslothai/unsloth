@@ -612,10 +612,9 @@ def _build_detection_sets():
         )
 
 
-# Reading the registry imports transformers, hence torch: most of `import main` on a
-# GPU host, spent before the port can bind. Only the capability checks need the sets, so
-# build on first use, double-checked because requests race here.
-# _build_detection_sets() never raises; it caches the curated fallback instead.
+# Reading the registry imports transformers, hence torch: most of `import main` on a GPU
+# host, spent before the port can bind. Only the capability checks need the sets, so build
+# on first use, double-checked. _build_detection_sets() never raises (curated fallback).
 _DETECTION_SETS: Optional[Tuple[frozenset, frozenset, frozenset]] = None
 _DETECTION_SETS_LOCK = threading.Lock()
 
@@ -706,8 +705,7 @@ def _raw_config_has_vision_config(
 
 # why: inline _is_vlm and constants are prepended so the subprocess stays
 # self-contained and does not import the parent backend module graph.
-# Built on demand: interpolating the sets eagerly would force the registry read this
-# module now defers.
+# Built on demand: interpolating the sets eagerly forces the registry read this module defers.
 def _build_vision_check_inline_helpers() -> str:
     vlm_types, vlm_classes, audio_types = _detection_sets()
     return (

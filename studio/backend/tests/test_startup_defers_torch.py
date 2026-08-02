@@ -13,11 +13,9 @@ in was about 5s of that on a GPU host. Four eager edges caused it:
   core/inference/orchestrator.py  from utils.hf_xet_fallback import DownloadStallError
   utils/datasets/raw_text.py    from datasets import Dataset  (annotation only)
 
-All four are lazy now and detection moved onto utils/torch_warmup.py. A fresh
-interpreter is used for the import invariant, since importing in-process would measure
-an already-warm sys.modules.
-
-CPU-only, no network, no GPU, no weights.
+All four are lazy now and detection moved onto utils/torch_warmup.py. A fresh interpreter
+is used for the import invariant, since importing in-process would measure an already-warm
+sys.modules. CPU-only, no network, no GPU, no weights.
 """
 
 from __future__ import annotations
@@ -205,11 +203,9 @@ def test_warm_starts_once_and_honours_the_kill_switch(monkeypatch):
 
 
 def test_the_warm_covers_every_package_import_main_used_to_pull():
-    """Deferring an import only moves its cost if something still pays it.
-
-    One stage per package `import main` used to leave in sys.modules. Dropping one
-    fails no other test; it silently moves that import onto the first request.
-    """
+    """Deferring an import only moves its cost if something still pays it. One stage per
+    package `import main` used to leave in sys.modules; dropping one fails no other test,
+    it silently moves that import onto the first request."""
     from utils import torch_warmup
     assert [name for name, _ in torch_warmup._STAGES] == [
         "hardware",  # torch, via utils.hardware
@@ -224,13 +220,11 @@ def test_the_warm_covers_every_package_import_main_used_to_pull():
 
 
 def test_the_unsloth_zoo_stage_goes_through_the_shim(monkeypatch):
-    """The warm must reproduce the eager import, not just import the package.
-
-    The edge it replaces was orchestrator.py's ``from utils.hf_xet_fallback import
-    DownloadStallError``, and the shim retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1
-    when unsloth_zoo's GPU init raises. A bare ``import unsloth_zoo`` skips that retry
-    and fails where startup used to succeed.
-    """
+    """The warm must reproduce the eager import, not just import the package. The edge it
+    replaces was orchestrator.py's ``from utils.hf_xet_fallback import DownloadStallError``,
+    and the shim retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1 when unsloth_zoo's GPU init
+    raises. A bare ``import unsloth_zoo`` skips that retry and fails where startup
+    succeeded."""
     import builtins
     import importlib
 
@@ -388,12 +382,9 @@ def test_first_paint_routes_do_not_block_the_event_loop(rel_path, func_name, cal
 
 
 def test_a_failed_detection_degrades_instead_of_raising():
-    """A torch that raises must not leave DEVICE unset.
-
-    The warm swallows stage failures, so a raising detection would leave DEVICE None,
-    and then every get_device() retries the same broken import while /api/health, which
-    waits on this, answers 500.
-    """
+    """A torch that raises must not leave DEVICE unset. The warm swallows stage failures, so a
+    raising detection would leave DEVICE None, and then every get_device() retries the same
+    broken import while /api/health, which waits on this, answers 500."""
     from utils.hardware import hardware as hw
 
     saved_device, saved_impl = hw.DEVICE, hw._detect_hardware_locked
@@ -462,12 +453,9 @@ def test_purge_partial_import_clears_the_zombie_and_leaves_live_ones():
 
 
 def test_purge_declines_when_a_compiled_submodule_is_loaded():
-    """Evicting a loaded C extension is worse than the zombie it would fix.
-
-    Re-importing one re-runs its module init, and pybind11 calls std::terminate on a
-    second registration of the same type ('generic_type: type "GradBucket" is already
-    registered!').
-    """
+    """Evicting a loaded C extension is worse than the zombie it would fix. Re-importing one
+    re-runs its module init, and pybind11 calls std::terminate on a second registration of
+    the same type."""
     import sys
     from importlib.machinery import EXTENSION_SUFFIXES
     from types import ModuleType
@@ -489,11 +477,9 @@ def test_purge_declines_when_a_compiled_submodule_is_loaded():
 
 
 def test_a_broken_torch_purges_its_own_zombie(monkeypatch):
-    """_has_torch() must clean up after the import it just watched fail.
-
-    Restores the real torch entries exactly: leaving `torch` in sys.modules with its
-    submodules evicted aborts the pytest process the next time anything imports one.
-    """
+    """_has_torch() must clean up after the import it just watched fail. Restores the real
+    torch entries exactly: leaving `torch` in sys.modules with its submodules evicted aborts
+    the pytest process the next time anything imports one."""
     import builtins
     import sys
     from types import ModuleType
@@ -527,12 +513,10 @@ def test_a_broken_torch_purges_its_own_zombie(monkeypatch):
 def test_one_detection_pass_probes_torch_once(monkeypatch):
     """A detection pass must import torch at most once.
 
-    _has_torch() is the expensive part: a broken wheel takes seconds to fail, and the
-    purge then declines because a compiled submodule is loaded, so the partial tree
-    stays and a second probe re-runs torch/__init__ against those cache hits. Same cost
-    again, with no guarantee it fails the same way twice. The CUDA branch and the XPU
-    fallback both need torch and must share one probe.
-    """
+    _has_torch() is the expensive part: a broken wheel takes seconds to fail, and the purge
+    then declines because a compiled submodule is loaded, so the partial tree stays and a
+    second probe re-runs torch/__init__ against those cache hits -- same cost again, with no
+    guarantee it fails the same way. The CUDA branch and the XPU fallback share one probe."""
     import builtins
     from types import ModuleType
 
@@ -575,12 +559,10 @@ def test_one_detection_pass_probes_torch_once(monkeypatch):
 
 
 def test_every_importing_warm_stage_purges_on_failure():
-    """A failed stage must not leave a half-imported package behind.
-
-    An import that dies partway leaves its submodules cached under an evicted parent,
-    so the retry returns a package that imports but is missing attributes: broken until
-    restart, while warm_status() reports nothing worse than a cold stage.
-    """
+    """A failed stage must not leave a half-imported package behind. An import that dies
+    partway leaves its submodules cached under an evicted parent, so the retry returns a
+    package that imports but is missing attributes: broken until restart, while
+    warm_status() reports nothing worse than a cold stage."""
     from utils import torch_warmup
 
     importing = {name for name, _ in torch_warmup._STAGES} - {"inference_backend"}
