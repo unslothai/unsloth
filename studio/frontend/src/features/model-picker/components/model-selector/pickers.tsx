@@ -132,7 +132,10 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
-import { visibleGgufVariants } from "./variant-visibility";
+import {
+  shouldMountVariantExpander,
+  visibleGgufVariants,
+} from "./variant-visibility";
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
@@ -712,7 +715,7 @@ const SOLE_QUANT_BATCH = 6;
 function useSoleDownloadedQuants(
   repos: readonly CachedGgufRepo[],
   { enabled, hfToken }: { enabled: boolean; hfToken?: string },
-): ReadonlyMap<string, SoleDownloadedQuant> {
+): { quants: ReadonlyMap<string, SoleDownloadedQuant>; pending: boolean } {
   const targets = useMemo(
     () =>
       repos.map((repo) => ({
@@ -784,7 +787,11 @@ function useSoleDownloadedQuants(
   }, [enabled, fetchKey, hfToken, targets]);
 
   // Stale results would collapse a row onto a quant that is already gone.
-  return resolved.key === fetchKey ? resolved.quants : EMPTY_SOLE_QUANTS;
+  const settled = resolved.key === fetchKey;
+  return {
+    quants: settled ? resolved.quants : EMPTY_SOLE_QUANTS,
+    pending: enabled && !settled,
+  };
 }
 
 function GgufVariantExpander({
@@ -2185,7 +2192,7 @@ export function HubModelPicker({
   const visibleCachedModelRows = chatOnly ? [] : visibleCachedModels;
 
   // Unfiltered list, so typing a query doesn't re-run resolution.
-  const soleDownloadedQuants = useSoleDownloadedQuants(sortedCachedGguf, {
+  const soleQuants = useSoleDownloadedQuants(sortedCachedGguf, {
     enabled: section === "downloaded" && !showAllQuantizations,
     hfToken: hfToken || undefined,
   });
@@ -3078,8 +3085,15 @@ export function HubModelPicker({
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
     const isSelected = value === c.repo_id;
-    const soleQuant = soleDownloadedQuants.get(c.repo_id);
+    const soleQuant = soleQuants.quants.get(c.repo_id);
     if (soleQuant) return renderSoleQuantGgufRow(c, soleQuant);
+    // Auto-expansion waits for the probe: expanding every row first would
+    // mount an expander, and its remote listing, for repos about to collapse.
+    const expanderOpen = shouldMountVariantExpander({
+      expanded: isGgufExpanded(c.repo_id),
+      autoExpand: expandQuantizations,
+      soleQuantsPending: soleQuants.pending,
+    });
     return (
       <div key={c.repo_id}>
         <div className={downloadedRowShellClassName(isSelected)}>
@@ -3099,7 +3113,7 @@ export function HubModelPicker({
               optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
               onClick={() => toggleGgufExpanded(c.repo_id)}
               onArrowDownIntoChildren={
-                isGgufExpanded(c.repo_id)
+                expanderOpen
                   ? () => focusFirstChildOption(optionKey)
                   : undefined
               }
@@ -3109,7 +3123,7 @@ export function HubModelPicker({
           </div>
           <span aria-hidden="true" className="mr-1 h-6 w-[26px] shrink-0" />
         </div>
-        {isGgufExpanded(c.repo_id) && (
+        {expanderOpen && (
           <GgufVariantExpander
             repoId={c.repo_id}
             loadId={c.load_id}

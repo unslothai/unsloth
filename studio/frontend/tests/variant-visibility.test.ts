@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { visibleGgufVariants } from "../src/features/model-picker/components/model-selector/variant-visibility.ts";
+import {
+  shouldMountVariantExpander,
+  visibleGgufVariants,
+} from "../src/features/model-picker/components/model-selector/variant-visibility.ts";
 
 /** A repo holding one complete quant, one torn download, and one quant that
  *  only exists on the Hub. */
@@ -64,4 +67,54 @@ test("variants missing the flags count as not on disk", () => {
     showAll: false,
   });
   assert.deepEqual(quants(shown), []);
+});
+
+test("auto-expansion waits for the sole-quant probe", () => {
+  // Every row would otherwise open an expander, and its remote listing,
+  // moments before collapsing into a single row.
+  assert.equal(
+    shouldMountVariantExpander({
+      expanded: true,
+      autoExpand: true,
+      soleQuantsPending: true,
+    }),
+    false,
+  );
+});
+
+test("auto-expansion resumes once the probe settles", () => {
+  assert.equal(
+    shouldMountVariantExpander({
+      expanded: true,
+      autoExpand: true,
+      soleQuantsPending: false,
+    }),
+    true,
+  );
+});
+
+test("a row the user opened is not held back", () => {
+  assert.equal(
+    shouldMountVariantExpander({
+      expanded: true,
+      autoExpand: false,
+      soleQuantsPending: true,
+    }),
+    true,
+  );
+});
+
+test("a collapsed row never mounts an expander", () => {
+  for (const soleQuantsPending of [true, false]) {
+    for (const autoExpand of [true, false]) {
+      assert.equal(
+        shouldMountVariantExpander({
+          expanded: false,
+          autoExpand,
+          soleQuantsPending,
+        }),
+        false,
+      );
+    }
+  }
 });
