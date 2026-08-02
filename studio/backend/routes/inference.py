@@ -5239,6 +5239,24 @@ def _guard_chat_load_against_training(
     from core.inference.llama_cpp import _diffusion_manual_ngl, _scale_diffusion_required_gb
 
     is_gguf = bool(getattr(config, "is_gguf", False))
+    # load_model rewrites a GGUF placement to CPU on a virtualised Metal device, so
+    # guard what will run rather than what was asked: sized as the raw Auto request,
+    # a CPU-only chat load can be refused for competing over VRAM it never takes.
+    # Same helper the launch and both duplicate-load comparators use.
+    if is_gguf and _metal_device_is_paravirtual():
+        _pv = paravirtual_normalized_request(
+            gpu_memory_mode = gpu_memory_mode,
+            gpu_layers = gpu_layers,
+            tensor_parallel = tensor_parallel,
+            tensor_split = None,
+            n_cpu_moe = 0,
+            extra_args = llama_extra_args,
+            log_dropped = False,
+        )
+        gpu_memory_mode = _pv.gpu_memory_mode
+        gpu_layers = _pv.gpu_layers
+        tensor_parallel = _pv.tensor_parallel
+        llama_extra_args = _pv.extra_args
     if diffusion_kind is _DIFFUSION_KIND_UNSET:
         diffusion_kind = _classify_diffusion_gguf(config) if is_gguf else False
     if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:

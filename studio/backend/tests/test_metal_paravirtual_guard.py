@@ -673,7 +673,14 @@ def _drafter_gate(
         "extra_args": list(extra_args) if extra_args else extra_args,
         "_extra_args_mtp_draft_path": llama_cpp._extra_args_mtp_draft_path,
         "_extra_args_draft_offloaded_to_cpu": llama_cpp._extra_args_draft_offloaded_to_cpu,
+        "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
+        "_child_spec_env": llama_cpp._child_spec_env,
         "strip_shadowing_flags": llama_cpp.strip_shadowing_flags,
+        # The slot restore rides in this block. 0 = nothing was clamped, so it stays
+        # out of the way of the drafter cases these helpers cover.
+        "_pv_extras_clamped_slots": 0,
+        "n_parallel": 1,
+        "cmd": ["--parallel", "1"],
         "logger": log,
     }
     exec(ast.unparse(ast.Module(body = body, type_ignores = [])), scope)
@@ -840,6 +847,34 @@ def test_a_managed_spec_block_clears_the_inherited_spec_env():
     gate = src[src.rindex("if ", 0, at) : at]
     assert "not _extra_args_set_spec_type(extra_args)" in gate
     assert "_pv_draft_unpinnable" in gate
+
+
+def test_the_drafter_drop_hands_back_the_slots_it_no_longer_needs():
+    """The extras-MTP clamp cuts a multi-slot request to one. If the drop then
+    strips that very spec group, the server is not speculating at all and would
+    otherwise serve one chat at a time forever: the dedupe records the original
+    ask, so no repeat Apply ever restores it."""
+    src = _load_model_source()
+    clamp_at = src.index("_pv_extras_clamped_slots = n_parallel")
+    restore_at = src.index("n_parallel = _pv_extras_clamped_slots")
+    assert clamp_at < restore_at
+    # Restored before the spec flags are rebuilt, so the backstop can re-clamp if
+    # Unsloth's own resolution turns out to be MTP after all.
+    assert restore_at < src.index("spec_flags = self._build_speculative_flags(")
+    # And it only fires once the stripped extras really are non-MTP.
+    assert "not _extra_args_requests_mtp(" in src[restore_at - 400 : restore_at]
+
+
+def test_the_training_guard_sizes_the_cpu_pin_not_the_raw_request():
+    """load_model rewrites a GGUF placement to CPU here, so a guard that sized the
+    raw Auto request could refuse a chat load for VRAM it never takes."""
+    guard_src = inspect.getsource(_routes()._guard_chat_load_against_training)
+    assert "_metal_device_is_paravirtual()" in guard_src
+    assert "paravirtual_normalized_request(" in guard_src
+    # Before the manual/GGUF early return, or the rewrite could not reach it.
+    assert guard_src.index("paravirtual_normalized_request(") < guard_src.index(
+        'gpu_memory_mode == "manual"'
+    )
 
 
 def test_a_pinnable_drafter_survives_on_the_same_hardware():

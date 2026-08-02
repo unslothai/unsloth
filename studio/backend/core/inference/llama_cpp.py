@@ -7897,9 +7897,13 @@ class LlamaCppBackend:
             # (--spec-type inserts, --spec-default push_backs, and enablement is a
             # find over the vector), so an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp
             # really does launch MTP and no later flag can clear it.
+            _pv_extras_clamped_slots = 0
             if n_parallel > 1 and _extra_args_requests_mtp(
                 extra_args, env = _child_spec_env(extra_args)
             ):
+                # Kept so the paravirtual drafter drop can hand them back if it
+                # strips the very spec group this clamped for.
+                _pv_extras_clamped_slots = n_parallel
                 logger.warning(
                     "MTP speculative decoding (--spec-type draft-mtp) does not support "
                     "%d parallel slots; using 1. Load without MTP to serve chats in "
@@ -9639,6 +9643,22 @@ class LlamaCppBackend:
                             strip_template = False,
                             strip_split_mode = False,
                         )
+                        # The slots were clamped for an MTP that just went away, so
+                        # give them back rather than serve one chat at a time on a
+                        # server that is no longer speculating. Restored before the
+                        # spec flags are rebuilt, so the backstop below re-clamps if
+                        # Unsloth's own resolution turns out to be MTP after all.
+                        if _pv_extras_clamped_slots > 1 and not _extra_args_requests_mtp(
+                            extra_args, env = _child_spec_env(extra_args)
+                        ):
+                            n_parallel = _pv_extras_clamped_slots
+                            if "--parallel" in cmd:
+                                cmd[cmd.index("--parallel") + 1] = str(n_parallel)
+                            logger.info(
+                                "Restoring %d parallel slots: the drafter drop left a "
+                                "non-MTP server.",
+                                n_parallel,
+                            )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
