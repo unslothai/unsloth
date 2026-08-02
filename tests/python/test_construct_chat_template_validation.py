@@ -113,7 +113,11 @@ _SYSTEM_CHAT_TEMPLATE = (
 )
 
 
-def _render(jinja_template, messages, add_generation_prompt = False):
+def _render(
+    jinja_template,
+    messages,
+    add_generation_prompt = False,
+):
     from jinja2.sandbox import ImmutableSandboxedEnvironment
 
     env = ImmutableSandboxedEnvironment()
@@ -275,6 +279,8 @@ def test_quotes_and_backslashes_survive_into_the_jinja_template(default_system_m
 
     # The generation prompt is spliced from its own literal, not through process().
     prompted = _render(
-        jinja_template, [{"role": "user", "content": "Hi"}], add_generation_prompt = True,
+        jinja_template,
+        [{"role": "user", "content": "Hi"}],
+        add_generation_prompt = True,
     )
     assert prompted.endswith("### Bot's reply: ")
