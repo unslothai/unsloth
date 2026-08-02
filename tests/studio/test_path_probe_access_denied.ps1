@@ -115,6 +115,42 @@ try {
     Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue
 }
 
+# ── Test-Path parity: the regression-safety invariant ──
+# Wherever the old bare probe returned a value instead of throwing, Get-PathState
+# must agree. Denied may only appear where the old probe threw, so no path that
+# used to work can take a different branch now.
+$parityRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_par_" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path (Join-Path $parityRoot "tree/sub") | Out-Null
+Set-Content -LiteralPath (Join-Path $parityRoot "tree/UNSLOTH_PREBUILT_INFO.json") -Value "{}"
+Set-Content -LiteralPath (Join-Path $parityRoot "tree/sub/file.txt") -Value "x"
+$parityProbes = @($parityRoot, (Join-Path $parityRoot "tree"), (Join-Path $parityRoot "tree/sub"),
+    (Join-Path $parityRoot "tree/UNSLOTH_PREBUILT_INFO.json"), (Join-Path $parityRoot "tree/sub/file.txt"),
+    (Join-Path $parityRoot "missing"), (Join-Path $parityRoot "missing/deeper.json"))
+$mismatch = 0; $deniedWithoutThrow = 0; $probed = 0
+foreach ($p in $parityProbes) {
+    foreach ($t in @("Any", "Leaf", "Container")) {
+        $old = $null; $threw = $false
+        try { $old = [bool](Test-Path -LiteralPath $p -PathType $t -ErrorAction Stop) } catch { $threw = $true }
+        $new = Get-PathState -Path $p -PathType $t
+        $probed++
+        if ($threw) { if ($new -notin @("Denied", "Absent")) { $mismatch++ } }
+        elseif ($new -eq "Denied") { $deniedWithoutThrow++ }
+        elseif ($old -ne ($new -eq "Present")) { $mismatch++ }
+    }
+}
+Remove-Item -Recurse -Force -LiteralPath $parityRoot -ErrorAction SilentlyContinue
+Check "Get-PathState matches bare Test-Path on every non-throwing probe ($probed)" ($mismatch -eq 0)
+Check "Denied never appears where the old probe did not throw" ($deniedWithoutThrow -eq 0)
+
+# ── The reporting path must not itself fail ──
+# Get-PathDenialDetail runs while a failure is being reported, so a null or empty
+# path must not replace the actionable message with a binding exception.
+foreach ($edge in @($null, "", "   ")) {
+    $edgeOk = $true
+    try { $null = Get-PathDenialDetail -Path $edge } catch { $edgeOk = $false }
+    Check "Get-PathDenialDetail tolerates an empty/null path" $edgeOk
+}
+
 # ── The desktop app must receive the reason, not just "exit code 1" ──
 # The real Exit-PathAccessDenied with the real Exit-SetupFailure in Tauri mode:
 # install.rs prefers a [TAURI:ERROR] line over its generic exit-code message, so

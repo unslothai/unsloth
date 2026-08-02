@@ -116,3 +116,16 @@ def test_whisper_phase_stays_non_fatal_on_a_denied_llama_tree():
     """whisper.cpp failures degrade to Transformers dictation by contract, so
     its read of the llama.cpp marker must not be able to terminate setup."""
     assert 'if (Test-PathQuiet $llamaMarker "Leaf")' in SETUP_PS1
+
+
+def test_reporting_helpers_tolerate_an_empty_path():
+    """These run while a failure is being reported. A mandatory [string] rejects
+    null and empty, so without these attributes the reporter would throw a
+    binding exception instead of printing the actionable message."""
+    for name in ("Get-PathDenialDetail", "Exit-PathAccessDenied"):
+        body = SETUP_PS1.split(f"function {name}", 1)[1].split("\nfunction ", 1)[0]
+        head = body.split("$Path", 1)[0]
+        assert "[AllowNull()]" in head, name
+        assert "[AllowEmptyString()]" in head, name
+    detail = SETUP_PS1.split("function Get-PathDenialDetail", 1)[1].split("\nfunction ", 1)[0]
+    assert 'if ([string]::IsNullOrWhiteSpace($Path)) { return "" }' in detail

@@ -340,14 +340,16 @@ function Test-PathQuiet {
 }
 
 # Names the link target of a denied dir, since that is where the user must look.
+# Empty/null tolerated: this runs while reporting a failure and must not add one.
 function Get-PathDenialDetail {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path)
 
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     if (-not $item) { return "" }
     if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
     $target = $null
-    try { $target = $item.Target } catch { }
+    try { $target = $item.Target } catch { $target = $null }
     # PS 5.1 exposes .Target as a collection; PS 7 as a string.
     if ($target) { return " (it is a link to $(@($target) -join ', '))" }
     return " (it is a link)"
@@ -358,8 +360,8 @@ function Get-PathDenialDetail {
 # folder outlives an app reinstall, so retrying cannot help.
 function Exit-PathAccessDenied {
     param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Label
+        [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Label
     )
 
     step "permissions" "$Label at $Path cannot be read: access is denied$(Get-PathDenialDetail -Path $Path)" "Red"
