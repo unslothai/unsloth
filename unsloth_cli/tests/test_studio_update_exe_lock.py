@@ -107,7 +107,10 @@ def test_a_locked_copy_hands_over_to_the_launcher(monkeypatch, tmp_path):
 
     with pytest.raises(studio.typer.Exit):
         studio._reexec_through_launcher_windows(
-            local = True, package = "unsloth", verbose = False, verify = False,
+            local = True,
+            package = "unsloth",
+            verbose = False,
+            verify = False,
         )
 
     assert seen["argv"][0] == str(shim), "the child did not run through the launcher"
@@ -127,20 +130,27 @@ def test_the_hand_over_happens_once(monkeypatch, tmp_path):
     monkeypatch.setattr(studio.subprocess, "run", explode)
 
     studio._reexec_through_launcher_windows(
-        local = False, package = "unsloth", verbose = False, verify = True,
+        local = False,
+        package = "unsloth",
+        verbose = False,
+        verify = True,
     )
 
 
 def test_the_childs_exit_code_is_this_processs_exit_code(monkeypatch, tmp_path):
     _shimmed(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        studio.subprocess, "run",
+        studio.subprocess,
+        "run",
         lambda argv, env = None: type("R", (), {"returncode": 3})(),
     )
 
     with pytest.raises(studio.typer.Exit) as excinfo:
         studio._reexec_through_launcher_windows(
-            local = False, package = "unsloth", verbose = False, verify = True,
+            local = False,
+            package = "unsloth",
+            verbose = False,
+            verify = True,
         )
     assert excinfo.value.exit_code == 3
 
@@ -153,12 +163,16 @@ def test_no_launcher_means_carry_on_and_report(monkeypatch, tmp_path):
     monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)  # no bin/unsloth.exe
     _as_windows(monkeypatch, scripts)
     monkeypatch.setattr(
-        studio.subprocess, "run",
+        studio.subprocess,
+        "run",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not run")),
     )
 
     studio._reexec_through_launcher_windows(
-        local = False, package = "unsloth", verbose = False, verify = True,
+        local = False,
+        package = "unsloth",
+        verbose = False,
+        verify = True,
     )
 
 
@@ -172,7 +186,10 @@ def test_a_launcher_that_will_not_start_is_not_handed_to(monkeypatch, tmp_path):
 
     # Returns rather than raising: the caller still owns the real failure.
     studio._reexec_through_launcher_windows(
-        local = False, package = "unsloth", verbose = False, verify = True,
+        local = False,
+        package = "unsloth",
+        verbose = False,
+        verify = True,
     )
 
 
@@ -180,12 +197,16 @@ def test_other_platforms_never_hand_over(monkeypatch, tmp_path):
     _shimmed(monkeypatch, tmp_path)
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
-        studio.subprocess, "run",
+        studio.subprocess,
+        "run",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not run")),
     )
 
     studio._reexec_through_launcher_windows(
-        local = False, package = "unsloth", verbose = False, verify = True,
+        local = False,
+        package = "unsloth",
+        verbose = False,
+        verify = True,
     )
 
 

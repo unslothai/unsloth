@@ -3066,7 +3066,10 @@ def update(
     # ModuleNotFoundError. Hand over to the launcher while that is still avoidable.
     if exe_lock_err is not None:
         _reexec_through_launcher_windows(
-            local = local, package = package, verbose = verbose, verify = verify,
+            local = local,
+            package = package,
+            verbose = verbose,
+            verify = verify,
         )
     try:
         _run_setup_script(verbose = verbose, repo_root = repo_root)
@@ -3182,10 +3185,7 @@ _REEXEC_ENV = "UNSLOTH_UPDATE_REEXEC"
 
 
 def _reexec_through_launcher_windows(
-    local: bool,
-    package: str,
-    verbose: bool,
-    verify: bool,
+    local: bool, package: str, verbose: bool, verify: bool
 ) -> None:
     """Re-run this update through the launcher, and exit with its result.
 
@@ -3228,7 +3228,9 @@ def _reexec_through_launcher_windows(
     env = dict(os.environ)
     env[_REEXEC_ENV] = "1"
     typer.echo("", err = True)
-    typer.echo(f"This copy is in use, so the update cannot replace it: {_exe_lock_hint()}", err = True)
+    typer.echo(
+        f"This copy is in use, so the update cannot replace it: {_exe_lock_hint()}", err = True
+    )
     typer.echo(f"Re-running through the launcher instead: {shim}", err = True)
     typer.echo("", err = True)
     try:
