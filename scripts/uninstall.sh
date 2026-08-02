@@ -17,9 +17,21 @@ Usage:
   curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh
   sh scripts/uninstall.sh
 
+To read this help from the piped form, sh needs -s so the arguments reach the
+script instead of the shell. Spelled out, with the same URL as above:
+  curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh -s -- --help
+
+Never pipe to `sh -h` expecting help. Neither form prints this message: where
+-h is accepted (bash, zsh, macOS /bin/sh) it is the shell's own hashall option,
+so the shell consumes it and the script uninstalls with no arguments; where it
+is not (dash, busybox sh) the shell exits with "Illegal option -h".
+
 Stops running Unsloth Studio servers, then removes the install dir, launcher
 data dir, CLI shim, desktop shortcut, macOS .app bundle and Launch Services
-entry. The Hugging Face cache at ~/.cache/huggingface is left in place.
+entry. In a default-mode install it also removes the shared prebuilts that sit
+beside the install dir: ~/.unsloth/{llama.cpp,node,whisper.cpp,.cache}. The
+Hugging Face cache at ~/.cache/huggingface is left in place, as is anything
+else you keep under ~/.unsloth.
 
 On WSL it also removes this distro's Windows-side shortcuts under /mnt/*/Users,
 strips the Unsloth block from ~/.bashrc, and uses sudo to delete
@@ -265,9 +277,24 @@ _unsloth_uninstall_main() {
     # Normally pruned after activate, but an interrupted build can leave it behind;
     # removing it lets the rmdir below succeed. No-op in env/custom mode and absent.
     _remove_path "$HOME/.unsloth/.staging"
-    # llama.cpp install lock (serializes the shared build); a stray one keeps ~/.unsloth
-    # from being pruned below. No-op in env/custom mode and when absent.
+    # Managed whisper.cpp dictation engine (install_whisper_prebuilt.py), a sibling
+    # of studio in default mode. Only present when a whisper prebuilt matching the
+    # pinned llama.cpp build existed at install time, so many installs lack it.
+    _remove_path "$HOME/.unsloth/whisper.cpp"
+    # Prebuilt install locks. Every prebuilt serializes on
+    # <parent>/.<name>.install.lock (prebuilt_core.py:1129), so llama.cpp, node and
+    # whisper.cpp each leave one; a stray lock keeps ~/.unsloth from being pruned
+    # below. No-op in env/custom mode and when absent.
     _remove_path "$HOME/.unsloth/.llama.cpp.install.lock"
+    _remove_path "$HOME/.unsloth/.node.install.lock"
+    _remove_path "$HOME/.unsloth/.whisper.cpp.install.lock"
+    # Taking over an abandoned lock renames it to .stale.<pid> before unlinking
+    # (install_node_prebuilt.py); a crash between the two steps strands the rename,
+    # and a stranded one blocks the rmdir below. Unmatched globs stay literal,
+    # hence the existence test.
+    for _stale in "$HOME"/.unsloth/.*.install.lock.stale.*; do
+        [ -e "$_stale" ] && _remove_path "$_stale"
+    done
     # ROCm-on-WSL helper artifacts (librocdxg build clone + smoke-test venv). No-op
     # where they don't exist; removing them lets the rmdir below succeed.
     _remove_path "$HOME/.unsloth/librocdxg"

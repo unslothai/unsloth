@@ -103,6 +103,49 @@ def test_big_endian_detection_ignores_model_name_be_token():
     )
 
 
+def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, monkeypatch):
+    root = tmp_path / "MTP"
+    root.mkdir()
+    main = root / "Qwen3.6-27B-MTP-Q6_K.gguf"
+    model_dir = root / "model"
+    model_dir.mkdir()
+    (model_dir / "Qwen3.6-27B-MTP-Q8_0.GGUF").write_bytes(b"x")
+    for file in (
+        main,
+        root / "gemma-4-12b-it-Q8_0-MTP.gguf",
+        root / "mtp-gemma-4-12b-it.gguf",
+    ):
+        file.write_bytes(b"x")
+
+    monkeypatch.setattr(gguf, "iter_gguf_files", lambda *_: pytest.fail("recursive scan"))
+    rows = local_inventory._scan_custom_folder(root)
+
+    paths = {Path(row.load_id) for row in rows}
+    assert {main, model_dir} <= paths
+    assert root / "gemma-4-12b-it-Q8_0-MTP.gguf" not in paths
+    assert root / "mtp-gemma-4-12b-it.gguf" not in paths
+
+    companion_root = tmp_path / "companion" / "MTP"
+    (companion_root / "other.gguf").mkdir(parents = True)
+    (companion_root / "config.json").write_bytes(b"{}")
+    (companion_root / "gemma-4-12b-it-Q8_0-MTP.gguf").write_bytes(b"x")
+    (companion_root / "other.gguf" / "Qwen3.6-27B-Q8_0.gguf").write_bytes(b"x")
+    assert companion_root not in {
+        Path(row.load_id) for row in local_inventory._scan_custom_folder(companion_root)
+    }
+
+
+def test_unregistered_variant_identity_stays_scan_relative(tmp_path):
+    from utils.models.model_config import list_local_gguf_variants
+
+    snapshot = tmp_path / "deadbeef"
+    snapshot.mkdir()
+    (snapshot / "model.gguf").write_bytes(b"x")
+
+    assert [v.quant for v in list_local_gguf_variants(str(snapshot))[0]] == ["model"]
+    assert [v.quant for v in gguf.list_local_gguf_variants(str(snapshot))[0]] == ["model"]
+
+
 def _cached_model_row(tmp_path: Path, *, partial: bool, active_cache: bool | None, size_bytes: int):
     path = tmp_path / f"cache-{active_cache}-{partial}-{size_bytes}"
     return model_common._local_model_info(
@@ -702,7 +745,7 @@ def test_cached_gguf_scan_dedupes_and_excludes_mmproj_only(monkeypatch, tmp_path
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
@@ -723,7 +766,7 @@ def test_cached_gguf_scan_preserves_partial_flag(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: True,
+        lambda _repo_id, _path, **_kw: True,
     )
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
@@ -766,7 +809,7 @@ def test_cached_gguf_scan_includes_variant_state_without_completed_gguf(monkeypa
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: True,
+        lambda _repo_id, _path, **_kw: True,
     )
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
@@ -799,7 +842,7 @@ def test_cached_gguf_scan_hides_infra_repos_without_user_downloads(monkeypatch, 
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
@@ -834,7 +877,7 @@ def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(monkeypa
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
@@ -866,7 +909,7 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_models()}
@@ -909,12 +952,12 @@ def test_cached_scans_hide_embedders_configured_by_cache_path(monkeypatch, tmp_p
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     assert cache_inventory._scan_cached_gguf() == []
@@ -972,12 +1015,12 @@ def test_cached_scans_hide_embedders_configured_by_snapshot_path(monkeypatch, tm
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     assert cache_inventory._scan_cached_gguf() == []
@@ -1015,7 +1058,7 @@ def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_models()}
@@ -1049,12 +1092,12 @@ def test_cached_scans_hide_stale_default_embedder_after_custom_setting(monkeypat
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     assert cache_inventory._scan_cached_gguf() == []

@@ -26,6 +26,7 @@ from unsloth.utils.packing import (
     patch_hybrid_linear_attention_varlen,
 )
 
+import inspect
 import logging
 from contextlib import ExitStack
 from types import SimpleNamespace
@@ -903,30 +904,42 @@ class _DummyModel(torch.nn.Module):
         self.generation_config = SimpleNamespace(attn_implementation = "sdpa")
 
 
+def _build_trl_language_modeling_collator():
+    """Build TRL's SFT collator with only the fields the installed TRL accepts.
+
+    The dataclass fields drift between TRL releases, so hardcoding a kwarg set
+    breaks whenever upstream drops one: ``return_position_ids`` only existed
+    around TRL 0.22, and ``completion_only_loss`` was removed from this collator
+    in TRL 1.7.0 (huggingface/trl#6037, commit f9aeb59) when label masking moved
+    into dataset preparation. Filtering against the live signature keeps the
+    dummy trainer faithful to whatever TRL is installed.
+    """
+    wanted = {
+        "pad_token_id": 0,
+        "completion_only_loss": False,
+        "return_tensors": "pt",
+        "padding_free": True,
+        "return_position_ids": False,
+    }
+    try:
+        accepted = set(inspect.signature(DataCollatorForLanguageModeling).parameters)
+    except (TypeError, ValueError):
+        accepted = {"pad_token_id"}
+    collator = DataCollatorForLanguageModeling(
+        **{key: value for key, value in wanted.items() if key in accepted}
+    )
+    # Ensure attributes exist even when this TRL has no such field.
+    if not hasattr(collator, "padding_free"):
+        collator.padding_free = True
+    if not hasattr(collator, "return_position_ids"):
+        collator.return_position_ids = False
+    return collator
+
+
 class _DummyTrainer:
     def __init__(self):
         self.args = SimpleNamespace(remove_unused_columns = True)
-        collator_args = {
-            "pad_token_id": 0,
-            "completion_only_loss": False,
-            "return_tensors": "pt",
-        }
-        optional_flags = [
-            {"padding_free": True, "return_position_ids": False},
-            {"padding_free": True},
-            {},
-        ]
-        for extra in optional_flags:
-            try:
-                self.data_collator = DataCollatorForLanguageModeling(**collator_args, **extra)
-                break
-            except TypeError:
-                continue
-        # Ensure attributes exist even if the constructor rejected the flags.
-        if not hasattr(self.data_collator, "padding_free"):
-            self.data_collator.padding_free = True
-        if not hasattr(self.data_collator, "return_position_ids"):
-            self.data_collator.return_position_ids = False
+        self.data_collator = _build_trl_language_modeling_collator()
 
 
 class _PaddingFreeCollator:
@@ -978,6 +991,37 @@ def test_enable_sample_packing():
     assert batch["input_ids"].shape == (1, 6)
     expected_positions = torch.tensor([0, 1, 0, 0, 1, 2], dtype = torch.long)
     assert torch.equal(batch["position_ids"].view(-1)[:6], expected_positions)
+
+
+def test_enable_sample_packing_only_requires_torch_call():
+    """Packing must not depend on optional TRL collator fields.
+
+    TRL keeps adding and removing fields on its SFT collator, so
+    ``enable_sample_packing`` is only allowed to require ``torch_call``.
+    """
+
+    class _MinimalCollator:
+        def torch_call(self, examples):
+            return {"input_ids": torch.tensor([[0, 1, 2, 3, 4, 5]], dtype = torch.long)}
+
+    trainer = SimpleNamespace(
+        args = SimpleNamespace(remove_unused_columns = True),
+        data_collator = _MinimalCollator(),
+    )
+
+    enable_sample_packing(_DummyModel(), trainer)
+
+    collator = trainer.data_collator
+    assert getattr(collator, "_unsloth_packing_wrapped") is True
+    assert trainer.args.remove_unused_columns is False
+
+    batch = collator.torch_call(
+        [
+            {"input_ids": [0, 1, 2], "seq_lengths": [2, 1]},
+            {"input_ids": [3, 4, 5], "seq_lengths": [3]},
+        ]
+    )
+    assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32))
 
 
 @pytest.mark.skipif(

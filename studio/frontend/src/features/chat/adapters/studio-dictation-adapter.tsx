@@ -14,9 +14,9 @@ import {
   StudioWebSpeechDictationAdapter,
 } from "./studio-web-speech-dictation-adapter";
 
-// The one live dictation session, so the recording bar's discard (X) can cancel
-// it without going through assistant-ui (which only exposes stop, i.e.
-// transcribe). Cancelling emits no transcript, so composer text is untouched.
+// The one live dictation session, so Escape can discard it without going
+// through assistant-ui (which only exposes stop, i.e. transcribe). Cancelling
+// emits no transcript, so composer text is untouched.
 let activeSession: StudioDictationSession | null = null;
 
 /** Discard the current dictation without transcribing. Safe to call when idle. */

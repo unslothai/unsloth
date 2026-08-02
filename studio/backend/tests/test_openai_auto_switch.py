@@ -341,7 +341,7 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     assert e2 is not None and e2.variants
 
 
-def test_local_gguf_entry_rejects_standalone_mmproj(tmp_path):
+def test_local_gguf_entry_rejects_standalone_companions(tmp_path, monkeypatch):
     # Codex P2: _scan_models_dir's standalone-.gguf pass emits an entry for a
     # bare mmproj projector (it only filters mmproj inside directory scans). A
     # projector is not a servable model, so the resolver must reject it or
@@ -352,6 +352,17 @@ def test_local_gguf_entry_rejects_standalone_mmproj(tmp_path):
     proj.write_text("x")
     assert resolver._local_gguf_entry("p", SimpleNamespace(path = str(proj))) is None
     assert resolver.info_has_local_gguf(SimpleNamespace(id = str(proj), path = str(proj))) is False
+    root = tmp_path / "MTP"
+    root.mkdir()
+    main = root / "Qwen3.6-27B-MTP-Q6_K.gguf"
+    terminal = root / "gemma-4-12b-it-Q8_0-MTP.gguf"
+    prefixed = root / "mtp-gemma-4-12b-it.gguf"
+    for file in (main, terminal, prefixed):
+        file.write_text("x")
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(root)}])
+    assert resolver._local_gguf_entry("main", SimpleNamespace(path = str(main))) is not None
+    assert resolver._local_gguf_entry("terminal", SimpleNamespace(path = str(terminal))) is None
+    assert resolver._local_gguf_entry("prefixed", SimpleNamespace(path = str(prefixed))) is None
 
 
 def _entry(loader_id, *variants):

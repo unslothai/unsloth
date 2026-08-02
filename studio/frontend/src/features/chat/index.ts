@@ -57,6 +57,7 @@ export {
   reconcilePersistedGpuSelection,
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
+export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
   toolOutputKey,
@@ -143,6 +144,10 @@ export {
   useChatProjects,
 } from "./hooks/use-chat-projects";
 export { subscribeDictationLevel } from "./adapters/dictation-level";
+export {
+  dictationFailed,
+  dictationProducedTranscript,
+} from "./adapters/dictation-outcome";
 export {
   StudioDictationAdapter,
   cancelActiveStudioDictation,
