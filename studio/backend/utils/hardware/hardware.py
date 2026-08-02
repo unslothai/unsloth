@@ -403,6 +403,13 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
             return DEVICE
         produced_here = DEVICE is None
         if produced_here:
+            # Same reason detect_hardware() clears it: the pass below assigns DEVICE and
+            # CHAT_ONLY before probes that can still fall back to CPU. Shutdown clearing
+            # DEVICE while a cached waiter goes on to set the event leaves it set with
+            # DEVICE None, which _await_hardware_detection() treats as "detect again", so
+            # this branch can start with a stale event and publish the XPU candidate as
+            # settled. Republished below once the verdict is final.
+            DETECTION_COMPLETE.clear()
             try:
                 _detect_hardware_locked()
             except BaseException as exc:  # noqa: BLE001 - degrade, never 500 the health check

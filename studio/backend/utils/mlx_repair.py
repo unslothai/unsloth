@@ -333,6 +333,13 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
         # happens instead of republishing a verdict for the lifespan that ended.
         with hw.owning_detection_epoch(epoch):
             hw.detect_hardware()  # flips CHAT_ONLY / DEVICE now that mlx imports
+        if epoch is not None and hw.current_detection_epoch() != epoch:
+            # The scoped pass declined: this repair outlived its lifespan. The install
+            # still succeeded though, so whatever is running now holds a verdict measured
+            # before mlx existed, and the process-wide _attempted latch stops any later
+            # repair from revisiting it. Left alone, a Mac that is now perfectly capable
+            # stays chat-only until a restart. Re-detect under the live epoch instead.
+            hw.detect_hardware()
         logger.info(
             "MLX self-heal succeeded; Train/Export enabled (reload the page). chat_only=%s",
             hw.CHAT_ONLY,

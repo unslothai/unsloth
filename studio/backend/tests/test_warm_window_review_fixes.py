@@ -2771,3 +2771,85 @@ def test_a_late_repair_cannot_erase_the_restarted_lifespans_verdict():
     finally:
         hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
         hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_a_repair_that_outlived_its_lifespan_still_reopens_train():
+    """Declining the stale pass must not leave a repaired Mac chat-only for good.
+
+    The install succeeded, so the running lifespan holds a verdict measured before mlx
+    existed. _attempted is process-wide, so no later repair revisits it, and health only
+    ever reads the settled snapshot: Train and Export stay disabled until a restart.
+    """
+    import utils.mlx_repair as repair
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        spawn_epoch = hw.current_detection_epoch()
+        hw.invalidate_detection()  # the restart, while the install was still running
+
+        # The successor measured before mlx landed and published chat-only.
+        hw.DEVICE = hw.DeviceType.CPU
+        hw.CHAT_ONLY = True
+        hw.CHAT_ONLY_REASON = "mlx_unavailable"
+        hw.DETECTION_COMPLETE.set()
+
+        def _probe_now_that_mlx_works():
+            hw.DEVICE = hw.DeviceType.MLX
+            hw.CHAT_ONLY = False
+            hw.CHAT_ONLY_REASON = None
+            return hw.DEVICE
+
+        with mock.patch.object(repair, "attempt_mlx_repair", lambda: True):
+            with mock.patch.object(hw, "_detect_hardware_locked", _probe_now_that_mlx_works):
+                repair._run_repair_and_redetect(spawn_epoch)
+
+        assert hw.CHAT_ONLY is False, (
+            "a successful repair that outlived its lifespan left the running one "
+            "chat-only; Train and Export stay disabled until the process restarts"
+        )
+        assert hw.DEVICE is hw.DeviceType.MLX
+        assert hw.CHAT_ONLY_REASON is None
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+
+
+def test_a_cached_path_pass_does_not_publish_its_own_intermediate_state():
+    """ensure_hardware_detected must clear the event before it mutates the globals.
+
+    Shutdown clears DEVICE, a cached waiter then sets the event, and the next pass starts
+    with the event set and DEVICE None. Every accelerator branch assigns CHAT_ONLY = False
+    before a probe that can fall back to CPU, so health reads that candidate as settled
+    and config/env.ts caches a training-capable verdict for a host that ends up chat-only.
+    """
+    from utils.hardware import hardware as hw
+
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    try:
+        hw.DEVICE = None
+        hw.CHAT_ONLY = True
+        hw.DETECTION_COMPLETE.set()  # the stale event
+
+        seen = {}
+
+        def _probe():
+            # Mid-pass, exactly where the XPU branch sits before get_device_name().
+            hw.DEVICE = hw.DeviceType.XPU
+            hw.CHAT_ONLY = False
+            seen["event_during_pass"] = hw.DETECTION_COMPLETE.is_set()
+            return hw.DEVICE
+
+        with mock.patch.object(hw, "_detect_hardware_locked", _probe):
+            hw.ensure_hardware_detected()
+
+        assert seen["event_during_pass"] is False, (
+            "the completion event stayed set while the pass was mutating DEVICE and "
+            "CHAT_ONLY, so health can serve the first candidate as a measurement"
+        )
+        assert hw.DETECTION_COMPLETE.is_set(), "the event was not republished once settled"
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
