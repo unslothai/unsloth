@@ -3068,7 +3068,7 @@ def update(
         # A note, never a replacement: the original failure keeps its own error, so
         # a cause unrelated to the lock is not hidden behind it.
         if exe_lock_err is not None:
-            _note_self_exe_locked(exe_lock_err)
+            _note_self_exe_locked(exe_lock_err, repo_root = repo_root)
         raise
     # On Windows clear the .deleteme orphan now that pip wrote a fresh
     # unsloth.exe; on next update os.replace would overwrite it anyway,
@@ -3105,7 +3105,7 @@ def _reinstall_command() -> str:
     if platform.system() == "Windows":
         prefix = ""
         if _STUDIO_HOME_IS_CUSTOM:
-            prefix = "$env:UNSLOTH_STUDIO_HOME = '{}'; ".format(str(STUDIO_HOME).replace("'", "''"))
+            prefix = f"$env:UNSLOTH_STUDIO_HOME = {_ps_single_quote(str(STUDIO_HOME))}; "
         if no_torch:
             prefix += "$env:UNSLOTH_NO_TORCH = '1'; "
         return f"{prefix}irm https://unsloth.ai/install.ps1 | iex"
@@ -3155,7 +3155,16 @@ def _release_self_exe_lock_windows() -> "OSError | None":
     return None
 
 
-def _note_self_exe_locked(err: OSError) -> None:
+def _ps_single_quote(value: str) -> str:
+    """Quote for a PowerShell single-quoted string, where '' is a literal quote.
+
+    A custom Studio root is user-chosen and can contain an apostrophe -- an
+    unescaped one ends the string early and the pasted command is a syntax error.
+    """
+    return "'{}'".format(str(value).replace("'", "''"))
+
+
+def _note_self_exe_locked(err: OSError, repo_root: "Optional[Path]" = None) -> None:
     """Add the cause behind a setup failure this process cannot avoid.
 
     setup.ps1 reports this one as a permissions problem, which is what sent people
@@ -3189,10 +3198,23 @@ def _note_self_exe_locked(err: OSError) -> None:
         # The full path, not a bare `unsloth`: reaching this lock is itself evidence
         # the venv Scripts dir may come first on PATH, in which case an unqualified
         # name resolves straight back to the locked copy.
+        #
+        # --local and STUDIO_LOCAL_REPO come along when this update was one: the
+        # retry runs in a new shell that inherits neither, so without them it
+        # silently becomes a PyPI update and reports success while the checkout
+        # that prompted the replacement stays uninstalled.
         if platform.system() == "Windows":
-            typer.echo(f"  & '{str(shim)}' studio update", err = True)
+            prefix = ""
+            if repo_root is not None:
+                prefix = f"$env:STUDIO_LOCAL_REPO = {_ps_single_quote(str(repo_root))}; "
+            suffix = " --local" if repo_root is not None else ""
+            typer.echo(f"  {prefix}& {_ps_single_quote(str(shim))} studio update{suffix}", err = True)
         else:
-            typer.echo(f"  {shlex.quote(str(shim))} studio update", err = True)
+            prefix = ""
+            if repo_root is not None:
+                prefix = f"STUDIO_LOCAL_REPO={shlex.quote(str(repo_root))} "
+            suffix = " --local" if repo_root is not None else ""
+            typer.echo(f"  {prefix}{shlex.quote(str(shim))} studio update{suffix}", err = True)
     else:
         typer.echo("", err = True)
         typer.echo("The launcher that avoids this is missing; reinstall to restore it:", err = True)

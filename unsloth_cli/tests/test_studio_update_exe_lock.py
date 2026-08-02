@@ -108,6 +108,66 @@ def test_the_note_is_conditional_not_a_diagnosis(monkeypatch, tmp_path, capsys):
     assert "If the failure above mentions" in capsys.readouterr().err
 
 
+def test_a_local_update_is_retried_as_a_local_update(monkeypatch, tmp_path, capsys):
+    """The retry runs in a new shell that inherits neither the flag nor the repo it
+    resolved, so without both it quietly becomes a PyPI update and reports success
+    with the checkout that prompted the replacement still uninstalled."""
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    shim = tmp_path / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+    repo = tmp_path / "checkout"
+
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"), repo_root = repo)
+
+    err = capsys.readouterr().err
+    assert "studio update --local" in err
+    assert f"$env:STUDIO_LOCAL_REPO = '{repo}'" in err
+
+
+def test_a_pypi_update_is_not_retried_as_a_local_one(monkeypatch, tmp_path, capsys):
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    shim = tmp_path / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
+
+    err = capsys.readouterr().err
+    assert "--local" not in err
+    assert "STUDIO_LOCAL_REPO" not in err
+
+
+def test_an_apostrophe_in_the_path_does_not_break_the_powershell_line(
+    monkeypatch, tmp_path, capsys
+):
+    """A custom Studio root is user-chosen, and an unescaped apostrophe ends the
+    single-quoted string early, so the prescribed recovery cannot be pasted."""
+    home = tmp_path / "O'Brien" / "Studio"
+    scripts = home / "unsloth_studio" / "Scripts"
+    scripts.mkdir(parents = True)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    shim = home / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", home)
+    _as_windows(monkeypatch, scripts)
+
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
+
+    line = [x for x in capsys.readouterr().err.splitlines() if "studio update" in x][0]
+    assert "O''Brien" in line, "the apostrophe was not doubled"
+    # Every quote in the rendered line has to pair up, or PowerShell reads the
+    # rest of the command as a string.
+    assert line.count("'") % 2 == 0
+
+
 def test_without_a_launcher_the_note_carries_the_install_config(monkeypatch, tmp_path, capsys):
     """A pasted reinstall runs in a new shell with none of this process's env, so a
     custom root has to be spelled out or it repairs the wrong installation."""

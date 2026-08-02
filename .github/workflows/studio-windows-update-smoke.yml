@@ -303,7 +303,24 @@ jobs:
             ls -la "$SCRIPTS"/*.deleteme
             exit 1
           fi
-          "$PY" -c "import unsloth" || { echo "::error::unsloth unimportable after replacement"; exit 1; }
+          # Run the venv copy itself, not the launcher: that is the file pip
+          # replaced and the one the cleanup could have deleted, so existence
+          # alone is not enough -- it has to still be a working image. Not
+          # `import unsloth`: this install is --no-torch by design (the step
+          # above asserts torch is absent), and the package refuses to import
+          # without it, so that would fail on a perfectly good install. And a
+          # bare import from the repo root resolves to the checked-out source
+          # tree rather than the installed copy, so it would not have been
+          # testing this at all. desktop-capabilities needs neither.
+          CAPS="$("$SCRIPTS/unsloth.exe" studio desktop-capabilities --json)" || {
+            echo "::error::the replaced unsloth.exe does not run."
+            exit 1
+          }
+          echo "$CAPS"
+          echo "$CAPS" | jq -e '.studio_install_ok == true' >/dev/null || {
+            echo "::error::the CLI runs but reports the install as damaged."
+            exit 1
+          }
           echo "an update that replaces the unsloth package works through the launcher"
 
       - name: Boot Unsloth briefly to confirm the install is still usable
