@@ -220,7 +220,8 @@ def test_both_loader_paths_gate_before_and_after_resolution():
         early, late = sorted(gates, key = lambda c: c.lineno)
 
         probes = [
-            c for c in _calls(function, "from_pretrained")
+            c
+            for c in _calls(function, "from_pretrained")
             if ast.unparse(c.func).split(".")[0] in ("AutoConfig", "PeftConfig")
         ]
         assert probes, f"{class_name} has no config probe"
@@ -230,9 +231,9 @@ def test_both_loader_paths_gate_before_and_after_resolution():
             keyword = _revision_kwarg(probe)
             if keyword is None:
                 continue  # the PEFT base-model probe deliberately pins nothing
-            assert getattr(keyword.value, "id", None) == "base_revision", (
-                f"probe at line {probe.lineno} uses the ungated revision"
-            )
+            assert (
+                getattr(keyword.value, "id", None) == "base_revision"
+            ), f"probe at line {probe.lineno} uses the ungated revision"
             gated += 1
         assert gated >= 2, f"{class_name} must gate its AutoConfig and PeftConfig probes"
 
@@ -248,7 +249,8 @@ def test_the_late_gate_is_skipped_for_peft():
         function = _function(tree, "from_pretrained", class_name)
         late = sorted(_calls(function, "_revision_for_resolved_repo"), key = lambda c: c.lineno)[-1]
         guards = [
-            n for n in ast.walk(function)
+            n
+            for n in ast.walk(function)
             if isinstance(n, ast.If)
             and ast.unparse(n.test).replace(" ", "") == "notis_peft"
             and n.lineno <= late.lineno <= n.end_lineno
@@ -262,7 +264,8 @@ def test_the_adapter_load_keeps_the_callers_revision():
     for class_name in ("FastLanguageModel", "FastModel"):
         function = _function(tree, "from_pretrained", class_name)
         peft_loads = [
-            c for c in _calls(function, "from_pretrained")
+            c
+            for c in _calls(function, "from_pretrained")
             if ast.unparse(c.func).startswith("PeftModel")
         ]
         assert peft_loads, f"{class_name} has no PeftModel load"
@@ -280,15 +283,18 @@ def test_a_pinned_load_does_not_mix_refs_with_vllm(path, flag):
     name = "FastLlamaModel" if path is LLAMA else "FastBaseModel"
     function = _function(tree, "from_pretrained", name)
     clears = [
-        n for n in ast.walk(function)
+        n
+        for n in ast.walk(function)
         if isinstance(n, ast.Assign)
         and any(getattr(t, "id", None) == flag for t in n.targets)
-        and isinstance(n.value, ast.Constant) and n.value.value is None
+        and isinstance(n.value, ast.Constant)
+        and n.value.value is None
     ]
     assert clears, f"{path.name} never drops the revision on the vLLM path"
     # It must happen before the config load, or the config is pinned and the weights are not.
     configs = [
-        c for c in _calls(function, "from_pretrained")
+        c
+        for c in _calls(function, "from_pretrained")
         if ast.unparse(c.func).startswith("AutoConfig")
     ]
     assert configs
