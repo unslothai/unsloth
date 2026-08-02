@@ -22,7 +22,7 @@ export const it = {
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth Studio",
-    accountMenu: "Menu account di {name}",
+    accountMenu: "Menu dell'account di {name}",
     updateAvailable: "Aggiornamento disponibile",
     resize: {
       collapse: "Clicca per ridurre",
@@ -52,7 +52,7 @@ export const it = {
       recipes: "Ricette",
       export: "Esporta",
       recents: "Recenti",
-      noChatsYet: "Nessuna chat",
+      noChatsYet: "Ancora nessuna chat",
       settings: "Impostazioni",
       api: "API",
       lightMode: "Tema chiaro",
@@ -90,8 +90,8 @@ export const it = {
         "Non puoi eliminare un run di addestramento in corso",
       failedToDeleteChat: "Eliminazione della chat non riuscita",
       failedToDeleteRun: "Eliminazione del run non riuscita",
-      failedToRenameChat: "Ridenominazione della chat non riuscita",
-      failedToRenameRun: "Ridenominazione del run non riuscita",
+      failedToRenameChat: "Impossibile rinominare la chat",
+      failedToRenameRun: "Impossibile rinominare il run",
     },
   },
   settings: {
@@ -310,9 +310,9 @@ export const it = {
         autoDownload: "Scarica i modelli mancanti",
         autoDownloadDescription:
           "Scarica un GGUF indicato in una richiesta API se non è ancora presente. Chiunque abbia una chiave API potrà così consumare spazio su disco e banda.",
-        idleUnload: "Rimozione automatica dopo inattività",
+        idleUnload: "Scaricamento automatico dalla memoria per inattività",
         idleUnloadDescription:
-          "Libera la VRAM dopo questi secondi di inattività. 0 mantiene il modello caricato, il minimo è 60.",
+          "Libera la VRAM dopo il numero indicato di secondi di inattività. 0 mantiene il modello in memoria; il minimo è 60.",
         idleNeedsEnable:
           "Attiva prima «Cambia modello in base alla richiesta».",
         idleActiveViaEnv: "Attivo tramite UNSLOTH_MODEL_IDLE_TTL.",
@@ -321,11 +321,11 @@ export const it = {
         saveError:
           "Salvataggio delle impostazioni di cambio automatico del modello non riuscito.",
         idleError:
-          "Inserisci 0 per mantenere il modello caricato, oppure almeno 60 secondi.",
+          "Inserisci 0 per mantenere il modello in memoria, oppure almeno 60 secondi.",
         keepKv:
-          "Mantieni il contesto della chat dopo la rimozione per inattività",
+          "Mantieni il contesto della chat dopo lo scaricamento dalla memoria per inattività",
         keepKvDescription:
-          "Salva la cache KV prima di una rimozione per inattività, così le chat riprese non rileggono la cronologia. Fino a 10 GB su disco.",
+          "Salva la cache KV prima dello scaricamento dalla memoria per inattività, così le chat riprese non rileggono la cronologia. Fino a 10 GB su disco.",
       },
       previewSharing: {
         sectionTitle: "Condivisione delle anteprime",
@@ -338,7 +338,7 @@ export const it = {
           "Salvataggio delle impostazioni di condivisione delle anteprime non riuscito.",
         revokeLabel: "Revoca tutti i link di anteprima",
         revokeDescription:
-          "Cambia il segreto di firma, così ogni link già condiviso smette di funzionare. I link copiati da quel momento continuano a funzionare.",
+          "Rigenera il segreto di firma, così tutti i link già condivisi smettono di funzionare. I nuovi link copiati da quel momento in poi continuano a funzionare.",
         revokeAction: "Revoca i link",
         revoking: "Revoca in corso...",
         revokeConfirmTitle: "Revocare tutti i link di anteprima?",
@@ -397,14 +397,14 @@ export const it = {
         copyError: "Impossibile copiare il percorso",
       },
       resetPreferences: {
-        sectionTitle: "Zona a rischio",
+        sectionTitle: "Zona pericolosa",
         label: "Reimposta tutte le preferenze locali",
         description:
-          "Cancella le preferenze solo locali. Chat, accesso API e impostazioni salvate nel database vengono mantenuti.",
+          "Cancella solo le preferenze locali. Le chat, l'accesso API e le impostazioni salvate nel database restano invariati.",
         action: "Reimposta le preferenze",
         confirmTitle: "Reimpostare tutte le preferenze locali?",
         confirmDescription:
-          "Cancella le preferenze solo locali e ricarica Unsloth. Chat, accesso API e impostazioni salvate nel database vengono mantenuti.",
+          "Cancella solo le preferenze locali e ricarica Unsloth. Le chat, l'accesso API e le impostazioni salvate nel database restano invariati.",
         confirmAction: "Reimposta e ricarica",
       },
     },
@@ -420,7 +420,7 @@ export const it = {
       nicknamePlaceholder: "Soprannome",
       nicknameSaved: "Nome preferito salvato",
       avatarShape: "Forma dell'avatar",
-      avatarShapeCircle: "Cerchio",
+      avatarShapeCircle: "Circolare",
       avatarShapeRounded: "Arrotondata",
       greetingSloth: "Bradipo nel saluto",
       greetingSlothDescription: "Mostra il bradipo nel saluto della chat.",
@@ -430,11 +430,11 @@ export const it = {
       nameSaved: "Nome del profilo salvato",
       namePersistErrorTitle: "Impossibile salvare il nome del profilo",
       namePersistErrorDescription:
-        "Il nome è aggiornato per questa sessione, ma potrebbe non essere mantenuto dopo il ricaricamento.",
+        "Il nome è stato aggiornato per questa sessione, ma potrebbe non essere mantenuto dopo il ricaricamento.",
       photoUpdated: "Foto del profilo aggiornata",
       photoPersistErrorTitle: "Impossibile salvare la foto del profilo",
       photoPersistErrorDescription:
-        "La foto è aggiornata per questa sessione, ma potrebbe non essere mantenuta dopo il ricaricamento.",
+        "La foto è stata aggiornata per questa sessione, ma potrebbe non essere mantenuta dopo il ricaricamento.",
       photoUpdateErrorTitle: "Impossibile aggiornare la foto del profilo",
       imageUseError: "Impossibile usare questa immagine.",
       stats: {
@@ -452,7 +452,7 @@ export const it = {
         currentStreak: "Serie attuale",
         longestStreak: "Serie più lunga",
         activityTitle: "Attività in token",
-        activityDescription: "{total} nelle ultime {weeks}",
+        activityDescription: "Periodo: {weeks} · {total}",
         mode: {
           daily: "Giornaliera",
           weekly: "Settimanale",
@@ -500,7 +500,7 @@ export const it = {
       theme: {
         title: "Tema",
         label: "Combinazione di colori",
-        description: "Chiaro, scuro o come il sistema.",
+        description: "Chiaro, scuro o in base alle impostazioni di sistema.",
         system: "Sistema",
         light: "Chiaro",
         dark: "Scuro",
@@ -738,14 +738,14 @@ export const it = {
       models: {
         title: "Scegliere un modello",
         description:
-          "Usa --model per scegliere modello e quantizzazione, e --context-length per impostare la finestra di contesto. Puoi usare un suffisso di quantizzazione oppure il flag esplicito --gguf-variant.",
+          "Usa --model per scegliere un modello e una quantizzazione, e --context-length per impostare la finestra di contesto. Puoi usare un suffisso di quantizzazione oppure il flag esplicito --gguf-variant.",
         suffixLabel: "Con un suffisso di quantizzazione",
         variantLabel: "Con un flag di variante esplicito",
       },
       options: {
         title: "Opzioni comuni",
         description:
-          "I flag di Unsloth vengono interpretati per primi; tutto ciò che non riconosce viene passato direttamente all'agente.",
+          "I flag di Unsloth vengono interpretati per primi; tutto ciò che Unsloth non riconosce viene passato direttamente all'agente.",
         model:
           "Seleziona un modello. Senza --model, unsloth start usa il modello attualmente caricato in Studio e restituisce un errore se non ce n'è nessuno.",
         contextLength:
@@ -754,7 +754,7 @@ export const it = {
         loadIn4bit:
           "Attiva o disattiva il caricamento a 4 bit per i modelli Hugging Face.",
         tensorParallel:
-          "Attiva o disattiva il parallelismo dei tensori su più GPU.",
+          "Attiva o disattiva il parallelismo tensoriale su più GPU.",
         serve: "Attiva o disattiva il server locale automatico.",
         launch:
           "Avvia l'agente oppure mostra soltanto il comando e le variabili d'ambiente.",
@@ -785,7 +785,7 @@ export const it = {
     chat: {
       title: "Chat",
       description:
-        "Personalizza il comportamento della chat su questo dispositivo.",
+        "Gestisci la cronologia delle chat memorizzata su questo dispositivo.",
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
@@ -886,7 +886,7 @@ export const it = {
       failedToArchiveChats: "Archiviazione delle chat non riuscita",
       confirmBeforeDeleting: "Chiedi conferma prima di eliminare",
       confirmBeforeDeletingDescription:
-        "Chiedi conferma prima di eliminare una chat. Disattiva per eliminare subito.",
+        "Richiedi una conferma prima di eliminare una chat. Disattiva l'opzione per eliminarla subito.",
       filesSection: "File",
       uploadedFiles: "File caricati",
       uploadedFilesDescription:
@@ -957,17 +957,17 @@ export const it = {
       codingAgentDetected: "Installato su questo computer",
       codingAgentsDetectedHint: "Rilevati su questo computer: {agents}.",
       relativeNever: "mai",
-      relativeJustNow: "adesso",
+      relativeJustNow: "proprio ora",
       relativeHoursAgo: "{count} h fa",
       relativeDaysAgo: "{count} g fa",
       relativeMonthsAgo: "{count} mesi fa",
       relativeYearsAgo: "{count} anni fa",
-      expired: "scaduto",
+      expired: "scaduta",
       today: "oggi",
       inDays: "tra {count} g",
       created: "Creato {value}",
-      used: "Usato {value}",
-      expires: "Scade {value}",
+      used: "Ultimo utilizzo: {value}",
+      expires: "Scadenza: {value}",
       actionsFor: "Azioni per {name}",
       copyPrefix: "Copia il prefisso",
       revokeToken: "Revoca il token",
@@ -1001,12 +1001,12 @@ export const it = {
         sectionTitle: "Licenza",
         studioLabel: "Unsloth Studio",
         studioLicense: "AGPL-3.0",
-        studioDescription: "Open source secondo la GNU AGPL v3.0.",
+        studioDescription: "Open source con licenza GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
         libraryLicense: "Apache-2.0",
         libraryDescription: "Distribuito con licenza Apache 2.0.",
       },
-      dangerZone: "Zona a rischio",
+      dangerZone: "Zona pericolosa",
       shutDownStudio: "Arresta Unsloth Studio",
       shutDownStudioDescription:
         "Ferma il server Unsloth e termina la tua sessione.",
@@ -1107,17 +1107,17 @@ export const it = {
       searching: "Ricerca...",
       noModelsFound: "Nessun modello trovato",
       needsVram: "Serve ~{vram} GB di VRAM (GPU: {gpu} GB)",
-      tightVram: "~{vram} GB di VRAM (al limite su {gpu} GB)",
+      tightVram: "~{vram} GB di VRAM (al limite con {gpu} GB)",
       vramEstimate: "~{vram} GB di VRAM",
       method: "Metodo",
       methodTooltip:
-        "QLoRA usa la quantizzazione a 4 bit per la VRAM minima. LoRA usa 16 bit. Full aggiorna tutti i pesi. CPT (Continued Pretraining) addestra su testo grezzo per adattare il modello a un nuovo dominio senza formattazione di chat.",
+        "QLoRA usa la quantizzazione a 4 bit per la VRAM minima. LoRA usa 16 bit. Il fine-tuning completo aggiorna tutti i pesi. CPT (preaddestramento continuo) addestra su testo grezzo per adattare il modello a un nuovo dominio senza formattazione di chat.",
       readMore: "Scopri di più",
-      fullFineTune: "Fine-tune completo",
+      fullFineTune: "Fine-tuning completo",
       checkingToken: "Verifica del token...",
       getOrUpdateToken: "Ottieni o aggiorna il token",
       huggingFaceTokenOptional: "Token Hugging Face (facoltativo)",
-      continuedPretraining: "Continued Pretraining",
+      continuedPretraining: "Preaddestramento continuo",
       localModels: "Modelli locali",
       localModelsFound: "Modelli locali o in cache trovati: {count}",
       loadingLocalModels: "Caricamento dei modelli locali...",
@@ -1129,7 +1129,7 @@ export const it = {
       chooseDataset: "Scegli un dataset",
       chooseDatasetTooltip:
         "Usa le schede del popup per passare fra Hugging Face e gli output delle ricette locali.",
-      localTab: "Locali",
+      localTab: "Locale",
       searchHuggingFaceDatasets: "Cerca dataset su Hugging Face...",
       searchLocalDatasets: "Cerca dataset locali...",
       searching: "Ricerca...",
@@ -1137,13 +1137,14 @@ export const it = {
       loadingLocalDatasets: "Caricamento dei dataset locali...",
       failedToLoadLocalDatasets: "Impossibile caricare i dataset locali.",
       noLocalDatasetsYet: "Nessun dataset locale.",
-      noLocalDatasetsMatchSearch: "Nessun dataset locale corrisponde.",
-      openDataRecipes: "Apri le ricette dei dati",
+      noLocalDatasetsMatchSearch:
+        "Nessun dataset locale corrisponde alla ricerca.",
+      openDataRecipes: "Apri Ricette",
       browsingSource:
         "Stai esplorando {browsing}. La selezione attuale resta {current}.",
       localDatasets: "Dataset locali",
       localDataset: "Dataset locale",
-      localDatasetRows: " / Righe: {count}",
+      localDatasetRows: " / {count} righe",
       huggingFaceDataset: "Dataset Hugging Face",
       localDatasetMetadata: "Metadati del dataset locale",
       dataRecipeOutput: "Output di una ricetta dei dati.",
@@ -1202,10 +1203,10 @@ export const it = {
         accessKeyId: "Access Key ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Secret Access Key",
-        secretAccessKeyPlaceholder: "La tua AWS secret access key",
+        secretAccessKeyPlaceholder: "La tua chiave di accesso segreta AWS",
         useIamRole: "Usa un ruolo IAM",
         useIamRoleTooltip:
-          "Usa le credenziali di un ruolo IAM invece delle access key (consigliato su EC2/SageMaker)",
+          "Usa le credenziali di un ruolo IAM invece delle chiavi di accesso (consigliato su EC2/SageMaker)",
         testConnection: "Prova la connessione",
         connectionSuccess: "Connessione al bucket S3 riuscita",
         connectionFailed: "Connessione al bucket S3 non riuscita",
@@ -1227,27 +1228,28 @@ export const it = {
       epochs: "Epoche",
       useMaxSteps: "Usa gli step massimi",
       useEpochs: "Usa le epoche",
-      maxStepsTooltip: "Sovrascrive il totale degli step dell'optimizer.",
+      maxStepsTooltip:
+        "Sovrascrive il numero totale di step dell'ottimizzatore.",
       epochsTooltip: "Numero di passaggi completi sul dataset.",
       epochsDescription: "Ogni epoca è un passaggio completo sul tuo dataset.",
       maxStepsDescription:
-        "Limita l'addestramento a un numero fisso di step dell'optimizer.",
+        "Limita l'addestramento a un numero fisso di step dell'ottimizzatore.",
       contextLength: "Lunghezza di contesto",
       contextLengthTooltip:
         "Numero massimo di token per campione di addestramento.",
       customContextLength: "Inserisci un valore personalizzato",
       contextLengthDescription:
         "Lunghezza massima di sequenza per i campioni di addestramento",
-      learningRate: "Learning rate",
+      learningRate: "Tasso di apprendimento",
       learningRateTooltip:
         "Ampiezza del passo negli aggiornamenti dei pesi. Valori più bassi addestrano più lentamente ma con più stabilità.",
       learningRateDescription:
-        "Consigliato: 2e-4 per LoRA, 5e-5 per CPT, 2e-5 per il fine-tune completo",
-      embeddingLearningRate: "Learning rate degli embedding",
+        "Consigliato: 2e-4 per LoRA, 5e-5 per CPT, 2e-5 per il fine-tuning completo",
+      embeddingLearningRate: "Tasso di apprendimento degli embedding",
       embeddingLearningRateTooltip:
-        "Usato solo quando CPT addestra embed_tokens. Gli embedding si destabilizzano più facilmente dei pesi LoRA, quindi di solito richiedono un LR più basso. Lascia vuoto per usare lr/10; l'intervallo tipico è da 2 a 10 volte più piccolo del LR principale. Aumentalo solo se l'adattamento al vocabolario o ai token di dominio è troppo lento.",
+        "Usato solo quando CPT addestra embed_tokens. Gli embedding si destabilizzano più facilmente dei pesi LoRA, quindi di solito richiedono un tasso di apprendimento più basso. Lascia vuoto per usare lr/10; l'intervallo tipico è da 2 a 10 volte più piccolo del tasso principale. Aumentalo solo se l'adattamento al vocabolario o ai token di dominio è troppo lento.",
       embeddingLearningRateDescription:
-        "Lascia vuoto per usare lr/10 (consigliato). L'intervallo tipico è da 2 a 10 volte più piccolo del learning rate principale.",
+        "Lascia vuoto per usare lr/10 (consigliato). L'intervallo tipico è da 2 a 10 volte più piccolo del tasso di apprendimento principale.",
       rank: "Rank",
       rankTooltip:
         "Dimensione delle matrici a rango ridotto. Più alto = più capacità.",
@@ -1256,10 +1258,10 @@ export const it = {
         "Fattore di scala degli aggiornamenti LoRA. Di solito il doppio del rank.",
       dropout: "Dropout",
       dropoutTooltip:
-        "Probabilità di dropout dei layer LoRA, per ridurre l'overfitting.",
-      visionLayers: "Layer di visione",
-      languageLayers: "Layer di linguaggio",
-      attentionModules: "Moduli di attention",
+        "Probabilità di dropout dei livelli LoRA, per ridurre l'overfitting.",
+      visionLayers: "Livelli visivi",
+      languageLayers: "Livelli linguistici",
+      attentionModules: "Moduli di attenzione",
       mlpModules: "Moduli MLP",
       targetModules: "Moduli di destinazione",
       enableLora: "Attiva LoRA",
@@ -1270,14 +1272,14 @@ export const it = {
       optimization: "Ottimizzazione",
       schedule: "Pianificazione",
       memory: "Memoria",
-      optimizer: "Optimizer",
+      optimizer: "Ottimizzatore",
       optimizerTooltip:
         "Algoritmo di ottimizzazione. Le varianti a 8 bit riducono il consumo di memoria. Fused è consigliato per i modelli di visione.",
       optimizerTooltipMlx:
-        "Algoritmo di ottimizzazione. AdamW è il predefinito. Lion usa meno memoria ma di solito richiede un learning rate più basso.",
-      lrScheduler: "Scheduler del LR",
+        "Algoritmo di ottimizzazione. AdamW è il predefinito. Lion usa meno memoria ma di solito richiede un tasso di apprendimento più basso.",
+      lrScheduler: "Pianificazione del tasso di apprendimento",
       lrSchedulerTooltip:
-        "Come cambia il learning rate durante l'addestramento. Lineare decresce in modo costante, cosine segue una curva.",
+        "Il tasso di apprendimento diminuisce costantemente con la pianificazione lineare o secondo una curva del coseno.",
       optimizerOptions: {
         adamw8bit: "AdamW 8 bit",
         pagedAdamw8bit: "Paged AdamW 8 bit",
@@ -1288,18 +1290,18 @@ export const it = {
       },
       lrSchedulerOptions: {
         linear: "Lineare",
-        cosine: "Cosine",
+        cosine: "Coseno",
       },
       batchSize: "Dimensione del batch",
       batchSizeTooltip:
         "Campioni elaborati per step. Più alto consuma più VRAM.",
       gradAccum: "Accumulo del gradiente",
       gradAccumTooltip: "Simula batch più grandi senza VRAM aggiuntiva.",
-      weightDecay: "Weight decay",
+      weightDecay: "Decadimento dei pesi",
       weightDecayTooltip: "Regolarizzazione L2 per evitare l'overfitting.",
       warmupSteps: "Step di warmup",
       warmupStepsTooltip:
-        "Aumenta gradualmente il LR all'inizio dell'addestramento, per stabilità.",
+        "Aumenta gradualmente il tasso di apprendimento all'inizio dell'addestramento, per stabilità.",
       scheduleEpochsTooltip:
         "Numero di passaggi completi sul dataset. Imposta 0 per procedere in base agli step massimi.",
       saveSteps: "Step fra i salvataggi",
@@ -1350,7 +1352,7 @@ export const it = {
       cancelAction: "Annulla l'addestramento",
       stopTitle: "Ferma l'addestramento",
       stopDescription:
-        "Scegli come fermare il run di addestramento in corso. «Ferma e salva» scrive un checkpoint da cui potrai riprendere più tardi; «Ferma» non è ripristinabile.",
+        "Scegli come fermare il run di addestramento in corso. «Ferma e salva» crea un checkpoint da cui potrai riprendere più tardi; con «Ferma» non potrai riprendere l'addestramento.",
       stopAction: "Ferma",
       stopping: "Arresto in corso...",
       stopAndSave: "Ferma e salva",
@@ -1385,7 +1387,7 @@ export const it = {
       loss: "Loss",
       steps: "Step",
       lossTrendSparkline: "Sparkline dell'andamento della loss",
-      relativeJustNow: "adesso",
+      relativeJustNow: "proprio ora",
       relativeMinutesAgo: "{count} min fa",
       relativeHoursAgo: "{count} h fa",
       relativeDaysAgo: "{count} g fa",
@@ -1400,7 +1402,7 @@ export const it = {
         completed: "Addestramento completato",
         stopped: "Addestramento fermato",
         running: "Addestramento in corso",
-        errored: "Addestramento in errore",
+        errored: "Errore durante l'addestramento",
       },
       copyPreviewLink: "Copia il link di anteprima",
       previewLinkCopied: "Link di anteprima copiato",
@@ -1429,16 +1431,16 @@ export const it = {
       linear: "Lineare",
       log: "Logaritmica",
       noClip: "Nessun clipping",
-      clipP99: "Taglia al p99",
-      clipP95: "Taglia al p95",
+      clipP99: "Limita al p99",
+      clipP95: "Limita al p95",
       lossAxis: "Asse della loss",
       gradientNormAxis: "Asse della norma del gradiente",
-      learningRateAxis: "Asse del learning rate",
+      learningRateAxis: "Asse del tasso di apprendimento",
       resetDefaults: "Ripristina i valori predefiniti",
       loss: "Loss",
       smoothed: "Livellata",
       evalLoss: "Loss di valutazione",
-      learningRate: "Learning rate",
+      learningRate: "Tasso di apprendimento",
       lr: "LR",
       gradNorm: "Norma grad.",
       gradientNorm: "Norma del gradiente",
@@ -1461,8 +1463,8 @@ export const it = {
       hyperparams: "Iperparametri",
       epochs: "Epoche",
       batchSize: "Dimensione del batch",
-      learningRate: "Learning rate",
-      optimizer: "Optimizer",
+      learningRate: "Tasso di apprendimento",
+      optimizer: "Ottimizzatore",
       maxSteps: "Step massimi",
       contextLength: "Lunghezza di contesto",
       warmupSteps: "Step di warmup",
@@ -1480,7 +1482,7 @@ export const it = {
       model: "Modello",
       method: "Metodo",
       elapsed: "Trascorso: {value}",
-      eta: "Tempo stimato: {value}",
+      eta: "Tempo rimanente stimato: {value}",
       stepsPerSecond: "{value} step/s",
       noStepsPerSecond: "-- step/s",
       tokens: "Token: {value}",
@@ -1510,7 +1512,7 @@ export const it = {
       left: "tempo rimanente: {eta}",
       downloaded: "Dati scaricati: {size}",
       terminalStart: "> avvio dell'addestramento con Unsloth...",
-      preparingResources: "> Preparazione di modello e dataset...",
+      preparingResources: "> Preparazione del modello e del dataset...",
       gettingReady: "> Stiamo preparando tutto per il tuo run...",
       waitingForFirstStep: "> {message} | in attesa del primo step... ({step})",
       resumingTraining: "Ripresa dell'addestramento...",
