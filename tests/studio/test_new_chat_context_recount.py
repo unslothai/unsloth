@@ -48,7 +48,7 @@ BOUND_NAMES = {
     "enabled",
     "ggufContextLength",
     "isLoading",
-    "localRunActive",
+    "runActive",
     "modelLoading",
     "nonce",
 }
@@ -277,14 +277,14 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   const checkpoint = state.params.checkpoint;
   const ggufContextLength = state.ggufContextLength;
   const modelLoading = state.modelLoading;
-  const localRunActive = Object.values(state.localRunByThreadId ?? {}).some(Boolean);
+  const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
   const scope: any = {
     activeThreadId,
     checkpoint,
     enabled,
     ggufContextLength,
-    localRunActive,
     modelLoading,
+    runActive,
   };
   const effects: any[] = [
 __RECOUNT_EFFECTS__
@@ -756,18 +756,22 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
 @pytest.mark.parametrize(
     ("running", "grew", "expected_total"),
     [
-        # Caught while the run is still live.
+        # A run that BEGINS after the count was issued. The entry gate cannot catch this one: it
+        # ran when the thread was idle, so only the publish guard is left to drop the total.
         (True, True, None),
         # Stopped before the count returned, so runningByThreadId is already false and the
         # usage snapshot is still equal: only the content makes the branch look different.
         (False, True, None),
         (False, False, 62),
     ],
-    ids = ["still_streaming", "stopped_before_publish", "idle_and_unchanged"],
+    ids = ["run_starts_mid_count", "stopped_before_publish", "idle_and_unchanged"],
 )
 def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, expected_total):
     """A run streaming into an existing turn grows its content without moving the branch length or
-    its last id, so the partial is what got priced. The run writes its own usage when it lands."""
+    its last id, so the partial is what got priced. The run writes its own usage when it lands.
+
+    Seeded idle and flipped mid-count on purpose: seeding it running would now be refused before
+    the request went out, which would exercise the entry gate instead of this guard."""
     out = _run(
         textwrap.dedent(
             f"""
@@ -789,13 +793,16 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, exp
               activeThreadId: "thread-a",
               contextUsage: null,
               contextUsageByThreadId: {{}},
-              runningByThreadId: {{ "thread-a": {str(running).lower()} }},
+              runningByThreadId: {{}},
             }});
 
             let release;
             world.countGate = new Promise((resolve) => {{ release = resolve; }});
             const pending = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
             await new Promise((resolve) => setTimeout(resolve, 20));
+            if ({str(running).lower()}) {{
+              seed({{ runningByThreadId: {{ "thread-a": true }} }});
+            }}
             if ({str(grew).lower()}) {{
               // Same id, same part count: only the streamed content grew.
               live[1].content = [{{ type: "text", text: "yo" + " and a great deal more" }}];
@@ -1245,15 +1252,20 @@ def test_an_output_only_audio_gguf_is_never_recounted(model_flags, expected_coun
         ('{ "thread-a": true }', 0),
         # A different thread, still the same llama-server.
         ('{ "thread-b": true }', 0),
-        # An external-provider run never touches llama-server, so it cannot contend.
+        # Control: an idle server is what the count is for.
         ("{}", 1),
     ],
-    ids = ["this_thread_decoding", "another_thread_decoding", "nothing_decoding"],
+    ids = ["this_thread_running", "another_thread_running", "nothing_running"],
 )
-def test_no_count_is_issued_while_the_local_model_is_decoding(local_runs, expected_counts):
+def test_no_count_is_issued_while_anything_is_generating(local_runs, expected_counts):
     """/apply-template and /tokenize take no inference slot, so the measured cost of counting
     during a decode is inside the noise, but the budget for this endpoint is zero rather than
-    small. The request is not issued at all while a local run is live."""
+    small. The request is not issued at all while a run is live.
+
+    Every run, not only the local ones. An external-provider run cannot contend for llama-server,
+    but chat_count_tokens refuses during one regardless, because state's active_generations does
+    not distinguish them. Gating on less than the server refuses on would spend a request to be
+    told 503 and then never retry, since only what this effect depends on can re-fire it."""
     out = _run(
         textwrap.dedent(
             f"""
@@ -1264,7 +1276,7 @@ def test_no_count_is_issued_while_the_local_model_is_decoding(local_runs, expect
               activeThreadId: "thread-a",
               contextUsage: null,
               contextUsageByThreadId: {{}},
-              localRunByThreadId: {local_runs},
+              runningByThreadId: {local_runs},
             }});
             await refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
             console.log(JSON.stringify({{
@@ -1275,15 +1287,15 @@ def test_no_count_is_issued_while_the_local_model_is_decoding(local_runs, expect
         )
     )
     assert out["counts"] == expected_counts, (
-        "a count must never be issued while the local server is decoding"
+        "a count must never be issued while anything is generating"
         if expected_counts == 0
         else "an idle server must still be counted"
     )
 
 
-def test_the_count_is_retried_once_the_local_run_finishes():
+def test_the_count_is_retried_once_the_run_finishes():
     """Skipping is only safe because the run finishing re-fires the effect. The recount
-    component lists localRunActive in its dependency array for exactly this reason, so a count
+    component lists runActive in its dependency array for exactly this reason, so a count
     skipped for being busy is not a count lost."""
     src = read(PROVIDER)
     recount = slice_between(
@@ -1291,9 +1303,9 @@ def test_the_count_is_retried_once_the_local_run_finishes():
         "function ThreadContextUsageRecount(",
         "\n// Exposes the current thread's cancelRun()",
     )
-    assert "localRunByThreadId" in recount, "the effect must observe local decoding"
+    assert "runningByThreadId" in recount, "the effect must observe decoding"
     deps = re.search(r"\}, \[([^\]]*)\]\);", recount, re.S)
-    assert deps and "localRunActive" in deps.group(1), (
-        "localRunActive must be a DEPENDENCY, not just a guard: nothing else in this array "
+    assert deps and "runActive" in deps.group(1), (
+        "runActive must be a DEPENDENCY, not just a guard: nothing else in this array "
         "changes when a run ends, so without it a skipped count would never be retried"
     )

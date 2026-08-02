@@ -1480,9 +1480,10 @@ function ThreadContextUsageRecount({
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   // A count must never share the llama-server with a decode. This is a dependency, not just a
   // guard: nothing else here changes when a run ends, so without it a count skipped for being
-  // busy would never be retried and the bar would stay blank.
-  const localRunActive = useChatRuntimeStore((s) =>
-    Object.values(s.localRunByThreadId).some(Boolean),
+  // busy would never be retried and the bar would stay blank. Every run, not just the local
+  // ones, because that is what the endpoint itself refuses on.
+  const runActive = useChatRuntimeStore((s) =>
+    Object.values(s.runningByThreadId).some(Boolean),
   );
 
   useEffect(() => {
@@ -1490,7 +1491,7 @@ function ThreadContextUsageRecount({
       !enabled ||
       !activeThreadId ||
       modelLoading ||
-      localRunActive ||
+      runActive ||
       !checkpoint ||
       ggufContextLength == null
     ) {
@@ -1504,7 +1505,7 @@ function ThreadContextUsageRecount({
     checkpoint,
     enabled,
     ggufContextLength,
-    localRunActive,
+    runActive,
     modelLoading,
   ]);
 

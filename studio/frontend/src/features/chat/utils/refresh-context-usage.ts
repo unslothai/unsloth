@@ -190,12 +190,17 @@ export async function refreshContextUsage(options?: {
   );
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
 
-  // Never issue a count while the local model is decoding. /apply-template and /tokenize take
-  // no inference slot, so the measured cost is inside the noise, but this endpoint shares a
-  // process with generation and the budget here is zero rather than small. localRunByThreadId,
-  // not runningByThreadId: an external-provider run never touches llama-server. The recount
-  // effect lists this in its dependencies, so the last run finishing re-fires it.
-  if (Object.values(store.localRunByThreadId ?? {}).some(Boolean)) return;
+  // Never issue a count while anything is generating. /apply-template and /tokenize take no
+  // inference slot, so the measured cost is inside the noise, but this endpoint shares a process
+  // with generation and the budget here is zero rather than small. The recount effect lists this
+  // in its dependencies, so the last run finishing re-fires it.
+  //
+  // runningByThreadId, not the narrower localRunByThreadId: an external-provider run never
+  // reaches llama-server, but the endpoint refuses during one anyway, because state's
+  // active_generations cannot tell them apart. Gating on less than the server refuses on would
+  // spend a request to be told 503, and worse, lose the retry: nothing re-fires this effect when
+  // an external run ends unless that run is in the dependency array.
+  if (Object.values(store.runningByThreadId ?? {}).some(Boolean)) return;
 
   const capturedThreadId = threadId ?? null;
   const capturedCheckpoint = checkpoint;

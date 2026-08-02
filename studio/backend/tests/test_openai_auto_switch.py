@@ -10,6 +10,7 @@ tests/test_gguf_completion_usage.py.
 import asyncio
 import json
 import os
+import threading
 
 import pytest
 from fastapi import HTTPException
@@ -3463,6 +3464,77 @@ def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypa
     assert [message.get("content") for message in counted.get("messages") or []] == [
         "first\n\nsecond"
     ]
+
+
+def _in_flight_generation():
+    """One registered generation, as the completion path registers it."""
+    from state import active_generations
+    return active_generations.ActiveGeneration(threading.Event(), thread_id = "t1")
+
+
+def test_chat_count_tokens_refuses_while_a_generation_is_in_flight(monkeypatch):
+    # The whole point of the endpoint's cost budget: a count must never share llama-server with a
+    # decode. The frontend gate only covers our own tab, so the refusal has to live here too.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    # Reached only after the tool selection and message rewriting, so it doubles as proof that the
+    # refusal happens on entry rather than after the handler has already done that work.
+    reached: list = []
+    real = inference_route._llama_status_checkpoint_id
+    monkeypatch.setattr(
+        inference_route,
+        "_llama_status_checkpoint_id",
+        lambda backend: (reached.append(1), real(backend))[1],
+    )
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    with _in_flight_generation():
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert reached == [], "the handler must decline before doing any of the count's work"
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
+
+
+def test_chat_count_tokens_counts_again_once_the_generation_ends(monkeypatch):
+    # Control: the refusal keys on a live generation, not on the request, and it does not latch.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    with _in_flight_generation():
+        with pytest.raises(HTTPException):
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    body = _counted_body(payload)
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must be reached once nothing is decoding"
+
+
+def test_chat_count_tokens_refuses_a_generation_that_starts_mid_count(monkeypatch):
+    # Everything between the entry guard and the tokenizer awaits, so a run can begin in the gap.
+    # _llama_status_checkpoint_id is the last call before the second guard: start a generation
+    # from inside it and the count must abandon rather than proceed with what it already built.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    started: list = []
+    real = inference_route._llama_status_checkpoint_id
+
+    def _start_a_run(backend):
+        if not started:
+            handle = _in_flight_generation()
+            handle.__enter__()
+            started.append(handle)
+        return real(backend)
+
+    monkeypatch.setattr(inference_route, "_llama_status_checkpoint_id", _start_a_run)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    finally:
+        for handle in started:
+            handle.__exit__(None, None, None)
+    assert started, "the hook must have fired, or the test proves nothing"
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached"
 
 
 def test_chat_count_tokens_refuses_image_messages(monkeypatch):

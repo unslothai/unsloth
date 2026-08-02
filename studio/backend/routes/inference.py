@@ -15043,6 +15043,22 @@ async def chat_count_tokens(
     Unlike the /v1 count endpoints this never auto-switches: ``model`` is informational. The
     caller is a background recount with no abort signal, so switching could drag the backend back
     to the model loaded when the count started, a reload the client's guards cannot undo."""
+    # Nothing this endpoint does may overlap a generation. /apply-template and /tokenize take no
+    # inference slot and measure inside the noise, but the budget here is zero rather than small,
+    # and the client-side gate only covers our own frontend. Declining server-side covers every
+    # caller: a second tab, a script against /api, a stale in-flight count. The bar just stays as
+    # it was until the run ends, which is the trade this endpoint already makes for images.
+    #
+    # Deliberately coarse: _TrackedCancel registers external-provider runs here too, which never
+    # touch llama-server, so those decline a count they could have served. Narrowing it would mean
+    # trusting a kind/model field to decide whether to do work next to a decode, and the cost of
+    # being wrong that way is inference time, while the cost of over-refusing is a later redraw.
+    if active_generations.count() > 0:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens while a generation is in progress.",
+        )
+
     # /apply-template swaps each image for a short media marker, so refuse rather than undercount.
     if _request_has_image(payload):
         raise HTTPException(
@@ -15152,6 +15168,14 @@ async def chat_count_tokens(
     # Whose tokenizer this is, in the shape /api/inference/status publishes: another tab's load
     # moves it while the caller's own checkpoint guard sees no change, so report and let it drop.
     _tokenizer_model = _llama_status_checkpoint_id(llama_backend)
+
+    # Re-checked immediately before the only work that reaches llama-server, because everything
+    # between here and the entry check awaits, so a run can have started in the gap.
+    if active_generations.count() > 0:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens while a generation is in progress.",
+        )
 
     try:
         count = await asyncio.to_thread(
