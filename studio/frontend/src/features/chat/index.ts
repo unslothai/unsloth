@@ -91,6 +91,7 @@ export {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
+  preStreamRunThreadIdsForAdapter,
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
   reservePreStreamRun,
@@ -100,6 +101,7 @@ export {
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
 } from "./utils/prompt-queue-model-boundary";
+export { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 export {
   addQueuedChatRunSettingsThreadIds,
   consumeQueuedChatRunSettings,
@@ -133,9 +135,11 @@ export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
+  deleteStoredChatThreads,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
+export { markChatThreadDeleted } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export { ArtifactCard } from "./artifacts/artifact-card";

@@ -29,6 +29,9 @@ QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").rea
 PRE_STREAM_RESERVATION = (
     FRONTEND / "features/chat/utils/pre-stream-run-reservation.ts"
 ).read_text(encoding = "utf-8")
+CHAT_CLEAR_BOUNDARY = (
+    FRONTEND / "features/chat/utils/chat-history-clear-boundary.ts"
+).read_text(encoding = "utf-8")
 QUEUED_SETTINGS = (FRONTEND / "features/chat/utils/queued-chat-run-settings.ts").read_text(
     encoding = "utf-8"
 )
@@ -182,6 +185,20 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "releaseCurrentPreStreamRun();" in CHAT_ADAPTER
     assert "releasePreStreamRunReservation(reservationToken)" in CHAT_ADAPTER
     assert "class PreStreamAwareAttachmentAdapter" in RUNTIME_PROVIDER
+    assert "preStreamRunThreadIdsForAdapter(" in CHAT_ADAPTER
+    adapter_wrapper = CHAT_ADAPTER.rsplit("async *run(args)", 1)[1]
+    assert "args.unstable_threadId," in adapter_wrapper
+    assert "useChatRuntimeStore.getState().activeThreadId" in adapter_wrapper
+
+    persisted_wrapper = _between(
+        RUNTIME_PROVIDER,
+        "function createPersistedRunAdapter(",
+        "function useStudioRuntimeAdapters(",
+    )
+    assert "findPreStreamRunReservation(reservationThreadIds)" in persisted_wrapper
+    assert "await waitForRunStartHistoryAppend(options.messages)" in persisted_wrapper
+    assert "releasePreStreamRunReservation(reservationToken)" in persisted_wrapper
+    assert "notifyPromptQueueRunFailed(" in persisted_wrapper
 
 
 def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
@@ -194,7 +211,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert target.index(
         "await useChatRuntimeStore.getState().hydratePersistedSettings()"
     ) < target.index("snapshotQueuedChatRunSettings(chatStateAtQueueStart)")
-    assert "if (!promptQueueTargetMountedRef.current)" in target
+    assert "!promptQueueTargetMountedRef.current" in target
     assert "const currentState = aui.threadListItem().getState()" in target
     assert "initialRunningThreadIds.includes(id)" in target
     assert "snapshotQueuedChatRunSettings(chatStateAtQueueStart)" in target
@@ -231,8 +248,9 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         < target.index("const appendResult = thread.append(")
     )
     assert "let cancelled = false" in target
-    assert "if (cancelled || !pendingSettingsIds.has(settingsId))" in target
-    assert target.index("if (cancelled || !pendingSettingsIds.has(settingsId))") < target.index(
+    assert target.count("cancelled ||") >= 2
+    assert target.count("!pendingSettingsIds.has(settingsId)") >= 2
+    assert target.index("!pendingSettingsIds.has(settingsId)") < target.index(
         "const appendResult = thread.append("
     )
     assert "cancelled = true" in target
@@ -406,6 +424,25 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint"
         in CHAT_ADAPTER
     )
+
+
+def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
+    target = _between(
+        THREAD,
+        "const createPromptQueueTarget = useCallback(",
+        "const dismissWaitToast",
+    )
+    assert "const historyClearGeneration = chatHistoryClearBoundary.capture()" in target
+    assert "chatHistoryClearBoundary.capture() !== historyClearGeneration" in target
+    assert "initializedFreshThreadId = initializingFreshThread ? remoteId : null" in target
+    assert "markChatThreadDeleted(initializedFreshThreadId)" in target
+    assert "deleteStoredChatThreads([initializedFreshThreadId])" in target
+    assert "removeFreshThreadPersistedAfterClear();" in target
+    assert "chatHistoryClearBoundary.advance();" in CLEAR_ALL_CHATS
+    assert CLEAR_ALL_CHATS.index("chatHistoryClearBoundary.advance();") < CLEAR_ALL_CHATS.index(
+        "requestPromptQueueStop();"
+    )
+    assert "class ChatHistoryClearBoundary" in CHAT_CLEAR_BOUNDARY
 
 
 def test_stop_delete_archive_and_clear_are_thread_scoped():

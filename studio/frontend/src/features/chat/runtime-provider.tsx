@@ -63,7 +63,9 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import { notifyPromptQueueRunFailed } from "./utils/prompt-queue-boundary";
 import {
+  adoptPreStreamRunReservation,
   findPreStreamRunReservation,
+  preStreamRunThreadIdsForAdapter,
   releasePreStreamRunReservation,
 } from "./utils/pre-stream-run-reservation";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
@@ -944,7 +946,32 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
   return {
     ...adapter,
     async *run(options) {
-      const adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
+      const reservationThreadIds = preStreamRunThreadIdsForAdapter(
+        options.unstable_threadId,
+        useChatRuntimeStore.getState().activeThreadId,
+      );
+      const reservationToken =
+        findPreStreamRunReservation(reservationThreadIds);
+      let adoptedThreadId: string | undefined;
+      try {
+        adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
+      } catch (error) {
+        if (
+          reservationToken &&
+          releasePreStreamRunReservation(reservationToken)
+        ) {
+          notifyPromptQueueRunFailed(
+            options.unstable_threadId ?? reservationThreadIds[0] ?? null,
+          );
+        }
+        throw error;
+      }
+      if (reservationToken && adoptedThreadId) {
+        adoptPreStreamRunReservation(reservationToken, [
+          ...reservationThreadIds,
+          adoptedThreadId,
+        ]);
+      }
       // The thread has an id by the time that resolves, but assistant-ui bound unstable_threadId
       // before the await. Hand the run its real id so a first turn never files its handles
       // under the unresolved key that concurrent runs share.

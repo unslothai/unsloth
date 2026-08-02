@@ -105,6 +105,8 @@ import {
   PROMPT_QUEUE_STOP_EVENT,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
+  chatHistoryClearBoundary,
+  deleteStoredChatThreads,
   discardQueuedChatRunSettings,
   discardQueuedChatRunSettingsForThread,
   hasPreStreamRunReservation,
@@ -118,6 +120,7 @@ import {
   snapshotQueuedChatRunSettings,
   composerDraftKey,
   markThreadIncognito,
+  markChatThreadDeleted,
   type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
   dictationFailed,
@@ -2188,8 +2191,12 @@ const Composer: FC<{
     ].filter((id): id is string => Boolean(id));
     const initialDocumentThreadId =
       initialState.remoteId ?? referenceThreadId ?? null;
+    const historyClearGeneration = chatHistoryClearBoundary.capture();
     await useChatRuntimeStore.getState().hydratePersistedSettings();
-    if (!promptQueueTargetMountedRef.current) {
+    if (
+      !promptQueueTargetMountedRef.current ||
+      chatHistoryClearBoundary.capture() !== historyClearGeneration
+    ) {
       return null;
     }
     const currentState = aui.threadListItem().getState();
@@ -2256,6 +2263,23 @@ const Composer: FC<{
     const pendingSettingsIds = new Set<number>();
     let cancelled = false;
     let shouldCorrectPersistedModel: boolean | null = null;
+    let initializedFreshThreadId: string | null = null;
+    const removeFreshThreadPersistedAfterClear = () => {
+      if (
+        !initializedFreshThreadId ||
+        chatHistoryClearBoundary.capture() === historyClearGeneration
+      ) {
+        return false;
+      }
+      // Tombstone synchronously so a completed Clear all cannot briefly show a
+      // record whose initializer won the storage race. Backend cleanup may
+      // finish afterward without making the thread visible again.
+      markChatThreadDeleted(initializedFreshThreadId);
+      void deleteStoredChatThreads([initializedFreshThreadId]).catch(
+        () => undefined,
+      );
+      return true;
+    };
     const discardOldestPendingSettings = () => {
       const settingsId = pendingSettingsIds.values().next().value;
       if (settingsId === undefined) {
@@ -2300,14 +2324,23 @@ const Composer: FC<{
           if (!runtime || !state) {
             throw new Error("Prompt queue thread item is unavailable");
           }
+          if (chatHistoryClearBoundary.capture() !== historyClearGeneration) {
+            return;
+          }
           shouldCorrectPersistedModel ??= !state.remoteId;
+          const initializingFreshThread = !state.remoteId;
           // A fresh chat receives its remote id during initialization. Await it
           // before append so the adapter can match the queued settings using
           // unstable_threadId on its first invocation.
           const { remoteId } = await runtime.threads
             .getItemById(state.id)
             .initialize();
-          if (cancelled || !pendingSettingsIds.has(settingsId)) {
+          initializedFreshThreadId = initializingFreshThread ? remoteId : null;
+          if (
+            removeFreshThreadPersistedAfterClear() ||
+            cancelled ||
+            !pendingSettingsIds.has(settingsId)
+          ) {
             return;
           }
           addQueuedChatRunSettingsThreadIds(settingsId, [
@@ -2322,7 +2355,11 @@ const Composer: FC<{
               modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
             });
             shouldCorrectPersistedModel = false;
-            if (cancelled || !pendingSettingsIds.has(settingsId)) {
+            if (
+              removeFreshThreadPersistedAfterClear() ||
+              cancelled ||
+              !pendingSettingsIds.has(settingsId)
+            ) {
               return;
             }
           }
@@ -2351,6 +2388,7 @@ const Composer: FC<{
       complete: discardOldestPendingSettings,
       cancel: () => {
         cancelled = true;
+        removeFreshThreadPersistedAfterClear();
         for (const settingsId of pendingSettingsIds) {
           discardQueuedChatRunSettings(settingsId);
         }

@@ -7,6 +7,14 @@ type PreStreamRunReservation = {
 const reservations = new Map<symbol, PreStreamRunReservation>();
 const reservationByThreadId = new Map<string, symbol>();
 
+export function preStreamRunThreadIdsForAdapter(
+  unstableThreadId: string | null | undefined,
+  activeThreadId: string | null | undefined,
+): string[] {
+  const threadId = unstableThreadId ?? activeThreadId;
+  return threadId ? [threadId] : [];
+}
+
 function normalizedThreadIds(
   threadIds: Iterable<string | null | undefined>,
 ): string[] {

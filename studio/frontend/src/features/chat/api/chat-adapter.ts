@@ -12,6 +12,7 @@ import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
+  preStreamRunThreadIdsForAdapter,
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
@@ -5103,10 +5104,10 @@ export function createOpenAIStreamAdapter(
   } satisfies ChatModelAdapter;
   return {
     async *run(args) {
-      const preStreamThreadIds = [
+      const preStreamThreadIds = preStreamRunThreadIdsForAdapter(
         args.unstable_threadId,
         useChatRuntimeStore.getState().activeThreadId,
-      ];
+      );
       const reservationToken =
         findPreStreamRunReservation(preStreamThreadIds);
       if (reservationToken) {

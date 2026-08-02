@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import test from "node:test";
 import { readFile } from "node:fs/promises";
+import test from "node:test";
 
 // Both spinners are ml-auto, so each one sits at its row's padding-right plus
 // its own margin-right. The two rows carry different padding, so the margins
@@ -44,13 +44,17 @@ test("nav and Recents spinners land on one trailing column", async () => {
   );
   const chatSpinner = grab(
     source,
-    /data-testid="chat-row-spinner"[\s\S]{0,200}?className="(ml-auto[^"]*)"/,
+    /data-testid="chat-row-spinner"[\s\S]{0,400}?className="(ml-auto[^"]*)"/,
     "Recents chat spinner",
   );
 
   const nav = inset(navRow, "pr") + inset(navSpinner, "mr");
   const chat = inset(chatRow, "pr") + inset(chatSpinner, "mr");
 
-  assert.equal(nav, chat, `nav spinner sits ${nav}px in, chat spinner ${chat}px`);
+  assert.equal(
+    nav,
+    chat,
+    `nav spinner sits ${nav}px in, chat spinner ${chat}px`,
+  );
   assert.equal(nav, 16);
 });

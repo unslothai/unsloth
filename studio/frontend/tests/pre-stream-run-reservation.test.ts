@@ -5,10 +5,23 @@ import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
+  preStreamRunThreadIdsForAdapter,
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
   reservePreStreamRun,
 } from "../src/features/chat/utils/pre-stream-run-reservation.ts";
+
+test("adapter thread ids never mix an identified background run with the visible chat", () => {
+  assert.deepEqual(
+    preStreamRunThreadIdsForAdapter("background-thread", "visible-thread"),
+    ["background-thread"],
+  );
+  assert.deepEqual(
+    preStreamRunThreadIdsForAdapter(undefined, "visible-thread"),
+    ["visible-thread"],
+  );
+  assert.deepEqual(preStreamRunThreadIdsForAdapter(undefined, null), []);
+});
 
 test("pre-stream reservations are immediate and scoped per thread", () => {
   const first = reservePreStreamRun(["thread-a"]);

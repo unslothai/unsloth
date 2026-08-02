@@ -1036,7 +1036,7 @@ export function AppSidebar() {
         ? "sidebar-row-action sidebar-touch-reveal group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
         : "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
-      "sidebar-nav-btn h-[33px] cursor-pointer rounded-full text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-[padding] duration-150",
+      "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-[padding] duration-150",
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
       // title with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
@@ -1045,10 +1045,10 @@ export function AppSidebar() {
       showWorkSpinner
         ? hasSecondaryRowAction
           ? "pr-16"
-          : "pr-7"
+          : undefined
         : hasUnreadActivity
           ? "pr-7"
-          : "pr-4",
+          : undefined,
       variant === "project"
         ? showWorkSpinner
           ? undefined
