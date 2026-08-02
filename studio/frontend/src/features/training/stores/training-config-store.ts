@@ -23,6 +23,7 @@ import type { BackendModelConfig } from "../api/models-api";
 import { cacheReferenceMatchesSelection } from "../lib/cache-reference";
 import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
+import { trainingConfigPatchTouchesModelDefaults } from "../lib/model-defaults-edit-policy";
 import { inferTrainingModelTypeFromFlags } from "../lib/model-type-inference";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import type {
@@ -68,18 +69,16 @@ let _trainOnCompletionsManuallySet = false;
 // switching method auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
 let _learningRateManuallySet = false;
 let _trainingMethodEditGeneration = 0;
+let _modelDefaultsEditGeneration = 0;
 let _modelDefaultsEditBaseline: {
   modelName: string;
-  userEditRevision: number;
+  editGeneration: number;
 } | null = null;
 
-function canReapplyModelDefaults(
-  modelName: string,
-  userEditRevision: number,
-): boolean {
+function canReapplyModelDefaults(modelName: string): boolean {
   return (
     _modelDefaultsEditBaseline?.modelName === modelName &&
-    _modelDefaultsEditBaseline.userEditRevision === userEditRevision
+    _modelDefaultsEditBaseline.editGeneration === _modelDefaultsEditGeneration
   );
 }
 
@@ -245,10 +244,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           | Partial<TrainingConfigState>
           | ((state: TrainingConfigStore) => Partial<TrainingConfigState>),
       ) => {
-        set((state) => ({
-          ...(typeof update === "function" ? update(state) : update),
-          userEditRevision: state.userEditRevision + 1,
-        }));
+        set((state) => {
+          const patch = typeof update === "function" ? update(state) : update;
+          if (trainingConfigPatchTouchesModelDefaults(patch)) {
+            _modelDefaultsEditGeneration += 1;
+          }
+          return {
+            ...patch,
+            userEditRevision: state.userEditRevision + 1,
+          };
+        });
       };
 
       const loadAndApplyModelDefaults = (
@@ -260,11 +265,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         const controller = new AbortController();
         const trainingMethodEditGeneration = _trainingMethodEditGeneration;
         const requestState = get();
-        const requestedUserEditRevision = requestState.userEditRevision;
+        const requestedModelDefaultsEditGeneration =
+          _modelDefaultsEditGeneration;
         if (applyTrainingDefaults) {
           _modelDefaultsEditBaseline = {
             modelName,
-            userEditRevision: requestedUserEditRevision,
+            editGeneration: requestedModelDefaultsEditGeneration,
           };
         }
         const requestedKnownCached =
@@ -276,7 +282,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             : null;
         const canApplyTrainingDefaults = () =>
           applyTrainingDefaults &&
-          get().userEditRevision === requestedUserEditRevision;
+          _modelDefaultsEditGeneration === requestedModelDefaultsEditGeneration;
         const preferLocalCache =
           requestedKnownCached && Boolean(requestedLocalPath?.trim());
         const requestMatchesSelection = () => {
@@ -837,10 +843,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
           if (cacheReferenceChanged) {
             void loadAndApplyModelDefaults(model, {
-              applyTrainingDefaults: canReapplyModelDefaults(
-                model,
-                state.userEditRevision,
-              ),
+              applyTrainingDefaults: canReapplyModelDefaults(model),
             });
           }
         },
@@ -863,10 +866,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             modelFormat: null,
           });
           void loadAndApplyModelDefaults(model, {
-            applyTrainingDefaults: canReapplyModelDefaults(
-              model,
-              state.userEditRevision,
-            ),
+            applyTrainingDefaults: canReapplyModelDefaults(model),
           });
         },
         clearSelectedDatasetCacheReference: (dataset, localPath) => {

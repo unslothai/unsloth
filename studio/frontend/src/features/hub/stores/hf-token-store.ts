@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { bumpInventoryVersion } from "./inventory-events";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const LEGACY_TRAINING_KEY = "unsloth_training_config_v1";
@@ -77,13 +76,10 @@ export const useHfTokenStore = create<HfTokenStore>((set) => {
   const applyToken = (value: string, shouldPersist: boolean) => {
     const next = normalizeHfToken(value);
     if (shouldPersist || next !== value) persist(next);
-    let changed = false;
     set((state) => {
       if (state.token === next) return state;
-      changed = true;
       return { token: next };
     });
-    if (changed) bumpInventoryVersion();
   };
 
   if (!storageSyncStarted && canUseStorage()) {

@@ -51,3 +51,15 @@ test("training validation accepts a positive learning rate", () => {
     { ok: true, errorKey: null },
   );
 });
+
+test("training validation keeps local dataset paths out of Hub ID validation", () => {
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      datasetSource: "upload",
+      dataset: null,
+      uploadedFile: "/datasets/team data/train.jsonl",
+    }),
+    { ok: true, errorKey: null },
+  );
+});

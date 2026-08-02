@@ -5,6 +5,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import call, patch
@@ -55,12 +56,150 @@ def _refusing_backend() -> SimpleNamespace:
     )
 
 
-def _start(route, request):
-    return asyncio.run(route.start_training(request, current_subject = "test-user"))
+class _FakeHFValidationError(Exception):
+    pass
+
+
+def _accept_repo_id(_repo_id):
+    return None
+
+
+def _fake_hf_modules(api_type, validate_repo_id = _accept_repo_id):
+    return {
+        "huggingface_hub": SimpleNamespace(HfApi = api_type),
+        "huggingface_hub.utils": SimpleNamespace(
+            HFValidationError = _FakeHFValidationError,
+            validate_repo_id = validate_repo_id,
+        ),
+    }
+
+
+def _start(route, request, *, run_dataset_preflight = False):
+    if run_dataset_preflight:
+        return asyncio.run(route.start_training(request, current_subject = "test-user"))
+    with (
+        patch.object(route, "_preflight_hf_dataset_request", return_value = None),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+    ):
+        return asyncio.run(route.start_training(request, current_subject = "test-user"))
 
 
 async def _inline_to_thread(function, *args, **kwargs):
     return function(*args, **kwargs)
+
+
+def test_hf_dataset_preflight_uses_hub_metadata_and_token():
+    route = _load_route_module("training_route_hf_dataset_preflight_success")
+    request = _request(hf_token = "hf_test")
+    calls: list[tuple[str, float]] = []
+
+    class FakeApi:
+        def __init__(self, token = None):
+            assert token == "hf_test"
+
+        def dataset_info(self, repo_id, *, timeout):
+            calls.append((repo_id, timeout))
+            return object()
+
+    with (
+        patch.object(route, "hf_env_offline", return_value = False),
+        patch.dict(sys.modules, _fake_hf_modules(FakeApi)),
+    ):
+        route._preflight_hf_dataset_request(request)
+
+    assert calls == [("org/dataset", route._REMOTE_DATASET_METADATA_TIMEOUT_SECONDS)]
+
+
+def test_hf_dataset_preflight_rejects_invalid_repo_id():
+    route = _load_route_module("training_route_hf_dataset_preflight_invalid")
+
+    class FakeApi:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("unexpected Hub metadata call")
+
+    def reject_repo_id(_repo_id):
+        raise _FakeHFValidationError("invalid repo")
+
+    with (
+        patch.dict(sys.modules, _fake_hf_modules(FakeApi, reject_repo_id)),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        route._preflight_hf_dataset_request(_request(hf_dataset = "org/team/dataset"))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == "hf_dataset_verification_failed"
+
+
+def test_hf_dataset_preflight_skips_local_sources(tmp_path):
+    route = _load_route_module("training_route_local_dataset_skips_hf_preflight")
+    dataset_path = tmp_path / "dataset.jsonl"
+    dataset_path.write_text('{"text":"hello"}\n', encoding = "utf-8")
+    request = _request(
+        hf_dataset = None,
+        local_datasets = [str(dataset_path)],
+        model_format = "gguf",
+    )
+
+    with (
+        patch.object(route, "get_training_backend", return_value = _refusing_backend()),
+        patch.object(route, "resolve_dataset_path", return_value = dataset_path),
+        patch.object(
+            route,
+            "_preflight_hf_dataset_request",
+            side_effect = AssertionError("unexpected Hub call"),
+        ),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        _start(route, request, run_dataset_preflight = True)
+
+    assert exc_info.value.status_code == 400
+    assert "GGUF" in exc_info.value.detail
+
+
+def test_hf_dataset_preflight_accepts_usable_selected_cache(tmp_path):
+    route = _load_route_module("training_route_cached_dataset_skips_hf_preflight")
+    request = _request(
+        dataset_known_cached = True,
+        dataset_local_path = str(tmp_path / "datasets--org--dataset"),
+    )
+
+    class UnexpectedApi:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("unexpected Hub call")
+
+    with (
+        patch(
+            "hub.utils.dataset_cache.training_dataset_cache_pin",
+            return_value = (tmp_path / "snapshot", "revision"),
+        ),
+        patch.dict(sys.modules, _fake_hf_modules(UnexpectedApi)),
+    ):
+        route._preflight_hf_dataset_request(request)
+
+
+def test_hf_dataset_preflight_rejects_before_backend_start():
+    route = _load_route_module("training_route_dataset_preflight_before_start")
+    request = _request()
+    backend = _refusing_backend()
+    error = HTTPException(
+        status_code = 404,
+        detail = {
+            "code": "hf_dataset_verification_failed",
+            "message": "Dataset not found",
+        },
+    )
+
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route, "_remote_untrainable_model_format", return_value = None),
+        patch.object(route, "_preflight_hf_dataset_request", side_effect = error),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        _start(route, request, run_dataset_preflight = True)
+
+    assert exc_info.value is error
 
 
 @pytest.mark.parametrize(

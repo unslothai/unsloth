@@ -186,6 +186,7 @@ def test_cancelled_route_during_spawn_keeps_the_worker_result_authoritative():
     with (
         patch.object(route, "get_training_backend", return_value = backend),
         patch.object(route, "_remote_untrainable_model_format", return_value = None),
+        patch.object(route, "_preflight_hf_dataset_request", new = lambda request: None),
         patch.object(route, "load_model_defaults", return_value = {}),
         patch.object(route.asyncio, "to_thread", new = controlled_to_thread),
     ):

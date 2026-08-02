@@ -409,6 +409,11 @@ def test_streaming_start_accepts_raw_text_and_cpt(training_type, format_type):
             "_remote_untrainable_model_format",
             return_value = None,
         ),
+        patch.object(
+            training_route,
+            "_preflight_hf_dataset_request",
+            return_value = None,
+        ),
         patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
         patch.object(training_route, "load_model_defaults", return_value = {}),
     ):
@@ -463,6 +468,11 @@ def test_streaming_start_happy_path_reaches_backend():
         patch.object(
             training_route,
             "_remote_untrainable_model_format",
+            return_value = None,
+        ),
+        patch.object(
+            training_route,
+            "_preflight_hf_dataset_request",
             return_value = None,
         ),
         patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),

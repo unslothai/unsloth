@@ -83,13 +83,15 @@ logger = get_logger(__name__)
 _LOCAL_MODEL_PROBE_LIMIT = 2000
 _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS = 5.0
 _REMOTE_MODEL_METADATA_RETRY_TIMEOUT_SECONDS = 10.0
+_REMOTE_DATASET_METADATA_TIMEOUT_SECONDS = 5.0
+_REMOTE_DATASET_METADATA_RETRY_TIMEOUT_SECONDS = 10.0
 
 
 class _LocalModelProbeIncomplete(RuntimeError):
     pass
 
 
-def _model_preflight_error(status_code: int, code: str, message: str) -> HTTPException:
+def _hf_preflight_error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(
         status_code = status_code,
         detail = {"code": code, "message": message},
@@ -317,7 +319,7 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
                 isinstance(status_code, int) and 500 <= status_code < 600
             )
             if status_code in (401, 403):
-                raise _model_preflight_error(
+                raise _hf_preflight_error(
                     422,
                     "hf_model_access_denied",
                     (
@@ -331,13 +333,13 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
                 if retry_available:
                     continue
                 if status_code == 429:
-                    raise _model_preflight_error(
+                    raise _hf_preflight_error(
                         429,
                         "hf_model_verification_rate_limited",
                         "Hugging Face model verification is rate-limited. Retry shortly.",
                     ) from error
             elif status_code is not None:
-                raise _model_preflight_error(
+                raise _hf_preflight_error(
                     status_code,
                     "hf_model_verification_failed",
                     (
@@ -352,7 +354,7 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
                 model_name,
                 type(error).__name__,
             )
-            raise _model_preflight_error(
+            raise _hf_preflight_error(
                 503,
                 "hf_model_metadata_unavailable",
                 (
@@ -378,6 +380,114 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
     if has_gguf and not has_trainable_weights:
         return "gguf"
     return None
+
+
+def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
+    dataset_id = request.hf_dataset
+    if not dataset_id:
+        return
+
+    from hub.utils.dataset_cache import training_dataset_cache_pin
+    from huggingface_hub.utils import HFValidationError, validate_repo_id
+
+    try:
+        validate_repo_id(dataset_id)
+    except HFValidationError as error:
+        raise _hf_preflight_error(
+            400,
+            "hf_dataset_verification_failed",
+            (
+                "The Hugging Face dataset could not be verified. "
+                "Check the repository ID and your access token."
+            ),
+        ) from error
+
+    cached_path, _ = training_dataset_cache_pin(
+        dataset_id,
+        request.dataset_snapshot_path or request.dataset_local_path,
+    )
+    if cached_path is not None:
+        return
+
+    if hf_env_offline():
+        raise _hf_preflight_error(
+            409,
+            "hf_dataset_not_cached_offline",
+            (
+                "The selected Hugging Face dataset is not available in the local cache, "
+                "and Hugging Face cannot be reached while offline."
+            ),
+        )
+
+    from hub.utils.hf_errors import hf_error_status
+    from huggingface_hub import HfApi
+
+    api = HfApi(token = request.hf_token or False)
+    timeouts = (
+        _REMOTE_DATASET_METADATA_TIMEOUT_SECONDS,
+        _REMOTE_DATASET_METADATA_RETRY_TIMEOUT_SECONDS,
+    )
+    for attempt, timeout in enumerate(timeouts):
+        try:
+            api.dataset_info(dataset_id, timeout = timeout)
+            return
+        except Exception as error:
+            status_code = hf_error_status(error)
+            if status_code is None:
+                upstream_status = getattr(
+                    getattr(error, "response", None),
+                    "status_code",
+                    None,
+                )
+                if isinstance(upstream_status, int) and 500 <= upstream_status < 600:
+                    status_code = upstream_status
+            transient_status = status_code in (408, 429) or (
+                isinstance(status_code, int) and 500 <= status_code < 600
+            )
+            if status_code in (401, 403):
+                raise _hf_preflight_error(
+                    422,
+                    "hf_dataset_access_denied",
+                    (
+                        "Hugging Face denied access to this dataset. Add a valid Hugging "
+                        "Face token with repository access and accept any required access "
+                        "terms, then try again."
+                    ),
+                ) from error
+            retry_available = attempt + 1 < len(timeouts)
+            if transient_status:
+                if retry_available:
+                    continue
+                if status_code == 429:
+                    raise _hf_preflight_error(
+                        429,
+                        "hf_dataset_verification_rate_limited",
+                        "Hugging Face dataset verification is rate-limited. Retry shortly.",
+                    ) from error
+            elif status_code is not None:
+                raise _hf_preflight_error(
+                    status_code,
+                    "hf_dataset_verification_failed",
+                    (
+                        "The Hugging Face dataset could not be verified. "
+                        "Check the repository ID and your access token."
+                    ),
+                ) from error
+            elif retry_available:
+                continue
+            logger.warning(
+                "Could not verify Hugging Face dataset %s after retry (%s)",
+                dataset_id,
+                type(error).__name__,
+            )
+            raise _hf_preflight_error(
+                503,
+                "hf_dataset_metadata_unavailable",
+                (
+                    "Hugging Face dataset metadata is temporarily unavailable. "
+                    "Retry before starting training."
+                ),
+            ) from error
 
 
 def _detect_local_gguf(path: Path) -> Optional[str]:
@@ -468,7 +578,7 @@ def _reject_untrainable_model_request(
                     snapshot,
                 )
     if path is None and offline_mode:
-        raise _model_preflight_error(
+        raise _hf_preflight_error(
             409,
             "hf_model_not_cached_offline",
             (
@@ -969,6 +1079,9 @@ async def start_training(
         training_model_snapshot_path = request.model_snapshot_path
         if cached_model_pin is not None:
             training_actual_model_repo_id, training_model_snapshot_path = cached_model_pin
+
+        if request.hf_dataset:
+            await asyncio.to_thread(_preflight_hf_dataset_request, request)
 
         # Convert request to backend kwargs.
         training_kwargs = {
