@@ -103,6 +103,41 @@ def test_exact_direct_snapshots_produce_complete_resumable_provenance(tmp_path):
     assert resource_provenance_allows_resume(persisted) is True
 
 
+@pytest.mark.parametrize(
+    "repo_id",
+    ["_owner/_repo_", f"{'a' * 96}/{'b' * 96}"],
+)
+def test_hub_valid_repo_ids_keep_exact_resume_provenance(tmp_path, repo_id):
+    model = _model_snapshot(tmp_path, repo_id, "model-commit")
+    dataset = _dataset_snapshot(tmp_path, repo_id, "dataset-commit")
+    config = {
+        "model_name": repo_id,
+        "model_snapshot_path": str(model),
+        "hf_dataset": repo_id,
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": False,
+    }
+    event = build_worker_provenance_event(
+        config,
+        SimpleNamespace(
+            config = SimpleNamespace(
+                _name_or_path = repo_id,
+                _commit_hash = "model-commit",
+            )
+        ),
+        model_load_target = str(model),
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+
+    updates = normalize_worker_provenance_event(event, config)
+    persisted = {**config, **updates}
+
+    assert updates["actual_model_repo_id"] == repo_id
+    assert updates[RESOURCE_PROVENANCE_KEY]["status"] == "complete"
+    assert exact_resume_resource_requirements(persisted) == (True, True)
+
+
 def test_loaded_model_metadata_attests_actual_quantized_redirect(tmp_path):
     _model_snapshot(tmp_path, "org/selected", "selected-commit")
     actual = _model_snapshot(

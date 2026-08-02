@@ -10,6 +10,8 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Optional
 from urllib.parse import unquote, urlsplit
 
+from hub.utils.paths import is_valid_repo_id
+
 
 RESOURCE_PROVENANCE_VERSION = 1
 RESOURCE_PROVENANCE_KEY = "resource_provenance"
@@ -19,9 +21,6 @@ _INCOMPLETE = "incomplete"
 _MODEL_LOAD_UNQUANTIZED = "unquantized"
 _MODEL_LOAD_PREQUANTIZED_4BIT = "prequantized_4bit"
 _MODEL_LOAD_RUNTIME_4BIT = "runtime_4bit"
-_REPO_ID_RE = re.compile(
-    r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,95})(?:/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,95}))?"
-)
 _REASON_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _MODEL_WEIGHT_RE = re.compile(
     r"(?:"
@@ -109,13 +108,8 @@ def effective_training_load_in_4bit(
 def _normalized_repo_id(value: Any) -> Optional[str]:
     if not isinstance(value, str):
         return None
-    value = value.strip().strip("/")
-    if (
-        not value
-        or len(value) > 192
-        or ".." in value.split("/")
-        or not _REPO_ID_RE.fullmatch(value)
-    ):
+    value = value.strip()
+    if not is_valid_repo_id(value):
         return None
     return value
 

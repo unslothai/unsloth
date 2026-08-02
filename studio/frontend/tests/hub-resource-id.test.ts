@@ -25,9 +25,6 @@ test("accepts safe Hugging Face resource identifiers", () => {
     validateHubResourceId(`${"a".repeat(96)}/${"b".repeat(96)}`).ok,
     true,
   );
-  for (const value of ["owner/repo--v2", "owner/repo.git", "org/team/repo"]) {
-    assert.equal(validateHubResourceId(value).ok, true, value);
-  }
 });
 
 test("rejects malformed or unsafe Hugging Face resource ids", () => {
@@ -39,6 +36,10 @@ test("rejects malformed or unsafe Hugging Face resource ids", () => {
     "owner//repo",
     "../repo",
     "owner/../repo",
+    "owner/repo--v2",
+    "owner/repo.git",
+    "org/team/repo",
+    `${"a".repeat(97)}/repo`,
     `${"a".repeat(257)}/repo`,
   ]) {
     assert.equal(validateHubResourceId(value).ok, false, value);
@@ -47,5 +48,5 @@ test("rejects malformed or unsafe Hugging Face resource ids", () => {
 
 test("exposes a predicate for filtering unselectable Hub results", () => {
   assert.equal(isValidHubResourceId("owner/repo"), true);
-  assert.equal(isValidHubResourceId("owner/repo--cache-ambiguous"), true);
+  assert.equal(isValidHubResourceId("owner/repo--cache-ambiguous"), false);
 });

@@ -3,7 +3,7 @@
 
 const HUB_RESOURCE_ID_SEGMENT_RE =
   /^[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?$/;
-const MAX_HUB_RESOURCE_ID_LENGTH = 256;
+const MAX_HUB_RESOURCE_ID_SEGMENT_LENGTH = 96;
 
 export type HubResourceIdValidationResult =
   | { ok: true; id: string }
@@ -13,11 +13,18 @@ export function validateHubResourceId(
   value: string,
 ): HubResourceIdValidationResult {
   const id = value.trim();
-  if (!id || id.length > MAX_HUB_RESOURCE_ID_LENGTH || id.includes("..")) {
+  if (!id || id.endsWith(".git") || id.includes("--") || id.includes("..")) {
     return { ok: false };
   }
   const segments = id.split("/");
-  if (segments.some((segment) => !HUB_RESOURCE_ID_SEGMENT_RE.test(segment))) {
+  if (
+    segments.length > 2 ||
+    segments.some(
+      (segment) =>
+        segment.length > MAX_HUB_RESOURCE_ID_SEGMENT_LENGTH ||
+        !HUB_RESOURCE_ID_SEGMENT_RE.test(segment),
+    )
+  ) {
     return { ok: false };
   }
   return { ok: true, id };

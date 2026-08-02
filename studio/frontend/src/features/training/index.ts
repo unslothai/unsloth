@@ -20,6 +20,7 @@ export {
 } from "./lib/run-display";
 export {
   isRawTextDatasetFormat,
+  isTrainingMethodSupportedOnDevice,
   parseBackendTrainingMethod,
 } from "./lib/training-methods";
 export { useTrainingHistorySidebarItems } from "./hooks/use-training-history-sidebar";

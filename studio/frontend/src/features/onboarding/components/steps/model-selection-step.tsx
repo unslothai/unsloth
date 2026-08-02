@@ -19,10 +19,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
 import { TrainModelSelector } from "@/features/train-model-picker";
 import {
   TRAINING_METHOD_META,
   TRAINING_METHOD_ORDER,
+  isTrainingMethodSupportedOnDevice,
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
@@ -35,6 +37,7 @@ import { HfTokenField } from "../hf-token-field";
 
 export function ModelSelectionStep() {
   const t = useT();
+  const deviceType = usePlatformStore((state) => state.deviceType);
   const {
     ensureModelDefaultsLoaded,
     modelType,
@@ -119,12 +122,19 @@ export function ModelSelectionStep() {
               <SelectContent>
                 {TRAINING_METHOD_ORDER.map((method) => {
                   const meta = TRAINING_METHOD_META[method];
-                  const note =
-                    method === "qlora" || method === "lora"
+                  const unsupportedOnDevice =
+                    !isTrainingMethodSupportedOnDevice(method, deviceType);
+                  const note = unsupportedOnDevice
+                    ? t("studio.params.notSupportedAppleSilicon")
+                    : method === "qlora" || method === "lora"
                       ? t(meta.noteKey)
                       : null;
                   return (
-                    <SelectItem key={method} value={method}>
+                    <SelectItem
+                      key={method}
+                      value={method}
+                      disabled={unsupportedOnDevice}
+                    >
                       {t(meta.labelKey)}
                       {note ? ` (${note})` : null}
                     </SelectItem>

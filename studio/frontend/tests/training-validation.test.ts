@@ -66,6 +66,29 @@ test("training validation keeps local dataset paths out of Hub ID validation", (
   );
 });
 
+test("training validation rejects Hub IDs that backend preflight rejects", () => {
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      selectedModel: "org/team/model",
+    }),
+    {
+      ok: false,
+      errorKey: "studio.modelPicker.reasonInvalidHubId",
+    },
+  );
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      dataset: "owner/dataset--v2",
+    }),
+    {
+      ok: false,
+      errorKey: "studio.datasetPicker.reasonInvalidHubId",
+    },
+  );
+});
+
 test("training validation rejects MLX-incompatible training modes", () => {
   assert.deepEqual(
     validateTrainingConfig({ ...validConfig, trainingMethod: "cpt" }, "mac"),

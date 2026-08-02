@@ -6,6 +6,7 @@ import type { TranslationKey } from "@/i18n";
 import type { TrainingConfigState } from "../types/config";
 import { isLocalTrainingModelSelection } from "./model-selection";
 import { isUntrainableModelFormat } from "./model-support";
+import { isTrainingMethodSupportedOnDevice } from "./training-methods";
 
 export type StartValidationResult =
   | { ok: true; errorKey: null }
@@ -119,13 +120,13 @@ export function validateTrainingConfig(
     };
   }
 
+  if (!isTrainingMethodSupportedOnDevice(config.trainingMethod, deviceType)) {
+    return {
+      ok: false,
+      errorKey: "studio.params.notSupportedAppleSilicon",
+    };
+  }
   if (deviceType === "mac") {
-    if (config.trainingMethod === "cpt") {
-      return {
-        ok: false,
-        errorKey: "studio.params.notSupportedAppleSilicon",
-      };
-    }
     if (config.isEmbeddingModel || config.modelType === "embeddings") {
       return {
         ok: false,

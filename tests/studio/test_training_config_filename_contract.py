@@ -22,8 +22,10 @@ def test_training_config_filename_is_bounded_by_utf8_bytes():
 def test_tauri_native_save_dialog_recognizes_yaml_configs():
     source = NATIVE_FILE_DIALOGS.read_text(encoding = "utf-8")
 
-    assert 'Some("yaml") | Some("yml") => ("YAML", vec!["yaml", "yml"])' in source
+    assert 'Some("yaml") | Some("yml") => ("YAML",' in source
     assert "fn training_configs_use_a_yaml_save_filter()" in source
+    assert 'assert_save_filter("training.yaml", "YAML", &["yaml", "yml"]);' in source
+    assert 'assert_save_filter("training.YML", "YAML", &["yaml", "yml"]);' in source
 
 
 def test_tauri_load_dialog_reads_bounded_yaml_configs():

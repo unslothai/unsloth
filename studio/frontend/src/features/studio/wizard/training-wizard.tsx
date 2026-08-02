@@ -22,6 +22,7 @@ import { TrainModelSelector } from "@/features/train-model-picker";
 import {
   TRAINING_METHOD_META,
   TRAINING_METHOD_ORDER,
+  isTrainingMethodSupportedOnDevice,
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
@@ -160,7 +161,7 @@ function TrainingMethodSelect() {
   const t = useT();
   const trainingMethod = useTrainingConfigStore((s) => s.trainingMethod);
   const setTrainingMethod = useTrainingConfigStore((s) => s.setTrainingMethod);
-  const isMac = usePlatformStore((state) => state.deviceType === "mac");
+  const deviceType = usePlatformStore((state) => state.deviceType);
   const activeMeta = TRAINING_METHOD_META[trainingMethod];
   const activeLabel = activeMeta ? t(activeMeta.labelKey) : trainingMethod;
   return (
@@ -198,7 +199,8 @@ function TrainingMethodSelect() {
       >
         {TRAINING_METHOD_ORDER.map((method) => {
           const meta = TRAINING_METHOD_META[method];
-          const unsupportedOnMlx = isMac && method === "cpt";
+          const unsupportedOnMlx =
+            !isTrainingMethodSupportedOnDevice(method, deviceType);
           return (
             <Tooltip key={method} delayDuration={300}>
               <TooltipTrigger asChild={true} disableClickToggle={true}>
