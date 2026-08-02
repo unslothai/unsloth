@@ -1810,10 +1810,9 @@ yi_chat_template_eos_token = "<|endoftext|>"
 CHAT_TEMPLATES["yi-chat"] = (yi_chat_template, yi_chat_template_eos_token, False, yi_chat_ollama)
 DEFAULT_SYSTEM_MESSAGE["yi-chat"] = None
 
-# Caller text is spliced into Jinja '...' / "..." literals, where a bare quote closes
-# the literal and a backslash is read as an escape, and \r is normalised to \n before
-# unescaping. Backslash first, else it re-escapes the ones added after. Escaping both
-# quotes is safe in either literal style, so the caller need not know which is in use.
+# Caller text is spliced into Jinja '...' / "..." literals: a bare quote closes the
+# literal, a backslash reads as an escape, and \r becomes \n before unescaping. Backslash
+# first, else it re-escapes the rest; escaping both quotes is safe in either style.
 def _escape_jinja_literal(text):
     return text.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"').replace("\r", "\\r")
 
@@ -1841,8 +1840,8 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
 
     # For predefined templates with default system message
     message_to_use = system_message if system_message is not None else default_system_message
-    # Our own templates hold {system_message} inside a Jinja literal, so escape it here.
-    # Custom templates (above) are filled verbatim: their placeholder may sit in raw text.
+    # Predefined templates hold {system_message} inside a Jinja literal, so escape it.
+    # Custom ones (above) are filled verbatim: their placeholder may sit in raw text.
     new_template = template.replace("{system_message}", _escape_jinja_literal(message_to_use))
 
     return new_template, message_to_use
@@ -2063,7 +2062,7 @@ def get_chat_template(
         chat_template = "{{ bos_token }}" + chat_template
 
     # For ShareGPT role -> from and content -> value
-    # Keys land inside Jinja literals, so escape them like any other spliced text.
+    # The spliced values land inside Jinja literals, so escape them.
     new_chat_template = chat_template\
         .replace("'role'",      "'" + _escape_jinja_literal(mapping["role"])      + "'")\
         .replace("'content'",   "'" + _escape_jinja_literal(mapping["content"])   + "'")\

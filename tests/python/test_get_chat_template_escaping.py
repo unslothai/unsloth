@@ -43,7 +43,7 @@ MESSAGES = [
 
 def _render(template):
     # No system turn in `messages`, so the template falls back to the baked-in
-    # {system_message} literal, which is the path under test.
+    # {system_message} literal, the path under test.
     environment = ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
     return environment.from_string(template).render(
         messages = [{"role": "user", "content": "Hi"}],
@@ -54,7 +54,7 @@ def _render(template):
 
 
 def test_templates_with_system_message_were_found():
-    # Guard the discovery above: an empty list would make every case below vacuous.
+    # An empty discovery list would make every case below vacuous.
     assert len(TEMPLATES_WITH_SYSTEM_MESSAGE) >= 10
 
 
@@ -68,7 +68,7 @@ def test_system_message_survives_the_jinja_literal(name, label, system_message):
 
 @pytest.mark.parametrize("name", TEMPLATES_WITH_SYSTEM_MESSAGE)
 def test_default_system_message_renders_verbatim(name):
-    # The defaults used to be hand-escaped in the source; escaping them again would
+    # Defaults are no longer hand-escaped in the source; escaping them twice would
     # surface a literal backslash to the user.
     default = DEFAULT_SYSTEM_MESSAGE[name]
     template, _ = _change_system_message(CHAT_TEMPLATES[name][0], name, None)
@@ -86,7 +86,7 @@ def test_vicuna_default_has_a_plain_apostrophe(name):
 @pytest.mark.parametrize("quote", ["'", '"'])
 @pytest.mark.parametrize("label, text", MESSAGES, ids = [m[0] for m in MESSAGES])
 def test_escape_round_trips_in_either_quote_style(quote, label, text):
-    # get_chat_template also splices the ShareGPT `mapping` values into literals, and
-    # llama-3.1 uses "..." where the rest use '...', so one escaper has to cover both.
+    # get_chat_template also splices ShareGPT `mapping` values into literals, and
+    # llama-3.1 uses "..." where the rest use '...', so one escaper must cover both.
     template = "{{ " + quote + _escape_jinja_literal(text) + quote + " }}"
     assert jinja2.Environment().from_string(template).render() == text
