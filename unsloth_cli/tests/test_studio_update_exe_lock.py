@@ -108,9 +108,7 @@ def test_the_note_is_conditional_not_a_diagnosis(monkeypatch, tmp_path, capsys):
     assert "If the failure above mentions" in capsys.readouterr().err
 
 
-def test_without_a_launcher_the_note_carries_the_install_config(
-    monkeypatch, tmp_path, capsys
-):
+def test_without_a_launcher_the_note_carries_the_install_config(monkeypatch, tmp_path, capsys):
     """A pasted reinstall runs in a new shell with none of this process's env, so a
     custom root has to be spelled out or it repairs the wrong installation."""
     scripts = _scripts(tmp_path)
