@@ -606,6 +606,38 @@ function Get-RocmPinStaleTags {
     }
 }
 
+# True when $PythonExe's torch can actually drive an Intel GPU. Quiet on purpose: the two
+# callers read a False differently (no XPU runtime here vs an XPU wheel the driver cannot
+# initialize). Only an XPU build can answer True, so a CPU build never vetoes a migration.
+# Mirrors the probe install.ps1 runs during its Intel scan.
+function Test-TorchXpuAvailable {
+    param([string]$PythonExe)
+    if (-not $PythonExe) { return $false }
+    try {
+        # 2>$null so PS 5.1 cannot turn an import-time torch warning into a terminating error
+        # (that would read as "no XPU" and cost the caller a working venv), and a line-anchored
+        # match so a stdout banner ahead of the answer hides nothing.
+        $probe = (& $PythonExe -c "import torch; print(torch.xpu.is_available())" 2>$null | Out-String)
+        return ($probe -match '(?m)^\s*True\s*$')
+    } catch { return $false }
+}
+
+# Post-install XPU runtime check. A WMI marketing-name match says the part is XPU-capable, not
+# that the compute runtime works: with an old Intel driver the wheel installs fine and then
+# never initializes, and unsloth/device_type.py raises NotImplementedError at import (a hard
+# crash, not a chat-only downgrade). Warn accurately -- the wheel is correct and a driver
+# update fixes it, so never fall back to CPU here.
+function Assert-XpuRuntimeReady {
+    param([string]$PythonExe)
+    if (Test-TorchXpuAvailable -PythonExe $PythonExe) { return $true }
+    substep "[WARN] PyTorch XPU is installed but torch.xpu.is_available() is False." "Yellow"
+    substep "       The Intel GPU driver is most likely too old -- PyTorch XPU on Windows" "Yellow"
+    substep "       needs Intel Graphics Driver 32.0.101.6739 (WHQL) or newer." "Yellow"
+    substep "       Update the driver, then re-run. See:" "Yellow"
+    substep "       https://unsloth.ai/docs/get-started/install/intel" "Yellow"
+    return $false
+}
+
 # VS generator -> MSBuild BuildCustomizations dir; toolset tracks the VS major
 # (18->v180, 17->v170), defaulting to v170 when unparseable.
 function Get-VcBuildCustomizationsDir {
@@ -2951,6 +2983,20 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     }
 
     if (-not $shouldRebuild) {
+        # The Intel scan above runs before $VenvPyExe exists and can only match on a WMI
+        # marketing name, so an unavailable/throwing Get-CimInstance -- or an Intel part
+        # outside the Arc|Data Center regex -- leaves $script:IsIntelXpu false. The
+        # expected-tag chain would then expect "cpu", see an installed "xpu" and WIPE a
+        # working XPU venv. A +xpu wheel that reports torch.xpu.is_available() proves the
+        # host, so re-evaluate here, before the stale decision below. Only an xpu wheel can
+        # answer True, so this never fires on a cpu/cu*/rocm venv, and it repeats the scan's
+        # own gate so NVIDIA / wheel-served AMD keep winning exactly as they do above.
+        if ($installedTorchTag -eq "xpu" -and -not $script:IsIntelXpu -and
+            -not $HasNvidiaSmi -and -not $AmdHasGpuWheels -and
+            (Test-TorchXpuAvailable -PythonExe $VenvPyExe)) {
+            $script:IsIntelXpu = $true
+            substep "Intel XPU runtime confirmed by PyTorch -- keeping this XPU environment." "Cyan"
+        }
         $_pinnedIdx = Get-PinnedTorchIndexUrl
         $_expectedKnown = $true
         if ($_pinnedIdx) {
@@ -3204,6 +3250,21 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             } catch {}
             if ($_torchIsCpu) {
                 substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
+                $SkipPythonDeps = $false
+            }
+        }
+        # ...and the same for an Intel Arc / Data Center GPU. Without this the fast path
+        # never reaches the XPU install below, so an up-to-date package on a CPU wheel
+        # stays on CPU torch forever. $SkipPythonDeps is re-tested so an escape already
+        # taken above (AMD, anyio, incomplete install) does not probe twice.
+        if ($script:IsIntelXpu -and $SkipPythonDeps) {
+            $_torchIsXpu = $false
+            try {
+                & python -c "import torch, sys; sys.exit(0 if torch.xpu.is_available() else 1)" 2>$null
+                if ($LASTEXITCODE -eq 0) { $_torchIsXpu = $true }
+            } catch {}
+            if (-not $_torchIsXpu) {
+                substep "Intel GPU detected but PyTorch XPU is unavailable -- reinstalling XPU PyTorch" "Cyan"
                 $SkipPythonDeps = $false
             }
         }
@@ -3467,14 +3528,22 @@ if ($XpuIndexUrl) {
     # supports, so a bare trio could resolve out of range.
     $_xpuTrio = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0")
     if ($WinArm64NoAudio) { $_xpuTrio = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0") }
-    # --force-reinstall like the ROCm branch: an installed CPU wheel already satisfies
-    # torch>=2.4,<2.11.0, so uv would keep it and the venv would never migrate to XPU.
+    # Gated like $cpuForce below, NOT unconditional: install.ps1 already installed the XPU
+    # trio before calling setup with SKIP_STUDIO_BASE=1, so forcing every pass re-downloads
+    # multiple GB there and again on every `studio update`. Force only when the wheel has to
+    # change flavor -- a CPU (or cu*/rocm) wheel already satisfies torch>=2.4,<2.11.0, so uv
+    # would keep it and the venv would never migrate to XPU. $installedTorchTag is $null when
+    # the flavor could not be read, which also forces (safe direction).
+    $xpuForce = @()
+    if ($installedTorchTag -ne "xpu") { $xpuForce = @("--force-reinstall") }
+    # A changed pin repairs in place, so the existing +xpu wheel must be replaced too.
+    if ($script:PinChangedForceReinstall) { $xpuForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
-        Fast-Install @_xpuTrio --force-reinstall --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+        Fast-Install @_xpuTrio @xpuForce --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install @_xpuTrio --force-reinstall --index-url $XpuIndexUrl | Out-String
+        $output = Fast-Install @_xpuTrio @xpuForce --index-url $XpuIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
@@ -3487,6 +3556,8 @@ if ($XpuIndexUrl) {
         $TorchInstallIndexUrl = "$PyTorchWhlBase/cpu"
     } else {
         substep "GPU XPU PyTorch installed -- training and GPU inference will use the GPU" "Cyan"
+        # The wheel being in place does not mean the runtime initializes -- see the helper.
+        Assert-XpuRuntimeReady -PythonExe "python" | Out-Null
     }
 }
 

@@ -2215,18 +2215,19 @@ exit 0
                 if ($xpuGpu) { $script:IsIntelXpu = $true }
             }
         } catch {}
-        # A migrated env's torch can confirm the match, and can veto it only when it is
-        # itself an XPU build: a CPU build reports False for lacking XPU support, not for
-        # unsuitable hardware, and must not block the CPU-to-XPU upgrade.
+        # A migrated env's torch can only CONFIRM the match, never veto it. An unavailable
+        # runtime means a stale driver, not unsuitable hardware, and vetoing there was
+        # actively misleading: the /cpu index it fell back to cannot displace the installed
+        # +xpu wheel (PEP 440 ignores the local label, so it satisfies torch>=2.4,<2.11.0),
+        # so the user kept an XPU build while being told the GPU was unusable. The driver
+        # warning after the install below is the honest treatment; setup.ps1 agrees.
         if (Test-Path -LiteralPath $VenvPython) {
             try {
-                $xpuCheck = (& $VenvPython -c "import torch; print(torch.xpu.is_available(), '+xpu' in torch.__version__)" 2>$null | Out-String).Trim()
-                if ($xpuCheck -like 'True*') {
+                $xpuCheck = (& $VenvPython -c "import torch; print(torch.xpu.is_available())" 2>$null | Out-String)
+                if ($xpuCheck -match '(?m)^\s*True\s*$') {
                     $HasIntelGpu = $true
                     $script:IsIntelXpu = $true
                     if (-not $IntelGpuLabel) { $IntelGpuLabel = "Intel GPU (detected by PyTorch XPU)" }
-                } elseif ($xpuCheck -eq 'False True') {
-                    $script:IsIntelXpu = $false
                 }
             } catch {}
         }
@@ -2408,6 +2409,30 @@ exit 0
             if ($proc.ExitCode -ne 0 -or -not $torchVer) { return $null }
             return ConvertTo-TorchFlavorTag $torchVer
         } catch { return $null }
+    }
+
+    # Post-install XPU runtime check. Installing the +xpu wheel is not proof the GPU can
+    # actually be used: with an old Intel compute driver torch.xpu.is_available() is False
+    # and Unsloth then dies at import. Warn (never fall back) -- a driver update fixes it.
+    function Assert-XpuRuntimeReady {
+        param([string]$PythonExe)
+        # No interpreter to ask means something bigger already broke; stay quiet rather than
+        # blame the Intel driver. Same defensive shape as Get-InstalledTorchTag above.
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $true }
+        $xpuReady = $false
+        try {
+            # 2>$null so PS 5.1 cannot turn an import-time torch warning into a terminating
+            # error, and a line-anchored match so a stdout banner ahead of it hides nothing.
+            $probe = (& $PythonExe -c "import torch; print(torch.xpu.is_available())" 2>$null | Out-String)
+            if ($probe -match '(?m)^\s*True\s*$') { $xpuReady = $true }
+        } catch {}
+        if ($xpuReady) { return $true }
+        substep "[WARN] PyTorch XPU is installed but torch.xpu.is_available() is False." "Yellow"
+        substep "       The Intel GPU driver is most likely too old -- PyTorch XPU on Windows" "Yellow"
+        substep "       needs Intel Graphics Driver 32.0.101.6739 (WHQL) or newer." "Yellow"
+        substep "       Update the driver, then re-run. See:" "Yellow"
+        substep "       https://unsloth.ai/docs/get-started/install/intel" "Yellow"
+        return $false
     }
 
     # An explicit pin is authoritative: the AMD ROCm reroute below must not rewrite it
@@ -2670,6 +2695,13 @@ exit 0
                 # Drop the XPU expectation so flavor-repair below skips the failed index (as ROCm does).
                 $script:IsIntelXpu = $false
                 $TorchIndexUrl = $CpuFallbackIndexUrl
+            } else {
+                # A WMI marketing-name match says the part is XPU-capable, not that the compute
+                # runtime works: on a stale Intel driver the wheel installs fine and then never
+                # initializes, and unsloth/device_type.py raises NotImplementedError at import
+                # (a hard crash, not a chat-only downgrade). Warn accurately -- the wheel is
+                # correct and a driver update fixes it, so do NOT fall back to CPU.
+                Assert-XpuRuntimeReady -PythonExe $VenvPython | Out-Null
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
