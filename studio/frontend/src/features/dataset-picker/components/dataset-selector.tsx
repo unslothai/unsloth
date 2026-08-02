@@ -304,6 +304,7 @@ export function DatasetSelector() {
         selectHfDataset(item.repoId, {
           knownCached: true,
           localPath: item.cachePath,
+          preferLocalCache: true,
         });
         closePicker();
         return { kind: "handled" };
@@ -404,6 +405,7 @@ export function DatasetSelector() {
               selectHfDataset(item.repoId, {
                 knownCached: true,
                 localPath: item.cachePath,
+                preferLocalCache: true,
               });
             }
             closePicker();

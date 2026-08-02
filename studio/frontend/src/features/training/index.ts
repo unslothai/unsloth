@@ -87,6 +87,7 @@ export {
   shouldClearMissingLocalDatasetSelection,
 } from "./lib/dataset-selection";
 export {
+  TRAINING_DATASET_UPLOAD_ACCEPT,
   TRAINING_DATASET_UPLOAD_EXTENSIONS,
   TRAINING_DOCUMENT_REDIRECT_EXTENSIONS,
   classifyNativeTrainingDatasetDrop,

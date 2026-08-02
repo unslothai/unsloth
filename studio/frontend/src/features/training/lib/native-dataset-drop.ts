@@ -7,6 +7,8 @@ export const TRAINING_DATASET_UPLOAD_EXTENSIONS = [
   ".json",
   ".parquet",
 ] as const;
+export const TRAINING_DATASET_UPLOAD_ACCEPT =
+  TRAINING_DATASET_UPLOAD_EXTENSIONS.join(",");
 
 export const TRAINING_DOCUMENT_REDIRECT_EXTENSIONS = [
   ".pdf",

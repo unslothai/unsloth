@@ -31,6 +31,7 @@ export interface TrainingModelSelectionOptions
 export interface DatasetCacheReferenceOptions {
   knownCached?: boolean;
   localPath?: string | null;
+  preferLocalCache?: boolean;
 }
 
 export type BrowseDatasetSelection =

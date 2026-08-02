@@ -30,6 +30,15 @@ export function createHfBrowseDatasetSelection(
   };
 }
 
+export function datasetSelectionStreamingPatch(
+  selection: Extract<BrowseDatasetSelection, { source: "huggingface" }>,
+  options?: DatasetCacheReferenceOptions,
+): Partial<Pick<TrainingConfigState, "datasetStreaming">> {
+  return selection.knownCached && options?.preferLocalCache
+    ? { datasetStreaming: false }
+    : {};
+}
+
 export function createUploadBrowseDatasetSelection(
   uploadedFile: string | null,
 ): Extract<BrowseDatasetSelection, { source: "upload" }> {

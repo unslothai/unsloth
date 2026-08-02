@@ -5,7 +5,10 @@ import { PICKER_FOCUS_VISIBLE_CLASS } from "@/components/resource-picker/picker-
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { datasetDisplayName } from "@/features/dataset-picker";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  TRAINING_DATASET_UPLOAD_ACCEPT,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
@@ -162,7 +165,7 @@ export function EvaluationDatasetUpload({
       <input
         ref={evalFileInputRef}
         type="file"
-        accept=".json,.jsonl,.csv,.parquet"
+        accept={TRAINING_DATASET_UPLOAD_ACCEPT}
         className="hidden"
         onChange={(event) => {
           uploads.handleEvalFileChange(event).catch(() => undefined);

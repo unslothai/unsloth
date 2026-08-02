@@ -11,13 +11,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from typing import Any, Optional, List, Dict, Literal
 
 from hub.schemas.inventory import ModelFormat
-from hub.utils.paths import is_valid_repo_id
 from utils.training_runs import normalize_project_name
 
 
 # ASCII integer, optional single sign. Rejects "++512" and Unicode digits
 # ("５１２") that slip through str.isdigit() + int().
 _INT_RE = re.compile(r"[+-]?[0-9]+")
+_HF_DATASET_ID_SEGMENT_RE = re.compile(
+    r"[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?"
+)
 
 
 _MAX_BATCH_SIZE = 4096
@@ -230,8 +232,15 @@ class TrainingStartRequest(BaseModel):
         v = v.strip()
         if not v:
             return None
-        if not is_valid_repo_id(v):
-            raise ValueError("hf_dataset must be a valid Hugging Face repo id")
+        if len(v) > 256:
+            raise ValueError("hf_dataset is too long (max 256 chars)")
+        if ".." in v:
+            raise ValueError("hf_dataset must not contain '..'")
+        if any(
+            _HF_DATASET_ID_SEGMENT_RE.fullmatch(segment) is None
+            for segment in v.split("/")
+        ):
+            raise ValueError("hf_dataset contains invalid characters or path segments")
         return v
 
     @field_validator("subset")

@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  TRAINING_DATASET_UPLOAD_ACCEPT,
   TRAINING_DATASET_UPLOAD_EXTENSIONS,
   classifyNativeTrainingDatasetDrop,
   isTrainingDatasetUploadPath,
@@ -124,4 +125,8 @@ test("frontend, backend, and Rust accept the same native dataset extensions", ()
 
   assert.deepEqual([...TRAINING_DATASET_UPLOAD_EXTENSIONS].sort(), backend);
   assert.deepEqual([...TRAINING_DATASET_UPLOAD_EXTENSIONS].sort(), rust);
+  assert.equal(
+    TRAINING_DATASET_UPLOAD_ACCEPT,
+    TRAINING_DATASET_UPLOAD_EXTENSIONS.join(","),
+  );
 });

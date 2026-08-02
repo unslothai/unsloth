@@ -187,7 +187,14 @@ def test_dataset_slice_bounds_are_non_negative():
 
 @pytest.mark.parametrize(
     "bad_hf_dataset",
-    ["../../etc/passwd", "org/../../secret", "a" * 257],
+    [
+        "../../etc/passwd",
+        "org/../../secret",
+        "my dataset!",
+        "owner//repo",
+        ".repo",
+        "a" * 257,
+    ],
 )
 def test_hf_dataset_rejects_unsafe_values(bad_hf_dataset):
     with pytest.raises(ValidationError):
@@ -200,17 +207,18 @@ def test_hf_dataset_rejects_unsafe_values(bad_hf_dataset):
 
 
 @pytest.mark.parametrize(
-    "bad_hf_dataset",
-    ["my dataset!", "datasets/foo/bar", ".repo", "repo.git", "foo--bar"],
+    "dataset_id",
+    ["datasets/foo/bar", "repo.git", "foo--bar"],
 )
-def test_hf_dataset_rejects_invalid_hub_ids(bad_hf_dataset):
-    with pytest.raises(ValidationError):
-        TrainingStartRequest(
-            model_name = "unsloth/test",
-            training_type = "LoRA/QLoRA",
-            format_type = "alpaca",
-            hf_dataset = bad_hf_dataset,
-        )
+def test_hf_dataset_defers_benign_repo_id_validation_to_hugging_face(dataset_id):
+    request = TrainingStartRequest(
+        model_name = "unsloth/test",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = dataset_id,
+    )
+
+    assert request.hf_dataset == dataset_id
 
 
 def test_hf_dataset_accepts_max_length_namespaced_id():

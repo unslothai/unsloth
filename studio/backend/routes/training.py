@@ -423,6 +423,7 @@ def _reject_untrainable_model_request(
     model_name = request.model_name
     model_local_path: Optional[str] = None
     cached_model_pin: Optional[tuple[str, str]] = None
+    offline_mode = False
     if is_local_path(request.model_name):
         try:
             path = Path(normalize_path(request.model_name)).expanduser().resolve(strict = True)
@@ -466,6 +467,16 @@ def _reject_untrainable_model_request(
                     canonical_model_repo_id(request.model_name),
                     snapshot,
                 )
+    if path is None and offline_mode:
+        raise _model_preflight_error(
+            409,
+            "hf_model_not_cached_offline",
+            (
+                "Offline mode is enabled, but the selected model is not available in the "
+                "local cache. Disable offline mode to download it, or select an on-device "
+                "model before starting training."
+            ),
+        )
     metadata_error: Optional[HTTPException] = None
     if path is None:
         try:

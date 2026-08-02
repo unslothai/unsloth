@@ -134,6 +134,23 @@ def test_start_rejects_claimed_cache_without_trainable_weights(tmp_path):
     assert "does not contain trainable weights" in exc_info.value.detail
 
 
+@pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_uncached_offline_model_fails_without_remote_probe(monkeypatch, offline_variable):
+    route = _load_route_module(f"training_route_uncached_offline_{offline_variable}")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv(offline_variable, "true")
+
+    with patch.object(route, "_remote_untrainable_model_format") as remote_probe:
+        with pytest.raises(HTTPException) as exc_info:
+            route._reject_untrainable_model_request(_request())
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "hf_model_not_cached_offline"
+    assert "not available in the local cache" in exc_info.value.detail["message"]
+    remote_probe.assert_not_called()
+
+
 def test_start_rejects_partial_adapter_local_dir(tmp_path):
     route = _load_route_module("training_route_reject_partial_adapter_dir")
     (tmp_path / "adapter_config.json").write_text("{}")

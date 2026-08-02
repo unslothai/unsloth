@@ -17,6 +17,7 @@ import {
   TRAINING_DATASET_UPLOAD_EXTENSIONS,
   TRAINING_DOCUMENT_REDIRECT_EXTENSIONS,
   classifyNativeTrainingDatasetDrop,
+  isTrainingDatasetUploadPath,
   nativeDropPositionHitsBounds,
   uploadNativeTrainingDataset,
   uploadTrainingDataset,
@@ -46,7 +47,12 @@ const TRAINING_UPLOAD_EXTENSION_SET = new Set<string>(
   TRAINING_UPLOAD_EXTENSIONS,
 );
 export const TRAINING_UPLOAD_ACCEPT = TRAINING_UPLOAD_EXTENSIONS.join(",");
-const TRAINING_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet, PDF, DOCX, TXT";
+const TRAINING_UPLOAD_LABEL = TRAINING_UPLOAD_EXTENSIONS.map((extension) =>
+  extension.slice(1).toUpperCase(),
+).join(", ");
+const TRAINING_DATASET_UPLOAD_LABEL = TRAINING_DATASET_UPLOAD_EXTENSIONS.map(
+  (extension) => extension.slice(1).toUpperCase(),
+).join(", ");
 const DOCUMENT_REDIRECT_EXTENSIONS = new Set<string>(
   TRAINING_DOCUMENT_REDIRECT_EXTENSIONS,
 );
@@ -403,6 +409,14 @@ export function useDatasetUploads() {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (file) {
+      if (!isTrainingDatasetUploadPath(file.name)) {
+        toast.error(t("studio.dataset.unsupportedFileType"), {
+          description: t("studio.dataset.uploadOneFileType", {
+            types: TRAINING_DATASET_UPLOAD_LABEL,
+          }),
+        });
+        return;
+      }
       await uploadFile(
         file,
         setUploadedEvalFile,

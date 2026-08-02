@@ -43,6 +43,7 @@ import {
   clampTrainingStep,
   createHfBrowseDatasetSelection,
   createUploadBrowseDatasetSelection,
+  datasetSelectionStreamingPatch,
   emptyManualMapping,
   formatStreamingDisabledOptions,
   hasSeparateStreamingEvalSplit,
@@ -642,6 +643,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           ...resetDatasetState(),
           datasetKnownCached: browseDatasetSelection.knownCached,
           datasetLocalPath: browseDatasetSelection.localPath,
+          ...datasetSelectionStreamingPatch(browseDatasetSelection, options),
         });
         if (datasetId) {
           runDatasetCheck(datasetId, "train");
