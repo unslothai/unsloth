@@ -487,6 +487,7 @@ _tauri_torch_index_family() {
         */cu128) echo "cu128" ;;
         */cu130) echo "cu130" ;;
         */cpu) echo "cpu" ;;
+        */xpu) echo "xpu" ;;
         */rocm[0-9]*.[0-9]*)
             _diag_family=${_diag_url##*/}
             case "$_diag_family" in
@@ -522,6 +523,7 @@ _tauri_gpu_branch() {
                 echo "rocm"
             fi ;;
         radeon) echo "rocm_radeon" ;;
+        xpu) echo "xpu" ;;
         cpu) echo "cpu" ;;
         none) echo "no_torch" ;;
         *) echo "unknown" ;;
