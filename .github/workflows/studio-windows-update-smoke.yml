@@ -389,12 +389,21 @@ jobs:
             ls -la "$SCRIPTS" | grep -i unsloth || true
             exit 1
           fi
+          # Running at all is the property under test. The wreckage this prevents
+          # is a stub that starts and then cannot import its own package, so the
+          # CLI answering here is what proves unsloth_cli survived.
+          #
+          # Deliberately not studio_install_ok yet: the raw force-reinstall above
+          # moved the installed version without re-running setup, so the manifest
+          # is legitimately out of date, and the update that would refresh it is
+          # the one just refused. Asserting it here would be asserting that a
+          # refusal repaired something, which is the opposite of refusing.
           CAPS="$("$SCRIPTS/unsloth.exe" studio desktop-capabilities --json)" || {
             echo "::error::the CLI does not run after a refused update."
             exit 1
           }
-          echo "$CAPS" | jq -e '.studio_install_ok == true' >/dev/null || {
-            echo "::error::the CLI runs but reports the install as damaged."
+          echo "$CAPS" | jq -e '.desktop_protocol_version' >/dev/null || {
+            echo "::error::the CLI ran but produced nothing usable: $CAPS"
             exit 1
           }
           if ls "$SCRIPTS"/*.deleteme >/dev/null 2>&1; then
@@ -404,13 +413,24 @@ jobs:
           fi
 
           # And the update it refused must still work through the launcher, or the
-          # advice it printed is useless.
+          # advice it printed is useless. This is also where the install becomes
+          # whole again, so studio_install_ok is asserted after it rather than
+          # before.
           "$SHIM_UPD" studio update --local > logs/update_after_refusal.log 2>&1 || {
             echo "::error::the launcher route it points people at does not work."
             tail -40 logs/update_after_refusal.log
             exit 1
           }
-          echo "a venv-launched replacement refuses safely and the launcher route works"
+          CAPS_AFTER="$("$SHIM_UPD" studio desktop-capabilities --json)" || {
+            echo "::error::the CLI does not run after the launcher route completed."
+            exit 1
+          }
+          echo "$CAPS_AFTER"
+          echo "$CAPS_AFTER" | jq -e '.studio_install_ok == true' >/dev/null || {
+            echo "::error::the launcher route completed but left the install damaged."
+            exit 1
+          }
+          echo "a venv-launched replacement refuses safely and the launcher route repairs it"
 
       - name: Boot Unsloth briefly to confirm the install is still usable
         run: |
