@@ -19,6 +19,7 @@ on:
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'unsloth_cli/__init__.py'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/python/test_cross_platform_parity.py'
@@ -30,6 +31,7 @@ on:
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'unsloth_cli/__init__.py'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/python/test_cross_platform_parity.py'

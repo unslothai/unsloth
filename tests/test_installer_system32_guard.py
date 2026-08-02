@@ -33,7 +33,7 @@ def _install_ps1() -> str:
 def test_install_ps1_leaves_system_directory_before_installing():
     """The guard must fire before winget/Python/uv/venv/PyTorch, not after the download."""
     src = _install_ps1()
-    guard_idx = src.index("$InSystemDir = $CurrentDir -and (")
+    guard_idx = src.index("$InSystemDir = Test-UnderSystemRoot $CurrentDir")
     for marker in (
         'step "winget" "available"',
         "uv venv $VenvDir --python",
@@ -59,7 +59,7 @@ def test_install_ps1_guard_covers_the_whole_windows_directory():
 
 def test_install_ps1_guard_relocates_and_keeps_relative_llama_cpp_dir():
     src = _install_ps1()
-    idx = src.index("$InSystemDir = $CurrentDir -and (")
+    idx = src.index("$InSystemDir = Test-UnderSystemRoot $CurrentDir")
     block = src[idx : idx + 3000]
     assert "Set-Location -LiteralPath $candidate" in block, "the guard must relocate, not just warn"
     llama_idx = block.index("GetUnresolvedProviderPathFromPSPath($WithLlamaCppDir)")
@@ -79,7 +79,7 @@ def test_install_ps1_guard_rejects_candidates_inside_the_windows_directory():
     idx = src.index("$SafeDirCandidates = @(")
     block = src[idx : idx + 700]
     assert (
-        "StartsWith(" in block and "$SystemRootDir" in block
+        "Test-UnderSystemRoot" in block
     ), "candidate directories under %SystemRoot% must be filtered out"
 
 
@@ -99,9 +99,16 @@ def test_install_ps1_guard_failure_message_is_actionable():
     assert "SYSTEM" in block, "name the account type that actually lands here"
 
 
+def _extract_helper() -> str:
+    """install.ps1's Test-UnderSystemRoot, verbatim, so the tests cannot drift from it."""
+    src = _install_ps1()
+    start = src.index("    function Test-UnderSystemRoot {")
+    return src[start : src.index("\n    }\n", start) + len("\n    }\n")]
+
+
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize(
-    ("current_dir", "expected"),
+    ("path", "expected"),
     [
         (r"C:\Windows\System32", "True"),
         (r"c:\windows\system32", "True"),
@@ -109,24 +116,22 @@ def test_install_ps1_guard_failure_message_is_actionable():
         (r"C:\Windows\SysWOW64", "True"),
         (r"C:\Windows", "True"),
         (r"C:\Users\me", "False"),
+        # Siblings sharing the prefix. Rejecting these would abort an install with a
+        # supported absolute UNSLOTH_STUDIO_HOME override.
         (r"C:\Windows2", "False"),
         (r"C:\WindowsApps\stuff", "False"),
+        (r"C:\WindowsStudio", "False"),
+        (r"C:\Windows.old\Users\me", "False"),
     ],
 )
-def test_install_ps1_system_dir_match(current_dir: str, expected: str):
-    """Run the extracted match expression against Windows-shaped paths (works on any pwsh host)."""
-    src = _install_ps1()
-    match = re.search(
-        r"\$InSystemDir = \$CurrentDir -and \(\n.*?\n    \)\n",
-        src,
-        flags = re.DOTALL,
-    )
-    assert match is not None, "install.ps1 $InSystemDir expression not found"
+def test_install_ps1_under_system_root(path: str, expected: str):
+    """Windows-shaped paths through the real helper; the separator is injected, since a
+    pwsh on Linux reports / for DirectorySeparatorChar."""
     script = (
-        f"$SystemRootDir = 'C:\\Windows'\n"
-        f"$CurrentDir = '{current_dir}'\n"
-        f"{match.group(0)}"
-        '"RESULT=$InSystemDir"\n'
+        "$SystemRootDir = 'C:\\Windows'\n"
+        "$SystemRootPrefix = 'C:\\Windows\\'\n"
+        f"{_extract_helper()}"
+        f"\"RESULT=$(Test-UnderSystemRoot '{path}')\"\n"
     )
     result = subprocess.run(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
@@ -136,6 +141,15 @@ def test_install_ps1_system_dir_match(current_dir: str, expected: str):
     )
     assert result.returncode == 0, result.stderr
     assert f"RESULT={expected}" in result.stdout, result.stdout
+
+
+def test_install_ps1_containment_has_a_path_boundary():
+    src = _install_ps1()
+    assert (
+        "$SystemRootPrefix = $SystemRootDir + [System.IO.Path]::DirectorySeparatorChar" in src
+    ), "the prefix must carry a separator so siblings are not swallowed"
+    helper = _extract_helper()
+    assert "$SystemRootPrefix" in helper and "$SystemRootDir + '\\'" not in helper
 
 
 def _extract_relocation_block() -> str:
@@ -169,6 +183,8 @@ def _run_relocation_block(
         + f"$CurrentDir = '{current_dir}'\n"
         + f"$WithLlamaCppDir = '{with_llama_cpp_dir}'\n"
         + f"$StudioHome = '{studio_home or (home_env / '.unsloth' / 'studio')}'\n"
+        + "$SystemRootPrefix = $SystemRootDir + [System.IO.Path]::DirectorySeparatorChar\n"
+        + _extract_helper()
         + "Set-Location -LiteralPath $CurrentDir\n"
         + _extract_relocation_block()
         + '\nWrite-Host "CWD:$((Get-Location).ProviderPath)"\n'
@@ -249,6 +265,26 @@ def test_relocation_block_refuses_a_studio_home_under_the_system_root(tmp_path):
     assert "would install into" in res.stdout
     assert "normal user account" in res.stdout
     assert "FAILED:" in res.stdout, "must route through Exit-InstallFailure for rollback"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_relocation_block_allows_a_studio_home_beside_the_system_root(tmp_path):
+    """UNSLOTH_STUDIO_HOME=C:\\WindowsStudio is a supported absolute override, not a descendant."""
+    system_root = tmp_path / "Windows"
+    current_dir = system_root / "System32"
+    current_dir.mkdir(parents = True)
+    home = tmp_path / "home"
+    home.mkdir()
+    res = _run_relocation_block(
+        tmp_path,
+        system_root,
+        current_dir,
+        home,
+        studio_home = tmp_path / "WindowsStudio",
+    )
+    assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
+    assert "would install into" not in res.stdout, "a sibling of the Windows directory is fine"
+    assert f"CWD:{home}" in res.stdout
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")

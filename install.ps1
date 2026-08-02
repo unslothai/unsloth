@@ -1144,6 +1144,9 @@ exit 0
     # fire until it stops.
     $SystemRootDir = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
     $SystemRootDir = [System.IO.Path]::GetFullPath($SystemRootDir).TrimEnd('\')
+    # Every containment test below compares against this, never the bare root: a prefix
+    # without the separator also swallows siblings like C:\Windows.old and C:\WindowsStudio.
+    $SystemRootPrefix = $SystemRootDir + [System.IO.Path]::DirectorySeparatorChar
     $CurrentDir = $null
     try {
         # -PSProvider FileSystem: a caller on HKLM:\ still has the filesystem
@@ -1154,10 +1157,14 @@ exit 0
     } catch {
         $CurrentDir = $null
     }
-    $InSystemDir = $CurrentDir -and (
-        $CurrentDir.Equals($SystemRootDir, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $CurrentDir.StartsWith($SystemRootDir + '\', [System.StringComparison]::OrdinalIgnoreCase)
-    )
+    function Test-UnderSystemRoot {
+        param([string]$Path)
+        return $Path -and (
+            $Path.Equals($SystemRootDir, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $Path.StartsWith($SystemRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+        )
+    }
+    $InSystemDir = Test-UnderSystemRoot $CurrentDir
     if ($InSystemDir) {
         if ($WithLlamaCppDir) {
             # Anchor to the location the user typed it against. Covers the partially
@@ -1173,15 +1180,11 @@ exit 0
             }
         }
         # SYSTEM's profile is C:\Windows\System32\config\systemprofile, so a candidate
-        # under the Windows directory is no better than where we already are. Prefix
-        # match with no trailing separator, deliberately: it also skips a sibling like
-        # C:\Windows.old, and losing a candidate is safe where accepting one is not.
+        # under the Windows directory is no better than where we already are.
         $SafeDirCandidates = @($env:USERPROFILE, $HOME, $env:PUBLIC, $env:TEMP) |
             Where-Object {
                 $_ -and (Test-Path -LiteralPath $_ -PathType Container) -and
-                -not ([System.IO.Path]::GetFullPath($_).TrimEnd('\')).StartsWith(
-                    $SystemRootDir, [System.StringComparison]::OrdinalIgnoreCase
-                )
+                -not (Test-UnderSystemRoot ([System.IO.Path]::GetFullPath($_).TrimEnd('\')))
             }
         $SafeDir = $null
         foreach ($candidate in $SafeDirCandidates) {
@@ -1200,7 +1203,7 @@ exit 0
         # before this block existed, only with a reason attached.
         $StudioHomeFull = ""
         try { $StudioHomeFull = [System.IO.Path]::GetFullPath($StudioHome).TrimEnd('\') } catch {}
-        if ($SafeDir -and $StudioHomeFull.StartsWith($SystemRootDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($SafeDir -and (Test-UnderSystemRoot $StudioHomeFull)) {
             Write-Host ""
             Write-Host "[ERROR] Unsloth would install into $StudioHomeFull," -ForegroundColor Red
             Write-Host "        which is inside $SystemRootDir." -ForegroundColor Yellow
