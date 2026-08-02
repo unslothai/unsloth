@@ -1882,7 +1882,13 @@ class TestDropEmptyAssistantSentinels:
         assert out[1]["reasoning_content"] == "I am thinking..."
         assert out[1]["content"] == ""
         # Truly empty sentinel was still dropped.
-        assert all(m["role"] != "assistant" or m.get("content") or m.get("tool_calls") or m.get("reasoning_content") for m in out)
+        assert all(
+            m["role"] != "assistant"
+            or m.get("content")
+            or m.get("tool_calls")
+            or m.get("reasoning_content")
+            for m in out
+        )
 
     def test_openai_messages_for_passthrough_forwards_reasoning_content(self):
         """``reasoning_content`` on an assistant message must reach the wire
@@ -1927,6 +1933,7 @@ class TestDropEmptyAssistantSentinels:
         ``_strip_provider_synthetic_tool_history`` must NOT scrub it the way
         it scrubs ``extra_content``."""
         from routes.inference import _strip_provider_synthetic_tool_history
+
         msgs = [
             {
                 "role": "assistant",
