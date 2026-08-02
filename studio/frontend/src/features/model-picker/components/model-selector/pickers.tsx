@@ -35,7 +35,7 @@ import {
   TransportConflictDialog,
   deleteCachedModel,
   listGgufVariants as listGgufVariantsCached,
-  useGgufVariantsCacheVersion,
+  useGgufVariantsCacheVersions,
   useHubInfiniteScroll,
 } from "@/features/hub";
 import {
@@ -730,23 +730,25 @@ const SOLE_QUANT_BATCH = 6;
 
 /** On Device repos holding exactly one quant on disk, keyed by repo id. With
  *  "Show all quantizations" off there is nothing else to pick, so those repos
- *  collapse into one pinned-style row. Shares the expander's variants cache. */
+ *  collapse into one pinned-style row. */
 function useSoleDownloadedQuants(
   repos: readonly CachedGgufRepo[],
   { enabled, hfToken }: { enabled: boolean; hfToken?: string },
 ): ReadonlyMap<string, GgufVariantDetail> {
-  // A download or delete bumps this, so a repo that gained or lost a sibling
-  // quant switches row style.
-  const variantsVersion = useGgufVariantsCacheVersion();
   const targets = useMemo(
     () =>
       repos.map((repo) => ({
         repoId: repo.repo_id,
-        // Same local source the expander passes, so both read one cache entry.
         localSource: repo.load_id || repo.cache_path || null,
       })),
     [repos],
   );
+  const repoIds = useMemo(
+    () => targets.map((target) => target.repoId),
+    [targets],
+  );
+  // A download or delete invalidates one repo, so watch each repo's version.
+  const variantsVersion = useGgufVariantsCacheVersions(repoIds);
   const fetchKey = useMemo(
     () =>
       `${variantsVersion}::${enabled ? "on" : "off"}::${targets
@@ -773,18 +775,16 @@ function useSoleDownloadedQuants(
         await Promise.all(
           targets.slice(i, i + SOLE_QUANT_BATCH).map(async (target) => {
             try {
-              const res = await listGgufVariants(
-                target.repoId,
-                hfToken,
-                target.localSource
-                  ? { localPath: target.localSource }
-                  : undefined,
-              );
-              const downloaded = normalizeGgufVariantsResponse(
-                res,
-              ).variants.filter((variant) => variant.downloaded === true);
-              if (downloaded.length === 1) {
-                found.set(target.repoId, downloaded[0]);
+              // Disk-only and client-cached: no remote listing per repo.
+              const res = await listGgufVariantsCached(target.repoId, hfToken, {
+                preferLocalCache: true,
+                localPath: target.localSource,
+              });
+              const local = normalizeGgufVariantsResponse(res).variants;
+              // One file on disk and nothing torn beside it. A partial quant
+              // keeps the expander, where it can be resumed or deleted.
+              if (local.length === 1 && local[0].downloaded === true) {
+                found.set(target.repoId, local[0]);
               }
             } catch {
               // Unresolved repos keep their expandable row.
@@ -3055,32 +3055,6 @@ export function HubModelPicker({
               unpinLabel: "Unpin",
               onToggle: () => togglePinned(c.repo_id, variant.quant),
             }}
-            update={
-              variant.update_available
-                ? {
-                    title: "Update cached model?",
-                    description: (
-                      <>
-                        This will update{" "}
-                        <span className="font-medium text-foreground">
-                          {c.repo_id} ({variant.quant})
-                        </span>
-                        {"."}
-                      </>
-                    ),
-                    repoId: c.repo_id,
-                    variant: variant.quant,
-                    disabled: loadedModelId === c.repo_id,
-                    onConfirm: () =>
-                      updateGgufVariant(
-                        c.repo_id,
-                        variant.quant,
-                        expectedBytes,
-                      ),
-                    onUpdated: refreshCachedLists,
-                  }
-                : undefined
-            }
             del={{
               title: "Delete cached model?",
               description: (
