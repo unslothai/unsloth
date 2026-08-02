@@ -443,14 +443,32 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     assert "const historyClearGeneration = chatHistoryClearBoundary.capture()" in target
     assert "chatHistoryClearBoundary.capture() !== historyClearGeneration" in target
     assert "initializedFreshThreadId = initializingFreshThread ? remoteId : null" in target
+    assert "freshThreadAppendAccepted = true" in target
+    assert "removeFreshThreadPersistedAfterAbort()" in target
     assert "markChatThreadDeleted(initializedFreshThreadId)" in target
     assert "deleteStoredChatThreads([initializedFreshThreadId])" in target
-    assert "removeFreshThreadPersistedAfterClear();" in target
+    assert "aui.threads().switchToNewThread()" in target
     assert "chatHistoryClearBoundary.advance();" in CLEAR_ALL_CHATS
     assert CLEAR_ALL_CHATS.index("chatHistoryClearBoundary.advance();") < CLEAR_ALL_CHATS.index(
         "requestPromptQueueStop();"
     )
     assert "class ChatHistoryClearBoundary" in CHAT_CLEAR_BOUNDARY
+
+
+def test_noop_setting_refreshes_do_not_invalidate_pending_queues():
+    assert "shouldAdvanceQueuedSettingsEpoch(" in CHAT_RUNTIME_STORE
+    set_params = _between(CHAT_RUNTIME_STORE, "setParams: (params, options)", "setCustomPresets:")
+    assert "state.params," in set_params
+    assert "params," in set_params
+    assert "queuedSettingsChanged" in set_params
+    set_checkpoint = _between(
+        CHAT_RUNTIME_STORE,
+        "setCheckpoint: (modelId, ggufVariant, options)",
+        "setActiveThreadId:",
+    )
+    assert "nextGgufVariant" in set_checkpoint
+    assert "nextDeepResearchEnabled" in set_checkpoint
+    assert "queuedSettingsChanged" in set_checkpoint
 
 
 def test_stop_delete_archive_and_clear_are_thread_scoped():

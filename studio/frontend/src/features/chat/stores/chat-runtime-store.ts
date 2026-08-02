@@ -36,6 +36,7 @@ import {
   chatModelLifecycleGate,
   type ModelLifecycleLease,
 } from "../utils/model-lifecycle-gate";
+import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { ResearchWebsitePolicy } from "../types/research";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
@@ -1708,6 +1709,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Bump version unconditionally so a late hydration response won't clobber
       // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
       const changedParams = getChangedInferenceParams(params, state.params);
+      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
+        state.params,
+        params,
+        options?.trackQueuedSettings !== false,
+      );
       if (
         options?.persist !== false &&
         state.settingsHydrated &&
@@ -1721,9 +1727,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       return {
         params,
-        ...(options?.trackQueuedSettings === false
-          ? {}
-          : { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }),
+        ...(queuedSettingsChanged
+          ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
+          : {}),
         ...(checkpointChanged
           ? { contextUsage: null, contextUsageByThreadId: {} }
           : {}),
@@ -1914,16 +1920,35 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           nextMaxTokens = cap;
         }
       }
+      const nextGgufVariant = ggufVariant ?? null;
+      const nextDeepResearchEnabled = isExternalModelId(modelId)
+        ? false
+        : state.deepResearchEnabled;
+      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
+        {
+          checkpoint: state.params.checkpoint,
+          maxTokens: state.params.maxTokens,
+          ggufVariant: state.activeGgufVariant,
+          deepResearchEnabled: state.deepResearchEnabled,
+        },
+        {
+          checkpoint: modelId,
+          maxTokens: nextMaxTokens,
+          ggufVariant: nextGgufVariant,
+          deepResearchEnabled: nextDeepResearchEnabled,
+        },
+        options?.trackQueuedSettings !== false,
+      );
       return {
         params: {
           ...state.params,
           checkpoint: modelId,
           maxTokens: nextMaxTokens,
         },
-        activeGgufVariant: ggufVariant ?? null,
-        ...(options?.trackQueuedSettings === false
-          ? {}
-          : { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }),
+        activeGgufVariant: nextGgufVariant,
+        ...(queuedSettingsChanged
+          ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
+          : {}),
         // Provenance and the spec-fallback reason both describe the model
         // being replaced, so they go together on a real change. Dropping only
         // one leaves the settings sheet pairing a stale reason with the wrong

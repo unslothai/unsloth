@@ -2264,20 +2264,28 @@ const Composer: FC<{
     let cancelled = false;
     let shouldCorrectPersistedModel: boolean | null = null;
     let initializedFreshThreadId: string | null = null;
-    const removeFreshThreadPersistedAfterClear = () => {
+    let freshThreadAppendAccepted = false;
+    const removeFreshThreadPersistedAfterAbort = (force = false) => {
+      const historyWasCleared =
+        chatHistoryClearBoundary.capture() !== historyClearGeneration;
       if (
         !initializedFreshThreadId ||
-        chatHistoryClearBoundary.capture() === historyClearGeneration
+        freshThreadAppendAccepted ||
+        (!force && !cancelled && !historyWasCleared)
       ) {
         return false;
       }
-      // Tombstone synchronously so a completed Clear all cannot briefly show a
-      // record whose initializer won the storage race. Backend cleanup may
-      // finish afterward without making the thread visible again.
+      // Tombstone synchronously so a late initializer cannot leave an empty
+      // record visible while backend cleanup completes.
       markChatThreadDeleted(initializedFreshThreadId);
       void deleteStoredChatThreads([initializedFreshThreadId]).catch(
         () => undefined,
       );
+      if (!historyWasCleared && isTargetCurrentThread()) {
+        void Promise.resolve(aui.threads().switchToNewThread()).catch(
+          () => undefined,
+        );
+      }
       return true;
     };
     const discardOldestPendingSettings = () => {
@@ -2337,7 +2345,7 @@ const Composer: FC<{
             .initialize();
           initializedFreshThreadId = initializingFreshThread ? remoteId : null;
           if (
-            removeFreshThreadPersistedAfterClear() ||
+            removeFreshThreadPersistedAfterAbort() ||
             cancelled ||
             !pendingSettingsIds.has(settingsId)
           ) {
@@ -2356,7 +2364,7 @@ const Composer: FC<{
             });
             shouldCorrectPersistedModel = false;
             if (
-              removeFreshThreadPersistedAfterClear() ||
+              removeFreshThreadPersistedAfterAbort() ||
               cancelled ||
               !pendingSettingsIds.has(settingsId)
             ) {
@@ -2370,6 +2378,7 @@ const Composer: FC<{
           const appendResult = thread.append(
             appendTextToThread(prompt),
           ) as unknown;
+          freshThreadAppendAccepted = true;
           // Calling append synchronously accepts the user turn; its promise
           // follows the whole provider run. Do not turn a later paid/streaming
           // failure into an automatic duplicate dispatch.
@@ -2380,6 +2389,7 @@ const Composer: FC<{
             void (appendResult as Promise<void>).catch(() => undefined);
           }
         } catch (error) {
+          removeFreshThreadPersistedAfterAbort(true);
           pendingSettingsIds.delete(settingsId);
           discardQueuedChatRunSettings(settingsId);
           throw error;
@@ -2388,7 +2398,7 @@ const Composer: FC<{
       complete: discardOldestPendingSettings,
       cancel: () => {
         cancelled = true;
-        removeFreshThreadPersistedAfterClear();
+        removeFreshThreadPersistedAfterAbort();
         for (const settingsId of pendingSettingsIds) {
           discardQueuedChatRunSettings(settingsId);
         }
