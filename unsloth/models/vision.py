@@ -636,6 +636,7 @@ from .loader_utils import (
     _hub_repo_or_local_path,
     _is_offline_related_error,
     _load_pretrained_tokenizer_fast,
+    _mark_loaded_revision,
     _offline_aware_load,
 )
 
@@ -1775,6 +1776,10 @@ class FastBaseModel:
         for _ in range(3):
             gc.collect()
             clean_gpu_cache()
+        # Saving restores sentencepiece assets from the repo name alone, which does not
+        # carry the branch this was read at. Stamped here rather than at each of the
+        # processor branches above, so a patch fallback cannot lose it.
+        _mark_loaded_revision(tokenizer, _tokenizer_revision)
         return model, tokenizer
 
     @staticmethod

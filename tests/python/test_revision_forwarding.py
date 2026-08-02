@@ -861,3 +861,19 @@ def test_the_sentencepiece_restore_reads_the_stamped_ref(callee):
     assert calls, f"{callee} not found on the save path"
     for call in calls:
         assert _revision_kwarg(call) is not None, f"{callee} at line {call.lineno} drops the ref"
+
+
+def test_the_vision_path_stamps_its_pinned_tokenizer_too():
+    """FastBaseModel builds its processor without load_correct_tokenizer, so the stamp the
+    save path reads has to be applied here as well or a pinned VLM load saves the default
+    branch's tokenizer.model. At the return, so a patch fallback cannot lose it."""
+    function = _function(_tree(VISION), "from_pretrained", "FastBaseModel")
+    stamps = _calls(function, "_mark_loaded_revision")
+    assert stamps, "the vision path never stamps its loaded ref"
+    for call in stamps:
+        assert any(
+            getattr(a, "id", None) == "_tokenizer_revision" for a in call.args
+        ), "stamp the ref the tokenizer was actually read at"
+    returns = [n for n in ast.walk(function) if isinstance(n, ast.Return)]
+    assert returns
+    assert max(c.lineno for c in stamps) < max(r.lineno for r in returns)
