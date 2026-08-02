@@ -351,7 +351,7 @@ function Get-PathDenialDetail {
     if (-not $item) { return "" }
     # Non-filesystem providers expose an unrelated .Attributes with no -band
     # overload, and throwing here would replace the failure we are reporting.
-    if (-not ($item.Attributes -is [System.IO.FileAttributes])) { return "" }
+    if ($item -isnot [System.IO.FileSystemInfo]) { return "" }
     if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
     $target = $null
     try { $target = $item.Target } catch { $target = $null }
@@ -369,13 +369,20 @@ function Exit-PathAccessDenied {
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Label,
         # "delete it, we reinstall it" is true of the managed cache and wrong for
         # a tree the user pointed us at. Never tell them to delete their build.
-        [switch]$UserSupplied
+        [switch]$UserSupplied,
+        # Same rule, one step weaker: the ownership guard stops because it could
+        # not read the marker, so it cannot claim the tree is ours either. It
+        # already says "move it aside" when it CAN prove the tree is not ours.
+        [switch]$OwnershipUnverified
     )
 
     step "permissions" "$Label at $Path cannot be read: access is denied$(Get-PathDenialDetail -Path $Path)" "Red"
     if ($UserSupplied) {
         substep "Unsloth will not touch a directory you pointed it at, so this has to be fixed at the source" "Yellow"
         substep "Restore access with these two in an elevated PowerShell, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build:" "Yellow"
+    } elseif ($OwnershipUnverified) {
+        substep "Unsloth cannot confirm this folder is its own install while it is unreadable, so it will not tell you to remove it" "Yellow"
+        substep "Restore access with these two in an elevated PowerShell, or move the folder aside and re-run setup:" "Yellow"
     } else {
         substep "This folder lives outside the app, so reinstalling Unsloth Studio, to any drive, reuses it and fails the same way" "Yellow"
         substep "Simplest fix: close Unsloth, delete or rename $Path, then re-run setup (it is a managed cache and gets reinstalled)" "Yellow"
@@ -386,6 +393,9 @@ function Exit-PathAccessDenied {
     substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
     if ($UserSupplied) {
         Exit-SetupFailure "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
+    }
+    if ($OwnershipUnverified) {
+        Exit-SetupFailure "Access denied reading $Label at $Path. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access with takeown/icacls, or move it aside, then re-run setup."
     }
     Exit-SetupFailure "Access denied reading the existing $Label at $Path. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
 }
@@ -2949,18 +2959,18 @@ function Assert-StudioOwnedOrAbsent {
     $pathState = Get-PathState -Path $Path -PathType Container
     if ($pathState -ne "Present") {
         if ($StudioHomeIsCustom -and $pathState -eq "Denied") {
-            Exit-PathAccessDenied -Path $Path -Label $Label
+            Exit-PathAccessDenied -Path $Path -Label $Label -OwnershipUnverified
         }
         return
     }
     $markerState = Get-PathState -Path (Join-Path $Path $StudioOwnedMarker) -PathType Leaf
     if ($StudioHomeIsCustom -and $markerState -eq "Denied") {
-        Exit-PathAccessDenied -Path $Path -Label $Label
+        Exit-PathAccessDenied -Path $Path -Label $Label -OwnershipUnverified
     }
     if ($StudioHomeIsCustom -and $markerState -ne "Present") {
         $adoptState = Get-StudioAdoptableState -Path $Path
         if ($adoptState -eq "Denied") {
-            Exit-PathAccessDenied -Path $Path -Label $Label
+            Exit-PathAccessDenied -Path $Path -Label $Label -OwnershipUnverified
         }
         if ($adoptState -eq "Yes") {
             Mark-StudioOwned $Path
@@ -4049,7 +4059,13 @@ if ($LocalLlamaCppSrc) {
         # can remove it and relink to a new valid directory.
         $existing = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
         if ($existing -and ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
-            $existing.Delete()
+            # A link reads Present, so the probe below cannot cover a denied
+            # unlink; report it here rather than terminate on the raw throw.
+            try { $existing.Delete() }
+            catch {
+                if (Test-AccessDeniedError $_) { Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" }
+                throw
+            }
         }
         if ($StudioHomeIsCustom) {
             Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"

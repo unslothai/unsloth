@@ -50,7 +50,13 @@ def test_every_denial_route_reports_instead_of_proceeding():
     assert '$llamaGitState -eq "Denied"' in SETUP_PS1
     assert "$pathState = Get-PathState -Path $Path -PathType Container" in SETUP_PS1
     assert '$StudioHomeIsCustom -and $pathState -eq "Denied"' in SETUP_PS1
+    # The junction path replaces this destination, so it needs its own stop.
+    assert "$destState = Get-PathState -Path $LlamaCppDir" in SETUP_PS1
+    assert '$destState -eq "Denied"' in SETUP_PS1
+    # Denied counts as surviving removal; collapsing it would junction over it.
+    assert '(Get-PathState -Path $LlamaCppDir) -ne "Absent"' in SETUP_PS1
     # Floor, not an exact count: losing a route is the bug, adding one is not.
+    # Each route above is pinned by name, so a swap cannot hide under the floor.
     assert SETUP_PS1.count("Exit-PathAccessDenied -Path") >= 9
 
 
@@ -219,3 +225,27 @@ def test_user_supplied_paths_are_never_told_to_delete_themselves():
             assert "-UserSupplied" in line, line
         elif "$LlamaCppDir" in line:
             assert "-UserSupplied" not in line, line
+
+
+def test_the_ownership_guard_never_advises_deleting_an_unverified_tree():
+    """The guard stops because it could not read the marker, so it cannot claim
+    the tree is ours. It already says "move it aside" when it can prove it."""
+    guard = SETUP_PS1.split("function Assert-StudioOwnedOrAbsent", 1)[1].split("\nfunction ", 1)[0]
+    calls = [line.strip() for line in guard.splitlines() if "Exit-PathAccessDenied" in line]
+    assert len(calls) == 3, calls
+    for line in calls:
+        assert "-OwnershipUnverified" in line, line
+    body = SETUP_PS1.split("function Exit-PathAccessDenied", 1)[1].split("\nfunction ", 1)[0]
+    assert "[switch]$OwnershipUnverified" in body
+    branch = body.split("} elseif ($OwnershipUnverified) {", 1)[1].split("} else {", 1)[0]
+    assert "delete" not in branch.lower(), branch
+    assert "managed cache" not in branch, branch
+    assert "move the folder aside" in branch, branch
+
+
+def test_the_reparse_point_unlink_reports_a_denied_delete():
+    """A link probes Present, so the destination check below cannot cover it."""
+    block = SETUP_PS1.split("$existing = Get-Item -LiteralPath $LlamaCppDir", 1)[1]
+    block = block.split("$destState", 1)[0]
+    assert "try { $existing.Delete() }" in block, block
+    assert "Test-AccessDeniedError" in block, block
