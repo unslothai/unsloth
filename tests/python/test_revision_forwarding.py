@@ -466,12 +466,14 @@ def test_both_dispatches_share_one_model_revision():
     for class_name in ("FastLanguageModel", "FastModel"):
         function = _function(tree, "from_pretrained", class_name)
         assert [
-            n for n in ast.walk(function)
+            n
+            for n in ast.walk(function)
             if isinstance(n, ast.Assign)
             and any(getattr(t, "id", None) == "model_revision" for t in n.targets)
         ], f"{class_name} must derive one model_revision"
         dispatch = next(
-            c for c in _calls(function, "from_pretrained")
+            c
+            for c in _calls(function, "from_pretrained")
             if any(k.arg == "tokenizer_revision" for k in c.keywords)
         )
         model_kw = _revision_kwarg(dispatch)
@@ -485,7 +487,8 @@ def test_a_direct_llama_call_still_pins_its_tokenizer():
     so tokenizer_revision has to fall back to it when the repos are the same."""
     function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")
     fallbacks = [
-        n for n in ast.walk(function)
+        n
+        for n in ast.walk(function)
         if isinstance(n, ast.Assign)
         and any(getattr(t, "id", None) == "tokenizer_revision" for t in n.targets)
         and getattr(n.value, "id", None) == "revision"
@@ -493,9 +496,12 @@ def test_a_direct_llama_call_still_pins_its_tokenizer():
     assert fallbacks, "no fallback from revision to tokenizer_revision"
     warms = _calls(function, "maybe_prefetch_hf_snapshot")
     tokenizer_warms = [
-        c for c in warms
-        if any(k.arg == "revision" and getattr(k.value, "id", None) == "tokenizer_revision"
-               for k in c.keywords)
+        c
+        for c in warms
+        if any(
+            k.arg == "revision" and getattr(k.value, "id", None) == "tokenizer_revision"
+            for k in c.keywords
+        )
     ]
     assert tokenizer_warms, "the tokenizer warm should use the same pin"
     # The fallback must precede the warm, or the warm fetches the wrong ref.
@@ -504,15 +510,18 @@ def test_a_direct_llama_call_still_pins_its_tokenizer():
 
 @pytest.mark.parametrize(
     "path, cls, name",
-    [(LLAMA, "FastLlamaModel", "tokenizer_revision"),
-     (VISION, "FastBaseModel", "_tokenizer_revision_arg")],
+    [
+        (LLAMA, "FastLlamaModel", "tokenizer_revision"),
+        (VISION, "FastBaseModel", "_tokenizer_revision_arg"),
+    ],
 )
 def test_the_vllm_drop_clears_the_tokenizer_pin_too(path, cls, name):
     """Clearing only the model pin left vLLM on the default branch while the tokenizer
     stayed on the requested ref."""
     function = _function(ast.parse(path.read_text(encoding = "utf-8")), "from_pretrained", cls)
     clears = [
-        n for n in ast.walk(function)
+        n
+        for n in ast.walk(function)
         if isinstance(n, ast.Assign)
         and any(getattr(t, "id", None) == name for t in n.targets)
         and isinstance(n.value, ast.Constant)
