@@ -2158,3 +2158,49 @@ def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_p
     response = asyncio.run(GV.get_gguf_variants_response("Org/Quant"))
     assert {v.quant for v in response.variants if v.downloaded} == {"Q4_K_M"}
     assert {v.quant for v in response.variants if v.partial} == {"Q8_0"}
+
+
+def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path):
+    """A sibling cancelled before any file landed moves neither the repo's bytes nor its mtime,
+    and its own partial flag stays false while another quant is clean. Without a signal of its
+    own on the row, a reader watching for on-disk change cannot see it happen."""
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Quant"
+    snapshot = repo_dir / "snapshots" / ("d" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(
+            hub_cache = active, hf_home = tmp_path, source = "studio", cache_home = tmp_path
+        ),
+    )
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.hf_cache_root",
+        lambda create = False, root = None: (root if root is not None else active),
+    )
+
+    from hub.services.models import cache_inventory
+    from hub.utils import download_manifest, inventory_scan
+
+    def _row():
+        inventory_scan.invalidate_hf_cache_scans()
+        cache_inventory.invalidate_hf_cache_scans()
+        rows = cache_inventory._scan_cached_gguf()
+        return next(r for r in rows if r["repo_id"] == "Org/Quant")
+
+    before = _row()
+    assert before["has_variant_state"] is False
+
+    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q8_0", hub_cache = active)
+
+    after = _row()
+    # The signals that would otherwise have to carry it.
+    assert after["size_bytes"] == before["size_bytes"]
+    assert after["last_modified"] == before["last_modified"]
+    assert after["partial"] is False
+    assert after["has_variant_state"] is True

@@ -34,6 +34,7 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
     cache_path: row.cachePath ?? "",
     last_modified: row.lastModified ?? undefined,
     has_vision: row.capabilities.supportsVision,
+    has_variant_state: row.hasVariantState ?? false,
   };
 }
 

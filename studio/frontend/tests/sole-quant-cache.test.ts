@@ -349,3 +349,20 @@ test("only the repo whose bytes moved drifts", () => {
   const after = [targetWith(A, "100:10", "1:0"), targetWith(B, "9:2", "1:0")];
   assert.deepEqual(takeDriftedRepos(after, seen), [B]);
 });
+
+test("a cancelled sibling moves the key even though bytes do not", () => {
+  // Another tab cancelled a sibling before any file landed: same bytes, same
+  // mtime, and the repo's own partial flag stays false while a quant is clean.
+  const disk = { size_bytes: 256, last_modified: 10 };
+  const before = soleQuantFingerprint(disk);
+  const after = soleQuantFingerprint({ ...disk, has_variant_state: true });
+  assert.notEqual(after, before);
+});
+
+test("download state clearing moves the key back", () => {
+  const disk = { size_bytes: 256, last_modified: 10, has_variant_state: true };
+  assert.notEqual(
+    soleQuantFingerprint({ ...disk, has_variant_state: false }),
+    soleQuantFingerprint(disk),
+  );
+});

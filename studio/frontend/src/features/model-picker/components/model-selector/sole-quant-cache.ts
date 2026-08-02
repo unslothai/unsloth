@@ -34,12 +34,19 @@ export function soleQuantKey(
 }
 
 /** What the inventory reports about a repo's files. A change here means disk
- *  moved, including from outside this tab, so the cached listing is suspect. */
+ *  moved, including from outside this tab, so the cached listing is suspect.
+ *
+ *  Download state is part of it: a sibling cancelled before any file landed
+ *  moves neither the bytes nor the mtime, and the repo's own partial flag
+ *  stays false while another quant is clean, so nothing else would notice. */
 export function soleQuantFingerprint(repo: {
   size_bytes?: number;
   last_modified?: number;
+  has_variant_state?: boolean;
 }): string {
-  return `${repo.size_bytes ?? ""}:${repo.last_modified ?? ""}`;
+  return `${repo.size_bytes ?? ""}:${repo.last_modified ?? ""}:${
+    repo.has_variant_state ? "state" : ""
+  }`;
 }
 
 /** Split the listed repos into resolved rows, repos still being read, and
