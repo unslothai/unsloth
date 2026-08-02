@@ -227,7 +227,11 @@ fn run_backend_update_with_terminal_events(
         update.current_attempt = Some(attempt.clone());
     }
 
-    let bin = match crate::process::find_unsloth_binary() {
+    // The shim, not the venv copy: an update launched from
+    // unsloth_studio\Scripts\unsloth.exe holds the entry pip has to replace, so
+    // the install fails on Windows (issue #7697). Falls back to the venv copy
+    // when there is no usable shim, which is no worse than before.
+    let bin = match crate::process::find_unsloth_updater() {
         Some(bin) => bin,
         None => {
             let msg = "Unsloth binary not found. Cannot run update.".to_string();

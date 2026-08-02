@@ -386,6 +386,43 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
     find_unsloth_binary_in_studio_dir(&studio)
 }
 
+/// The launcher shim in `<studio>/bin`, if it is one worth running.
+///
+/// install.ps1 downgrades a shim it could not create to a warning and carries on,
+/// and the `Copy-Item` fallback can leave a truncated file, so existence alone is
+/// not enough -- an empty one is not a working image.
+fn find_unsloth_launcher_in_studio_dir(studio: &std::path::Path) -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    let shim = studio.join("bin").join("unsloth");
+    #[cfg(windows)]
+    let shim = studio.join("bin").join("unsloth.exe");
+
+    match std::fs::metadata(&shim) {
+        Ok(meta) if meta.is_file() && meta.len() > 0 => Some(shim),
+        _ => None,
+    }
+}
+
+/// The binary to run `studio update` with: the shim first, the venv copy second.
+///
+/// Windows locks the directory entry an image was launched from rather than the
+/// file behind it, so an update started from `unsloth_studio\Scripts\unsloth.exe`
+/// holds the very entry pip has to replace and the install fails (issue #7697).
+/// The shim in `<studio>\bin` is a separate entry to the same binary, so going
+/// through it leaves the venv copy replaceable. On Unix the shim is a symlink and
+/// none of this matters, but preferring it there too keeps one code path.
+///
+/// Only for update and repair. The long-lived backend deliberately keeps using
+/// find_unsloth_binary: launching it from the shim would hold *that* entry open
+/// for as long as Studio runs, which is the same bug pointed at the other file.
+pub fn find_unsloth_updater() -> Option<std::path::PathBuf> {
+    let home = dirs::home_dir()?;
+    let studio = home.join(".unsloth").join("studio");
+
+    find_unsloth_launcher_in_studio_dir(&studio)
+        .or_else(|| find_unsloth_binary_in_studio_dir(&studio))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,6 +470,39 @@ mod tests {
         );
         fs::remove_file(&new_bin).unwrap();
         assert_eq!(find_unsloth_binary_in_studio_dir(&temp), Some(old_bin));
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn the_updater_prefers_the_shim_over_the_venv_copy() {
+        // Issue #7697: an update launched from the venv copy holds the entry pip
+        // has to replace, so the desktop update could never install a release that
+        // replaces the unsloth package.
+        let temp = temp_studio_dir("updater-prefers-shim");
+
+        #[cfg(unix)]
+        let venv_bin = temp.join("unsloth_studio/bin/unsloth");
+        #[cfg(unix)]
+        let shim = temp.join("bin/unsloth");
+        #[cfg(windows)]
+        let venv_bin = temp.join("unsloth_studio/Scripts/unsloth.exe");
+        #[cfg(windows)]
+        let shim = temp.join("bin/unsloth.exe");
+
+        fs::create_dir_all(venv_bin.parent().unwrap()).unwrap();
+        fs::write(&venv_bin, "MZ").unwrap();
+        // No shim yet: the venv copy is still better than refusing to update.
+        assert_eq!(find_unsloth_launcher_in_studio_dir(&temp), None);
+
+        fs::create_dir_all(shim.parent().unwrap()).unwrap();
+        fs::write(&shim, "MZ").unwrap();
+        assert_eq!(find_unsloth_launcher_in_studio_dir(&temp), Some(shim.clone()));
+
+        // install.ps1 downgrades a shim it could not write to a warning and carries
+        // on, so a truncated one is reachable and is not a working image.
+        fs::write(&shim, "").unwrap();
+        assert_eq!(find_unsloth_launcher_in_studio_dir(&temp), None);
+
         fs::remove_dir_all(temp).unwrap();
     }
 
