@@ -132,6 +132,7 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
+import { visibleGgufVariants } from "./variant-visibility";
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
@@ -1005,15 +1006,16 @@ function GgufVariantExpander({
   }, [variants, effectiveRecommended, getGgufFit]);
 
   // On Device only: when Show all quantizations is off, list quants already on
-  // disk. Recommended and other browse lists always show every quant.
+  // disk, torn ones included. Browse lists always show every quant.
   const showAllQuantizations = useChatRuntimeStore(
     (s) => s.showAllQuantizations,
   );
   const displayVariants = useMemo(() => {
     if (!sortedVariants) return sortedVariants;
-    return showAllQuantizations || !onDevice
-      ? sortedVariants
-      : sortedVariants.filter((v) => v.downloaded);
+    return visibleGgufVariants(sortedVariants, {
+      onDevice,
+      showAll: showAllQuantizations,
+    });
   }, [sortedVariants, showAllQuantizations, onDevice]);
 
   const variantOptionKeys = useMemo(
