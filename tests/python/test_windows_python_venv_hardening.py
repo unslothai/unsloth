@@ -51,7 +51,7 @@ def test_path_python_wrapper_resolves_to_real_executable(tmp_path: Path, shell: 
     else:
         wrapper = tmp_path / "python-wrapper"
         wrapper.write_text(
-            f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n", encoding = "utf-8"
+            f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n', encoding = "utf-8"
         )
         wrapper.chmod(0o755)
 
@@ -125,7 +125,9 @@ Write-Output (Test-VenvPythonReady -PythonExe $env:TEST_MANAGED_PYTHON)
 def test_readiness_gate_precedes_installs_and_names_both_interpreters():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     gate = source.index("if (-not (Test-VenvPythonReady -PythonExe $VenvPython))")
-    marker = source.index('[System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "")')
+    marker = source.index(
+        '[System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "")'
+    )
     first_uv_pip = source.index("uv pip install --python $VenvPython")
     gpu_detection = source.index("function Invoke-AmdSmiNoElevate")
 
