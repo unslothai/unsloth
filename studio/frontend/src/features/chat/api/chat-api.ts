@@ -357,6 +357,9 @@ export interface CachedGgufRepo {
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
   has_vision?: boolean;
+  /** True when some quant has a download manifest or cancel marker. Optional
+   * for older-backend compatibility. */
+  has_variant_state?: boolean;
   partial?: boolean;
   capabilities?: CachedRepoCapabilities | null;
 }

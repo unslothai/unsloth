@@ -1132,6 +1132,108 @@ exit 0
         return
     }
 
+    # ── Leave Windows system directories before installing ──
+    # "Run as administrator" starts in C:\Windows\System32, so `irm ... | iex` installs
+    # from there and `unsloth studio setup` refuses only after PyTorch has downloaded,
+    # then rolls back. Relocating is safe: nothing here reads the caller's directory
+    # ($RepoRoot from $PSCommandPath, $StudioHome from the environment), so only
+    # --with-llama-cpp-dir needs a rebase first. Not restored at the end, same reason as
+    # the PSModulePath fix at the top: the interactive path ends running Studio in the
+    # foreground, so a finally would not fire until it stops.
+    $SystemRootDir = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
+    $SystemRootDir = [System.IO.Path]::GetFullPath($SystemRootDir).TrimEnd('\')
+    # Separator included, or siblings like C:\Windows.old and C:\WindowsStudio match too.
+    $SystemRootPrefix = $SystemRootDir + [System.IO.Path]::DirectorySeparatorChar
+    $CurrentDir = $null
+    try {
+        # FileSystem provider: a caller parked on HKLM:\ still has the location children inherit.
+        $CurrentDir = [System.IO.Path]::GetFullPath(
+            (Get-Location -PSProvider FileSystem -ErrorAction Stop).ProviderPath
+        ).TrimEnd('\')
+    } catch {
+        $CurrentDir = $null
+    }
+    function Test-UnderSystemRoot {
+        param([string]$Path)
+        return $Path -and (
+            $Path.Equals($SystemRootDir, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $Path.StartsWith($SystemRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+        )
+    }
+    $InSystemDir = Test-UnderSystemRoot $CurrentDir
+    if ($InSystemDir) {
+        if ($WithLlamaCppDir) {
+            # Anchor to the directory the user typed it against, including the partially
+            # qualified forms (C:llama.cpp, \llama.cpp). Not [System.IO.Path]::GetFullPath,
+            # which resolves against [Environment]::CurrentDirectory, a separate location
+            # that Set-Location never updates.
+            try {
+                $WithLlamaCppDir =
+                    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WithLlamaCppDir)
+            } catch {
+                $WithLlamaCppDir = Join-Path $CurrentDir $WithLlamaCppDir
+            }
+        }
+        # SYSTEM's profile is C:\Windows\System32\config\systemprofile, so a candidate
+        # inside the Windows directory is no better than where we already are.
+        $SafeDirCandidates = @($env:USERPROFILE, $HOME, $env:PUBLIC, $env:TEMP) |
+            Where-Object {
+                $_ -and (Test-Path -LiteralPath $_ -PathType Container) -and
+                -not (Test-UnderSystemRoot ([System.IO.Path]::GetFullPath($_).TrimEnd('\')))
+            }
+        $SafeDir = $null
+        foreach ($candidate in $SafeDirCandidates) {
+            try {
+                Set-Location -LiteralPath $candidate -ErrorAction Stop
+                $SafeDir = (Get-Location -PSProvider FileSystem).ProviderPath
+                break
+            } catch {
+                continue
+            }
+        }
+        # $StudioHome came from USERPROFILE far above, so a SYSTEM account would keep
+        # installing into C:\Windows\System32\config\systemprofile while we report having
+        # escaped. Rebasing it would orphan the install (the runtime resolvers recompute
+        # the root from USERPROFILE), so stop instead.
+        $StudioHomeFull = ""
+        try { $StudioHomeFull = [System.IO.Path]::GetFullPath($StudioHome).TrimEnd('\') } catch {}
+        if ($SafeDir -and (Test-UnderSystemRoot $StudioHomeFull)) {
+            Write-Host ""
+            Write-Host "[ERROR] Unsloth would install into $StudioHomeFull," -ForegroundColor Red
+            Write-Host "        which is inside $SystemRootDir." -ForegroundColor Yellow
+            Write-Host "        That is where a service or the SYSTEM account keeps its profile." -ForegroundColor Yellow
+            Write-Host "        Sign in as a normal user, open PowerShell there, and run the" -ForegroundColor Yellow
+            Write-Host "        installer again:" -ForegroundColor Yellow
+            Write-Host "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
+            Write-Host ""
+            return (Exit-InstallFailure "Refusing to install into $StudioHomeFull, which is inside $SystemRootDir. Run the installer from a normal user account.")
+        }
+        if ($SafeDir) {
+            Write-TauriLog "STEP" "Left system directory $CurrentDir for $SafeDir"
+            step "directory" "$CurrentDir is a Windows system folder" "Yellow"
+            substep "Unsloth cannot install or run from there, so this install continues in:" "Yellow"
+            substep "  $SafeDir" "Yellow"
+            substep "This is normal: 'Run as administrator' opens PowerShell in System32." "Yellow"
+        } else {
+            Write-Host ""
+            Write-Host "[ERROR] Unsloth cannot be installed from $CurrentDir." -ForegroundColor Red
+            Write-Host "        That is a Windows system folder, and Unsloth writes its virtual" -ForegroundColor Yellow
+            Write-Host "        environment caches, model downloads and build files into the" -ForegroundColor Yellow
+            Write-Host "        working directory, which Windows blocks there." -ForegroundColor Yellow
+            Write-Host "        'Run as administrator' opens PowerShell in System32, which is how" -ForegroundColor Yellow
+            Write-Host "        most people land here." -ForegroundColor Yellow
+            # USERPROFILE was just rejected as a candidate, so naming it here would send
+            # the user back into the same tree.
+            Write-Host "        Nothing outside $SystemRootDir was usable either (USERPROFILE," -ForegroundColor Yellow
+            Write-Host "        HOME, PUBLIC, TEMP), which normally means a service or the SYSTEM" -ForegroundColor Yellow
+            Write-Host "        account. Sign in as a normal user, open PowerShell there, and run" -ForegroundColor Yellow
+            Write-Host "        the installer again:" -ForegroundColor Yellow
+            Write-Host "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
+            Write-Host ""
+            return (Exit-InstallFailure "Refusing to install from the Windows system directory $CurrentDir, and no folder outside $SystemRootDir was usable. Run the installer from a normal user account.")
+        }
+    }
+
     # ── Check winget ──
     # winget is only needed to install Python or uv. If both are
     # already on PATH (Windows ARM64 GitHub-hosted runners, manual
@@ -2523,7 +2625,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.1" "unsloth-zoo>=2026.8.1" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -2537,7 +2639,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.1" "unsloth-zoo>=2026.8.1" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2624,7 +2726,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.1" "unsloth-zoo>=2026.8.1" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2636,7 +2738,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.1" "unsloth-zoo>=2026.8.1" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -2664,7 +2766,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.7" "unsloth>=2026.7.6" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.8.1" "unsloth>=2026.8.1" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

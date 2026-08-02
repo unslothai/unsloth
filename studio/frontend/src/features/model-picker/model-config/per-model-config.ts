@@ -234,6 +234,99 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
+// Whether Run Settings shows its advanced section is a standing preference,
+// not a per-model one: opening it once keeps it open for every model and
+// quant. Closed until asked for.
+export const ADVANCED_SETTINGS_OPEN_KEY = "unsloth_model_advanced_settings";
+
+function loadAdvancedSettingsOpen(): boolean | null {
+  if (!canUseStorage()) {
+    return null;
+  }
+  try {
+    const raw = localStorage.getItem(ADVANCED_SETTINGS_OPEN_KEY);
+    return raw === "true" ? true : raw === "false" ? false : null;
+  } catch {
+    return null;
+  }
+}
+
+// Set only when a write is refused, so the switch keeps working in a browser
+// with storage disabled, sandboxed or full. Cleared by the next write that
+// sticks, which puts storage back in charge. `stored` is what storage held at
+// the time, the one signal that tells a later write by someone else apart.
+let unpersisted: { open: boolean; stored: boolean | null } | null = null;
+const advancedOpenListeners = new Set<() => void>();
+
+/** null until the switch is used, so an untouched panel is free to open the
+ *  section for a model that carries non-default advanced values.
+ *
+ *  Read straight from storage rather than cached: a write from another tab
+ *  while every panel was unmounted has no listener to catch it, and its
+ *  storage event is not replayed on the next mount. */
+export function readAdvancedSettingsOpen(): boolean | null {
+  const stored = loadAdvancedSettingsOpen();
+  if (!unpersisted) {
+    return stored;
+  }
+  // Storage moved since the refused write, so someone made a newer choice and
+  // it outranks the fallback. Checked on read, not on the storage event, so it
+  // still holds for an event that landed while nothing was mounted.
+  if (stored !== unpersisted.stored) {
+    unpersisted = null;
+    return stored;
+  }
+  return unpersisted.open;
+}
+
+/** True when the choice reached storage. */
+function writeAdvancedSettingsOpen(open: boolean): boolean {
+  if (!canUseStorage()) {
+    return false;
+  }
+  try {
+    localStorage.setItem(ADVANCED_SETTINGS_OPEN_KEY, open ? "true" : "false");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function saveAdvancedSettingsOpen(open: boolean): void {
+  unpersisted = writeAdvancedSettingsOpen(open)
+    ? null
+    : { open, stored: loadAdvancedSettingsOpen() };
+  // Run Settings is mounted on several surfaces at once, and the sidebar copy
+  // stays mounted while collapsed, so tell them all rather than let them keep
+  // a snapshot taken at mount.
+  for (const listener of [...advancedOpenListeners]) {
+    listener();
+  }
+}
+
+/** Follow the preference while mounted, including a change from another tab. */
+export function subscribeAdvancedSettingsOpen(
+  onChange: () => void,
+): () => void {
+  advancedOpenListeners.add(onChange);
+  if (!canUseStorage()) {
+    return () => {
+      advancedOpenListeners.delete(onChange);
+    };
+  }
+  const onStorage = (event: StorageEvent) => {
+    // A null key is a clear(), which drops this preference too.
+    if (event.key === null || event.key === ADVANCED_SETTINGS_OPEN_KEY) {
+      onChange();
+    }
+  };
+  window.addEventListener("storage", onStorage);
+  return () => {
+    advancedOpenListeners.delete(onChange);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
 function serializedByteLength(value: string): number {
   return typeof TextEncoder !== "undefined"
     ? new TextEncoder().encode(value).byteLength

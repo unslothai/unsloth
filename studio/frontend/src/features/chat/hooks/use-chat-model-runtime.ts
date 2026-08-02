@@ -108,17 +108,14 @@ function rememberApprovedRemoteCode(
   if (fingerprint) approvedRemoteCodeFingerprints.set(checkpoint, fingerprint);
 }
 
+// Class carries the progress-bar spacing; layout is shared CSS now.
 const MODEL_LOAD_TOAST_CLASSNAMES = {
-  toast: "chat-model-load-toast items-center gap-2.5",
+  toast: "chat-model-load-toast",
   content: "gap-0.5 flex-1 min-w-0",
   title: "leading-5",
   description: "mt-0 w-full",
   cancelButton:
     "!h-auto !rounded-none !border-0 !bg-transparent !px-1 !text-ui-11 !font-normal !text-muted-foreground hover:!bg-transparent hover:!text-destructive focus-visible:!text-destructive",
-} as const;
-
-const MODEL_LOADED_TOAST_CLASSNAMES = {
-  toast: "chat-model-loaded-toast items-center gap-2.5",
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -1791,7 +1788,6 @@ export function useChatModelRuntime() {
           if (abortCtrl.signal.aborted) return;
           if (loadToastDismissedRef.current) {
             toast.success(`${toastDisplayName} loaded`, {
-              classNames: MODEL_LOADED_TOAST_CLASSNAMES,
               closeButton: true,
               duration: 8000,
             });
@@ -1800,7 +1796,6 @@ export function useChatModelRuntime() {
               id: toastId,
               description: undefined,
               cancel: undefined,
-              classNames: MODEL_LOADED_TOAST_CLASSNAMES,
               closeButton: true,
               duration: 8000,
               onDismiss: undefined,
