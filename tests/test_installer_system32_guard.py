@@ -9,6 +9,7 @@ to get out of it."""
 from __future__ import annotations
 
 import ntpath
+import os
 import re
 import shutil
 import subprocess
@@ -163,13 +164,22 @@ def _run_relocation_block(
         + '\nWrite-Host "CWD:$((Get-Location).ProviderPath)"\n'
         + 'Write-Host "LLAMA:$WithLlamaCppDir"\n'
     )
-    env = {
-        "PATH": "/usr/bin:/bin",
-        "HOME": str(home_env),
-        "USERPROFILE": str(home_env),
-        "PUBLIC": str(home_env),
-        "TEMP": str(home_env),
-    }
+    # Inherit the real environment (pwsh needs PATH and SystemRoot on Windows) and point
+    # every home-ish variable at the fixture. HOMEDRIVE/HOMEPATH too: that pair is where
+    # PowerShell gets $HOME on Windows, and a stale one would look like a safe directory.
+    env = dict(os.environ)
+    drive, tail = os.path.splitdrive(str(home_env))
+    env.update(
+        {
+            "HOME": str(home_env),
+            "USERPROFILE": str(home_env),
+            "PUBLIC": str(home_env),
+            "TEMP": str(home_env),
+            "TMP": str(home_env),
+            "HOMEDRIVE": drive,
+            "HOMEPATH": tail,
+        }
+    )
     return subprocess.run(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
