@@ -5018,8 +5018,30 @@ if ($LocalLlamaCppLinked) {
     # Swap temp build dir into final location (only if we built in a temp dir)
     if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
         Assert-StudioOwnedOrAbsent -Path $OriginalLlamaCppDir -Label "llama.cpp install"
-        if (Test-Path -LiteralPath $OriginalLlamaCppDir) { Remove-Item -LiteralPath $OriginalLlamaCppDir -Recurse -Force }
+        if ((Get-PathState -Path $OriginalLlamaCppDir) -ne "Absent") {
+            Remove-Item -LiteralPath $OriginalLlamaCppDir -Recurse -Force -ErrorAction SilentlyContinue
+            # Any unreadable or locked child survives the removal, and Move-Item
+            # then nests the build *inside* the leftovers instead of replacing
+            # them. Both are non-terminating here, so check before destroying
+            # more: the temp build is still whole at this point.
+            $swapState = Get-PathState -Path $OriginalLlamaCppDir
+            if ($swapState -eq "Denied") {
+                Exit-PathAccessDenied -Path $OriginalLlamaCppDir -Label "llama.cpp install"
+            }
+            if ($swapState -ne "Absent") {
+                step "llama.cpp" "could not replace the existing install at $OriginalLlamaCppDir" "Red"
+                substep "Part of it survived removal; the new build is intact at $LlamaCppDir" "Yellow"
+                substep "Close Unsloth and other llama.cpp users, or move that folder aside, then re-run setup" "Yellow"
+                Exit-SetupFailure "llama.cpp install at $OriginalLlamaCppDir could not be replaced; the new build is at $LlamaCppDir" 3
+            }
+        }
         Move-Item -LiteralPath $LlamaCppDir -Destination $OriginalLlamaCppDir
+        # A failed move is non-terminating too; without this setup would report
+        # a build it never installed.
+        if ((Get-PathState -Path $LlamaCppDir) -ne "Absent") {
+            step "llama.cpp" "could not move the new build into $OriginalLlamaCppDir" "Red"
+            Exit-SetupFailure "llama.cpp build at $LlamaCppDir could not be moved into $OriginalLlamaCppDir" 3
+        }
         $LlamaCppDir = $OriginalLlamaCppDir
         $BuildDir = Join-Path $LlamaCppDir "build"
         $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"

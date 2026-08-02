@@ -249,3 +249,19 @@ def test_the_reparse_point_unlink_reports_a_denied_delete():
     block = block.split("$destState", 1)[0]
     assert "try { $existing.Delete() }" in block, block
     assert "Test-AccessDeniedError" in block, block
+
+
+def test_the_temp_dir_swap_checks_both_of_its_destructive_steps():
+    """Remove-Item and Move-Item are both non-terminating here, and Move-Item
+    onto a surviving directory nests the build inside it rather than replacing
+    it, so setup would report a build it never installed."""
+    swap = SETUP_PS1.split("# Swap temp build dir into final location", 1)[1]
+    swap = swap.split("} elseif (-not $BuildOk", 1)[0]
+    assert '$swapState = Get-PathState -Path $OriginalLlamaCppDir' in swap, swap
+    assert '$swapState -eq "Denied"' in swap, swap
+    # Stop before the move runs, while the temp build is still whole.
+    move = "Move-Item -LiteralPath $LlamaCppDir"
+    assert swap.index('$swapState -ne "Absent"') < swap.index(move), swap
+    # And catch a move that silently did not happen.
+    assert '(Get-PathState -Path $LlamaCppDir) -ne "Absent"' in swap.split(move, 1)[1], swap
+    assert "Test-Path -LiteralPath $OriginalLlamaCppDir" not in swap, swap
