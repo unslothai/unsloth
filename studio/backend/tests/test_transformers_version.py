@@ -2011,9 +2011,7 @@ class TestVenvDirFileIntegrity:
         (venv_dir / ".unsloth-studio-owned").touch()
         (venv_dir / "transformers" / "__init__.py").write_text("x")
 
-        monkeypatch.setattr(
-            "utils.transformers_version._install_to_dir", lambda pkg, target: True
-        )
+        monkeypatch.setattr("utils.transformers_version._install_to_dir", lambda pkg, target: True)
         assert _ensure_venv_dir(str(venv_dir), ("transformers==5.3.0",), "transformers 5.3.0")
 
         assert (venv_dir / ".unsloth-studio-owned").is_file()
