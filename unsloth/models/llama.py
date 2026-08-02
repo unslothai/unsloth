@@ -2299,6 +2299,7 @@ class FastLlamaModel:
         tokenizer_name = None,
         trust_remote_code = False,
         revision = None,
+        tokenizer_revision = None,
         fast_inference = False,  # uses vLLM
         gpu_memory_utilization = 0.5,
         float8_kv_cache = False,
@@ -2338,9 +2339,10 @@ class FastLlamaModel:
                 raise RuntimeError(
                     "Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!"
                 )
-            # `fast_inference` may have just been turned off above, and the in-process
-            # load that then runs can honour the revision, so re-check it here.
-            if fast_inference and revision is not None:
+            # Only vLLM cannot take a revision. fast_inference may have just been turned
+            # off above, and a num_labels load goes in-process regardless; both of those
+            # can honour the pin, so use the same predicate as the prefetch warm below.
+            if fast_inference and num_labels is None and revision is not None:
                 # load_vllm takes no revision, so vLLM fetches the default branch. Pinning
                 # only the config and tokenizer would mix two refs in one model.
                 logger.warning_once(
@@ -2506,8 +2508,7 @@ class FastLlamaModel:
                 cache_dir = _tokenizer_cache_dir,
                 local_files_only = kwargs.get("local_files_only", False),
                 tokenizer_only = True,
-                # Matches the tokenizer load below, which only pins its own repo.
-                revision = revision if _tokenizer_repo == model_name else None,
+                revision = tokenizer_revision,
             )
 
         has_rope_scaling = False
@@ -2799,7 +2800,7 @@ class FastLlamaModel:
             token = token,
             trust_remote_code = trust_remote_code,
             fix_tokenizer = fix_tokenizer,
-            revision = revision if tokenizer_name == model_name else None,
+            revision = tokenizer_revision,
             **_tokenizer_cache_kwargs,
         )
 

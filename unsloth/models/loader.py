@@ -149,20 +149,41 @@ def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
     return s
 
 
-def _revision_for_resolved_repo(revision, model_name, old_model_name):
+def _revision_for_resolved_repo(revision, model_name, old_model_name, mapper_moved_name = False):
     """Drop `revision` once the requested repo has been remapped to another one.
 
     A revision names a branch/tag/SHA on the repo the caller asked for, but from_pretrained
     may resolve model_name to a different repo (a pre-quantized mirror, an fp8 temp dir, a
-    ModelScope snapshot, a -bnb-4bit strip), where that ref does not exist.
+    ModelScope snapshot, a -bnb-4bit strip), where that ref does not exist. Only the mapper
+    substitution answers to use_exact_model_name, so only suggest it when it would help.
     """
     if revision is None or model_name == old_model_name:
         return revision
+    remedy = (
+        " Pass `use_exact_model_name = True` to load your repo as-is."
+        if mapper_moved_name else ""
+    )
     logger.warning_once(
         f"Unsloth: Ignoring revision = `{revision}` since `{old_model_name}` resolved to "
-        f"`{model_name}`, which does not have that revision. "
-        "Pass `use_exact_model_name = True` to load your repo as-is."
+        f"`{model_name}`, which does not have that revision.{remedy}"
     )
+    return None
+
+
+def _revision_for_tokenizer_repo(
+    tokenizer_name, model_name, old_model_name, revision, base_revision
+):
+    """Pick the revision for whichever repo the tokenizer is actually read from.
+
+    It is not always the base model's: a PEFT load keeps the caller's repo when
+    tokenizer_name points at the adapter, while an unset tokenizer_name follows the
+    resolved model_name and so follows the gated revision.
+    """
+    repo = tokenizer_name if tokenizer_name else model_name
+    if repo == old_model_name:
+        return revision
+    if repo == model_name:
+        return base_revision
     return None
 
 
@@ -554,6 +575,8 @@ class FastLanguageModel(FastLlamaModel):
                 # on-the-fly quantization to avoid double quantization
                 if load_in_fp8 != False and new_model_name != old_model_name:
                     load_in_fp8 = False
+        # Only this block honours use_exact_model_name; the transforms below do not.
+        mapper_moved_name = model_name != old_model_name
 
         # Check if pre-quantized models are allowed
         # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
@@ -576,7 +599,9 @@ class FastLanguageModel(FastLlamaModel):
 
         # Gate before the probe below, or a pinned 4bit load fails against the mirror
         # instead of warning. Kept separate: `revision` still names the adapter repo.
-        base_revision = _revision_for_resolved_repo(revision, model_name, old_model_name)
+        base_revision = _revision_for_resolved_repo(
+            revision, model_name, old_model_name, mapper_moved_name
+        )
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import (
@@ -874,7 +899,9 @@ class FastLanguageModel(FastLlamaModel):
         # model_name can move once more here. Skip for PEFT: model_name is then the base
         # model, and `revision` names the adapter that PeftModel.from_pretrained loads below.
         if not is_peft:
-            base_revision = _revision_for_resolved_repo(base_revision, model_name, old_model_name)
+            base_revision = _revision_for_resolved_repo(
+                base_revision, model_name, old_model_name, mapper_moved_name
+            )
 
         load_in_4bit_kwargs = load_in_4bit
         load_in_8bit_kwargs = load_in_8bit
@@ -903,6 +930,9 @@ class FastLanguageModel(FastLlamaModel):
             tokenizer_name = tokenizer_name,
             trust_remote_code = trust_remote_code,
             revision = base_revision if not is_peft else None,
+            tokenizer_revision = _revision_for_tokenizer_repo(
+                tokenizer_name, model_name, old_model_name, revision, base_revision
+            ),
             fast_inference = fast_inference,
             gpu_memory_utilization = gpu_memory_utilization,
             float8_kv_cache = float8_kv_cache,
@@ -1281,6 +1311,8 @@ class FastModel(FastBaseModel):
                 # on-the-fly quantization to avoid double quantization
                 if load_in_fp8 != False and new_model_name != old_model_name:
                     load_in_fp8 = False
+        # Only this block honours use_exact_model_name; the transforms below do not.
+        mapper_moved_name = model_name != old_model_name
 
         # Check if pre-quantized models are allowed
         # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
@@ -1304,7 +1336,9 @@ class FastModel(FastBaseModel):
 
         # Gate before the probe below, or a pinned 4bit load fails against the mirror
         # instead of warning. Kept separate: `revision` still names the adapter repo.
-        base_revision = _revision_for_resolved_repo(revision, model_name, old_model_name)
+        base_revision = _revision_for_resolved_repo(
+            revision, model_name, old_model_name, mapper_moved_name
+        )
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import (
@@ -1831,7 +1865,9 @@ class FastModel(FastBaseModel):
         # FastBaseModel remaps again via fast_inference_setup. Skip for PEFT: model_name is
         # then the base model, and `revision` names the adapter PeftModel loads below.
         if not is_peft:
-            base_revision = _revision_for_resolved_repo(base_revision, model_name, old_model_name)
+            base_revision = _revision_for_resolved_repo(
+                base_revision, model_name, old_model_name, mapper_moved_name
+            )
 
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
@@ -1845,6 +1881,9 @@ class FastModel(FastBaseModel):
             device_map = device_map,
             trust_remote_code = trust_remote_code,
             revision = base_revision if not is_peft else None,
+            tokenizer_revision = _revision_for_tokenizer_repo(
+                tokenizer_name, model_name, old_model_name, revision, base_revision
+            ),
             model_types = model_types,
             tokenizer_name = tokenizer_name,
             auto_model = auto_model,

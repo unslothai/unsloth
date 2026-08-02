@@ -192,7 +192,7 @@ def test_no_revision_stays_none_even_when_remapped():
     assert gate(None, "unsloth/llama-3-8b-bnb-4bit", "meta-llama/Meta-Llama-3-8B") is None
 
 
-def test_the_gate_warns_exactly_once_when_it_drops_a_revision():
+def _gate_with_warnings():
     source = LOADER.read_text(encoding = "utf-8")
     function = _function(ast.parse(source), "_revision_for_resolved_repo")
     warnings = []
@@ -200,13 +200,43 @@ def test_the_gate_warns_exactly_once_when_it_drops_a_revision():
     module = ast.Module(body = [function], type_ignores = [])
     ast.fix_missing_locations(module)
     exec(compile(module, str(LOADER), "exec"), namespace)
+    return namespace["_revision_for_resolved_repo"], warnings
 
-    namespace["_revision_for_resolved_repo"]("abc123", "unsloth/x-bnb-4bit", "org/x")
+
+def test_the_gate_warns_exactly_once_when_it_drops_a_revision():
+    gate, warnings = _gate_with_warnings()
+    gate("abc123", "unsloth/x-bnb-4bit", "org/x", True)
     assert len(warnings) == 1
     message = warnings[0]
     # Both repos have to be named or the user cannot tell which load was silently redirected.
     assert "abc123" in message and "org/x" in message and "unsloth/x-bnb-4bit" in message
-    assert "use_exact_model_name" in message
+
+
+def test_exact_name_mode_is_only_offered_when_it_would_help():
+    """It gates the mapper substitution alone. The ModelScope download, the
+    ALLOW_PREQUANTIZED_MODELS strip and fast_inference_setup all ignore it, so
+    recommending it there sends the caller round the same loop."""
+    gate, warnings = _gate_with_warnings()
+    gate("abc123", "unsloth/x-bnb-4bit", "org/x", True)
+    assert "use_exact_model_name" in warnings[0]
+
+    gate, warnings = _gate_with_warnings()
+    gate("abc123", "/tmp/modelscope/x", "org/x", False)
+    assert "use_exact_model_name" not in warnings[0]
+
+
+def test_both_loader_paths_pass_the_mapper_flag():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        assert [
+            n for n in ast.walk(function)
+            if isinstance(n, ast.Assign)
+            and any(getattr(t, "id", None) == "mapper_moved_name" for t in n.targets)
+        ], f"{class_name} must record whether the mapper moved the name"
+        for call in _calls(function, "_revision_for_resolved_repo"):
+            names = [getattr(a, "id", None) for a in call.args]
+            assert "mapper_moved_name" in names, "the gate needs the flag to tailor its remedy"
 
 
 def test_both_loader_paths_gate_before_and_after_resolution():
@@ -318,9 +348,10 @@ def test_local_snapshot_resolution_takes_the_revision():
     assert inner and all(_revision_kwarg(c) is not None for c in inner)
 
 
-def test_the_vllm_drop_re_checks_fast_inference():
-    """`fast_inference` is turned off in that same block when vLLM is missing or the GPU
-    is too old, and the in-process load that then runs can honour the revision."""
+def test_the_vllm_drop_only_fires_when_vllm_owns_the_weights():
+    """fast_inference is turned off in that same block when vLLM is missing or the GPU
+    is too old, and a num_labels load goes through transformers regardless. Both of
+    those can honour the pin, so the drop must not be unconditional."""
     function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")
     clears = [
         n
@@ -337,7 +368,57 @@ def test_the_vllm_drop_re_checks_fast_inference():
             for n in ast.walk(function)
             if isinstance(n, ast.If)
             and n.lineno <= clear.lineno <= n.end_lineno
-            and "fast_inference" in ast.unparse(n.test)
             and "revision" in ast.unparse(n.test)
         ]
-        assert guards, "the drop must re-check fast_inference, not just the enclosing block"
+        assert guards, "the drop needs its own condition"
+        test = ast.unparse(guards[0].test)
+        assert "fast_inference" in test, "must re-check fast_inference"
+        assert "num_labels" in test, "a num_labels load runs in-process and can be pinned"
+
+
+def test_the_tokenizer_revision_is_resolved_by_the_loader():
+    """The tokenizer repo is not always the base model's: a PEFT load whose
+    tokenizer_name is the adapter keeps the caller's ref, which the base model cannot."""
+    tree = _tree(LOADER)
+    helper = _function(tree, "_revision_for_tokenizer_repo")
+    assert helper, "the loader must resolve the tokenizer repo's revision"
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        dispatches = [
+            c for c in _calls(function, "from_pretrained")
+            if any(k.arg == "tokenizer_revision" for k in c.keywords)
+        ]
+        assert dispatches, f"{class_name} must dispatch a tokenizer_revision"
+        for call in dispatches:
+            keyword = next(k for k in call.keywords if k.arg == "tokenizer_revision")
+            assert isinstance(keyword.value, ast.Call), "it has to be the resolved value"
+
+
+def test_llama_uses_the_dispatched_tokenizer_revision():
+    function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")
+    assert "tokenizer_revision" in _params(function)
+    loads = _calls(function, "load_correct_tokenizer")
+    assert loads
+    for call in loads:
+        keyword = _revision_kwarg(call)
+        assert keyword is not None
+        assert getattr(keyword.value, "id", None) == "tokenizer_revision"
+
+
+def test_vision_pops_the_tokenizer_revision_before_the_weight_load():
+    """FastBaseModel forwards **kwargs to the weight load, and transformers has no
+    tokenizer_revision argument, so it must be popped rather than read."""
+    function = _function(_tree(VISION), "from_pretrained", "FastBaseModel")
+    pops = [
+        c for c in ast.walk(function)
+        if isinstance(c, ast.Call)
+        and ast.unparse(c.func).endswith("kwargs.pop")
+        and c.args and getattr(c.args[0], "value", None) == "tokenizer_revision"
+    ]
+    assert pops, "tokenizer_revision must be popped from kwargs"
+    weight_loads = [
+        c for c in _calls(function, "from_pretrained")
+        if ast.unparse(c.func).startswith("auto_model")
+    ]
+    assert weight_loads
+    assert pops[0].lineno < min(c.lineno for c in weight_loads)

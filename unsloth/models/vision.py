@@ -871,6 +871,7 @@ class FastBaseModel:
         # Read revision from kwargs, not the signature: the weight load below forwards
         # **kwargs, so binding it would drop it there. Pin its repo before any remap.
         _revision = kwargs.get("revision")
+        _tokenizer_revision_arg = kwargs.pop("tokenizer_revision", None)
         if _revision is not None and fast_inference and is_vLLM_available():
             # load_vllm takes no revision, so vLLM fetches the default branch. Pinning only
             # the config and tokenizer would mix two refs in one model.
@@ -1458,9 +1459,11 @@ class FastBaseModel:
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
-        # The tokenizer repo can differ from the revision's repo (a caller override, or
-        # model_name remapped by fast_inference_setup above).
-        _tokenizer_revision = _revision if tokenizer_name == _revision_repo else None
+        # Resolved by the loader, which knows whether the tokenizer repo is the caller's
+        # (a PEFT adapter) or the resolved base model. Falls back for a direct call.
+        _tokenizer_revision = _tokenizer_revision_arg
+        if _tokenizer_revision is None and tokenizer_name == _revision_repo:
+            _tokenizer_revision = _revision
 
         # On the vLLM path the tokenizer warm was deferred (fast_inference_setup may remap model_name).
         # Warm the now-final tokenizer repo so the load below hits the cache (a cached/local repo is a no-op).
