@@ -9650,7 +9650,18 @@ class LlamaCppBackend:
                     and _extra_args_mtp_draft_path([*spec_flags, *(extra_args or [])]) is not None
                     and _paravirtual_draft_ngl_flag(server_caps)
                 ):
-                    _pv_draft_cpu_pin = [str(_paravirtual_draft_ngl_flag(server_caps)), "0"]
+                    # The layer count alone is not enough, for the same reason
+                    # --gpu-layers 0 was not: common_base_params_to_speculative
+                    # replaces the draft context's device list with the draft one,
+                    # so the main --device none never reaches it and an empty draft
+                    # list leaves every device visible. --device-draft has carried
+                    # this spelling across the whole supported range.
+                    _pv_draft_cpu_pin = [
+                        str(_paravirtual_draft_ngl_flag(server_caps)),
+                        "0",
+                        "--device-draft",
+                        "none",
+                    ]
                     logger.warning(
                         "Pinning the speculative drafter to CPU: this Mac's Metal "
                         "device is virtualised."

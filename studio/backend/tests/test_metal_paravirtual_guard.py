@@ -905,6 +905,22 @@ def test_a_load_with_no_separate_drafter_is_unaffected():
     assert (drafter, out, warnings) == (None, None, [])
 
 
+def test_the_drafter_pin_covers_the_device_not_just_the_layers():
+    """common_base_params_to_speculative replaces the draft context's device list
+    with the draft one, so the main --device none never reaches it and an empty
+    draft list leaves every device visible. The layer count alone would leave the
+    drafter running on the corrupt device, exactly as --gpu-layers 0 did."""
+    src = _load_model_source()
+    pin_at = src.index("_pv_draft_cpu_pin = [")
+    pin = src[pin_at : src.index("]", pin_at)]
+    assert "--device-draft" in pin
+    assert '"none"' in pin
+    # And the accounting must read that back as a CPU drafter, not a GPU one.
+    cmd = ["llama-server", "-md", "d.gguf", "--gpu-layers-draft", "0", "--device-draft", "none"]
+    assert llama_cpp._extra_args_draft_offloaded_to_cpu(cmd) is True
+    assert llama_cpp.LlamaCppBackend._cmd_has_gpu_companion(cmd, {}) is False
+
+
 def test_the_drafter_drop_precedes_the_flags_it_feeds():
     """launch_mtp_draft_path becomes --model-draft and extra_args become the
     pass-through tail, so clearing either after _build_speculative_flags has run
@@ -915,9 +931,7 @@ def test_the_drafter_drop_precedes_the_flags_it_feeds():
     assert gate_at < src.index("cmd.extend(str(a) for a in _emit_extra_args)")
     # The CPU pin is the other half of the same decision, so it can only be reached
     # on a build that advertises a flag to pin with.
-    assert gate_at < src.index(
-        '_pv_draft_cpu_pin = [str(_paravirtual_draft_ngl_flag(server_caps)), "0"]'
-    )
+    assert gate_at < src.index("_pv_draft_cpu_pin = [")
 
 
 # ── a pass-through GPU split mode must not fail the CPU-only load ────
