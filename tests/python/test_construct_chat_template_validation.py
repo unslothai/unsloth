@@ -117,6 +117,7 @@ def _render(
     jinja_template,
     messages,
     add_generation_prompt = False,
+    bos_token = "<s>",
 ):
     from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -124,7 +125,7 @@ def _render(
     env.globals["raise_exception"] = lambda message: (_ for _ in ()).throw(RuntimeError(message))
     return env.from_string(jinja_template).render(
         messages = messages,
-        bos_token = "<s>",
+        bos_token = bos_token,
         eos_token = "</s>",
         add_generation_prompt = add_generation_prompt,
     )
@@ -257,6 +258,9 @@ _APOSTROPHE_CHAT_TEMPLATE = (
         "Answer the user's question.",
         r"Put the answer in \boxed{}.",
         r"Files live in C:\Users\me",
+        # A template authored on Windows arrives with CRLF; Jinja rewrites a raw
+        # carriage return to \n before unescaping, so \r needs escaping as well.
+        "Answer briefly.\r\nBe polite.",
     ],
 )
 def test_quotes_and_backslashes_survive_into_the_jinja_template(default_system_message):
@@ -284,3 +288,33 @@ def test_quotes_and_backslashes_survive_into_the_jinja_template(default_system_m
         add_generation_prompt = True,
     )
     assert prompted.endswith("### Bot's reply: ")
+
+
+class _BosFakeTokenizer(_SuccessFakeTokenizer):
+    """A bos_token carrying characters the Jinja escaper rewrites."""
+
+    bos_token = "<s'\\a>"
+
+    def __call__(self, text):
+        # input_ids[0] == bos_token_id takes the BOS-handling branch.
+        return SimpleNamespace(input_ids = [1])
+
+
+def test_bos_token_with_quote_or_backslash_is_not_emitted_twice():
+    """The BOS is stripped from the system section so it is only rendered once, via
+    `{{ bos_token }}`. Stripping it after process() had escaped the section left it
+    unmatched, and the caller-system branch then emitted it a second time."""
+    bos = _BosFakeTokenizer.bos_token
+    _, jinja_template, _, _ = construct_chat_template(
+        tokenizer = _BosFakeTokenizer(),
+        chat_template = bos + _APOSTROPHE_CHAT_TEMPLATE,
+        default_system_message = "Be helpful.",
+        extra_eos_tokens = ["</s>"],
+    )
+
+    for messages in (
+        [{"role": "user", "content": "Hi"}],
+        [{"role": "system", "content": "Sysmsg"}, {"role": "user", "content": "Hi"}],
+    ):
+        rendered = _render(jinja_template, messages, bos_token = bos)
+        assert rendered.count(bos) == 1, rendered
