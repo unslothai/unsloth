@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   shouldMountVariantExpander,
+  toggleAutoExpandedRow,
   visibleGgufVariants,
 } from "../src/features/model-picker/components/model-selector/variant-visibility.ts";
 
@@ -117,4 +118,42 @@ test("a collapsed row never mounts an expander", () => {
       );
     }
   }
+});
+
+test("clicking a row held back by its probe opens it", () => {
+  // Auto-expand is on, so the row is not in the collapsed set, but its
+  // pending probe means it renders nothing.
+  const next = toggleAutoExpandedRow(
+    { collapsed: new Set(), reopened: new Set() },
+    { repoId: "unsloth/Qwen3-8B-GGUF", showing: false },
+  );
+  assert.deepEqual([...next.collapsed], []);
+  assert.deepEqual([...next.reopened], ["unsloth/Qwen3-8B-GGUF"]);
+  // Reopened rows stop following the preference, so the wait no longer applies.
+  assert.equal(
+    shouldMountVariantExpander({
+      expanded: true,
+      autoExpand: false,
+      soleQuantsPending: true,
+    }),
+    true,
+  );
+});
+
+test("clicking a showing row collapses it and clears the reopen mark", () => {
+  const next = toggleAutoExpandedRow(
+    { collapsed: new Set(), reopened: new Set(["unsloth/Qwen3-8B-GGUF"]) },
+    { repoId: "unsloth/Qwen3-8B-GGUF", showing: true },
+  );
+  assert.deepEqual([...next.collapsed], ["unsloth/Qwen3-8B-GGUF"]);
+  assert.deepEqual([...next.reopened], []);
+});
+
+test("reopening a collapsed row leaves other rows alone", () => {
+  const next = toggleAutoExpandedRow(
+    { collapsed: new Set(["a", "b"]), reopened: new Set() },
+    { repoId: "a", showing: false },
+  );
+  assert.deepEqual([...next.collapsed], ["b"]);
+  assert.deepEqual([...next.reopened], ["a"]);
 });

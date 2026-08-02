@@ -33,3 +33,24 @@ export function shouldMountVariantExpander({
 }): boolean {
   return expanded && !(autoExpand && soleQuantsPending);
 }
+
+/** Next collapse/reopen sets after a click on an auto-expanded row.
+ *  `showing` is what the row renders, not what the collapse set says: a row
+ *  held back by its sole-quant probe shows nothing, so a click opens it. A
+ *  reopened row stops following the auto-expand preference until it is
+ *  collapsed again. */
+export function toggleAutoExpandedRow(
+  state: { collapsed: ReadonlySet<string>; reopened: ReadonlySet<string> },
+  { repoId, showing }: { repoId: string; showing: boolean },
+): { collapsed: Set<string>; reopened: Set<string> } {
+  const collapsed = new Set(state.collapsed);
+  const reopened = new Set(state.reopened);
+  if (showing) {
+    collapsed.add(repoId);
+    reopened.delete(repoId);
+  } else {
+    collapsed.delete(repoId);
+    reopened.add(repoId);
+  }
+  return { collapsed, reopened };
+}

@@ -140,6 +140,7 @@ import type {
 } from "./types";
 import {
   shouldMountVariantExpander,
+  toggleAutoExpandedRow,
   visibleGgufVariants,
 } from "./variant-visibility";
 
@@ -780,12 +781,14 @@ function useSoleDownloadedQuants(
   // never re-read, and an in-flight one is never read twice.
   const inFlightRef = useRef(new Map<string, string>());
   const mountedRef = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set on setup, not just cleared on teardown: StrictMode replays effects,
+    // and a ref left false would discard every later read.
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   useEffect(() => {
     const queue = stale.filter(
@@ -1635,16 +1638,22 @@ export function HubModelPicker({
   // Shared with the Hub page: list only models sized within the device budget.
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
-  // Repos the user clicked to collapse while expand-by-default is on. Kept in
-  // memory only, so it resets on reload (and when the setting is toggled).
+  // Repos the user clicked to collapse while expand-by-default is on, and the
+  // ones they clicked back open. Kept in memory only, so both reset on reload
+  // (and when the setting is toggled).
   const [collapsedGgufState, setCollapsedGgufState] = useState<{
     expandQuantizations: boolean;
     value: Set<string>;
-  }>(() => ({ expandQuantizations, value: new Set() }));
-  const collapsedGguf =
-    collapsedGgufState.expandQuantizations === expandQuantizations
-      ? collapsedGgufState.value
-      : new Set<string>();
+    reopened: Set<string>;
+  }>(() => ({ expandQuantizations, value: new Set(), reopened: new Set() }));
+  const expansionMatchesSetting =
+    collapsedGgufState.expandQuantizations === expandQuantizations;
+  const collapsedGguf = expansionMatchesSetting
+    ? collapsedGgufState.value
+    : new Set<string>();
+  const reopenedGguf = expansionMatchesSetting
+    ? collapsedGgufState.reopened
+    : new Set<string>();
   const isGgufExpanded = useCallback(
     (id: string) =>
       expandQuantizations ? !collapsedGguf.has(id) : expandedGguf === id,
@@ -1653,23 +1662,31 @@ export function HubModelPicker({
   // Toggle a repo's quantizations: flip the collapse set when expand-by-default
   // is on, otherwise drive the single-open expandedGguf state.
   const toggleGgufExpanded = useCallback(
-    (id: string) => {
-      if (expandQuantizations) {
-        setCollapsedGgufState((prev) => {
-          const current =
-            prev.expandQuantizations === expandQuantizations
-              ? prev.value
-              : new Set<string>();
-          const next = new Set(current);
-          if (next.has(id)) next.delete(id);
-          else next.add(id);
-          return { expandQuantizations, value: next };
-        });
-      } else {
+    // `showing` is what the row actually renders, which is not the collapse
+    // set alone: a row held back by its sole-quant probe shows nothing, and a
+    // click on it should open it rather than collapse what is already hidden.
+    (id: string, showing = isGgufExpanded(id)) => {
+      if (!expandQuantizations) {
         setExpandedGguf((prev) => (prev === id ? null : id));
+        return;
       }
+      setCollapsedGgufState((prev) => {
+        const matches = prev.expandQuantizations === expandQuantizations;
+        const next = toggleAutoExpandedRow(
+          {
+            collapsed: matches ? prev.value : new Set(),
+            reopened: matches ? prev.reopened : new Set(),
+          },
+          { repoId: id, showing },
+        );
+        return {
+          expandQuantizations,
+          value: next.collapsed,
+          reopened: next.reopened,
+        };
+      });
     },
-    [expandQuantizations],
+    [expandQuantizations, isGgufExpanded],
   );
 
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
@@ -3120,7 +3137,7 @@ export function HubModelPicker({
     // mount an expander, and its remote listing, for repos about to collapse.
     const expanderOpen = shouldMountVariantExpander({
       expanded: isGgufExpanded(c.repo_id),
-      autoExpand: expandQuantizations,
+      autoExpand: expandQuantizations && !reopenedGguf.has(c.repo_id),
       soleQuantsPending: soleQuants.pending.has(c.repo_id),
     });
     return (
@@ -3140,7 +3157,7 @@ export function HubModelPicker({
                 "required",
               )}
               optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
-              onClick={() => toggleGgufExpanded(c.repo_id)}
+              onClick={() => toggleGgufExpanded(c.repo_id, expanderOpen)}
               onArrowDownIntoChildren={
                 expanderOpen
                   ? () => focusFirstChildOption(optionKey)
