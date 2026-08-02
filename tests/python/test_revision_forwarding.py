@@ -769,15 +769,17 @@ def test_the_peft_probe_keeps_the_adapter_ref_under_vllm():
     for class_name in ("FastLanguageModel", "FastModel"):
         function = _function(tree, "from_pretrained", class_name)
         probes = [
-            c for c in _calls(function, "from_pretrained") if ast.unparse(c.func).startswith("PeftConfig")
+            c
+            for c in _calls(function, "from_pretrained")
+            if ast.unparse(c.func).startswith("PeftConfig")
         ]
         assert probes, f"{class_name} must still probe for an adapter"
         for call in probes:
             keyword = _revision_kwarg(call)
             assert keyword is not None
-            assert getattr(keyword.value, "id", None) == "adapter_revision", (
-                "the adapter probe must not take the base model's gated ref"
-            )
+            assert (
+                getattr(keyword.value, "id", None) == "adapter_revision"
+            ), "the adapter probe must not take the base model's gated ref"
 
 
 def test_both_loaders_drop_the_vllm_pin_before_the_probe():
@@ -805,9 +807,9 @@ def test_both_loaders_drop_the_vllm_pin_before_the_probe():
             if ast.unparse(c.func).split(".")[0] in ("AutoConfig", "PeftConfig")
         ]
         assert probes
-        assert drops[0].end_lineno < min(c.lineno for c in probes), (
-            f"{class_name} probes at a ref the weights will not be at"
-        )
+        assert drops[0].end_lineno < min(
+            c.lineno for c in probes
+        ), f"{class_name} probes at a ref the weights will not be at"
 
 
 def test_llama_owns_the_vllm_predicate_the_loader_gates_on():
@@ -829,7 +831,9 @@ def test_llama_owns_the_vllm_predicate_the_loader_gates_on():
 def test_a_pinned_tokenizer_is_stamped_for_the_save_path():
     """save.py restores tokenizer.model from tokenizer.name_or_path, which names the repo
     but not the branch, so a merged export would copy the default branch's asset."""
-    stamps = _calls(_function(_tree(TOKENIZER_UTILS), "load_correct_tokenizer"), "_mark_loaded_revision")
+    stamps = _calls(
+        _function(_tree(TOKENIZER_UTILS), "load_correct_tokenizer"), "_mark_loaded_revision"
+    )
     assert stamps, "the loaded ref has to travel with the tokenizer"
     assert any(
         any(getattr(a, "id", None) == "revision" for a in c.args) for c in stamps
@@ -841,7 +845,9 @@ def test_a_pinned_tokenizer_is_stamped_for_the_save_path():
     assert "revision" in _params(_function(tree, "_resolve_hub_repo_cached_file"))
 
 
-@pytest.mark.parametrize("callee", ["_resolve_hub_repo_cached_file", "hf_hub_download", "model_info"])
+@pytest.mark.parametrize(
+    "callee", ["_resolve_hub_repo_cached_file", "hf_hub_download", "model_info"]
+)
 def test_the_sentencepiece_restore_reads_the_stamped_ref(callee):
     tree = _tree(SAVE)
     functions = [

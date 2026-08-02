@@ -490,9 +490,7 @@ def _has_tokenizer_model(tokenizer, token = None):
         return False
 
     try:
-        repo_info = HfApi(token = token).model_info(
-            source, revision = revision, files_metadata = False
-        )
+        repo_info = HfApi(token = token).model_info(source, revision = revision, files_metadata = False)
     except Exception:
         return False
 
