@@ -1233,8 +1233,13 @@ class InferenceBackend:
                 vision_messages = [user_msg]
 
             # Processor's own template skips the choke point (#7066). Rebind user_msg
-            # so the no-system retry keeps the copy.
-            vision_messages = neutralize_control_markup_in_messages(vision_messages)
+            # so the no-system retry keeps the copy. Profiled from the processor, so a
+            # vision request is gated on the loaded model exactly as the text path is.
+            from core.inference.chat_template_helpers import markup_for_tokenizer
+
+            vision_messages = neutralize_control_markup_in_messages(
+                vision_messages, None, markup_for_tokenizer(processor)
+            )
             user_msg = vision_messages[-1]
 
             try:
