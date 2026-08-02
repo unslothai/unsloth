@@ -379,13 +379,13 @@ def _collapsed_sources(markers: set) -> list:
         # cannot start rewriting "array[42]". Over "<unused0>".."<unused6241>" that is
         # "\d{1,4}", which is the same match set the literals had.
         widths = [len(m) - len(prefix) - len(suffix) for m in members]
-        span = f"{{{min(widths)},{max(widths)}}}" if min(widths) != max(widths) else f"{{{widths[0]}}}"
+        span = (
+            f"{{{min(widths)},{max(widths)}}}" if min(widths) != max(widths) else f"{{{widths[0]}}}"
+        )
         sources.append(re.escape(prefix) + "\\d" + span + re.escape(suffix))
     # Longest first so no prefix shadows a longer literal; the family arms go last, since
     # they only ever match strings no literal here spells out.
-    sources = [
-        _marker_pattern_source(m) for m in sorted(singles, key = len, reverse = True)
-    ] + sources
+    sources = [_marker_pattern_source(m) for m in sorted(singles, key = len, reverse = True)] + sources
     return sources
 
 

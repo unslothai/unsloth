@@ -4754,15 +4754,28 @@ def test_a_dynamic_opener_is_not_folded_into_a_numeric_family():
     """'<function=1>' carries a render-time name; the dynamic rule must still win."""
     tokens = [f"<function={n}>" for n in range(20)]
     markup = model_markup("{{ messages }}", tokens)
-    assert markup.rewrite_control('<function=wire_money>') == '< function=wire_money>'
+    assert markup.rewrite_control("<function=wire_money>") == "< function=wire_money>"
 
 
 def test_collapsing_does_not_change_what_a_gemma_shaped_vocabulary_matches():
     """The whole point: same match set, far fewer arms. Shaped like the real Gemma-3
     vocabulary, which is 6242 '<unusedN>' fillers beside ~80 genuine delimiters."""
     tokens = [f"<unused{n}>" for n in range(6242)] + [
-        "<pad>", "<eos>", "<bos>", "<unk>", "<mask>", "<start_of_turn>", "<end_of_turn>",
-        "<table>", "<caption>", "<thead>", "<tbody>", "<tr>", "<th>", "<td>", "</table>",
+        "<pad>",
+        "<eos>",
+        "<bos>",
+        "<unk>",
+        "<mask>",
+        "<start_of_turn>",
+        "<end_of_turn>",
+        "<table>",
+        "<caption>",
+        "<thead>",
+        "<tbody>",
+        "<tr>",
+        "<th>",
+        "<td>",
+        "</table>",
     ]
     markup = model_markup("{{ messages }}", tokens)
     assert len(markup.markers) == len(tokens)
