@@ -119,6 +119,11 @@ import {
   matchesFormatFilter,
   paramsFromId,
 } from "./recommended-fit";
+import {
+  ggufVariantsMatchForPicker,
+  modelIdsMatchForPicker,
+  soleQuantRowState,
+} from "./row-identity";
 import { parseMetaTokens, splitRepoLabel } from "./row-meta";
 import type {
   DeletedModelRef,
@@ -387,41 +392,6 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
         </span>
       ))}
     </>
-  );
-}
-
-function normalizeModelIdForPicker(modelId: string): string {
-  const trimmed = modelId.trim();
-  const slashPath = trimmed.replace(/\\/g, "/").replace(/\/+$/, "");
-  const caseInsensitive =
-    !/^(\/|\.{1,2}\/|~\/)/.test(slashPath) ||
-    /^[A-Za-z]:\//.test(slashPath) ||
-    slashPath.startsWith("//") ||
-    /^\/mnt\/[A-Za-z](?:\/|$)/.test(slashPath);
-  return caseInsensitive ? slashPath.toLowerCase() : slashPath;
-}
-
-function modelIdsMatchForPicker(
-  left: string | null | undefined,
-  right: string | null | undefined,
-): boolean {
-  return Boolean(
-    left &&
-      right &&
-      normalizeModelIdForPicker(left) === normalizeModelIdForPicker(right),
-  );
-}
-
-function normalizeGgufVariantForPicker(variant: string | null | undefined) {
-  return variant?.trim().toLowerCase() ?? "";
-}
-
-function ggufVariantsMatchForPicker(
-  left: string | null | undefined,
-  right: string | null | undefined,
-): boolean {
-  return (
-    normalizeGgufVariantForPicker(left) === normalizeGgufVariantForPicker(right)
   );
 }
 
@@ -3016,7 +2986,15 @@ export function HubModelPicker({
   ) => {
     const variant = sole.variant;
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
-    const isSelected = value === c.repo_id;
+    // The row names one quant, so the repo running a different one is not it.
+    const rowState = soleQuantRowState({
+      pickerValue: value,
+      repoId: c.repo_id,
+      quant: variant.quant,
+      loadedModelId,
+      activeGgufVariant,
+    });
+    const isSelected = rowState.selected;
     const expectedBytes = ggufVariantExpectedBytes(variant);
     const isPinned = pinnedSet.has(pinKey(c.repo_id, variant.quant));
     const selectMeta: ModelSelectorChangeMeta = {
@@ -3038,11 +3016,7 @@ export function HubModelPicker({
             quantChip={variant.quant}
             showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
-            // The row is one quant, so only that quant counts as loaded.
-            loaded={
-              modelIdsMatchForPicker(loadedModelId, c.repo_id) &&
-              ggufVariantsMatchForPicker(activeGgufVariant, variant.quant)
-            }
+            loaded={rowState.loaded}
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
             onClick={() => onSelect(c.repo_id, selectMeta)}
             vramStatus={null}
