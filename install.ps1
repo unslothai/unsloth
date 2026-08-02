@@ -1132,6 +1132,76 @@ exit 0
         return
     }
 
+    # ── Leave Windows system directories before installing ──
+    # "Run as administrator" opens PowerShell in C:\Windows\System32, so `irm ... | iex`
+    # installs from there, and `unsloth studio setup` below inherits it and refuses to
+    # run (unsloth_cli/__init__.py) only after PyTorch has downloaded, then rolls back.
+    # Relocate rather than fail: nothing here reads the caller's directory ($RepoRoot
+    # comes from $PSCommandPath, $StudioHome from the environment, both resolved above),
+    # so only a relative --with-llama-cpp-dir needs pinning first. Not restored at the
+    # end, same reason as the PSModulePath fix at the top: the interactive path ends
+    # running Studio in the foreground, so a finally would not fire until it stops.
+    $SystemRootDir = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
+    $SystemRootDir = [System.IO.Path]::GetFullPath($SystemRootDir).TrimEnd('\')
+    $CurrentDir = $null
+    try {
+        # -PSProvider FileSystem: a caller on HKLM:\ still has the filesystem
+        # location that child processes inherit.
+        $CurrentDir = [System.IO.Path]::GetFullPath(
+            (Get-Location -PSProvider FileSystem -ErrorAction Stop).ProviderPath
+        ).TrimEnd('\')
+    } catch {
+        $CurrentDir = $null
+    }
+    $InSystemDir = $CurrentDir -and (
+        $CurrentDir.Equals($SystemRootDir, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $CurrentDir.StartsWith($SystemRootDir + '\', [System.StringComparison]::OrdinalIgnoreCase)
+    )
+    if ($InSystemDir) {
+        if ($WithLlamaCppDir -and -not [System.IO.Path]::IsPathRooted($WithLlamaCppDir)) {
+            $WithLlamaCppDir = Join-Path $CurrentDir $WithLlamaCppDir
+        }
+        # SYSTEM's profile is C:\Windows\System32\config\systemprofile, so a candidate
+        # under the Windows directory is no better than where we already are.
+        $SafeDirCandidates = @($env:USERPROFILE, $HOME, $env:PUBLIC, $env:TEMP) |
+            Where-Object {
+                $_ -and (Test-Path -LiteralPath $_ -PathType Container) -and
+                -not ([System.IO.Path]::GetFullPath($_).TrimEnd('\')).StartsWith(
+                    $SystemRootDir, [System.StringComparison]::OrdinalIgnoreCase
+                )
+            }
+        $SafeDir = $null
+        foreach ($candidate in $SafeDirCandidates) {
+            try {
+                Set-Location -LiteralPath $candidate -ErrorAction Stop
+                $SafeDir = (Get-Location -PSProvider FileSystem).ProviderPath
+                break
+            } catch {
+                continue
+            }
+        }
+        if ($SafeDir) {
+            Write-TauriLog "STEP" "Left system directory $CurrentDir for $SafeDir"
+            step "directory" "$CurrentDir is a Windows system folder" "Yellow"
+            substep "Unsloth cannot install or run from there, so this install continues in:" "Yellow"
+            substep "  $SafeDir" "Yellow"
+            substep "This is normal: 'Run as administrator' opens PowerShell in System32." "Yellow"
+        } else {
+            Write-Host ""
+            Write-Host "[ERROR] Unsloth cannot be installed from $CurrentDir." -ForegroundColor Red
+            Write-Host "        That is a Windows system folder, and Unsloth writes its virtual" -ForegroundColor Yellow
+            Write-Host "        environment caches, model downloads and build files into the" -ForegroundColor Yellow
+            Write-Host "        working directory, which Windows blocks there." -ForegroundColor Yellow
+            Write-Host "        'Run as administrator' opens PowerShell in System32, which is how" -ForegroundColor Yellow
+            Write-Host "        most people land here." -ForegroundColor Yellow
+            Write-Host "        Change to a normal folder and run the installer again:" -ForegroundColor Yellow
+            Write-Host "          cd `$env:USERPROFILE" -ForegroundColor Cyan
+            Write-Host "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
+            Write-Host ""
+            return (Exit-InstallFailure "Refusing to install from the Windows system directory $CurrentDir. cd to a normal folder (for example `$env:USERPROFILE) and re-run the installer.")
+        }
+    }
+
     # ── Check winget ──
     # winget is only needed to install Python or uv. If both are
     # already on PATH (Windows ARM64 GitHub-hosted runners, manual
