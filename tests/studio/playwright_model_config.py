@@ -375,7 +375,13 @@ with sync_playwright() as p:
         except Exception:
             pass
 
-    def select_on_device_row(popover, hint):
+    def find_on_device_row(popover, hint):
+        """Locate the row without clicking it.
+
+        Since single-quant rows collapse (#7736) the row loads its quant in one
+        click and the picker closes, so selecting first would dismiss the gear
+        this is about to press.
+        """
         od = page.get_by_role("tab", name = "On Device").first
         if _count(od):
             od.click()
@@ -389,16 +395,18 @@ with sync_playwright() as p:
                 search.fill(hint)
                 page.wait_for_timeout(700)
                 row = popover.locator("[data-model-picker-option]", has_text = hint).first
-        if _count(row) == 0:
-            return None
-        row.click()
-        page.wait_for_timeout(800)
-        return row
+        return row if _count(row) else None
 
     def open_config(popover, hint):
-        if select_on_device_row(popover, hint) is None:
+        if find_on_device_row(popover, hint) is None:
             return None
-        gear = popover.locator('button[aria-label^="Inference settings for"]').first
+        # data-model-picker-option sits on the row button; the gear is its
+        # sibling, so it cannot be reached through the row. Match it by the model
+        # its own label names, which also keeps this from pressing the gear of
+        # whichever row happens to come first.
+        gear = popover.locator(
+            f'button[aria-label^="Inference settings for"][aria-label*="{hint}"]'
+        ).first
         if _count(gear) == 0:
             return None
         gear.click()
