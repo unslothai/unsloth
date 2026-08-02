@@ -1318,6 +1318,7 @@ def _load_pretrained_tokenizer_fast(
     trust_remote_code = False,
     cache_dir = None,
     local_files_only = False,
+    revision = None,
 ):
     """Load ``PreTrainedTokenizerFast`` without Hub metadata probes when cached/offline.
 
@@ -1344,6 +1345,7 @@ def _load_pretrained_tokenizer_fast(
         trust_remote_code = trust_remote_code,
         cache_dir = cache_dir,
         local_files_only = lfo,
+        revision = revision,
     )
 
 
