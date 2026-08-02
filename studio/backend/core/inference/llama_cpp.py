@@ -2020,9 +2020,7 @@ def _extra_args_requests_mtp(
     env_value = (os.environ if env is None else env).get("LLAMA_ARG_SPEC_TYPE")
     if env_value:
         values.append(env_value)
-    return any(
-        p.strip().lower() in ("mtp", "draft-mtp") for v in values for p in v.split(",")
-    )
+    return any(p.strip().lower() in ("mtp", "draft-mtp") for v in values for p in v.split(","))
 
 
 @functools.lru_cache(maxsize = 1)
