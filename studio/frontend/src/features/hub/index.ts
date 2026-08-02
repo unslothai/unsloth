@@ -113,6 +113,7 @@ export {
 export { ggufVariantDisplayLabel } from "./lib/gguf-variant-sort";
 export { EMBEDDING_TAGS, isGgufLike } from "./lib/hf-model-meta";
 export { matchTokens, tokenizeQuery } from "./lib/search-text";
+export { recommendedGgufVariant } from "./lib/gguf-recommendation";
 export {
   DeleteConfirmDialog,
   UpdateConfirmDialog,

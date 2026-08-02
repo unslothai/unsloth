@@ -61,7 +61,10 @@ import {
   ggufFilenamesMatch,
   ggufSelectionOverrideMatchesIntent,
 } from "../lib/gguf-filename";
-import { recommendedDownloadableGgufVariant } from "../lib/gguf-recommendation";
+import {
+  recommendedGgufVariant,
+  shouldShowGgufRecommendation,
+} from "../lib/gguf-recommendation";
 import {
   ggufVariantDisplayLabel,
   ggufVariantDownloadSizeBytes,
@@ -432,6 +435,14 @@ export function QuantOptionsMenu({
   );
 }
 
+function GgufRecommendationLabel() {
+  return (
+    <span className="shrink-0 text-ui-9 font-sans font-medium text-primary/70">
+      recommended
+    </span>
+  );
+}
+
 const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   repoId,
   item,
@@ -516,11 +527,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
             </TooltipContent>
           </Tooltip>
         )}
-        {recommended && (
-          <span className="shrink-0 text-ui-9 font-sans font-medium text-primary/70">
-            recommended
-          </span>
-        )}
+        {recommended && <GgufRecommendationLabel />}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
@@ -583,7 +590,7 @@ export function GgufDownloadCard({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const localVariantPath = cachePath?.trim() || null;
-  const { variants, loading, error, refreshError, refresh } =
+  const { variants, defaultVariant, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
       repoId,
       hfToken,
@@ -651,14 +658,15 @@ export function GgufDownloadCard({
   const recommendedVariant = useMemo(
     () =>
       sortedVariants
-        ? recommendedDownloadableGgufVariant(sortedVariants)
+        ? recommendedGgufVariant(
+            sortedVariants,
+            defaultVariant,
+            (sizeBytes) =>
+              classifyGgufFit(sizeBytes, { gpuGb, systemRamGb }) !== "oom",
+          )
         : null,
-    [sortedVariants],
+    [defaultVariant, gpuGb, sortedVariants, systemRamGb],
   );
-  const recommendedVariantKey = recommendedVariant
-    ? normalizeGgufVariantIdentity(recommendedVariant.quant)
-    : null;
-
   const selectedQuant =
     (selectedQuantOverride
       ? sortedVariants?.find((v) =>
@@ -1004,10 +1012,8 @@ export function GgufDownloadCard({
                     </TooltipContent>
                   </Tooltip>
                 )}
-                {selectedVariantKey === recommendedVariantKey && (
-                  <span className="shrink-0 text-ui-9 font-sans font-medium text-primary/70">
-                    recommended
-                  </span>
+                {shouldShowGgufRecommendation(selected, recommendedVariant) && (
+                  <GgufRecommendationLabel />
                 )}
                 <DotTag tone="gguf" label="GGUF" />
                 {selected &&
@@ -1043,7 +1049,10 @@ export function GgufDownloadCard({
                     selected={item.key === selectedVariantKey}
                     loaded={isActive && item.key === activeVariantKey}
                     liveActive={liveActive}
-                    recommended={item.key === recommendedVariantKey}
+                    recommended={shouldShowGgufRecommendation(
+                      item,
+                      recommendedVariant,
+                    )}
                     showFitInfo={showFitInfo}
                     onSelect={handleSelectVariant}
                     onDelete={handleDeleteVariant}
