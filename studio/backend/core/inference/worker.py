@@ -713,6 +713,10 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
         audio_type = cmd.get("audio_type")
 
         if audio_type == "whisper":
+            if not hasattr(backend, "generate_whisper_response"):
+                # MLX has no ASR path. Without this the user sees a raw
+                # AttributeError for a limitation we already know about.
+                raise RuntimeError("Whisper transcription is not supported on the MLX backend yet.")
             generator = backend.generate_whisper_response(
                 audio_array = audio_array,
                 cancel_event = cancel_event,
@@ -978,6 +982,19 @@ def run_inference_process(
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
                     _handle_generate_audio_input(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "generate_audio":
+                    # No TTS on this backend. Say so now: the parent blocks for
+                    # 120s on a reply it would otherwise never get, and a codec
+                    # checkpoint (snac/dac/bicodec/csm) reaches this loop because
+                    # dispatch is by device, not by modality.
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "audio_error",
+                            "request_id": cmd.get("request_id"),
+                            "error": "Text-to-speech is not supported on the MLX backend yet.",
+                        },
+                    )
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
@@ -1007,6 +1024,18 @@ def run_inference_process(
                     )
                 elif cmd_type == "shutdown":
                     return
+                else:
+                    # Same terminal branch the GPU loop has: an unhandled command
+                    # dropped in silence costs the caller its whole timeout.
+                    logger.warning("Unknown MLX command type: %s", cmd_type)
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "error",
+                            "request_id": cmd.get("request_id"),
+                            "error": f"Unknown command type: {cmd_type}",
+                        },
+                    )
             except Exception as exc:
                 logger.error("MLX command error (%s): %s", cmd_type, exc)
                 _send_response(
