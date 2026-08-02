@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import contextlib
 import json
 import subprocess
 import sys
@@ -1567,6 +1568,97 @@ def test_mlx_audio_classification_survives_an_absent_dependency(monkeypatch):
     assert mlx_inference._classify_mlx_audio_type(_audio_model(), _audio_processor(), True) is None
 
 
+@pytest.mark.parametrize("codec", ["snac", "dac", "bicodec", "csm", "whisper"])
+def test_mlx_audio_classification_keeps_a_classification_it_cannot_judge(monkeypatch, codec):
+    """A TTS codec or Whisper is never a vision model, so the probe never runs.
+
+    The worker mirrors this entry over the pre-load config, so returning a bare
+    None here would strip is_audio from a codec checkpoint mlx-lm loads happily
+    (Orpheus/Llasa/Spark-TTS are plain llama/qwen2), and the chat route's TTS
+    redirect would stop firing.
+    """
+    from core.inference import mlx_inference
+
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", None)
+    assert (
+        mlx_inference._classify_mlx_audio_type(
+            _audio_model(),
+            None,
+            False,
+            config_audio_type = codec,
+        )
+        == codec
+    )
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [
+        None,  # dependency absent entirely
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("zoo blew up")),
+        lambda *a, **k: SimpleNamespace(),  # older/newer API: no .capable
+    ],
+)
+def test_mlx_audio_capability_survives_a_probe_that_could_not_run(monkeypatch, capability):
+    """An unjudgeable probe defers; it does not retract audio_vlm.
+
+    Every currently released unsloth_zoo lands here, so treating "could not look"
+    as a verified negative would hide the upload control the pre-load detection
+    had already earned.
+    """
+    from core.inference import mlx_inference
+
+    if capability is None:
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", None)
+    else:
+        fake_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+        fake_utils.audio_input_capability = capability
+        fake_utils.audio_extractor_sampling_rate = lambda proc: 16000
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", fake_utils)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *a, num_audios = 0: "P<audio>" if num_audios else "P",
+    )
+
+    assert (
+        mlx_inference._classify_mlx_audio_type(
+            _audio_model(),
+            _audio_processor(),
+            True,
+            config_audio_type = "audio_vlm",
+        )
+        == "audio_vlm"
+    )
+
+
+def test_mlx_audio_probe_that_answered_no_still_retracts_audio_vlm(monkeypatch):
+    """The corrective direction survives: a real negative downgrades."""
+    from core.inference import mlx_inference
+
+    fake_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    fake_utils.audio_input_capability = lambda *a, **k: SimpleNamespace(
+        capable = False, reason = "processor drops audio"
+    )
+    fake_utils.audio_extractor_sampling_rate = lambda proc: 16000
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", fake_utils)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *a, num_audios = 0: "P<audio>" if num_audios else "P",
+    )
+
+    assert (
+        mlx_inference._classify_mlx_audio_type(
+            _audio_model(),
+            _audio_processor(),
+            True,
+            config_audio_type = "audio_vlm",
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     ("model_type", "places_marker"),
     [
@@ -1651,3 +1743,73 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
     backend.models["m"]["audio_type"] = None
     with pytest.raises(RuntimeError, match = "not supported .* MLX"):
         next(backend.generate_audio_input_response(**args))
+
+
+def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
+    """Base-vs-LoRA compare sends audio_base64 and use_adapter in one body.
+
+    The audio stream has to enter _temporary_mlx_adapter_state like the text and
+    vision paths, or the base side silently runs the loaded adapter.
+    """
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    seen = {}
+
+    @contextlib.contextmanager
+    def _fake_adapter_state(model, use_adapter):
+        seen["use_adapter"] = use_adapter
+        seen["entered"] = True
+        yield
+        seen["exited"] = True
+
+    def _fake_stream(model, processor, prompt, **kwargs):
+        seen["inside"] = seen.get("entered") and not seen.get("exited")
+        yield SimpleNamespace(
+            text = "x",
+            prompt_tokens = 1,
+            prompt_tps = 1.0,
+            generation_tokens = 1,
+            generation_tps = 1.0,
+        )
+
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.stream_generate = _fake_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *a, num_images = 0, num_audios = 0: "P<audio>",
+    )
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _fake_adapter_state)
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._generation_lock = __import__("threading").Lock()
+    backend._model, backend._processor = _audio_model(), _audio_processor()
+    backend.active_model_name = "m"
+    backend.last_generation_stats = None
+    backend.models = {"m": {"audio_type": "audio_vlm"}}
+
+    list(
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "hi"}],
+            system_prompt = "",
+            audio_array = [0.0],
+            max_new_tokens = 8,
+            use_adapter = False,
+        )
+    )
+    assert seen["use_adapter"] is False
+    # Held for the whole stream, and restored afterwards.
+    assert seen["inside"] is True and seen["exited"] is True
+
+
+def test_worker_forwards_use_adapter_on_the_audio_command():
+    """The wire carries the selection only when the caller set it."""
+    import inspect
+
+    from core.inference import worker
+
+    src = inspect.getsource(worker._handle_generate_audio_input)
+    assert 'cmd.get("use_adapter")' in src
+    assert '"use_adapter"' in src

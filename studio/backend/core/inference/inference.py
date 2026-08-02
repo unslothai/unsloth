@@ -1400,11 +1400,13 @@ class InferenceBackend:
         min_p,
         max_new_tokens,
         repetition_penalty,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """Audio-input (ASR) generation: takes an audio numpy array, streams text.
 
         Uses processor.apply_chat_template with audio embedded in messages (Gemma 3n pattern).
+        use_adapter: see _apply_adapter_state; None leaves the loaded state alone.
         """
         import threading
         import numpy as np
@@ -1473,6 +1475,11 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
+                        # Same contract as the text path: apply the request's
+                        # adapter selection under the lock, so Base-vs-LoRA
+                        # compare over audio does not run the adapter on both
+                        # sides. _apply_adapter_state is a no-op for None.
+                        self._apply_adapter_state(use_adapter)
                         model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)

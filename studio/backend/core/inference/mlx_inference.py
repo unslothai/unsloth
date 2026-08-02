@@ -16,6 +16,7 @@ from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
     normalize_reasoning_snapshots,
 )
+from utils.models.model_config import is_audio_input_type
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -131,7 +132,12 @@ _AUDIO_INPUT_SAMPLE_RATE = 16000
 _AUDIO_PROBE_MESSAGES = [{"role": "user", "content": "audio"}]
 
 
-def _classify_mlx_audio_type(model, processor, is_vision):
+def _classify_mlx_audio_type(
+    model,
+    processor,
+    is_vision,
+    config_audio_type = None,
+):
     """audio_type for the model entry: "audio_vlm" (omni audio input; is_audio
     stays False — it means TTS and redirects in the chat route) or None.
 
@@ -143,9 +149,29 @@ def _classify_mlx_audio_type(model, processor, is_vision):
     count and silently drop it. The rendered prompt is what the capability call
     probes with, so a family whose marker only its own template emits is judged
     on the real thing.
+
+    This probe speaks for "audio_vlm" and nothing else, so `config_audio_type`
+    (the pre-load answer from detect_audio_type) is carried through untouched
+    whenever the probe has no standing:
+
+      * a non-vision checkpoint is never asked, so a TTS codec ("snac", "dac",
+        "bicodec", "csm") or Whisper keeps the classification it arrived with —
+        the worker mirrors this entry over the pre-load config, so returning a
+        bare None here would silently strip the chat route's TTS redirect;
+      * a probe that could not run (absent or older unsloth_zoo, a raising or
+        unrecognised capability result) leaves the pre-load answer standing
+        rather than downgrading a model on the strength of a missing
+        dependency.
+
+    Only a probe that actually ran and answered may retract "audio_vlm".
     """
+
+    def _probe_says_no():
+        # Ran, answered: authoritative for audio_vlm, silent on everything else.
+        return None if config_audio_type == "audio_vlm" else config_audio_type
+
     if not is_vision or processor is None:
-        return None
+        return config_audio_type
     # Everything below runs inside the guard, including the capability call and
     # its result: this is a probe, and a model load must never fail on one. The
     # dependency promises totality, but it is pinned by a floor rather than a
@@ -158,18 +184,34 @@ def _classify_mlx_audio_type(model, processor, is_vision):
         )
 
         if audio_extractor_sampling_rate(processor) != _AUDIO_INPUT_SAMPLE_RATE:
-            return None
+            logger.info(
+                "MLX audio input unavailable: feature extractor is not %d Hz, and "
+                "the chat route decodes uploads to that rate.",
+                _AUDIO_INPUT_SAMPLE_RATE,
+            )
+            return _probe_says_no()
         args = (processor, model, _AUDIO_PROBE_MESSAGES, 0)
         marked = _render_registered_vlm_prompt(*args, num_audios = 1)
         if not marked or marked == _render_registered_vlm_prompt(*args, num_audios = 0):
-            return None
+            logger.info(
+                "MLX audio input unavailable: mlx-vlm's renderer for this family "
+                "places no audio marker."
+            )
+            return _probe_says_no()
         capability = audio_input_capability(model, processor, texts = marked)
         if capability.capable:
             return "audio_vlm"
         logger.info("MLX audio input unavailable for this model: %s", capability.reason)
+        return _probe_says_no()
     except BaseException as exc:
-        logger.info("MLX audio capability check did not run (%s)", type(exc).__name__)
-    return None
+        logger.info(
+            "MLX audio capability check did not run (%s); keeping the pre-load "
+            "classification %r. Audio input needs an unsloth_zoo release providing "
+            "audio_input_capability.",
+            type(exc).__name__,
+            config_audio_type,
+        )
+    return config_audio_type
 
 
 def _count_vlm_images(content):
@@ -674,7 +716,12 @@ class MLXInferenceBackend:
             self._processor = None
             self._is_vlm = False
 
-        _audio_type = _classify_mlx_audio_type(model, self._processor, is_vision)
+        _audio_type = _classify_mlx_audio_type(
+            model,
+            self._processor,
+            is_vision,
+            config_audio_type = getattr(config, "audio_type", None),
+        )
         self.active_model_name = model_name
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
@@ -693,7 +740,7 @@ class MLXInferenceBackend:
             # Mirrors utils.models.model_config semantics (is_audio == TTS).
             "is_audio": _audio_type is not None and _audio_type != "audio_vlm",
             "audio_type": _audio_type,
-            "has_audio_input": _audio_type in ("whisper", "audio_vlm"),
+            "has_audio_input": is_audio_input_type(_audio_type),
             "context_length": runtime_context_length(self._model, max_seq_length),
         }
         # Capture chat_template_info for the worker IPC reply and route capability classification.
@@ -1238,6 +1285,7 @@ class MLXInferenceBackend:
         system_prompt,
         audio_array,
         max_new_tokens = 512,
+        use_adapter = None,
         cancel_event = None,
         **_sampler,
     ):
@@ -1283,7 +1331,10 @@ class MLXInferenceBackend:
             )
 
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
-        with self._generation_lock:
+        # Hold the adapter state for the whole stream, as the text and vision
+        # paths do: Base-vs-LoRA compare sends use_adapter alongside the audio,
+        # so without this both sides would run the loaded adapter.
+        with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):
             final_response = None
             try:
                 for response in vlm_stream(

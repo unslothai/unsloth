@@ -718,18 +718,24 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 cancel_event = cancel_event,
             )
         else:
-            generator = backend.generate_audio_input_response(
-                messages = cmd.get("messages", []),
-                system_prompt = cmd.get("system_prompt", ""),
-                audio_array = audio_array,
-                temperature = cmd.get("temperature", 0.7),
-                top_p = cmd.get("top_p", 0.9),
-                top_k = cmd.get("top_k", 40),
-                min_p = cmd.get("min_p", 0.0),
-                max_new_tokens = cmd.get("max_new_tokens", 512),
-                repetition_penalty = cmd.get("repetition_penalty", 1.0),
-                cancel_event = cancel_event,
-            )
+            audio_kwargs = {
+                "messages": cmd.get("messages", []),
+                "system_prompt": cmd.get("system_prompt", ""),
+                "audio_array": audio_array,
+                "temperature": cmd.get("temperature", 0.7),
+                "top_p": cmd.get("top_p", 0.9),
+                "top_k": cmd.get("top_k", 40),
+                "min_p": cmd.get("min_p", 0.0),
+                "max_new_tokens": cmd.get("max_new_tokens", 512),
+                "repetition_penalty": cmd.get("repetition_penalty", 1.0),
+                "cancel_event": cancel_event,
+            }
+            # Forward only when present, as the "generate" branch does, so the
+            # backend signature can evolve independently of the wire format.
+            use_adapter = cmd.get("use_adapter")
+            if use_adapter is not None:
+                audio_kwargs["use_adapter"] = use_adapter
+            generator = backend.generate_audio_input_response(**audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
 
