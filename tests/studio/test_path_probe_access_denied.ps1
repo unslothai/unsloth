@@ -257,7 +257,13 @@ if ($assertSrc -and $markSrc) {
     $nfRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_nf_" + [guid]::NewGuid().ToString("N"))
     $nfDenied = Join-Path $nfRoot "whisper.cpp"
     $nfUnowned = Join-Path $nfRoot "unowned"
-    New-Item -ItemType Directory -Force -Path (Join-Path $nfDenied "sub") | Out-Null
+    $nfInner = Join-Path $nfDenied "inner"
+    $nfMarker = Join-Path $nfDenied $StudioOwnedMarker
+    # Populate before locking. Windows returns $false for a MISSING child of a
+    # denied directory instead of throwing, so a probe target that does not
+    # exist makes the negative control read as "this host cannot deny".
+    New-Item -ItemType Directory -Force -Path $nfInner | Out-Null
+    Set-Content -LiteralPath $nfMarker -Value ""
     New-Item -ItemType Directory -Force -Path $nfUnowned | Out-Null
     Set-Content -LiteralPath (Join-Path $nfUnowned "someone-elses.txt") -Value "x"
     function Set-NfDenied([bool]$on) {
@@ -273,7 +279,7 @@ if ($assertSrc -and $markSrc) {
         Set-NfDenied $true
         # Same environment gate as above: no real denial means no real test.
         $nfReal = $false
-        try { $null = Test-Path (Join-Path $nfDenied $StudioOwnedMarker) } catch { $nfReal = $true }
+        try { $null = Test-Path $nfMarker } catch { $nfReal = $true }
         Check "the host can actually deny a read (negative control)" $nfReal
         if ($nfReal) {
             $threw = $false
@@ -292,13 +298,34 @@ if ($assertSrc -and $markSrc) {
             # A locked directory still probes Present from its readable parent, so
             # the case above only covers the marker read. Lock the parent to reach
             # the root probe itself.
-            $nfInner = Join-Path $nfDenied "inner"
             $out = $null
             $threw = $false
             try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfInner -Label "whisper.cpp install" -NonFatal) }
             catch { $threw = $true }
             Check "-NonFatal hands back a tree whose parent is unreadable" (
                 -not $threw -and $out.Count -eq 1 -and $out[0] -eq "Denied")
+
+            # The realistic fresh-custom-home case: no marker was ever written.
+            # Windows reports a MISSING child of a denied directory as Absent, so
+            # this cannot go through the marker probe there and has to be caught
+            # by the adoptable-state read instead. Either route is fine; anything
+            # other than Denied is not.
+            $nfBare = Join-Path $nfRoot "bare"
+            New-Item -ItemType Directory -Force -Path (Join-Path $nfBare "sub") | Out-Null
+            $bareWho = "$env:USERDOMAIN\$env:USERNAME"
+            if ($onWindows) { icacls $nfBare /deny "${bareWho}:(OI)(CI)(RX)" *>$null }
+            else { chmod 000 $nfBare }
+            try {
+                $out = $null
+                $threw = $false
+                try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfBare -Label "whisper.cpp install" -NonFatal) }
+                catch { $threw = $true }
+                Check "-NonFatal hands back a denied tree that has no marker" (
+                    -not $threw -and $out.Count -eq 1 -and $out[0] -eq "Denied")
+            } finally {
+                if ($onWindows) { icacls $nfBare /remove:d "$bareWho" *>$null }
+                else { chmod 755 $nfBare }
+            }
         }
         # -NonFatal rescues the denial only: someone else's folder must still stop.
         $threw = $false
