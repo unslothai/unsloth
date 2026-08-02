@@ -3189,10 +3189,7 @@ class LlamaCppBackend:
         ):
             return False
         if (
-            (
-                self._speculative_type == "draft-mtp"
-                or self._spec_fallback_reason == "runtime_error"
-            )
+            (self._speculative_type == "draft-mtp" or self._spec_fallback_reason == "runtime_error")
             and intent.spec_draft_n_max is not None
             and intent.spec_draft_n_max != (self._spec_draft_n_max or 0)
         ):
