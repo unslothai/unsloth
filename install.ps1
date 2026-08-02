@@ -2166,10 +2166,8 @@ exit 0
     }
 
     # ── AMD gfx arch → AMD pip index family (repo.amd.com/rocm/whl/<family>) ──
-    # Hoisted above the Intel scan because the scan has to know whether AMD actually
-    # gets a GPU wheel: an arch missing from this map has no ROCm wheels and falls back
-    # to CPU torch, so it must not outrank a usable Arc card. Consumed unchanged by the
-    # AMD reroute further down.
+    # Hoisted above the Intel scan, which needs it: an arch missing from this map gets CPU
+    # torch, so it must not outrank a usable Arc card. The AMD reroute below consumes it.
     $archFamilyMap = @{
         "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
         "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"       # RDNA 3.5 (Strix Halo/Point)
@@ -2182,20 +2180,18 @@ exit 0
         "gfx1030" = "gfx103X-all"
         "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
     }
-    # "AMD gets GPU wheels here", which is NOT the same as "an AMD GPU is present":
-    # $HasROCm / $ROCmGfxArch are true on unmapped arches too, and those install CPU torch.
+    # "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are
+    # true on unmapped arches too, and those install CPU torch.
     $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
 
     # ── Bounded "ask the venv python" probe ──
-    # Every probe that imports torch goes through here. A wedged torch import or a hanging
-    # Intel compute-driver init -- exactly what the XPU probes below exist to detect -- would
-    # block a bare `& python -c ...` forever, and the installer would never reach the warning.
-    # ProcessStartInfo, not &, so stderr cannot trip $ErrorActionPreference; BOTH streams are
-    # drained async so a noisy import cannot deadlock on a full pipe; WaitForExit bounds the
-    # wait and the child is killed on timeout. Failure (timeout, crash, exception) always
-    # reads as .Ok = $false -- a probe that never answers is never treated as a yes.
-    # Defined here, above the Intel scan, because PowerShell binds a function when its
-    # definition RUNS: one placed further down would not exist yet for that scan.
+    # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist
+    # to detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so
+    # stderr cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import
+    # cannot deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every
+    # failure (timeout, crash, exception) reads as .Ok = $false, never as a yes.
+    # Defined above the Intel scan: PowerShell binds a function when its definition RUNS, so
+    # one placed further down would not exist yet for that scan.
     function Invoke-BoundedPythonProbe {
         param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
         $result = [pscustomobject]@{ Ok = $false; Output = "" }
@@ -2223,23 +2219,18 @@ exit 0
     }
 
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
-    # Runs BEFORE the report chain, not inside its final else: an AMD adapter that is only
-    # WMI-named (ROCmGpuLabel set, no usable ROCm) would otherwise take that chain and hide
-    # a discrete Arc card, e.g. an AMD CPU's integrated Radeon next to an Arc GPU.
-    # XPU (SYCL) wheels bundle their own oneAPI runtime, but Windows still needs the Intel
-    # driver (Unsloth also documents oneAPI + Level Zero), so an Intel adapter alone proves
-    # nothing: $HasIntelGpu is "one is present", $script:IsIntelXpu is "XPU wheels suit it".
-    # Only Arc / Data Center parts are XPU-capable; UHD / HD / Iris Xe are not.
+    # Runs BEFORE the report chain, not inside its final else: a WMI-named-only AMD adapter
+    # (ROCmGpuLabel set, no usable ROCm) would take that chain and hide a discrete Arc card.
+    # $HasIntelGpu is "an Intel adapter is present"; $script:IsIntelXpu is "XPU wheels suit
+    # it" -- only Arc / Data Center parts qualify, UHD / HD / Iris Xe do not.
     # Get-CimInstance, not Get-WmiObject: the latter does not exist in PowerShell 7.
     $HasIntelGpu = $false
     $IntelGpuLabel = $null
-    # Reset every invocation: under the documented "irm ... | iex" path $script: is the
-    # caller's session scope, so a second run in the same session would inherit a stale
-    # $true, skip the scan on a now-NVIDIA host, and still reroute to the xpu index.
+    # Reset every invocation: under "irm ... | iex" $script: is the caller's session scope, so
+    # a second run would inherit a stale $true and reroute a now-NVIDIA host to the xpu index.
     $script:IsIntelXpu = $false
-    # Excluding $AmdHasGpuWheels keeps a WHEEL-SERVED AMD host out of the XPU reroute below.
-    # An AMD host with no wheels (unmapped arch, or arch unknown) is heading for CPU torch,
-    # so an Arc card next to it should win instead of both ending up on CPU.
+    # Excluding $AmdHasGpuWheels keeps a wheel-served AMD host out of the XPU reroute below.
+    # An AMD host with no wheels is heading for CPU torch, so a neighbouring Arc card wins.
     if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
         try {
             $intelGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
@@ -2251,14 +2242,11 @@ exit 0
                 if ($xpuGpu) { $script:IsIntelXpu = $true }
             }
         } catch {}
-        # A migrated env's torch can only CONFIRM the match, never veto it. An unavailable
-        # runtime means a stale driver, not unsuitable hardware, and vetoing there was
-        # actively misleading: the /cpu index it fell back to cannot displace the installed
-        # +xpu wheel (PEP 440 ignores the local label, so it satisfies torch>=2.4,<2.11.0),
-        # so the user kept an XPU build while being told the GPU was unusable. The driver
-        # warning after the install below is the honest treatment; setup.ps1 agrees.
-        # Bounded: a torch import that never returns must not hang the installer, and a
-        # timeout reads as "no XPU" (the WMI verdict above stands).
+        # A migrated env's torch can only CONFIRM the match, never veto it: an unavailable
+        # runtime means a stale driver, not unsuitable hardware, and the /cpu fallback could
+        # not displace the installed +xpu wheel anyway (PEP 440 ignores the local label, so
+        # it satisfies torch>=2.4,<2.11.0). The driver warning after the install below is the
+        # honest treatment. Bounded, and a timeout reads as "no XPU" -- the WMI verdict stands.
         if (Test-Path -LiteralPath $VenvPython) {
             $xpuCheck = Invoke-BoundedPythonProbe -PythonExe $VenvPython -Code 'import torch; print(torch.xpu.is_available())'
             if ($xpuCheck.Ok -and $xpuCheck.Output -match '(?m)^\s*True\s*$') {
@@ -2272,12 +2260,11 @@ exit 0
     if ($HasNvidiaSmi) {
         step "gpu" "NVIDIA GPU detected"
     } elseif ($script:IsIntelXpu) {
-        # Ranks above every AMD branch: it can only be true when AMD gets no GPU wheel
-        # ($AmdHasGpuWheels gates the scan above), so the AMD branches below would all
-        # end on CPU torch. Report what actually gets installed.
+        # Ranks above every AMD branch: only true when AMD gets no GPU wheel
+        # ($AmdHasGpuWheels gates the scan above), so those branches would all end on CPU.
         step "gpu" "Intel GPU detected" "Green"
         substep "$IntelGpuLabel"
-        # Reroute below prints the index: only it knows the mirror URL and any pin override.
+        # The reroute below prints the index: only it knows the mirror URL and any pin.
     } elseif ($HasROCm) {
         step "gpu" $ROCmGpuLabel
         $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
@@ -2428,17 +2415,15 @@ exit 0
         return ConvertTo-TorchFlavorTag $torchVer
     }
 
-    # Post-install XPU runtime check. Installing the +xpu wheel is not proof the GPU can
-    # actually be used: with an old Intel compute driver torch.xpu.is_available() is False
-    # and Unsloth then dies at import. Warn (never fall back) -- a driver update fixes it.
+    # Post-install XPU runtime check. The +xpu wheel installing is not proof the GPU is usable:
+    # on an old Intel compute driver torch.xpu.is_available() is False and Unsloth then dies at
+    # import. Warn, never fall back -- a driver update fixes it.
     function Assert-XpuRuntimeReady {
         param([string]$PythonExe)
-        # No interpreter to ask means something bigger already broke; stay quiet rather than
-        # blame the Intel driver. Same defensive shape as Get-InstalledTorchTag above.
+        # No interpreter to ask means something bigger already broke; do not blame the driver.
         if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $true }
-        # Bounded and line-anchored: a stdout banner ahead of the answer hides nothing, and
-        # a driver init that never returns times out into the warning below instead of
-        # hanging the installer. Not-ready is the fail-safe verdict for every failure.
+        # Line-anchored so a stdout banner ahead of the answer hides nothing. Every failure,
+        # timeout included, reads as not-ready and warns rather than hanging the installer.
         $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.xpu.is_available())'
         if ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$') { return $true }
         substep "[WARN] PyTorch XPU is installed but torch.xpu.is_available() is False." "Yellow"
@@ -2689,13 +2674,12 @@ exit 0
             }
         } elseif ($script:IsIntelXpu -and (Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
             # ── Intel Arc / XPU PyTorch install ──
-            # XPU wheels carry their own oneAPI runtime (intel-sycl-rt et al.) and are
-            # published under PEP 503 at https://download.pytorch.org/whl/xpu.
+            # XPU wheels carry their own oneAPI runtime (intel-sycl-rt et al.), published
+            # under PEP 503 at https://download.pytorch.org/whl/xpu.
             Write-TauriLog "STEP" "Installing PyTorch (Intel XPU)"
             substep "installing PyTorch from $(Remove-IndexUrlCredentials $TorchIndexUrl)..."
-            # Bound the trio like every other index: the XPU index serves torch up to 2.13.0,
-            # past our ceiling, and torchaudio dropped its exact torch pin, so bare names
-            # resolve a mismatched pair and drag unsloth back to an old release.
+            # Bound the trio like every other index: the xpu index serves torch past our
+            # ceiling (up to 2.13.0), and torchaudio dropped its exact torch pin.
             $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 # Transient XPU-index failure: fall back to CPU base.
@@ -2710,11 +2694,9 @@ exit 0
                 $script:IsIntelXpu = $false
                 $TorchIndexUrl = $CpuFallbackIndexUrl
             } else {
-                # A WMI marketing-name match says the part is XPU-capable, not that the compute
-                # runtime works: on a stale Intel driver the wheel installs fine and then never
-                # initializes, and unsloth/device_type.py raises NotImplementedError at import
-                # (a hard crash, not a chat-only downgrade). Warn accurately -- the wheel is
-                # correct and a driver update fixes it, so do NOT fall back to CPU.
+                # A WMI name match says XPU-capable, not that the runtime initializes: on a
+                # stale driver unsloth/device_type.py then raises NotImplementedError at
+                # import. The helper warns and deliberately does NOT fall back to CPU.
                 Assert-XpuRuntimeReady -PythonExe $VenvPython | Out-Null
             }
         } else {
@@ -2818,22 +2800,20 @@ exit 0
     }
 
     # ── Intel XPU: bitsandbytes must carry XPU kernels ──
-    # unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 when device_type is
-    # "xpu"; only bitsandbytes' XPU library exports those (the CUDA one has the naive gemm
-    # instead), so a wheel without it turns 4-bit QLoRA off. win_amd64 first shipped an XPU
-    # library in 0.49.0, but the floor is 0.50.0 -- the same one the AMD paths use, since
-    # <=0.49.2 NaNs at 4-bit decode on AMD and an Arc card can sit next to a Radeon.
-    # unsloth's own floor (>=0.45.5) is low enough that a MIGRATED venv keeps an older
-    # wheel: --reinstall-package unsloth upgrades unsloth alone. Runs after the unsloth
-    # install so it is the last word. --no-deps (torch/numpy are in already), and never the
-    # curated unsloth[intel-gpu-torch*] extra: that pins torch to a single +xpu wheel URL,
-    # which would unpin the bounded trio, and it carries the bitsandbytes preview wheel uv
-    # refuses ("Wheel version does not match filename"), which would fail the whole command.
-    # Best-effort: 4-bit is one feature, so a failure warns instead of aborting the install.
-    # Keyed off the index leaf alone, not $script:IsIntelXpu: an explicit FAMILY=xpu pin on a
-    # non-Intel host skips the XPU branch above but still installs the trio from the xpu index,
-    # so torch is +xpu and needs the same floor. The CPU fallback there rewrites $TorchIndexUrl,
-    # so a failed XPU install reads as "cpu" here and this stays quiet.
+    # unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 for device_type "xpu"
+    # and only bitsandbytes' XPU library exports those (the CUDA one has the naive gemm), so
+    # a wheel without it turns 4-bit QLoRA off. 0.49.0 is the first win_amd64 build carrying
+    # that library, but the floor is 0.50.0, the AMD paths' floor: <=0.49.2 NaNs at 4-bit
+    # decode on AMD, and an Arc card can sit next to a Radeon. unsloth's own floor (>=0.45.5)
+    # lets a MIGRATED venv keep an older wheel while --reinstall-package unsloth upgrades
+    # unsloth alone, so run after that install for the last word. --no-deps (torch/numpy are
+    # in), and never the curated unsloth[intel-gpu-torch*] extra: it pins torch to a single
+    # +xpu wheel URL, unpinning the bounded trio, and carries a preview bitsandbytes wheel uv
+    # refuses ("Wheel version does not match filename"), failing the whole command.
+    # Keyed off the index leaf, not $script:IsIntelXpu: a FAMILY=xpu pin on a non-Intel host
+    # skips the XPU branch above yet still installs +xpu torch, which needs the same floor.
+    # The CPU fallback there rewrites $TorchIndexUrl, so a failed XPU install reads as "cpu"
+    # here and this stays quiet. Best-effort: a failure warns instead of aborting the install.
     if (-not $SkipTorch -and (Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
         substep "installing bitsandbytes with Intel XPU kernels..."
         $bnbXpuExit = Invoke-InstallCommandRetry -Label "install bitsandbytes (Intel XPU)" { uv pip install --python $VenvPython --no-deps "bitsandbytes>=0.50.0" }

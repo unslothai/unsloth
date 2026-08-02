@@ -2859,9 +2859,8 @@ get_torch_index_url() {
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
 # torch.__version__ ($1) -> flavor tag (cuXXX / rocm / xpu / cpu); untagged wheel = cpu.
-# The xpu arm is not optional once an xpu index is expected below: without it a correct
-# 2.10.0+xpu wheel reads as "cpu", so every run force-reinstalls it and then warns that
-# torch is CPU-only. Matches install.ps1 ConvertTo-TorchFlavorTag and setup.ps1.
+# The xpu arm is load-bearing: without it a correct 2.10.0+xpu wheel reads as "cpu", so every
+# run force-reinstalls it and then warns torch is CPU-only. Parity with the ps1 side.
 _torch_flavor_tag() {
     case "$1" in
         *+cu[0-9]*) printf '%s\n' "$1" | sed -n 's/.*+\(cu[0-9][0-9]*\).*/\1/p' ;;
@@ -3018,8 +3017,8 @@ _expected_torch_flavor_tag() {
             esac
             ;;
         cpu)          echo "cpu" ;;
-        # Intel XPU (SYCL). A GPU flavor like cuXXX/rocm, so a pinned xpu index repairs a
-        # stale CPU wheel instead of silently keeping it. Parity with the ps1 side.
+        # Intel XPU (SYCL): a GPU flavor like cuXXX/rocm, so a pinned xpu index repairs a
+        # stale CPU wheel instead of keeping it.
         xpu)          echo "xpu" ;;
         # Exact rocm/gfx families only; a custom rocm*-suffixed leaf -> "" (custom).
         *)
@@ -3037,8 +3036,7 @@ _torch_index_repairable() {
     _leaf=$(_torch_index_url_leaf "$1")
     case "$_leaf" in
         cu[0-9]*) echo "yes" ;;
-        # download.pytorch.org/whl/xpu is a plain PEP 503 index (it serves the whole
-        # oneAPI runtime and triton-xpu as ordinary deps), so it repairs like cuXXX.
+        # /whl/xpu is a plain PEP 503 index (oneAPI runtime and triton-xpu are ordinary deps).
         xpu)      echo "yes" ;;
         # Only EXACT rocm/gfx families resolve via --default-index; a suffixed leaf is verbatim.
         *)
