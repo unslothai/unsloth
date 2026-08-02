@@ -51,9 +51,9 @@ def test_install_ps1_guard_covers_the_whole_windows_directory():
     idx = src.index("$SystemRootDir = if ($env:SystemRoot)")
     block = src[idx : idx + 2500]
     assert '{ "C:\\Windows" }' in block, "SystemRoot must fall back to C:\\Windows"
-    assert "Get-Location -PSProvider FileSystem" in block, (
-        "the guard must read the filesystem location so a caller parked on HKLM:\\ is still checked"
-    )
+    assert (
+        "Get-Location -PSProvider FileSystem" in block
+    ), "the guard must read the filesystem location so a caller parked on HKLM:\\ is still checked"
     assert "OrdinalIgnoreCase" in block, "Windows paths compare case-insensitively"
 
 
@@ -64,9 +64,9 @@ def test_install_ps1_guard_relocates_and_keeps_relative_llama_cpp_dir():
     assert "Set-Location -LiteralPath $candidate" in block, "the guard must relocate, not just warn"
     llama_idx = block.index("GetUnresolvedProviderPathFromPSPath($WithLlamaCppDir)")
     set_loc_idx = block.index("Set-Location -LiteralPath $candidate")
-    assert llama_idx < set_loc_idx, (
-        "--with-llama-cpp-dir must be pinned to the original directory before Set-Location"
-    )
+    assert (
+        llama_idx < set_loc_idx
+    ), "--with-llama-cpp-dir must be pinned to the original directory before Set-Location"
     assert "GetFullPath($WithLlamaCppDir)" not in block, (
         "GetFullPath resolves against [Environment]::CurrentDirectory, which Set-Location "
         "does not update; the PSPath resolver follows the PowerShell location"
@@ -78,9 +78,9 @@ def test_install_ps1_guard_rejects_candidates_inside_the_windows_directory():
     src = _install_ps1()
     idx = src.index("$SafeDirCandidates = @(")
     block = src[idx : idx + 700]
-    assert "StartsWith(" in block and "$SystemRootDir" in block, (
-        "candidate directories under %SystemRoot% must be filtered out"
-    )
+    assert (
+        "StartsWith(" in block and "$SystemRootDir" in block
+    ), "candidate directories under %SystemRoot% must be filtered out"
 
 
 def test_install_ps1_guard_failure_message_is_actionable():
@@ -210,9 +210,9 @@ def test_relocation_block_moves_out_and_rebases_relative_llama_cpp_dir(tmp_path)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
     assert f"CWD:{home}" in res.stdout, f"must relocate to the home directory; got {res.stdout!r}"
     assert "Windows system folder" in res.stdout, "the user must be told why the directory changed"
-    assert f"LLAMA:{current_dir / 'llama.cpp'}" in res.stdout, (
-        "a relative --with-llama-cpp-dir must still resolve against the original directory"
-    )
+    assert (
+        f"LLAMA:{current_dir / 'llama.cpp'}" in res.stdout
+    ), "a relative --with-llama-cpp-dir must still resolve against the original directory"
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
@@ -227,9 +227,9 @@ def test_relocation_block_leaves_a_fully_qualified_llama_cpp_dir_alone(tmp_path)
         tmp_path, system_root, current_dir, home, with_llama_cpp_dir = str(absolute)
     )
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
-    assert f"LLAMA:{absolute}" in res.stdout, (
-        "an already qualified path must pass through untouched"
-    )
+    assert (
+        f"LLAMA:{absolute}" in res.stdout
+    ), "an already qualified path must pass through untouched"
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
@@ -416,6 +416,6 @@ def test_cli_guard_message_repeats_the_actual_command():
         r"C:\Windows\System32", argv = ["unsloth", "train", "--model", "my model"]
     )
     assert message is not None
-    assert 'unsloth train --model "my model"' in message, (
-        "the retry line must reproduce the invoked command, re-quoting arguments with spaces"
-    )
+    assert (
+        'unsloth train --model "my model"' in message
+    ), "the retry line must reproduce the invoked command, re-quoting arguments with spaces"
