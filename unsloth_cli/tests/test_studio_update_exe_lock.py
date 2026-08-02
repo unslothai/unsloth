@@ -76,7 +76,7 @@ def test_other_platforms_are_untouched(monkeypatch, tmp_path):
     assert studio._release_self_exe_lock_windows() is None
 
 
-# ── handing over to the launcher ─────────────────────────────────────
+# ── refusing before pip destroys the install ─────────────────────────
 
 
 def _shimmed(monkeypatch, tmp_path):
@@ -90,124 +90,56 @@ def _shimmed(monkeypatch, tmp_path):
     return scripts, shim
 
 
-def test_a_locked_copy_hands_over_to_the_launcher(monkeypatch, tmp_path):
-    """Continuing is not just a failed update. pip uninstalls before it installs,
-    so it removes unsloth_cli and only then hits the locked stub, leaving an exe
-    that starts and raises ModuleNotFoundError. Nothing destructive has happened
-    at this point, so hand over while that is still true."""
-    _scripts_dir, shim = _shimmed(monkeypatch, tmp_path)
-    seen = {}
-
-    def fake_run(argv, env = None):
-        seen["argv"] = argv
-        seen["env"] = env
-        return type("R", (), {"returncode": 0})()
-
-    monkeypatch.setattr(studio.subprocess, "run", fake_run)
-
-    with pytest.raises(studio.typer.Exit):
-        studio._reexec_through_launcher_windows(
-            local = True,
-            package = "unsloth",
-            verbose = False,
-            verify = False,
-        )
-
-    assert seen["argv"][0] == str(shim), "the child did not run through the launcher"
-    assert "--local" in seen["argv"] and "--no-verify" in seen["argv"]
-    assert seen["env"][studio._REEXEC_ENV] == "1"
-
-
-def test_the_hand_over_happens_once(monkeypatch, tmp_path):
-    """If the launcher resolves back to this same entry the child hits the same
-    lock, and without the guard it would do so forever."""
+def test_a_locked_copy_stops_before_pip_runs(monkeypatch, tmp_path, capsys):
+    """Continuing is not a failed update. pip uninstalls before it installs, so it
+    removes unsloth_cli and only then hits the locked stub, leaving an exe that
+    starts and raises ModuleNotFoundError. Nothing has been removed at this point,
+    so this is the last moment it is still avoidable."""
     _shimmed(monkeypatch, tmp_path)
-    monkeypatch.setenv(studio._REEXEC_ENV, "1")
-
-    def explode(*a, **k):
-        raise AssertionError("re-executed twice")
-
-    monkeypatch.setattr(studio.subprocess, "run", explode)
-
-    studio._reexec_through_launcher_windows(
-        local = False,
-        package = "unsloth",
-        verbose = False,
-        verify = True,
-    )
-
-
-def test_the_childs_exit_code_is_this_processs_exit_code(monkeypatch, tmp_path):
-    _shimmed(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        studio.subprocess,
-        "run",
-        lambda argv, env = None: type("R", (), {"returncode": 3})(),
-    )
 
     with pytest.raises(studio.typer.Exit) as excinfo:
-        studio._reexec_through_launcher_windows(
-            local = False,
-            package = "unsloth",
-            verbose = False,
-            verify = True,
-        )
-    assert excinfo.value.exit_code == 3
+        studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
+
+    assert excinfo.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "Nothing has been removed" in err
+    assert "unsloth.exe" in err, "the reason has to travel with the refusal"
 
 
-def test_no_launcher_means_carry_on_and_report(monkeypatch, tmp_path):
-    """Returning lets the caller reach the failure it can at least explain. A
-    broken hand-off must not become a second failure mode on top of the first."""
+def test_without_a_launcher_it_goes_on_rather_than_stranding_the_user(
+    monkeypatch, tmp_path
+):
+    """With no launcher there is no better path to send anyone down, and stopping
+    would leave them unable to update at all."""
     scripts = _scripts(tmp_path)
     (scripts / "unsloth.exe").write_bytes(b"MZ")
     monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)  # no bin/unsloth.exe
     _as_windows(monkeypatch, scripts)
-    monkeypatch.setattr(
-        studio.subprocess,
-        "run",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not run")),
-    )
 
-    studio._reexec_through_launcher_windows(
-        local = False,
-        package = "unsloth",
-        verbose = False,
-        verify = True,
-    )
+    studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
 
 
-def test_a_launcher_that_will_not_start_is_not_handed_to(monkeypatch, tmp_path):
+def test_an_unusable_launcher_is_not_a_reason_to_stop(monkeypatch, tmp_path):
+    _scripts_dir, shim = _shimmed(monkeypatch, tmp_path)
+    shim.write_bytes(b"")
+
+    studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
+
+
+def test_the_refusal_can_be_overridden(monkeypatch, tmp_path):
+    """An escape hatch, because this stops updates that would have succeeded: one
+    with no package change never touches the file at all."""
     _shimmed(monkeypatch, tmp_path)
+    monkeypatch.setenv(studio._ALLOW_LOCKED_ENV, "1")
 
-    def boom(*a, **k):
-        raise OSError("cannot exec")
-
-    monkeypatch.setattr(studio.subprocess, "run", boom)
-
-    # Returns rather than raising: the caller still owns the real failure.
-    studio._reexec_through_launcher_windows(
-        local = False,
-        package = "unsloth",
-        verbose = False,
-        verify = True,
-    )
+    studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
 
 
-def test_other_platforms_never_hand_over(monkeypatch, tmp_path):
+def test_other_platforms_never_refuse(monkeypatch, tmp_path):
     _shimmed(monkeypatch, tmp_path)
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(
-        studio.subprocess,
-        "run",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not run")),
-    )
 
-    studio._reexec_through_launcher_windows(
-        local = False,
-        package = "unsloth",
-        verbose = False,
-        verify = True,
-    )
+    studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
 
 
 # ── the note on a later failure ──────────────────────────────────────

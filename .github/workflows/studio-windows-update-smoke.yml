@@ -323,7 +323,7 @@ jobs:
           }
           echo "an update that replaces the unsloth package works through the launcher"
 
-      - name: The same update from the venv copy hands over to the launcher (issue #7697)
+      - name: The same update from the venv copy refuses before it breaks the install (issue #7697)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
@@ -334,6 +334,7 @@ jobs:
           # what issue #7697 is about, and what the desktop app did before this PR.
           SCRIPTS="$HOME/.unsloth/studio/unsloth_studio/Scripts"
           PY="$SCRIPTS/python.exe"
+          SHIM_UPD="$HOME/.unsloth/studio/bin/unsloth.exe"
           "$PY" -m pip install --no-deps --force-reinstall --no-build-isolation . 2>&1 | tail -3
 
           # The step above already reinstalled unsloth non-editably, so the CLI now
@@ -349,15 +350,14 @@ jobs:
           # Before this PR the venv-launched update was destructive, not merely
           # failing: pip uninstalls before it installs, so it removed unsloth_cli
           # and only then hit the locked stub, leaving an unsloth.exe that starts
-          # and raises ModuleNotFoundError. The update now hands over to the
-          # launcher at the point the rename fails, while nothing has been removed
-          # yet, so this must succeed.
+          # and raises ModuleNotFoundError. It now refuses before pip runs, so the
+          # update fails and the install survives intact.
           set +e
           "$SCRIPTS/unsloth.exe" studio update --local > logs/update_venv.log 2>&1
           RC=$?
           set -e
           echo "venv-launched update exited $RC"
-          tail -40 logs/update_venv.log
+          tail -50 logs/update_venv.log
 
           # Guard against the step passing for the wrong reason: exiting at an
           # argument guard would satisfy the assertions below while testing none
@@ -366,25 +366,31 @@ jobs:
             echo "::error::the update never started; this step proved nothing."
             exit 1
           fi
-          if ! grep -q "Re-running through the launcher instead" logs/update_venv.log; then
-            echo "::error::the update did not hand over to the launcher."
-            echo "Either the rename unexpectedly succeeded, in which case this step"
-            echo "no longer covers the lock, or the hand-off is broken."
+          if [ "$RC" -eq 0 ]; then
+            echo "::error::the venv-launched update succeeded, so the rename no longer"
+            echo "fails and this step has stopped covering the lock it exists for."
             exit 1
           fi
-          if [ "$RC" -ne 0 ]; then
-            echo "::error::the update failed even after handing over to the launcher."
+          if ! grep -q "Nothing has been removed" logs/update_venv.log; then
+            echo "::error::it did not stop before pip; the install may be destroyed."
             exit 1
           fi
+          # The destruction this prevents: pip must not have started, so no
+          # uninstall line may appear.
+          if grep -qiE "Uninstalling unsloth-|Successfully installed unsloth" logs/update_venv.log; then
+            echo "::error::pip ran anyway; refusing before the install changes did not work."
+            grep -iE "Uninstalling|Successfully installed" logs/update_venv.log | tail -10
+            exit 1
+          fi
+
+          # The install has to be exactly as usable as it was before the attempt.
           if [ ! -s "$SCRIPTS/unsloth.exe" ]; then
             echo "::error::no usable unsloth.exe left behind."
             ls -la "$SCRIPTS" | grep -i unsloth || true
             exit 1
           fi
-          # The exact wreckage this prevents: the stub survives a partial pip
-          # uninstall, so it starts and then cannot import its own package.
           CAPS="$("$SCRIPTS/unsloth.exe" studio desktop-capabilities --json)" || {
-            echo "::error::the CLI does not run after a venv-launched update."
+            echo "::error::the CLI does not run after a refused update."
             exit 1
           }
           echo "$CAPS" | jq -e '.studio_install_ok == true' >/dev/null || {
@@ -396,7 +402,15 @@ jobs:
             ls -la "$SCRIPTS"/*.deleteme
             exit 1
           fi
-          echo "a venv-launched replacement hands over and leaves a working CLI"
+
+          # And the update it refused must still work through the launcher, or the
+          # advice it printed is useless.
+          "$SHIM_UPD" studio update --local > logs/update_after_refusal.log 2>&1 || {
+            echo "::error::the launcher route it points people at does not work."
+            tail -40 logs/update_after_refusal.log
+            exit 1
+          }
+          echo "a venv-launched replacement refuses safely and the launcher route works"
 
       - name: Boot Unsloth briefly to confirm the install is still usable
         run: |
