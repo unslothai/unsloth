@@ -540,6 +540,46 @@ def test_validate_dataset_accepts_objects_without_column_names():
     return True
 
 
+def test_validate_dataset_streams_instead_of_materialising_columns():
+    """Columns must be streamed via Dataset.iter(), not copied whole.
+
+    dataset[column] pulls every row into Python objects at once, which for token
+    ids is the bulk of peak memory and grows with the dataset.
+    """
+
+    class BatchedDataset:
+        column_names = ["input_ids"]
+
+        def __init__(self, rows):
+            self.rows = rows
+            self.materialised = 0
+
+        def __len__(self):
+            return len(self.rows)
+
+        def iter(self, batch_size):
+            for start in range(0, len(self.rows), batch_size):
+                yield {"input_ids": self.rows[start : start + batch_size]}
+
+        def __getitem__(self, key):
+            self.materialised += 1
+            return self.rows
+
+    class Tokenizer:
+        def decode(self, token_ids, skip_special_tokens = False):
+            return " ".join(f"word_{i}" for i in token_ids)
+
+    dataset = BatchedDataset([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    stats = TextPreprocessor().validate_dataset(dataset, tokenizer = Tokenizer())
+
+    assert stats["total_samples"] == 3, stats
+    assert stats["empty_samples"] == 0, stats
+    assert dataset.materialised == 0, "column was materialised instead of streamed"
+
+    print("test_validate_dataset_streams_instead_of_materialising_columns passed")
+    return True
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
@@ -548,4 +588,5 @@ if __name__ == "__main__":
     success = test_load_from_files_all_empty_raises() and success
     success = test_validate_dataset_handles_tokenized_and_text_columns() and success
     success = test_validate_dataset_accepts_objects_without_column_names() and success
+    success = test_validate_dataset_streams_instead_of_materialising_columns() and success
     sys.exit(0 if success else 1)

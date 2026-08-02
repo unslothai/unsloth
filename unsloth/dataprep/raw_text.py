@@ -287,6 +287,22 @@ class RawTextDataLoader:
         return ""
 
 
+def _iter_column(dataset, column):
+    """Yield one column value at a time.
+
+    `dataset[column]` copies the whole column into Python objects, which for token
+    ids dominates validate_dataset's peak memory on datasets<4 (4.x returns a lazy
+    Column). Dataset.iter() streams Arrow batches instead; anything without it
+    (DataFrames, dicts, custom __getitem__) falls back to plain indexing.
+    """
+    batched = getattr(dataset, "iter", None)
+    if callable(batched):
+        for batch in batched(batch_size = 256):
+            yield from batch[column]
+    else:
+        yield from dataset[column]
+
+
 class TextPreprocessor:
     # Compile regex patterns once for better performance
     _WHITESPACE_PATTERN = re.compile(r"[^\S\n]+")
@@ -350,14 +366,11 @@ class TextPreprocessor:
             "warnings": [],
         }
 
-        # `column_names` is HF Dataset-only, so fall back to plain indexing to keep
-        # accepting mapping-likes (DataFrames, dicts, custom __getitem__) as before.
+        # `column_names` is HF Dataset-only; None means a mapping-like (DataFrame,
+        # dict, custom __getitem__), which this method has always accepted.
         column_names = getattr(dataset, "column_names", None)
-        if column_names is None:
-            texts = dataset["text"]
-
-        elif "text" in column_names:
-            texts = dataset["text"]
+        if column_names is None or "text" in column_names:
+            texts = _iter_column(dataset, "text")
 
         elif "input_ids" in column_names:
             if tokenizer is None:
@@ -365,9 +378,11 @@ class TextPreprocessor:
                     "Dataset has 'input_ids' but no 'text' column; "
                     "pass `tokenizer=` to validate_dataset() to decode it for validation."
                 )
-            texts = [
-                tokenizer.decode(ids, skip_special_tokens = True) for ids in dataset["input_ids"]
-            ]
+            # Generator, not a list: decoded text is consumed once by the loop below.
+            texts = (
+                tokenizer.decode(ids, skip_special_tokens = True)
+                for ids in _iter_column(dataset, "input_ids")
+            )
 
         else:
             raise ValueError("Dataset must have either 'text' or 'input_ids' column")
