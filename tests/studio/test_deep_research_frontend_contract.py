@@ -63,7 +63,11 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     # runSignal, not abortSignal: each run gets its own controller, forwarded from the thread
     # signal, so one chat's Stop cannot abort a sibling streaming in the background.
     assert "if (runSignal.aborted) return" in adapter
-    assert "await autoLoadSmallestModel()" in adapter
+    research = adapter.split("if (\n        runtime.deepResearchEnabled", 1)[1].split(
+        "const sandboxSessionId", 1
+    )[0]
+    assert "await resolveQueuedEmptyLocalModel(abortSignal)" in research
+    assert "queuedEmptyModelRuntime = resolution.modelRuntime" in research
     assert "signal: researchFollowController.signal" in adapter
     assert "beginExternalResearchFollow(" in adapter
     assert "ragScope" in adapter
@@ -201,9 +205,9 @@ def test_research_presentation_is_integrated() -> None:
     assert "effectiveDeepResearchEnabled ? (" in thread
     assert "replayFrom: session?.lastAppliedSeq ?? 0" in coordinator
     assert "loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in store
-    checkpoint_update = store.split("setCheckpoint: (modelId, ggufVariant) =>", 1)[1].split(
-        "setActiveThreadId:", 1
-    )[0]
+    checkpoint_update = store.split(
+        "setCheckpoint: (modelId, ggufVariant, options) =>", 1
+    )[1].split("setActiveThreadId:", 1)[0]
     assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in checkpoint_update
     assert "const permissionMode = loadPermissionMode();" in store
     assert "permissionMode," in store

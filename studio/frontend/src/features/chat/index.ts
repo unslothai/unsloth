@@ -75,12 +75,21 @@ export {
   type PromptQueueUIState,
 } from "./stores/prompt-queue-ui-store";
 export {
+  notifyPromptQueueRunFailed,
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
   requestLocalPromptQueueStop,
   type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
 } from "./utils/prompt-queue-boundary";
+export {
+  adoptPreStreamRunReservation,
+  findPreStreamRunReservation,
+  hasPreStreamRunReservation,
+  releasePreStreamRunForThreadIds,
+  releasePreStreamRunReservation,
+  reservePreStreamRun,
+} from "./utils/pre-stream-run-reservation";
 export {
   localPromptQueueModelBoundary,
   shouldAbortPendingQueueForModelBoundary,

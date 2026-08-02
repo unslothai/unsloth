@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import {
   AssistantRuntimeProvider,
+  type Attachment,
   type AttachmentAdapter,
   type ChatModelAdapter,
   type CompleteAttachment,
@@ -60,6 +61,11 @@ import {
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
+import { notifyPromptQueueRunFailed } from "./utils/prompt-queue-boundary";
+import {
+  findPreStreamRunReservation,
+  releasePreStreamRunReservation,
+} from "./utils/pre-stream-run-reservation";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   chatContentPartAttachmentIdFromSignature,
@@ -99,6 +105,47 @@ type TitleResponse = {
     };
   }>;
 };
+
+class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
+  private readonly delegate: AttachmentAdapter;
+  private readonly getThreadIds: () => Array<string | null | undefined>;
+
+  constructor(
+    delegate: AttachmentAdapter,
+    getThreadIds: () => Array<string | null | undefined>,
+  ) {
+    this.delegate = delegate;
+    this.getThreadIds = getThreadIds;
+  }
+
+  get accept(): string {
+    return this.delegate.accept;
+  }
+
+  add(state: { file: File }) {
+    return this.delegate.add(state);
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    return this.delegate.remove(attachment);
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const threadIds = this.getThreadIds();
+    const reservationToken = findPreStreamRunReservation(threadIds);
+    try {
+      return await this.delegate.send(attachment);
+    } catch (error) {
+      if (
+        reservationToken &&
+        releasePreStreamRunReservation(reservationToken)
+      ) {
+        notifyPromptQueueRunFailed(threadIds.find(Boolean) ?? null);
+      }
+      throw error;
+    }
+  }
+}
 
 class VisionImageAdapter implements AttachmentAdapter {
   accept = "image/jpeg,image/png,image/webp,image/gif";
@@ -1305,16 +1352,26 @@ function useStudioRuntimeAdapters(
   );
   const attachments = useMemo(
     () =>
-      new CompositeAttachmentAdapter([
-        new VisionImageAdapter(),
-        new AudioAttachmentAdapter(),
-        new TextAttachmentAdapter(),
-        new HtmlAttachmentAdapter(),
-        new PDFAttachmentAdapter(),
-        new DocxAttachmentAdapter(),
-        new OpenDocumentAttachmentAdapter(),
-      ]),
-    [],
+      new PreStreamAwareAttachmentAdapter(
+        new CompositeAttachmentAdapter([
+          new VisionImageAdapter(),
+          new AudioAttachmentAdapter(),
+          new TextAttachmentAdapter(),
+          new HtmlAttachmentAdapter(),
+          new PDFAttachmentAdapter(),
+          new DocxAttachmentAdapter(),
+          new OpenDocumentAttachmentAdapter(),
+        ]),
+        () => {
+          const state = aui.threadListItem().getState();
+          return [
+            state.remoteId,
+            state.id,
+            useChatRuntimeStore.getState().activeThreadId,
+          ];
+        },
+      ),
+    [aui],
   );
   const adapters = useMemo(
     () => ({ history, dictation, speech, attachments }),

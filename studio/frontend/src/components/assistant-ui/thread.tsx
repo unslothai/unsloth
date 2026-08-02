@@ -104,10 +104,15 @@ import {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
   addQueuedChatRunSettingsThreadIds,
+  adoptPreStreamRunReservation,
   discardQueuedChatRunSettings,
   discardQueuedChatRunSettingsForThread,
+  hasPreStreamRunReservation,
   localPromptQueueModelBoundary,
+  notifyPromptQueueRunFailed,
   registerQueuedChatRunSettings,
+  releasePreStreamRunReservation,
+  reservePreStreamRun,
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
   snapshotQueuedChatRunSettings,
@@ -1981,6 +1986,22 @@ const Composer: FC<{
     threadListItemRemoteId,
     threadId,
   ]);
+  const preStreamThreadIds = compactIds([
+    ...promptQueueThreadIds,
+    referenceThreadId,
+  ]);
+  const preStreamRunReservationRef = useRef<symbol | null>(null);
+  useEffect(() => {
+    const token = preStreamRunReservationRef.current;
+    if (!token) {
+      return;
+    }
+    adoptPreStreamRunReservation(token, preStreamThreadIds);
+    if (threadIsRunning) {
+      releasePreStreamRunReservation(token);
+      preStreamRunReservationRef.current = null;
+    }
+  }, [preStreamThreadIds, threadIsRunning]);
   const promptQueueActive = usePromptQueueUI((s) =>
     Boolean(findPromptQueueEntry(s, promptQueueThreadIds)),
   );
@@ -2244,7 +2265,9 @@ const Composer: FC<{
       getRunningThreadIds: () => {
         return getQueueThreadIds();
       },
-      isRunning: () => Boolean(getThreadRuntime()?.getState().isRunning),
+      isRunning: () =>
+        hasPreStreamRunReservation(getQueueThreadIds()) ||
+        Boolean(getThreadRuntime()?.getState().isRunning),
       append: async (prompt) => {
         const thread = getThreadRuntime();
         if (!thread) {
@@ -2450,15 +2473,25 @@ const Composer: FC<{
   );
 
   const sendReservedComposer = useCallback(() => {
+    const reservationToken = reservePreStreamRun(preStreamThreadIds);
+    if (!reservationToken) {
+      toast.error("Wait for the current response to finish");
+      return;
+    }
+    preStreamRunReservationRef.current = reservationToken;
     try {
       aui.composer().send();
     } catch (error) {
+      if (releasePreStreamRunReservation(reservationToken)) {
+        notifyPromptQueueRunFailed(referenceThreadId);
+      }
+      preStreamRunReservationRef.current = null;
       toast.error("Could not prepare attachments", {
         description:
           error instanceof Error ? error.message : "Please retry the send.",
       });
     }
-  }, [aui]);
+  }, [aui, preStreamThreadIds, referenceThreadId]);
 
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
@@ -2535,8 +2568,14 @@ const Composer: FC<{
             promptQueueThreadIds,
           ),
         );
+      const livePreStreamRunActive =
+        hasPreStreamRunReservation(preStreamThreadIds);
 
-      if (liveThreadIsRunning || livePromptQueueActive) {
+      if (
+        liveThreadIsRunning ||
+        livePromptQueueActive ||
+        livePreStreamRunActive
+      ) {
         event.preventDefault();
         // Project new-chat composer: never queue, just ask the user to wait.
         if (disableQueue) {
@@ -2560,7 +2599,7 @@ const Composer: FC<{
         const queuedPrompt = composerText.trim();
         startHydratedPromptQueue(
           [queuedPrompt],
-          liveThreadIsRunning,
+          liveThreadIsRunning || livePreStreamRunActive,
           () => {
             if (aui.composer().getState().text.trim() !== queuedPrompt) {
               return;
@@ -2617,6 +2656,8 @@ const Composer: FC<{
             );
         });
         closeOverlay();
+        event.preventDefault();
+        sendReservedComposer();
         return;
       }
 
@@ -2626,7 +2667,9 @@ const Composer: FC<{
         sendReservedComposer();
         return;
       }
+      event.preventDefault();
       clearStoredDraft();
+      sendReservedComposer();
     },
     [
       aui,
@@ -2644,6 +2687,7 @@ const Composer: FC<{
       overlay,
       promptQueueActive,
       promptQueueThreadIds,
+      preStreamThreadIds,
       referenceThreadId,
       setImageToolsEnabled,
       setPendingImageEditReference,

@@ -26,6 +26,9 @@ SHARED_COMPOSER = (FRONTEND / "features/chat/shared-composer.tsx").read_text(enc
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
     encoding = "utf-8"
 )
+PRE_STREAM_RESERVATION = (
+    FRONTEND / "features/chat/utils/pre-stream-run-reservation.ts"
+).read_text(encoding = "utf-8")
 QUEUED_SETTINGS = (FRONTEND / "features/chat/utils/queued-chat-run-settings.ts").read_text(
     encoding = "utf-8"
 )
@@ -57,7 +60,9 @@ def test_scheduler_dispatches_each_ready_chat_without_a_frontend_global_cap():
     )
     assert "PROMPT_QUEUE_GLOBAL_CONCURRENCY" not in THREAD
     assert "promptQueueHasCapacity" not in THREAD
-    assert "preStreamRunReservations" not in QUEUE_BOUNDARY
+    assert "const reservations = new Map<symbol" in PRE_STREAM_RESERVATION
+    assert "reservationByThreadId" in PRE_STREAM_RESERVATION
+    assert "let preStreamRunReservations = 0" not in PRE_STREAM_RESERVATION
 
 
 def test_each_chat_queue_stays_sequential_and_targets_its_background_runtime():
@@ -145,7 +150,8 @@ def test_composer_only_queues_behind_the_current_chat():
     )
     assert "aui.thread().getState().isRunning" in submit
     assert "usePromptQueueUI.getState()" in submit
-    assert "if (liveThreadIsRunning || livePromptQueueActive)" in submit
+    assert "livePreStreamRunActive" in submit
+    assert "liveThreadIsRunning || livePreStreamRunActive" in submit
     assert "startHydratedPromptQueue(" in submit
     assert "aui.composer().getState().text.trim() !== queuedPrompt" in submit
     assert "promptQueueStartPendingRef.current" in THREAD
@@ -169,7 +175,13 @@ def test_composer_only_queues_behind_the_current_chat():
     assert ".finally(() =>" in THREAD
     assert "anyPromptQueueRunning" not in submit
     assert "promptQueueAtCapacity" not in submit
-    assert "tryReservePreStreamRun" not in submit
+    assert "sendReservedComposer();" in submit
+    assert "reservePreStreamRun(preStreamThreadIds)" in THREAD
+    assert "adoptPreStreamRunReservation(token, preStreamThreadIds)" in THREAD
+    assert "hasPreStreamRunReservation(getQueueThreadIds())" in THREAD
+    assert "releaseCurrentPreStreamRun();" in CHAT_ADAPTER
+    assert "releasePreStreamRunReservation(reservationToken)" in CHAT_ADAPTER
+    assert "class PreStreamAwareAttachmentAdapter" in RUNTIME_PROVIDER
 
 
 def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():

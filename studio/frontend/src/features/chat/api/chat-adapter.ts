@@ -10,6 +10,12 @@ import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
+  adoptPreStreamRunReservation,
+  findPreStreamRunReservation,
+  releasePreStreamRunForThreadIds,
+  releasePreStreamRunReservation,
+} from "../utils/pre-stream-run-reservation";
+import {
   consumeQueuedChatRunSettings,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
@@ -2327,7 +2333,7 @@ async function resolveQueuedEmptyLocalModel(
 export function createOpenAIStreamAdapter(
   options: OpenAIStreamAdapterOptions = {},
 ): ChatModelAdapter {
-  return {
+  const adapter = {
     async *run({
       messages,
       abortSignal,
@@ -2340,6 +2346,11 @@ export function createOpenAIStreamAdapter(
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const releaseCurrentPreStreamRun = () =>
+        releasePreStreamRunForThreadIds([
+          unstable_threadId,
+          resolvedThreadId,
+        ]);
       const queuedRunSettings =
         consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
@@ -2568,6 +2579,7 @@ export function createOpenAIStreamAdapter(
           }
         };
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
+        releaseCurrentPreStreamRun();
         runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
         let report = "";
         let releaseResearchFollow: (() => void) | null = null;
@@ -3219,6 +3231,7 @@ export function createOpenAIStreamAdapter(
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
+        releaseCurrentPreStreamRun();
         runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
         try {
           yield {
@@ -3306,6 +3319,7 @@ export function createOpenAIStreamAdapter(
       }, warmupDelayMs);
       // Flagged local/external so the model-swap gate only counts the chats a reload ends; the
       // backend leaves external-provider runs out of active_generations for the same reason.
+      releaseCurrentPreStreamRun();
       runtime.setThreadRunning(threadKey, true, {
         local: !isExternalRequest,
         owner: serverCancel,
@@ -4967,6 +4981,29 @@ export function createOpenAIStreamAdapter(
         // key, so a blind clear could drop a sibling's entry.
         runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
         runtime.clearThreadServerCancel(cleanupKey, serverCancel);
+      }
+    },
+  } satisfies ChatModelAdapter;
+  return {
+    async *run(args) {
+      const preStreamThreadIds = [
+        args.unstable_threadId,
+        useChatRuntimeStore.getState().activeThreadId,
+      ];
+      const reservationToken =
+        findPreStreamRunReservation(preStreamThreadIds);
+      if (reservationToken) {
+        adoptPreStreamRunReservation(reservationToken, preStreamThreadIds);
+      }
+      try {
+        yield* adapter.run(args);
+      } finally {
+        if (
+          reservationToken &&
+          releasePreStreamRunReservation(reservationToken)
+        ) {
+          notifyPromptQueueRunFailed(args.unstable_threadId ?? null);
+        }
       }
     },
   };
