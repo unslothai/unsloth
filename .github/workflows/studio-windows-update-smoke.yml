@@ -336,6 +336,16 @@ jobs:
           PY="$SCRIPTS/python.exe"
           "$PY" -m pip install --no-deps --force-reinstall --no-build-isolation . 2>&1 | tail -3
 
+          # The step above already reinstalled unsloth non-editably, so the CLI now
+          # runs out of site-packages and cannot derive the checkout from __file__.
+          # Without this, `--local` exits at the argument guard and never reaches
+          # the lock, which is what this step exists to exercise. A Windows path:
+          # MSYS rewrites arguments that look like paths, but not environment
+          # variables, so the native python would not resolve an /d/a/... one.
+          STUDIO_LOCAL_REPO="$(cygpath -w "$PWD")"
+          export STUDIO_LOCAL_REPO
+          test -f "$PWD/pyproject.toml" || { echo "::error::not a checkout: $PWD"; exit 1; }
+
           # Not asserted to succeed: pip has to replace the entry this process is
           # running from, and that is the failure the PR explains rather than
           # removes. What is asserted is that either outcome leaves a usable CLI --
@@ -348,6 +358,19 @@ jobs:
           set -e
           echo "venv-launched update exited $RC"
           tail -40 logs/update_venv.log
+
+          # This step is only meaningful if the update actually ran. Exiting at an
+          # argument guard would satisfy every assertion below while testing none
+          # of them, which is how the first version of this step passed for the
+          # wrong reason.
+          if grep -q "needs an Unsloth checkout to install from" logs/update_venv.log; then
+            echo "::error::the update never started; this step proved nothing."
+            exit 1
+          fi
+          if ! grep -qE "setup|install|update" logs/update_venv.log; then
+            echo "::error::no update output at all; this step proved nothing."
+            exit 1
+          fi
 
           if [ "$RC" -ne 0 ]; then
             # It must say why. The whole point of the PR is that this stops being
