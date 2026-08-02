@@ -149,7 +149,12 @@ def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
     return s
 
 
-def _revision_for_resolved_repo(revision, model_name, old_model_name, mapper_moved_name = False):
+def _revision_for_resolved_repo(
+    revision,
+    model_name,
+    old_model_name,
+    mapper_moved_name = False,
+):
     """Drop `revision` once the requested repo has been remapped to another one.
 
     A revision names a branch/tag/SHA on the repo the caller asked for, but from_pretrained
@@ -160,8 +165,7 @@ def _revision_for_resolved_repo(revision, model_name, old_model_name, mapper_mov
     if revision is None or model_name == old_model_name:
         return revision
     remedy = (
-        " Pass `use_exact_model_name = True` to load your repo as-is."
-        if mapper_moved_name else ""
+        " Pass `use_exact_model_name = True` to load your repo as-is." if mapper_moved_name else ""
     )
     logger.warning_once(
         f"Unsloth: Ignoring revision = `{revision}` since `{old_model_name}` resolved to "

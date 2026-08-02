@@ -230,7 +230,8 @@ def test_both_loader_paths_pass_the_mapper_flag():
     for class_name in ("FastLanguageModel", "FastModel"):
         function = _function(tree, "from_pretrained", class_name)
         assert [
-            n for n in ast.walk(function)
+            n
+            for n in ast.walk(function)
             if isinstance(n, ast.Assign)
             and any(getattr(t, "id", None) == "mapper_moved_name" for t in n.targets)
         ], f"{class_name} must record whether the mapper moved the name"
@@ -385,7 +386,8 @@ def test_the_tokenizer_revision_is_resolved_by_the_loader():
     for class_name in ("FastLanguageModel", "FastModel"):
         function = _function(tree, "from_pretrained", class_name)
         dispatches = [
-            c for c in _calls(function, "from_pretrained")
+            c
+            for c in _calls(function, "from_pretrained")
             if any(k.arg == "tokenizer_revision" for k in c.keywords)
         ]
         assert dispatches, f"{class_name} must dispatch a tokenizer_revision"
@@ -410,14 +412,17 @@ def test_vision_pops_the_tokenizer_revision_before_the_weight_load():
     tokenizer_revision argument, so it must be popped rather than read."""
     function = _function(_tree(VISION), "from_pretrained", "FastBaseModel")
     pops = [
-        c for c in ast.walk(function)
+        c
+        for c in ast.walk(function)
         if isinstance(c, ast.Call)
         and ast.unparse(c.func).endswith("kwargs.pop")
-        and c.args and getattr(c.args[0], "value", None) == "tokenizer_revision"
+        and c.args
+        and getattr(c.args[0], "value", None) == "tokenizer_revision"
     ]
     assert pops, "tokenizer_revision must be popped from kwargs"
     weight_loads = [
-        c for c in _calls(function, "from_pretrained")
+        c
+        for c in _calls(function, "from_pretrained")
         if ast.unparse(c.func).startswith("auto_model")
     ]
     assert weight_loads
