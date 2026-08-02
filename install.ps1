@@ -2218,6 +2218,63 @@ exit 0
         } catch { return $result }
     }
 
+    # Bounded Win32_VideoController scan. The display provider calls into the driver stack, so on
+    # a host with slow AV scanning or a degraded WMI repository the query blocks indefinitely:
+    # -ErrorAction only suppresses reported errors, and -OperationTimeoutSec is not enforced for
+    # the local COM session this uses. Out of process with a wall-clock kill is the only bound
+    # that holds, which is how install_llama_prebuilt.py runs the same query. Returns
+    # @{ Ok; Names }; Ok = $false on timeout, failure, or an empty answer (a Windows host always
+    # has an adapter), never a partial one. Mirrors setup.ps1's copy.
+    function Invoke-BoundedVideoControllerScan {
+        param([int]$TimeoutSec = 15)
+        $result = [pscustomobject]@{ Ok = $false; Names = @() }
+        $job = $null
+        try {
+            $job = Start-Job -ScriptBlock {
+                Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                    Select-Object -ExpandProperty Name
+            }
+            if (Wait-Job -Job $job -Timeout $TimeoutSec) {
+                $names = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+                $result.Names = @($names | Where-Object { $_ })
+                $result.Ok = ($result.Names.Count -gt 0)
+            } else {
+                Stop-Job -Job $job -ErrorAction SilentlyContinue
+            }
+        } catch {
+        } finally {
+            if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+        }
+        return $result
+    }
+
+    # Registry fallback for the scan above, mirroring install_llama_prebuilt.py's
+    # windows_intel_gpu_in_registry(): the display-adapter class key holds one NNNN subkey per
+    # installed driver config, each with a DriverDesc and a PCI MatchingDeviceId (ven_8086). It
+    # is in-process and answers in microseconds, but its guarantee is weaker -- a driver config
+    # can outlive removed hardware, so a stale entry can name a card that is gone. Hence the
+    # fallback, not the fast path that function is on: there a false positive only picks a
+    # different llama.cpp bundle, here it would install XPU torch on a host that has no Arc.
+    # On a fresh install there is no venv torch to rescue a failed query, so the alternative is
+    # silently selecting CPU. Mirrors setup.ps1's copy.
+    function Get-IntelRegistryAdapterNames {
+        $names = @()
+        $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        try {
+            foreach ($sub in @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)) {
+                # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
+                if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
+                $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                if (-not $props) { continue }
+                $desc = "$($props.DriverDesc)"
+                if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086' -or $desc -match '(?i)intel') {
+                    $names += if ($desc) { $desc } else { "Intel Graphics" }
+                }
+            }
+        } catch { return @() }
+        return $names
+    }
+
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
     # Runs BEFORE the report chain, not inside its final else: a WMI-named-only AMD adapter
     # (ROCmGpuLabel set, no usable ROCm) would take that chain and hide a discrete Arc card.
@@ -2233,12 +2290,15 @@ exit 0
     # An AMD host with no wheels is heading for CPU torch, so a neighbouring Arc card wins.
     if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
         try {
-            $intelGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match "(?i)Intel" })
+            # Bounded, with the registry as the fallback when WMI does not answer. Same
+            # Arc / Data Center match whichever source answered.
+            $_gpuScan = Invoke-BoundedVideoControllerScan
+            $_gpuNames = if ($_gpuScan.Ok) { $_gpuScan.Names } else { @(Get-IntelRegistryAdapterNames) }
+            $intelGpus = @($_gpuNames | Where-Object { $_ -match "(?i)Intel" })
             if ($intelGpus.Count -gt 0) {
                 $HasIntelGpu = $true
-                $xpuGpu = $intelGpus | Where-Object { $_.Name -match "(?i)Intel.*(Arc|Data Center GPU)" } | Select-Object -First 1
-                $IntelGpuLabel = if ($xpuGpu) { $xpuGpu.Name } else { $intelGpus[0].Name }
+                $xpuGpu = $intelGpus | Where-Object { $_ -match "(?i)Intel.*(Arc|Data Center GPU)" } | Select-Object -First 1
+                $IntelGpuLabel = if ($xpuGpu) { $xpuGpu } else { $intelGpus[0] }
                 if ($xpuGpu) { $script:IsIntelXpu = $true }
             }
         } catch {}
