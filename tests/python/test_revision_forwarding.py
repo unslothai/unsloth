@@ -728,9 +728,9 @@ def test_the_vllm_drop_happens_before_the_config_probe():
         if ast.unparse(c.func).split(".")[0] in ("AutoConfig", "PeftConfig")
     ]
     assert probes
-    assert drops[0].end_lineno < min(c.lineno for c in probes), (
-        "the probe would read a ref the weights will not be at"
-    )
+    assert drops[0].end_lineno < min(
+        c.lineno for c in probes
+    ), "the probe would read a ref the weights will not be at"
     # The probed config goes down untouched again, so nothing may re-gate it at dispatch.
     dispatches = [
         c
@@ -751,9 +751,7 @@ def test_the_fp8_cache_key_survives_a_lossy_sanitization():
     source = ast.unparse(function)
     assert "sha256" in source or "blake2" in source, "the sanitized name alone collides"
     digests = [
-        n
-        for n in ast.walk(function)
-        if isinstance(n, ast.Call) and "sha256" in ast.unparse(n.func)
+        n for n in ast.walk(function) if isinstance(n, ast.Call) and "sha256" in ast.unparse(n.func)
     ]
     assert digests
     assert any("revision" in ast.unparse(n) for n in digests), "hash the ref, not the repo"
