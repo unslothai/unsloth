@@ -43,10 +43,7 @@ def resolve_effective_use_xet(use_xet: bool) -> bool:
     return False
 
 
-def resolve_requested_use_xet(
-    transport_mode: Optional[str],
-    use_xet: bool,
-) -> tuple[bool, str]:
+def resolve_requested_use_xet(transport_mode: Optional[str], use_xet: bool) -> tuple[bool, str]:
     """Turn a download request's transport preference into ``(use_xet, reason)``.
 
     ``transport_mode`` is the current field ("auto" / "xet" / "http"); ``use_xet`` is the older
@@ -79,7 +76,6 @@ def resolve_auto_use_xet() -> tuple[bool, str]:
         return (False, "hf_xet is not installed")
     try:
         from utils.hf_xet_fallback import xet_health
-
         health = xet_health()
     except Exception as exc:  # noqa: BLE001 - never let a health probe block a download
         logger.debug("Xet health probe failed, defaulting to Xet: %s", exc)
@@ -136,9 +132,13 @@ def spawn_worker(
         # inside the worker would be too late. Anything already in `env` was set deliberately by
         # the caller and is left alone.
         from utils.hf_xet_fallback import xet_env_overrides
-
-        allow_high_perf = os.environ.get("UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", "").strip().lower() in (
-            "1", "true", "yes", "on",
+        allow_high_perf = os.environ.get(
+            "UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", ""
+        ).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
         )
         for key, value in xet_env_overrides().items():
             if key in ("HF_XET_HIGH_PERFORMANCE", "HF_XET_HP") and not allow_high_perf:
@@ -624,7 +624,6 @@ def _record_xet_failure(reason: str, logger) -> None:
     """Tell the health tracker a Xet transfer failed here; best-effort, never fatal to a download."""
     try:
         from utils.hf_xet_fallback import record_xet_outcome
-
         record_xet_outcome(False, reason)
     except Exception as exc:  # noqa: BLE001
         logger.debug("could not record Xet outcome: %s", exc)
@@ -660,8 +659,9 @@ def _start_stall_watchdog(
     cache_dir = getattr(metadata, "hub_cache", None) if metadata is not None else None
 
     def _on_stall(message: str) -> None:
-        logger.warning("%s %s for %s; killing the worker to retry over HTTP",
-                       log_prefix, message, label)
+        logger.warning(
+            "%s %s for %s; killing the worker to retry over HTTP", log_prefix, message, label
+        )
         on_stall(message)
         try:
             # Kill only -- the _watch thread is already blocked reaping this process, and a second
@@ -725,9 +725,15 @@ def register_worker(
             # take over; the SIGKILL surfaces as "error", which is exactly what triggers it.
             if can_retry_http:
                 watchdog_stop = _start_stall_watchdog(
-                    registry, key, proc,
-                    repo_type = repo_type, repo_id = repo_id, label = label,
-                    log_prefix = log_prefix, logger = logger, on_stall = stalled.append,
+                    registry,
+                    key,
+                    proc,
+                    repo_type = repo_type,
+                    repo_id = repo_id,
+                    label = label,
+                    log_prefix = log_prefix,
+                    logger = logger,
+                    on_stall = stalled.append,
                 )
             state = finalize_worker_exit(
                 registry,

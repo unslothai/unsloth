@@ -27,13 +27,13 @@ class DownloadModelRequest(BaseModel):
     use_xet: bool = Field(
         True,
         description = "Legacy transport flag, superseded by transport_mode. Kept so an older "
-                      "frontend or a scripted caller keeps working.",
+        "frontend or a scripted caller keeps working.",
     )
     transport_mode: Optional[Literal["auto", "xet", "http"]] = Field(
         None,
         description = "Transport preference. 'auto' (the default in the UI) lets the backend pick "
-                      "per machine: it knows this host's RAM, its hf_xet build, and whether Xet has "
-                      "been failing here. 'xet'/'http' force one. Omitted -> use_xet decides.",
+        "per machine: it knows this host's RAM, its hf_xet build, and whether Xet has "
+        "been failing here. 'xet'/'http' force one. Omitted -> use_xet decides.",
     )
 
 
@@ -136,13 +136,13 @@ class DownloadDatasetRequest(BaseModel):
     use_xet: bool = Field(
         True,
         description = "Legacy transport flag, superseded by transport_mode. Kept so an older "
-                      "frontend or a scripted caller keeps working.",
+        "frontend or a scripted caller keeps working.",
     )
     transport_mode: Optional[Literal["auto", "xet", "http"]] = Field(
         None,
         description = "Transport preference. 'auto' (the default in the UI) lets the backend pick "
-                      "per machine: it knows this host's RAM, its hf_xet build, and whether Xet has "
-                      "been failing here. 'xet'/'http' force one. Omitted -> use_xet decides.",
+        "per machine: it knows this host's RAM, its hf_xet build, and whether Xet has "
+        "been failing here. 'xet'/'http' force one. Omitted -> use_xet decides.",
     )
 
 

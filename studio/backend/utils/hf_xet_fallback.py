@@ -103,11 +103,9 @@ def _load_optional(module_name: str) -> Any:
     """
     try:
         import importlib
-
         return importlib.import_module(module_name)
     except Exception as exc:  # noqa: BLE001 - an older/absent unsloth_zoo must degrade, not crash
         import logging as _logging
-
         _logging.getLogger(__name__).debug("%s unavailable: %s", module_name, exc)
         return None
 
@@ -125,7 +123,6 @@ def xet_health(**kwargs: Any) -> Any:
         return module.xet_health(**kwargs)
     except Exception as exc:  # noqa: BLE001
         import logging as _logging
-
         _logging.getLogger(__name__).debug("xet_health failed: %s", exc)
         return None
 
@@ -139,7 +136,6 @@ def record_xet_outcome(ok: bool, reason: str = "") -> None:
         module.record_xet_outcome(ok, reason)
     except Exception as exc:  # noqa: BLE001
         import logging as _logging
-
         _logging.getLogger(__name__).debug("record_xet_outcome failed: %s", exc)
 
 
@@ -152,7 +148,6 @@ def xet_env_overrides() -> "dict[str, str]":
         return dict(module.xet_env_overrides())
     except Exception as exc:  # noqa: BLE001
         import logging as _logging
-
         _logging.getLogger(__name__).debug("xet_env_overrides failed: %s", exc)
         return {}
 

@@ -158,7 +158,8 @@ async def download_dataset_response(
     key = _download_job_key(repo_id)
 
     use_xet, transport_reason = download_lifecycle.resolve_requested_use_xet(
-        getattr(body, "transport_mode", None), body.use_xet,
+        getattr(body, "transport_mode", None),
+        body.use_xet,
     )
     transport = download_lifecycle.resolve_transport(use_xet)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)

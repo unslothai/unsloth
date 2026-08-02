@@ -41,6 +41,7 @@ from hub.utils import download_registry
 # Transport selection
 # --------------------------------------------------------------------------------------------
 
+
 def test_explicit_modes_are_honoured(monkeypatch):
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
     assert dl.resolve_requested_use_xet("http", True)[0] is False
@@ -86,7 +87,7 @@ def test_auto_reports_http_when_hf_xet_is_missing(monkeypatch):
 
 
 def test_auto_is_not_a_real_transport():
-    """"auto" is a request preference. The on-disk .transport marker must keep naming the writer
+    """ "auto" is a request preference. The on-disk .transport marker must keep naming the writer
     that produced a partial, or a resume would pick the wrong resume strategy."""
     assert download_registry.TRANSPORT_AUTO not in download_registry.VALID_TRANSPORTS
     assert download_registry.TRANSPORT_AUTO in download_registry.VALID_TRANSPORT_MODES
@@ -95,6 +96,7 @@ def test_auto_is_not_a_real_transport():
 # --------------------------------------------------------------------------------------------
 # RAM caps reach the worker environment
 # --------------------------------------------------------------------------------------------
+
 
 class _FakePopen:
     def __init__(self, *args, **kwargs):
@@ -105,10 +107,19 @@ class _FakePopen:
         self.returncode = 0
 
 
-def _spawn_env(monkeypatch, *, use_xet: bool, parent_env: dict | None = None) -> dict:
+def _spawn_env(
+    monkeypatch,
+    *,
+    use_xet: bool,
+    parent_env: dict | None = None,
+) -> dict:
     captured = {}
 
-    def _fake_popen(cmd, env = None, **kwargs):
+    def _fake_popen(
+        cmd,
+        env = None,
+        **kwargs,
+    ):
         captured.update(env or {})
         return _FakePopen()
 
@@ -132,22 +143,24 @@ def test_xet_worker_gets_ram_caps(monkeypatch):
 def test_high_performance_is_cleared_not_merely_defaulted(monkeypatch):
     """xet-core applies the high-performance preset AFTER reading the environment, so an inherited
     "1" would discard every cap above rather than compete with it. setdefault is not enough."""
-    env = _spawn_env(monkeypatch, use_xet = True,
-                     parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
+    env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
     assert env["HF_XET_HIGH_PERFORMANCE"] == "0"
 
 
 def test_user_can_opt_back_into_high_performance(monkeypatch):
     monkeypatch.setenv("UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", "1")
-    env = _spawn_env(monkeypatch, use_xet = True,
-                     parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
+    env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
     assert env["HF_XET_HIGH_PERFORMANCE"] == "1"
 
 
 def test_explicit_cap_from_the_operator_is_preserved(monkeypatch):
-    env = _spawn_env(monkeypatch, use_xet = True, parent_env = {
-        "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT": "7777777",
-    })
+    env = _spawn_env(
+        monkeypatch,
+        use_xet = True,
+        parent_env = {
+            "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT": "7777777",
+        },
+    )
     assert env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"] == "7777777"
 
 
@@ -160,6 +173,7 @@ def test_http_worker_gets_no_xet_caps(monkeypatch):
 # --------------------------------------------------------------------------------------------
 # Stall -> kill -> HTTP retry
 # --------------------------------------------------------------------------------------------
+
 
 class _KillablePopen:
     def __init__(self):
@@ -192,9 +206,15 @@ def test_stall_watchdog_kills_the_worker(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
 
     stop = dl._start_stall_watchdog(
-        _registry_stub(), "models--a--b", proc,
-        repo_type = "model", repo_id = "a/b", label = "a/b",
-        log_prefix = "[hub]", logger = dl.logger, on_stall = seen.append,
+        _registry_stub(),
+        "models--a--b",
+        proc,
+        repo_type = "model",
+        repo_id = "a/b",
+        label = "a/b",
+        log_prefix = "[hub]",
+        logger = dl.logger,
+        on_stall = seen.append,
     )
     assert stop is not None
     assert proc.killed.is_set(), "a stalled worker was not killed"
@@ -205,6 +225,7 @@ def test_stall_watchdog_kills_the_worker(monkeypatch):
 
 def test_stall_watchdog_survives_an_already_exited_worker(monkeypatch):
     """The worker can exit between the stall verdict and the kill; that is a race, not an error."""
+
     class _Gone:
         pid = 1
 
@@ -216,8 +237,15 @@ def test_stall_watchdog_survives_an_already_exited_worker(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
 
     stop = dl._start_stall_watchdog(
-        _registry_stub(), "k", _Gone(), repo_type = "model", repo_id = "a/b",
-        label = "a/b", log_prefix = "[hub]", logger = dl.logger, on_stall = lambda _m: None,
+        _registry_stub(),
+        "k",
+        _Gone(),
+        repo_type = "model",
+        repo_id = "a/b",
+        label = "a/b",
+        log_prefix = "[hub]",
+        logger = dl.logger,
+        on_stall = lambda _m: None,
     )
     assert stop is not None
 
@@ -226,10 +254,20 @@ def test_missing_watchdog_degrades_quietly(monkeypatch):
     """An older unsloth_zoo without start_watchdog must not break downloads, only stall detection."""
     fake = _types.ModuleType("utils.hf_xet_fallback")
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
-    assert dl._start_stall_watchdog(
-        _registry_stub(), "k", _KillablePopen(), repo_type = "model", repo_id = "a/b",
-        label = "a/b", log_prefix = "[hub]", logger = dl.logger, on_stall = lambda _m: None,
-    ) is None
+    assert (
+        dl._start_stall_watchdog(
+            _registry_stub(),
+            "k",
+            _KillablePopen(),
+            repo_type = "model",
+            repo_id = "a/b",
+            label = "a/b",
+            log_prefix = "[hub]",
+            logger = dl.logger,
+            on_stall = lambda _m: None,
+        )
+        is None
+    )
 
 
 def test_stall_is_recorded_against_the_machine(monkeypatch):
@@ -256,10 +294,12 @@ def test_recording_a_failure_never_raises(monkeypatch):
 # Capabilities endpoint
 # --------------------------------------------------------------------------------------------
 
+
 def test_capabilities_report_what_auto_resolves_to(monkeypatch):
     fake = _types.ModuleType("utils.hf_xet_fallback")
     fake.xet_health = lambda **kw: _types.SimpleNamespace(
-        use_xet = False, reason = "Xet failed 2 times in a row on this machine",
+        use_xet = False,
+        reason = "Xet failed 2 times in a row on this machine",
     )
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
     caps = download_registry.get_download_transport_capabilities()
