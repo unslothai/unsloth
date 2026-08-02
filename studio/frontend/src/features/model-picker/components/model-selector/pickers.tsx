@@ -125,6 +125,12 @@ import {
   soleQuantRowState,
 } from "./row-identity";
 import { parseMetaTokens, splitRepoLabel } from "./row-meta";
+import {
+  type SoleQuantEntry,
+  type SoleQuantTarget,
+  partitionSoleQuants,
+  soleQuantKey,
+} from "./sole-quant-cache";
 import type {
   DeletedModelRef,
   ExternalModelOption,
@@ -705,93 +711,116 @@ interface SoleDownloadedQuant {
   hasVision: boolean;
 }
 
-const EMPTY_SOLE_QUANTS: ReadonlyMap<string, SoleDownloadedQuant> = new Map();
-// A few repos at a time, so a large cache doesn't fire one request per repo.
-const SOLE_QUANT_BATCH = 6;
+/** The repo's one complete quant, or null when it holds none, holds several,
+ *  or could not be read. Disk-only and client-cached: no remote listing. */
+async function readSoleQuant(
+  target: SoleQuantTarget,
+  hfToken?: string,
+): Promise<SoleDownloadedQuant | null> {
+  try {
+    const res = await listGgufVariantsCached(target.repoId, hfToken, {
+      preferLocalCache: true,
+      localPath: target.localSource,
+    });
+    const normalized = normalizeGgufVariantsResponse(res);
+    const local = normalized.variants;
+    // One file on disk and nothing torn beside it. A partial quant keeps the
+    // expander, where it can be resumed.
+    if (local.length !== 1 || local[0].downloaded !== true) return null;
+    return { variant: local[0], hasVision: normalized.hasVision };
+  } catch {
+    return null;
+  }
+}
+
+const EMPTY_SOLE_QUANT_ENTRIES: ReadonlyMap<
+  string,
+  SoleQuantEntry<SoleDownloadedQuant>
+> = new Map();
+// Reads run a few at a time, so a large cache doesn't fire one request per
+// repo. A worker pool, not fixed batches: one slow repo holds up only itself.
+const SOLE_QUANT_WORKERS = 6;
 
 /** On Device repos holding exactly one quant on disk, keyed by repo id. With
  *  "Show all quantizations" off there is nothing else to pick, so those repos
- *  collapse into one pinned-style row. */
+ *  collapse into one pinned-style row. Results are kept per repo, so one
+ *  repo's download or delete leaves every other row as it was. */
 function useSoleDownloadedQuants(
   repos: readonly CachedGgufRepo[],
   { enabled, hfToken }: { enabled: boolean; hfToken?: string },
-): { quants: ReadonlyMap<string, SoleDownloadedQuant>; pending: boolean } {
-  const targets = useMemo(
-    () =>
-      repos.map((repo) => ({
-        repoId: repo.repo_id,
-        localSource: repo.load_id || repo.cache_path || null,
-      })),
-    [repos],
-  );
-  const repoIds = useMemo(
-    () => targets.map((target) => target.repoId),
-    [targets],
-  );
+): {
+  quants: ReadonlyMap<string, SoleDownloadedQuant>;
+  pending: ReadonlySet<string>;
+} {
+  const repoIds = useMemo(() => repos.map((repo) => repo.repo_id), [repos]);
   // A download or delete invalidates one repo, so watch each repo's version.
   const variantsVersion = useGgufVariantsCacheVersions(repoIds);
-  const fetchKey = useMemo(
-    () =>
-      `${variantsVersion}::${enabled ? "on" : "off"}::${targets
-        .map((target) => `${target.repoId}|${target.localSource ?? ""}`)
-        .join(",")}`,
-    [enabled, targets, variantsVersion],
+  const targets = useMemo(() => {
+    const versions = variantsVersion.split(",");
+    return repos.map((repo, index) => {
+      const localSource = repo.load_id || repo.cache_path || null;
+      return {
+        repoId: repo.repo_id,
+        localSource,
+        key: soleQuantKey(versions[index], localSource),
+      };
+    });
+  }, [repos, variantsVersion]);
+
+  const [entries, setEntries] =
+    useState<ReadonlyMap<string, SoleQuantEntry<SoleDownloadedQuant>>>(
+      EMPTY_SOLE_QUANT_ENTRIES,
+    );
+  const { quants, pending, stale } = useMemo(
+    () => partitionSoleQuants(targets, entries, { enabled }),
+    [targets, entries, enabled],
   );
-  const [resolved, setResolved] = useState<{
-    key: string;
-    quants: ReadonlyMap<string, SoleDownloadedQuant>;
-  }>({ key: "", quants: EMPTY_SOLE_QUANTS });
+
+  // Reads outlive a re-render, so they are tracked in refs: a settled repo is
+  // never re-read, and an in-flight one is never read twice.
+  const inFlightRef = useRef(new Map<string, string>());
+  const mountedRef = useRef(true);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (!enabled || targets.length === 0) {
-      setResolved({ key: fetchKey, quants: EMPTY_SOLE_QUANTS });
-      return;
+    const queue = stale.filter(
+      (target) => inFlightRef.current.get(target.repoId) !== target.key,
+    );
+    if (queue.length === 0) return;
+    for (const target of queue) {
+      inFlightRef.current.set(target.repoId, target.key);
     }
-    let cancelled = false;
 
-    const resolve = async () => {
-      const found = new Map<string, SoleDownloadedQuant>();
-      for (let i = 0; i < targets.length; i += SOLE_QUANT_BATCH) {
-        if (cancelled) return;
-        await Promise.all(
-          targets.slice(i, i + SOLE_QUANT_BATCH).map(async (target) => {
-            try {
-              // Disk-only and client-cached: no remote listing per repo.
-              const res = await listGgufVariantsCached(target.repoId, hfToken, {
-                preferLocalCache: true,
-                localPath: target.localSource,
-              });
-              const normalized = normalizeGgufVariantsResponse(res);
-              const local = normalized.variants;
-              // One file on disk and nothing torn beside it. A partial quant
-              // keeps the expander, where it can be resumed or deleted.
-              if (local.length === 1 && local[0].downloaded === true) {
-                found.set(target.repoId, {
-                  variant: local[0],
-                  hasVision: normalized.hasVision,
-                });
-              }
-            } catch {
-              // Unresolved repos keep their expandable row.
-            }
-          }),
-        );
+    const readNext = async () => {
+      while (queue.length > 0) {
+        const target = queue.shift();
+        if (!target) return;
+        const quant = await readSoleQuant(target, hfToken);
+        if (inFlightRef.current.get(target.repoId) === target.key) {
+          inFlightRef.current.delete(target.repoId);
+        }
+        if (!mountedRef.current) return;
+        setEntries((prev) => {
+          const next = new Map(prev);
+          next.set(target.repoId, { key: target.key, quant });
+          return next;
+        });
       }
-      if (!cancelled) setResolved({ key: fetchKey, quants: found });
     };
 
-    void resolve();
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, fetchKey, hfToken, targets]);
+    void Promise.all(
+      Array.from({ length: Math.min(SOLE_QUANT_WORKERS, queue.length) }, () =>
+        readNext(),
+      ),
+    );
+  }, [hfToken, stale]);
 
-  // Stale results would collapse a row onto a quant that is already gone.
-  const settled = resolved.key === fetchKey;
-  return {
-    quants: settled ? resolved.quants : EMPTY_SOLE_QUANTS,
-    pending: enabled && !settled,
-  };
+  return { quants, pending };
 }
 
 function GgufVariantExpander({
@@ -3092,7 +3121,7 @@ export function HubModelPicker({
     const expanderOpen = shouldMountVariantExpander({
       expanded: isGgufExpanded(c.repo_id),
       autoExpand: expandQuantizations,
-      soleQuantsPending: soleQuants.pending,
+      soleQuantsPending: soleQuants.pending.has(c.repo_id),
     });
     return (
       <div key={c.repo_id}>

@@ -49,3 +49,14 @@ test("a global invalidation moves the snapshot too", () => {
   bumpGgufVariantsCacheVersion();
   assert.notEqual(snapshot(repos), before);
 });
+
+test("a version carries no comma, so a joined snapshot splits back per repo", () => {
+  const repos = [REPO, OTHER];
+  bumpGgufVariantsCacheVersion(REPO);
+  const joined = snapshot(repos);
+  // The picker splits the snapshot and pairs it with its repo list by index.
+  assert.deepEqual(
+    joined.split(","),
+    repos.map((id) => getGgufVariantsCacheVersion(id)),
+  );
+});
