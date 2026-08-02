@@ -492,6 +492,7 @@ def run_safetensors_tool_loop(
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
     reasoning_prefilled: bool = False,
+    markup = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -562,8 +563,12 @@ def run_safetensors_tool_loop(
     # keep the ORIGINAL names: those decide what LOOKS like a call, not what may run (#7066).
     from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
+    # *markup* is the same profile the renderer uses, so a tool is never dropped from the
+    # controller over a marker this model does not treat as structure (#7066).
     tool_controller = ToolLoopController(
-        tools = None if unrestricted_tools else neutralize_tool_descriptions(tools),
+        tools = (
+            None if unrestricted_tools else neutralize_tool_descriptions(tools, None, markup)
+        ),
         auto_heal_tool_calls = auto_heal_tool_calls,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).

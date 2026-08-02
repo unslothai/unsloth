@@ -11321,10 +11321,17 @@ async def openai_chat_completions(
     # dropped tool with a clean NAME be promoted out of text-form output, handing the
     # client a structured call for a tool the model was never shown (#7066).
     from core.inference.chat_template_helpers import (
+        markup_for_tokenizer as _sf_markup_for,
         neutralize_tool_descriptions as _sf_neutralize_tools,
     )
 
-    _sf_healing_tools = _sf_neutralize_tools(payload.tools) if _sf_client_tools else None
+    _sf_markup = _sf_markup_for(_sf_model_info.get("tokenizer"))
+
+    _sf_healing_tools = (
+        # The same profile apply_chat_template_for_generation renders with, so the healer
+        # offers exactly the catalog the model was shown (#7066).
+        _sf_neutralize_tools(payload.tools, None, _sf_markup) if _sf_client_tools else None
+    )
     _sf_heal = (
         heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice)
         if _sf_client_tools
@@ -15783,6 +15790,7 @@ def _build_passthrough_payload(
     backend_ctx = None,
     seed = None,
     stream_options = None,
+    markup = None,
 ):
     from core.inference.chat_template_helpers import (
         neutralize_control_markup_in_messages,
@@ -15792,8 +15800,11 @@ def _build_passthrough_payload(
 
     # The one place to break markup: llama-server applies the template itself, and both
     # /v1/messages bodies come from here, never the OpenAI builder below (#7066).
+    # *markup* is the loaded model's profile, so passthrough leaves another family's
+    # marker alone exactly as generate_chat_completion does (#7066).
+    _pt_markup = markup
     body = {
-        "messages": neutralize_control_markup_in_messages(openai_messages),
+        "messages": neutralize_control_markup_in_messages(openai_messages, None, _pt_markup),
         "temperature": temperature,
         "top_p": top_p,
         "top_k": top_k,
@@ -15801,7 +15812,7 @@ def _build_passthrough_payload(
     }
     # Tested after the rewrite: an all-injected catalog drops to empty, and
     # "tools": [] would still advertise tool use.
-    safe_tools = neutralize_tool_descriptions(openai_tools)
+    safe_tools = neutralize_tool_descriptions(openai_tools, None, _pt_markup)
     if safe_tools:
         body["tools"] = _llama_compatible_tools(safe_tools)
         # A mixed catalog keeps safe_tools non-empty while dropping the one tool the client
@@ -15922,6 +15933,7 @@ async def _anthropic_passthrough_stream(
         tool_choice = tool_choice,
         backend_ctx = llama_backend.context_length,
         stream_options = {"include_usage": True},
+        markup = getattr(llama_backend, "markup_profile", None),
     )
 
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
@@ -15958,7 +15970,9 @@ async def _anthropic_passthrough_stream(
         # the prompt, so promoting it would hand the client an unadvertised tool_use (#7066).
         from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
-        _healing_tools = neutralize_tool_descriptions(openai_tools)
+        _healing_tools = neutralize_tool_descriptions(
+            openai_tools, None, getattr(llama_backend, "markup_profile", None)
+        )
         # The reconciled choice the body actually carries, not the caller's: when a forced
         # tool was dropped, _build_passthrough_payload sent "auto", and gating on the stale
         # forced name would intersect the safe names with a removed one and disable healing
@@ -16161,6 +16175,7 @@ async def _anthropic_passthrough_non_streaming(
         presence_penalty = presence_penalty,
         tool_choice = tool_choice,
         backend_ctx = llama_backend.context_length,
+        markup = getattr(llama_backend, "markup_profile", None),
     )
 
     _client = _cancelable_nonstreaming_client()
@@ -16215,7 +16230,9 @@ async def _anthropic_passthrough_non_streaming(
         # nudging on, the retry would otherwise name a tool dropped from the prompt (#7066).
         from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
-        _healing_tools = neutralize_tool_descriptions(openai_tools)
+        _healing_tools = neutralize_tool_descriptions(
+            openai_tools, None, getattr(llama_backend, "markup_profile", None)
+        )
         # The reconciled choice the body actually carries, not the caller's: when a forced
         # tool was dropped, _build_passthrough_payload sent "auto", and gating on the stale
         # forced name would intersect the safe names with a removed one and disable healing
@@ -16696,6 +16713,7 @@ def _build_openai_passthrough_body(
         backend_ctx = backend_ctx,
         seed = payload.seed,
         stream_options = payload.stream_options,
+        markup = getattr(llama_backend, "markup_profile", None),
     )
 
 

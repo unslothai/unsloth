@@ -5181,6 +5181,21 @@ class LlamaCppBackend:
         if atype == 7:  # BOOL
             return [struct.unpack("<?", f.read(1))[0] for _ in range(alen)]
 
+        if atype == 8:  # STRING: kept only for the delimiter-shaped entries (#7066).
+            from core.inference.chat_template_helpers import delimiter_shaped_tokens
+
+            kept: list = []
+            for _ in range(alen):
+                n = struct.unpack("<Q", f.read(8))[0]
+                raw = f.read(n)
+                # A vocabulary holds arbitrary bytes; a marker is text, so undecodable
+                # entries are simply not markers.
+                try:
+                    kept.append(raw.decode("utf-8"))
+                except UnicodeDecodeError:
+                    continue
+            return delimiter_shaped_tokens(kept)
+
         for _ in range(alen):
             LlamaCppBackend._gguf_skip_value(f, atype)
         return None

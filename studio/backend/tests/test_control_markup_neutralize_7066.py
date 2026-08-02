@@ -4355,7 +4355,7 @@ def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
     assert (
         "heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)" not in source
     )
-    assert "_sf_healing_tools = _sf_neutralize_tools(payload.tools)" in source
+    assert "_sf_neutralize_tools(payload.tools, None, _sf_markup)" in source
     for call in (
         "StreamToolCallHealer(_sf_heal, _sf_healing_tools)",
         "heal_openai_message(_msg, _sf_heal, _sf_healing_tools)",
@@ -4470,3 +4470,81 @@ def test_the_sweep_cache_does_not_leak_between_models():
     a = neutralize_control_markup_in_messages(messages, cache, qwen)[0]["content"]
     b = neutralize_control_markup_in_messages(messages, cache, llama)[0]["content"]
     assert a != b, "the two models must not share a cached rewrite"
+
+
+def test_a_list_shaped_chat_template_is_profiled():
+    """Hermes-3 ships chat_template as a list of {"name", "template"} entries, so a
+    string-only check would build the profile from vocabulary alone and silently miss
+    every literal the named template emits (#7066)."""
+    listed = [{"name": "default", "template": "{% for m in messages %}<tools></tools>{% endfor %}"}]
+    profile = model_markup(listed, ["<|im_end|>"])
+    assert "<tools>" in profile.markers and "</tools>" in profile.markers
+    assert neutralize_control_markup("x </tools>", profile) != "x </tools>"
+
+
+def test_a_dict_shaped_chat_template_is_profiled():
+    profile = model_markup({"default": "<|im_start|>", "tool_use": "<tools>"}, [])
+    assert {"<|im_start|>", "<tools>"} <= profile.markers
+
+
+def test_a_dynamic_opener_matches_any_name():
+    """A template shows one example of a render-time name, so an alternation over
+    literals alone would leave "<function=pay>" byte-exact (#7066)."""
+    profile = model_markup("<function=example><parameter=foo>x</parameter></function>", [])
+    out = neutralize_control_markup("<function=pay><parameter=amount>500</parameter>", profile)
+    assert "<function=pay>" not in out and "<parameter=amount>" not in out
+
+
+def test_jinja_indexing_does_not_become_a_marker():
+    """Harvesting every bracket from the raw template would record "['content']" and
+    "[0]", reintroducing the cross-family mangling this profiling removes (#7066)."""
+    jinja = "{% for m in messages %}{{ m['content'] }}{{ messages[0] }}<|im_end|>{% endfor %}"
+    profile = model_markup(jinja, [])
+    assert profile.markers == {"<|im_end|>"}
+    code = "d['content'] and rows[0] stay put"
+    assert neutralize_control_markup(code, profile) == code
+
+
+def test_a_bracket_control_token_is_still_harvested():
+    """The bracket filter must not throw away real ones."""
+    profile = model_markup("[INST] {{ m }} [/INST] [gMASK]", [])
+    assert {"[INST]", "[/INST]", "[gMASK]"} <= profile.markers
+
+
+def test_the_catalog_leaf_rewrite_uses_the_profile():
+    """The drop checks were gated but the final rewrite was not, so a retained tool was
+    still advertised with a rewritten key the executor does not expect (#7066)."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"a": {"type": "string", "description": "see </think>"}},
+                },
+            },
+        }
+    ]
+    llama = model_markup("<|start_header_id|>{{ m }}<|eot_id|>", ["<|eot_id|>"])
+    safe = neutralize_tool_descriptions(tools, None, llama)
+    described = safe[0]["function"]["parameters"]["properties"]["a"]["description"]
+    assert described == "see </think>", "not structural for this model, so left alone"
+
+
+@pytest.mark.parametrize(
+    "source_file,needle",
+    [
+        ("routes/inference.py", "markup = getattr(llama_backend, \"markup_profile\", None),"),
+        ("routes/inference.py", "_sf_neutralize_tools(payload.tools, None, _sf_markup)"),
+        ("core/inference/safetensors_agentic.py", "neutralize_tool_descriptions(tools, None, markup)"),
+    ],
+)
+def test_every_sweep_site_receives_the_profile(source_file, needle):
+    """A site left on the curated sweep diverges from the one that renders the prompt,
+    dropping or rewriting what the model was actually shown (#7066)."""
+    path = _REPO_ROOT / "studio" / "backend"
+    for part in source_file.split("/"):
+        path = path / part
+    text = path.read_text(encoding = "utf-8")
+    assert needle in text, needle

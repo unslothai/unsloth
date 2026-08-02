@@ -932,7 +932,14 @@ class InferenceBackend:
         if system_prompt:
             initial = [{"role": "system", "content": system_prompt}] + initial
 
+        # Same profile the renderer uses, so the controller never drops a tool over a
+        # marker this model does not treat as structure (#7066).
+        from core.inference.chat_template_helpers import markup_for_tokenizer
+
         yield from run_safetensors_tool_loop(
+            markup = markup_for_tokenizer(
+                (self.models.get(self.active_model_name) or {}).get("tokenizer")
+            ),
             single_turn = _single_turn,
             messages = initial,
             tools = tools,

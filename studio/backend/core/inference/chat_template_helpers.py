@@ -247,7 +247,46 @@ _TTS_MARKUP_DEFAULT = re.compile(
 # plain word or a "\u2581" piece are not delimiters and are left alone.
 _DELIMITER_SHAPED = re.compile(r"\A(?:<[^\s<>]{1,60}>|\[[^\s\[\]]{1,40}\])\Z")
 # The same shapes, for harvesting literals a template writes out that are not vocab entries.
-_TEMPLATE_DELIMITERS = re.compile(r"<[^\s<>]{1,60}>|\[[^\s\[\]]{1,40}\]")
+# The bracket half deliberately excludes quotes and bare digits: a Jinja template indexes
+# with "message['content']" and "messages[0]", which are implementation syntax that never
+# reaches the prompt, and harvesting them would rewrite ordinary code containing
+# "['content']" -- the exact cross-family mangling this profiling removes (#7066).
+_TEMPLATE_DELIMITERS = re.compile(
+    "<[^\\s<>'\"]{1,60}>|\\[/?[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\]"
+)
+# A marker whose name is filled in at render time, so a template only ever shows one
+# example. "<function=pay>" must break on a model whose template spells
+# "<function=example>", which an alternation over literals alone cannot do.
+_DYNAMIC_OPENER = re.compile(r"\A<(/?[A-Za-z_][A-Za-z0-9_.\-]{0,30})=[^\s<>]*>\Z")
+
+
+def _marker_pattern_source(marker: str) -> str:
+    """The regex for one harvested marker: exact, unless its name is dynamic."""
+    dynamic = _DYNAMIC_OPENER.match(marker)
+    if dynamic:
+        return "<" + re.escape(dynamic.group(1)) + "=[^\\s<>]*>"
+    return re.escape(marker)
+
+
+def _template_strings(chat_template) -> list:
+    """Every template body a tokenizer exposes, whatever shape it uses.
+
+    A tokenizer may carry one string, a dict of named templates, or a list of
+    ``{"name", "template"}`` entries (Hermes-3 ships the list form). Profiling only the
+    string case would silently drop every literal a named template emits."""
+    out: list = []
+    if isinstance(chat_template, str):
+        out.append(chat_template)
+    elif isinstance(chat_template, dict):
+        for value in chat_template.values():
+            out.extend(_template_strings(value))
+    elif isinstance(chat_template, (list, tuple)):
+        for entry in chat_template:
+            if isinstance(entry, dict):
+                out.extend(_template_strings(entry.get("template")))
+            else:
+                out.extend(_template_strings(entry))
+    return out
 
 
 def delimiter_shaped_tokens(tokens) -> list:
@@ -292,10 +331,12 @@ def _alternation(markers: set):
     """A pattern matching any of *markers*, longest first so no prefix shadows a longer one."""
     if not markers:
         return None
-    return re.compile("|".join(re.escape(m) for m in sorted(markers, key = len, reverse = True)))
+    return re.compile(
+        "|".join(_marker_pattern_source(m) for m in sorted(markers, key = len, reverse = True))
+    )
 
 
-def model_markup(chat_template: Optional[str], tokens = None) -> Optional[ModelMarkup]:
+def model_markup(chat_template, tokens = None) -> Optional[ModelMarkup]:
     """Profile one model's structural markers, or None when nothing is known about it.
 
     None means "sweep everything the curated patterns know", which is the safe direction
@@ -305,8 +346,8 @@ def model_markup(chat_template: Optional[str], tokens = None) -> Optional[ModelM
     for token in tokens or ():
         if isinstance(token, str) and _DELIMITER_SHAPED.match(token):
             markers.add(token)
-    if chat_template:
-        markers.update(_TEMPLATE_DELIMITERS.findall(chat_template))
+    for body in _template_strings(chat_template):
+        markers.update(_TEMPLATE_DELIMITERS.findall(body))
     return ModelMarkup(markers) if markers else None
 
 
@@ -1012,7 +1053,7 @@ def neutralize_tool_descriptions(
             )
             changed = True
             continue
-        new_tool = _neutralize_argument_leaves(tool)
+        new_tool = _neutralize_argument_leaves(tool, markup)
         if not _differs(new_tool, tool):
             out.append(tool)
             continue
@@ -1612,19 +1653,25 @@ def markup_for_tokenizer(tokenizer) -> Optional[ModelMarkup]:
         cached = None
     if cached is not None:
         return cached[0]
+    # A vision model stores the container processor here: the chat_template lives on the
+    # processor while the vocabulary lives on the inner tokenizer, so each is read from
+    # whichever actually has it (mirrors chat_eos's template_source unwrap).
+    inner = getattr(tokenizer, "tokenizer", tokenizer)
     template = getattr(tokenizer, "chat_template", None)
+    if not template:
+        template = getattr(inner, "chat_template", None)
     tokens = None
-    added = getattr(tokenizer, "added_tokens_decoder", None)
+    added = getattr(inner, "added_tokens_decoder", None)
     if isinstance(added, dict):
         tokens = [getattr(v, "content", v) for v in added.values()]
     if tokens is None:
-        vocab = getattr(tokenizer, "get_vocab", None)
+        vocab = getattr(inner, "get_vocab", None)
         if callable(vocab):
             try:
                 tokens = list(vocab())
             except Exception:
                 tokens = None
-    profile = model_markup(template if isinstance(template, str) else None, tokens)
+    profile = model_markup(template, tokens)
     try:
         _MARKUP_BY_TOKENIZER[tokenizer] = (profile,)
     except TypeError:
