@@ -746,8 +746,7 @@ def _force_stall_for_tests(repo_id: str, repo_type: str) -> None:
     """
     from huggingface_hub.constants import HF_HUB_CACHE
 
-    blobs = os.path.join(
-        HF_HUB_CACHE, f"{repo_type}s--" + repo_id.replace("/", "--"), "blobs")
+    blobs = os.path.join(HF_HUB_CACHE, f"{repo_type}s--" + repo_id.replace("/", "--"), "blobs")
     handle = None
     try:
         os.makedirs(blobs, exist_ok = True)

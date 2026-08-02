@@ -132,6 +132,7 @@ def spawn_worker(
         # inside the worker would be too late. Anything already in `env` was set deliberately by
         # the caller and is left alone.
         from utils.hf_xet_fallback import xet_env_overrides
+
         allow_high_perf = os.environ.get(
             "UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", ""
         ).strip().lower() in (

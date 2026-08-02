@@ -135,7 +135,6 @@ def _spawn_env(
 def _tuning_available() -> bool:
     try:
         from utils.hf_xet_fallback import xet_env_overrides
-
         return bool(xet_env_overrides())
     except Exception:  # noqa: BLE001
         return False
