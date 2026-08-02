@@ -251,11 +251,30 @@ _DELIMITER_SHAPED = re.compile(r"\A(?:<[^\s<>]{1,60}>|\[[^\s\[\]]{1,40}\])\Z")
 # with "message['content']" and "messages[0]", which are implementation syntax that never
 # reaches the prompt, and harvesting them would rewrite ordinary code containing
 # "['content']" -- the exact cross-family mangling this profiling removes (#7066).
-_TEMPLATE_DELIMITERS = re.compile("<[^\\s<>'\"]{1,60}>|\\[/?[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\]")
+#
+# The third arm is the attribute form "<function name=\"NAME\">" that MiniCPM-5 and
+# MiniMax-M2 use and that ``tool_call_parser`` parses as a live call opener. It carries a
+# space and quotes, so the first arm can never see it, and a profile built without it kept
+# only the closing "</function>" -- leaving client text free to open a tool-call envelope
+# on exactly the models that honour it (#7066).
+_TEMPLATE_DELIMITERS = re.compile(
+    "<[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\s+[A-Za-z_][A-Za-z0-9_.\\-]{0,38}=\"[^\"<>]{0,60}\">"
+    "|<[^\\s<>'\"]{1,60}>"
+    "|\\[/?[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\]"
+)
+# A Jinja variable index, "loop_messages[i]" or "x[j]", binds directly to the name in front
+# of it. A delimiter a template writes out never does: "[INST]" follows a space, a quote, a
+# newline or "}". Gating on the preceding character keeps the shipped Gemma-4 loop indexes
+# out of the profile without also dropping the Mistral delimiters (#7066).
+_JINJA_INDEX = re.compile(r"[\w\]\)]\Z")
 # A marker whose name is filled in at render time, so a template only ever shows one
 # example. "<function=pay>" must break on a model whose template spells
 # "<function=example>", which an alternation over literals alone cannot do.
 _DYNAMIC_OPENER = re.compile(r"\A<(/?[A-Za-z_][A-Za-z0-9_.\-]{0,30})=[^\s<>]*>\Z")
+# The attribute spelling of the same thing: the value is the render-time name.
+_DYNAMIC_ATTR_OPENER = re.compile(
+    r"\A<([A-Za-z_][A-Za-z0-9_.\-]{0,38})\s+([A-Za-z_][A-Za-z0-9_.\-]{0,38})=\"[^\"<>]{0,60}\">\Z"
+)
 
 
 def _marker_pattern_source(marker: str) -> str:
@@ -263,6 +282,13 @@ def _marker_pattern_source(marker: str) -> str:
     dynamic = _DYNAMIC_OPENER.match(marker)
     if dynamic:
         return "<" + re.escape(dynamic.group(1)) + "=[^\\s<>]*>"
+    attr = _DYNAMIC_ATTR_OPENER.match(marker)
+    if attr:
+        # Whitespace stays loose: a template may render one space where a client sends
+        # several, and both open the same envelope.
+        return (
+            "<" + re.escape(attr.group(1)) + "\\s+" + re.escape(attr.group(2)) + '="[^"<>]*">'
+        )
     return re.escape(marker)
 
 
@@ -345,7 +371,11 @@ def model_markup(chat_template, tokens = None) -> Optional[ModelMarkup]:
         if isinstance(token, str) and _DELIMITER_SHAPED.match(token):
             markers.add(token)
     for body in _template_strings(chat_template):
-        markers.update(_TEMPLATE_DELIMITERS.findall(body))
+        for match in _TEMPLATE_DELIMITERS.finditer(body):
+            marker = match.group(0)
+            if marker.startswith("[") and _JINJA_INDEX.search(body, 0, match.start()):
+                continue  # "loop_messages[i]": an index, not something the prompt shows.
+            markers.add(marker)
     return ModelMarkup(markers) if markers else None
 
 
@@ -1036,13 +1066,27 @@ def neutralize_tool_descriptions(
             out.append(tool)
             continue
         function = tool.get("function")
-        target = function if isinstance(function, dict) else tool
+        target = function if isinstance(function, dict) and function else tool
+        # Both spellings, not just the selected one: an entry may carry an empty
+        # "function" mapping alongside a flat "name", and picking the nested level on
+        # "isinstance" alone skipped the identity that actually dispatches. The flat name
+        # was then rewritten in place, so the model saw a name execute_tool no longer
+        # answers to (#7066).
         name = target.get("name")
-        if isinstance(name, str) and neutralize_control_markup(name, markup) != name:
+        unsafe_name = next(
+            (
+                candidate
+                for candidate in (name, tool.get("name"))
+                if isinstance(candidate, str)
+                and neutralize_control_markup(candidate, markup) != candidate
+            ),
+            None,
+        )
+        if unsafe_name is not None:
             logger.warning(
                 "Dropping tool %r from the catalog: function.name carries chat "
                 "control markup, which templates render as a turn boundary.",
-                name,
+                unsafe_name,
             )
             changed = True
             continue

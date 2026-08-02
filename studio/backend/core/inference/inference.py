@@ -1457,8 +1457,13 @@ class InferenceBackend:
             },
         ]
 
-        # Direct processor render like the vision path, so neutralize here too (#7066).
-        audio_messages = neutralize_control_markup_in_messages(audio_messages)
+        # Direct processor render like the vision path, so neutralize here too, with
+        # this processor's own profile so another family's marker stays untouched (#7066).
+        from core.inference.chat_template_helpers import markup_for_tokenizer
+
+        audio_messages = neutralize_control_markup_in_messages(
+            audio_messages, None, markup_for_tokenizer(processor)
+        )
 
         # apply_chat_template does audio embedding + tokenization in one step
         inputs = processor.apply_chat_template(
@@ -2129,8 +2134,13 @@ class InferenceBackend:
             chat_messages.pop()
 
         # Direct tokenizer render bypasses the choke point, and the user sub above
-        # leaves system_prompt and replayed assistant text raw (#7066).
-        chat_messages = neutralize_control_markup_in_messages(chat_messages)
+        # leaves system_prompt and replayed assistant text raw. Profiled off this same
+        # tokenizer, so the sweep matches what the text path would do (#7066).
+        from core.inference.chat_template_helpers import markup_for_tokenizer
+
+        chat_messages = neutralize_control_markup_in_messages(
+            chat_messages, None, markup_for_tokenizer(tokenizer)
+        )
 
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
