@@ -2332,9 +2332,7 @@ def _extra_args_requests_separate_draft(
     Accumulating for the same reason as _extra_args_requests_mtp: a later
     --spec-default or --spec-type cannot clear an inherited draft-simple, so
     reading only the last one under-reserved the separate model it still loads."""
-    return bool(
-        _accumulated_spec_types(extra_args, env) & {"draft-simple", "draft-eagle3"}
-    )
+    return bool(_accumulated_spec_types(extra_args, env) & {"draft-simple", "draft-eagle3"})
 
 
 def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optional[int]:
