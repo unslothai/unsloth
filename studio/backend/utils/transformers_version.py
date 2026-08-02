@@ -2354,10 +2354,55 @@ def _mark_studio_owned(venv_dir: str) -> None:
         pass
 
 
-def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
-    """Ensure *venv_dir* exists with all *packages*. Install if missing."""
-    if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
-        return True
+def _repair_would_disturb_a_live_worker() -> bool:
+    """Whether wiping a shared overlay right now could pull it out from under someone.
+
+    True in a worker child, which cannot see its live siblings at all, and in a parent
+    that can see a chat, training or export worker running. Deliberately stateless:
+    the answer is recomputed per call, so a deferral simply retries on the next one.
+    Any record of "repair me later" would have to be cleared by something, and that is
+    exactly the shape that deadlocked the latest tier.
+    """
+    try:
+        import multiprocessing as _mp
+        if _mp.parent_process() is not None:
+            return True
+    except Exception:
+        pass
+    return _workers_active_for_repair()
+
+
+def _ensure_venv_dir(
+    venv_dir: str, packages: tuple[str, ...], label: str, *, shared: bool = True
+) -> bool:
+    """Ensure *venv_dir* exists with all *packages*. Install if missing.
+
+    *shared* marks a directory other processes may already be importing from, where a
+    file-damage repair is deferred while anyone could be using it. Pass False for a
+    private directory such as a staging tree, which nothing else can have open.
+    """
+    if _venv_dir_is_valid(venv_dir, packages):
+        damaged, _ = _sidecar_scan(venv_dir)
+        if not damaged:
+            return True
+        if shared and _repair_would_disturb_a_live_worker():
+            # The wipe below is not staged: it deletes the live directory and
+            # repopulates it over a multi-minute pip run, so a worker that lazy-imports
+            # in that window dies on a tree that is half there -- possibly over damage
+            # in a file it would never have touched. Leaving it is what happened before
+            # the damage was detectable at all, so this is a floor, not a regression,
+            # and the next call with nobody active repairs it.
+            logger.warning(
+                "%s has damaged files but may be in use; deferring the repair: %s",
+                venv_dir,
+                "; ".join(damaged),
+            )
+            return True
+        logger.warning(
+            "%s has damaged files -- venv will be wiped and reinstalled: %s",
+            venv_dir,
+            "; ".join(damaged),
+        )
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
@@ -2706,7 +2751,11 @@ def _stage_and_swap_latest_venv(
     retired = _VENV_T5_LATEST_DIR + ".old"
     shutil.rmtree(staging, ignore_errors = True)
     try:
-        if not _ensure_venv_dir(staging, packages, f"transformers {version} (latest)"):
+        # Private tree, just deleted above and not yet swapped in, so nothing can be
+        # importing from it and a deferral here would strand the repair it is part of.
+        if not _ensure_venv_dir(
+            staging, packages, f"transformers {version} (latest)", shared = False
+        ):
             # No exception, so the except cleanup below never runs; drop the partial dir.
             shutil.rmtree(staging, ignore_errors = True)
             return False

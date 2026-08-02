@@ -498,7 +498,7 @@ class TestLatestVenvProvisioning:
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
         recorded = {}
 
-        def _fake_ensure(dir_, packages, label):
+        def _fake_ensure(dir_, packages, label, **_):
             recorded["dir"] = dir_
             recorded["packages"] = packages
             Path(dir_).mkdir(parents = True, exist_ok = True)
@@ -567,7 +567,7 @@ class TestLatestVenvProvisioning:
         monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda *a: False)
         recorded = {}
 
-        def _fake_ensure(dir_, packages, label):
+        def _fake_ensure(dir_, packages, label, **_):
             recorded["dir"] = dir_
             recorded["packages"] = packages
             Path(dir_).mkdir(parents = True, exist_ok = True)
@@ -1089,7 +1089,7 @@ def test_failed_staging_install_removes_staging_dir(tmp_path, monkeypatch):
     venv_dir = tmp_path / ".venv_t5_latest"
     monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(venv_dir))
 
-    def _fake_ensure(dir_, packages, label):
+    def _fake_ensure(dir_, packages, label, **_):
         Path(dir_).mkdir(parents = True, exist_ok = True)
         (Path(dir_) / "partial").write_text("x")
         return False

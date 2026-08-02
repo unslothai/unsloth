@@ -2002,6 +2002,81 @@ class TestVenvDirFileIntegrity:
         assert installed == ["transformers==5.3.0"], "damaged sidecar was not reinstalled"
         assert not (venv_dir / "transformers").exists(), "damaged tree was not wiped first"
 
+    def _damage_and_watch(self, tmp_path: Path, monkeypatch, name: str):
+        """A damaged fixed-tier sidecar plus a record of whether it got reinstalled."""
+        venv_dir = self._make_venv(tmp_path / name)
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+        installed: list = []
+        monkeypatch.setattr(
+            "utils.transformers_version._install_to_dir",
+            lambda pkg, target: (installed.append(pkg), True)[-1],
+        )
+        return venv_dir, installed
+
+    def test_damage_repair_defers_while_a_worker_may_be_using_the_overlay(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The fixed-tier wipe is not staged: it deletes the live directory and refills
+        it over a multi-minute pip run. A worker lazy-importing in that window dies on a
+        half-present tree, possibly over damage in a file it would never have touched."""
+        import multiprocessing
+
+        import utils.transformers_version as tv
+
+        for label, in_child, busy in (
+            ("worker child cannot see its siblings", True, False),
+            ("parent can see a live worker", False, True),
+        ):
+            venv_dir, installed = self._damage_and_watch(tmp_path, monkeypatch, label[:12])
+            monkeypatch.setattr(
+                multiprocessing, "parent_process", lambda: object() if in_child else None
+            )
+            monkeypatch.setattr(tv, "_workers_active_for_repair", lambda: busy)
+
+            # True, not False: callers raise RuntimeError on False and _probe_tier drops
+            # the tier, so refusing would be worse than the damage it is deferring.
+            assert _ensure_venv_dir(str(venv_dir), ("transformers==5.3.0",), "t") is True, label
+            assert installed == [], label
+            assert (venv_dir / "transformers" / "__init__.py").read_text() == "x", label
+
+    def test_a_deferred_repair_runs_as_soon_as_nobody_is_active(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Stateless by design: nothing records the deferral, so nothing has to clear
+        it. Any 'repair me later' record is the shape that deadlocked the latest tier."""
+        import multiprocessing
+
+        import utils.transformers_version as tv
+
+        venv_dir, installed = self._damage_and_watch(tmp_path, monkeypatch, "venv")
+        monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+        monkeypatch.setattr(tv, "_workers_active_for_repair", lambda: True)
+        assert _ensure_venv_dir(str(venv_dir), ("transformers==5.3.0",), "t") is True
+        assert installed == []
+
+        monkeypatch.setattr(tv, "_workers_active_for_repair", lambda: False)
+        assert _ensure_venv_dir(str(venv_dir), ("transformers==5.3.0",), "t") is True
+        assert installed == ["transformers==5.3.0"], "the deferral outlived the workers"
+
+    def test_a_child_still_provisions_a_missing_fixed_tier(self, tmp_path: Path, monkeypatch):
+        """Only damage defers. Fixed tiers are legitimately created by a worker on first
+        use when setup never provisioned them, so a blanket child refusal would break
+        fresh installs."""
+        import multiprocessing
+
+        import utils.transformers_version as tv
+
+        installed: list = []
+        monkeypatch.setattr(
+            "utils.transformers_version._install_to_dir",
+            lambda pkg, target: (installed.append(pkg), True)[-1],
+        )
+        monkeypatch.setattr(multiprocessing, "parent_process", lambda: object())
+        monkeypatch.setattr(tv, "_workers_active_for_repair", lambda: True)
+
+        assert _ensure_venv_dir(str(tmp_path / "absent"), ("transformers==5.3.0",), "t") is True
+        assert installed == ["transformers==5.3.0"]
+
     def test_ensure_venv_dir_restores_the_studio_owned_marker(self, tmp_path: Path, monkeypatch):
         """The wipe takes setup.sh's ownership marker with the old directory. Without a
         new one, the next `unsloth studio update` under a custom UNSLOTH_STUDIO_HOME
@@ -3444,7 +3519,7 @@ class TestStageAndSwapBeforeSwap:
         live = tmp_path / "venv_latest"
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
 
-        def _fake_build(target, packages, label):
+        def _fake_build(target, packages, label, **_):
             if build_ok:
                 Path(target).mkdir(parents = True, exist_ok = True)
             return build_ok
