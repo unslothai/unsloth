@@ -1266,17 +1266,17 @@ export function findLatestUserAudioBase64(
   return pendingAudio ?? undefined;
 }
 
-// The Canvas instructions createOpenAIStreamAdapter appends, named so the recount below prices
-// the same text the request carries.
+// The Canvas instructions createOpenAIStreamAdapter appends, named so the recount prices the same
+// text the request carries.
 export const CANVAS_TOOL_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once.";
 export const CANVAS_FALLBACK_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
 
 /**
- * The OpenAI-form messages a completion would send, for the token recount. Mirrors the prune +
- * system-prompt half of createOpenAIStreamAdapter; the tool catalog is priced server-side from
- * buildLocalTokenCountExtras' flags, since --enable-tools can inject schemas the client cannot see.
+ * The OpenAI-form messages a completion would send. Mirrors the prune + system-prompt half of
+ * createOpenAIStreamAdapter; the tool catalog is priced server-side instead, since --enable-tools
+ * can inject schemas the client cannot see.
  */
 export async function buildOutboundMessagesForTokenCount(
   messages: RunMessages,
@@ -1348,10 +1348,9 @@ export async function buildOutboundMessagesForTokenCount(
 }
 
 /**
- * The reasoning fields a completion would send. The backend turns these into llama-server
- * `chat_template_kwargs`, and llama-server falls back to the load-time `--chat-template-kwargs`
- * only for keys a request omits -- so a count sending none renders the template in whatever mode
- * the model was LOADED in, and any template that prefills a thinking block misreports the size.
+ * The reasoning fields a completion would send. llama-server falls back to the load-time
+ * `--chat-template-kwargs` only for keys a request omits, so a count sending none renders the
+ * template in whatever mode the model was LOADED in and misreports any prefilled thinking block.
  */
 export function buildLocalTokenCountReasoning(): Record<string, unknown> {
   const {
@@ -1457,7 +1456,6 @@ export async function buildLocalTokenCountExtras(
       : {}),
   };
 }
-
 
 async function resolveUseAdapter(
   threadId: string | undefined,

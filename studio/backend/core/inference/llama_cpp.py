@@ -13827,11 +13827,10 @@ class LlamaCppBackend:
                     template_messages = [
                         {"role": "system", "content": system_text}
                     ] + template_messages
-                # An empty list is passed through as-is. Templates that index messages[0]
-                # look like they should reject it, but llama-server renders through minja,
-                # which yields undefined there rather than raising, so every template tried
-                # returns the bare preamble. Injecting a placeholder turn instead would add
-                # a system block to the empty-chat count for the templates that emit one.
+                # An empty list is passed through as-is: llama-server renders through minja,
+                # not jinja2, so messages[0] yields undefined rather than raising and the
+                # template returns its bare preamble. Injecting a placeholder turn instead
+                # would add a system block to the empty-chat count.
                 apply_template_failed = False
                 try:
                     # llama-server's /apply-template renders tool declarations
@@ -13840,8 +13839,7 @@ class LlamaCppBackend:
                     template_body = {"messages": template_messages}
                     if tools:
                         template_body["tools"] = tools
-                    # llama-server layers these over the load-time --chat-template-kwargs,
-                    # so only the keys sent here move.
+                    # Layered over the load-time --chat-template-kwargs: only keys sent here move.
                     if chat_template_kwargs:
                         template_body["chat_template_kwargs"] = chat_template_kwargs
                     resp = client.post(
@@ -13857,7 +13855,7 @@ class LlamaCppBackend:
                     apply_template_failed = True
 
                 # The fallback drops role markers, special tokens and tool schemas (~30% of a
-                # six-turn two-tool prompt), so a strict caller errors rather than undercount.
+                # six-turn two-tool prompt), so strict callers error rather than undercount.
                 if strict and apply_template_failed:
                     raise RuntimeError("llama-server could not render the chat template")
 

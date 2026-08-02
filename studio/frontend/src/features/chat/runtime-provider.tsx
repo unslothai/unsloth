@@ -1391,8 +1391,7 @@ function ThreadNewChatSwitch({
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
-  // Only the recount below reads this. New Chat itself leaves the outgoing thread running, and
-  // whether it is still going must not change what New Chat does.
+  // Read only by the recount below: New Chat itself must not care whether a run is still going.
   const runActive = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
   );
@@ -1412,8 +1411,8 @@ function ThreadNewChatSwitch({
 
   // The effect above blanks the bar, and this view reaches no other recount trigger: no persisted
   // thread for the history loader, and ActiveThreadSync is off while a nonce is present. Keyed on
-  // the model too because on a RELOAD of /chat?new=<uuid> neither the checkpoint nor the window is
-  // known until /api/inference/status answers. Only into a blank bar on an unpersisted thread.
+  // the model too: on a RELOAD of /chat?new=<uuid> neither the checkpoint nor the window is known
+  // until /api/inference/status answers.
   useEffect(() => {
     if (
       isLoading ||
@@ -1428,10 +1427,9 @@ function ThreadNewChatSwitch({
     if (store.activeThreadId != null || store.contextUsage != null) return;
     void refreshContextUsage();
     // nonce: a fresh New Chat click re-runs the effect above, which blanks the bar again.
-    // runActive: New Chat during a background run is a supported flow, and refreshContextUsage
-    // declines while anything is generating. ThreadContextUsageRecount cannot pick this up
-    // afterwards because an unpersisted New Chat has no activeThreadId, so without the run here
-    // the empty chat's bar would stay blank for good once the run ended.
+    // runActive is a dependency, not just a guard: refreshContextUsage declines while anything
+    // generates, and nothing else re-fires this when the run ends. ThreadContextUsageRecount
+    // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
   }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce, runActive]);
 
   return null;
@@ -1456,8 +1454,7 @@ function ActiveThreadSync({
 }
 
 // Lets the recount read the on-screen branch, not the stored records: an incognito thread stores
-// none, and a retried thread's newest stored leaf is not what the runtime would send. The
-// single-chat pane only, whose thread the bar tracks.
+// none, and a retried thread's newest stored leaf is not what the runtime would send.
 function ActiveBranchRegistrar({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -1482,10 +1479,9 @@ function ActiveBranchRegistrar({
 }
 
 // Price whichever thread the bar points at whenever it has nothing to show. Two paths reach this
-// and no other: (1) a model change empties contextUsageByThreadId and an already-mounted thread
-// does not rerun its history loader; (2) on a deep link to /chat/:id the history loader can run
-// before /api/inference/status has a checkpoint while status can land before the thread is active,
-// so neither independently timed callback counts. Reading the model fields retries once they hydrate.
+// and no other: (1) a model change empties contextUsageByThreadId and a mounted thread does not
+// rerun its history loader; (2) on a deep link to /chat/:id the history loader and status can each
+// land before the other, so neither independently timed callback counts.
 function ThreadContextUsageRecount({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -1493,10 +1489,9 @@ function ThreadContextUsageRecount({
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
-  // A count must never share the llama-server with a decode. This is a dependency, not just a
-  // guard: nothing else here changes when a run ends, so without it a count skipped for being
-  // busy would never be retried and the bar would stay blank. Every run, not just the local
-  // ones, because that is what the endpoint itself refuses on.
+  // A dependency, not just a guard: nothing else here changes when a run ends, so without it a
+  // count skipped for being busy would never be retried and the bar would stay blank. Every run,
+  // not just the local ones, because that is what the endpoint itself refuses on.
   const runActive = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
   );

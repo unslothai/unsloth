@@ -393,9 +393,8 @@ LOADED_MODEL = """
 @pytest.mark.parametrize(
     ("before_status", "expected_early_counts"),
     [
-        # Arriving on New Chat with the GGUF already resident: the model is known from the outset
-        # and the outgoing chat's usage is blanked. The second render repeats identical store
-        # values (a deferred inventory refresh rewriting the checkpoint) and must not re-price.
+        # Arriving on New Chat with the GGUF already resident. The second render repeats identical
+        # store values (a deferred inventory refresh rewrites the checkpoint) and must not re-price.
         pytest.param(
             LOADED_MODEL
             + """
@@ -409,9 +408,9 @@ LOADED_MODEL = """
         ),
         # A page RELOAD of /chat?new=<uuid>: nothing is priceable until /api/inference/status answers.
         pytest.param("", 0, id = "reload_before_status_hydrates"),
-        # New Chat opened FROM a populated conversation, which is left running: its runtime stays
-        # mounted and the live branch reader keeps returning its messages until the voided
-        # switchToNewThread() settles. The empty chat must still be priced as a bare template.
+        # New Chat opened FROM a populated conversation left running: its runtime stays mounted and
+        # the live branch reader keeps returning its messages until switchToNewThread() settles.
+        # The empty chat must still be priced as a bare template.
         pytest.param(
             LOADED_MODEL
             + """
@@ -635,9 +634,9 @@ LIVE_INCOGNITO_BRANCH = """
         pytest.param(
             RETRY_BRANCH_STORED + LIVE_BRANCH, 2, None, id = "runtime_shows_an_older_branch"
         ),
-        # The endpoint counts with whatever is resident, never the model asked for. Another tab
-        # loaded a different GGUF, so the total came from a tokenizer whose window the bar is not
-        # showing -- and this client's checkpoint never moved, so the reported id is the witness.
+        # The endpoint counts with whatever is resident, never the model asked for: another tab
+        # loaded a different GGUF, and since this client's checkpoint never moved, the reported
+        # id is the only witness that the total came from the wrong tokenizer.
         pytest.param(
             TWO_STORED_TURNS, 2, "unsloth/other-gguf", id = "another_client_swapped_the_model"
         ),
@@ -838,8 +837,7 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, exp
         ("live[1].content[0] = { ...live[1].content[0], result: { rows: 4000 } };", None),
         # An edit to different text of the same length, which a size-based signature cannot see.
         ('live[0].content = [{ type: "text", text: "ih" }];', None),
-        # Deleting an attachment. The counter prices attachment text, but the removal handler
-        # rewrites `attachments` alone and leaves content and ids as they were.
+        # Deleting an attachment: priced, but the handler rewrites `attachments` alone.
         ("live[0].attachments = [];", None),
         ("", 62),
     ],

@@ -72,9 +72,9 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
 const ROLE_ORDER: Record<string, number> = { system: 0, user: 1, assistant: 2 };
 
 /**
- * The branch the runtime displays for a stored thread, rebuilt as the history adapter does: sort
- * by (createdAt, role, id), parent legacy records to the previous one, then walk the last record's
- * ancestor chain. Greedy newest-child descent picks another branch and drops pre-parentId history.
+ * The displayed branch, rebuilt as the history adapter does: sort by (createdAt, role, id), parent
+ * legacy records to the previous one, then walk the last record's ancestor chain. Greedy
+ * newest-child descent would pick another branch and drop pre-parentId history.
  */
 function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
   const sorted = messages.slice().sort((a, b) => {
@@ -128,10 +128,9 @@ function foldPart(part: unknown, seed: number): number {
 }
 
 /**
- * Identity of the branch a count priced. Content is hashed, not measured: a run mutates an existing
- * turn without moving the count or the last id (streaming grows its text; a tool result lands on a
- * part with no `text`), so neither a length nor a part tally sees it. Attachments are folded in
- * because the counter prices them too and deleting one rewrites `attachments` alone.
+ * Identity of the branch a count priced. Content is hashed, not measured: a run mutates a turn in
+ * place (streaming grows its text; a tool result lands on a part with no `text`), so neither a
+ * length nor a part tally sees it. Attachments are folded in because the counter prices them too.
  */
 function branchSignature(messages: readonly ThreadMessage[]): string {
   let hash = 0;
@@ -158,7 +157,7 @@ let readActiveBranch: ActiveBranchReader | null = null;
 
 /**
  * Publish the mounted runtime's visible branch so the recount prices it instead of the persisted
- * records. Only the single-chat pane registers one (compare panes never own the bar); null on unmount.
+ * records. Only the single-chat pane registers one; compare panes never own the bar.
  */
 export function setActiveBranchReader(reader: ActiveBranchReader | null): void {
   readActiveBranch = reader;
@@ -190,16 +189,13 @@ export async function refreshContextUsage(options?: {
   );
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
 
-  // Never issue a count while anything is generating. /apply-template and /tokenize take no
-  // inference slot, so the measured cost is inside the noise, but this endpoint shares a process
-  // with generation and the budget here is zero rather than small. The recount effect lists this
-  // in its dependencies, so the last run finishing re-fires it.
+  // Never count while anything is generating: the endpoint refuses, and the recount effect
+  // depends on this, so the last run finishing re-fires it.
   //
-  // runningByThreadId, not the narrower localRunByThreadId: an external-provider run never
-  // reaches llama-server, but the endpoint refuses during one anyway, because state's
-  // active_generations cannot tell them apart. Gating on less than the server refuses on would
-  // spend a request to be told 503, and worse, lose the retry: nothing re-fires this effect when
-  // an external run ends unless that run is in the dependency array.
+  // runningByThreadId, not the narrower localRunByThreadId: the endpoint refuses during an
+  // external-provider run too (active_generations cannot tell them apart), so gating on less than
+  // the server refuses on would spend a request to be told 503 and lose the retry -- nothing
+  // re-fires this effect when an external run ends unless it is in the dependency array.
   if (Object.values(store.runningByThreadId ?? {}).some(Boolean)) return;
 
   const capturedThreadId = threadId ?? null;
@@ -215,11 +211,10 @@ export async function refreshContextUsage(options?: {
     useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint;
 
   try {
-    // Prefer the mounted runtime: it is what the next request reads from. An incognito thread
-    // persists nothing, and after a retry or edit the newest stored leaf is a branch the user
-    // switched away from. A captured null is EXCLUDED, not matched: New Chat leaves the outgoing
-    // conversation mounted until switchToNewThread() settles, so null === null would price that
-    // branch into the empty chat -- which should be a bare template.
+    // Prefer the mounted runtime: it is what the next request reads from (an incognito thread
+    // persists nothing, and after a retry the newest stored leaf is a branch the user left). A
+    // captured null is EXCLUDED, not matched: New Chat leaves the outgoing conversation mounted
+    // until switchToNewThread() settles, so null === null would price it into the empty chat.
     const readOwnBranch = (): readonly ThreadMessage[] | null =>
       capturedThreadId != null &&
       useChatRuntimeStore.getState().activeThreadId === capturedThreadId
@@ -231,9 +226,8 @@ export async function refreshContextUsage(options?: {
     let runMessages: readonly ThreadMessage[];
     // Re-read before publishing, so a turn sent while this count was in flight drops it.
     let countedBranch: string | null = null;
-    // The stored fallback's witness: storage records and runtime ThreadMessages are different
-    // shapes, so content hashes are not comparable; only ids survive both, and the last one moves
-    // as soon as a turn is sent or an edit mints a message.
+    // The stored fallback's witness: storage records and ThreadMessages hash differently, so only
+    // ids survive both, and the last one moves as soon as a turn is sent or an edit mints one.
     let countedLastId: string | null = null;
     if (liveBranch && liveBranch.length > 0) {
       runMessages = liveBranch;
@@ -252,8 +246,7 @@ export async function refreshContextUsage(options?: {
     if (findLatestUserAudioBase64(runMessages)) return;
 
     // A completion finishing mid-count writes exact usage for a turn this count predates, so drop
-    // the recount rather than roll the bar backwards. Sampled as soon as runMessages is fixed: the
-    // payload build only awaits storage, so anything landing in that window compares equal.
+    // the recount rather than roll the bar backwards. Sampled once runMessages is fixed.
     const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
 
     // undefined, not null: a chat with no persisted thread has no project to resolve from.

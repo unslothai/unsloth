@@ -10061,11 +10061,10 @@ async def openai_chat_completions(
                 param = "tools" if payload.tools else "messages",
             ),
         )
-    # One helper, shared with the token counter, so a count can never describe a route the
-    # completion does not take. Guided decoding routes here too so response_format reaches
-    # llama-server: the non-passthrough path calls generate_chat_completion, which has no
-    # response_format kwarg and would silently drop the schema, leaving data_designer on
-    # free-form sampling. No ``supports_tools`` needed -- grammars are independent of it.
+    # Shared with the token counter, so a count can never describe a route the completion does
+    # not take. Guided decoding routes here too: the non-passthrough path calls
+    # generate_chat_completion, which has no response_format kwarg and would silently drop the
+    # schema. No ``supports_tools`` needed -- grammars are independent of it.
     if using_gguf and _takes_tool_passthrough(payload, llama_backend):
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
@@ -15231,16 +15230,14 @@ async def chat_count_tokens(
     Unlike the /v1 count endpoints this never auto-switches: ``model`` is informational. The
     caller is a background recount with no abort signal, so switching could drag the backend back
     to the model loaded when the count started, a reload the client's guards cannot undo."""
-    # Nothing this endpoint does may overlap a generation. /apply-template and /tokenize take no
-    # inference slot and measure inside the noise, but the budget here is zero rather than small,
-    # and the client-side gate only covers our own frontend. Declining server-side covers every
-    # caller: a second tab, a script against /api, a stale in-flight count. The bar just stays as
-    # it was until the run ends, which is the trade this endpoint already makes for images.
+    # No count may overlap a generation: the client-side gate only covers our own frontend, so
+    # refusing server-side also covers a second tab or a script against /api. The bar just stays
+    # as it was until the run ends.
     #
     # Deliberately coarse: _TrackedCancel registers external-provider runs here too, which never
-    # touch llama-server, so those decline a count they could have served. Narrowing it would mean
-    # trusting a kind/model field to decide whether to do work next to a decode, and the cost of
-    # being wrong that way is inference time, while the cost of over-refusing is a later redraw.
+    # touch llama-server, so those decline a count they could have served. Narrowing it means
+    # trusting a kind/model field to decide whether to work next to a decode -- being wrong there
+    # costs inference time, while over-refusing only costs a later redraw.
     if active_generations.count() > 0:
         raise HTTPException(
             status_code = 503,
@@ -15268,9 +15265,8 @@ async def chat_count_tokens(
         )
 
     # Same sanitization the GGUF chat path runs before generation. Route FIRST: the passthrough
-    # forwards what _openai_messages_for_passthrough builds, which does not merge adjacent user
-    # turns, so coalescing here would price a prompt that route never sends. (Two user turns split
-    # by an empty assistant sentinel is that shape, after a stopped response.)
+    # does not merge adjacent user turns, so coalescing here would price a prompt it never sends
+    # (two user turns split by an empty assistant sentinel, after a stopped response).
     _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
     openai_messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
@@ -15280,12 +15276,11 @@ async def chat_count_tokens(
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
-    # A thread left on a PENDING turn (unanswered user message, or a tool result an interrupted
-    # loop never answered) is the one shape where the next generation runs on exactly these
-    # messages -- and the tool loop starts it by splicing in whatever build_rag_autoinject
-    # retrieves, thousands of tokens this count never sees, so the bar would claim the turn fits
-    # when the generation would not. Retrieval is not this endpoint's job, so decline. Any other
-    # shape ends in an assistant turn, where retrieval has no user message to run against.
+    # A PENDING turn (unanswered user message, or an unanswered tool result) is the one shape
+    # where the next generation runs on exactly these messages, and the tool loop splices in
+    # whatever build_rag_autoinject retrieves -- thousands of tokens this count never sees, so
+    # the bar would claim room the generation lacks. Any other shape ends in an assistant turn,
+    # where retrieval has no user message to run against.
     if (
         payload.rag_scope
         and openai_messages
@@ -15296,10 +15291,9 @@ async def chat_count_tokens(
             detail = "Cannot count tokens for a pending turn that would retrieve documents.",
         )
 
-    # The passthrough is the only route that puts the caller's own catalog on the wire, and only
-    # under _passthrough_client_tools' rule. Every other route renders tools solely from the
-    # selection below, so a catalog surviving here would price schemas the completion never sends
-    # -- which is what tool_choice "none" would do, since it also disables that selection.
+    # The passthrough is the only route that puts the caller's own catalog on the wire. Every
+    # other route renders tools solely from the selection below, so a catalog surviving here
+    # would price schemas the completion never sends.
     openai_tools = _passthrough_client_tools(payload) if _takes_passthrough else None
     # The CLI hard-override still applies: _effective_enable_tools resolves it into _tools_on.
     _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
@@ -15307,8 +15301,8 @@ async def chat_count_tokens(
     )
     # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
     _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
-    # Same rule the completion path resolves, so the two agree on whether MCP schemas are part of
-    # the prompt at all. MCP alone turns tools on there, hence the widened branch below.
+    # Same rule the completion path resolves, so the two agree on whether MCP schemas are in the
+    # prompt at all. MCP alone turns tools on there, hence the widened branch below.
     from state.tool_policy import get_tool_policy as _get_tool_policy_ct
 
     _mcp_on = (
@@ -15316,12 +15310,10 @@ async def chat_count_tokens(
         and bool(getattr(payload, "mcp_enabled", False))
         and _get_tool_policy_ct() is not False
     )
-    # Never discovery on a count: get_enabled_mcp_tools spawns stdio MCP servers, writes cache and
-    # cool-off state, and blocks for a whole probe timeout on a server that is down. A background
-    # count must not do host work a completion did not ask for. So the schemas come from the cache
-    # that path fills, and a count that cannot see all of them is declined rather than published
-    # short, because an undercount tells the user room exists that the next request will not find.
-    # _mcp_allowed stays False for exactly that reason: it is what would reach the network.
+    # Never discovery on a count: get_enabled_mcp_tools spawns stdio servers, writes cache and
+    # cool-off state, and blocks a whole probe timeout on a server that is down. _mcp_allowed
+    # stays False because it is the flag that reaches the network; the schemas come from the
+    # cache that path fills instead, and an incomplete view is declined rather than undercounted.
     _mcp_allowed = False
     _mcp_tools: list[dict] = []
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
@@ -15336,8 +15328,7 @@ async def chat_count_tokens(
         tools_to_use = await _select_request_tools(
             payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
         )
-        # Appended, not passed through mcp_allowed, and in that same position, so the rendered
-        # order matches what _select_request_tools would have produced.
+        # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
         if tools_to_use:
             openai_tools = tools_to_use
@@ -15353,8 +15344,8 @@ async def chat_count_tokens(
                 ),
             )
 
-            # The GGUF tool path strips leaked markup from replayed history before rendering;
-            # without the same strip the count prices text it removes.
+            # The GGUF tool path strips leaked markup from replayed history before rendering,
+            # so without the same strip the count prices text it removes.
             _count_auto_heal = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
