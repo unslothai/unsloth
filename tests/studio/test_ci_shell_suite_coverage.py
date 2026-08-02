@@ -285,6 +285,33 @@ class TestPowerShellTestsRunOnAPr:
             f"path (or a scoped glob) to the workflow's paths filter: {unguarded}"
         )
 
+    def test_multi_test_steps_propagate_each_exit_code(self):
+        """A `shell: pwsh` step inherits only the LAST command's exit code, so a
+        step running several tests must check $LASTEXITCODE after each one.
+        Without it, test_resolve_cuda_toolkit.ps1 failed two checks on every
+        Windows run for as long as anyone can tell, and CI stayed green."""
+        offenders = []
+        for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+            for block in re.findall(
+                r"run: \|\n(.*?)(?=\n      [-a-zA-Z]|\Z)",
+                workflow.read_text(encoding = "utf-8"),
+                re.S,
+            ):
+                invocations = re.findall(
+                    r"pwsh -NoProfile -File (tests/[^\s`\"']+\.ps1)[^\n]*\n(.*?)(?=pwsh -NoProfile -File|\Z)",
+                    block,
+                    re.S,
+                )
+                if len(invocations) < 2:
+                    continue  # a single invocation's exit code is the step's
+                for test, following in invocations:
+                    if "$LASTEXITCODE" not in following:
+                        offenders.append(f"{workflow.name}: {test} runs without an exit-code check")
+        assert not offenders, (
+            "these tests can fail without failing their step; add "
+            f"`if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}` after each: {offenders}"
+        )
+
     def test_every_invoked_powershell_test_exists(self):
         missing = [
             f"{name} -> {test}"

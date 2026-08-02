@@ -83,11 +83,20 @@ jobs:
             if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
             Write-Host "$f parsed with no errors"
           }
+          # Propagate each child test's failure before continuing: the step only
+          # inherits the LAST command's exit code, so without these every test
+          # but the last one could fail and still report green (studio-windows-
+          # update-smoke.yml already does this).
           pwsh -NoProfile -File tests/studio/test_resolve_cuda_toolkit.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_torch_flavor.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_node_decision.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_node_probe_guard.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_path_probe_access_denied.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       # uninstall.ps1: native uninstall must keep the shared unsloth.ico while a
       # WSL shortcut still references it (dual install), else that shortcut blanks.
