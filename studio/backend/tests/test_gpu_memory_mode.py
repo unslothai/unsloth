@@ -1332,3 +1332,14 @@ def test_cmd_companion_ignores_cpu_forced_drafter():
     # mmproj still counts even alongside a CPU drafter.
     cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0", "--mmproj", "p.gguf"]
     assert has(cmd, {}) is True
+
+
+def test_cmd_companion_ignores_a_projector_pinned_off_the_gpu():
+    # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole GPU
+    # backend on it, so a CPU-pinned vision server must not look GPU resident.
+    has = LlamaCppBackend._cmd_has_gpu_companion
+    cmd = ["llama-server", "--mmproj", "p.gguf", "--no-mmproj-offload"]
+    assert has(cmd, {}) is False
+    # llama.cpp assigns rather than accumulates for this one, so the last flag wins.
+    cmd = ["llama-server", "--mmproj", "p.gguf", "--no-mmproj-offload", "--mmproj-offload"]
+    assert has(cmd, {}) is True

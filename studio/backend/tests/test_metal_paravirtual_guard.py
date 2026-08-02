@@ -1038,6 +1038,15 @@ def test_an_inherited_mtp_env_still_clamps_the_slots():
     assert "_extra_args_requests_mtp(extra_args, env = {})" not in src
 
 
+def test_the_route_slot_clamp_reads_the_env_like_the_backend():
+    """The route sizes VRAM for the slots it expects to launch. If it ignored an
+    inherited draft-mtp while the backend clamps on it, it would size for N slots
+    against a server that launches 1 and could 409 a load that fits."""
+    route_src = inspect.getsource(_routes())
+    assert "_extra_args_requests_mtp(llama_extra_args)" in route_src
+    assert "_extra_args_requests_mtp(llama_extra_args, env = {})" not in route_src
+
+
 def test_the_backstop_defers_to_a_user_owned_spec_type():
     """_build_speculative_flags emits nothing when the user owns --spec-type, and
     judging that empty list would fall through to the env and clamp anyway."""

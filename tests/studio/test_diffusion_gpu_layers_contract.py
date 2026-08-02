@@ -43,6 +43,11 @@ def llama_cpp():
         # (utils, state, models, hub, auth, storage) for every later test.
         if sys.path and sys.path[0] == backend:
             sys.path.pop(0)
+    # The dedupe comparators consult the Metal device, so on a Mac (and on the
+    # macos runners, which are paravirtual) they would normalize the request to
+    # the CPU pin and stop matching these fixtures. This module is a private
+    # copy, so pinning it here cannot leak into the app.
+    module._metal_device_is_paravirtual = lambda: False
     return module
 
 

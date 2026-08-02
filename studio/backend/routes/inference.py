@@ -5295,11 +5295,12 @@ def _guard_chat_load_against_training(
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
             n_parallel = 1
-        # env = {} mirrors load_model's clamp: only an explicit --spec-type the
-        # user passed through is final this early. A mode that only resolves to
-        # MTP inside _build_speculative_flags still over-sizes here, which errs
-        # toward protecting training.
-        elif _extra_args_requests_mtp(llama_extra_args, env = {}):
+        # Reads the env like load_model's clamp: llama.cpp appends spec types
+        # rather than replacing them, so an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp
+        # really does launch MTP. A mode that only resolves to MTP inside
+        # _build_speculative_flags still over-sizes here, which errs toward
+        # protecting training.
+        elif _extra_args_requests_mtp(llama_extra_args):
             n_parallel = 1
         else:
             try:

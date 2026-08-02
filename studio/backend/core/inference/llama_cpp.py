@@ -11150,8 +11150,13 @@ class LlamaCppBackend:
         LLAMA_ARG_SPEC_DRAFT_* env) -- these offload to the GPU regardless of
         the main ``--gpu-layers``. A drafter explicitly forced to CPU
         (--spec-draft-ngl 0 / --spec-draft-device cpu) doesn't count."""
-        if any(str(a).startswith("--mmproj") for a in cmd):
-            return True
+        _args = [str(a) for a in cmd]
+        if any(a.startswith("--mmproj") for a in _args):
+            # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole
+            # GPU backend on it, so the projector holds no VRAM. Last flag wins.
+            _off = [a for a in _args if a in ("--mmproj-offload", "--no-mmproj-offload")]
+            if not _off or _off[-1] != "--no-mmproj-offload":
+                return True
         if _extra_args_mtp_draft_path(cmd, env) is None:
             return False
         return not _extra_args_draft_offloaded_to_cpu(cmd, env)
