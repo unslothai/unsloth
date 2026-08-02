@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from core.inference.chat_template_helpers import (
+    _deepseek_opener_pattern,
     _neutralize_content_parts,
     resolve_native_chat_template,
     markup_for_tokenizer,
@@ -4924,3 +4925,58 @@ def test_resolving_a_cached_native_template_does_not_refetch():
     assert resolve_native_chat_template(info, "some/model") == "{{ m }}"
     absent = {"native_chat_template": False}
     assert resolve_native_chat_template(absent, "some/model") is False
+
+
+def test_a_deepseek_profile_breaks_every_opener_the_parser_honours():
+    """tool_call_parser keeps five outer spellings plus the per-call opener, and treats the
+    short '<\uff5ctool\u2581calls\uff5c>' as live structure. A profile that broke only the
+    spelling the vocabulary happens to hold left the rest openable by client text (#7066)."""
+    canonical = f"<{_FW}tool\u2581calls\u2581begin{_FW}>"
+    markup = model_markup("{{ m }}", [canonical])
+    for spelling in (
+        canonical,
+        f"<{_FW}tool\u2581call\u2581begin{_FW}>",
+        f"<{_FW}tool\u2581calls{_FW}>",
+        f"<{_FW}tool_calls_begin{_FW}>",
+        f"<{_FW}tool calls begin{_FW}>",
+        f"<{_FW}tool\\_calls\\_begin{_FW}>",
+    ):
+        assert markup.rewrite_control(spelling) != spelling, spelling
+
+
+def test_the_deepseek_set_is_taken_from_the_parser_not_restated():
+    """Single source of truth: if the parser learns a sixth spelling the profile follows."""
+    from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC
+
+    source = (
+        _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "chat_template_helpers.py"
+    ).read_text(encoding = "utf-8")
+    assert "_DEEPSEEK_OPEN_RE_SRC" in source
+    assert "TOOL_XML_SIGNALS" in source
+    # And the alternation really is the parser's, not a copy.
+    assert _DEEPSEEK_OPEN_RE_SRC in (_deepseek_opener_pattern() or "")
+
+
+def test_a_non_deepseek_fullwidth_marker_does_not_inherit_the_deepseek_set():
+    markup = model_markup("{{ m }}", [f"<{_FW}custom\u2581thing{_FW}>"])
+    short = f"<{_FW}tool\u2581calls{_FW}>"
+    assert markup.rewrite_control(short) == short
+    # Its own separator aliases still break.
+    assert markup.rewrite_control(f"<{_FW}custom thing{_FW}>") != f"<{_FW}custom thing{_FW}>"
+
+
+def test_the_real_deepseek_profile_breaks_the_short_alias():
+    config = (
+        _REPO_ROOT.parent / "temp" / "hf_tpl" / "deepseek-ai_DeepSeek-R1" / "tokenizer_config.json"
+    )
+    if not config.exists():
+        pytest.skip("DeepSeek-R1 tokenizer_config.json not fetched")
+    payload = json.loads(config.read_text(encoding = "utf-8"))
+    tokens = [
+        entry.get("content")
+        for entry in (payload.get("added_tokens_decoder") or {}).values()
+        if isinstance(entry, dict)
+    ]
+    markup = model_markup(payload.get("chat_template"), tokens)
+    short = f"<{_FW}tool\u2581calls{_FW}>"
+    assert markup.rewrite_control(short) != short

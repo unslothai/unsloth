@@ -292,11 +292,44 @@ _FULLWIDTH_MARKER = re.compile("\\A<\uff5c([A-Za-z][A-Za-z\u2581_ \\\\]{0,39})\u
 _ALIAS_SEPARATORS = "(?:\u2581|\\\\?_| )"
 
 
+@functools.lru_cache(maxsize = 1)
+def _deepseek_opener_pattern():
+    """The tool-call-parser's own DeepSeek opener alternation, or None if unavailable.
+
+    Single source of truth: tool_call_parser keeps the five spellings llama.cpp accepts,
+    and a profile that breaks only the one spelling a vocabulary happens to hold leaves the
+    other four live (#7066)."""
+    try:
+        from core.inference.tool_call_parser import (
+            _DEEPSEEK_OPEN_RE_SRC,
+            TOOL_XML_SIGNALS,
+        )
+    except Exception:  # pragma: no cover - parser unavailable
+        return None
+    # The outer-block alternation plus every fullwidth signal the parser flips on, which is
+    # where the per-call "<\uff5ctool\u2581call\u2581begin\uff5c>" lives.
+    signals = [
+        re.escape(signal)
+        for signal in TOOL_XML_SIGNALS
+        if isinstance(signal, str) and signal.startswith("<\uff5c") and signal.endswith("\uff5c>")
+    ]
+    return "|".join([_DEEPSEEK_OPEN_RE_SRC, *signals]) if signals else _DEEPSEEK_OPEN_RE_SRC
+
+
 def _marker_pattern_source(marker: str) -> str:
     """The regex for one harvested marker: exact, unless its name is dynamic."""
     fullwidth = _FULLWIDTH_MARKER.match(marker)
     if fullwidth:
-        # Every separator position accepts the three spellings the parser accepts.
+        # A DeepSeek opener has aliases the parser accepts that are not separator
+        # respellings at all: it treats the short "<\uff5ctool\u2581calls\uff5c>" and the
+        # singular "<\uff5ctool\u2581call\u2581begin\uff5c>" as the same live opener. Reuse the
+        # parser's own alternation rather than restating it, so the two cannot drift and a
+        # profiled DeepSeek prompt cannot be handed an envelope the parser will honour but
+        # the profile never learned to break (#7066).
+        deepseek = _deepseek_opener_pattern()
+        if deepseek is not None and re.fullmatch(deepseek, marker):
+            return deepseek
+        # Otherwise every separator position accepts the three spellings the parser accepts.
         name = fullwidth.group(1)
         parts = re.split("[\u2581_ ]", name)
         if len(parts) > 1:
