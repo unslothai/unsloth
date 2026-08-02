@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from ..device_type import DEVICE_TYPE_TORCH
+import hashlib
 import importlib
 import os
 import torch
@@ -362,8 +363,12 @@ def _offline_quantize_to_fp8(
     # Cache text-only and full-VLM artifacts separately so neither reuses the other. #5816
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
     if revision is not None:
-        # Slashes and dots would escape the temp dir; a branch name may hold both.
-        cache_name += "-rev-" + re.sub(r"[^0-9A-Za-z_-]", "_", revision)
+        # Slashes and dots would escape the temp dir, so the readable half is sanitized and
+        # therefore lossy: `release/v1` and `release.v1` collapse to one name. A digest of
+        # the raw ref rides along so two refs never share (and silently reuse) an artifact.
+        digest = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
+        readable = re.sub(r"[^0-9A-Za-z_-]", "_", revision)[:40]
+        cache_name += "-rev-" + readable + "-" + digest
     if text_config is not None:
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)

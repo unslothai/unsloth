@@ -1362,6 +1362,18 @@ class FastModel(FastBaseModel):
         base_revision = _revision_for_resolved_repo(
             revision, model_name, old_model_name, mapper_moved_name
         )
+        # vLLM takes no revision and fetches the default branch, so this pin is already dead
+        # for the weights. Drop it here rather than at the dispatch: model_types, auto_model
+        # and the text-only decision all come off the config probed below, and reading that
+        # at a ref the weights will not be at picks the dispatch for the wrong model. Same
+        # predicate FastBaseModel uses, so its own guard is a no-op on this path. An adapter
+        # still keeps `revision`: peft loads it in-process, not through vLLM.
+        if base_revision is not None and fast_inference and is_vLLM_available():
+            logger.warning_once(
+                f"Unsloth: Ignoring revision = `{base_revision}` since vLLM loads weights "
+                "from the default branch. Use `fast_inference = False` to load a pinned revision."
+            )
+            base_revision = None
 
         # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import (
@@ -1894,20 +1906,6 @@ class FastModel(FastBaseModel):
         # On a PEFT load model_name is the base model, which the caller's ref is not for.
         model_revision = base_revision if not is_peft else None
 
-        # vLLM takes no revision and fetches the default branch, so FastBaseModel drops the
-        # pin. The config probed above was read at that pin, and handing it down would skip
-        # the reload and pair a pinned config with default-branch weights. A config the
-        # caller passed in is theirs either way, so only withhold one we read ourselves.
-        dispatch_config = model_config
-        if (
-            dispatch_config is not None
-            and user_config is None
-            and model_revision is not None
-            and fast_inference
-            and is_vLLM_available()
-        ):
-            dispatch_config = None
-
         model, tokenizer = FastBaseModel.from_pretrained(
             model_name = model_name,
             max_seq_length = max_seq_length,
@@ -1930,7 +1928,7 @@ class FastModel(FastBaseModel):
             supports_sdpa = supports_sdpa,
             whisper_language = whisper_language,
             whisper_task = whisper_task,
-            auto_config = dispatch_config,
+            auto_config = model_config,
             offload_embedding = offload_embedding,
             float32_mixed_precision = float32_mixed_precision,
             # Pass vLLM/inference parameters

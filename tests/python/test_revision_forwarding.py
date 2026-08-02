@@ -678,9 +678,15 @@ def test_the_fp8_cache_name_is_revision_specific():
         for n in ast.walk(function)
         if isinstance(n, ast.AugAssign) and getattr(n.target, "id", None) == "cache_name"
     ]
-    assert any(
-        "revision" in ast.unparse(n) for n in writes
-    ), "two revisions of one repo would share a cache entry"
+    assert writes
+    guarded = [
+        n
+        for n in ast.walk(function)
+        if isinstance(n, ast.If)
+        and "revision" in ast.unparse(n.test)
+        and any(n.lineno <= w.lineno <= n.end_lineno for w in writes)
+    ]
+    assert guarded, "two revisions of one repo would share a cache entry"
 
 
 def test_both_loaders_hand_the_fp8_quantizer_the_revision():
@@ -697,10 +703,35 @@ def test_both_loaders_hand_the_fp8_quantizer_the_revision():
             ), "the fp8 source is still the caller's own repo here"
 
 
-def test_a_pinned_config_is_not_handed_to_the_vllm_path():
-    """FastBaseModel skips its config load while auto_config is set, so passing one read
-    at the pinned ref would pair it with the default-branch weights vLLM fetches."""
+def test_the_vllm_drop_happens_before_the_config_probe():
+    """model_types, auto_model and the text-only decision all come off the probed config.
+    Reading it at a ref vLLM will not fetch picks the dispatch for a different model, so
+    the pin has to be gone before the probe, not just before the dispatch."""
     function = _function(_tree(LOADER), "from_pretrained", "FastModel")
+    drops = [
+        n
+        for n in ast.walk(function)
+        if isinstance(n, ast.If)
+        and "is_vLLM_available" in ast.unparse(n.test)
+        and any(
+            isinstance(b, ast.Assign)
+            and any(getattr(t, "id", None) == "base_revision" for t in b.targets)
+            and isinstance(b.value, ast.Constant)
+            and b.value.value is None
+            for b in n.body
+        )
+    ]
+    assert drops, "FastModel never drops base_revision for the vLLM path"
+    probes = [
+        c
+        for c in _calls(function, "from_pretrained")
+        if ast.unparse(c.func).split(".")[0] in ("AutoConfig", "PeftConfig")
+    ]
+    assert probes
+    assert drops[0].end_lineno < min(c.lineno for c in probes), (
+        "the probe would read a ref the weights will not be at"
+    )
+    # The probed config goes down untouched again, so nothing may re-gate it at dispatch.
     dispatches = [
         c
         for c in _calls(function, "from_pretrained")
@@ -710,23 +741,19 @@ def test_a_pinned_config_is_not_handed_to_the_vllm_path():
     for call in dispatches:
         keyword = next((k for k in call.keywords if k.arg == "auto_config"), None)
         assert keyword is not None
-        name = getattr(keyword.value, "id", None)
-        assert (
-            name is not None and name != "model_config"
-        ), "the probed config must go through the vLLM gate first"
-        guards = [
-            n
-            for n in ast.walk(function)
-            if isinstance(n, ast.If)
-            and any(
-                isinstance(b, ast.Assign)
-                and any(getattr(t, "id", None) == name for t in b.targets)
-                and isinstance(b.value, ast.Constant)
-                and b.value.value is None
-                for b in n.body
-            )
-        ]
-        assert guards, f"{name} is never withheld"
-        test = ast.unparse(guards[0].test)
-        for token in ("fast_inference", "is_vLLM_available", "user_config", "revision"):
-            assert token in test, token
+        assert getattr(keyword.value, "id", None) == "model_config"
+
+
+def test_the_fp8_cache_key_survives_a_lossy_sanitization():
+    """The readable half replaces every unsafe character with the same one, so `a/b` and
+    `a.b` collapse together. Only a digest of the raw ref keeps them apart."""
+    function = _function(_tree(LOADER_UTILS), "_offline_quantize_to_fp8")
+    source = ast.unparse(function)
+    assert "sha256" in source or "blake2" in source, "the sanitized name alone collides"
+    digests = [
+        n
+        for n in ast.walk(function)
+        if isinstance(n, ast.Call) and "sha256" in ast.unparse(n.func)
+    ]
+    assert digests
+    assert any("revision" in ast.unparse(n) for n in digests), "hash the ref, not the repo"
