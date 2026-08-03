@@ -512,6 +512,31 @@ function VramBadge({ status }: { status?: VramFitStatus | null }) {
   return null;
 }
 
+const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
+
+/** A size in mono: the dot pulled in, a hair of air before the unit. */
+function SizeText({ value }: { value: string }) {
+  const parts = SIZE_PARTS_RE.exec(value);
+  if (!parts) {
+    return <>{value}</>;
+  }
+  const [, approx, digits, unit] = parts;
+  const [whole, fraction] = digits.split(".");
+  return (
+    <>
+      {approx}
+      {whole}
+      {fraction === undefined ? null : (
+        <>
+          <span className="mx-[-0.1em]">.</span>
+          {fraction}
+        </>
+      )}
+      <span className="ml-[0.14em]">{unit}</span>
+    </>
+  );
+}
+
 /** The one quant a row loads, as a compact mono chip. */
 function QuantChip({ label }: { label: string }) {
   return (
@@ -583,6 +608,7 @@ function ModelRow({
   showVision,
   quantChip,
   alignMeta,
+  showSize,
   className,
 }: {
   label: string;
@@ -614,6 +640,9 @@ function ModelRow({
   /** Column layout (see META_COLUMN): "device" reserves the quant chip,
    *  "hub" the download and VRAM badges those lists carry instead. */
   alignMeta?: "device" | "hub";
+  /** Hold the size column open. Hub rows pass this on the MLX and Safetensors
+   *  filters, where a repo is one download with one size. */
+  showSize?: boolean;
   className?: string;
 }) {
   const exceeds = vramStatus === "exceeds";
@@ -776,20 +805,22 @@ function ModelRow({
             {text}
           </span>
         ))}
-        {/* Hub rows skip the size: only the odd safetensors repo reports one
-            unexpanded, so the column would be an empty gap. */}
-        {alignMeta === "device" ? (
+        {/* GGUF repos hold several quants of different sizes, so their rows
+            report one only once expanded, leaving the column an empty gap. */}
+        {alignMeta === "device" || showSize ? (
           <span
             className={cn(
               "shrink-0 whitespace-nowrap text-right font-mono text-ui-10 text-muted-foreground tabular-nums",
               META_COLUMN.size,
             )}
           >
-            {parsed.size}
+            {parsed.size === undefined ? null : (
+              <SizeText value={parsed.size} />
+            )}
           </span>
-        ) : alignMeta === "hub" ? null : parsed.size !== undefined ? (
+        ) : aligned ? null : parsed.size !== undefined ? (
           <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
-            {parsed.size}
+            <SizeText value={parsed.size} />
           </span>
         ) : null}
       </span>
@@ -1381,7 +1412,7 @@ function GgufVariantExpander({
                   </span>
                 )}
                 <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
-                  {formatBytes(v.size_bytes)}
+                  <SizeText value={formatBytes(v.size_bytes)} />
                 </span>
               </span>
             </button>
@@ -2187,6 +2218,9 @@ export function HubModelPicker({
   const [customSort, setCustomSort] = useState<LocalSortKey>("recent");
   // Format filter toggle for the Unsloth listing.
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  // MLX and Safetensors repos are one download, so a row can name its size.
+  const hubRowsShowSize =
+    formatFilter === "mlx" || formatFilter === "safetensors";
 
   // Recommended suggests GGUF anywhere; on Mac also MLX and safetensors. The
   // "recommended" sort also drops models too big for the device. Already-
@@ -4475,6 +4509,7 @@ export function HubModelPicker({
                               label={id}
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
+                              showSize={hubRowsShowSize}
                               hideOwner={true}
                               downloaded={downloadedSet.has(id.toLowerCase())}
                               capabilities={capsById.get(id)}
@@ -4585,6 +4620,7 @@ export function HubModelPicker({
                             label={id}
                             hubUrl={hubRepoUrl(id)}
                             alignMeta="hub"
+                            showSize={hubRowsShowSize}
                             capabilities={capsById.get(id)}
                             meta={
                               isKnownGgufRepo(id)
@@ -4698,6 +4734,7 @@ export function HubModelPicker({
                               label={id}
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
+                              showSize={hubRowsShowSize}
                               capabilities={capsById.get(id)}
                               meta={
                                 isSearchGguf
