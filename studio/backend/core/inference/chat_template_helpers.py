@@ -1597,6 +1597,57 @@ def chat_render_target(processor, tokenizer = None):
 # The Jinja variable HF passes the schema in. A template that never reads it cannot put a
 # tool in the prompt, whatever the caller asked for.
 _TOOLS_VARIABLE = re.compile(r"\btools\b")
+# Only what Jinja evaluates counts. A raw word search over the whole body also matched the
+# word in prose the template merely prints, so "{{ 'no tools available' }}" read as a
+# template that renders schemas and the catalog stayed authorized (#7066).
+_JINJA_CODE = re.compile(r"\{\{(.*?)\}\}|\{%(.*?)%\}", re.S)
+# String literals are data, not a variable read: the same prose moved inside an expression
+# would otherwise pass. Non-greedy and per-quote, so an apostrophe in a double-quoted
+# string cannot swallow the rest of the expression.
+_JINJA_STRING = re.compile(r"'[^']*'|\"[^\"]*\"", re.S)
+
+
+# A template that replays assistant tool_calls and tool results takes part in tool calling
+# by design, with the schema supplied by the caller's system prompt rather than by the
+# template: DeepSeek-R1 renders message['tool_calls'] and <|tool outputs|> and never reads
+# the tools variable at all. Unlike the tools read, this one keeps string literals, because
+# the name appears as a mapping key.
+_TOOL_TURN = re.compile(r"tool_calls|role\s*==\s*['\"]tool['\"]|['\"]tool['\"]\s*==\s*role")
+
+
+def _jinja_code(body: str):
+    """Yield only what Jinja evaluates: the inside of every {{ }} and {% %}."""
+    for match in _JINJA_CODE.finditer(_JINJA_COMMENT.sub("", body)):
+        yield match.group(1) or match.group(2) or ""
+
+
+def _reads_tools_variable(body: str) -> bool:
+    """True when *body* evaluates the ``tools`` variable, rather than printing the word."""
+    return any(_TOOLS_VARIABLE.search(_JINJA_STRING.sub("", code)) for code in _jinja_code(body))
+
+
+def _round_trips_tool_calls(body: str) -> bool:
+    """True when *body* renders assistant tool calls or tool results."""
+    return any(_TOOL_TURN.search(code) for code in _jinja_code(body))
+
+
+def _template_reads_tools(value, tools, prefer_tool_use: bool = True) -> bool:
+    """True unless the template selected out of *value* takes no part in tool calling.
+
+    Reading the ``tools`` variable is the direct case. Replaying tool calls counts too:
+    such a template round-trips a tool turn it never advertised, so the schema came from
+    the caller's own system prompt and the catalog is authorized after all."""
+    bodies = _selected_template_strings_from_value(
+        value, tools, prefer_tool_use = prefer_tool_use
+    )
+    if not bodies:
+        # Unreadable, not proven silent. Emptying the catalog here would disable healing
+        # for every model whose template shape this module cannot parse, which is a
+        # feature regression rather than the narrow authorization fix (#7066).
+        return True
+    return any(
+        _reads_tools_variable(body) or _round_trips_tool_calls(body) for body in bodies
+    )
 
 
 def _renders_tool_schema(target, template, tools) -> bool:
@@ -1604,15 +1655,7 @@ def _renders_tool_schema(target, template, tools) -> bool:
     value = template or getattr(target, "chat_template", None)
     if not value:
         value = getattr(getattr(target, "tokenizer", None), "chat_template", None)
-    bodies = _selected_template_strings_from_value(
-        value, tools, prefer_tool_use = not _is_processor(target)
-    )
-    if not bodies:
-        # Unreadable, not proven silent. Emptying the catalog here would disable healing
-        # for every model whose template shape this module cannot parse, which is a
-        # feature regression rather than the narrow authorization fix (#7066).
-        return True
-    return any(_TOOLS_VARIABLE.search(_JINJA_COMMENT.sub("", body)) for body in bodies)
+    return _template_reads_tools(value, tools, prefer_tool_use = not _is_processor(target))
 
 
 def renderable_tool_catalog(
@@ -1642,25 +1685,36 @@ def renderable_tool_catalog(
     )
     if not safe:
         return safe
+    def _unadvertised():
+        logger.info(
+            "No chat template this request could select renders tool schemas; text-form "
+            "tool calls will be relayed as prose rather than healed."
+        )
+        return []
+
+    active_renders_tools = _renders_tool_schema(tokenizer, template, tools)
     # A processor stays on "default" and the VLM path renders straight through
     # apply_chat_template_for_generation, with no native-template fallback behind it
     # (mlx_inference.py). When that default body never reads ``tools`` the schema cannot
     # reach the prompt at all, so every tool in the catalog is unadvertised and healing a
     # text-form call would promote one the model was never shown (#7066).
-    if _is_processor(tokenizer) and not _renders_tool_schema(tokenizer, template, tools):
-        logger.info(
-            "The processor's default chat template does not render tool schemas; "
-            "text-form tool calls will be relayed as prose rather than healed."
-        )
-        return []
+    if _is_processor(tokenizer) and not active_renders_tools:
+        return _unadvertised()
     # Resolved rather than read: render_native_template fetches it during the render, so on
     # the FIRST request needing the fallback the cache is still empty and this would hand
     # back the active-profile catalog unchanged (#7066).
     native_tpl = resolve_native_chat_template(
         model_info or {}, active_model_name, (model_info or {}).get("hf_token")
     )
+    # The tokenizer path is normally rescued by that fallback: an active template which
+    # drops the schema is re-rendered with the native one. When there is no native template
+    # to reach -- unresolvable, private, or a failed fetch -- nothing is left that could
+    # advertise, and render_with_native_template_fallback keeps the no-tools prompt. The
+    # catalog has to say so, or the healer promotes a call the prompt never showed (#7066).
     if not native_tpl:
-        return safe
+        return safe if active_renders_tools else _unadvertised()
+    if not active_renders_tools and not _template_reads_tools(native_tpl, tools):
+        return _unadvertised()
     native = model_markup(native_tpl, _vocabulary_of(tokenizer), tools)
     if native is None:
         return safe
@@ -2347,7 +2401,12 @@ def render_native_template(
             # The NATIVE profile decided this render's catalog: it can drop a tool the
             # active profile kept, so callers must gate healing and tool execution on this
             # list rather than on the one they sanitized themselves (#7066).
-            neutralize_tool_descriptions(tools, None, markup_for_tokenizer(render_tokenizer)),
+            # With *tools*, matching the render above: a named native template selects
+            # "tool_use" for a tool-calling turn, and profiling it without them read
+            # "default" instead, so a tool the render dropped was reported as advertised.
+            neutralize_tool_descriptions(
+                tools, None, markup_for_tokenizer(render_tokenizer, tools)
+            ),
         )
     return with_tools
 
@@ -2386,8 +2445,11 @@ def render_with_native_template_fallback(
     ):
         if return_metadata:
             if advertised is None and tools:
+                # With *tools*, so the reported catalog is the one the render sanitized:
+                # apply_chat_template_for_generation profiles with them, and omitting them
+                # here described a "default" template the request never rendered (#7066).
                 advertised = neutralize_tool_descriptions(
-                    tools, None, markup_for_tokenizer(tokenizer)
+                    tools, None, markup_for_tokenizer(tokenizer, tools)
                 )
             return ChatTemplateRenderResult(prompt, markers, advertised)
         return prompt

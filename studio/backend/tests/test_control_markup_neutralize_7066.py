@@ -19,6 +19,8 @@ import pytest
 from core.inference.chat_template_helpers import (
     _deepseek_opener_pattern,
     _neutralize_content_parts,
+    _reads_tools_variable,
+    _round_trips_tool_calls,
     chat_render_target,
     resolve_native_chat_template,
     markup_for_tokenizer,
@@ -4846,7 +4848,12 @@ def test_the_authorization_catalog_covers_every_template_that_could_render():
     controller are authorization boundaries, so they take the catalog safe either way."""
 
     class _Tok:
-        chat_template = "{% for m in messages %}<|im_start|>{{ m }}<|im_end|>{% endfor %}"
+        # Both templates render the schema: this test is about which PROFILE decides the
+        # catalog, not about whether a template advertises tools at all.
+        chat_template = (
+            "{% for t in tools %}{{ t }}{% endfor %}"
+            "{% for m in messages %}<|im_start|>{{ m }}<|im_end|>{% endfor %}"
+        )
         added_tokens_decoder: dict = {}
 
     tools = [
@@ -4863,6 +4870,7 @@ def test_the_authorization_catalog_covers_every_template_that_could_render():
     assert catalog_tool_names(renderable_tool_catalog(tools, tok, {})) == {"pay", "ok"}
     native = {
         "native_chat_template": (
+            "{% for t in tools %}{{ t }}{% endfor %}"
             '{% for m in messages %}<function name="NAME">{{ m }}</function>{% endfor %}'
         )
     }
@@ -5137,7 +5145,10 @@ def test_the_native_catalog_profile_sees_the_requests_tools():
     render dropped it (#7066)."""
 
     class _Tok:
-        chat_template = "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}"
+        chat_template = (
+            "{% for t in tools %}{{ t }}{% endfor %}"
+            "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}"
+        )
         added_tokens_decoder: dict = {}
 
     tools = [
@@ -5153,7 +5164,10 @@ def test_the_native_catalog_profile_sees_the_requests_tools():
     info = {
         "native_chat_template": {
             "default": "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}",
-            "tool_use": "{% for m in messages %}<tools>{{ m }}</tools>{% endfor %}",
+            "tool_use": (
+                "{% for t in tools %}{{ t }}{% endfor %}"
+                "{% for m in messages %}<tools>{{ m }}</tools>{% endfor %}"
+            ),
         }
     }
     assert catalog_tool_names(renderable_tool_catalog(tools, _Tok(), info)) == {"ok"}
@@ -5451,19 +5465,6 @@ def test_a_processor_that_cannot_render_tools_advertises_none():
     assert catalog_tool_names(renderable_tool_catalog(tools, _RendersTools(), {})) == {"read_file"}
 
 
-def test_a_plain_tokenizer_keeps_its_catalog_without_a_tools_reference():
-    """The tokenizer path has the native-template fallback behind it, so an active template
-    that drops the schema is re-rendered with one that does not. Emptying the catalog there
-    would break tool passthrough for every override template (#6801)."""
-
-    class _Tokenizer:
-        chat_template = "{% for m in messages %}{{ m }}{% endfor %}"
-        added_tokens_decoder: dict = {}
-
-    tools = [{"type": "function", "function": {"name": "read_file", "description": "d"}}]
-    assert catalog_tool_names(renderable_tool_catalog(tools, _Tokenizer(), {})) == {"read_file"}
-
-
 def test_an_unreadable_processor_template_keeps_its_catalog():
     """Unreadable is not proven silent: emptying here would disable healing for every
     template shape this module cannot parse, a feature regression rather than a fix."""
@@ -5480,3 +5481,115 @@ def test_an_unreadable_processor_template_keeps_its_catalog():
 
     tools = [{"type": "function", "function": {"name": "read_file", "description": "d"}}]
     assert catalog_tool_names(renderable_tool_catalog(tools, _Processor(), {})) == {"read_file"}
+
+
+@pytest.mark.parametrize(
+    ("body", "reads"),
+    [
+        # Prose the template merely prints. A raw word search over the body matched these,
+        # so a template that renders no schema at all read as one that does (#7066).
+        ("{{ 'no tools available' }}", False),
+        ('{{ "use the tools wisely" }}{{ messages }}', False),
+        ("You have no tools.", False),
+        ("{# tools #}{{ messages }}", False),
+        # A different variable that merely starts with the word.
+        ("{{ tools_json }}", False),
+        # Real reads, in each shape a shipped template uses.
+        ("{% for t in tools %}{{ t }}{% endfor %}", True),
+        ("{{ tools | tojson }}", True),
+        ("{%- if tools %}x{%- endif %}", True),
+        ("{% set ns.schema = tools %}", True),
+    ],
+)
+def test_only_an_evaluated_tools_variable_counts_as_advertising(body, reads):
+    """Only what Jinja evaluates can put a schema in the prompt."""
+    assert _reads_tools_variable(body) is reads
+
+
+def test_no_native_template_leaves_a_silent_active_template_unauthorized():
+    """The tokenizer path is normally rescued by the native-template fallback. When there
+    is no native template to reach -- unresolvable, private, or a failed fetch --
+    render_with_native_template_fallback keeps the no-tools prompt, so nothing advertised
+    the schema and healing would promote a call the model never saw (#7066)."""
+
+    class _Silent:
+        chat_template = "{% for m in messages %}{{ m }}{% endfor %}"
+        added_tokens_decoder: dict = {}
+
+    class _Renders:
+        chat_template = "{% for t in tools %}{{ t }}{% endfor %}{{ messages }}"
+        added_tokens_decoder: dict = {}
+
+    tools = [{"type": "function", "function": {"name": "read_file", "description": "d"}}]
+    absent = {"native_chat_template": False}
+    assert renderable_tool_catalog(tools, _Silent(), absent) == []
+    # An active template that does render them keeps its catalog with no native template.
+    assert catalog_tool_names(renderable_tool_catalog(tools, _Renders(), absent)) == {"read_file"}
+
+
+def test_a_native_template_that_renders_tools_rescues_a_silent_active_one():
+    """The fallback really does re-render with the native template, so emptying the catalog
+    whenever the ACTIVE one is silent would break override-template passthrough (#6801)."""
+
+    class _Silent:
+        chat_template = "{% for m in messages %}{{ m }}{% endfor %}"
+        added_tokens_decoder: dict = {}
+
+    tools = [{"type": "function", "function": {"name": "read_file", "description": "d"}}]
+    native = {"native_chat_template": "{% for t in tools %}{{ t }}{% endfor %}"}
+    assert catalog_tool_names(renderable_tool_catalog(tools, _Silent(), native)) == {"read_file"}
+    # Neither renderer reads tools: nothing this request can select would advertise them.
+    silent_native = {"native_chat_template": "{{ messages }}"}
+    assert renderable_tool_catalog(tools, _Silent(), silent_native) == []
+
+
+def test_the_advertised_catalog_is_profiled_with_the_request_tools():
+    """A named template selects "tool_use" for a tool-calling turn. Profiling it without
+    the tools read "default" instead, so a tool the render dropped was reported as shown to
+    the model, and a caller gating execution on that field could authorize it (#7066)."""
+    source = (
+        _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "chat_template_helpers.py"
+    ).read_text(encoding = "utf-8")
+    assert "markup_for_tokenizer(render_tokenizer, tools)" in source
+    assert "markup_for_tokenizer(render_tokenizer)" not in source
+    assert "markup_for_tokenizer(tokenizer, tools)\n" in source
+    # The profile really does differ between the two selections.
+    named = {
+        "default": "{% for m in messages %}{{ m }}{% endfor %}",
+        "tool_use": "{% for m in messages %}<tools>{{ m }}</tools>{% endfor %}",
+    }
+
+    class _Tok:
+        chat_template = named
+        added_tokens_decoder = {0: type("_T", (), {"content": "<tools>"})()}
+
+    tok = _Tok()
+    with_tools = markup_for_tokenizer(tok, [{"type": "function"}])
+    without = markup_for_tokenizer(tok, None)
+    assert "</tools>" in with_tools.markers
+    assert without is None or "</tools>" not in without.markers
+
+
+def test_a_template_that_replays_tool_calls_still_authorizes_its_catalog():
+    """DeepSeek-R1 never reads the tools variable, yet it renders message['tool_calls'] and
+    tool outputs and reports supports_tools. Its schema comes from the caller's own system
+    prompt, so treating "no tools variable" as "nothing was advertised" would have switched
+    text-form healing off for a model that round-trips tool turns by design."""
+    r1_shaped = (
+        "{%- for message in messages %}"
+        "{%- if message['role'] == 'assistant' and 'tool_calls' in message %}"
+        "{%- for tool in message['tool_calls'] %}{{ tool }}{%- endfor %}"
+        "{%- endif %}{%- endfor %}"
+    )
+    assert _reads_tools_variable(r1_shaped) is False
+    assert _round_trips_tool_calls(r1_shaped) is True
+
+    class _R1:
+        chat_template = r1_shaped
+        added_tokens_decoder: dict = {}
+
+    tools = [{"type": "function", "function": {"name": "read_file", "description": "d"}}]
+    absent = {"native_chat_template": False}
+    assert catalog_tool_names(renderable_tool_catalog(tools, _R1(), absent)) == {"read_file"}
+    # A template that does neither is the one with nothing to authorize.
+    assert _round_trips_tool_calls("{% for m in messages %}{{ m }}{% endfor %}") is False
