@@ -406,9 +406,18 @@ def test_start_watchdog_drops_kwargs_the_installed_zoo_cannot_take(monkeypatch):
     seen = {}
 
     def _old_signature_watchdog(
-        *, repo_ids, on_stall, repo_type = "model", cache_dir = None, interval = 30.0,
-        stall_timeout = 180.0, xet_disabled = False, on_heartbeat = None,
-        watch_new_partials_only = False, baseline_incomplete_blobs = None, child_pid = None,
+        *,
+        repo_ids,
+        on_stall,
+        repo_type = "model",
+        cache_dir = None,
+        interval = 30.0,
+        stall_timeout = 180.0,
+        xet_disabled = False,
+        on_heartbeat = None,
+        watch_new_partials_only = False,
+        baseline_incomplete_blobs = None,
+        child_pid = None,
     ):
         seen.update(locals())
         return threading.Event()
@@ -420,9 +429,11 @@ def test_start_watchdog_drops_kwargs_the_installed_zoo_cannot_take(monkeypatch):
     monkeypatch.setattr(shim, "_shared_available", True, raising = False)
 
     stop = shim.start_watchdog(
-        repo_ids = ["a/b"], on_stall = lambda _m: None,
-        watch_new_partials_only = True, child_pid = 1234,
-        connect_timeout = 600.0,          # only on the unreleased zoo
+        repo_ids = ["a/b"],
+        on_stall = lambda _m: None,
+        watch_new_partials_only = True,
+        child_pid = 1234,
+        connect_timeout = 600.0,  # only on the unreleased zoo
     )
     assert stop is not None, "the watchdog did not start"
     assert seen["watch_new_partials_only"] is True, "a SUPPORTED kwarg was dropped"

@@ -341,6 +341,7 @@ def start_watchdog(**kwargs: Any) -> Any:
     impl = _shared.start_watchdog if _load_shared() else _degraded_start_watchdog
     return impl(**_supported_kwargs(impl, kwargs))
 
+
 # Annotation-only declarations for the three names above: they bind NO value, so lookup still misses
 # and PEP 562 ``__getattr__`` resolves them lazily -- but ruff/pyflakes see them as defined, so listing
 # them in ``__all__`` does not trip F822 (while F822 still catches a real typo elsewhere in the list).
