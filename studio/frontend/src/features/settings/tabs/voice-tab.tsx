@@ -834,40 +834,44 @@ export function VoiceTab() {
               : t("settings.voice.dictation.engineBrowserDescription")
           }
         >
-          <Select
-            value={dictationEngine}
-            onValueChange={(value) => {
-              const next = value === "model" ? "model" : "browser";
-              if (next !== dictationEngine) {
-                // Unload whichever backend was resident for the old engine.
-                void unloadSttModel().catch(() => {});
-                if (next === "model") {
-                  setSttPhase("checking");
-                  setSttDevice(null);
-                  setSttDownload(null);
+          {isTauri ? (
+            <span className="text-sm text-muted-foreground">
+              {t("settings.voice.dictation.engineModel")}
+            </span>
+          ) : (
+            <Select
+              value={dictationEngine}
+              onValueChange={(value) => {
+                const next = value === "model" ? "model" : "browser";
+                if (next !== dictationEngine) {
+                  // Unload whichever backend was resident for the old engine.
+                  void unloadSttModel().catch(() => {});
+                  if (next === "model") {
+                    setSttPhase("checking");
+                    setSttDevice(null);
+                    setSttDownload(null);
+                  }
                 }
-              }
-              setDictationEngine(next);
-            }}
-          >
-            <SelectTrigger
-              aria-label="Dictation engine"
-              className="w-56"
-              size="sm"
+                setDictationEngine(next);
+              }}
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {isTauri ? null : (
+              <SelectTrigger
+                aria-label="Dictation engine"
+                className="w-56"
+                size="sm"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
                 <SelectItem value="browser">
                   {t("settings.voice.dictation.engineBrowser")}
                 </SelectItem>
-              )}
-              <SelectItem value="model">
-                {t("settings.voice.dictation.engineModel")}
-              </SelectItem>
-            </SelectContent>
-          </Select>
+                <SelectItem value="model">
+                  {t("settings.voice.dictation.engineModel")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          )}
         </SettingsRow>
 
         {isLocalEngine ? (
