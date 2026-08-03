@@ -3638,6 +3638,10 @@ def _active_gguf_intent(
         source,
         request,
         model_identifier = model_identifier,
+        # A repo or directory variant has not been resolved to a file yet. Do
+        # not inherit the resident file or source matching would compare that
+        # file with itself and ignore a requested quant switch.
+        gguf_path = source.gguf_path if model_identifier.lower().endswith(".gguf") else None,
         hf_variant = request.gguf_variant or source.hf_variant,
         chat_template_override = chat_template_override,
         extra_args = effective_extra,

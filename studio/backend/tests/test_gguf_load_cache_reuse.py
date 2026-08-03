@@ -646,6 +646,39 @@ class TestCachedGgufForLoadProbe:
 
 
 class TestLoadHubDownloadExclusion:
+    def test_resident_local_directory_intent_uses_variant_until_path_is_resolved(self):
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_local_variant_identity",
+            "routes/inference.py",
+        )
+        model_identifier = "/models/local-quants"
+        loaded_path = "/models/model.gguf"
+        backend = SimpleNamespace(
+            extra_args = None,
+            gguf_path = loaded_path,
+            layer_preserves_tensor_intent = False,
+            last_load_intent = GgufLoadIntent(
+                model_identifier = model_identifier,
+                gguf_path = loaded_path,
+                hf_variant = VARIANT,
+            ),
+        )
+
+        with patch.object(route, "_mtp_draft_for_path", return_value = None):
+            intent = route._active_gguf_intent(
+                LoadRequest(model_path = model_identifier, gguf_variant = "Q8_0"),
+                backend,
+                model_identifier = model_identifier,
+                chat_template_override = None,
+                n_parallel = 1,
+                native_grant_backed = False,
+            )
+
+        assert intent.gguf_path is None
+        assert intent.hf_variant == "Q8_0"
+
     def test_resident_gguf_reuse_precedes_model_metadata_resolution(self):
         from models.inference import LoadRequest
 
