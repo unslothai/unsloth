@@ -2729,9 +2729,7 @@ _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS = 5.0
 _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS = 8.0
 # Its own small pool, so a read stranded on a hung mount occupies these threads and
 # never the shared executor the rest of the app runs its blocking work on.
-_NATIVE_CONTEXT_EXECUTOR = ThreadPoolExecutor(
-    max_workers = 4, thread_name_prefix = "native-ctx"
-)
+_NATIVE_CONTEXT_EXECUTOR = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "native-ctx")
 
 
 async def _read_native_context_length_bounded(model: str, is_local: bool) -> Optional[int]:
@@ -2945,9 +2943,7 @@ async def get_gguf_variants(
         # local-only, so the length has to come from the copy the variants came from.
         local_only = prefer_local_cache or offline
         context_model = hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path) or (
-            local_path
-            if local_only and local_path and is_local_path(local_path)
-            else repo_id
+            local_path if local_only and local_path and is_local_path(local_path) else repo_id
         )
         local = is_local_path(context_model)
 

@@ -2023,6 +2023,7 @@ def test_native_context_read_budget_is_checked_between_caches(monkeypatch, tmp_p
 def test_native_context_read_budget_covers_cache_discovery(monkeypatch, tmp_path):
     """Cache enumeration touches the filesystem too. Started after it, the budget would hand
     the walk a full fresh allowance on top of whatever discovery already cost."""
+
     def slow_discovery(_kind, _repo):
         time.sleep(0.4)
         return [tmp_path / "a", tmp_path / "b", tmp_path / "c"]
@@ -2092,9 +2093,7 @@ def test_offline_reads_context_from_the_copy_the_variants_came_from(monkeypatch,
     context_calls = []
 
     async def scoped_variants(repo_id, **kwargs):
-        return SimpleNamespace(
-            repo_id = repo_id, variants = [], has_vision = False, default_variant = None
-        )
+        return SimpleNamespace(repo_id = repo_id, variants = [], has_vision = False, default_variant = None)
 
     monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
     monkeypatch.setattr(
