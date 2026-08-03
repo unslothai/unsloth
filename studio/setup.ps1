@@ -3940,7 +3940,16 @@ print(install_manifest.manifest_path())
                     $_held = Join-Path $_tritonTmp "held_manifest.json"
                     try {
                         Move-Item -LiteralPath $_manifestPath -Destination $_held -Force -ErrorAction Stop
-                        $_manifestHeld = $_held
+                        # Move-Item across volumes is a copy plus a delete, and it reports success
+                        # even when only the delete fails, leaving the original where it was. The
+                        # whole point here is that the manifest is GONE for the swap, so confirm
+                        # that rather than trust the call.
+                        if (Test-Path -LiteralPath $_manifestPath -PathType Leaf) {
+                            Remove-Item -LiteralPath $_held -Force -ErrorAction SilentlyContinue
+                            $_manifestBlocked = $true
+                        } else {
+                            $_manifestHeld = $_held
+                        }
                     } catch { $_manifestBlocked = $true }
                 }
                 if ($_manifestBlocked) {
