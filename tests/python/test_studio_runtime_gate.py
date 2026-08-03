@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import os
 import threading
 from ctypes import wintypes
@@ -31,6 +32,22 @@ def test_runtime_mutex_name_matches_installer_and_tauri():
     )
     assert '"Global\\UnslothStudioManagedEnvironment-$Sid"' in install_source
     assert '"Global\\\\UnslothStudioManagedEnvironment-"' in rust_source
+
+
+def test_custom_root_mutex_name_matches_installer_hash(monkeypatch):
+    root = Path(r"C:\\custom\\studio")
+    canonical = r"C:\\custom\\studio"
+    monkeypatch.setattr(gate, "uses_tauri_managed_root", lambda _path: False)
+    monkeypatch.setattr(gate, "_resolved_windows_path", lambda _path: canonical)
+    expected_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    assert gate.runtime_mutex_name_for_studio_home(root) == (
+        f"Global\\UnslothStudioManagedEnvironmentPath-{expected_hash}"
+    )
+    install_source = (REPO_ROOT / "install.ps1").read_text(encoding = "utf-8")
+    assert (
+        '"Global\\UnslothStudioManagedEnvironmentPath-$(Get-StudioRuntimePathHash -Path $Path)"'
+        in install_source
+    )
 
 
 def test_runtime_gate_handoff_is_one_shot(monkeypatch):
@@ -85,3 +102,36 @@ def test_runtime_gate_blocks_another_thread_and_recovers():
 
     with gate.studio_runtime_launch_guard(managed_root) as acquired:
         assert acquired is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows named mutexes are required")
+def test_custom_root_runtime_gate_blocks_another_thread(tmp_path):
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32.CreateMutexW.argtypes = [
+        ctypes.c_void_p,
+        wintypes.BOOL,
+        wintypes.LPCWSTR,
+    ]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    name = gate.runtime_mutex_name_for_studio_home(tmp_path)
+    holder = kernel32.CreateMutexW(None, True, name)
+    assert holder
+    observed: list[str] = []
+
+    def contend() -> None:
+        try:
+            with gate.studio_runtime_launch_guard(tmp_path):
+                observed.append("acquired")
+        except gate.StudioRuntimeGateBusy:
+            observed.append("blocked")
+
+    contender = threading.Thread(target = contend)
+    contender.start()
+    contender.join(timeout = 10)
+    assert not contender.is_alive()
+    assert observed == ["blocked"]
+    assert kernel32.ReleaseMutex(holder)
+    assert kernel32.CloseHandle(holder)

@@ -54,7 +54,10 @@ def _mutex_helpers(source: str) -> str:
             "Get-StudioInstallMutexName",
             "Test-StudioPathEqual",
             "Get-StudioRuntimeMutexNameForSid",
+            "Get-StudioRuntimePathHash",
+            "Get-StudioRuntimeMutexNameForPath",
             "Get-StudioRuntimeMutexName",
+            "Get-StudioRuntimeMutexNames",
             "Enter-StudioInstallMutex",
             "Exit-StudioInstallMutex",
         )
@@ -104,7 +107,12 @@ $ErrorActionPreference = "Stop"
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_command_line_only_venv_consumer_is_reported(tmp_path: Path, shell: str):
+@pytest.mark.parametrize("path_style", ["backslash", "forward"])
+def test_command_line_only_venv_consumer_is_reported(
+    tmp_path: Path,
+    shell: str,
+    path_style: str,
+):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     detector = _process_helpers(source)
     venv = tmp_path / "unsloth_studio"
@@ -118,7 +126,7 @@ function Get-CimInstance {{
         ProcessId = 4242
         Name = "python.exe"
         ExecutablePath = $env:TEST_BASE_PYTHON
-        CommandLine = ('"' + $env:TEST_BASE_PYTHON + '" "' + $env:TEST_VENV + '\\Lib\\site-packages\\worker.py"')
+        CommandLine = ('"' + $env:TEST_BASE_PYTHON + '" "' + $env:TEST_SCRIPT + '"')
     }}
 }}
 {detector}
@@ -127,6 +135,8 @@ function Get-CimInstance {{
 """
     env = os.environ.copy()
     env["TEST_VENV"] = str(venv)
+    worker = venv / "Lib" / "site-packages" / "worker.py"
+    env["TEST_SCRIPT"] = worker.as_posix() if path_style == "forward" else str(worker)
     env["TEST_BASE_PYTHON"] = shutil.which("python") or "python.exe"
     assert _run_powershell(shell, script, env) == "4242"
 
@@ -300,6 +310,51 @@ Exit-StudioInstallMutex -Mutex $mutex
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
+def test_unknown_root_identity_acquires_sid_and_path_mutexes(tmp_path: Path, shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    helpers = _mutex_helpers(source)
+    custom_root = tmp_path / "custom-studio"
+    custom_root.mkdir()
+    script = f"""
+$ErrorActionPreference = "Stop"
+{helpers}
+$names = @(
+    Get-StudioRuntimeMutexNames -TauriRootMatch $null -Path $env:TEST_STUDIO_HOME
+)
+$names | ForEach-Object {{ Write-Output $_ }}
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(custom_root)
+    names = _run_powershell(shell, script, env).splitlines()
+    assert len(names) == 2
+    assert any(name.startswith("Global\\UnslothStudioManagedEnvironment-S-1-") for name in names)
+    assert any(
+        name.startswith("Global\\UnslothStudioManagedEnvironmentPath-") for name in names
+    )
+
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_unicode_custom_root_mutex_name_matches_python(tmp_path: Path, shell: str):
+    from unsloth_cli import _studio_runtime_gate as gate
+
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    helpers = _mutex_helpers(source)
+    custom_root = tmp_path / "Studio-ß"
+    custom_root.mkdir()
+    script = f"""
+$ErrorActionPreference = "Stop"
+{helpers}
+Write-Output (Get-StudioRuntimeMutexNameForPath -Path $env:TEST_STUDIO_HOME)
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(custom_root)
+    powershell_name = _run_powershell(shell, script, env)
+    assert powershell_name == gate.runtime_mutex_name_for_studio_home(custom_root)
+
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
 def test_runtime_gate_blocks_a_late_backend_start(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     helper = _extract(r"    function Enter-StudioNamedMutex \{.*?\n    \}\n", source)
@@ -372,7 +427,9 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     restore = source.rindex("Restore-StudioVenvRollback")
     prompt = source.index("Start Unsloth Studio now?", restore)
     autostart = source.index("Start-Process -FilePath $UnslothExe", prompt)
-    release_runtime = source.rindex("Exit-StudioInstallMutex -Mutex $studioRuntimeMutex")
+    release_runtime = source.rindex(
+        "Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]"
+    )
     release_install = source.rindex("Exit-StudioInstallMutex -Mutex $studioInstallMutex")
     wait_for_exit = source.rindex("$studioAutoStartProcess.WaitForExit()")
 

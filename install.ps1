@@ -1819,6 +1819,26 @@ public static class UnslothStudioFinalPath
         return "Global\UnslothStudioManagedEnvironment-$Sid"
     }
 
+    function Get-StudioRuntimePathHash {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        # Keep the resolved spelling byte-for-byte. Cross-language Unicode case
+        # conversion is not stable (for example, .NET and Python differ on ß).
+        $canonical = Get-StudioFinalPath -Path $Path
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $sha256.ComputeHash($bytes)
+        } finally {
+            $sha256.Dispose()
+        }
+        return (-join ($digest | ForEach-Object { $_.ToString('x2') }))
+    }
+
+    function Get-StudioRuntimeMutexNameForPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        return "Global\UnslothStudioManagedEnvironmentPath-$(Get-StudioRuntimePathHash -Path $Path)"
+    }
+
     function Get-StudioRuntimeMutexName {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
         if ($null -eq $identity) {
@@ -1833,6 +1853,24 @@ public static class UnslothStudioFinalPath
             throw "Could not determine the Windows user SID for the Studio runtime lock"
         }
         return (Get-StudioRuntimeMutexNameForSid -Sid $sid)
+    }
+
+    function Get-StudioRuntimeMutexNames {
+        param(
+            [AllowNull()]$TauriRootMatch,
+            [Parameter(Mandatory = $true)][string]$Path
+        )
+        $names = @()
+        # true: confirmed Tauri default -> SID lock
+        # false: confirmed custom root -> path lock
+        # null: identity resolution failed -> take both and fail closed
+        if ($TauriRootMatch -ne $false) {
+            $names += Get-StudioRuntimeMutexName
+        }
+        if ($TauriRootMatch -ne $true) {
+            $names += Get-StudioRuntimeMutexNameForPath -Path $Path
+        }
+        return $names
     }
 
     function Enter-StudioInstallMutex {
@@ -1852,13 +1890,17 @@ public static class UnslothStudioFinalPath
             [Parameter(Mandatory = $true)][string]$Path
         )
         if (-not $CommandLine) { return $false }
+        # Windows accepts either separator in command-line paths. Normalize both
+        # before the literal search, then apply the existing component boundary.
+        $normalizedCommandLine = $CommandLine.Replace('/', '\')
+        $normalizedPath = $Path.Replace('/', '\')
         $searchFrom = 0
-        while ($searchFrom -lt $CommandLine.Length) {
-            $matchIndex = $CommandLine.IndexOf($Path, $searchFrom, [System.StringComparison]::OrdinalIgnoreCase)
+        while ($searchFrom -lt $normalizedCommandLine.Length) {
+            $matchIndex = $normalizedCommandLine.IndexOf($normalizedPath, $searchFrom, [System.StringComparison]::OrdinalIgnoreCase)
             if ($matchIndex -lt 0) { return $false }
-            $endIndex = $matchIndex + $Path.Length
-            if ($endIndex -ge $CommandLine.Length) { return $true }
-            $next = $CommandLine[$endIndex]
+            $endIndex = $matchIndex + $normalizedPath.Length
+            if ($endIndex -ge $normalizedCommandLine.Length) { return $true }
+            $next = $normalizedCommandLine[$endIndex]
             if (
                 $next -eq [System.IO.Path]::DirectorySeparatorChar -or
                 $next -eq [System.IO.Path]::AltDirectorySeparatorChar -or
@@ -2062,7 +2104,7 @@ public static class UnslothStudioFinalPath
         return (Exit-InstallFailure "Another Unsloth Studio install or repair is already running")
     }
 
-    $studioRuntimeMutex = $null
+    $studioRuntimeMutexes = @()
     $tauriManagedStudioHome = if ($tauriProfile) {
         Join-Path $tauriProfile ".unsloth\studio"
     } else { $null }
@@ -2070,22 +2112,27 @@ public static class UnslothStudioFinalPath
         Test-StudioPathEqual -Left $StudioHome -Right $tauriManagedStudioHome
     } else { $false }
     $studioUsesTauriManagedRoot = ($studioTauriRootMatch -eq $true)
-    $studioNeedsRuntimeLock = ($null -eq $studioTauriRootMatch) -or $studioUsesTauriManagedRoot
+    $studioNeedsRuntimeLock = $true
     $studioUsesLegacyLayout = ($StudioRedirectMode -ne 'env') -or $studioUsesTauriManagedRoot
     $studioAutoStartProcess = $null
     try {
         if ($studioNeedsRuntimeLock) {
             try {
-                $studioRuntimeMutexName = Get-StudioRuntimeMutexName
-                $studioRuntimeMutex = Enter-StudioNamedMutex -Name $studioRuntimeMutexName
+                $studioRuntimeMutexNames = @(
+                    Get-StudioRuntimeMutexNames -TauriRootMatch $studioTauriRootMatch -Path $StudioHome
+                )
+                foreach ($studioRuntimeMutexName in $studioRuntimeMutexNames) {
+                    $mutex = Enter-StudioNamedMutex -Name $studioRuntimeMutexName
+                    if ($null -eq $mutex) {
+                        Write-Host "[ERROR] Unsloth Studio is starting or installation is already running." -ForegroundColor Red
+                        Write-Host "        Close Unsloth Studio completely, wait for the other operation, then re-run install.ps1." -ForegroundColor Yellow
+                        return (Exit-InstallFailure "The managed Studio environment is busy")
+                    }
+                    $studioRuntimeMutexes += $mutex
+                }
             } catch {
                 Write-Host "[ERROR] Could not create the Studio runtime lock: $($_.Exception.Message)" -ForegroundColor Red
                 return (Exit-InstallFailure "Could not create the Studio runtime lock")
-            }
-            if ($null -eq $studioRuntimeMutex) {
-                Write-Host "[ERROR] Unsloth Studio is starting or installation is already running." -ForegroundColor Red
-                Write-Host "        Close Unsloth Studio completely, wait for the other operation, then re-run install.ps1." -ForegroundColor Yellow
-                return (Exit-InstallFailure "The managed Studio environment is busy")
             }
         }
 
@@ -3474,7 +3521,9 @@ public static class UnslothStudioFinalPath
         Write-Host ""
     }
     } finally {
-        Exit-StudioInstallMutex -Mutex $studioRuntimeMutex
+        for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
+            Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
+        }
         Exit-StudioInstallMutex -Mutex $studioInstallMutex
     }
     if ($null -ne $studioAutoStartProcess) {

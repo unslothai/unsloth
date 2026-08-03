@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import hashlib
 import os
 import sys
 from ctypes import wintypes
@@ -15,6 +16,7 @@ from typing import Iterator, Mapping
 
 
 _RUNTIME_MUTEX_PREFIX = "Global\\UnslothStudioManagedEnvironment-"
+_PATH_RUNTIME_MUTEX_PREFIX = "Global\\UnslothStudioManagedEnvironmentPath-"
 _RUNTIME_GATE_HANDOFF_ENV = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF"
 
 
@@ -58,8 +60,17 @@ def _windows_profile_path() -> Path:
     return Path(buffer.value)
 
 
+def _resolved_windows_path(path: Path) -> str:
+    resolved = str(path.resolve(strict = False)).rstrip("\\/")
+    if resolved.startswith("\\\\?\\UNC\\"):
+        resolved = "\\\\" + resolved[8:]
+    elif resolved.startswith("\\\\?\\"):
+        resolved = resolved[4:]
+    return resolved
+
+
 def _canonical_windows_path(path: Path) -> str:
-    return str(path.resolve(strict = False)).rstrip("\\/").casefold()
+    return _resolved_windows_path(path).casefold()
 
 
 def uses_tauri_managed_root(studio_home: Path) -> bool:
@@ -67,6 +78,14 @@ def uses_tauri_managed_root(studio_home: Path) -> bool:
         return False
     managed_root = _windows_profile_path() / ".unsloth" / "studio"
     return _canonical_windows_path(studio_home) == _canonical_windows_path(managed_root)
+
+
+def runtime_mutex_name_for_studio_home(studio_home: Path) -> str:
+    if uses_tauri_managed_root(studio_home):
+        return runtime_mutex_name_for_sid(_current_windows_user_sid())
+    canonical = _resolved_windows_path(studio_home)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"{_PATH_RUNTIME_MUTEX_PREFIX}{digest}"
 
 
 def _current_windows_user_sid() -> str:
@@ -135,7 +154,7 @@ def _current_windows_user_sid() -> str:
 def studio_runtime_launch_guard(studio_home: Path, *, inherited: bool = False) -> Iterator[bool]:
     """Hold the shared Windows launch gate through backend admission."""
 
-    if sys.platform != "win32" or inherited or not uses_tauri_managed_root(studio_home):
+    if sys.platform != "win32" or inherited:
         yield False
         return
 
@@ -153,7 +172,7 @@ def studio_runtime_launch_guard(studio_home: Path, *, inherited: bool = False) -
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
 
-    name = runtime_mutex_name_for_sid(_current_windows_user_sid())
+    name = runtime_mutex_name_for_studio_home(studio_home)
     handle = kernel32.CreateMutexW(None, False, name)
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error())
