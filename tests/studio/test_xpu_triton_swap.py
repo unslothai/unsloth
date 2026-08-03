@@ -402,6 +402,56 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         assert env["HTTPS_PROXY"] == "http://proxy.internal:8080"
 
 
+class TestADeadDriverIsNotAFlavourMismatch:
+    """A wedged `import torch` under a SUPPORTED +xpu wheel is a driver, not a bad wheel.
+
+    _ensure_xpu_torch used to read every inconclusive probe as "repair", and it runs at two
+    repair points: on a stalled Arc host that is two 90-second hangs plus two force-reinstalls
+    of the whole multi-gigabyte trio, every single update, fixing nothing. The disk answers
+    the question the probe cannot, so an unsupported or missing wheel still repairs while a
+    supported one gets the driver warning.
+    """
+
+    @pytest.mark.parametrize(
+        "label, supported",
+        [
+            ("2.6.0+xpu", True),
+            ("2.9.1+xpu", True),
+            ("2.10.0+xpu", True),
+            ("2.5.1+xpu", False),  # below the floor unsloth raises at
+            ("2.11.0+xpu", False),  # past the tested ceiling
+            ("3.0.0+xpu", False),
+            ("2.9.1+cu128", False),
+            ("2.9.1+rocm6.4", False),
+            ("2.9.1", False),
+            ("", False),
+            (None, False),  # no torch on disk at all
+        ],
+    )
+    def test_the_supported_range_matches_the_probe(self, monkeypatch, tmp_path, label, supported):
+        mod, _ = _load(
+            monkeypatch, tmp_path, spec = "", generic = "", torch_label = label
+        )
+        assert mod.__dict__["_xpu_wheel_supported_on_disk"]() is supported
+
+    def test_the_disk_check_and_the_probe_agree_on_the_bounds(self):
+        # Two copies of the range, in different languages, one line apart in behaviour. A
+        # floor that drifts installs an environment that raises at import.
+        src = STACK.read_text(encoding = "utf-8")
+        assert src.count("(2, 6) <= n < (2, 11)") == 1, "the probe's range moved"
+        assert src.count("(2, 6) <= nums < (2, 11)") == 1, "the disk check's range moved"
+
+    def test_a_timeout_on_a_supported_wheel_reinstalls_nothing(self):
+        # Asserted on the source because _ensure_xpu_torch sits above the extracted slice: the
+        # early return has to come BEFORE probe is set to None, or the repair runs anyway.
+        src = STACK.read_text(encoding = "utf-8")
+        start = src.index("def _ensure_xpu_torch() -> None:")
+        body = src[start : src.index("def _installed_torch_version_label", start)]
+        guard = body.index("_xpu_wheel_supported_on_disk()")
+        assert guard < body.index("probe = None"), "the guard runs after the repair is armed"
+        assert "return" in body[guard : guard + 400], "the guard does not return"
+
+
 class TestPlatformGuards:
     @pytest.mark.parametrize("flag", ["NO_TORCH", "IS_MACOS", "IS_WINDOWS"])
     def test_skipped_where_it_does_not_apply(self, monkeypatch, tmp_path, flag):

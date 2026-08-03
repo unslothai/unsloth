@@ -1824,6 +1824,10 @@ $AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains 
 # wins over an AMD host heading for CPU torch anyway), same Arc / Data Center match;
 # Get-CimInstance because Get-WmiObject is absent in PowerShell 7.
 $script:IsIntelXpu = $false
+# Set when the stale check below keeps an installed +xpu venv instead of wiping it. Separate
+# from $script:IsIntelXpu on purpose: it steers the INSTALL, not the hardware report, which
+# must stay honest about the NVIDIA GPU that is also in the machine.
+$script:PreservedXpuVenv = $false
 $IntelGpuLabel = $null
 if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
     try {
@@ -3257,6 +3261,12 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         substep "Keeping the installed Intel XPU environment (this host expects $expectedTorchTag)." "Yellow"
         substep "Re-run install.ps1 to replace it -- that path rebuilds with a rollback copy." "Yellow"
         $shouldRebuild = $false
+        # Keeping the venv is only half the job: the index selection below prefers NVIDIA over
+        # Intel, and the CUDA arm does NOT --reinstall-package torch, so uv would leave the
+        # +xpu wheel in place as satisfied while installing triton-windows over torch's XPU
+        # triton -- with $XpuIndexUrl null, nothing swaps it back. A half-converted venv is
+        # worse than either end state, so the whole pass stays on the xpu index.
+        $script:PreservedXpuVenv = $true
     }
 
     if ($shouldRebuild) {
@@ -3626,6 +3636,12 @@ $PinnedTorchIndexUrl = Get-PinnedTorchIndexUrl
 $TorchIndexPinned = [bool]$PinnedTorchIndexUrl
 if ($PinnedTorchIndexUrl) {
     $CuTag = Get-TorchIndexLeaf $PinnedTorchIndexUrl
+} elseif ($script:PreservedXpuVenv) {
+    # The stale check kept an installed +xpu venv rather than wiping it, which a hybrid
+    # NVIDIA + Arc host reaches. Ahead of the NVIDIA arm deliberately: converting halfway
+    # leaves +xpu torch under triton-windows and no XPU index to swap it back. install.ps1
+    # is what converts, and the message above says so.
+    $CuTag = "xpu"
 } elseif ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
 } elseif ($script:IsIntelXpu) {

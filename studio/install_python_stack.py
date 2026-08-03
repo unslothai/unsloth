@@ -1721,10 +1721,20 @@ def _ensure_xpu_torch() -> None:
             timeout = 90,
         )
     except (OSError, subprocess.TimeoutExpired):
-        # Unlike the CPU counterpart, an inconclusive probe here is EVIDENCE: the usual reason
-        # `import torch` wedges on this path is a stalled Intel driver under an unsupported
-        # +xpu wheel, and the resolver keeps that wheel because it satisfies the base range.
-        # Returning would write a manifest and repeat the same dead probe on every update.
+        # Inconclusive, and what that means depends on what is actually installed -- which the
+        # disk can answer without loading SYCL. An UNSUPPORTED or missing wheel really does
+        # need the reinstall (the resolver keeps a too-old +xpu wheel because it satisfies the
+        # base range). A SUPPORTED one means the Intel DRIVER is stalled, and no amount of
+        # reinstalling fixes a driver: this helper runs at two repair points, so it would hang
+        # 90s and re-download the whole multi-gigabyte trio twice on every single update.
+        if _xpu_wheel_supported_on_disk():
+            print(
+                _red(
+                    "   torch did not respond in time; the installed XPU build is supported, "
+                    "so this is the Intel GPU compute driver -- update it and re-run"
+                )
+            )
+            return
         probe = None
     _lines = (
         [
@@ -1789,6 +1799,20 @@ def _installed_torch_version_label() -> str:
         return ""
     match = re.search(r"""^__version__\s*=\s*['"]([^'"]*)['"]""", text, re.MULTILINE)
     return match.group(1) if match else ""
+
+
+def _xpu_wheel_supported_on_disk() -> bool:
+    """True when torch ON DISK is a +xpu wheel inside the supported release range.
+
+    The same flavour-and-range test the interpreter probe runs, but off version.py, so it
+    still answers when `import torch` cannot. Floor 2.6 because unsloth/models/_utils.py
+    raises at import for an XPU device below it; ceiling from _XPU_TORCH_PKG_SPEC.
+    """
+    label = _installed_torch_version_label().lower()
+    if "+xpu" not in label:
+        return False
+    nums = tuple(int(p) for p in label.split("+")[0].split(".")[:2] if p.isdigit())
+    return len(nums) == 2 and (2, 6) <= nums < (2, 11)
 
 
 def _ensure_venv_pip() -> bool:

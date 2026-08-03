@@ -186,6 +186,24 @@ Check "the escape clears shouldRebuild" ($_keep -match '(?s)\$installedTorchTag 
 Check "installer-managed runs still rebuild" ($_keep -match '-not \$InstallerManagedSetup')
 # Silently keeping a venv the host does not want is its own trap; say how to change it.
 Check "the escape says how to replace it" ($_keep -match 'substep "[^"]*install\.ps1')
+# Keeping the venv is only half the job. The CUDA arm does not --reinstall-package torch, so
+# uv leaves the +xpu wheel satisfied while installing triton-windows over torch's XPU triton,
+# and $XpuIndexUrl stays null so nothing swaps it back: a half-converted venv, worse than
+# either end state. The whole pass has to stay on the xpu index.
+Check "the escape steers the install too" ($_keep -match '\$script:PreservedXpuVenv = \$true')
+Check "the flag is declared up front"     ($setupText -match '(?m)^\$script:PreservedXpuVenv = \$false')
+$_tagChain = if ($setupText -match '(?s)(\$PinnedTorchIndexUrl\) \{\s*\$CuTag = Get-TorchIndexLeaf.*?\$CuTag = "cpu")') { $Matches[1] } else { "" }
+Check "the index chain was found"         ($_tagChain -ne "")
+Check "a preserved venv picks the xpu leaf" ($_tagChain -match '(?s)\$script:PreservedXpuVenv\) \{.*?\$CuTag = "xpu"')
+# Ahead of the NVIDIA arm, or the hybrid host this exists for never reaches it.
+Check "it outranks the NVIDIA arm" (
+    $_tagChain.IndexOf('$script:PreservedXpuVenv') -ge 0 -and
+    $_tagChain.IndexOf('$script:PreservedXpuVenv') -lt $_tagChain.IndexOf('$HasNvidiaSmi'))
+# ...but an explicit pin still wins, as it does everywhere else.
+Check "an explicit pin still outranks it" (
+    $_tagChain.IndexOf('$PinnedTorchIndexUrl') -lt $_tagChain.IndexOf('$script:PreservedXpuVenv'))
+# The hardware report must stay honest: there IS an NVIDIA GPU in this machine.
+Check "the report is not forced to Intel" (-not ($_keep -match '\$script:IsIntelXpu = \$true'))
 
 Write-Host "a Triton swap that strands the venv must fail the setup"
 # Both installs failing leaves NO importable triton at all. Printing alone left $stackExit at
