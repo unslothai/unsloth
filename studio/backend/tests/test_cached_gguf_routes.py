@@ -27,7 +27,13 @@ import routes.models as models_route
 from hub.services.models import gguf_variants as GV
 
 
-def _answer(repo_id, variants = (), *, default_variant = None, source = None):
+def _answer(
+    repo_id,
+    variants = (),
+    *,
+    default_variant = None,
+    source = None,
+):
     """The (listing, source) pair the route consumes; *source* is the copy it came from."""
     return GV.VariantsAnswer(
         SimpleNamespace(

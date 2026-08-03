@@ -576,6 +576,7 @@ async def _shared_variants_scan(key: tuple, compute):
 class VariantsAnswer(NamedTuple):
     """The listing, plus the directory it came from so a caller reading metadata reads the
     same copy. None means no single directory: the repo's caches answered."""
+
     response: GgufVariantsResponse
     context_source: Optional[str]
 
