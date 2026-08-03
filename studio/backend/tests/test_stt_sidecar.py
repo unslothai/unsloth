@@ -1108,13 +1108,7 @@ def test_progress_counts_only_selected_blobs_and_caps_incomplete_files(monkeypat
 def test_progress_counts_selected_snapshot_files_when_windows_cannot_symlink(monkeypatch, tmp_path):
     revision = "d" * 40
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
-    snapshot = (
-        tmp_path
-        / "hub"
-        / "models--owner--whisper"
-        / "snapshots"
-        / revision
-    )
+    snapshot = tmp_path / "hub" / "models--owner--whisper" / "snapshots" / revision
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_bytes(b"x" * 10)
     state = stt_sidecar_module._SnapshotDownloadState()

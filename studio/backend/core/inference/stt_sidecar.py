@@ -89,7 +89,11 @@ class _CachedSttSnapshot:
 class _HfByteProgress:
     """Small tqdm-compatible sink for Hugging Face transport byte updates."""
 
-    def __init__(self, report: Callable[[int], None], initial: int = 0) -> None:
+    def __init__(
+        self,
+        report: Callable[[int], None],
+        initial: int = 0,
+    ) -> None:
         self._report = report
         self._lock = threading.Lock()
         self._bytes = max(int(initial), 0)
@@ -113,9 +117,7 @@ _HF_PROGRESS_PATCH_LOCK = threading.RLock()
 
 
 @contextmanager
-def _capture_hf_download_progress(
-    report: Callable[[int], None],
-) -> Iterator[None]:
+def _capture_hf_download_progress(report: Callable[[int], None]) -> Iterator[None]:
     """Route Hugging Face's byte progress for this thread into ``report``.
 
     ``hf_hub_download`` does not expose its transport progress callback. Both
@@ -702,6 +704,7 @@ class _SnapshotDownloadState:
             # could not distinguish this STT job from unrelated Hub downloads.
             completed = 0
             for selected in selected_files:
+
                 def report_file_progress(
                     file_bytes: int,
                     *,
@@ -725,10 +728,7 @@ class _SnapshotDownloadState:
                     self._transport_bytes = max(self._transport_bytes, completed)
 
             snapshot = (
-                Path(cache_dir)
-                / f"models--{repo.replace('/', '--')}"
-                / "snapshots"
-                / revision
+                Path(cache_dir) / f"models--{repo.replace('/', '--')}" / "snapshots" / revision
             )
             if not _snapshot_is_complete(snapshot):
                 raise SttModelCompatibilityError(
