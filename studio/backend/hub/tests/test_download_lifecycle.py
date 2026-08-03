@@ -364,7 +364,7 @@ def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_p
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
 
     order = []
-    sizes = iter([0, 5_000])   # nothing before the spawn, bytes present after it
+    sizes = iter([0, 5_000])  # nothing before the spawn, bytes present after it
 
     monkeypatch.setattr(
         download_lifecycle,
@@ -372,15 +372,17 @@ def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_p
         lambda *a, **k: (order.append("sample"), next(sizes, 5_000))[1],
     )
     recorded = []
-    monkeypatch.setattr(
-        download_lifecycle, "_record_xet_success", lambda _l: recorded.append(True)
-    )
+    monkeypatch.setattr(download_lifecycle, "_record_xet_success", lambda _l: recorded.append(True))
 
     registry = download_registry.DownloadRegistry()
     key = download_registry.normalize_job_key("Org/Model")
     assert registry.claim(
-        key, download_registry.TRANSPORT_XET, repo_type = "model", repo_id = "Org/Model",
-        variant = None, blob_hashes = frozenset({"blob"}),
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = None,
+        blob_hashes = frozenset({"blob"}),
     )[0]
 
     def _spawn():
@@ -388,7 +390,8 @@ def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_p
         return _Proc(0)
 
     download_lifecycle.launch_worker(
-        registry, key,
+        registry,
+        key,
         spawn = _spawn,
         hf_token = None,
         label = "Org/Model",
