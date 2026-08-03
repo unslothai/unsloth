@@ -397,7 +397,11 @@ with sync_playwright() as p:
                 row = popover.locator("[data-model-picker-option]", has_text = hint).first
         return row if _count(row) else None
 
-    def find_gear(popover, hint, tries = 6):
+    def find_gear(
+        popover,
+        hint,
+        tries = 6,
+    ):
         # data-model-picker-option sits on the row button; the gear is its
         # sibling, so it cannot be reached through the row. Match it by the model
         # its own label names, which also keeps this from pressing the gear of
