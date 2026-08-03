@@ -67,15 +67,13 @@ updates:
       default-days: 7
       semver-minor-days: 3
       semver-patch-days: 3
-    # Tauri v2 renders Studio on Linux through GTK3, and the gtk-rs
-    # GTK3 bindings are frozen: `gtk` and `gdk` ended at 0.18.2 and
-    # will never ship a 0.19+. `glib` and `gdk-pixbuf` DO keep
-    # releasing, so Dependabot happily proposes 0.22 for them while
-    # `gtk`/`gdk` stay on 0.18. That lands two incompatible copies of
-    # glib in one tree and native_clipboard.rs stops compiling, since
-    # it hands a gdk_pixbuf::Pixbuf to a gtk::Clipboard. Pin both to
-    # the 0.18 line so 0.18.x patches still flow. Revisit only when
-    # Tauri moves off GTK3.
+    # Tauri renders Studio on Linux through GTK3 and the gtk-rs GTK3
+    # bindings are archived at 0.18.2, so `gtk`/`gdk` will never ship
+    # 0.19+. Moving `glib`/`gdk-pixbuf` past 0.18 puts two
+    # incompatible copies in the tree and native_clipboard.rs stops
+    # compiling: `gtk::Clipboard::wait_for_image` returns a 0.18
+    # `Pixbuf` our `gdk_pixbuf` no longer accepts. This also
+    # suppresses security PRs above 0.18, leaving alerts only.
     ignore:
       - dependency-name: "glib"
         versions: [">= 0.19"]
