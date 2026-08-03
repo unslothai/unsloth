@@ -1069,7 +1069,7 @@ with sync_playwright() as p:
     # The follow-up must materialize as queued work instead of a second direct
     # append. This control exists only while that queued item is cancellable.
     page.wait_for_selector(
-        'button[aria-label="Stop queued message"]',
+        'button[aria-label="Remove queued prompt 1"]',
         state = "attached",
         timeout = 10_000,
     )
@@ -1082,7 +1082,7 @@ with sync_playwright() as p:
                 document.querySelectorAll('[data-role="assistant"]').length >= want &&
                 replies.every((reply) => (reply.innerText || '').trim().length > 0) &&
                 !document.querySelector('button[aria-label="Stop generating"]') &&
-                !document.querySelector('button[aria-label="Stop queued message"]');
+                !document.querySelector('button[aria-label="Remove queued prompt 1"]');
         }""",
         arg = rapid_bubbles_before + 2,
         timeout = TURN_TIMEOUT_MS * 2,
