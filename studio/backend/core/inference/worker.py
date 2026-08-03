@@ -13,6 +13,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 from loggers import get_logger
 import os
@@ -572,6 +573,22 @@ def _prepare_generate_audio(cmd, resp_queue: Any, cancel_event, drain_event) -> 
     return True
 
 
+def _backend_declares_seed(backend) -> bool:
+    """Whether this backend's generate_chat_response declares a seed parameter.
+
+    A signature check, not a capability claim: a backend honoring seed through
+    **kwargs would read as False here. That is accurate for the backends that
+    ship today, and failing closed only costs an ignored seed, never a crash.
+    """
+    generate = getattr(backend, "generate_chat_response", None)
+    if generate is None:
+        return False
+    try:
+        return "seed" in inspect.signature(generate).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
@@ -611,6 +628,12 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         ):
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
+
+        # Seeded sampling is MLX-only. The transformers backend has no seed
+        # parameter and no **kwargs, so forwarding unconditionally would turn
+        # its documented "ignores the seed" behavior into a TypeError.
+        if "seed" in cmd and _backend_declares_seed(backend):
+            gen_kwargs["seed"] = cmd["seed"]
 
         use_adapter = cmd.get("use_adapter")
         if use_adapter is not None:

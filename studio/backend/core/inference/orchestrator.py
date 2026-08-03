@@ -744,6 +744,7 @@ class InferenceOrchestrator:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -760,6 +761,8 @@ class InferenceOrchestrator:
             "repetition_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
+        if seed is not None:
+            cmd["seed"] = seed
         # Only forward template kwargs the caller set, for older worker compat.
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
@@ -979,6 +982,7 @@ class InferenceOrchestrator:
         continue_final_message: bool = False,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -1042,6 +1046,7 @@ class InferenceOrchestrator:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             continue_final_message = continue_final_message,
+            seed = seed,
         )
 
         # Create the mailbox BEFORE sending, rechecking _unload_pending under
@@ -1708,6 +1713,7 @@ class InferenceOrchestrator:
         continue_final_message: bool = False,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess.
 
@@ -1739,6 +1745,7 @@ class InferenceOrchestrator:
             continue_final_message = continue_final_message,
             stats_holder = stats_holder,
             presence_penalty = presence_penalty,
+            seed = seed,
         )
 
     def generate_chat_completion_with_tools(
@@ -1771,6 +1778,7 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
         reasoning_prefilled: bool = False,
+        seed: Optional[int] = None,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process,
@@ -1810,6 +1818,7 @@ class InferenceOrchestrator:
                 # last turn wins, like the GGUF tool loop
                 stats_holder = stats_holder,
                 presence_penalty = presence_penalty,
+                seed = seed,
             )
             if use_adapter is not None:
                 stream = self.generate_with_adapter_control(
@@ -1933,6 +1942,7 @@ class InferenceOrchestrator:
         continue_final_message: bool = False,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        seed: Optional[int] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -1988,6 +1998,7 @@ class InferenceOrchestrator:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 continue_final_message = continue_final_message,
+                seed = seed,
             )
 
             # Claim the worker BEFORE sending, so a Stop on some OTHER chat -- still queued on the

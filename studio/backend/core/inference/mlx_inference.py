@@ -953,6 +953,63 @@ def _init_mlx_distributed():
     return group, rank, world_size
 
 
+def _normalize_mlx_seed(seed):
+    """Map any request seed onto ``mx.random.key``'s unsigned domain.
+
+    The seed field is shared with backends that accept values this one cannot:
+    llama-server forwards ``-1`` unchanged, while ``mx.random.key`` raises for
+    negatives and for anything >= 2**64. Reducing modulo 2**64 is total over
+    every Python int, so no schema-valid seed can fail mid-generation.
+    """
+    return int(seed) % (2**64)
+
+
+def _make_seeded_mlx_sampler(
+    seed,
+    *,
+    temp,
+    top_p,
+    min_p,
+    top_k,
+    min_tokens_to_keep = 1,
+):
+    """mlx_lm.make_sampler's chain with a request-scoped key instead of global RNG.
+
+    ``mx.random.seed`` mutates thread-local state that later requests inherit, so
+    an unseeded request following a seeded one would silently become reproducible.
+    A per-request key keeps determinism inside the request that asked for it.
+
+    The filtering stages are mlx_lm's own ``apply_*`` functions rather than
+    reimplementations: supplying a custom sampler suppresses the chain mlx_lm and
+    mlx_vlm would otherwise build, so anything not reused here would be silently
+    dropped from seeded requests only.
+    """
+    import mlx.core as mx
+    from mlx_lm.sample_utils import apply_top_p, apply_min_p, apply_top_k
+
+    if temp == 0:
+        # argmax draws no randomness; seeding it would be meaningless, not wrong.
+        return lambda logprobs: mx.argmax(logprobs, axis = -1)
+
+    stages = []
+    if 0 < top_p < 1.0:
+        stages.append(lambda x: apply_top_p(x, top_p))
+    if min_p != 0.0:
+        stages.append(lambda x: apply_min_p(x, min_p, min_tokens_to_keep))
+    if top_k > 0:
+        stages.append(lambda x: apply_top_k(x, top_k))
+
+    state = {"key": mx.random.key(_normalize_mlx_seed(seed))}
+
+    def _sampler(logprobs):
+        for stage in stages:
+            logprobs = stage(logprobs)
+        state["key"], subkey = mx.random.split(state["key"])
+        return mx.random.categorical(logprobs * (1 / temp), key = subkey)
+
+    return _sampler
+
+
 def _make_mlx_presence_penalty_processor(penalty: float):
     """Presence penalty as an mlx_lm/mlx_vlm logits processor, matching the safetensors path.
 
@@ -1432,6 +1489,7 @@ class MLXInferenceBackend:
         preserve_thinking = None,
         continue_final_message = False,
         presence_penalty = 0.0,
+        seed = None,
         _adapter_state = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
@@ -1478,6 +1536,7 @@ class MLXInferenceBackend:
                 preserve_thinking = preserve_thinking,
                 continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
+                seed = seed,
                 _adapter_state = _adapter_state,
             )
         else:
@@ -1496,6 +1555,7 @@ class MLXInferenceBackend:
                 preserve_thinking = preserve_thinking,
                 continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
+                seed = seed,
                 _adapter_state = _adapter_state,
             )
         yield from stream
@@ -1517,6 +1577,7 @@ class MLXInferenceBackend:
         preserve_thinking = None,
         continue_final_message = False,
         presence_penalty = 0.0,
+        seed = None,
         _adapter_state = None,
     ):
         from mlx_lm import stream_generate
@@ -1571,13 +1632,22 @@ class MLXInferenceBackend:
         think_prefix = detect_think_prefill(
             prompt, getattr(self._tokenizer, "all_special_tokens", None)
         )
-        sampler = make_sampler(
-            temp = temperature,
-            top_p = top_p,
-            top_k = int(top_k or 0),
-            min_p = float(min_p or 0.0),
-            min_tokens_to_keep = 1,
-        )
+        if seed is None:
+            sampler = make_sampler(
+                temp = temperature,
+                top_p = top_p,
+                top_k = int(top_k or 0),
+                min_p = float(min_p or 0.0),
+                min_tokens_to_keep = 1,
+            )
+        else:
+            sampler = _make_seeded_mlx_sampler(
+                seed,
+                temp = temperature,
+                top_p = top_p,
+                top_k = int(top_k or 0),
+                min_p = float(min_p or 0.0),
+            )
         # Repetition and/or presence penalty processors (GGUF/safetensors parity).
         logits_processors = []
         if repetition_penalty is not None and float(repetition_penalty) not in (
@@ -1709,6 +1779,7 @@ class MLXInferenceBackend:
         preserve_thinking = None,
         continue_final_message = False,
         presence_penalty = 0.0,
+        seed = None,
         _adapter_state = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
@@ -1828,6 +1899,17 @@ class MLXInferenceBackend:
             min_p = float(min_p or 0.0),
         )
         vlm_kwargs.update(self._kv_quant_generate_kwargs())
+        if seed is not None:
+            # generate_step builds its temperature/top_p/min_p/top_k sampler only
+            # when sampler is None, so a seeded request must supply the whole
+            # chain -- otherwise seeding would silently disable those controls.
+            vlm_kwargs["sampler"] = _make_seeded_mlx_sampler(
+                seed,
+                temp = temperature,
+                top_p = top_p,
+                top_k = int(top_k or 0),
+                min_p = float(min_p or 0.0),
+            )
         _rep_active = repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
             1.0,

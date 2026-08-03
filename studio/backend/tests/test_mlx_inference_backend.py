@@ -2864,3 +2864,50 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     assert backend._template_override["applied"] is None
     assert backend._template_override["reason"] == mlx_inference.MLX_TEMPLATE_DROPS_IMAGE
     assert backend._processor.chat_template == "{{ native }}"
+# ── Per-request seed ────────────────────────────────────────────────
+
+
+def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
+    """The pinned mlx-vlm has no seed parameter, and a newer one ignores it at
+    Studio's default min_p/top_k -- so the seed must ride on the sampler."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    seen = []
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "<image> prompt"
+    )
+
+    def _vlm_stream(*_args, **kwargs):
+        seen.append(kwargs)
+        yield SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "<image> prompt",
+    )
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
+    backend._processor = SimpleNamespace(chat_template = "template")
+    args = (
+        [{"role": "user", "content": [{"type": "image"}]}],
+        object(),
+        0.7,
+        0.9,
+        40,
+        0.01,
+        4,
+        1.0,
+        None,
+    )
+
+    assert list(backend._generate_vlm(*args, seed = 4242)) == ["ok"]
+    assert callable(seen[-1]["sampler"]) and "seed" not in seen[-1]
+    assert list(backend._generate_vlm(*args)) == ["ok"]
+    assert "sampler" not in seen[-1]

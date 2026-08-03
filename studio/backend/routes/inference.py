@@ -15498,6 +15498,7 @@ async def openai_chat_completions(
                 max_tokens = effective_max_tokens,
                 repetition_penalty = payload.repetition_penalty,
                 presence_penalty = payload.presence_penalty,
+                seed = payload.seed,
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
@@ -15859,6 +15860,7 @@ async def openai_chat_completions(
         max_new_tokens = effective_max_tokens or 2048,
         repetition_penalty = payload.repetition_penalty,
         presence_penalty = payload.presence_penalty,
+        seed = payload.seed,
     )
     # Forward reasoning kwargs; the worker/template wrapper peels off any the
     # template doesn't accept.
