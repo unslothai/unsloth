@@ -431,6 +431,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     model_info["context_length"] = int(_context_length)
             except Exception as _ctx_exc:
                 logger.warning("context_length forward failed: %s", _ctx_exc)
+            # Backend post-load audio classification outranks pre-load config.
+            model_info.update(
+                {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
+            )
             # Forward chat_template_info so the parent can classify capabilities.
             try:
                 _tpl_info = _entry.get("chat_template_info")
@@ -709,23 +713,31 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
         audio_type = cmd.get("audio_type")
 
         if audio_type == "whisper":
+            if not hasattr(backend, "generate_whisper_response"):
+                # MLX has no ASR path; report it instead of a raw AttributeError.
+                raise RuntimeError("Whisper transcription is not supported on the MLX backend yet.")
             generator = backend.generate_whisper_response(
                 audio_array = audio_array,
                 cancel_event = cancel_event,
             )
         else:
-            generator = backend.generate_audio_input_response(
-                messages = cmd.get("messages", []),
-                system_prompt = cmd.get("system_prompt", ""),
-                audio_array = audio_array,
-                temperature = cmd.get("temperature", 0.7),
-                top_p = cmd.get("top_p", 0.9),
-                top_k = cmd.get("top_k", 40),
-                min_p = cmd.get("min_p", 0.0),
-                max_new_tokens = cmd.get("max_new_tokens", 512),
-                repetition_penalty = cmd.get("repetition_penalty", 1.0),
-                cancel_event = cancel_event,
-            )
+            audio_kwargs = {
+                "messages": cmd.get("messages", []),
+                "system_prompt": cmd.get("system_prompt", ""),
+                "audio_array": audio_array,
+                "temperature": cmd.get("temperature", 0.7),
+                "top_p": cmd.get("top_p", 0.9),
+                "top_k": cmd.get("top_k", 40),
+                "min_p": cmd.get("min_p", 0.0),
+                "max_new_tokens": cmd.get("max_new_tokens", 512),
+                "repetition_penalty": cmd.get("repetition_penalty", 1.0),
+                "cancel_event": cancel_event,
+            }
+            # Forward only when present, as the "generate" branch does.
+            use_adapter = cmd.get("use_adapter")
+            if use_adapter is not None:
+                audio_kwargs["use_adapter"] = use_adapter
+            generator = backend.generate_audio_input_response(**audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
 
@@ -960,6 +972,25 @@ def run_inference_process(
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
                     _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "generate_audio_input":
+                    # Drain discipline as in "generate" (see that branch).
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
+                    cancel_event.clear()
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
+                    _handle_generate_audio_input(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "generate_audio":
+                    # No TTS here, but codec checkpoints still reach this loop
+                    # (dispatch is by device). Answer, or the parent waits 120s.
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "audio_error",
+                            "request_id": cmd.get("request_id"),
+                            "error": "Text-to-speech is not supported on the MLX backend yet.",
+                        },
+                    )
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
@@ -989,6 +1020,18 @@ def run_inference_process(
                     )
                 elif cmd_type == "shutdown":
                     return
+                else:
+                    # As in the GPU loop: dropping a command silently costs the
+                    # caller its whole timeout.
+                    logger.warning("Unknown MLX command type: %s", cmd_type)
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "error",
+                            "request_id": cmd.get("request_id"),
+                            "error": f"Unknown command type: {cmd_type}",
+                        },
+                    )
             except Exception as exc:
                 logger.error("MLX command error (%s): %s", cmd_type, exc)
                 _send_response(

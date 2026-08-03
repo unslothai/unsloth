@@ -68,6 +68,7 @@ from .models.loader_utils import (
     get_model_name,
     _resolve_hub_repo_cached_file,
     _tokenizer_cache_dir,
+    _tokenizer_revision,
     _tokenizer_wants_local_only,
 )
 from .models._utils import _convert_torchao_model
@@ -460,8 +461,11 @@ def _has_tokenizer_model(tokenizer, token = None):
         return False
     if os.path.isdir(source):
         return os.path.isfile(os.path.join(source, "tokenizer.model"))
-    if source in _TOKENIZER_MODEL_CACHE:
-        return _TOKENIZER_MODEL_CACHE[source]
+    # Refs of one repo can differ in whether they ship the asset, so memoize per ref.
+    revision = _tokenizer_revision(tokenizer)
+    cache_key = (source, revision)
+    if cache_key in _TOKENIZER_MODEL_CACHE:
+        return _TOKENIZER_MODEL_CACHE[cache_key]
 
     # Hub repo id: probe local cache before model_info (issue #7481).
     cache_dir = _tokenizer_cache_dir(tokenizer) or os.environ.get("HF_HUB_CACHE")
@@ -476,23 +480,24 @@ def _has_tokenizer_model(tokenizer, token = None):
         token = token,
         local_files_only = True,
         cache_dir = cache_dir,
+        revision = revision,
     )
     if cached_path is not None:
-        _TOKENIZER_MODEL_CACHE[source] = True
+        _TOKENIZER_MODEL_CACHE[cache_key] = True
         return True
 
     if _tokenizer_wants_local_only(tokenizer):
         return False
 
     try:
-        repo_info = HfApi(token = token).model_info(source, files_metadata = False)
+        repo_info = HfApi(token = token).model_info(source, revision = revision, files_metadata = False)
     except Exception:
         return False
 
     has_tokenizer_model = any(
         sibling.rfilename == "tokenizer.model" for sibling in (repo_info.siblings or [])
     )
-    _TOKENIZER_MODEL_CACHE[source] = has_tokenizer_model
+    _TOKENIZER_MODEL_CACHE[cache_key] = has_tokenizer_model
     return has_tokenizer_model
 
 
@@ -555,6 +560,7 @@ def _preserve_sentencepiece_tokenizer_assets(
                     token = token,
                     local_files_only = True,
                     cache_dir = cache_dir,
+                    revision = _tokenizer_revision(tokenizer),
                 )
                 if cached_path is not None:
                     downloaded_path = cached_path
@@ -567,6 +573,7 @@ def _preserve_sentencepiece_tokenizer_assets(
                             token = token,
                             local_files_only = _tokenizer_wants_local_only(tokenizer),
                             cache_dir = cache_dir,
+                            revision = _tokenizer_revision(tokenizer),
                         )
                     except Exception:
                         downloaded_path = None

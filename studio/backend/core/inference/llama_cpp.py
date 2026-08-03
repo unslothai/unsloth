@@ -12,6 +12,7 @@ import atexit
 import contextlib
 import functools
 import json
+import logging
 import math
 import os
 import re
@@ -10506,12 +10507,30 @@ class LlamaCppBackend:
         self._diffusion_requested_ngl = None
         if self._process is None:
             return
+        # Not every _process is a Popen: tests stand one in to mean "a server is
+        # loaded" without spawning anything. Terminating what cannot be terminated
+        # is not an error worth reporting, but everything else still has to happen,
+        # so this skips only the signalling and falls through to the finally rather
+        # than returning early and duplicating part of it.
+        terminable = hasattr(self._process, "terminate")
+        if not terminable:
+            logger.debug("no terminable llama-server process to kill; clearing state")
         try:
-            self._process.terminate()
-            self._process.wait(timeout = 5)
+            if terminable:
+                self._process.terminate()
+                self._process.wait(timeout = 5)
         except subprocess.TimeoutExpired:
-            logger.warning("llama-server did not exit on SIGTERM, sending SIGKILL")
+            # Signal first, report after. logger here is a structlog PrintLogger
+            # writing straight to stdout, so a closed stream raises out of the
+            # warning; doing it first meant SIGKILL was skipped and the server
+            # left running with the reference about to be dropped below.
             self._process.kill()
+            # Between the two, deliberately. After kill() so the signal never
+            # depends on a log write, and before this wait() because a second
+            # TimeoutExpired raised in here is not caught by the handler it is
+            # raised from -- it escapes, and a truly unkillable server would then
+            # be reported by nothing at all.
+            logger.warning("llama-server did not exit on SIGTERM, sent SIGKILL")
             self._process.wait(timeout = 5)
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
@@ -10921,8 +10940,30 @@ class LlamaCppBackend:
         return killed
 
     def _cleanup(self):
-        """atexit handler to ensure llama-server is terminated."""
-        self._kill_process()
+        """atexit handler to ensure llama-server is terminated.
+
+        Nothing here may report a failure through the logging machinery. By the
+        time atexit runs, the streams the handlers write to can already be closed,
+        and a write then fails -- which is how this was found, as several unrelated
+        tracebacks printed after the test summary.
+
+        Two different mechanisms, because there are two kinds of logger in play.
+        This module's own logger is a structlog PrintLogger writing straight to
+        stdout (loggers/config.py), which has no error handling of its own and does
+        not consult raiseExceptions at all, so only the except below covers it.
+        raiseExceptions covers the stdlib loggers other libraries install, which
+        report a broken handler by printing their own traceback instead of raising.
+        Neither one alone is enough.
+        """
+        raise_exceptions = logging.raiseExceptions
+        logging.raiseExceptions = False
+        try:
+            self._kill_process()
+        except Exception:
+            # atexit swallows this anyway, and there is nowhere left to report it.
+            pass
+        finally:
+            logging.raiseExceptions = raise_exceptions
 
     @staticmethod
     def _fit_off_retry_eligible(cmd: "list[str]", use_fit: bool) -> bool:
