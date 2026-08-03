@@ -405,7 +405,11 @@ with sync_playwright() as p:
     # every reload. Until then the row carries no gear, so "no gear" means either
     # a multi-quant repo or a probe still in flight. Waiting instead of sleeping
     # keeps a slow probe from being read as multi-quant.
-    SOLE_QUANT_SETTLE_MS = 6_000
+    # Same budget the rest of this driver allows a slow page (open_picker, the
+    # networkidle waits). A pending probe and a genuine multi-quant repo render
+    # through the same branch, so there is no DOM state to wait on instead; only
+    # a multi-quant repo pays this, and it pays it once per open_config.
+    SOLE_QUANT_SETTLE_MS = 30_000
 
     def row_gear(
         popover,
@@ -413,9 +417,11 @@ with sync_playwright() as p:
         timeout_ms = SOLE_QUANT_SETTLE_MS,
     ):
         # The gear is a sibling of the row, not inside [data-model-picker-option],
-        # so scope it by the repo id its aria-label carries.
-        gear = popover.locator(
-            f'button[aria-label^="Inference settings for"][aria-label*="{hint}"]'
+        # so scope it by the repo id its aria-label carries. Matched
+        # case-insensitively, like the has_text lookup that found the row.
+        gear = popover.get_by_role(
+            "button",
+            name = re.compile(f"^Inference settings for .*{re.escape(hint)}", re.IGNORECASE),
         ).first
         try:
             gear.wait_for(state = "visible", timeout = timeout_ms)
