@@ -826,8 +826,6 @@ def test_the_env_the_child_inherits_is_dropped_too():
     outlive the model just removed. The same scrub covers every Unsloth-owned spec
     block."""
     src = _load_model_source()
-    gate_at = src.index("for _pv_spec_var in (")
-    block = src[gate_at : gate_at + 900]
     for var in (
         "LLAMA_ARG_SPEC_DRAFT_MODEL",
         "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
@@ -837,8 +835,9 @@ def test_the_env_the_child_inherits_is_dropped_too():
         "LLAMA_ARG_MODEL_DRAFT",
         "LLAMA_ARG_HFD_REPO",
     ):
-        assert var in block, f"{var} survives the drafter drop into the child env"
-    assert "env.pop(_pv_spec_var, None)" in block
+        assert var in llama_cpp._SPEC_ENV_VARS, f"{var} survives the drafter drop into the child env"
+    gate_at = src.index("for _pv_spec_var in _SPEC_ENV_VARS")
+    assert "env.pop(_pv_spec_var, None)" in src[gate_at : gate_at + 200]
 
 
 def test_a_managed_spec_block_clears_the_inherited_spec_env():
@@ -848,7 +847,7 @@ def test_a_managed_spec_block_clears_the_inherited_spec_env():
     env adds; the launch clears it instead. Extras that own --spec-type keep theirs,
     since there the two genuinely accumulate."""
     src = _load_model_source()
-    at = src.index("for _pv_spec_var in (")
+    at = src.index("for _pv_spec_var in _SPEC_ENV_VARS")
     gate = src[src.rindex("if ", 0, at) : at]
     assert "not _extra_args_set_spec_type(extra_args)" in gate
     assert "_pv_draft_unpinnable" in gate
@@ -1289,6 +1288,27 @@ def test_the_mtp_fallback_gets_the_requested_slots_back():
     assert slots == 4
 
 
+def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
+    """A trailing --spec-default cannot override MTP that extras or the env supplied:
+    llama.cpp applies the env first and appends types rather than replacing them, so the
+    retry would relaunch the mode that just failed and lose a main model that loads fine
+    without it. It strips the spec group, and takes the child env with it."""
+    src = _load_model_source()
+    retry = src[src.index("_fb_tail = cmd[_spec_start") : src.index("fallback_cmd = cmd[:_spec_start]")]
+    assert "_extra_args_requests_mtp(extra_args, env = _launch_spec_env)" in retry
+    assert "strip_spec = True" in retry
+    assert "env.pop(_fb_spec_var, None)" in retry
+    # ...and that strip really removes the group rather than shadowing it.
+    assert llama_cpp.strip_shadowing_flags(
+        ["--spec-type", "draft-mtp", "--top-k", "40"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = True,
+        strip_template = False,
+        strip_split_mode = False,
+    ) == ["--top-k", "40"]
+
+
 def test_the_fallback_gets_back_what_the_fit_sized_not_what_the_user_asked():
     """_slots_that_fit_on_gpu can already have cut the count before the clamp, so restoring
     the raw ask would launch a server the VRAM budget never covered."""
@@ -1362,7 +1382,7 @@ def test_the_restore_is_scoped_to_the_retry_that_actually_drops_mtp():
     assert "healthy" in _names(owners[0].test), "the restore must only run on a failed MTP start"
     # ...and after the retry argv exists, or it would rewrite nothing.
     src = _load_model_source()
-    assert src.index("fallback_cmd = (") < src.index("_mtp_clamped_slots > 1")
+    assert src.index("fallback_cmd = cmd[:_spec_start]") < src.index("_mtp_clamped_slots > 1")
     assert src.index("_mtp_clamped_slots > 1") < src.index("_spawn_and_wait(fallback_cmd")
 
 

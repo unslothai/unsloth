@@ -137,6 +137,17 @@ LLAMA_SERVER_NOT_FOUND_DETAIL = (
 )
 
 # Shared by the pre-teardown and post-metadata rejections (#7205).
+# Every env var that can put a drafter or spec type into the child. Pre-b8955
+# spellings included: the new names arrived 2026-04-28 and the launchable floor is
+# 2025-08-30, so a build in that window reads the old ones and would keep the drafter.
+_SPEC_ENV_VARS = (
+    "LLAMA_ARG_SPEC_DRAFT_MODEL",
+    "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
+    "LLAMA_ARG_SPEC_TYPE",
+    "LLAMA_ARG_MODEL_DRAFT",
+    "LLAMA_ARG_HFD_REPO",
+)
+
 _PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR = (
     "This Mac's Metal device is virtualised, where offloaded layers can return "
     "corrupt output, and the installed unsloth_zoo diffusion shim has no --ngl, "
@@ -9985,16 +9996,7 @@ class LlamaCppBackend:
                 # left alone: their flags and the env accumulate, which is what the slot
                 # clamp above reads.
                 if _pv_draft_unpinnable or not _extra_args_set_spec_type(extra_args):
-                    for _pv_spec_var in (
-                        "LLAMA_ARG_SPEC_DRAFT_MODEL",
-                        "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
-                        "LLAMA_ARG_SPEC_TYPE",
-                        # Pre-b8955 spellings: the new names arrived 2026-04-28 and the
-                        # launchable floor is 2025-08-30, so a build in that window
-                        # reads these instead and would keep the drafter.
-                        "LLAMA_ARG_MODEL_DRAFT",
-                        "LLAMA_ARG_HFD_REPO",
-                    ):
+                    for _pv_spec_var in _SPEC_ENV_VARS:
                         env.pop(_pv_spec_var, None)
 
                 # The projector guard has a worse blind spot: it only clears Unsloth's
@@ -10398,15 +10400,24 @@ class LlamaCppBackend:
                         _retry_reason,
                     )
                     self._kill_process()
-                    fallback_cmd = (
-                        cmd[:_spec_start]
-                        + ["--spec-default"]
-                        + cmd[_spec_start + len(spec_flags) :]
-                    )
-                    # User/env MTP survives in the tail; llama.cpp takes the last
-                    # spec flag, so a trailing --spec-default overrides it too.
+                    _fb_tail = cmd[_spec_start + len(spec_flags) :]
+                    # Appending --spec-default cannot clear MTP the extras or the env
+                    # carry: types accumulate, so it would retry the mode that just
+                    # failed and lose a main model that loads fine without it. The
+                    # tail loses its spec group and the env goes with it, the same way
+                    # the crash replay does it.
                     if _extra_args_requests_mtp(extra_args, env = _launch_spec_env):
-                        fallback_cmd.append("--spec-default")
+                        _fb_tail = strip_shadowing_flags(
+                            _fb_tail,
+                            strip_context = False,
+                            strip_cache = False,
+                            strip_spec = True,
+                            strip_template = False,
+                            strip_split_mode = False,
+                        )
+                        for _fb_spec_var in _SPEC_ENV_VARS:
+                            env.pop(_fb_spec_var, None)
+                    fallback_cmd = cmd[:_spec_start] + ["--spec-default"] + _fb_tail
                     # fallback_cmd inherits the MTP slot clamp, but this retry is not
                     # MTP: hand back the slots the KV fit was sized for, or --parallel N
                     # silently serves one chat at a time (and the requested-vs-requested
