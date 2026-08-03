@@ -240,6 +240,7 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     assert "$process.Path" not in detector
     assert "[UnslothStudioFinalPath]::GetProcessImagePath($process.Id)" in detector
 
+
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_desktop_process_filter_keeps_only_the_current_user_sid(shell: str):
