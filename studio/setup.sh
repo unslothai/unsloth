@@ -1190,6 +1190,34 @@ _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
+# Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support
+# is an explicit index pin, not autodetection -- so the installed runtime IS the signal.
+# Read the local label off disk first: a CPU-only host must not pay for an `import torch` on
+# every `unsloth studio update` just to be told it has no GPU.
+_setup_torch_is_xpu=false
+_setup_xpu_ready=false
+for _setup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+    [ -f "$_setup_tv" ] || continue
+    grep -q "^__version__ = '[^']*+xpu" "$_setup_tv" 2>/dev/null || continue
+    _setup_torch_is_xpu=true
+    # A +xpu wheel installs fine on a host whose driver never initialises, so the wheel alone
+    # must not claim a GPU; only the runtime answer reaches the summary below.
+    if "$VENV_DIR/bin/python" -c "import torch,sys; sys.exit(0 if torch.xpu.is_available() else 1)" >/dev/null 2>&1; then
+        _setup_xpu_ready=true
+    fi
+    break
+done
+
+# bitsandbytes carries XPU kernels (libbitsandbytes_xpu2025.so, _xpu2026.so) only from 0.50.0,
+# and unsloth's own floor is 0.45.5, so a pre-XPU wheel satisfies it forever. install.sh raises
+# the floor, but `unsloth studio update` runs THIS file and never install.sh, so an existing XPU
+# user would keep a bitsandbytes without kernels and lose 4-bit QLoRA indefinitely. Keyed on the
+# wheel, not the runtime: a stalled driver is a driver problem, not a reason to skip the upgrade.
+# --no-deps: torch and numpy are already in. Best effort, like the install.sh and Windows passes.
+if [ "$_setup_torch_is_xpu" = true ]; then
+    run_quiet "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
+        substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable."
+fi
 # NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
 # a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
 # This also keeps a wedged rocminfo/amd-smi from hanging setup before the
@@ -1281,6 +1309,11 @@ elif [ "$_setup_amd_detected" = true ]; then
     substep "ROCm: $_setup_rocm_root"
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
     [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
+elif [ "$_setup_xpu_ready" = true ]; then
+    # Ranks below NVIDIA and AMD for the same reason as setup.ps1: those hosts get their own
+    # wheels, and only a confirmed XPU runtime reaches here.
+    step "gpu" "Intel GPU detected (XPU runtime)"
+    substep "PyTorch XPU (SYCL) provides training and GPU inference on this GPU."
 elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ "$(uname -m 2>/dev/null)" = "arm64" ]; then
     # Apple Silicon: llama.cpp builds with Metal over unified memory, so not a CPU-only host.
     step "gpu" "Apple Silicon (Metal, unified memory)"
