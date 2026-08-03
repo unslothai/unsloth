@@ -1482,7 +1482,7 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
         fi
-        rm -rf "$LLAMA_CPP_DIR" 2>/dev/null || true
+        rm -rf "$LLAMA_CPP_DIR" || true
         if [ -e "$LLAMA_CPP_DIR" ]; then
             if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
                 _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
@@ -2185,9 +2185,10 @@ else
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
-            # Without this the raw rm error aborts under errexit and the desktop
-            # app shows a bare exit code, with the fresh build silently stranded.
-            rm -rf "$LLAMA_CPP_DIR" 2>/dev/null || true
+            # Without the || true the raw rm error aborts under errexit and the
+            # desktop app shows a bare exit code, with the fresh build stranded.
+            # stderr is kept: rm names the exact subpath, which we cannot.
+            rm -rf "$LLAMA_CPP_DIR" || true
             if [ -e "$LLAMA_CPP_DIR" ]; then
                 if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
                     _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"

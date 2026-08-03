@@ -46,10 +46,17 @@ echo "=== setup.sh: neither destructive replace runs blind ==="
 
 # rm -rf failing under errexit aborts with a raw "Permission denied" and no
 # [TAURI:ERROR], so the desktop app shows a bare exit code.
-if [ "$(grep -c 'rm -rf "$LLAMA_CPP_DIR" 2>/dev/null || true' "$SETUP_SH")" -ge 2 ]; then
+if [ "$(grep -c 'rm -rf "$LLAMA_CPP_DIR" || true' "$SETUP_SH")" -ge 2 ]; then
     ok "both replace sites tolerate a failing rm instead of aborting raw"
 else
     bad "both replace sites tolerate a failing rm instead of aborting raw"
+fi
+# rm names the exact subpath that refused to go; the messages below can only
+# name the install root, so discarding its stderr loses the useful half.
+if grep -q 'rm -rf "$LLAMA_CPP_DIR" 2>/dev/null' "$SETUP_SH"; then
+    bad "the failing rm keeps its stderr"
+else
+    ok "the failing rm keeps its stderr"
 fi
 if [ "$(grep -c 'if \[ -e "$LLAMA_CPP_DIR" \]; then' "$SETUP_SH")" -ge 2 ]; then
     ok "both replace sites check the postcondition"
@@ -59,7 +66,7 @@ fi
 assert_contains "a stranded build reports where it was left" \
     "$SETUP_SH" 'The new build is at $_BUILD_TMP.'
 assert_contains "a bare rm -rf of the install dir is gone" \
-    "$SETUP_SH" 'rm -rf "$LLAMA_CPP_DIR" 2>/dev/null || true'
+    "$SETUP_SH" 'rm -rf "$LLAMA_CPP_DIR" || true'
 if grep -qE '^\s*rm -rf "\$LLAMA_CPP_DIR"\s*$' "$SETUP_SH"; then
     bad "no unguarded rm -rf of the install dir remains"
 else
