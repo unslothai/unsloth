@@ -3435,7 +3435,9 @@ class FastLlamaModel:
             target_modules = final_modules,
             lora_dropout = lora_dropout,
             bias = bias,
-            task_type = TaskType.SEQ_2_SEQ_LM if is_seq2seq else (TaskType.CAUSAL_LM if not is_classification else TaskType.SEQ_CLS),
+            task_type = TaskType.SEQ_2_SEQ_LM
+            if is_seq2seq
+            else (TaskType.CAUSAL_LM if not is_classification else TaskType.SEQ_CLS),
             layers_to_transform = layers_to_transform,
             init_lora_weights = init_lora_weights,
             loftq_config = loftq_config,

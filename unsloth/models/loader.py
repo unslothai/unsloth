@@ -1879,10 +1879,7 @@ class FastModel(FastBaseModel):
         for _cfg_key, _cfg_val in task_config_attrs.items():
             set_task_config_attr(model_config, _cfg_key, _cfg_val)
         if auto_model is None:
-            if (
-                AutoModelForSeq2SeqLM._model_mapping.get(type(model_config), None)
-                is not None
-            ):
+            if AutoModelForSeq2SeqLM._model_mapping.get(type(model_config), None) is not None:
                 auto_model = AutoModelForSeq2SeqLM
             elif _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
