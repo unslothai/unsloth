@@ -375,7 +375,8 @@ with sync_playwright() as p:
         except Exception:
             pass
 
-    def select_on_device_row(popover, hint):
+    def reveal_on_device_row(popover, hint):
+        """Bring the row into view without clicking it."""
         od = page.get_by_role("tab", name = "On Device").first
         if _count(od):
             od.click()
@@ -389,17 +390,56 @@ with sync_playwright() as p:
                 search.fill(hint)
                 page.wait_for_timeout(700)
                 row = popover.locator("[data-model-picker-option]", has_text = hint).first
-        if _count(row) == 0:
+        return row if _count(row) else None
+
+    def select_on_device_row(popover, hint):
+        row = reveal_on_device_row(popover, hint)
+        if row is None:
             return None
         row.click()
         page.wait_for_timeout(800)
         return row
 
-    def open_config(popover, hint):
-        if select_on_device_row(popover, hint) is None:
+    # The collapsed sole-quant row appears only after an async probe lands, so an absent
+    # gear means either a multi-quant repo or a probe in flight, with no DOM state to
+    # tell them apart. Only a multi-quant repo pays the full wait, once per open_config.
+    SOLE_QUANT_SETTLE_MS = 30_000
+
+    def row_gear(
+        popover,
+        hint,
+        timeout_ms = SOLE_QUANT_SETTLE_MS,
+    ):
+        # The gear is a sibling of the row, not inside [data-model-picker-option], so
+        # scope it by repo id; case-insensitive to match the has_text row lookup.
+        gear = popover.get_by_role(
+            "button",
+            name = re.compile(f"^Inference settings for .*{re.escape(hint)}", re.IGNORECASE),
+        ).first
+        try:
+            gear.wait_for(state = "visible", timeout = timeout_ms)
+        except Exception:
             return None
-        gear = popover.locator('button[aria-label^="Inference settings for"]').first
-        if _count(gear) == 0:
+        return gear
+
+    def open_config(popover, hint):
+        if reveal_on_device_row(popover, hint) is None:
+            return None
+        # A sole-quant repo is a collapsed row whose click selects the model and closes
+        # the picker, so click its gear without touching the row; a multi-quant repo
+        # shows gears only once the row is expanded.
+        gear = row_gear(popover, hint)
+        if gear is None:
+            if select_on_device_row(popover, hint) is None:
+                return None
+            if not popover.is_visible():
+                # The probe landed mid-click, so the row selected the model; reopen for
+                # the gear that is now there.
+                popover = open_picker()
+                if reveal_on_device_row(popover, hint) is None:
+                    return None
+            gear = row_gear(popover, hint)
+        if gear is None:
             return None
         gear.click()
         page.wait_for_timeout(800)
