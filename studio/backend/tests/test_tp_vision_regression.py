@@ -143,6 +143,12 @@ _ALLOWED_TP_DROP_GUARDS = {
     # launch under the CPU-only GPU mask (no visible devices) aborts the server
     # instead of the intended CPU-only load (#6414).
     "gpu_memory_mode == 'manual' and gpu_layers == 0",
+    # Virtualised Metal: offloaded layers return corrupt tokens, so the load is rewritten
+    # to manual/0 and nothing is left to split (no multi-GPU given up, a paravirtual Mac
+    # has one emulated device). Guarded on the hardware alone, since the rewrite applies
+    # to every request here, including one already asking for manual/0 (whose extras can
+    # still carry an --override-tensor the route does not strip).
+    "_paravirtual_cpu_forced",
 }
 
 

@@ -457,7 +457,8 @@ def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
 
 def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
     # A user --spec-type draft-mtp in extra_args must be neutralised on the reload
-    # (append a last-wins --spec-default) so MTP can't re-engage and loop.
+    # so MTP can't re-engage and loop. Appending --spec-default cannot do it:
+    # llama.cpp appends spec types rather than replacing, so the flag has to go.
     b = _recovery_backend()
     b._last_load_intent = replace(
         b._last_load_intent,
@@ -475,7 +476,8 @@ def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
     assert done.wait(timeout = 5)
     assert captured["speculative_type"] == "off"
-    assert captured["extra_args"][-1] == "--spec-default"
+    assert "--spec-type" not in captured["extra_args"]
+    assert "draft-mtp" not in captured["extra_args"]
 
 
 def test_runtime_recovery_restores_requested_mode(monkeypatch):
