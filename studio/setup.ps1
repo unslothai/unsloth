@@ -3394,33 +3394,36 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             if (-not $_torchIsXpu) {
                 substep "Intel GPU detected but PyTorch XPU is unavailable -- reinstalling XPU PyTorch" "Cyan"
                 $SkipPythonDeps = $false
-            } else {
-                # XPU torch is already in place, but the bitsandbytes floor and the Triton
-                # replacement live in the dependency pass below. A venv that reached +xpu
-                # without them -- an explicit xpu pin, or an update whose first pass ran the
-                # pre-XPU setup.ps1 -- would take this fast path on every later update and
-                # never get them. Same two conditions those passes install for.
-                $_xpuDepsCode = "import importlib.metadata as m; " +
-                    "print('BNB=' + next((d.version for d in m.distributions() " +
-                    "if (d.metadata['Name'] or '').lower() == 'bitsandbytes'), '')); " +
-                    "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
-                    "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
-                $_xpuDeps = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_xpuDepsCode
-                if ($_xpuDeps.Ok) {
-                    $_bnbVer = if ($_xpuDeps.Output -match '(?m)^BNB=(\S+)\s*$') { $Matches[1] } else { "" }
-                    # An unreadable or unparseable version is treated as stale, the safe
-                    # direction: one extra dependency pass, never a venv left on kernels that
-                    # cannot do 4-bit. Trailing suffixes (0.51.0.dev0) are dropped, not cast.
-                    $_bnbNum = ($_bnbVer -replace '[^0-9.].*$', '').TrimEnd('.')
-                    $_bnbStale = $true
-                    if ($_bnbNum -match '^\d+\.\d+') {
-                        try { $_bnbStale = [version]$_bnbNum -lt [version]"0.50.0" } catch {}
-                    }
-                    $_tritonWinPresent = $_xpuDeps.Output -match '(?m)^TRITONWIN=\S+\s*$'
-                    if ($_bnbStale -or $_tritonWinPresent) {
-                        substep "Intel XPU dependencies are stale -- running the dependency pass" "Cyan"
-                        $SkipPythonDeps = $false
-                    }
+            }
+        }
+        # Keyed off the installed wheel as well as the scan, for the same reason the
+        # bitsandbytes pass is keyed off the index leaf: an explicit xpu pin on a host the scan
+        # skips (a mixed NVIDIA + Intel box, where $HasNvidiaSmi suppresses it) still ends up on
+        # XPU, and $script:IsIntelXpu is false there. Whatever put the venv on a +xpu wheel, the
+        # bitsandbytes floor and the Triton replacement live in the dependency pass below, so a
+        # venv that reached +xpu without them would take this fast path on every later update
+        # and never get them. Same two conditions those passes install for.
+        if ($SkipPythonDeps -and ($script:IsIntelXpu -or $installedTorchTag -eq "xpu")) {
+            $_xpuDepsCode = "import importlib.metadata as m; " +
+                "print('BNB=' + next((d.version for d in m.distributions() " +
+                "if (d.metadata['Name'] or '').lower() == 'bitsandbytes'), '')); " +
+                "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
+                "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
+            $_xpuDeps = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_xpuDepsCode
+            if ($_xpuDeps.Ok) {
+                $_bnbVer = if ($_xpuDeps.Output -match '(?m)^BNB=(\S+)\s*$') { $Matches[1] } else { "" }
+                # An unreadable or unparseable version is treated as stale, the safe
+                # direction: one extra dependency pass, never a venv left on kernels that
+                # cannot do 4-bit. Trailing suffixes (0.51.0.dev0) are dropped, not cast.
+                $_bnbNum = ($_bnbVer -replace '[^0-9.].*$', '').TrimEnd('.')
+                $_bnbStale = $true
+                if ($_bnbNum -match '^\d+\.\d+') {
+                    try { $_bnbStale = [version]$_bnbNum -lt [version]"0.50.0" } catch {}
+                }
+                $_tritonWinPresent = $_xpuDeps.Output -match '(?m)^TRITONWIN=\S+\s*$'
+                if ($_bnbStale -or $_tritonWinPresent) {
+                    substep "Intel XPU dependencies are stale -- running the dependency pass" "Cyan"
+                    $SkipPythonDeps = $false
                 }
             }
         }
