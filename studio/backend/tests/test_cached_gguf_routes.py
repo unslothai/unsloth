@@ -3,6 +3,7 @@
 
 import asyncio
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -2085,6 +2086,93 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
     assert [v.quant for v in result.variants] == ["Q4_K_M"]
     assert result.context_length is None
     assert elapsed < 3
+
+
+def test_native_context_read_runs_on_a_daemon_thread(monkeypatch):
+    """A thread pool's workers are joined at interpreter exit, so a read abandoned on a hung
+    mount would hold up shutdown for as long as the mount stays hung (measured: the full
+    length of the read). A daemon thread does not."""
+    observed = {}
+    entered = threading.Event()
+
+    def stalled(model, *, is_local):
+        observed["daemon"] = threading.current_thread().daemon
+        entered.set()
+        time.sleep(0.5)
+        return 8192
+
+    monkeypatch.setattr(models_route, "_read_native_context_length", stalled)
+    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS", 0.1)
+
+    async def drive():
+        return await models_route._read_native_context_length_bounded("/tmp", True)
+
+    assert asyncio.run(drive()) is None
+    assert entered.wait(3)
+    assert observed["daemon"] is True
+
+
+def _live_context_threads() -> int:
+    return sum(1 for thread in threading.enumerate() if thread.name == "native-ctx")
+
+
+def _drain_context_threads(timeout: float = 5.0) -> None:
+    """Reads abandoned by an earlier test outlive it, so wait them out before counting."""
+    end = time.monotonic() + timeout
+    while _live_context_threads() and time.monotonic() < end:
+        time.sleep(0.02)
+
+
+def test_native_context_reads_stop_starting_once_every_slot_is_stranded(monkeypatch):
+    """Retries against a hung mount must not start a thread apiece; they wait for a slot
+    and give up inside the bound."""
+    release = threading.Event()
+
+    def stalled(model, *, is_local):
+        release.wait(5)
+        return 8192
+
+    monkeypatch.setattr(models_route, "_read_native_context_length", stalled)
+    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_MAX_CONCURRENT_READS", 2)
+    _drain_context_threads()
+
+    async def drive():
+        for _ in range(2):  # strand every slot
+            assert await models_route._read_native_context_length_bounded("/tmp", True) is None
+        live_before = _live_context_threads()
+        began = time.monotonic()
+        answer = await models_route._read_native_context_length_bounded("/tmp", True)
+        return answer, time.monotonic() - began, live_before, _live_context_threads()
+
+    try:
+        answer, elapsed, before, after = asyncio.run(drive())
+        assert answer is None
+        assert elapsed < 1  # gave up inside the bound rather than waiting on the mount
+        assert before == 2  # the cap held
+        assert after <= before  # and nothing new was started
+    finally:
+        release.set()
+
+
+def test_concurrent_native_context_reads_all_keep_their_length(monkeypatch):
+    """Ordinary concurrency must queue for a slot, not skip the read. Giving up when no slot
+    was free on the spot dropped most lengths on a healthy cache (measured 4 of 64)."""
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: (time.sleep(0.002), 8192)[1],
+    )
+
+    async def drive():
+        return await asyncio.gather(
+            *[
+                models_route._read_native_context_length_bounded("/tmp", True)
+                for _ in range(64)
+            ]
+        )
+
+    assert asyncio.run(drive()) == [8192] * 64
 
 
 def test_offline_reads_context_from_the_copy_the_variants_came_from(monkeypatch, tmp_path):
