@@ -899,22 +899,25 @@ class _DummyModel(torch.nn.Module):
 class _DummyTrainer:
     def __init__(self):
         self.args = SimpleNamespace(remove_unused_columns = True)
-        collator_args = {
-            "pad_token_id": 0,
-            "completion_only_loss": False,
-            "return_tensors": "pt",
-        }
-        optional_flags = [
-            {"padding_free": True, "return_position_ids": False},
-            {"padding_free": True},
+        collator_attempts = [
+            {"pad_token_id": 0, "padding_free": True, "return_position_ids": False},
+            {"pad_token_id": 0, "padding_free": True},
+            {"pad_token_id": 0},
             {},
         ]
-        for extra in optional_flags:
+        last_error = None
+        for kwargs in collator_attempts:
             try:
-                self.data_collator = DataCollatorForLanguageModeling(**collator_args, **extra)
+                self.data_collator = DataCollatorForLanguageModeling(**kwargs)
                 break
-            except TypeError:
+            except TypeError as exc:
+                last_error = exc
                 continue
+        else:
+            raise RuntimeError(
+                "Could not construct DataCollatorForLanguageModeling with any "
+                f"supported keyword set; last error: {last_error}"
+            ) from last_error
         # Ensure attributes exist even if the constructor rejected the flags.
         if not hasattr(self.data_collator, "padding_free"):
             self.data_collator.padding_free = True
