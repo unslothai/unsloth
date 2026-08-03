@@ -256,7 +256,7 @@ function Install-UnslothStudio {
             $missingSegments = @($leaf) + $missingSegments
             $existingPath = $parent
         }
-        if (-not ("UnslothStudioFinalPath" -as [type])) {
+        if (-not ("UnslothStudioFinalPathV2" -as [type])) {
             Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -264,7 +264,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
-public static class UnslothStudioFinalPath
+public static class UnslothStudioFinalPathV2
 {
     private const uint FileShareRead = 0x00000001;
     private const uint FileShareWrite = 0x00000002;
@@ -362,7 +362,7 @@ public static class UnslothStudioFinalPath
 }
 '@
         }
-        $resolved = [UnslothStudioFinalPath]::Resolve($existingPath)
+        $resolved = [UnslothStudioFinalPathV2]::Resolve($existingPath)
         if ($resolved.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolved = '\\' + $resolved.Substring(8)
         } elseif ($resolved.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -1573,7 +1573,7 @@ exit 0
         # process has Studio files open and should not create a false abort.
         foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
             $executable = $null
-            try { $executable = [UnslothStudioFinalPath]::GetProcessImagePath($process.Id) } catch { continue }
+            try { $executable = [UnslothStudioFinalPathV2]::GetProcessImagePath($process.Id) } catch { continue }
             if (-not $executable) { continue }
             try { $executable = Get-StudioFinalPath -Path $executable } catch { continue }
             if (Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact) {

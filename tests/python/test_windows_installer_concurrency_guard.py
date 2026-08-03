@@ -238,7 +238,28 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     assert "Get-CimInstance" not in detector
     assert ".CommandLine" not in detector
     assert "$process.Path" not in detector
-    assert "[UnslothStudioFinalPath]::GetProcessImagePath($process.Id)" in detector
+    assert "[UnslothStudioFinalPathV2]::GetProcessImagePath($process.Id)" in detector
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_versioned_native_helper_loads_after_older_installer_type(shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    final_path_helper = _extract(r"    function Get-StudioFinalPath \{.*?\n    \}\n", source)
+    script = f"""
+$ErrorActionPreference = "Stop"
+Add-Type -TypeDefinition @'
+public static class UnslothStudioFinalPath
+{{
+    public static string Resolve(string path) {{ return path; }}
+}}
+'@
+{final_path_helper}
+Get-StudioFinalPath -Path $env:SystemRoot | Out-Null
+Write-Output ([bool]("UnslothStudioFinalPathV2" -as [type]))
+Write-Output ([bool]([UnslothStudioFinalPathV2]::GetProcessImagePath($PID)))
+"""
+    assert _run_powershell(shell, script, os.environ.copy()).splitlines() == ["True", "True"]
+
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
