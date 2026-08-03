@@ -101,9 +101,19 @@ const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
 function Logo() {
   return (
-    <div className="flex flex-col items-center gap-4">
-      <img src="/sticker.png" alt="Unsloth" className="h-[72px] w-[72px] object-contain" />
-      <img src="/studio.png" alt="Unsloth Studio" className="h-auto w-[250px] object-contain dark:invert" />
+    <div className="flex items-center justify-center gap-3">
+      <img
+        src="/sticker.png"
+        alt=""
+        aria-hidden="true"
+        className="h-[60px] w-[60px] object-contain"
+      />
+      <span
+        className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
+        style={{ fontFamily: '"Hellix", sans-serif' }}
+      >
+        unsloth
+      </span>
     </div>
   );
 }
@@ -152,11 +162,14 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 flex-col items-center justify-center">
         <Logo />
-        <p className="mt-4 text-xs font-bold text-muted-foreground">
+      </div>
+      <div className="mb-10 flex flex-col items-center gap-3">
+        <p
+          className="text-ui-13 font-semibold tracking-[-0.01em] text-muted-foreground"
+          style={{ fontFamily: '"Hellix", sans-serif' }}
+        >
           To install Unsloth, click Get Started.
         </p>
-      </div>
-      <div className="mb-10">
         <ShimmerButton
           onClick={onInstall}
           shimmerColor="#a7f3d0"

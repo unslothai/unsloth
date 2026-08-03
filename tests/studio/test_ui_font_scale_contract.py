@@ -58,6 +58,15 @@ def test_preference_writes_a_scale_not_the_root_font_size():
     assert "style.fontSize" not in STORE
 
 
+def test_default_ui_font_size_is_fifteen():
+    assert "UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 }" in STORE
+    assert "const UI_FONT_SIZE_CSS_BASE = 16;" in STORE
+    assert "c.uiFontSize ?? UI_FONT_SIZE_RANGE.default" in STORE
+    assert "effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default" in STORE
+    assert "effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE" in STORE
+    assert "--ui-font-scale: 0.9375;" in INDEX_CSS
+
+
 def test_named_text_tokens_scale():
     for token, rem in (
         ("--text-xs", "0.75rem"),
@@ -111,7 +120,7 @@ def test_cn_knows_the_ui_typography_tokens():
 
 def test_icons_follow_the_ui_font_size_itself():
     """Standard glyphs render at --ui-icon-size, which follows the UI font
-    size itself: matches it below the 16px default and grows at half the
+    size itself: matches it below the 16px CSS scale base and grows at half the
     change above it (setting 20 gives 18px icons), so icons track the text
     when shrinking and read slightly smaller than it when growing. Sub 16px
     glyphs keep their proportions through the same curve as a factor.

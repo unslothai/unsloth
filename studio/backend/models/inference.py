@@ -454,18 +454,10 @@ class GenerateRequest(BaseModel):
     image_base64: Optional[str] = Field(None, description = "Base64 encoded image for vision models")
 
 
-class LoadResponse(BaseModel):
-    """Response after loading a model"""
+class _InferenceRuntimeFields(BaseModel):
+    """Runtime fields shared by load and status responses."""
 
-    status: str = Field(..., description = "Load status")
-    model: str = Field(..., description = "Model identifier")
-    display_name: str = Field(..., description = "Display name of the model")
     is_vision: bool = Field(False, description = "Whether model is a vision model")
-    is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
-    is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
-    is_local_model: bool = Field(
-        False, description = "Whether the loaded model came from a local filesystem path"
-    )
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
     )
@@ -479,9 +471,6 @@ class LoadResponse(BaseModel):
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
-    inference: dict = Field(
-        ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
-    )
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
@@ -607,6 +596,22 @@ class LoadResponse(BaseModel):
     )
 
 
+class LoadResponse(_InferenceRuntimeFields):
+    """Response after loading a model"""
+
+    status: str = Field(..., description = "Load status")
+    model: str = Field(..., description = "Model identifier")
+    display_name: str = Field(..., description = "Display name of the model")
+    is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
+    is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
+    is_local_model: bool = Field(
+        False, description = "Whether the loaded model came from a local filesystem path"
+    )
+    inference: dict = Field(
+        ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
+    )
+
+
 class UnloadResponse(BaseModel):
     """Response after unloading a model"""
 
@@ -642,7 +647,7 @@ class LoadProgressResponse(BaseModel):
     fraction: float = Field(0.0, description = "bytes_loaded / bytes_total, clamped to 0..1.")
 
 
-class InferenceStatusResponse(BaseModel):
+class InferenceStatusResponse(_InferenceRuntimeFields):
     """Current inference backend status"""
 
     active_model: Optional[str] = Field(
@@ -652,116 +657,19 @@ class InferenceStatusResponse(BaseModel):
         None,
         description = "Loadable identifier for the active model.",
     )
-    is_vision: bool = Field(False, description = "Whether the active model is a vision model")
     is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")
     is_local_model: bool = Field(
         False, description = "Whether the active model came from a local filesystem path"
     )
-    is_diffusion: bool = Field(
-        False, description = "Whether the active model is a block-diffusion model (DiffusionGemma)"
-    )
-    diffusion_requested_ngl: Optional[int] = Field(
-        None,
-        description = "GPU-layer count the diffusion runner was ASKED for, when that differs "
-        "from what it applied: an unsloth_zoo shim without --ngl drops the split and runs "
-        "Auto, so gpu_layers reports -1 while this reports the standing request. None for "
-        "non-diffusion models and whenever the ask and the applied split agree.",
-    )
     gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
-    is_audio: bool = Field(False, description = "Whether the active model is a TTS audio model")
-    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
-    has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )
-    requires_trust_remote_code: bool = Field(
-        False,
-        description = "Whether the active model requires trust_remote_code to be enabled for loading.",
-    )
-    supports_reasoning: bool = Field(
-        False, description = "Whether the active model supports reasoning/thinking mode"
-    )
-    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
-        Field(
-            "enable_thinking",
-            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
-        )
-    )
-    reasoning_effort_levels: List[str] = Field(
-        default_factory = list,
-        description = "Discrete reasoning_effort levels the template offers when reasoning_style is 'enable_thinking_effort' (e.g. ['high', 'max']); empty otherwise",
-    )
-    reasoning_always_on: bool = Field(
-        False, description = "Whether reasoning is always on (not toggleable)"
-    )
-    supports_preserve_thinking: bool = Field(
-        False,
-        description = "Whether the active model's template understands the optional preserve_thinking kwarg",
-    )
-    supports_tools: bool = Field(
-        False, description = "Whether the active model supports tool calling"
-    )
-    context_length: Optional[int] = Field(None, description = "Context length of the active model")
-    max_context_length: Optional[int] = Field(
-        None,
-        description = "Maximum context length currently available for the active model",
-    )
-    native_context_length: Optional[int] = Field(
-        None,
-        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
-    )
-    cache_type_kv: Optional[str] = Field(
-        None,
-        description = (
-            "KV cache quantization dtype "
-            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32'), "
-            "or None for default"
-        ),
-    )
-    chat_template: Optional[str] = Field(
-        None, description = "Model's default chat template (Jinja2 source), if any"
-    )
     chat_template_override: Optional[str] = Field(
         None,
         description = "Active chat template override applied at load time, or None if model is using its default",
-    )
-    speculative_type: Optional[str] = Field(
-        None,
-        description = (
-            "Canonical UI-facing requested speculative decoding mode "
-            "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
-            "'ngram-simple'), round-tripped from the original LoadRequest. "
-            "None when no model is loaded."
-        ),
-    )
-    spec_draft_n_max: Optional[int] = Field(
-        None,
-        description = (
-            "Active --spec-draft-n-max for MTP speculative decoding, or "
-            "None when the platform default is in effect."
-        ),
-    )
-    tensor_parallel: bool = Field(
-        False,
-        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
-    )
-    gpu_memory_mode: Literal["auto", "manual"] = Field(
-        "auto",
-        description = "Active GPU memory strategy ('auto' or 'manual').",
-    )
-    gpu_layers: int = Field(
-        -1,
-        description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
-    )
-    n_cpu_moe: int = Field(
-        0,
-        description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
-    )
-    tensor_split: Optional[List[float]] = Field(
-        None,
-        description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
     )
     requested_context_length: Optional[int] = Field(
         None,
@@ -769,42 +677,6 @@ class InferenceStatusResponse(BaseModel):
             "The n_ctx the active GGUF load was invoked with (0 = Auto). Lets the "
             "UI re-seed a Manual + Auto-layers context pin on hydration, where "
             "context_length only exposes the resolved value. None for non-GGUF."
-        ),
-    )
-    n_layers: Optional[int] = Field(
-        None,
-        description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
-    )
-    n_moe_layers: int = Field(
-        0,
-        description = "Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not an MoE model.",
-    )
-    gpu_ids: Optional[List[int]] = Field(
-        None,
-        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
-    )
-    requested_gpu_ids: Optional[List[int]] = Field(
-        None,
-        description = (
-            "GPU placement pool requested by the user before fit-time narrowing, "
-            "or None for automatic selection."
-        ),
-    )
-    requested_parallel_slots: Optional[int] = Field(
-        None,
-        description = (
-            "Parallel decode slots the active load was invoked with (per-load "
-            "n_parallel, else the server-wide --parallel default). None when "
-            "no GGUF model is loaded and for the diffusion runner, which "
-            "ignores --parallel."
-        ),
-    )
-    parallel_slots: Optional[int] = Field(
-        None,
-        description = (
-            "Serving slots the active llama-server actually runs (--parallel "
-            "after any fit-time slot reduction). None when no GGUF model is "
-            "loaded and for the diffusion runner, which ignores --parallel."
         ),
     )
     llama_cpp_supports_mtp: bool = Field(
@@ -1541,6 +1413,57 @@ class ChatCompletionRequest(BaseModel):
             # stream=true. The mode still drives the loop's per-call gate.
             self.confirm_tool_calls = True
         return self
+
+
+class ChatCountTokensRequest(BaseModel):
+    """Count prompt tokens for a local GGUF chat without generating."""
+
+    model_config = {"extra": "allow"}
+
+    model: str = Field(
+        "default",
+        description = "Model identifier (informational; the active model is used)",
+    )
+    messages: list[ChatMessage] = Field(
+        ...,
+        description = "Conversation messages in OpenAI chat form",
+    )
+    tools: Optional[list[dict]] = Field(
+        None,
+        description = "Optional OpenAI tool definitions included in the prompt",
+    )
+    enable_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Render the template in thinking mode, as a completion would",
+    )
+    reasoning_effort: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Reasoning effort level the completion would request",
+    )
+    preserve_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Keep historical <think> blocks in the rendered prompt",
+    )
+    enable_tools: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Enable tool calling for supported models",
+    )
+    enabled_tools: Optional[list[str]] = Field(
+        None,
+        description = "[x-unsloth] List of enabled built-in tool names",
+    )
+    mcp_enabled: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Append tools from every enabled MCP server",
+    )
+    rag_scope: Optional[dict] = Field(
+        None,
+        description = "[x-unsloth] Hidden RAG retrieval scope for search_knowledge_base",
+    )
+    auto_heal_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
+    )
 
 
 class ToolConfirmRequest(BaseModel):

@@ -1,5 +1,5 @@
 {
-  "productName": "Unsloth Studio (Desktop)",
+  "productName": "Unsloth",
   "identifier": "ai.unsloth.studio",
   "build": {
     "beforeDevCommand": {
@@ -21,7 +21,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Unsloth Studio (Desktop)",
+        "title": "Unsloth",
         "width": 760,
         "height": 560,
         "center": true,
@@ -86,6 +86,9 @@
       },
       "deb": {
         "desktopTemplate": "./linux/unsloth.desktop",
+        "provides": ["unsloth-studio-desktop"],
+        "conflicts": ["unsloth-studio-desktop"],
+        "replaces": ["unsloth-studio-desktop"],
         "postRemoveScript": "./linux/postremove.sh"
       }
     }
