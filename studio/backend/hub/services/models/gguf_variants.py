@@ -573,13 +573,20 @@ async def _shared_variants_scan(key: tuple, compute):
     return await asyncio.shield(task)
 
 
-async def get_gguf_variants_response(
+class VariantsAnswer(NamedTuple):
+    """The listing, plus the directory it came from so a caller reading metadata reads the
+    same copy. None means no single directory: the repo's caches answered."""
+    response: GgufVariantsResponse
+    context_source: Optional[str]
+
+
+async def get_gguf_variants_answer(
     repo_id: str,
     prefer_local_cache: bool = False,
     offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = None,
-):
+) -> VariantsAnswer:
     """
     List available GGUF quantization variants for a HuggingFace repo
     or a local directory (e.g. LM Studio model folder).
@@ -588,6 +595,9 @@ async def get_gguf_variants_response(
     with file sizes, whether the model supports vision, and the recommended
     default variant.
     """
+    # Set by whichever branch answers, and returned with the listing: the HF cache answers
+    # before local_path, so a caller cannot infer the copy from the request alone.
+    answered_from: list[Optional[str]] = [None]
 
     def _compute() -> GgufVariantsResponse:
         repo_cache_dir = (
@@ -695,6 +705,7 @@ async def get_gguf_variants_response(
         # Local directory path (e.g. LM Studio models) — scan filesystem
         if is_local_path(repo_id):
             variants, has_vision = list_local_gguf_variants(repo_id)
+            answered_from[0] = repo_id
             # The load id is this path, so a quant offered here has to resolve here.
             return _local_response(repo_id, variants, has_vision, _complete_quants_under(repo_id))
 
@@ -710,6 +721,7 @@ async def get_gguf_variants_response(
             variants, has_vision = list_local_gguf_variants(str(snapshot_scope))
             if not (variants or has_vision):
                 return None
+            answered_from[0] = str(snapshot_scope)
             return _with_state_partials(
                 _local_response(
                     repo_id, variants, has_vision, _complete_quants_under(str(snapshot_scope))
@@ -731,6 +743,7 @@ async def get_gguf_variants_response(
             if local_path and is_local_path(local_path):
                 variants, has_vision = list_local_gguf_variants(local_path)
                 if variants or has_vision:
+                    answered_from[0] = local_path
                     # Same reason as the is_local_path branch above.
                     return _local_response(
                         repo_id, variants, has_vision, _complete_quants_under(local_path)
@@ -1022,7 +1035,12 @@ async def get_gguf_variants_response(
             default_variant = default_variant,
         )
 
-    def _compute_with_cleanables() -> GgufVariantsResponse:
+    def _compute_with_cleanables() -> VariantsAnswer:
+        # Returned with the answer, not read from the closure afterwards: coalesced callers
+        # share one computation and must all see the copy it actually answered from.
+        return VariantsAnswer(_compute_response(), answered_from[0])
+
+    def _compute_response() -> GgufVariantsResponse:
         skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
         try:
             response = _compute()
@@ -1070,3 +1088,21 @@ async def get_gguf_variants_response(
             status_code = 500,
             detail = "Failed to list GGUF variants: " + scrubbed,
         )
+
+
+async def get_gguf_variants_response(
+    repo_id: str,
+    prefer_local_cache: bool = False,
+    offline: bool = False,
+    local_path: Optional[str] = None,
+    hf_token: Optional[str] = None,
+) -> GgufVariantsResponse:
+    """The listing alone, for callers that do not read metadata off the same copy."""
+    answer = await get_gguf_variants_answer(
+        repo_id,
+        prefer_local_cache = prefer_local_cache,
+        offline = offline,
+        local_path = local_path,
+        hf_token = hf_token,
+    )
+    return answer.response

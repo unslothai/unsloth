@@ -2980,19 +2980,20 @@ async def get_gguf_variants(
         hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants
 
-        response = await hub_gguf_variants.get_gguf_variants_response(
+        answer = await hub_gguf_variants.get_gguf_variants_answer(
             repo_id,
             prefer_local_cache = prefer_local_cache,
             offline = offline,
             local_path = local_path,
             hf_token = hf_token,
         )
-        # A pin names the copy that will load; a repo-wide walk can read another revision's length.
-        # offline counts alongside prefer_local_cache because the service treats either as
-        # local-only, so the length has to come from the copy the variants came from.
-        local_only = prefer_local_cache or offline
-        context_model = hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path) or (
-            local_path if local_only and local_path and is_local_path(local_path) else repo_id
+        response = answer.response
+        # The copy the listing answered from, else the pin naming the copy that will load.
+        # Both beat a repo-wide walk, which can read another revision's length.
+        context_model = (
+            answer.context_source
+            or hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path)
+            or repo_id
         )
         local = is_local_path(context_model)
 

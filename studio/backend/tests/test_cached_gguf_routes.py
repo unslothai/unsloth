@@ -27,6 +27,19 @@ import routes.models as models_route
 from hub.services.models import gguf_variants as GV
 
 
+def _answer(repo_id, variants = (), *, default_variant = None, source = None):
+    """The (listing, source) pair the route consumes; *source* is the copy it came from."""
+    return GV.VariantsAnswer(
+        SimpleNamespace(
+            repo_id = repo_id,
+            variants = list(variants),
+            has_vision = False,
+            default_variant = default_variant,
+        ),
+        source,
+    )
+
+
 def _repo(
     repo_id: str,
     files: list[SimpleNamespace],
@@ -1823,15 +1836,10 @@ def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, t
 
     async def scoped_variants(repo_id, **kwargs):
         calls.append((repo_id, kwargs))
-        return SimpleNamespace(
-            repo_id = repo_id,
-            variants = [],
-            has_vision = False,
-            default_variant = None,
-        )
+        return _answer(repo_id)
 
     context_calls = []
-    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
     monkeypatch.setattr(
         models_route,
         "_read_native_context_length",
@@ -1870,10 +1878,10 @@ def test_gguf_variants_route_reads_context_from_the_pinned_snapshot(monkeypatch,
     snapshot.mkdir(parents = True)
 
     async def scoped_variants(repo_id, **kwargs):
-        return SimpleNamespace(repo_id = repo_id, variants = [], has_vision = False, default_variant = None)
+        return _answer(repo_id)
 
     context_calls = []
-    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
     monkeypatch.setattr(
         models_route,
         "_read_native_context_length",
@@ -1900,10 +1908,10 @@ def test_gguf_variants_route_ignores_a_pin_naming_another_repo(monkeypatch, tmp_
     other.mkdir(parents = True)
 
     async def scoped_variants(repo_id, **kwargs):
-        return SimpleNamespace(repo_id = repo_id, variants = [], has_vision = False, default_variant = None)
+        return _answer(repo_id)
 
     context_calls = []
-    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
     monkeypatch.setattr(
         models_route,
         "_read_native_context_length",
@@ -1930,9 +1938,9 @@ def test_gguf_variants_route_forwards_offline(monkeypatch):
 
     async def scoped_variants(repo_id, **kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(repo_id = repo_id, variants = [], has_vision = False, default_variant = None)
+        return _answer(repo_id)
 
-    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
     monkeypatch.setattr(
         models_route, "_read_native_context_length", lambda model, *, is_local: None
     )
@@ -2058,9 +2066,9 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
     monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS", 0.2)
 
     async def scoped_variants(repo_id, **kwargs):
-        return SimpleNamespace(
-            repo_id = repo_id,
-            variants = [
+        return _answer(
+            repo_id,
+            [
                 SimpleNamespace(
                     filename = "model-Q4_K_M.gguf",
                     quant = "Q4_K_M",
@@ -2069,11 +2077,10 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
                     downloaded = True,
                 )
             ],
-            has_vision = False,
             default_variant = "Q4_K_M",
         )
 
-    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
 
     async def drive():
         began = time.monotonic()
@@ -2173,14 +2180,15 @@ def test_concurrent_native_context_reads_all_keep_their_length(monkeypatch):
 
 
 def test_offline_reads_context_from_the_copy_the_variants_came_from(monkeypatch, tmp_path):
-    """offline alone makes the service local-only, so the length has to come from that
-    directory. Reading repo_id instead reports another copy's context, or none."""
+    """The length has to come from the copy the listing came from. Which copy that is cannot
+    be read off the request: the HF cache answers before local_path, so the service reports
+    it and the route follows."""
     context_calls = []
 
     async def scoped_variants(repo_id, **kwargs):
-        return SimpleNamespace(repo_id = repo_id, variants = [], has_vision = False, default_variant = None)
+        return _answer(repo_id, source = kwargs["local_path"])
 
-    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
     monkeypatch.setattr(
         models_route,
         "_read_native_context_length",
@@ -2601,3 +2609,44 @@ def test_one_caller_giving_up_leaves_the_scan_for_the_others(monkeypatch):
 
     assert answer.repo_id == "/models/x"
     assert len(scans) == 1
+
+
+def test_offline_context_follows_the_hf_cache_when_it_answers(monkeypatch, tmp_path):
+    """The HF cache answers before local_path, so with both present the length must come
+    from the cache. Picking local_path on the offline flag alone attached another copy's
+    context to the cache's variants. Real service, no stub."""
+    context_calls = []
+
+    monkeypatch.setattr(
+        GV,
+        "list_gguf_variants_from_hf_cache",
+        lambda repo_id, root = None: (
+            [
+                SimpleNamespace(
+                    filename = "m-Q4_K_M.gguf",
+                    quant = "Q4_K_M",
+                    display_label = None,
+                    size_bytes = 10,
+                )
+            ],
+            False,
+            {"q4_k_m"},
+        ),
+    )
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
+    )
+
+    asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            offline = True,
+            local_path = str(tmp_path),  # an ordinary directory, not this repo's cache
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert context_calls == [("org/repo", False)]
