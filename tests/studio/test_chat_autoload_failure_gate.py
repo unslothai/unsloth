@@ -10,6 +10,7 @@ cached repo whose load rejected fell through to fetching an unrelated default mo
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -115,6 +116,10 @@ function resolveSpeculativeSettingsForLoad() {
 }
 function readLastLocalModelLoad() { return SCENARIO.lastLoaded; }
 function recordLastLocalModelLoad(_x: any) {}
+// Only reached for a GGUF with an explicit GPU pin or tensor parallel; neutral
+// defaults so a scenario that does pin one gets a plain answer, not a throw.
+async function prepareHfTokenForUse(token: any) { return { proceed: true, token }; }
+async function fetchGgufStagedMetadata(_payload: any) { return { isDiffusion: false }; }
 function resolveInitialConfig(_id: string, _variant: any) {
   return { config: {
     customContextLength: null, maxSeqLength: null, gpuMemoryMode: null,
@@ -221,9 +226,25 @@ def _require_node():
         pytest.skip("node --experimental-strip-types not available")
 
 
+_IMPORT_BLOCK = re.compile(r"\bimport\s+(?:type\s+)?\{([^}]*)\}\s*from\s*[\"'][^\"']+[\"']")
+
+
+def _imported_names(source: str) -> set[str]:
+    """Bare identifiers the adapter pulls in across the module boundary."""
+    names: set[str] = set()
+    for block in _IMPORT_BLOCK.findall(source):
+        for piece in block.split(","):
+            piece = piece.strip().removeprefix("type ").strip()
+            piece = piece.split(" as ")[-1].strip()
+            if piece.isidentifier():
+                names.add(piece)
+    return names
+
+
 def _build_harness(run_dir: Path):
     """Slice autoLoadSmallestModel and its helpers verbatim out of the adapter."""
-    lines = ADAPTER.read_text(encoding = "utf-8").splitlines()
+    source = ADAPTER.read_text(encoding = "utf-8")
+    lines = source.splitlines()
     start = next(
         (i for i, line in enumerate(lines) if line.startswith("const MAX_AUTO_LOAD_ATTEMPTS")),
         None,
@@ -241,6 +262,21 @@ def _build_harness(run_dir: Path):
     ), "could not locate the auto-load region in chat-adapter.ts"
     body = "\n".join(lines[start:end])
     assert "async function autoLoadSmallestModel" in body
+    # PREAMBLE supplies the module boundary by hand. An import the slice calls but
+    # PREAMBLE never stubs throws a ReferenceError inside the sweep, and the sweep's
+    # catches are parameterless, so it is swallowed and reads as exactly the fall-through
+    # this file guards. Name the missing stub instead of counterfeiting that bug.
+    unstubbed = sorted(
+        name
+        for name in _imported_names(source)
+        if re.search(rf"\b{re.escape(name)}\b", body)
+        and not re.search(rf"\b{re.escape(name)}\b", PREAMBLE)
+    )
+    assert not unstubbed, (
+        f"chat-adapter.ts imports {unstubbed}, which the auto-load region calls but "
+        "PREAMBLE does not stub; add a stub for each, or these tests fail as a false "
+        "auto-load regression"
+    )
     (run_dir / "harness.ts").write_text(
         "// @ts-nocheck\n" + PREAMBLE + "\n" + body + "\nexport { autoLoadSmallestModel };\n",
         encoding = "utf-8",
