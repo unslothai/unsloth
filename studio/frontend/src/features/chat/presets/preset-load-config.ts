@@ -276,6 +276,11 @@ export function formatPresetLoadConfigSummary(
   if (config.reasoningBudget !== -1) {
     parts.push(`Reasoning ${config.reasoningBudget}`);
   }
+  // A marker, not the text: the message is free prose up to 8 KiB. Without it a
+  // message-only preset is non-default but summarises to null, hiding both lines.
+  if (config.reasoningBudgetMessage) {
+    parts.push("Budget msg");
+  }
   if (config.gpuMemoryMode === "manual") {
     parts.push("GPU manual");
   }

@@ -96,6 +96,26 @@ def test_preset_load_config_carries_reasoning_budget():
     assert "reasoningBudgetMessage: Optional[str]" in routes
 
 
+def test_preset_summary_marks_a_budget_message():
+    """hasPresetLoadConfig() counts the message, so the summary has to as well.
+
+    perModelConfigsEqual compares reasoningBudgetMessage, so a preset that sets only
+    the message is non-default and does change llama-server behaviour. With no part
+    for it the formatter returned null, and the sheet hides both "Active now" and
+    "Saved in preset" on null. A marker, never the text: it can reach 8 KiB.
+    """
+    source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
+    body = source[source.index("export function formatPresetLoadConfigSummary") :]
+    body = body[: body.index("\n}")]
+    assert "config.reasoningBudgetMessage" in body, (
+        "a message-only preset summarises to null, so the Preset section shows no "
+        "load settings at all for a config that is not default"
+    )
+    assert "${config.reasoningBudgetMessage}" not in body, (
+        "the message is free prose up to 8 KiB; the summary takes a marker only"
+    )
+
+
 def test_preset_sheet_reacts_to_a_reasoning_budget_change():
     """capturePresetLoadConfig() reads the runtime store through getState().
 
