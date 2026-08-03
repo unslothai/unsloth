@@ -429,9 +429,7 @@ class TestADeadDriverIsNotAFlavourMismatch:
         ],
     )
     def test_the_supported_range_matches_the_probe(self, monkeypatch, tmp_path, label, supported):
-        mod, _ = _load(
-            monkeypatch, tmp_path, spec = "", generic = "", torch_label = label
-        )
+        mod, _ = _load(monkeypatch, tmp_path, spec = "", generic = "", torch_label = label)
         assert mod.__dict__["_xpu_wheel_supported_on_disk"]() is supported
 
     def test_the_disk_check_and_the_probe_agree_on_the_bounds(self):
