@@ -1049,6 +1049,91 @@ def _make_mlx_presence_penalty_processor(penalty: float):
     return _processor
 
 
+def _make_mlx_frequency_penalty_processor(penalty: float):
+    """Frequency penalty as an mlx_lm/mlx_vlm logits processor.
+
+    Identical to the presence processor except the scatter *accumulates*, so a
+    token repeated N times in the completion is charged N × penalty. It counts
+    occurrences and scales once, in float32: accumulating the penalty itself in
+    a float16 logits dtype rounds on every repeat, which drifts by tens of
+    logits over a long run (1000 repeats at 0.3 lands on -274.25, not -300).
+    """
+    state = {"prompt_len": None}
+
+    def _processor(tokens, logits):
+        if state["prompt_len"] is None:
+            state["prompt_len"] = int(tokens.shape[0])
+            return logits
+        generated = tokens[state["prompt_len"] :]
+        if generated.size == 0:
+            return logits
+        import mlx.core as mx
+
+        vocab = logits.shape[-1]
+        valid = (generated >= 0) & (generated < vocab)
+        safe = mx.where(valid, generated, vocab).astype(mx.int32)
+        counts = mx.zeros((vocab + 1,), dtype = mx.float32).at[safe].add(1.0)
+        return logits - (penalty * counts[:vocab]).astype(logits.dtype)
+
+    return _processor
+
+
+def _make_mlx_logit_bias_processor(logit_bias: dict):
+    """Additive logit bias as an mlx_lm/mlx_vlm logits processor.
+
+    mlx_lm's own ``logit_bias`` processor indexes logits with the raw client
+    ids; MLX does no bounds checking, so a bias on an id past the model's logit
+    width is undefined behavior. Route strays to the same discarded scratch
+    slot the penalty processors use.
+    """
+    state = {"safe": None, "values": None, "vocab": None}
+
+    def _processor(tokens, logits):
+        import mlx.core as mx
+
+        vocab = logits.shape[-1]
+        if state["vocab"] != vocab:
+            pairs = [(int(t), float(v)) for t, v in logit_bias.items()]
+            state["safe"] = mx.array(
+                [t if 0 <= t < vocab else vocab for t, _ in pairs], dtype = mx.int32
+            )
+            state["values"] = mx.array([v for _, v in pairs], dtype = mx.float32)
+            state["vocab"] = vocab
+        mask = mx.zeros((vocab + 1,), dtype = mx.float32).at[state["safe"]].add(state["values"])
+        return logits + mask[:vocab].astype(logits.dtype)
+
+    return _processor
+
+
+def _mlx_sampling_processors(
+    *,
+    repetition_penalty = None,
+    presence_penalty: float = 0.0,
+    frequency_penalty: float = 0.0,
+    logit_bias = None,
+):
+    """Logits processors for the sampling knobs, or ``None`` when all are inert.
+
+    Bias runs before the penalties, matching llama-server's sampler order.
+    mlx_lm supplies only the repetition penalty here: its presence and
+    frequency processors window the last 20 tokens *including the prompt*,
+    while the penalties below score the whole completion and exclude it, so
+    using them would make the same request sample differently depending on the
+    backend.
+    """
+    processors = []
+    if logit_bias:
+        processors.append(_make_mlx_logit_bias_processor(logit_bias))
+    if repetition_penalty is not None and float(repetition_penalty) not in (0.0, 1.0):
+        from mlx_lm.sample_utils import make_logits_processors
+        processors.extend(make_logits_processors(repetition_penalty = float(repetition_penalty)))
+    if presence_penalty:
+        processors.append(_make_mlx_presence_penalty_processor(float(presence_penalty)))
+    if frequency_penalty:
+        processors.append(_make_mlx_frequency_penalty_processor(float(frequency_penalty)))
+    return processors or None
+
+
 class MLXInferenceBackend:
     def __init__(self):
         self.models = {}
@@ -1490,6 +1575,8 @@ class MLXInferenceBackend:
         continue_final_message = False,
         presence_penalty = 0.0,
         seed = None,
+        frequency_penalty = 0.0,
+        logit_bias = None,
         _adapter_state = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
@@ -1537,6 +1624,8 @@ class MLXInferenceBackend:
                 continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
                 seed = seed,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
                 _adapter_state = _adapter_state,
             )
         else:
@@ -1556,6 +1645,8 @@ class MLXInferenceBackend:
                 continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
                 seed = seed,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
                 _adapter_state = _adapter_state,
             )
         yield from stream
@@ -1578,10 +1669,12 @@ class MLXInferenceBackend:
         continue_final_message = False,
         presence_penalty = 0.0,
         seed = None,
+        frequency_penalty = 0.0,
+        logit_bias = None,
         _adapter_state = None,
     ):
         from mlx_lm import stream_generate
-        from mlx_lm.sample_utils import make_sampler, make_logits_processors
+        from mlx_lm.sample_utils import make_sampler
 
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
@@ -1648,21 +1741,12 @@ class MLXInferenceBackend:
                 top_k = int(top_k or 0),
                 min_p = float(min_p or 0.0),
             )
-        # Repetition and/or presence penalty processors (GGUF/safetensors parity).
-        logits_processors = []
-        if repetition_penalty is not None and float(repetition_penalty) not in (
-            0.0,
-            1.0,
-        ):
-            logits_processors.extend(
-                make_logits_processors(
-                    repetition_penalty = float(repetition_penalty),
-                )
-            )
-        if presence_penalty:
-            logits_processors.append(_make_mlx_presence_penalty_processor(float(presence_penalty)))
-        if not logits_processors:
-            logits_processors = None
+        logits_processors = _mlx_sampling_processors(
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
+        )
 
         preserve_native_channels = reasoning_channel_markers is not None
         token_ids = []
@@ -1780,6 +1864,8 @@ class MLXInferenceBackend:
         continue_final_message = False,
         presence_penalty = 0.0,
         seed = None,
+        frequency_penalty = 0.0,
+        logit_bias = None,
         _adapter_state = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
@@ -1914,18 +2000,15 @@ class MLXInferenceBackend:
             0.0,
             1.0,
         )
-        if presence_penalty:
-            # Presence needs a custom processor: pass the full list (repetition +
-            # presence) instead of the repetition_penalty shortcut so both apply.
-            from mlx_lm.sample_utils import make_logits_processors
-
-            _vlm_processors = []
-            if _rep_active:
-                _vlm_processors.extend(
-                    make_logits_processors(repetition_penalty = float(repetition_penalty))
-                )
-            _vlm_processors.append(_make_mlx_presence_penalty_processor(float(presence_penalty)))
-            vlm_kwargs["logits_processors"] = _vlm_processors
+        if presence_penalty or frequency_penalty or logit_bias:
+            # These need custom processors: pass the full list (repetition +
+            # the rest) instead of the repetition_penalty shortcut so all apply.
+            vlm_kwargs["logits_processors"] = _mlx_sampling_processors(
+                repetition_penalty = repetition_penalty,
+                presence_penalty = presence_penalty,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
+            )
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 

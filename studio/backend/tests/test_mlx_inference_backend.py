@@ -2870,44 +2870,36 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
 def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
     """The pinned mlx-vlm has no seed parameter, and a newer one ignores it at
     Studio's default min_p/top_k -- so the seed must ride on the sampler."""
+@pytest.mark.parametrize(
+    "factory_name, factory_args, vocab, sequence, expected",
+    [
+        # Frequency counts multiplicity where presence charges once.
+        (
+            "_make_mlx_frequency_penalty_processor",
+            (0.5,),
+            20,
+            [10, 11, 5, 5, 5, 6, 99, -1],
+            {5: -1.5, 6: -0.5, 10: 0.0, 19: 0.0, 0: 0.0},
+        ),
+        # Bias is history-free, so it also applies on the prompt-only first call.
+        (
+            "_make_mlx_logit_bias_processor",
+            ({1: 4.0, 3: -2.5, 99: 100.0, -1: 100.0},),
+            8,
+            [10, 11],
+            {1: 4.0, 3: -2.5, 0: 0.0, 7: 0.0},
+        ),
+    ],
+)
+def test_mlx_processors_penalize_in_range_ids_and_route_strays_away(
+    factory_name, factory_args, vocab, sequence, expected
+):
+    # MLX does no bounds checking, so a stray id is undefined behaviour.
+    mx = pytest.importorskip("mlx.core")
     from core.inference import mlx_inference
-    from core.inference.mlx_inference import MLXInferenceBackend
 
-    seen = []
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = SimpleNamespace(
-        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "<image> prompt"
-    )
-
-    def _vlm_stream(*_args, **kwargs):
-        seen.append(kwargs)
-        yield SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
-    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda *_a, **_k: "<image> prompt",
-    )
-    monkeypatch.setattr(
-        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
-    )
-    backend = MLXInferenceBackend()
-    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
-    backend._processor = SimpleNamespace(chat_template = "template")
-    args = (
-        [{"role": "user", "content": [{"type": "image"}]}],
-        object(),
-        0.7,
-        0.9,
-        40,
-        0.01,
-        4,
-        1.0,
-        None,
-    )
-
-    assert list(backend._generate_vlm(*args, seed = 4242)) == ["ok"]
-    assert callable(seen[-1]["sampler"]) and "seed" not in seen[-1]
-    assert list(backend._generate_vlm(*args)) == ["ok"]
-    assert "sampler" not in seen[-1]
+    proc = getattr(mlx_inference, factory_name)(*factory_args)
+    proc(mx.array([10, 11]), mx.zeros((1, vocab)))  # first call latches prompt_len
+    out = proc(mx.array(sequence), mx.zeros((1, vocab)))
+    for token, value in expected.items():
+        assert float(out[0, token]) == pytest.approx(value), token

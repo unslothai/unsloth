@@ -13977,6 +13977,8 @@ async def openai_chat_completions(
                     max_tokens = effective_max_tokens,
                     repetition_penalty = payload.repetition_penalty,
                     presence_penalty = payload.presence_penalty,
+                    frequency_penalty = payload.frequency_penalty,
+                    logit_bias = payload.logit_bias,
                     stop = normalized_stop,
                     cancel_event = cancel_event,
                     seed = payload.seed,
@@ -14668,6 +14670,8 @@ async def openai_chat_completions(
                 max_tokens = effective_max_tokens,
                 repetition_penalty = payload.repetition_penalty,
                 presence_penalty = payload.presence_penalty,
+                frequency_penalty = payload.frequency_penalty,
+                logit_bias = payload.logit_bias,
                 stop = normalized_stop,
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
@@ -15499,6 +15503,8 @@ async def openai_chat_completions(
                 repetition_penalty = payload.repetition_penalty,
                 presence_penalty = payload.presence_penalty,
                 seed = payload.seed,
+                frequency_penalty = payload.frequency_penalty,
+                logit_bias = payload.logit_bias,
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
@@ -15861,6 +15867,8 @@ async def openai_chat_completions(
         repetition_penalty = payload.repetition_penalty,
         presence_penalty = payload.presence_penalty,
         seed = payload.seed,
+        frequency_penalty = payload.frequency_penalty,
+        logit_bias = payload.logit_bias,
     )
     # Forward reasoning kwargs; the worker/template wrapper peels off any the
     # template doesn't accept.
@@ -21017,6 +21025,8 @@ def _build_passthrough_payload(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    frequency_penalty = None,
+    logit_bias = None,
     tool_choice = "auto",
     response_format = None,
     chat_template_kwargs = None,
@@ -21073,6 +21083,12 @@ def _build_passthrough_payload(
         body["repeat_penalty"] = repetition_penalty
     if presence_penalty is not None:
         body["presence_penalty"] = presence_penalty
+    if frequency_penalty is not None:
+        body["frequency_penalty"] = frequency_penalty
+    if logit_bias:
+        # llama-server's OpenAI endpoint takes the spec's {token id: bias}
+        # object (JSON stringifies the int keys) and ignores out-of-vocab ids.
+        body["logit_bias"] = logit_bias
     if response_format is not None:
         # llama-server applies a GBNF grammar derived from the JSON schema when
         # response_format is present. The field is documented flat at the
@@ -22026,6 +22042,8 @@ def _build_openai_passthrough_body(
         min_p = payload.min_p,
         repetition_penalty = payload.repetition_penalty,
         presence_penalty = payload.presence_penalty,
+        frequency_penalty = payload.frequency_penalty,
+        logit_bias = payload.logit_bias,
         tool_choice = tool_choice,
         response_format = _extract_response_format(payload),
         chat_template_kwargs = tpl_kwargs,

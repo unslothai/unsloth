@@ -20863,6 +20863,8 @@ class LlamaCppBackend:
         max_tokens: Optional[int] = None,
         repetition_penalty: float = 1.0,
         presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
@@ -20907,10 +20909,13 @@ class LlamaCppBackend:
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
+            "frequency_penalty": frequency_penalty,
         }
         if perf_callback is not None:
             payload["return_progress"] = True
             payload["timings_per_token"] = True
+        if logit_bias:
+            payload["logit_bias"] = logit_bias
         # Per-request enable_thinking / reasoning_effort / preserve_thinking
         _reasoning_kw = self._request_reasoning_kwargs(
             enable_thinking, reasoning_effort, preserve_thinking
@@ -21069,6 +21074,8 @@ class LlamaCppBackend:
                     max_tokens = max_tokens,
                     repetition_penalty = repetition_penalty,
                     presence_penalty = presence_penalty,
+                    frequency_penalty = frequency_penalty,
+                    logit_bias = logit_bias,
                     stop = stop,
                     cancel_event = cancel_event,
                     enable_thinking = enable_thinking,
@@ -21102,6 +21109,8 @@ class LlamaCppBackend:
         max_tokens: Optional[int] = None,
         repetition_penalty: float = 1.0,
         presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
         enable_thinking: Optional[bool] = None,
@@ -21415,11 +21424,14 @@ class LlamaCppBackend:
                 "min_p": min_p,
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
+                "frequency_penalty": frequency_penalty,
             }
 
             if perf_callback is not None:
                 payload["return_progress"] = True
                 payload["timings_per_token"] = True
+            if logit_bias:
+                payload["logit_bias"] = logit_bias
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
@@ -22636,7 +22648,10 @@ class LlamaCppBackend:
             "min_p": min_p,
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
+            "frequency_penalty": frequency_penalty,
         }
+        if logit_bias:
+            stream_payload["logit_bias"] = logit_bias
         _reasoning_kw = self._request_reasoning_kwargs(
             enable_thinking, reasoning_effort, preserve_thinking
         )

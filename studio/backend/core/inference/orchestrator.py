@@ -745,6 +745,8 @@ class InferenceOrchestrator:
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
         seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -760,6 +762,8 @@ class InferenceOrchestrator:
             "max_new_tokens": max_new_tokens,
             "repetition_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
+            "frequency_penalty": frequency_penalty,
+            "logit_bias": logit_bias,
         }
         if seed is not None:
             cmd["seed"] = seed
@@ -983,6 +987,8 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
         seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -1040,6 +1046,8 @@ class InferenceOrchestrator:
             max_new_tokens = max_new_tokens,
             repetition_penalty = repetition_penalty,
             presence_penalty = presence_penalty,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
             use_adapter = use_adapter,
             tools = tools,
             enable_thinking = enable_thinking,
@@ -1714,6 +1722,8 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
         seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess.
 
@@ -1746,6 +1756,8 @@ class InferenceOrchestrator:
             stats_holder = stats_holder,
             presence_penalty = presence_penalty,
             seed = seed,
+            frequency_penalty = frequency_penalty,
+            logit_bias = logit_bias,
         )
 
     def generate_chat_completion_with_tools(
@@ -1777,6 +1789,8 @@ class InferenceOrchestrator:
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
         reasoning_prefilled: bool = False,
         seed: Optional[int] = None,
         **_unused,
@@ -1819,6 +1833,8 @@ class InferenceOrchestrator:
                 stats_holder = stats_holder,
                 presence_penalty = presence_penalty,
                 seed = seed,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
             )
             if use_adapter is not None:
                 stream = self.generate_with_adapter_control(
@@ -1943,6 +1959,8 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
         seed: Optional[int] = None,
+        frequency_penalty: float = 0.0,
+        logit_bias: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -1992,6 +2010,8 @@ class InferenceOrchestrator:
                 max_new_tokens = max_new_tokens,
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
                 use_adapter = use_adapter,
                 tools = tools,
                 enable_thinking = enable_thinking,

@@ -1426,7 +1426,34 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(
         None, ge = 1, description = "Maximum tokens to generate (None = until EOS)"
     )
-    presence_penalty: float = Field(0.0, ge = 0.0, le = 2.0, description = "Presence penalty")
+    # OpenAI's documented range is [-2, 2] on both penalties. Widening only
+    # admits requests that used to be rejected, so nothing that works today
+    # changes. A negative value boosts repetition wherever the backend applies
+    # the penalty at all.
+    presence_penalty: float = Field(
+        0.0,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "Presence penalty: charges a token once if it appears. MLX scores the completion"
+            " only; llama-server also counts the prompt, within its own window."
+        ),
+    )
+    frequency_penalty: float = Field(
+        0.0,
+        ge = -2.0,
+        le = 2.0,
+        description = (
+            "Frequency penalty: charges a token per occurrence. MLX scores the completion"
+            " only; llama-server also counts the prompt, within its own window."
+        ),
+    )
+    # Ids are not range-checked here: MLX bounds-checks nothing either, so a
+    # stray is dropped at the processors rather than failing the request.
+    logit_bias: Optional[Dict[int, Annotated[float, Field(ge = -100.0, le = 100.0)]]] = Field(
+        None,
+        description = "Additive per-token logit bias keyed by token id, each in [-100, 100]. Ids past the model's logit width are ignored.",
+    )
     stop: Optional[Union[str, list[str]]] = Field(
         None,
         description = "OpenAI stop sequences: a single string or list of strings at which generation halts.",
