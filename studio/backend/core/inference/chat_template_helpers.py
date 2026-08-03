@@ -228,12 +228,16 @@ _TTS_MARKUP_BY_CODEC = {
         r"<(?=\|(?:im_(?:start|end)|text_(?:start|end)|audio_(?:start|end)"
         r"|global_features_(?:start|end))\|>)"
     ),
-    # _generate_csm interpolates into "[speaker_id]text" (inference.py:1911-1918) and the
-    # processor tokenizes that directly, so the leading speaker id is structure and only a
-    # leading paste can shadow it. "<|AUDIO|>" and "<|audio_eos|>" are the codec's own
-    # tokenizer tokens, the pair CSM is detected by (model_config.py:992-995): a pasted
-    # opener is counted as audio with none behind it and the EOS ends the spoken text early.
-    "csm": re.compile(r"\A\[(?=\d+\])|<(?=\|(?:AUDIO|audio_eos)\|>)"),
+    # _generate_csm interpolates into "[speaker_id]text" (inference.py:1943-1948) and the
+    # processor tokenizes that flat string directly, so a "[1]" ANYWHERE in the text reads
+    # as a second speaker turn, not just a leading one. "<|AUDIO|>" and "<|audio_eos|>" are
+    # the codec's own tokenizer tokens, the pair CSM is detected by (model_config.py:
+    # 992-995): a pasted opener is counted as audio with none behind it and the EOS ends the
+    # spoken text early. The processor is called with add_special_tokens = True, so the
+    # document boundaries it adds are forgeable from the text as well (#7066).
+    "csm": re.compile(
+        r"\[(?=\d+\])|<(?=\|(?:AUDIO|audio_eos|begin_of_text|end_of_text)\|>)"
+    ),
 }
 # An unrecognised codec gets the union: still far narrower than the chat sweep, but it does
 # not assume a prompt shape this module has not seen.
@@ -466,6 +470,7 @@ def model_markup(
     chat_template,
     tokens = None,
     tools = None,
+    prefer_tool_use: bool = True,
 ) -> Optional[ModelMarkup]:
     """Profile one model's structural markers, or None when nothing is known about it.
 
@@ -496,7 +501,9 @@ def model_markup(
     # Only the template this request will render with. A named-template dict carries both
     # "default" and "tool_use", and unioning them made a no-tools turn rewrite "<tools>",
     # which cannot appear in the prompt it is about to send (#7066).
-    bodies = _selected_template_strings_from_value(chat_template, tools)
+    bodies = _selected_template_strings_from_value(
+        chat_template, tools, prefer_tool_use = prefer_tool_use
+    )
     for body in bodies or _template_strings(chat_template):
         # Blanked rather than removed, so every offset the index check relies on survives.
         body = _JINJA_COMMENT.sub(lambda m: " " * len(m.group(0)), body)
@@ -2029,7 +2036,12 @@ def markup_for_tokenizer(
     # tool-calling turn and "default" otherwise, and the two emit different literals. Both
     # live in the same entry, so a conversation alternating tool and no-tool turns keeps
     # hitting instead of rebuilding on every message.
-    selector = bool(tools)
+    _is_processor = getattr(tokenizer, "tokenizer", None) is not None and callable(
+        getattr(tokenizer, "apply_chat_template", None)
+    )
+    # A processor always renders "default", so its profile does not vary with tools and the
+    # cache must not key two identical entries under different selectors.
+    selector = bool(tools) and not _is_processor
     # A named-template dict is unhashable, so the key is a stable serialization of it;
     # without this the cache write raised TypeError and every call rebuilt the profile.
     if not isinstance(template, str):
@@ -2047,7 +2059,11 @@ def markup_for_tokenizer(
         cached = None
     tokens = None
     tokens = _tokenizer_strings(inner)
-    profile = model_markup(template, tokens, tools)
+    # ProcessorMixin.apply_chat_template does NOT switch to "tool_use" implicitly; it
+    # renders "default" unless chat_template= names another. _selected_chat_template_strings
+    # already documents this, so profiling with the tokenizer rule left a processor's own
+    # default-template boundary unswept while the render emitted it (#7066).
+    profile = model_markup(template, tokens, tools, prefer_tool_use = not _is_processor)
     try:
         entry = cached if isinstance(cached, dict) else {}
         # Two selectors and one template per tokenizer; a template swap adds a key rather

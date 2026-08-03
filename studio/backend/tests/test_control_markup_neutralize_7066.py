@@ -2603,7 +2603,6 @@ def test_forced_tool_choice_is_reconciled_when_its_tool_is_dropped():
         "<|start_content|>",
         "Read [INST] literally",
         "say <s>hello</s>",
-        "see [1] and [2]",
     ],
 )
 def test_csm_only_breaks_its_own_speaker_prefix(text):
@@ -2612,11 +2611,31 @@ def test_csm_only_breaks_its_own_speaker_prefix(text):
     assert neutralize_tts_prompt_text(text, "csm") == text
 
 
-def test_csm_breaks_a_leading_speaker_id():
-    """Only in the leading position can a paste shadow the real speaker prefix."""
+def test_csm_breaks_a_speaker_id_anywhere_in_the_text():
+    """CSM's own chat template emits "{{ '[' + message['role'] + ']' }}" per message and
+    concatenates them into one flat sequence, so a "[1]" mid-text is indistinguishable from
+    a genuine speaker boundary, not ordinary prose. _generate_csm hands the processor
+    "[0]{text}" directly, so client text can open a second speaker turn (#7066)."""
     assert neutralize_tts_prompt_text("[1]hello", "csm") != "[1]hello"
-    # Mid-text, a bracketed number is ordinary prose.
-    assert neutralize_tts_prompt_text("as in [1] above", "csm") == "as in [1] above"
+    assert neutralize_tts_prompt_text("as in [1] above", "csm") != "as in [1] above"
+    assert neutralize_tts_prompt_text("see [1] and [2]", "csm") == "see [ 1] and [ 2]"
+
+
+def test_csm_breaks_its_document_boundaries():
+    """The processor is called with add_special_tokens = True, so a pasted boundary can end
+    the spoken segment early."""
+    for marker in ("<|end_of_text|>", "<|begin_of_text|>"):
+        assert neutralize_tts_prompt_text(f"say {marker} now", "csm") != f"say {marker} now"
+
+
+def test_csm_still_leaves_a_bracket_without_digits_alone():
+    """Only "[digits]" is a speaker marker; ordinary indexing and prose are untouched."""
+    for text in ("an array[i] value", "Read [INST] literally", "a cost of $5"):
+        assert neutralize_tts_prompt_text(text, "csm") == text
+
+
+def test_another_codec_does_not_inherit_the_csm_speaker_rule():
+    assert neutralize_tts_prompt_text("hello [1] world", "snac") == "hello [1] world"
 
 
 @pytest.mark.parametrize(
@@ -4370,7 +4389,7 @@ def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
     assert (
         "heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)" not in source
     )
-    assert "_sf_renderable_tools(" in source
+    assert "_sf_renderable_tools," in source and "asyncio.to_thread(" in source
     assert (
         "heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice)" in source
     )
@@ -4558,7 +4577,7 @@ def test_the_catalog_leaf_rewrite_uses_the_profile():
     "source_file,needle",
     [
         ("routes/inference.py", 'markup = getattr(llama_backend, "markup_profile", None),'),
-        ("routes/inference.py", "_sf_renderable_tools("),
+        ("routes/inference.py", "_sf_renderable_tools,"),
         (
             "core/inference/safetensors_agentic.py",
             "neutralize_tool_descriptions(tools, None, markup)",
@@ -5294,3 +5313,58 @@ def test_the_profile_records_which_template_it_was_selected_for():
     }
     assert model_markup(named, [], None).selected_with_tools is False
     assert model_markup(named, [], [{"type": "function"}]).selected_with_tools is True
+
+
+def test_a_processor_is_profiled_with_its_default_template():
+    """ProcessorMixin.apply_chat_template does NOT switch to "tool_use" implicitly; it
+    renders "default" unless chat_template= names another. _selected_chat_template_strings
+    already documents that, so profiling a processor with the tokenizer rule left its own
+    default-template boundary unswept while the render emitted it (#7066)."""
+    named = {
+        "default": "{% for m in messages %}<|zeta_default|>{{ m }}{% endfor %}",
+        "tool_use": "{% for m in messages %}<tools>{{ m }}</tools>{% endfor %}",
+    }
+
+    class _Inner:
+        added_tokens_decoder = {
+            0: type("_T", (), {"content": "<|zeta_default|>"})(),
+            1: type("_T", (), {"content": "<tools>"})(),
+        }
+
+    class _Processor:
+        chat_template = named
+        tokenizer = _Inner()
+
+        def apply_chat_template(self, *args, **kwargs):
+            return ""
+
+    class _PlainTokenizer:
+        chat_template = named
+        added_tokens_decoder = _Inner.added_tokens_decoder
+
+    processor = markup_for_tokenizer(_Processor(), [{"type": "function"}])
+    assert processor.rewrite_control("<|zeta_default|>") == "< |zeta_default|>"
+    # A plain tokenizer keeps the tool_use rule.
+    plain = markup_for_tokenizer(_PlainTokenizer(), [{"type": "function"}])
+    assert "</tools>" in plain.markers
+
+
+def test_the_mlx_vlm_healer_catalog_uses_the_processor():
+    """A text-only tool request on an MLX VLM still renders through _generate_vlm with the
+    PROCESSOR's template, so profiling the nested tokenizer could keep a tool that render
+    drops (#7066)."""
+    source = (_REPO_ROOT / "studio" / "backend" / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    assert '_sf_model_info.get("processor") or _sf_model_info.get("tokenizer")' in source
+    assert "_sf_chat_target" in source
+
+
+def test_the_native_template_resolution_is_off_the_event_loop():
+    """On the first request this reaches AutoTokenizer.from_pretrained, which can touch the
+    filesystem and the Hub; on the async path that blocks every concurrent request."""
+    source = (_REPO_ROOT / "studio" / "backend" / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    block = source.split("_sf_healing_tools = (", 1)[1][:700]
+    assert "asyncio.to_thread(" in block

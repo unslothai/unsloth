@@ -11328,14 +11328,24 @@ async def openai_chat_completions(
 
     _sf_markup = _sf_markup_for(_sf_model_info.get("tokenizer"))
 
+    # An MLX VLM serves even a text-only tool request through _generate_vlm, which renders
+    # with the PROCESSOR's own chat template. Profiling the nested tokenizer instead would
+    # keep a tool the processor render drops, so the healer could promote a call for a tool
+    # the prompt never advertised (#7066).
+    _sf_chat_target = _sf_model_info.get("processor") or _sf_model_info.get("tokenizer")
     _sf_healing_tools = (
         # Safe under EVERY template this turn could select. When the active template drops
         # the schema the render falls back to the model's native one, whose profile can
         # drop a tool the active profile kept; gating on the active catalog alone would let
         # the healer promote a call for a tool the prompt never advertised (#7066).
-        _sf_renderable_tools(
+        #
+        # In a thread: on the first request this resolves the native template, which can
+        # reach AutoTokenizer.from_pretrained and hit the filesystem or the Hub. That would
+        # block the event loop for every concurrent request until it completes.
+        await asyncio.to_thread(
+            _sf_renderable_tools,
             payload.tools,
-            _sf_model_info.get("tokenizer"),
+            _sf_chat_target,
             _sf_model_info,
             active_model_name = backend.active_model_name,
         )
