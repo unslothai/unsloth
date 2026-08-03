@@ -13,7 +13,9 @@ from pathlib import Path
 import pytest
 
 WORKDIR = Path(__file__).resolve().parents[2]
-CHAT_TREE = WORKDIR / "studio" / "frontend" / "src" / "features" / "chat" / "utils" / "chat-message-tree.ts"
+CHAT_TREE = (
+    WORKDIR / "studio" / "frontend" / "src" / "features" / "chat" / "utils" / "chat-message-tree.ts"
+)
 FRONTEND_DIR = WORKDIR / "studio" / "frontend"
 TEMP = WORKDIR / "temp" / "chat_message_tree_7732"
 
