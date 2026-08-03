@@ -2812,6 +2812,10 @@ def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     return kwargs
 
 
+class CountAborted(Exception):
+    """A token count stood down mid-flight because its answer stopped mattering."""
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -2861,6 +2865,8 @@ class LlamaCppBackend:
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
         self._chat_template: Optional[str] = None
+        self._markup_tokens: list = []
+        self._markup_profile = None
         self._chat_template_override: Optional[str] = None
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
@@ -3270,6 +3276,30 @@ class LlamaCppBackend:
     @property
     def chat_template(self) -> Optional[str]:
         return self._chat_template
+
+    @property
+    def markup_profile(self):
+        """This model's own structural markers, from its GGUF template and vocabulary.
+
+        None when neither could be read, which falls back to the curated patterns: a model
+        we cannot profile stays fully swept rather than unprotected (#7066)."""
+        # getattr, not attribute access: a lightweight backend double in a test never runs
+        # __init__, and an unprofiled model must fall back rather than raise.
+        cached = getattr(self, "_markup_profile", None)
+        if cached is None:
+            from core.inference.chat_template_helpers import model_markup
+            cached = (
+                model_markup(
+                    getattr(self, "_chat_template_override", None)
+                    or getattr(self, "_chat_template", None),
+                    getattr(self, "_markup_tokens", None),
+                ),
+            )
+            try:
+                self._markup_profile = cached
+            except AttributeError:
+                pass
+        return cached[0]
 
     @property
     def chat_template_override(self) -> Optional[str]:
@@ -6095,6 +6125,21 @@ class LlamaCppBackend:
         if atype == 7:  # BOOL
             return [struct.unpack("<?", f.read(1))[0] for _ in range(alen)]
 
+        if atype == 8:  # STRING: kept only for the delimiter-shaped entries (#7066).
+            from core.inference.chat_template_helpers import delimiter_shaped_tokens
+
+            kept: list = []
+            for _ in range(alen):
+                n = struct.unpack("<Q", f.read(8))[0]
+                raw = f.read(n)
+                # A vocabulary holds arbitrary bytes; a marker is text, so undecodable
+                # entries are simply not markers.
+                try:
+                    kept.append(raw.decode("utf-8"))
+                except UnicodeDecodeError:
+                    continue
+            return delimiter_shaped_tokens(kept)
+
         for _ in range(alen):
             LlamaCppBackend._gguf_skip_value(f, atype)
         return None
@@ -6124,6 +6169,8 @@ class LlamaCppBackend:
         # carry over when switching models.
         self._context_length = None
         self._chat_template = None
+        self._markup_tokens = []
+        self._markup_profile = None
         self._supports_reasoning = False
         self._reasoning_always_on = False
         self._reasoning_style = "enable_thinking"
@@ -6270,6 +6317,15 @@ class LlamaCppBackend:
                                 if key == "tokenizer.ggml.tokens":
                                     self._vocab_size = int(alen)
                                 val_a = self._gguf_read_array_value(f, atype, alen)
+                                if key == "tokenizer.ggml.tokens" and val_a is not None:
+                                    # Only the delimiter-shaped entries are kept, a few
+                                    # hundred out of a six-figure vocab, so the sweep can
+                                    # tell this model's own sentinels from another family's
+                                    # without holding the whole vocabulary (#7066).
+                                    from core.inference.chat_template_helpers import (
+                                        delimiter_shaped_tokens,
+                                    )
+                                    self._markup_tokens = delimiter_shaped_tokens(val_a)
                                 attr = arch_keys.get(key)
                                 if attr == "n_kv_heads" and val_a is not None:
                                     self._n_kv_heads_by_layer = [int(x) for x in val_a]
@@ -11313,6 +11369,8 @@ class LlamaCppBackend:
             self._effective_cache_types = ("f16", "f16")
             self._kv_cache_context_total = None
             self._chat_template = None
+            self._markup_tokens = []
+            self._markup_profile = None
             self._chat_template_override = None
             self._supports_reasoning = False
             self._reasoning_always_on = False
@@ -12883,10 +12941,15 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
+        from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
         openai_messages = self._build_openai_messages(messages, image_b64)
 
         payload = {
-            "messages": openai_messages,
+            # llama-server applies the chat template itself (#7066).
+            "messages": neutralize_control_markup_in_messages(
+                openai_messages, None, self.markup_profile
+            ),
             "stream": True,
             "temperature": temperature,
             "top_p": top_p,
@@ -13288,8 +13351,16 @@ class LlamaCppBackend:
                 return False
             return strip_leading_bare_json_call(probe, enabled_tool_names) != probe
 
+        # Sanitized at construction, not at each gate: the controller authorizes execution,
+        # and llama-server's structured delta.tool_calls path reaches prepare_call without
+        # _enabled_tool_names at all. A tool dropped for unsafe markup is absent from the
+        # prompt, so it must leave the controller too or it stays executable by name (#7066).
+        from core.inference.chat_template_helpers import (
+            neutralize_tool_descriptions as _neutralize_tool_descriptions,
+        )
+
         tool_controller = ToolLoopController(
-            tools = tools,
+            tools = _neutralize_tool_descriptions(tools, None, self.markup_profile),
             auto_heal_tool_calls = auto_heal_tool_calls,
         )
 
@@ -13325,6 +13396,11 @@ class LlamaCppBackend:
         # Reserve extra iterations for re-prompts so they don't consume the
         # caller's tool-call budget; only when tool iterations are allowed.
         _extra = _MAX_REPROMPTS + 1 if max_tool_iterations > 0 else 0
+        # Owned by this request and dropped with it: the sweep below re-reads every earlier
+        # turn on each iteration, and the rewrite is a function of the text alone (#7066).
+        from core.inference.chat_template_helpers import sweep_cache as _sweep_cache
+
+        _markup_cache = _sweep_cache()
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -13335,10 +13411,19 @@ class LlamaCppBackend:
             if not active_tools:
                 _append_budget_exhausted_nudge = False
                 break
+            from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
+            # An MCP server's description and inputSchema are remote text the template renders
+            # into the system turn (#7066). Computed above the gate: a tool dropped for unsafe
+            # markup is absent from the prompt and must be absent from what we EXECUTE too,
+            # else the model names it and the raw gate lets the call through.
+            safe_tools = neutralize_tool_descriptions(
+                active_tools, _markup_cache, self.markup_profile
+            )
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
             _enabled_tool_names = {
                 (tool.get("function") or {}).get("name")
-                for tool in active_tools
+                for tool in safe_tools
                 if (tool.get("function") or {}).get("name")
             }
             # Shared signal tuple so GGUF BUFFERING wakes on every format the parser knows (like safetensors).
@@ -13346,8 +13431,16 @@ class LlamaCppBackend:
 
             # Build payload -- stream: True so we detect tool signals
             # in the first 1-2 chunks without a non-streaming penalty.
+            from core.inference.chat_template_helpers import (
+                neutralize_control_markup_in_messages,
+            )
+
             payload = {
-                "messages": conversation,
+                # Re-run every iteration: tool results land in ``conversation`` as the
+                # loop goes, and a forged turn in one would render for real (#7066).
+                "messages": neutralize_control_markup_in_messages(
+                    conversation, _markup_cache, self.markup_profile
+                ),
                 "stream": True,
                 "stream_options": {"include_usage": True},
                 "temperature": temperature,
@@ -13356,9 +13449,12 @@ class LlamaCppBackend:
                 "min_p": min_p,
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
-                "tools": active_tools,
-                "tool_choice": "auto",
             }
+            # As in the passthrough builder: if every name carried markup the catalog is
+            # now empty, and "tools": [] would still advertise tool use.
+            if safe_tools:
+                payload["tools"] = safe_tools
+                payload["tool_choice"] = "auto"
             _reasoning_kw = self._request_reasoning_kwargs(
                 enable_thinking, reasoning_effort, preserve_thinking
             )
@@ -14469,8 +14565,12 @@ class LlamaCppBackend:
         yield {"type": "status", "text": ""}
 
         # Final streaming pass with the full conversation context.
+        from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
         stream_payload = {
-            "messages": conversation,
+            "messages": neutralize_control_markup_in_messages(
+                conversation, None, self.markup_profile
+            ),
             "stream": True,
             "temperature": temperature,
             "top_p": top_p,
@@ -14624,39 +14724,26 @@ class LlamaCppBackend:
         system = None,
         tools = None,
         strict: bool = False,
+        chat_template_kwargs = None,
+        should_abort = None,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
-        Non-strict callers keep the historical best-effort behavior and receive
-        0 when a count cannot be determined. Strict callers (public count_tokens
-        endpoints) get an exception instead of a successful-looking zero when
-        tokenizer/template calls fail or a multimodal prompt would fall back to a
-        text-only approximation.
+        Non-strict callers keep the historical best-effort behavior and get 0 when a
+        count cannot be determined. Strict callers (public count_tokens endpoints)
+        raise instead: the text-only fallback is an approximation, not a count.
+
+        ``chat_template_kwargs`` reaches /apply-template unchanged, so a caller can
+        price a request rendered in a non-default reasoning mode.
+
+        ``should_abort`` is polled between the two llama-server calls. Admission is the
+        caller's job; this only stops a count that was admitted while idle from spending its
+        second round trip once the answer stopped mattering. Raises when it fires.
         """
         if not self.is_loaded:
             if strict:
                 raise RuntimeError("llama-server is not loaded")
             return 0
-
-        def _has_non_text_content(content) -> bool:
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, str):
-                        continue
-                    if not isinstance(block, dict):
-                        return True
-                    if isinstance(block.get("text"), str):
-                        continue
-                    return True
-            return False
-
-        def _has_non_text_prompt_parts() -> bool:
-            if _has_non_text_content(system):
-                return True
-            for msg in messages or []:
-                if isinstance(msg, dict) and _has_non_text_content(msg.get("content", "")):
-                    return True
-            return False
 
         def _block_text(content) -> str:
             if isinstance(content, str):
@@ -14678,6 +14765,26 @@ class LlamaCppBackend:
             system_text = system
         elif isinstance(system, list):
             system_text = _block_text(system)
+
+        # Count the neutralized prompt: raw text budgets a prompt generation never sends (#7066).
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup,
+            neutralize_control_markup_in_messages,
+            neutralize_tool_descriptions,
+        )
+
+        _profile = self.markup_profile
+        messages = neutralize_control_markup_in_messages(messages, None, _profile)
+        # The model's own profile, like its two neighbours. The curated sweep here made the
+        # count describe a different prompt from the one generation sends: a Llama profile
+        # has no "</think>", so generation leaves that text byte-exact while the count path
+        # was turning it into "< /think>" before /apply-template (#7066).
+        system_text = (
+            neutralize_control_markup(system_text)
+            if _profile is None
+            else _profile.rewrite_control(system_text)
+        )
+        tools = neutralize_tool_descriptions(tools, None, _profile)
 
         try:
             with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
@@ -14704,6 +14811,9 @@ class LlamaCppBackend:
                     template_messages = [
                         {"role": "system", "content": system_text}
                     ] + template_messages
+                # An empty list is passed through as-is: llama-server renders through minja, not
+                # jinja2, so messages[0] yields undefined rather than raising and the template
+                # returns its bare preamble. A placeholder turn would add a system block instead.
                 apply_template_failed = False
                 try:
                     # llama-server's /apply-template renders tool declarations
@@ -14712,6 +14822,9 @@ class LlamaCppBackend:
                     template_body = {"messages": template_messages}
                     if tools:
                         template_body["tools"] = tools
+                    # Layered over the load-time --chat-template-kwargs: only keys sent here move.
+                    if chat_template_kwargs:
+                        template_body["chat_template_kwargs"] = chat_template_kwargs
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,
@@ -14719,15 +14832,21 @@ class LlamaCppBackend:
                     if resp.status_code == 200:
                         prompt = resp.json().get("prompt", "")
                         if isinstance(prompt, str):
+                            if should_abort is not None and should_abort():
+                                raise CountAborted()
                             return _tokenize(prompt)
                     apply_template_failed = True
+                except CountAborted:
+                    # Not a template failure: swallowed, the text fallback tokenizes anyway,
+                    # which is the work being declined. Must precede the generic except.
+                    raise
                 except Exception:
                     apply_template_failed = True
 
-                if strict and apply_template_failed and _has_non_text_prompt_parts():
-                    raise RuntimeError(
-                        "cannot fall back to text-only token counting for multimodal messages"
-                    )
+                # The fallback drops role markers, special tokens and tool schemas (~30% of a
+                # six-turn two-tool prompt), so strict callers error rather than undercount.
+                if strict and apply_template_failed:
+                    raise RuntimeError("llama-server could not render the chat template")
 
                 # 2. Fallback: concatenate plain text and tokenize. Append a
                 # serialized form of the tools so they still contribute to the
@@ -14899,9 +15018,11 @@ class LlamaCppBackend:
             raise RuntimeError(f"GGUF TTS does not support '{audio_type}' codec.")
 
         tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
+        # Raw prompt, not messages: codec delimiters are the only structure to break (#7066).
+        from core.inference.chat_template_helpers import neutralize_tts_prompt_text
 
         payload: dict = {
-            "prompt": tpl.format(text = text),
+            "prompt": tpl.format(text = neutralize_tts_prompt_text(text, audio_type)),
             "stream": False,
             "n_predict": max_new_tokens,
             "temperature": temperature,

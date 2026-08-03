@@ -363,6 +363,131 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
             sys.modules["utils.hf_xet_fallback"] = saved_shim
 
 
+def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_override(monkeypatch):
+    """The shim sets UNSLOTH_ZOO_DISABLE_GPU_INIT=1 process-wide while it retries an optional
+    import, and unsloth_zoo answers that flag with STUB triton and bitsandbytes, so a child that
+    inherited it would run for life against no-ops and never clear it."""
+    import importlib
+    import os
+
+    from utils.child_stdio import utf8_child_env
+
+    monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
+    child_envs = []
+
+    class _SpawnsAWorkerMidImport:
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
+            if name == "unsloth_zoo":
+                # A concurrent request lands mid-retry and spawns its worker right here.
+                child_envs.append(utf8_child_env())
+                raise NotImplementedError("Unsloth cannot find any torch accelerator")
+            return None
+
+    finder = _SpawnsAWorkerMidImport()
+    saved = {
+        k: v
+        for k, v in list(sys.modules.items())
+        if k == "unsloth_zoo" or k.startswith("unsloth_zoo.")
+    }
+    for k in saved:
+        del sys.modules[k]
+    saved_shim = sys.modules.pop("utils.hf_xet_fallback", None)
+    sys.meta_path.insert(0, finder)
+    try:
+        shim = importlib.import_module("utils.hf_xet_fallback")
+        shim.DownloadStallError  # drives the load: plain attempt, then the retry
+        assert len(child_envs) == 2, child_envs
+        # The retry is the attempt that sets it; neither child may see it.
+        assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
+        for env in child_envs:
+            assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" not in env, env
+            assert env["PYTHONIOENCODING"] == "utf-8"
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("utils.hf_xet_fallback", None)
+        sys.modules.update(saved)
+        if saved_shim is not None:
+            sys.modules["utils.hf_xet_fallback"] = saved_shim
+
+
+def test_a_spawn_cannot_overlap_the_loader_env_override_window():
+    """multiprocessing spawn copies the parent's LIVE os.environ and takes no env argument, so the
+    only way to keep the shim's transient UNSLOTH_ZOO_DISABLE_GPU_INIT out of a worker is that a
+    spawn cannot start while a loader holds it; a child that inherits it silently trains against
+    unsloth_zoo's stub triton and bitsandbytes. Structural on purpose: it asserts the two share one
+    lock rather than trying to hit a microsecond window by timing."""
+    import threading
+
+    from utils.hf_cache_settings import child_environment_for_spawn
+
+    loader_holds = threading.Event()
+    release_loader = threading.Event()
+    spawn_started = threading.Event()
+    spawn_entered = threading.Event()
+
+    def _loader():
+        with xf.env_override_barrier():
+            loader_holds.set()
+            release_loader.wait(5.0)
+
+    def _spawner():
+        spawn_started.set()
+        with child_environment_for_spawn({}):
+            spawn_entered.set()
+
+    t_loader = threading.Thread(target = _loader, daemon = True)
+    t_loader.start()
+    assert loader_holds.wait(5.0), "loader never took the barrier"
+
+    t_spawn = threading.Thread(target = _spawner, daemon = True)
+    t_spawn.start()
+    assert spawn_started.wait(5.0)
+    try:
+        assert not spawn_entered.wait(0.5), "a spawn started inside the loader override window"
+    finally:
+        release_loader.set()
+    assert spawn_entered.wait(5.0), "the spawn never proceeded after the loader let go"
+    t_loader.join(5.0)
+    t_spawn.join(5.0)
+
+
+def test_the_spawn_barrier_is_reentrant():
+    """child_environment_for_spawn nests (an inference respawn inside a training start), which its
+    RLock _spawn_env_lock allows, so the barrier it now takes alongside must be reentrant too or the
+    inner enter deadlocks. Bounded on purpose: a plain Lock hangs the suite rather than failing."""
+    import threading
+
+    from utils.hf_cache_settings import child_environment_for_spawn
+
+    done = threading.Event()
+
+    def _nest():
+        with child_environment_for_spawn({"HF_HUB_CACHE": "outer"}):
+            with child_environment_for_spawn({"HF_HUB_CACHE": "inner"}):
+                pass
+        done.set()
+
+    worker = threading.Thread(target = _nest, daemon = True)
+    worker.start()
+    assert done.wait(10.0), "a nested spawn deadlocked on the loader barrier"
+    worker.join(5.0)
+
+
+def test_an_operator_set_gpu_init_override_still_reaches_the_child(monkeypatch):
+    """Only the loader's own transient value is dropped. Someone who exported the flag themselves
+    on a GPU-less box meant it, and their children must keep it."""
+    from utils.child_stdio import utf8_child_env
+
+    monkeypatch.setenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", "1")
+    monkeypatch.setattr(xf, "_gpu_init_override_depth", 0, raising = False)
+    assert utf8_child_env()["UNSLOTH_ZOO_DISABLE_GPU_INIT"] == "1"
+
+
 def test_importing_child_should_disable_xet_stays_light(monkeypatch):
     """Regression guard for the stale-transformers-sidecar bug: importing the shim (and
     ``child_should_disable_xet``) must NOT pull in ``transformers``/``unsloth_zoo``. The worker calls
@@ -389,3 +514,71 @@ def test_importing_child_should_disable_xet_stays_light(monkeypatch):
     # And nothing heavy was imported as a side effect.
     assert "transformers" not in sys.modules, "importing the shim must not import transformers"
     assert "unsloth_zoo" not in sys.modules, "importing the shim must not import unsloth_zoo"
+
+
+def test_start_watchdog_drops_kwargs_the_installed_zoo_cannot_take(monkeypatch):
+    """Version-skew adapter, and load-bearing: the floor's start_watchdog is keyword-only with no
+    **kwargs and no connect_timeout, so passing one raises TypeError into the caller's
+    `except Exception` and the watchdog silently never starts. That is the feature entirely off.
+    """
+    import threading
+
+    import utils.hf_xet_fallback as shim
+
+    seen = {}
+
+    def _old_signature_watchdog(
+        *,
+        repo_ids,
+        on_stall,
+        repo_type = "model",
+        cache_dir = None,
+        interval = 30.0,
+        stall_timeout = 180.0,
+        xet_disabled = False,
+        on_heartbeat = None,
+        watch_new_partials_only = False,
+        baseline_incomplete_blobs = None,
+        child_pid = None,
+    ):
+        seen.update(locals())
+        return threading.Event()
+
+    class _FakeShared:
+        start_watchdog = staticmethod(_old_signature_watchdog)
+
+    monkeypatch.setattr(shim, "_shared", _FakeShared, raising = False)
+    monkeypatch.setattr(shim, "_shared_available", True, raising = False)
+
+    stop = shim.start_watchdog(
+        repo_ids = ["a/b"],
+        on_stall = lambda _m: None,
+        watch_new_partials_only = True,
+        child_pid = 1234,
+        connect_timeout = 600.0,  # only on the unreleased zoo
+    )
+    assert stop is not None, "the watchdog did not start"
+    assert seen["watch_new_partials_only"] is True, "a SUPPORTED kwarg was dropped"
+    assert seen["child_pid"] == 1234
+
+
+def test_start_watchdog_passes_everything_to_a_zoo_that_accepts_it(monkeypatch):
+    """A newer zoo must still receive the newer knobs."""
+    import threading
+
+    import utils.hf_xet_fallback as shim
+
+    seen = {}
+
+    def _new_signature_watchdog(**kwargs):
+        seen.update(kwargs)
+        return threading.Event()
+
+    class _FakeShared:
+        start_watchdog = staticmethod(_new_signature_watchdog)
+
+    monkeypatch.setattr(shim, "_shared", _FakeShared, raising = False)
+    monkeypatch.setattr(shim, "_shared_available", True, raising = False)
+
+    shim.start_watchdog(repo_ids = ["a/b"], on_stall = lambda _m: None, connect_timeout = 600.0)
+    assert seen["connect_timeout"] == 600.0, "a newer zoo lost the kwarg it supports"

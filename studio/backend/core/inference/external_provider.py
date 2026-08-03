@@ -19,6 +19,14 @@ from urllib.parse import urlparse
 import httpx
 import structlog
 
+# Local servers, not hosted APIs: each applies the model's own chat template on the way
+# in, so a prompt built here is templated just like an in-process one (#7066). "custom" is
+# a user-supplied OpenAI-compatible base_url (routes/providers.py:207-213), i.e. how a
+# self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume
+# a template applies: sweeping a hosted API costs a space in delimiter-like text, not
+# sweeping a local one costs a forged turn.
+_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
+
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
@@ -945,6 +953,26 @@ class ExternalProviderClient:
             ):
                 yield line
             return
+
+        # A self-hosted server templates client text just like the in-process paths, so the
+        # same "</think>" or turn marker forges a turn (#7066). Hosted APIs are left alone:
+        # their prompt assembly is not this repo's template and not ours to rewrite.
+        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS:
+            from core.inference.chat_template_helpers import (
+                neutralize_control_markup_in_messages,
+                neutralize_tool_descriptions,
+                reconciled_tool_choice,
+            )
+            messages = neutralize_control_markup_in_messages(messages)
+            if tools:
+                safe_tools = neutralize_tool_descriptions(tools)
+                # A mixed catalog keeps safe_tools non-empty while dropping the one tool the
+                # client forced, so an empty check is not enough: without the passthrough
+                # builder's per-name reconciliation the body names an unadvertised function.
+                tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
+                if not safe_tools:
+                    tool_choice = None
+                tools = safe_tools
 
         body: dict[str, Any] = {
             "model": model,
