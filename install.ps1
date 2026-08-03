@@ -1132,6 +1132,108 @@ exit 0
         return
     }
 
+    # ── Leave Windows system directories before installing ──
+    # "Run as administrator" starts in C:\Windows\System32, so `irm ... | iex` installs
+    # from there and `unsloth studio setup` refuses only after PyTorch has downloaded,
+    # then rolls back. Relocating is safe: nothing here reads the caller's directory
+    # ($RepoRoot from $PSCommandPath, $StudioHome from the environment), so only
+    # --with-llama-cpp-dir needs a rebase first. Not restored at the end, same reason as
+    # the PSModulePath fix at the top: the interactive path ends running Studio in the
+    # foreground, so a finally would not fire until it stops.
+    $SystemRootDir = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
+    $SystemRootDir = [System.IO.Path]::GetFullPath($SystemRootDir).TrimEnd('\')
+    # Separator included, or siblings like C:\Windows.old and C:\WindowsStudio match too.
+    $SystemRootPrefix = $SystemRootDir + [System.IO.Path]::DirectorySeparatorChar
+    $CurrentDir = $null
+    try {
+        # FileSystem provider: a caller parked on HKLM:\ still has the location children inherit.
+        $CurrentDir = [System.IO.Path]::GetFullPath(
+            (Get-Location -PSProvider FileSystem -ErrorAction Stop).ProviderPath
+        ).TrimEnd('\')
+    } catch {
+        $CurrentDir = $null
+    }
+    function Test-UnderSystemRoot {
+        param([string]$Path)
+        return $Path -and (
+            $Path.Equals($SystemRootDir, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $Path.StartsWith($SystemRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+        )
+    }
+    $InSystemDir = Test-UnderSystemRoot $CurrentDir
+    if ($InSystemDir) {
+        if ($WithLlamaCppDir) {
+            # Anchor to the directory the user typed it against, including the partially
+            # qualified forms (C:llama.cpp, \llama.cpp). Not [System.IO.Path]::GetFullPath,
+            # which resolves against [Environment]::CurrentDirectory, a separate location
+            # that Set-Location never updates.
+            try {
+                $WithLlamaCppDir =
+                    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WithLlamaCppDir)
+            } catch {
+                $WithLlamaCppDir = Join-Path $CurrentDir $WithLlamaCppDir
+            }
+        }
+        # SYSTEM's profile is C:\Windows\System32\config\systemprofile, so a candidate
+        # inside the Windows directory is no better than where we already are.
+        $SafeDirCandidates = @($env:USERPROFILE, $HOME, $env:PUBLIC, $env:TEMP) |
+            Where-Object {
+                $_ -and (Test-Path -LiteralPath $_ -PathType Container) -and
+                -not (Test-UnderSystemRoot ([System.IO.Path]::GetFullPath($_).TrimEnd('\')))
+            }
+        $SafeDir = $null
+        foreach ($candidate in $SafeDirCandidates) {
+            try {
+                Set-Location -LiteralPath $candidate -ErrorAction Stop
+                $SafeDir = (Get-Location -PSProvider FileSystem).ProviderPath
+                break
+            } catch {
+                continue
+            }
+        }
+        # $StudioHome came from USERPROFILE far above, so a SYSTEM account would keep
+        # installing into C:\Windows\System32\config\systemprofile while we report having
+        # escaped. Rebasing it would orphan the install (the runtime resolvers recompute
+        # the root from USERPROFILE), so stop instead.
+        $StudioHomeFull = ""
+        try { $StudioHomeFull = [System.IO.Path]::GetFullPath($StudioHome).TrimEnd('\') } catch {}
+        if ($SafeDir -and (Test-UnderSystemRoot $StudioHomeFull)) {
+            Write-Host ""
+            Write-Host "[ERROR] Unsloth would install into $StudioHomeFull," -ForegroundColor Red
+            Write-Host "        which is inside $SystemRootDir." -ForegroundColor Yellow
+            Write-Host "        That is where a service or the SYSTEM account keeps its profile." -ForegroundColor Yellow
+            Write-Host "        Sign in as a normal user, open PowerShell there, and run the" -ForegroundColor Yellow
+            Write-Host "        installer again:" -ForegroundColor Yellow
+            Write-Host "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
+            Write-Host ""
+            return (Exit-InstallFailure "Refusing to install into $StudioHomeFull, which is inside $SystemRootDir. Run the installer from a normal user account.")
+        }
+        if ($SafeDir) {
+            Write-TauriLog "STEP" "Left system directory $CurrentDir for $SafeDir"
+            step "directory" "$CurrentDir is a Windows system folder" "Yellow"
+            substep "Unsloth cannot install or run from there, so this install continues in:" "Yellow"
+            substep "  $SafeDir" "Yellow"
+            substep "This is normal: 'Run as administrator' opens PowerShell in System32." "Yellow"
+        } else {
+            Write-Host ""
+            Write-Host "[ERROR] Unsloth cannot be installed from $CurrentDir." -ForegroundColor Red
+            Write-Host "        That is a Windows system folder, and Unsloth writes its virtual" -ForegroundColor Yellow
+            Write-Host "        environment caches, model downloads and build files into the" -ForegroundColor Yellow
+            Write-Host "        working directory, which Windows blocks there." -ForegroundColor Yellow
+            Write-Host "        'Run as administrator' opens PowerShell in System32, which is how" -ForegroundColor Yellow
+            Write-Host "        most people land here." -ForegroundColor Yellow
+            # USERPROFILE was just rejected as a candidate, so naming it here would send
+            # the user back into the same tree.
+            Write-Host "        Nothing outside $SystemRootDir was usable either (USERPROFILE," -ForegroundColor Yellow
+            Write-Host "        HOME, PUBLIC, TEMP), which normally means a service or the SYSTEM" -ForegroundColor Yellow
+            Write-Host "        account. Sign in as a normal user, open PowerShell there, and run" -ForegroundColor Yellow
+            Write-Host "        the installer again:" -ForegroundColor Yellow
+            Write-Host "          irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Cyan
+            Write-Host ""
+            return (Exit-InstallFailure "Refusing to install from the Windows system directory $CurrentDir, and no folder outside $SystemRootDir was usable. Run the installer from a normal user account.")
+        }
+    }
+
     # ── Check winget ──
     # winget is only needed to install Python or uv. If both are
     # already on PATH (Windows ARM64 GitHub-hosted runners, manual
@@ -1167,17 +1269,19 @@ exit 0
         param([string]$Exe)
         if ($Exe -match $script:CondaSkipPattern) { return $true }
         try {
-            $basePrefix = (& $Exe -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
+            $basePrefix = (& $Exe -S -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
             if ($basePrefix -match $script:CondaSkipPattern) { return $true }
         } catch { }
         return $false
     }
 
     # The interpreter's own arch, asked of it: win-amd64|win-arm64|win32|"".
+    # -S: the caller compares this with -eq, so a sitecustomize banner would read as
+    # "unknown" and lose the x64-over-ARM64 preference.
     function Get-PythonPlatformTag {
         param([string]$Exe)
         try {
-            return (& $Exe -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+            return (& $Exe -S -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
         } catch { return "" }
     }
 
@@ -1209,8 +1313,8 @@ exit 0
                     if ($out -match "Python (3\.1[1-3])\.\d+") {
                         $ver = $Matches[1]
                         # Resolve the actual executable path and verify it is not conda-based
-                        $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                        if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsCondaPython $resolvedExe)) {
+                        $resolvedExe = (& $pyLauncher.Source "-$minor" -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                        if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
                             if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
                         }
@@ -1233,8 +1337,14 @@ exit 0
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
                     if ($out -match "Python (3\.1[1-3])\.\d+") {
-                        if (-not $preferX64) { return @{ Version = $Matches[1]; Path = $cmd.Source; Arch = "" } }
-                        $candidates += @{ Version = $Matches[1]; Path = $cmd.Source }
+                        $ver = $Matches[1]
+                        # PATH entries may be wrappers (e.g. pyenv-win's python.bat).
+                        # Resolve the real executable so uv bypasses wrapper re-resolution.
+                        $resolvedExe = (& $cmd.Source -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
+                        if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
+                            if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
+                            $candidates += @{ Version = $ver; Path = $resolvedExe }
+                        }
                     }
                 } catch {}
             }
@@ -1575,6 +1685,38 @@ exit 0
     $script:StudioVenvRollbackTarget = $VenvDir
     $script:StudioVenvRollbackActive = $false
 
+    function Test-VenvPythonReady {
+        param([Parameter(Mandatory = $true)][string]$PythonExe)
+        if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
+
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $global:LASTEXITCODE = -1
+            $null = & $PythonExe -c "import sys; sys.exit(0)" 2>$null
+            return ($LASTEXITCODE -eq 0)
+        } catch {
+            return $false
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+    }
+
+    function Get-VenvBaseHome {
+        param([Parameter(Mandatory = $true)][string]$VenvRoot)
+        $configPath = Join-Path $VenvRoot "pyvenv.cfg"
+        if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { return $null }
+
+        try {
+            foreach ($line in [System.IO.File]::ReadAllLines($configPath)) {
+                if ($line -match '^\s*home\s*=\s*(.*?)\s*$') {
+                    return $Matches[1].Trim()
+                }
+            }
+        } catch {}
+        return $null
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
@@ -1783,11 +1925,20 @@ exit 0
         substep "$VenvDir"
     }
 
-    # Mark the freshly-created venv as Unsloth-owned so a partial install can be
-    # repaired by re-running install.ps1; the env-mode deletion guard above
-    # accepts this marker as the primary sentinel.
+    # Mark the managed venv before probing so failed installs can be replaced on rerun.
     if (Test-Path -LiteralPath $VenvDir -PathType Container) {
         try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
+    }
+
+    if (-not (Test-VenvPythonReady -PythonExe $VenvPython)) {
+        $recordedBaseHome = Get-VenvBaseHome -VenvRoot $VenvDir
+        Write-Host "[ERROR] The managed Python interpreter is missing or cannot be launched." -ForegroundColor Red
+        Write-Host "        Managed Python: $VenvPython" -ForegroundColor Yellow
+        if (-not $recordedBaseHome) { $recordedBaseHome = "unavailable" }
+        Write-Host "        Recorded base Python home: $recordedBaseHome" -ForegroundColor Yellow
+        # The ownership marker is written above, so a plain re-run replaces this venv.
+        Write-Host "        Restore that Python installation, or just re-run install.ps1." -ForegroundColor Yellow
+        return (Exit-InstallFailure "Managed Python is unavailable at $VenvPython (recorded base home: $recordedBaseHome)")
     }
 
     # ── Helper: run amd-smi without triggering a UAC elevation prompt ──
@@ -2523,7 +2674,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.1" "unsloth-zoo>=2026.8.1" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -2537,7 +2688,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.1" "unsloth-zoo>=2026.8.1" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2624,7 +2775,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.1" "unsloth-zoo>=2026.8.1" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2636,7 +2787,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.1" "unsloth-zoo>=2026.8.1" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -2664,7 +2815,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.7" "unsloth>=2026.7.6" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.8.1" "unsloth>=2026.8.1" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

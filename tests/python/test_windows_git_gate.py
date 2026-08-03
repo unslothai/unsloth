@@ -36,11 +36,30 @@ def _git_gate_block() -> str:
     raise AssertionError("Unclosed git gate block in setup.ps1")
 
 
+def _function(name: str) -> str:
+    """Inject the real helper the block calls; an undefined one is a silent no-op
+    under Continue, which would let the layout scan always report 'nothing built'."""
+    source = SETUP_PS1.read_text(encoding = "utf-8")
+    start = source.index(f"function {name} {{")
+    depth = 0
+    for index in range(source.index("{", start), len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"Unclosed function {name} in setup.ps1")
+
+
 def _script() -> str:
     return f"""
 $DefaultLlamaPrForce = "0"
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
+{_function("Test-AccessDeniedError")}
+{_function("Get-PathState")}
+function Exit-PathAccessDenied {{ param($Path, $Label, [switch]$UserSupplied) throw "denied: $Path" }}
 {_git_gate_block()}
 Write-Output $gitNeeded
 """

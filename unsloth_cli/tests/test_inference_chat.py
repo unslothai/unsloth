@@ -663,17 +663,43 @@ def test_deferred_error_helper_defaults_a_missing_status():
     assert excinfo.value.code == 500
 
 
-def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
+@pytest.mark.parametrize(
+    ("source", "expected_source"),
+    [
+        (
+            {"gguf_hf_repo": "org/model-GGUF"},
+            {"hf_repo": "org/model-GGUF", "hf_token": "hf_x"},
+        ),
+        (
+            {
+                "gguf_hf_repo": None,
+                "gguf_file": "/models/model.gguf",
+                "gguf_mmproj_file": "/models/mmproj.gguf",
+                "gguf_mtp_file": "/models/mtp.gguf",
+            },
+            {
+                "gguf_path": "/models/model.gguf",
+                "mmproj_path": "/models/mmproj.gguf",
+                "mtp_draft_path": "/models/mtp.gguf",
+            },
+        ),
+    ],
+    ids = ("hugging-face", "local"),
+)
+def test_load_gguf_backend_forwards_source_and_runtime_options(
+    monkeypatch, source, expected_source
+):
     import unsloth_cli._inference as inference
 
     calls = []
 
     class _FakeLlamaCppBackend:
-        def load_model(self, **kwargs):
-            calls.append(kwargs)
+        def load_model(self, intent):
+            calls.append(intent)
             return True
 
     fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.GgufLoadIntent = lambda **kwargs: SimpleNamespace(**kwargs)
     fake_llama_cpp.LlamaCppBackend = _FakeLlamaCppBackend
     fake_args = types.ModuleType("core.inference.llama_server_args")
     fake_args.validate_extra_args = lambda args: list(args or [])
@@ -702,7 +728,7 @@ def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
         gguf_variant = "Q4_K_M",
         identifier = "org/model-GGUF",
         is_vision = False,
-        gguf_hf_repo = "org/model-GGUF",
+        **source,
     )
 
     backend = inference._load_gguf_backend(
@@ -714,16 +740,15 @@ def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
     )
 
     assert isinstance(backend, ChatBackend)
-    assert calls == [
+    assert [vars(intent) for intent in calls] == [
         {
-            "hf_repo": "org/model-GGUF",
-            "hf_token": "hf_x",
             "hf_variant": "Q4_K_M",
             "model_identifier": "org/model-GGUF",
             "is_vision": False,
             "n_ctx": 8192,
             "tensor_parallel": True,
             "extra_args": ["--top-k", "20"],
+            **expected_source,
         }
     ]
 
@@ -732,6 +757,7 @@ def test_load_gguf_backend_exits_cleanly_on_invalid_extra_args(monkeypatch):
     import unsloth_cli._inference as inference
 
     fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.GgufLoadIntent = object
     fake_llama_cpp.LlamaCppBackend = object
     fake_args = types.ModuleType("core.inference.llama_server_args")
 
@@ -774,11 +800,12 @@ def test_load_gguf_backend_uses_tensor_fallback(monkeypatch):
     fallback_calls = []
 
     class _FakeLlamaCppBackend:
-        def load_model(self, **kwargs):
-            calls.append(kwargs)
-            return kwargs["tensor_parallel"] is False
+        def load_model(self, intent):
+            calls.append(intent)
+            return intent.tensor_parallel is False
 
     fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.GgufLoadIntent = lambda **kwargs: SimpleNamespace(**kwargs)
     fake_llama_cpp.LlamaCppBackend = _FakeLlamaCppBackend
     fake_args = types.ModuleType("core.inference.llama_server_args")
     fake_args.validate_extra_args = lambda args: list(args or [])
@@ -823,8 +850,8 @@ def test_load_gguf_backend_uses_tensor_fallback(monkeypatch):
 
     assert isinstance(backend, ChatBackend)
     assert fallback_calls == [(True, [], "org/model-GGUF")]
-    assert [call["tensor_parallel"] for call in calls] == [True, False]
-    assert calls[1]["extra_args"] == ["--split-mode", "layer"]
+    assert [intent.tensor_parallel for intent in calls] == [True, False]
+    assert calls[1].extra_args == ["--split-mode", "layer"]
 
 
 def test_http_backend_merges_emoji_split_across_deltas(monkeypatch):
