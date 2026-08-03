@@ -7,7 +7,11 @@ import {
   LR_DEFAULT_CPT,
   LR_DEFAULT_LORA,
 } from "@/config/training";
-import { getHfToken, useHfTokenStore } from "@/features/hub";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's unrelated React exports.
+import {
+  getHfToken,
+  useHfTokenStore,
+} from "@/features/hub/stores/hf-token-store";
 import { isTrainingMethod } from "@/types/training";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 import {
@@ -16,7 +20,7 @@ import {
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 16;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 17;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -24,8 +28,6 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "isCheckingVision",
     "isLoadingModelDefaults",
     "modelDefaultsError",
-    "modelDefaultsAppliedFor",
-    "advancedSettingsBaseline",
     "isCheckingDataset",
     "isDatasetImage",
     "isDatasetAudio",
@@ -150,6 +152,19 @@ function migrateThroughVersion16(
   }
 }
 
+function migrateThroughVersion17(
+  state: PersistedTrainingConfig,
+  version: number,
+): void {
+  if (version < 17) {
+    state.modelDefaultsAppliedFor =
+      typeof state.selectedModel === "string" && state.selectedModel.length > 0
+        ? state.selectedModel
+        : null;
+    state.advancedSettingsBaseline = null;
+  }
+}
+
 export function migrateTrainingConfig(
   persisted: unknown,
   version: number,
@@ -158,6 +173,7 @@ export function migrateTrainingConfig(
   migrateThroughVersion8(state, version);
   migrateThroughVersion12(state, version);
   migrateThroughVersion16(state, version);
+  migrateThroughVersion17(state, version);
   return state as unknown as TrainingConfigStore;
 }
 
@@ -166,9 +182,19 @@ export function mergeTrainingConfig(
   current: TrainingConfigStore,
 ): TrainingConfigStore {
   const persistedState = persisted as Partial<TrainingConfigState>;
+  const modelDefaultsAppliedFor =
+    typeof persistedState.modelDefaultsAppliedFor === "string" &&
+    persistedState.modelDefaultsAppliedFor.length > 0 &&
+    persistedState.modelDefaultsAppliedFor === persistedState.selectedModel
+      ? persistedState.modelDefaultsAppliedFor
+      : null;
   return {
     ...current,
     ...persistedState,
+    modelDefaultsAppliedFor,
+    advancedSettingsBaseline: modelDefaultsAppliedFor
+      ? (persistedState.advancedSettingsBaseline ?? null)
+      : null,
     trainingMethod: isTrainingMethod(persistedState.trainingMethod)
       ? persistedState.trainingMethod
       : current.trainingMethod,

@@ -7,6 +7,7 @@ const WINDOWS_DRIVE_PATH_RE = /^[A-Za-z]:/;
 const WINDOWS_RELATIVE_PATH_RE = /^\.{1,2}\\/;
 const WINDOWS_ROOTED_PATH_RE = /^\\/;
 const WSL_DRIVE_PATH_RE = /^\/mnt\/[A-Za-z](?:\/|$)/;
+const TILDE_PATH_RE = /^~[^\\/]*(?:[\\/]|$)/;
 
 function trimTrailingSeparators(path: string, minLength: number): string {
   let end = path.length;
@@ -42,6 +43,9 @@ export function normalizeModelIdentity(modelId: string): string {
     return normalizeCaseInsensitivePath(trimmed, 6);
   }
   if (WINDOWS_RELATIVE_PATH_RE.test(trimmed)) {
+    return trimTrailingSeparators(slashPath, 1);
+  }
+  if (TILDE_PATH_RE.test(trimmed)) {
     return trimTrailingSeparators(slashPath, 1);
   }
   return trimTrailingSeparators(trimmed, 1);

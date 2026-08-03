@@ -288,7 +288,6 @@ export function TrainingWizard({
         description={t("studio.wizard.modelDescription")}
         icon={BrainIcon}
         chipTint="var(--chart-1)"
-        dataTour="studio-model"
       >
         <ModelPanel />
       </SectionBox>

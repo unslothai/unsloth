@@ -6,9 +6,10 @@ import importlib.util
 import json
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 from fastapi import HTTPException
@@ -72,6 +73,16 @@ def _fake_hf_modules(api_type, validate_repo_id = _accept_repo_id):
             validate_repo_id = validate_repo_id,
         ),
     }
+
+
+@contextmanager
+def _patch_model_info(**kwargs):
+    model_info = Mock(**kwargs)
+    with patch.dict(
+        sys.modules,
+        {"huggingface_hub": SimpleNamespace(model_info = model_info)},
+    ):
+        yield model_info
 
 
 def _start(route, request, *, run_dataset_preflight = False):
@@ -833,7 +844,7 @@ def test_remote_format_probe_uses_token_and_shorthand():
     route = _load_route_module("training_route_remote_adapter_metadata")
     info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
 
-    with patch("huggingface_hub.model_info", return_value = info) as model_info:
+    with _patch_model_info(return_value = info) as model_info:
         assert route._remote_untrainable_model_format("test", "hf-token") == "adapter"
 
     model_info.assert_called_once_with(
@@ -847,8 +858,7 @@ def test_remote_format_probe_retries_transient_failure():
     route = _load_route_module("training_route_remote_adapter_metadata_retry")
     info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
 
-    with patch(
-        "huggingface_hub.model_info",
+    with _patch_model_info(
         side_effect = [OSError("timed out"), info],
     ) as model_info:
         assert route._remote_untrainable_model_format("test", "hf-token") == "adapter"
@@ -874,8 +884,7 @@ def test_remote_format_probe_retries_transient_hub_status(status_code):
     transient_error.response = SimpleNamespace(status_code = status_code)
     info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
 
-    with patch(
-        "huggingface_hub.model_info",
+    with _patch_model_info(
         side_effect = [transient_error, info],
     ) as model_info:
         assert route._remote_untrainable_model_format("test", "hf-token") == "adapter"
@@ -892,7 +901,7 @@ def test_remote_format_probe_maps_hub_access_denial_to_validation_error(status_c
     access_error = RuntimeError("access denied")
     access_error.response = SimpleNamespace(status_code = status_code)
 
-    with patch("huggingface_hub.model_info", side_effect = access_error) as model_info:
+    with _patch_model_info(side_effect = access_error) as model_info:
         with pytest.raises(HTTPException) as exc_info:
             route._remote_untrainable_model_format("test", "hf-token")
 
@@ -908,7 +917,7 @@ def test_remote_format_probe_reports_stable_verification_error_code():
     not_found = RuntimeError("not found")
     not_found.response = SimpleNamespace(status_code = 404)
 
-    with patch("huggingface_hub.model_info", side_effect = not_found):
+    with _patch_model_info(side_effect = not_found):
         with pytest.raises(HTTPException) as exc_info:
             route._remote_untrainable_model_format("test", "hf-token")
 
@@ -939,7 +948,7 @@ def test_remote_format_probe_exhausted_transient_status_reports_unavailable(stat
     transient_error = RuntimeError("transient Hub failure")
     transient_error.response = SimpleNamespace(status_code = status_code)
 
-    with patch("huggingface_hub.model_info", side_effect = transient_error) as model_info:
+    with _patch_model_info(side_effect = transient_error) as model_info:
         with pytest.raises(HTTPException) as exc_info:
             route._remote_untrainable_model_format("test", "hf-token")
 
@@ -958,7 +967,7 @@ def test_remote_format_probe_rejects_gguf_only_repository():
         ]
     )
 
-    with patch("huggingface_hub.model_info", return_value = info):
+    with _patch_model_info(return_value = info):
         assert route._remote_untrainable_model_format("org/model", None) == "gguf"
 
 
@@ -971,7 +980,7 @@ def test_remote_format_probe_allows_repository_with_trainable_weights():
         ]
     )
 
-    with patch("huggingface_hub.model_info", return_value = info):
+    with _patch_model_info(return_value = info):
         assert route._remote_untrainable_model_format("org/model", None) is None
 
 
@@ -980,7 +989,7 @@ def test_remote_format_probe_reports_rate_limit_without_token_guidance():
     rate_limit_error = RuntimeError("rate limited")
     rate_limit_error.response = SimpleNamespace(status_code = 429)
 
-    with patch("huggingface_hub.model_info", side_effect = rate_limit_error):
+    with _patch_model_info(side_effect = rate_limit_error):
         with pytest.raises(HTTPException) as exc_info:
             route._remote_untrainable_model_format("test", "hf-token")
 

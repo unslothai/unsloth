@@ -342,49 +342,49 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               return;
             }
 
+            const modelDefaultsPatch =
+              mapBackendModelConfigToTrainingPatch(modelDetails.config);
             const patch = shouldApplyTrainingDefaults
-              ? mapBackendModelConfigToTrainingPatch(modelDetails.config)
+              ? modelDefaultsPatch
               : {};
 
             // Treat a model-config LR as authoritative so async auto-select
             // won't overwrite it.
-            const modelConfigHasLR = patch.learningRate !== undefined;
+            const modelConfigHasLR =
+              modelDefaultsPatch.learningRate !== undefined;
             if (shouldApplyTrainingDefaults) {
-              _yamlLearningRate = patch.learningRate;
+              _yamlLearningRate = modelDefaultsPatch.learningRate;
             }
 
             // YAML LRs are tuned for adapters (LoRA/QLoRA); on full fine-tune,
             // use the full-finetune default instead of the YAML adapter LR.
             if (modelConfigHasLR && !isAdapterMethod(get().trainingMethod)) {
-              patch.learningRate = LR_DEFAULT_FULL;
+              modelDefaultsPatch.learningRate = LR_DEFAULT_FULL;
             }
 
             // Vision model + known image dataset: force trainOnCompletions off.
             if (
-              shouldApplyTrainingDefaults &&
               modelDetails.is_vision &&
               get().isDatasetImage === true
             ) {
-              patch.trainOnCompletions = false;
+              modelDefaultsPatch.trainOnCompletions = false;
             }
 
             const isAudio = !!modelDetails.is_audio;
             // Pure audio model -> always uncheck trainOnCompletions.
             if (
-              shouldApplyTrainingDefaults &&
               isAudio &&
               !modelDetails.is_vision
             ) {
-              patch.trainOnCompletions = false;
+              modelDefaultsPatch.trainOnCompletions = false;
             }
             // Audio-capable vision model (e.g. gemma3n) + audio dataset -> uncheck.
             if (
-              shouldApplyTrainingDefaults &&
               isAudio &&
               modelDetails.is_vision &&
               get().isDatasetAudio
             ) {
-              patch.trainOnCompletions = false;
+              modelDefaultsPatch.trainOnCompletions = false;
             }
 
             const isEmbedding = !!modelDetails.is_embedding;
@@ -414,13 +414,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               shouldApplyTrainingDefaults && get().trainingMethod === "cpt"
                 ? getCptModelDefaultsPatch()
                 : {};
+            const modelDefaultsBaseline = {
+              ...modelDefaultsPatch,
+              ...(get().trainingMethod === "cpt"
+                ? getCptModelDefaultsPatch()
+                : {}),
+            };
+            const advancedSettingsBaseline =
+              get().advancedSettingsBaseline ?? modelDefaultsBaseline;
 
             set({
               ...patch,
               ...cptOverrides,
               advancedSettingsBaseline: shouldApplyTrainingDefaults
-                ? { ...patch, ...cptOverrides }
-                : get().advancedSettingsBaseline,
+                ? modelDefaultsBaseline
+                : advancedSettingsBaseline,
               modelType: inferredModelType,
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
@@ -938,7 +946,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (state.isLoadingModelDefaults) return;
           const defaultsAlreadyApplied =
             state.modelDefaultsAppliedFor === state.selectedModel;
-          if (defaultsAlreadyApplied && !state.modelDefaultsError) return;
           void loadAndApplyModelDefaults(state.selectedModel, {
             applyTrainingDefaults:
               !defaultsAlreadyApplied ||

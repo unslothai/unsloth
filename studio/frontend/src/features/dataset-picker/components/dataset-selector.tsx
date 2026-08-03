@@ -355,7 +355,6 @@ export function DatasetSelector() {
       trigger={
         <button
           type="button"
-          data-tour="studio-dataset-picker"
           title={
             (datasetSource === "upload" ? uploadedFile : dataset) ?? undefined
           }

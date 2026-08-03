@@ -380,6 +380,21 @@ test("normalizes relative Windows separators without changing path case", () => 
   );
 });
 
+test("normalizes tilde path separators without changing path case", () => {
+  assert.equal(
+    normalizeModelIdentity(String.raw`~\Models\Demo\\`),
+    "~/Models/Demo",
+  );
+  assert.equal(
+    normalizeModelIdentity(String.raw`~user\Models\Demo`),
+    "~user/Models/Demo",
+  );
+  assert.notEqual(
+    normalizeModelIdentity(String.raw`~\Models\Demo`),
+    normalizeModelIdentity(String.raw`~\models\demo`),
+  );
+});
+
 test("keeps backslashes in POSIX-shaped paths as filename characters", () => {
   assert.notEqual(
     normalizeModelIdentity(String.raw`./models/foo\bar`),
