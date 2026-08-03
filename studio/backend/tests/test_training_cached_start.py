@@ -85,7 +85,12 @@ def _patch_model_info(**kwargs):
         yield model_info
 
 
-def _start(route, request, *, run_dataset_preflight = False):
+def _start(
+    route,
+    request,
+    *,
+    run_dataset_preflight = False,
+):
     if run_dataset_preflight:
         return asyncio.run(route.start_training(request, current_subject = "test-user"))
     with (

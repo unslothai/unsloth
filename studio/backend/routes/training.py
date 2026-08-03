@@ -403,7 +403,6 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
 
     if not request.dataset_streaming:
         from hub.utils.dataset_cache import training_dataset_cache_pin
-
         cached_path, _ = training_dataset_cache_pin(
             dataset_id,
             request.dataset_snapshot_path or request.dataset_local_path,
