@@ -3426,7 +3426,14 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
                 "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
                 "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
             $_xpuDeps = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_xpuDepsCode
-            if ($_xpuDeps.Ok) {
+            if (-not $_xpuDeps.Ok) {
+                # A probe that did not answer (timeout, or a malformed .dist-info making
+                # distributions() raise) says nothing about the venv, and reading that as
+                # "dependencies are current" lets a migration fast-path past both remediations
+                # forever. Same direction as an unparseable version below: one extra pass.
+                substep "Intel XPU dependencies could not be read -- running the dependency pass" "Cyan"
+                $SkipPythonDeps = $false
+            } else {
                 $_bnbVer = if ($_xpuDeps.Output -match '(?m)^BNB=(\S+)\s*$') { $Matches[1] } else { "" }
                 # An unreadable or unparseable version is treated as stale, the safe
                 # direction: one extra dependency pass, never a venv left on kernels that

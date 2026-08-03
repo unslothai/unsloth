@@ -3454,6 +3454,15 @@ case "$_torch_index_leaf" in
         TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"
         ;;
+    # The xpu index only reaches here through an explicit pin (there is no Intel autodetect on
+    # this side), and unsloth/models/_utils.py raises at import for an XPU device below torch
+    # 2.6, so the generic 2.4 floor would let a mirror carrying an older +xpu wheel produce an
+    # install that cannot run. download.pytorch.org/whl/xpu starts at 2.6.0 either way.
+    xpu)
+        TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
+        TORCHVISION_CONSTRAINT="torchvision>=0.21,<0.26.0"
+        TORCHAUDIO_CONSTRAINT="torchaudio>=2.6,<2.11.0"
+        ;;
 esac
 
 # A pinned custom/unknown-leaf index (/simple, /current, /cu128-private) has no curated

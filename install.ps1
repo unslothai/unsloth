@@ -2762,7 +2762,10 @@ exit 0
                 $ROCmIndexUrl = $null
                 $ROCmTorchFloor = $null
             }
-        } elseif ($script:IsIntelXpu -and (Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
+        # Keyed off the index leaf alone, like the bitsandbytes gate below: a FAMILY=xpu or
+        # URL pin lands here on a host whose Intel scan never ran (a mixed NVIDIA box), and
+        # requiring $script:IsIntelXpu sent it to the generic branch and its 2.4 floor.
+        } elseif ((Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
             # ── Intel Arc / XPU PyTorch install ──
             # XPU wheels carry their own oneAPI runtime (intel-sycl-rt et al.), published
             # under PEP 503 at https://download.pytorch.org/whl/xpu.
