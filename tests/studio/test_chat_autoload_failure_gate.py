@@ -287,7 +287,8 @@ def _build_harness(run_dir: Path):
             if name:
                 imported.add(name)
     missing = sorted(
-        name for name in imported
+        name
+        for name in imported
         if re.search(rf"\b{re.escape(name)}\s*\(", body)
         and not re.search(
             rf"^(?:async\s+)?(?:function\s+|const\s+|let\s+|var\s+){re.escape(name)}\b",
