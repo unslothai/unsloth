@@ -140,6 +140,7 @@ import type { DownloadTransportCapabilities } from "./transport-capabilities";
 const DOWNLOAD_TRANSPORT_CAPABILITIES_TTL_MS = 30_000;
 let downloadTransportCapabilitiesCache: {
   expiresAt: number;
+  probed: boolean;
   capabilities: DownloadTransportCapabilities;
 } | null = null;
 let downloadTransportCapabilitiesInFlight: Promise<DownloadTransportCapabilities> | null =
@@ -147,23 +148,33 @@ let downloadTransportCapabilitiesInFlight: Promise<DownloadTransportCapabilities
 
 export async function getDownloadTransportCapabilities(options: {
   force?: boolean;
+  // Ask the backend to actually reach for the Xet endpoint rather than answering from its cached
+  // verdict. Only the download-start path sets this: the UI polls this endpoint on render, and a
+  // connection attempt per poll is exactly what the cheap default avoids.
+  probe?: boolean;
 } = {}): Promise<DownloadTransportCapabilities> {
-  if (
-    !options.force &&
-    downloadTransportCapabilitiesCache &&
-    downloadTransportCapabilitiesCache.expiresAt > Date.now()
-  ) {
-    return downloadTransportCapabilitiesCache.capabilities;
+  const cached = downloadTransportCapabilitiesCache;
+  // A cheap cached answer cannot satisfy a caller that asked for a probe, but a probed one
+  // satisfies everybody.
+  const cacheUsable =
+    cached !== null &&
+    cached.expiresAt > Date.now() &&
+    (!options.probe || cached.probed);
+  if (!options.force && cacheUsable) {
+    return cached.capabilities;
   }
-  if (!options.force && downloadTransportCapabilitiesInFlight) {
+  if (!options.force && !options.probe && downloadTransportCapabilitiesInFlight) {
     return downloadTransportCapabilitiesInFlight;
   }
-  const request = authFetch("/api/studio/download-transport-capabilities")
+  const request = authFetch(
+    `/api/studio/download-transport-capabilities${options.probe ? "?probe=1" : ""}`,
+  )
     .then(parseJsonOrThrow<unknown>)
     .then(normalizeDownloadTransportCapabilities)
     .then((capabilities) => {
       downloadTransportCapabilitiesCache = {
         expiresAt: Date.now() + DOWNLOAD_TRANSPORT_CAPABILITIES_TTL_MS,
+        probed: options.probe === true,
         capabilities,
       };
       return capabilities;

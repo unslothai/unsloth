@@ -403,3 +403,64 @@ def test_optional_loader_returns_none_when_truly_absent(monkeypatch):
     assert shim.xet_env_overrides() == {}
     assert shim.xet_health() is None
     shim.record_xet_outcome(False, "x")
+
+
+def test_capabilities_probe_is_opt_in(monkeypatch):
+    """The UI polls this endpoint on render, so it must stay cheap by default.
+
+    The download-start path opts in, because that is the one moment worth a connection attempt: a
+    host with an unreachable CAS and no recorded failure yet would otherwise learn by stalling.
+    """
+    from hub.utils import download_registry
+
+    seen: list[bool] = []
+
+    class _Health:
+        use_xet = False
+        reason = "probed: CAS unreachable"
+
+    import utils.hf_xet_fallback as shim
+
+    def _fake_health(*, probe = True):
+        seen.append(probe)
+        return _Health()
+
+    monkeypatch.setattr(shim, "xet_health", _fake_health)
+
+    download_registry.get_download_transport_capabilities()
+    download_registry.get_download_transport_capabilities(probe = True)
+
+    assert seen == [False, True]
+
+
+def test_gpu_init_override_is_serialized(monkeypatch):
+    """Concurrent optional-module loads must not leave the process-wide override set.
+
+    Interleaved save/set/restore could otherwise end with UNSLOTH_ZOO_DISABLE_GPU_INIT stuck at 1
+    for the life of the process, and every later worker would inherit it and skip Zoo's GPU init.
+    """
+    import importlib
+    import os
+    import threading
+
+    import utils.hf_xet_fallback as shim
+
+    monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
+
+    def _always_fail(name):
+        # Widen the race window: without the lock this is where the interleave happens.
+        time.sleep(0.005)
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(importlib, "import_module", _always_fail)
+
+    threads = [
+        threading.Thread(target = shim._load_optional, args = ("unsloth_zoo.hf_xet_tuning",))
+        for _ in range(8)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" not in os.environ

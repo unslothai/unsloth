@@ -186,7 +186,12 @@ export async function effectiveTransportMode(
   if (preferred === TRANSPORT.HTTP) {
     return TRANSPORT.HTTP;
   }
-  const capabilities = await getDownloadTransportCapabilities();
+  // Probe only for Auto. This runs at download start, not on render, and it is the one moment
+  // worth paying a connection attempt for: a host whose CAS is unreachable but which has not
+  // recorded a failure yet would otherwise discover that by stalling for 30s.
+  const capabilities = await getDownloadTransportCapabilities(
+    preferred === TRANSPORT.AUTO ? { probe: true } : {},
+  );
   if (preferred === TRANSPORT.AUTO) {
     // Resolve "auto" HERE, from the backend's own verdict, rather than letting the client and the
     // server decide independently: the resolved transport is compared against the `.transport`

@@ -89,7 +89,7 @@ class DownloadTransportCapabilities:
     auto_reason: Optional[str] = None
 
 
-def get_download_transport_capabilities() -> DownloadTransportCapabilities:
+def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTransportCapabilities:
     xet_available = importlib.util.find_spec("hf_xet") is not None
     auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
     auto_reason: Optional[str] = None
@@ -97,9 +97,12 @@ def get_download_transport_capabilities() -> DownloadTransportCapabilities:
         try:
             from utils.hf_xet_fallback import xet_health
 
-            # probe = False: this endpoint is polled by the UI, so it answers from the cached
-            # verdict and the local signals rather than opening a connection on every poll.
-            health = xet_health(probe = False)
+            # Default probe = False: the UI polls this endpoint, so it normally answers from the
+            # cached verdict and local signals rather than opening a connection every time. The
+            # download-start path opts in, because that is the one moment worth paying a probe for
+            # -- otherwise a host with an unreachable CAS and no recorded failures yet would learn
+            # that only by stalling.
+            health = xet_health(probe = probe)
             if health is not None:
                 auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
                 auto_reason = str(health.reason)
