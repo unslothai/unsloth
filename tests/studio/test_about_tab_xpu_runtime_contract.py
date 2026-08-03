@@ -42,12 +42,18 @@ def test_about_tab_renders_the_xpu_runtime_row():
     assert "hw.gpus.length > 0 || runtime" in src
 
 
-def test_every_locale_defines_the_xpu_label():
-    # check-parity.ts errors on an overlay key missing from en, and the label is a proper
-    # noun, so all overlays carry the same literal.
-    missing = [
+def test_the_xpu_label_resolves_in_every_locale():
+    # en is the fallback source, so it is the only file that MUST carry the key --
+    # check-parity.ts states overlays may be partial and missing keys fall back to English.
+    # Requiring it everywhere would break the next locale anyone adds for no gain: the
+    # label is a proper noun, so the fallback is byte-identical to a translation.
+    assert 'xpu: "XPU",' in (LOCALES / "en.ts").read_text(encoding = "utf-8")
+    # What the overlays must not do is disagree with en, which is what would actually
+    # render wrong. check-parity.ts rejects a key absent from en; this catches the value.
+    wrong = [
         p.name
         for p in sorted(LOCALES.glob("*.ts"))
-        if 'xpu: "XPU",' not in p.read_text(encoding = "utf-8")
+        for line in p.read_text(encoding = "utf-8").splitlines()
+        if line.strip().startswith("xpu:") and line.strip() != 'xpu: "XPU",'
     ]
-    assert not missing, f"locales missing the xpu label: {missing}"
+    assert not wrong, f"locales whose xpu label diverges from en: {wrong}"
