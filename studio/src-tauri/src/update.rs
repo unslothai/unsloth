@@ -341,6 +341,13 @@ fn clear_current_attempt(state: &UpdateState) {
     }
 }
 
+pub fn is_update_running(state: &UpdateState) -> bool {
+    state
+        .lock()
+        .map(|update| update.child.is_some())
+        .unwrap_or(false)
+}
+
 pub fn record_update_intentional_stop(state: &UpdateState, diagnostics: &DiagnosticsState) {
     let attempt = state
         .lock()
