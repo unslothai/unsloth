@@ -709,6 +709,16 @@ function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
     : variant.size_bytes;
 }
 
+/** Why the quant listing did not arrive. A raw timeout reads as "The operation
+ *  timed out.", which names neither the Hub nor the retry that usually clears it. */
+function describeVariantListingError(err: unknown): string {
+  if (err instanceof DOMException && err.name === "TimeoutError") {
+    return "Timed out listing quantizations. Check your connection to Hugging Face, then retry.";
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return "Failed to load variants";
+}
+
 /** The one quant a repo holds, plus the vision flag read with it. The
  *  collapsed row never mounts the expander, so this is its only source. */
 interface SoleDownloadedQuant {
@@ -919,6 +929,9 @@ function GgufVariantExpander({
 
   useEffect(() => {
     let canceled = false;
+    // Collapsing the row drops the request: a stalled one otherwise holds a
+    // per-host connection, and enough of them stall download and load too.
+    const controller = new AbortController();
     queueMicrotask(() => {
       if (canceled) return;
       setLoading(true);
@@ -927,7 +940,10 @@ function GgufVariantExpander({
 
     // The row's own directory, so disk contents count against that cache, not the active one. No
     // preferLocalCache: it answers from disk alone and drops the undownloaded.
-    listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)
+    listGgufVariants(repoId, hfToken, {
+      ...(localSource ? { localPath: localSource } : {}),
+      signal: controller.signal,
+    })
       .then((res) => {
         if (canceled) return;
         const normalized = normalizeGgufVariantsResponse(res);
@@ -939,9 +955,7 @@ function GgufVariantExpander({
       })
       .catch((err) => {
         if (canceled) return;
-        setError(
-          err instanceof Error ? err.message : "Failed to load variants",
-        );
+        setError(describeVariantListingError(err));
       })
       .finally(() => {
         if (!canceled) setLoading(false);
@@ -949,6 +963,7 @@ function GgufVariantExpander({
 
     return () => {
       canceled = true;
+      controller.abort();
     };
   }, [repoId, localSource, refreshKey, hfToken]);
 
@@ -1087,7 +1102,18 @@ function GgufVariantExpander({
   }
 
   if (error) {
-    return <div className="px-5 py-2 text-xs text-destructive">{error}</div>;
+    return (
+      <div className="flex flex-wrap items-center gap-2 px-5 py-2 text-xs text-destructive">
+        <span>{error}</span>
+        <button
+          type="button"
+          onClick={() => setRefreshKey((key) => key + 1)}
+          className="rounded-full border border-destructive/40 px-2 py-0.5 font-medium text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          Retry
+        </button>
+      </div>
+    );
   }
 
   if (!displayVariants || displayVariants.length === 0) {

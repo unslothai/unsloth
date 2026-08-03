@@ -3,6 +3,7 @@
 
 import asyncio
 import sys
+import time
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -1851,6 +1852,7 @@ def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, t
             "org/repo",
             {
                 "prefer_local_cache": True,
+                "offline": False,
                 "local_path": str(snapshot),
                 "hf_token": None,
             },
@@ -1918,6 +1920,70 @@ def test_gguf_variants_route_ignores_a_pin_naming_another_repo(monkeypatch, tmp_
     )
 
     assert context_calls == [("org/repo", False)]
+
+
+def test_gguf_variants_route_forwards_offline(monkeypatch):
+    """Parity with /api/hub/gguf-variants: without this an unreachable Hub still sends the
+    picker down the remote path."""
+    calls = []
+
+    async def scoped_variants(repo_id, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            repo_id = repo_id, variants = [], has_vision = False, default_variant = None
+        )
+
+    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(models_route, "_read_native_context_length", lambda model, *, is_local: None)
+
+    asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            offline = True,
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+
+    assert calls == [
+        {"prefer_local_cache": False, "offline": True, "local_path": None, "hf_token": None}
+    ]
+
+
+def test_native_context_read_gives_up_when_the_cache_walk_drags(monkeypatch, tmp_path):
+    """Unbounded, this walk held the variant listing open, leaving the picker on
+    "Loading variants…" with no quant to click. It reports None and stops walking instead."""
+    visited = []
+
+    def dragging_walk(root):
+        for index in range(200):
+            time.sleep(0.01)
+            visited.append(index)
+            yield Path(root) / f"model-{index}.gguf"
+
+    monkeypatch.setattr(models_route, "_iter_gguf_paths", dragging_walk)
+    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.1)
+
+    started = time.monotonic()
+    result = models_route._read_native_context_length(str(tmp_path), is_local = True)
+    elapsed = time.monotonic() - started
+
+    assert result is None
+    assert elapsed < 2
+    assert len(visited) < 200
+
+
+def test_native_context_read_still_reports_a_length_within_budget(monkeypatch, tmp_path):
+    """Control: the bound only trims a walk that drags; a header reached in time still answers."""
+    gguf = tmp_path / "model-Q4_K_M.gguf"
+    gguf.write_bytes(b"x")
+
+    monkeypatch.setattr(models_route, "_iter_gguf_paths", lambda root: iter([gguf]))
+    monkeypatch.setattr(
+        "utils.models.gguf_metadata.read_gguf_context_length", lambda _path: 8192
+    )
+
+    assert models_route._read_native_context_length(str(tmp_path), is_local = True) == 8192
 
 
 def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):

@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
@@ -2717,11 +2718,21 @@ async def check_embedding_model(
         )
 
 
+# Budget for the walk below: a slow volume or a large tree can far outlast the
+# listing it is attached to.
+_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS = 5.0
+
+
 def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     """Native max context from a downloaded GGUF for this repo, or None.
 
     The value is identical across quants, so reading one non-mmproj shard's
     header is enough. Only resolves once a file is on disk. Never raises.
+
+    Bounded by ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a
+    context field on an already selectable row, so a dragging walk reports None
+    rather than holding the variant listing open. Checked between files, and
+    files already read stay cached, so a later request resumes.
     """
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
@@ -2733,8 +2744,12 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
                 return None
             roots = list(iter_repo_cache_dirs("model", repo_id))
 
+        deadline = time.monotonic() + _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS
         for root in roots:
             for f in _iter_gguf_paths(root):
+                if time.monotonic() >= deadline:
+                    logger.debug("native context read for '%s' out of budget", repo_id)
+                    return None
                 if _is_mmproj_filename(f.name):
                     continue
                 n = read_gguf_context_length(str(f))
@@ -2872,6 +2887,7 @@ async def get_gguf_variants(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
     prefer_local_cache: bool = False,
+    offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
     hf_token_header: Optional[str] = Depends(get_hf_token),
@@ -2885,6 +2901,7 @@ async def get_gguf_variants(
         response = await hub_gguf_variants.get_gguf_variants_response(
             repo_id,
             prefer_local_cache = prefer_local_cache,
+            offline = offline,
             local_path = local_path,
             hf_token = hf_token,
         )
