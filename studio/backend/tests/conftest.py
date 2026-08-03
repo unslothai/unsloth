@@ -69,7 +69,18 @@ def _isolate_xet_health_home(tmp_path_factory):
     """
     from _pytest.monkeypatch import MonkeyPatch
 
+    from huggingface_hub import constants as hf_constants
+
     mp = MonkeyPatch()
+    # Pin these to what the hub resolved from the REAL environment before moving HF_HOME. HF_HOME
+    # also defaults HF_HUB_CACHE, HF_XET_CACHE and HF_TOKEN_PATH, so moving it alone would send the
+    # spawned E2E server to an empty cache and an empty token store: a ~1.1GB GGUF redownload
+    # inside the 120s startup deadline, and no credentials for a private --unsloth-model.
+    mp.setenv("HF_HUB_CACHE", hf_constants.HF_HUB_CACHE)
+    mp.setenv("HF_TOKEN_PATH", hf_constants.HF_TOKEN_PATH)
+    xet_cache = getattr(hf_constants, "HF_XET_CACHE", None)
+    if xet_cache:
+        mp.setenv("HF_XET_CACHE", xet_cache)
     mp.setenv("HF_HOME", str(tmp_path_factory.mktemp("xet_health_home")))
     yield
     mp.undo()

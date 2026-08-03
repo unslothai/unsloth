@@ -4,6 +4,8 @@
 import io
 import logging
 
+import pytest
+
 from hub.services import download_lifecycle
 from hub.utils import download_registry, state_dir
 
@@ -213,3 +215,59 @@ def test_a_real_xet_transfer_does_clear_the_failure_streak(monkeypatch, tmp_path
     """The streak must still reset on a job that actually moved bytes, or "two in a row" is wrong."""
     recorded = _run_completed_xet_worker(monkeypatch, tmp_path, bytes_before = 0, bytes_after = 5_000)
     assert recorded == [True]
+
+
+def test_a_sibling_variants_bytes_do_not_count_as_this_jobs_progress(monkeypatch, tmp_path):
+    """Two same-transport GGUF variants of one repo may run concurrently and share one blobs/ dir.
+
+    A repo-wide measure credited a cached no-op worker with its sibling's bytes, which clears a
+    legitimate stall streak and flips an already demoted verdict back to Xet.
+    """
+    seen = []
+
+    def _fake_completed(repo_type, repo_id, blob_hashes, *, root = None):
+        seen.append(frozenset(blob_hashes))
+        return 1_000  # this variant's own blobs never grow: it was already cached
+
+    monkeypatch.setattr(download_registry, "completed_blob_bytes", _fake_completed)
+    monkeypatch.setattr(
+        download_lifecycle,
+        "_repo_bytes_on_disk",
+        lambda *a, **k: pytest.fail("a variant job must not use the repo-wide measure"),
+    )
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
+
+    recorded = []
+    monkeypatch.setattr(
+        download_lifecycle, "_record_xet_success", lambda _logger: recorded.append(True)
+    )
+
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model::Q4_K_M")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        blob_hashes = frozenset({"mine"}),
+    )[0]
+
+    download_lifecycle.register_worker(
+        registry,
+        key,
+        _Proc(0),
+        hf_token = None,
+        label = "Org/Model",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+    )
+
+    assert recorded == [], "a cached variant was credited with a sibling's bytes"
+    assert seen and all(h == frozenset({"mine"}) for h in seen), seen

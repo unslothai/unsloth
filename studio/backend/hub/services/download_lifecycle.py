@@ -651,6 +651,32 @@ def _repo_bytes_on_disk(repo_type, repo_id: str, cache_dir) -> "Optional[int]":
     return None if state is None else int(state[0])
 
 
+def _job_bytes_on_disk(repo_type, repo_id: str, cache_dir, blob_hashes) -> "Optional[int]":
+    """Bytes THIS job owns, or None when unmeasurable.
+
+    Scoped to the variant's own blobs when the claim resolved them: the registry deliberately lets
+    two same-transport GGUF variants of one repo run concurrently, and they share one blobs/ dir, so
+    a repo-wide measure credits a cached no-op worker with its sibling's bytes. That would clear a
+    legitimate stall streak and, worse, flip an already demoted verdict back to Xet.
+
+    Non-variant model jobs and dataset jobs cannot have a concurrent same-repo sibling (claim()
+    rejects those), so they keep the repo-wide measure.
+    """
+    if blob_hashes is None:
+        return _repo_bytes_on_disk(repo_type, repo_id, cache_dir)
+    if not blob_hashes:
+        return None  # variant job with no resolved hashes: unmeasurable, so never clear the streak
+    try:
+        return download_registry.completed_blob_bytes(
+            repo_type,
+            repo_id,
+            blob_hashes,
+            root = Path(cache_dir) if cache_dir else None,
+        )
+    except Exception:  # noqa: BLE001 - a missing measurement must never fail a download
+        return None
+
+
 def _record_xet_success(logger) -> None:
     """Tell the health tracker a Xet transfer completed here, which resets the failure streak."""
     try:
@@ -746,9 +772,16 @@ def register_worker(
     _get_metadata = getattr(registry, "get_job_metadata", None)
     _metadata = _get_metadata(key) if callable(_get_metadata) else None
     _cache_dir = getattr(_metadata, "hub_cache", None) if _metadata is not None else None
+    # The variant's own blobs, so a sibling variant writing into the same repo cannot be counted as
+    # this job's progress. None for job shapes that cannot have a concurrent same-repo sibling.
+    _own_blob_hashes = (
+        getattr(_metadata, "blob_hashes", frozenset())
+        if getattr(_metadata, "variant", None)
+        else None
+    )
     # Sampled before the worker can write anything, so "did this job actually move bytes over Xet"
     # is answerable when it exits.
-    _bytes_before = _repo_bytes_on_disk(repo_type, repo_id, _cache_dir)
+    _bytes_before = _job_bytes_on_disk(repo_type, repo_id, _cache_dir, _own_blob_hashes)
 
     def _watch() -> None:
         stalled: list[str] = []
@@ -809,7 +842,9 @@ def register_worker(
                 # without touching the network, and clearing a correctly earned demotion on that
                 # would put a bad machine back on Xet. Unmeasurable means do not clear -- a missed
                 # clear costs one extra streak entry, a wrong clear undoes the demotion.
-                bytes_after = _repo_bytes_on_disk(repo_type, repo_id, _cache_dir)
+                bytes_after = _job_bytes_on_disk(
+                    repo_type, repo_id, _cache_dir, _own_blob_hashes
+                )
                 if (
                     _bytes_before is not None
                     and bytes_after is not None
