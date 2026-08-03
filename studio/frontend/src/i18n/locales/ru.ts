@@ -493,6 +493,7 @@ export const ru = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Обновление",
       help: "Справка",
       documentation: "Документация",

@@ -525,6 +525,7 @@ export const de = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Update",
       help: "Hilfe",
       documentation: "Dokumentation",

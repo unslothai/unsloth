@@ -952,6 +952,7 @@ export const en = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Update",
       help: "Help",
       documentation: "Documentation",

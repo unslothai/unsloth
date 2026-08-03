@@ -494,6 +494,7 @@ export const ko = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "업데이트",
       help: "도움말",
       documentation: "문서",

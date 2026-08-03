@@ -554,6 +554,7 @@ export const ja = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "アップデート",
       help: "ヘルプ",
       documentation: "ドキュメント",

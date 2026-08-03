@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { getAuthToken } from "@/features/auth";
 import { removeTrainingUnloadGuard } from "@/features/training";
-import { useHardwareInfo } from "@/hooks/use-hardware-info";
-import { useT } from "@/i18n";
+import { type HardwareInfo, useHardwareInfo } from "@/hooks/use-hardware-info";
+import { type TranslationKey, useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   ArrowUpRight01Icon,
@@ -73,11 +73,29 @@ async function fetchInstallSource(): Promise<UpdateInstallSource> {
   }
 }
 
+// Whichever accelerator runtime is present, at most one. Module scope on purpose: inlining the
+// three-way choice pushes AboutTab past the cognitive-complexity ceiling.
+function acceleratorRuntime(
+  hw: HardwareInfo,
+): { labelKey: TranslationKey; version: string } | null {
+  if (hw.cuda) {
+    return { labelKey: "settings.about.cuda", version: hw.cuda };
+  }
+  if (hw.rocm) {
+    return { labelKey: "settings.about.rocm", version: hw.rocm };
+  }
+  if (hw.xpu) {
+    return { labelKey: "settings.about.xpu", version: hw.xpu };
+  }
+  return null;
+}
+
 export function AboutTab() {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const defaultShell = deviceType === "windows" ? "windows" : "unix";
   const hw = useHardwareInfo();
+  const runtime = acceleratorRuntime(hw);
   const updateSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -155,7 +173,7 @@ export function AboutTab() {
         </SettingsSection>
       </div>
 
-      {hw.gpus.length > 0 || hw.cuda || hw.rocm ? (
+      {hw.gpus.length > 0 || runtime ? (
         <SettingsSection title={t("settings.about.hardware")}>
           {hw.gpus.map((gpu, i) => (
             <SettingsRow
@@ -176,14 +194,10 @@ export function AboutTab() {
               </code>
             </SettingsRow>
           ))}
-          {hw.cuda || hw.rocm ? (
-            <SettingsRow
-              label={
-                hw.cuda ? t("settings.about.cuda") : t("settings.about.rocm")
-              }
-            >
+          {runtime ? (
+            <SettingsRow label={t(runtime.labelKey)}>
               <code className="font-mono text-xs text-muted-foreground">
-                {hw.cuda ?? hw.rocm}
+                {runtime.version}
               </code>
             </SettingsRow>
           ) : null}

@@ -583,6 +583,7 @@ export const zhCN = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "更新",
       help: "帮助",
       documentation: "文档",

@@ -22,6 +22,9 @@ export interface HardwareInfo {
     torch: string | null;
     cuda: string | null;
     rocm: string | null;
+    // Intel XPU (SYCL). The backend has always emitted this; without it here the About tab
+    // shows no runtime row at all on an Arc host, since cuda and rocm are both null there.
+    xpu: string | null;
     transformers: string | null;
     unsloth: string | null;
     llamaCpp: string | null;
@@ -42,6 +45,7 @@ const DEFAULT: HardwareInfo = {
     torch: null,
     cuda: null,
     rocm: null,
+    xpu: null,
     transformers: null,
     unsloth: null,
     llamaCpp: null,
@@ -95,6 +99,7 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 torch: data?.versions?.torch ?? null,
                 cuda: data?.versions?.cuda ?? null,
                 rocm: data?.versions?.rocm ?? null,
+                xpu: data?.versions?.xpu ?? null,
                 transformers: data?.versions?.transformers ?? null,
                 unsloth: data?.versions?.unsloth ?? null,
                 llamaCpp: data?.llama_cpp ?? null,

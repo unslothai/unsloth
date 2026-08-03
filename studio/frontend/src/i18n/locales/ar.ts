@@ -495,6 +495,7 @@ export const ar = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "التحديث",
       help: "مساعدة",
       documentation: "الوثائق",

@@ -509,6 +509,7 @@ export const fr = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Mise à jour",
       help: "Aide",
       documentation: "Documentation",
