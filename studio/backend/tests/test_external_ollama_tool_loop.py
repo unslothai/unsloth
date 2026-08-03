@@ -6,6 +6,9 @@
 import asyncio
 import copy
 import json
+import threading
+
+import pytest
 
 from core.inference import external_tool_loop as loop_mod
 
@@ -164,4 +167,63 @@ def test_budget_final_pass_cannot_loop_on_nonconforming_provider(monkeypatch):
     assert client.calls[1]["tools"] is None
     assert client.calls[1]["tool_choice"] == "none"
     assert output.count("data: [DONE]") == 0
+
+
+def test_provider_hosted_tools_survive_every_studio_round(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    client = _FakeClient(
+        [
+            _tool_round(),
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    asyncio.run(
+        _collect(
+            client,
+            provider_enabled_tools = ["web_fetch", "image_generation"],
+        )
+    )
+
+    assert [call["enabled_tools"] for call in client.calls] == [
+        ["web_fetch", "image_generation"],
+        ["web_fetch", "image_generation"],
+    ]
+
+
+def test_cancel_interrupts_a_silent_provider_stream():
+    class BlockingClient:
+        def __init__(self):
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.closed = asyncio.Event()
+
+        async def stream_chat_completion(self, **_kwargs):
+            self.entered.set()
+            try:
+                await self.release.wait()
+                yield "data: [DONE]"
+            finally:
+                self.closed.set()
+
+    async def run():
+        client = BlockingClient()
+        cancel = threading.Event()
+        stream = loop_mod.stream_external_chat_with_tools(
+            client = client,
+            messages = [{"role": "user", "content": "wait"}],
+            model = "silent-model",
+            tools = [TOOL_SCHEMA],
+            request_kwargs = {},
+            cancel_event = cancel,
+        )
+        pending = asyncio.create_task(stream.__anext__())
+        await asyncio.wait_for(client.entered.wait(), timeout = 0.5)
+        cancel.set()
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(pending, timeout = 0.5)
+        await asyncio.wait_for(client.closed.wait(), timeout = 0.5)
+        await stream.aclose()
+
+    asyncio.run(run())
 

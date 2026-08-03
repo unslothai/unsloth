@@ -900,6 +900,7 @@ class ExternalProviderClient:
                 anthropic_code_exec_container_id,
                 prompt_cache_ttl,
                 compaction_threshold,
+                tools,
                 tool_choice,
                 fast_mode = fast_mode,
             ):
@@ -1665,6 +1666,7 @@ class ExternalProviderClient:
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
         compaction_threshold: Optional[int] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         *,
         fast_mode: Optional[bool] = None,
@@ -2044,6 +2046,28 @@ class ExternalProviderClient:
             not _anthropic_tool_choice_disabled and not _anthropic_tool_choice_forced_function
         )
 
+        # Translate OpenAI function declarations into Anthropic client tools.
+        anthropic_function_tools: list[dict[str, Any]] = []
+        for tool in tools or []:
+            if not isinstance(tool, dict) or tool.get("type") != "function":
+                continue
+            function = tool.get("function")
+            if not isinstance(function, dict) or not function.get("name"):
+                continue
+            input_schema = function.get("parameters")
+            if not isinstance(input_schema, dict):
+                input_schema = {"type": "object", "properties": {}}
+            translated = {
+                "name": function["name"],
+                "input_schema": input_schema,
+            }
+            description = function.get("description")
+            if isinstance(description, str) and description:
+                translated["description"] = description
+            anthropic_function_tools.append(translated)
+        if anthropic_function_tools:
+            body["tools"] = anthropic_function_tools
+
         # Anthropic web_search (date-pinned per model family).
         # https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
         if _anthropic_hosted_builtins_allowed and enabled_tools and "web_search" in enabled_tools:
@@ -2094,6 +2118,20 @@ class ExternalProviderClient:
             # Stale ids 4xx and clear via container_invalidated.
             if anthropic_code_exec_container_id:
                 body["container"] = anthropic_code_exec_container_id
+
+        # Anthropic rejects tool_choice without a tool catalog.
+        if body.get("tools"):
+            if isinstance(tool_choice, str):
+                choice = tool_choice.strip().lower()
+                if choice == "required":
+                    body["tool_choice"] = {"type": "any"}
+                elif choice in ("auto", "none"):
+                    body["tool_choice"] = {"type": choice}
+            elif _anthropic_tool_choice_forced_function:
+                body["tool_choice"] = {
+                    "type": "tool",
+                    "name": tool_choice["function"]["name"],
+                }
 
         # Server-side compaction (beta `compact-2026-01-12`). Clamps below-min
         # thresholds to 50K so the request doesn't 400.
@@ -2248,6 +2286,10 @@ class ExternalProviderClient:
                 # and emit on content_block_stop so the chat-adapter can persist
                 # it onto the assistant message for next-turn round-tripping.
                 current_compaction: Optional[dict[str, Any]] = None
+                # Client calls may be parallel, so key state by Anthropic's
+                # content-block index rather than sharing hosted-tool state.
+                client_tool_uses: dict[int, dict[str, Any]] = {}
+                next_client_tool_index = 0
                 compaction_blocks_seen = 0
                 # Document citations from ``citations_delta`` events. Deduped by
                 # type-specific anchor key; inline [N] is injected after each
@@ -2440,7 +2482,19 @@ class ExternalProviderClient:
                             content_block = event.get("content_block") or {}
                             block_type = content_block.get("type")
                             block_name = content_block.get("name")
-                            if block_type == "server_tool_use" and block_name == "web_search":
+                            block_index = event.get("index")
+                            if block_type == "tool_use" and isinstance(block_index, int):
+                                seed_input = content_block.get("input")
+                                client_tool_uses[block_index] = {
+                                    "index": next_client_tool_index,
+                                    "id": content_block.get("id")
+                                    or f"call_anthropic_{next_client_tool_index}",
+                                    "name": block_name or "",
+                                    "buffer": "",
+                                    "input": seed_input if isinstance(seed_input, dict) else {},
+                                }
+                                next_client_tool_index += 1
+                            elif block_type == "server_tool_use" and block_name == "web_search":
                                 tool_use_id = content_block.get("id", "") or (
                                     f"ws_{len(web_search_calls)}"
                                 )
@@ -2578,7 +2632,10 @@ class ExternalProviderClient:
                                 # query, code-exec command, etc.); route to
                                 # whichever buffer is open.
                                 partial = delta.get("partial_json", "")
-                                if current_server_tool_use is not None:
+                                block_index = event.get("index")
+                                if isinstance(block_index, int) and block_index in client_tool_uses:
+                                    client_tool_uses[block_index]["buffer"] += partial
+                                elif current_server_tool_use is not None:
                                     current_server_tool_use["buffer"] += partial
                                 elif current_code_exec_use is not None:
                                     current_code_exec_use["buffer"] += partial
@@ -2589,7 +2646,39 @@ class ExternalProviderClient:
                             # user-visible content.
 
                         elif event_type == "content_block_stop":
-                            if current_server_tool_use is not None:
+                            block_index = event.get("index")
+                            if isinstance(block_index, int) and block_index in client_tool_uses:
+                                client_call = client_tool_uses.pop(block_index)
+                                arguments = client_call["buffer"]
+                                if not arguments:
+                                    arguments = _json.dumps(
+                                        client_call["input"], separators = (",", ":")
+                                    )
+                                chunk = {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {
+                                                "tool_calls": [
+                                                    {
+                                                        "index": client_call["index"],
+                                                        "id": client_call["id"],
+                                                        "type": "function",
+                                                        "function": {
+                                                            "name": client_call["name"],
+                                                            "arguments": arguments,
+                                                        },
+                                                    }
+                                                ]
+                                            },
+                                            "finish_reason": None,
+                                        }
+                                    ],
+                                }
+                                yield f"data: {_json.dumps(chunk)}"
+                            elif current_server_tool_use is not None:
                                 # End of the server_tool_use block — parse the
                                 # accumulated input_json into a query and emit
                                 # tool_start. The matching tool_end fires later

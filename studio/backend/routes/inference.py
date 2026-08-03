@@ -8895,8 +8895,10 @@ async def _proxy_to_external_provider(
                 status_code = 400,
                 detail = f"Provider '{config['display_name']}' is disabled.",
             )
-        provider_type = provider_type or config["provider_type"]
-        base_url = base_url or config["base_url"]
+        # A saved provider id is the trust boundary for Studio execution.
+        # Never let request-supplied routing fields retarget its opt-in.
+        provider_type = config["provider_type"]
+        base_url = config["base_url"]
         studio_tool_execution = bool(config.get("studio_tool_execution", 0))
 
     if not provider_type:
@@ -8994,6 +8996,16 @@ async def _proxy_to_external_provider(
         else []
     )
     _use_external_studio_tools = bool(_external_studio_tools)
+    _external_studio_tool_names = {
+        tool["function"]["name"]
+        for tool in _external_studio_tools
+        if isinstance(tool, dict)
+        and isinstance(tool.get("function"), dict)
+        and isinstance(tool["function"].get("name"), str)
+    }
+    _external_provider_enabled_tools = [
+        name for name in (payload.enabled_tools or []) if name not in _external_studio_tool_names
+    ]
 
     if (
         payload.confirm_tool_calls
@@ -9075,6 +9087,7 @@ async def _proxy_to_external_provider(
                 model = model,
                 tools = _external_studio_tools,
                 request_kwargs = {
+                    # Provider-hosted tools are passed separately below.
                     "temperature": payload.temperature,
                     "top_p": payload.top_p,
                     "max_tokens": _effective_max_tokens(payload),
@@ -9089,6 +9102,7 @@ async def _proxy_to_external_provider(
                     "compaction_threshold": payload.compaction_threshold,
                     "fast_mode": payload.fast_mode,
                 },
+                provider_enabled_tools = _external_provider_enabled_tools,
                 tool_choice = payload.tool_choice,
                 max_tool_iterations = payload.max_tool_calls_per_message
                 if payload.max_tool_calls_per_message is not None

@@ -118,6 +118,7 @@ import {
   encryptProviderApiKey,
   isProviderKeyRotationError,
 } from "./providers-api";
+import { buildExternalEnabledTools } from "./external-tool-payload";
 import {
   beginExternalResearchFollow,
   ingestResearchUpdate,
@@ -3726,22 +3727,24 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // enabled_tools from active pills; backend maps each name
-              // to the provider's tool schema.
+              // Keep provider-hosted tools and Studio functions in one
+              // de-duplicated request catalog. When Studio execution is on,
+              // Search/Code resolve to local functions while unrelated hosted
+              // capabilities (Fetch/Image) remain available.
               ...(webSearchEnabledForThisTurn ||
               webFetchEnabledForThisTurn ||
               codeExecEnabledForThisTurn ||
-              imageGenerationEnabledForThisTurn
+              imageGenerationEnabledForThisTurn ||
+              (externalUsesStudioTools && mcpEnabledForChat)
                 ? {
                     enable_tools: true,
-                    enabled_tools: [
-                      ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
-                      ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
-                      ...(imageGenerationEnabledForThisTurn
-                        ? ["image_generation"]
-                        : []),
-                    ],
+                    enabled_tools: buildExternalEnabledTools({
+                      studioToolExecution: externalUsesStudioTools,
+                      webSearch: webSearchEnabledForThisTurn,
+                      webFetch: webFetchEnabledForThisTurn,
+                      codeExecution: codeExecEnabledForThisTurn,
+                      imageGeneration: imageGenerationEnabledForThisTurn,
+                    }),
                   }
                 : {}),
               provider_id: externalProvider.id,
@@ -3750,10 +3753,6 @@ export function createOpenAIStreamAdapter(
                 (toolsEnabled || codeToolsEnabled || mcpEnabledForChat)
                 ? {
                     enable_tools: true,
-                    enabled_tools: [
-                      ...(toolsEnabled ? ["web_search"] : []),
-                      ...(codeToolsEnabled ? ["python", "terminal"] : []),
-                    ],
                     mcp_enabled: mcpEnabledForChat,
                     permission_mode: permissionMode,
                     ...(permissionMode === "auto"

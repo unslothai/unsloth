@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { buildExternalEnabledTools } from "../src/features/chat/api/external-tool-payload.ts";
 import {
   type ExternalProviderConfig,
   normalizeProvider,
@@ -41,4 +42,30 @@ test("Studio tool execution opt-in is independent of provider type", () => {
     configured.providerType = providerType;
     assert.equal(normalizeProvider(configured).studioToolExecution, true);
   }
+});
+
+test("Studio execution preserves unrelated provider-hosted tools", () => {
+  assert.deepEqual(
+    buildExternalEnabledTools({
+      studioToolExecution: true,
+      webSearch: true,
+      webFetch: true,
+      codeExecution: true,
+      imageGeneration: true,
+    }),
+    ["web_search", "web_fetch", "python", "terminal", "image_generation"],
+  );
+});
+
+test("disabled Studio execution keeps provider-native Search and Code", () => {
+  assert.deepEqual(
+    buildExternalEnabledTools({
+      studioToolExecution: false,
+      webSearch: true,
+      webFetch: true,
+      codeExecution: true,
+      imageGeneration: true,
+    }),
+    ["web_search", "web_fetch", "code_execution", "image_generation"],
+  );
 });

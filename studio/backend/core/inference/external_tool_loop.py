@@ -179,6 +179,12 @@ def _event_line(event: Mapping[str, Any]) -> str:
     return "data: " + json.dumps(dict(event), ensure_ascii = False)
 
 
+async def _wait_for_cancel(cancel: threading.Event) -> None:
+    """Wait without occupying a worker thread for the lifetime of a request."""
+    while not cancel.is_set():
+        await asyncio.sleep(0.025)
+
+
 async def stream_external_chat_with_tools(
     *,
     client,
@@ -186,6 +192,7 @@ async def stream_external_chat_with_tools(
     model: str,
     tools: Sequence[Mapping[str, Any]],
     request_kwargs: Mapping[str, Any],
+    provider_enabled_tools: Sequence[str] | None = None,
     tool_choice: Any = None,
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
@@ -224,11 +231,28 @@ async def stream_external_chat_with_tools(
             tools = active_tools or None,
             tool_choice = next_tool_choice if active_tools else "none",
             stream = True,
-            enabled_tools = None,
+            enabled_tools = list(provider_enabled_tools) if provider_enabled_tools else None,
             **dict(request_kwargs),
         )
+        cancel_task = asyncio.create_task(_wait_for_cancel(cancel))
+        next_task: asyncio.Task | None = None
         try:
-            async for line in upstream:
+            while True:
+                next_task = asyncio.create_task(upstream.__anext__())
+                done, _pending = await asyncio.wait(
+                    {next_task, cancel_task},
+                    return_when = asyncio.FIRST_COMPLETED,
+                )
+                if cancel_task in done:
+                    next_task.cancel()
+                    await asyncio.gather(next_task, return_exceptions = True)
+                    return
+                try:
+                    line = next_task.result()
+                except StopAsyncIteration:
+                    break
+                finally:
+                    next_task = None
                 payload = _sse_data(line)
                 if payload is _DONE:
                     if not round_calls:
@@ -239,6 +263,11 @@ async def stream_external_chat_with_tools(
                 if forward is not None:
                     yield forward
         finally:
+            if next_task is not None:
+                next_task.cancel()
+                await asyncio.gather(next_task, return_exceptions = True)
+            cancel_task.cancel()
+            await asyncio.gather(cancel_task, return_exceptions = True)
             try:
                 await upstream.aclose()
             except RuntimeError:

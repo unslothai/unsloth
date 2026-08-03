@@ -4927,6 +4927,154 @@ def test_anthropic_forced_function_tool_choice_drops_hosted_tools(monkeypatch):
         assert tool.get("name") not in hosted_tool_names, body
 
 
+@pytest.mark.parametrize(
+    ("openai_choice", "anthropic_choice"),
+    [
+        ("auto", {"type": "auto"}),
+        ("required", {"type": "any"}),
+        ("none", {"type": "none"}),
+        (
+            {"type": "function", "function": {"name": "lookup_record"}},
+            {"type": "tool", "name": "lookup_record"},
+        ),
+    ],
+)
+def test_anthropic_translates_client_tools_and_tool_choice(
+    monkeypatch, openai_choice, anthropic_choice
+):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+    function_tool = {
+        "type": "function",
+        "function": {
+            "name": "lookup_record",
+            "description": "Look up a record.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    }
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "anthropic",
+            base_url = "https://api.anthropic.com",
+            api_key = "sk-ant-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "find it"}],
+            model = "claude-sonnet-4-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+            enabled_tools = ["web_fetch"],
+            tools = [function_tool],
+            tool_choice = openai_choice,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    body = captured["body"]
+    client_tool = next(tool for tool in body["tools"] if tool["name"] == "lookup_record")
+    assert client_tool == {
+        "name": "lookup_record",
+        "description": "Look up a record.",
+        "input_schema": function_tool["function"]["parameters"],
+    }
+    if openai_choice == "none" or isinstance(openai_choice, dict):
+        assert all(tool["name"] != "web_fetch" for tool in body["tools"])
+    else:
+        assert any(tool["name"] == "web_fetch" for tool in body["tools"])
+    assert body["tool_choice"] == anthropic_choice
+
+
+def test_anthropic_stream_translates_parallel_client_tool_uses(monkeypatch):
+    events = [
+        {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "tool_use", "id": "tu_a", "name": "first", "input": {}},
+        },
+        {
+            "type": "content_block_start",
+            "index": 3,
+            "content_block": {"type": "tool_use", "id": "tu_b", "name": "second", "input": {}},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 3,
+            "delta": {"type": "input_json_delta", "partial_json": '{"b":2}'},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": '{"a":1}'},
+        },
+        {"type": "content_block_stop", "index": 3},
+        {"type": "content_block_stop", "index": 1},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        {"type": "message_stop"},
+    ]
+    content = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = content.encode(),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "anthropic",
+            base_url = "https://api.anthropic.com",
+            api_key = "sk-ant-test",
+        )
+        lines = []
+        async for line in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "go"}],
+            model = "claude-sonnet-4-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+        ):
+            lines.append(line)
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    payloads = [json.loads(line.removeprefix("data: ")) for line in lines if line != "data: [DONE]"]
+    calls = [
+        payload["choices"][0]["delta"]["tool_calls"][0]
+        for payload in payloads
+        if payload.get("choices") and payload["choices"][0]["delta"].get("tool_calls")
+    ]
+    assert [(call["index"], call["id"], call["function"]) for call in calls] == [
+        (1, "tu_b", {"name": "second", "arguments": '{"b":2}'}),
+        (0, "tu_a", {"name": "first", "arguments": '{"a":1}'}),
+    ]
+    assert any(
+        payload.get("choices")
+        and payload["choices"][0].get("finish_reason") == "tool_calls"
+        for payload in payloads
+    )
+    assert lines[-1] == "data: [DONE]"
+
+
 def test_openrouter_forced_function_tool_choice_drops_web_plugin(monkeypatch):
     """Round 22: forced-function tool_choice must drop the OpenRouter web
     plugin too — caller pinned a user function, so OpenRouter must not attach
