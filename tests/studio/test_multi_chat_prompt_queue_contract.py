@@ -467,27 +467,44 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     ) < persisted_adapter.index("notifyPromptQueueRunFailed(")
     assert "pendingRunStartThreadIdsByMessageId" in RUNTIME_PROVIDER
     assert "localThreadId," in RUNTIME_PROVIDER
+    successful_persisted_preflight = _between(
+        RUNTIME_PROVIDER,
+        "async function waitForRunStartHistoryAppend(",
+        "function createPersistedRunAdapter(",
+    )
+    assert successful_persisted_preflight.index(
+        "pendingRunStartReadyByMessageId.delete(userMessage.id)"
+    ) < successful_persisted_preflight.index(
+        "pendingRunStartThreadIdsByMessageId.delete(userMessage.id)"
+    )
     assert "!runningByThreadId[threadId] && !cancel" in STOP_CHAT_THREAD
     assert "serverCancels.length === 0" in STOP_CHAT_THREAD
     assert "await confirmStopRunningChatsIfNeeded(" in SHARED_COMPOSER
-    assert SHARED_COMPOSER.index("await confirmStopRunningChatsIfNeeded(") < SHARED_COMPOSER.index(
-        'setText("");'
-    )
     send_flow = _between(
         SHARED_COMPOSER,
         "async function send()",
-        "// Generalized compare: load each model before dispatching to its side",
+        "sendRef.current = send;",
     )
     assert "const submittedText = text;" in send_flow
     assert "const submittedImages = pendingImages;" in send_flow
     assert "const submittedAudio = pendingAudio;" in send_flow
-    assert "textRef.current !== submittedText" in send_flow
-    assert "pendingImagesRef.current !== submittedImages" in send_flow
-    assert "pendingAudioRef.current !== submittedAudio" in send_flow
+    assert "textRef.current === submittedText" in send_flow
+    assert "pendingImagesRef.current === submittedImages" in send_flow
+    assert "pendingAudioRef.current === submittedAudio" in send_flow
+    confirm_index = send_flow.index("await confirmStopRunningChatsIfNeeded(")
+    first_draft_check = send_flow.index("if (!submittedDraftIsCurrent())")
+    gpu_discovery_index = send_flow.index("await ensureGpuDeviceCache();")
+    second_draft_check = send_flow.index(
+        "if (!submittedDraftIsCurrent())",
+        gpu_discovery_index,
+    )
     assert (
-        send_flow.index("await confirmStopRunningChatsIfNeeded(")
-        < send_flow.index("textRef.current !== submittedText")
-        < send_flow.index('setText("");')
+        send_flow.index("beginModelLoading()")
+        < confirm_index
+        < first_draft_check
+        < gpu_discovery_index
+        < second_draft_check
+        < send_flow.index("clearSubmittedDraft();")
     )
     assert "requestLocalPromptQueueStop(" in SHARED_COMPOSER
     assert SHARED_COMPOSER.index("requestLocalPromptQueueStop(") < SHARED_COMPOSER.index(

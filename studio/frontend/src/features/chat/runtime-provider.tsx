@@ -973,6 +973,7 @@ async function waitForRunStartHistoryAppend(
       pendingRunStartReadyByMessageId.get(userMessage.id) === runStartReady
     ) {
       pendingRunStartReadyByMessageId.delete(userMessage.id);
+      pendingRunStartThreadIdsByMessageId.delete(userMessage.id);
     }
   }
   return adoptedThreadId;

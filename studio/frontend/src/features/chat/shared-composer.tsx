@@ -1012,25 +1012,6 @@ export function SharedComposer({
     }
     if (content.length === 0) return;
 
-    let compareStopDecision = isGeneralizedCompare
-      ? await confirmStopRunningChatsIfNeeded(
-          "Loading models for comparison",
-          "reload",
-        )
-      : null;
-    if (compareStopDecision && !compareStopDecision.proceed) {
-      return;
-    }
-    if (
-      textRef.current !== submittedText ||
-      pendingImagesRef.current !== submittedImages ||
-      pendingAudioRef.current !== submittedAudio
-    ) {
-      toast.info("Message changed while preparing", {
-        description: "Your updated draft was kept. Send it again when ready.",
-      });
-      return;
-    }
     let compareLifecycleLease: ModelLifecycleLease | null = null;
     if (isGeneralizedCompare) {
       compareLifecycleLease = useChatRuntimeStore
@@ -1061,12 +1042,49 @@ export function SharedComposer({
         throw new Error("Another model load started during comparison");
       }
     };
+    const submittedDraftIsCurrent = () =>
+      textRef.current === submittedText &&
+      pendingImagesRef.current === submittedImages &&
+      pendingAudioRef.current === submittedAudio;
+    const keepChangedDraft = () => {
+      releaseCompareModelLifecycle();
+      toast.info("Message changed while preparing", {
+        description: "Your updated draft was kept. Send it again when ready.",
+      });
+    };
+    const clearSubmittedDraft = () => {
+      setText("");
+      setPendingImages([]);
+      setPendingAudio(null);
+      clearPendingAudioStore();
+      textareaRef.current?.focus();
+    };
 
-    setText("");
-    setPendingImages([]);
-    setPendingAudio(null);
-    clearPendingAudioStore();
-    textareaRef.current?.focus();
+    let compareStopDecision: Awaited<
+      ReturnType<typeof confirmStopRunningChatsIfNeeded>
+    > | null = null;
+    if (isGeneralizedCompare) {
+      try {
+        compareStopDecision = await confirmStopRunningChatsIfNeeded(
+          "Loading models for comparison",
+          "reload",
+        );
+      } catch (error) {
+        releaseCompareModelLifecycle();
+        toast.error("Compare failed", {
+          description: error instanceof Error ? error.message : "Unknown error",
+        });
+        return;
+      }
+      if (!compareStopDecision.proceed) {
+        releaseCompareModelLifecycle();
+        return;
+      }
+    }
+    if (!submittedDraftIsCurrent()) {
+      keepChangedDraft();
+      return;
+    }
 
     // Generalized compare: load each model before dispatching to its side
     if (isGeneralizedCompare) {
@@ -1091,7 +1109,10 @@ export function SharedComposer({
         }
       } catch (error) {
         releaseCompareModelLifecycle();
-        throw error;
+        toast.error("Compare failed", {
+          description: error instanceof Error ? error.message : "Unknown error",
+        });
+        return;
       }
       // The GPU/offload knobs both compare loads must use, snapshotted at Send.
       // ensureModelLoaded runs sequentially and the first load's response echo
@@ -1107,6 +1128,11 @@ export function SharedComposer({
         selectedGpuIds: store.selectedGpuIds,
         selectedGpuIndexKind: store.selectedGpuIndexKind,
       };
+      if (!submittedDraftIsCurrent()) {
+        keepChangedDraft();
+        return;
+      }
+      clearSubmittedDraft();
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
       let upgradeUnloadedActive = false;
@@ -1547,6 +1573,7 @@ export function SharedComposer({
       }
     } else {
       // Original behavior: fire all handles simultaneously
+      clearSubmittedDraft();
       for (const handle of Object.values(handlesRef.current)) {
         handle.append(content);
       }
