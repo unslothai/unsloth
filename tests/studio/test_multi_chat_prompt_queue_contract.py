@@ -180,7 +180,9 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "anyPromptQueueRunning" not in submit
     assert "promptQueueAtCapacity" not in submit
     assert "sendReservedComposer();" in submit
-    assert "reservePreStreamRun(preStreamThreadIds)" in THREAD
+    assert "reservePreStreamRun(preStreamThreadIds, {" in THREAD
+    assert "usesLocalModel:" in THREAD
+    assert "aui.thread().cancelRun()" in THREAD
     assert "adoptPreStreamRunReservation(token, preStreamThreadIds)" in THREAD
     assert "hasPreStreamRunReservation(getQueueThreadIds())" in THREAD
     assert "releaseCurrentPreStreamRun();" in CHAT_ADAPTER
@@ -400,6 +402,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert (
         select_model.index("beginModelLoading()")
         < select_model.index("await confirmStopRunningChatsIfNeeded(")
+        < select_model.index("cancelPreStreamRunReservations(stopDecision.preStreamRunTokens)")
         < select_model.index("requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds)")
     )
     assert "beginModelLoading()" in eject
@@ -441,6 +444,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert (
         eject.index("beginModelLoading()")
         < eject.index("await confirmStopRunningChatsIfNeeded(")
+        < eject.index("cancelPreStreamRunReservations(stopDecision.preStreamRunTokens)")
         < eject.index("requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds)")
     )
     assert "function promptQueueRunUsesLocalModel(run: PromptQueueRun)" in THREAD
@@ -462,6 +466,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "function useStudioRuntimeAdapters(",
     )
     assert "runStartThreadIdsForMessages(options.messages)" in persisted_adapter
+    assert "isPreStreamRunReservationCancelled(reservationToken)" in persisted_adapter
+    assert persisted_adapter.count("throwIfReservationCancelled();") == 2
     assert persisted_adapter.index(
         "requestPromptQueueStop(persistedRunThreadIds)"
     ) < persisted_adapter.index("notifyPromptQueueRunFailed(")
@@ -507,6 +513,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         < send_flow.index("clearSubmittedDraft();")
     )
     assert "requestLocalPromptQueueStop(" in SHARED_COMPOSER
+    assert "compareStopDecision?.preStreamRunTokens ?? []" in SHARED_COMPOSER
     assert SHARED_COMPOSER.index("requestLocalPromptQueueStop(") < SHARED_COMPOSER.index(
         "const resp = await loadModel("
     )

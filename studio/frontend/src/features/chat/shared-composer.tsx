@@ -38,6 +38,7 @@ import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
+import { cancelPreStreamRunReservations } from "./utils/pre-stream-run-reservation";
 import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
@@ -1339,6 +1340,9 @@ export function SharedComposer({
             );
           }
         }
+        cancelPreStreamRunReservations(
+          compareStopDecision?.preStreamRunTokens ?? [],
+        );
         requestLocalPromptQueueStop(
           compareStopDecision?.promptQueueThreadIds,
         );

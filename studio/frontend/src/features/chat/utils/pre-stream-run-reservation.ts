@@ -2,7 +2,20 @@ const DEFAULT_THREAD_ID = "__default";
 
 type PreStreamRunReservation = {
   threadIds: Set<string>;
+  usesLocalModel: boolean;
+  cancel?: () => void;
+  cancelled: boolean;
 };
+
+export interface LocalPreStreamRunReservation {
+  token: symbol;
+  threadIds: string[];
+}
+
+export interface PreStreamRunReservationOptions {
+  usesLocalModel: boolean;
+  cancel?: () => void;
+}
 
 const reservations = new Map<symbol, PreStreamRunReservation>();
 const reservationByThreadId = new Map<string, symbol>();
@@ -54,17 +67,60 @@ export function hasPreStreamRunReservation(
 
 export function reservePreStreamRun(
   threadIds: Iterable<string | null | undefined>,
+  options: PreStreamRunReservationOptions = { usesLocalModel: true },
 ): symbol | null {
   const ids = normalizedThreadIds(threadIds);
   if (ids.some((threadId) => reservationByThreadId.has(threadId))) {
     return null;
   }
   const token = Symbol("pre-stream-run");
-  reservations.set(token, { threadIds: new Set(ids) });
+  reservations.set(token, {
+    threadIds: new Set(ids),
+    usesLocalModel: options.usesLocalModel,
+    cancel: options.cancel,
+    cancelled: false,
+  });
   for (const threadId of ids) {
     reservationByThreadId.set(threadId, token);
   }
   return token;
+}
+
+export function listLocalPreStreamRunReservations(): LocalPreStreamRunReservation[] {
+  return Array.from(reservations.entries())
+    .filter(
+      ([, reservation]) => reservation.usesLocalModel && !reservation.cancelled,
+    )
+    .map(([token, reservation]) => ({
+      token,
+      threadIds: [...reservation.threadIds].filter(
+        (threadId) => threadId !== DEFAULT_THREAD_ID,
+      ),
+    }));
+}
+
+export function cancelPreStreamRunReservations(
+  tokens: Iterable<symbol>,
+): number {
+  let cancelled = 0;
+  for (const token of new Set(tokens)) {
+    const reservation = reservations.get(token);
+    if (!reservation || !reservation.usesLocalModel || reservation.cancelled) {
+      continue;
+    }
+    reservation.cancelled = true;
+    cancelled += 1;
+    try {
+      reservation.cancel?.();
+    } catch {
+      // The run may have ended between the confirmation snapshot and cancellation.
+    }
+  }
+  return cancelled;
+}
+
+export function isPreStreamRunReservationCancelled(token: symbol): boolean {
+  return reservations.get(token)?.cancelled ?? false;
 }
 
 export function adoptPreStreamRunReservation(

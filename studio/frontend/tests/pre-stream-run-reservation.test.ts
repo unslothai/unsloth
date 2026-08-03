@@ -3,8 +3,11 @@ import test from "node:test";
 
 import {
   adoptPreStreamRunReservation,
+  cancelPreStreamRunReservations,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
+  isPreStreamRunReservationCancelled,
+  listLocalPreStreamRunReservations,
   preStreamRunThreadIdsForAdapter,
   preStreamRunThreadIdsForRuntime,
   releasePreStreamRunForThreadIds,
@@ -84,4 +87,29 @@ test("alias adoption cannot steal another thread reservation", () => {
   assert.equal(findPreStreamRunReservation(["shared-remote"]), second);
   assert.equal(releasePreStreamRunReservation(first), true);
   assert.equal(releasePreStreamRunReservation(second), true);
+});
+
+test("local reservations can be snapshotted and cancelled before streaming", () => {
+  let cancelCount = 0;
+  const local = reservePreStreamRun(["local-thread"], {
+    usesLocalModel: true,
+    cancel: () => {
+      cancelCount += 1;
+    },
+  });
+  const external = reservePreStreamRun(["external-thread"], {
+    usesLocalModel: false,
+  });
+  assert.ok(local);
+  assert.ok(external);
+  assert.deepEqual(listLocalPreStreamRunReservations(), [
+    { token: local, threadIds: ["local-thread"] },
+  ]);
+  assert.equal(cancelPreStreamRunReservations([local]), 1);
+  assert.equal(cancelCount, 1);
+  assert.equal(isPreStreamRunReservationCancelled(local), true);
+  assert.deepEqual(listLocalPreStreamRunReservations(), []);
+  assert.equal(cancelPreStreamRunReservations([local]), 0);
+  assert.equal(releasePreStreamRunReservation(local), true);
+  assert.equal(releasePreStreamRunReservation(external), true);
 });

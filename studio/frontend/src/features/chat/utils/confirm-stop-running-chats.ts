@@ -9,6 +9,7 @@ import {
   useStopRunningChatsDialogStore,
 } from "../stores/stop-running-chats-dialog-store";
 import { listStoredChatThreads } from "./chat-history-storage";
+import { listLocalPreStreamRunReservations } from "./pre-stream-run-reservation";
 
 export interface StopRunningChatsDecision {
   /** False when the user chose to keep generating; the caller must not load. */
@@ -17,6 +18,8 @@ export interface StopRunningChatsDecision {
   forceCancelActive: boolean;
   /** Local-model prompt queues to stop immediately before the model-changing request. */
   promptQueueThreadIds: string[];
+  /** Accepted local sends that have not reached the running map yet. */
+  preStreamRunTokens: symbol[];
 }
 
 export function getLocalPromptQueueThreadIds(): string[] {
@@ -46,6 +49,23 @@ export async function confirmStopRunningChatsIfNeeded(
   let running = Object.entries(runningByThreadId)
     .filter(([threadId, on]) => on && localRunByThreadId[threadId])
     .map(([threadId]) => threadId);
+  const preStreamRuns = listLocalPreStreamRunReservations();
+  const preStreamRunTokens = preStreamRuns.map(({ token }) => token);
+  let unnamedPreStreamRuns = 0;
+  const runningIds = new Set(running);
+  for (const { threadIds } of preStreamRuns) {
+    if (threadIds.some((id) => runningIds.has(id))) {
+      continue;
+    }
+    if (threadIds.length > 0) {
+      running.push(threadIds[0]);
+      for (const threadId of threadIds) {
+        runningIds.add(threadId);
+      }
+    } else {
+      unnamedPreStreamRuns += 1;
+    }
+  }
   const promptQueueThreadIds = getLocalPromptQueueThreadIds();
   const promptQueuesByThreadId = usePromptQueueUI.getState().byThreadId;
   const aliasesByQueuedRun = new Map<string, string[]>();
@@ -58,7 +78,6 @@ export async function confirmStopRunningChatsIfNeeded(
     aliases.push(threadId);
     aliasesByQueuedRun.set(entry.runId, aliases);
   }
-  const runningIds = new Set(running);
   for (const aliases of aliasesByQueuedRun.values()) {
     if (aliases.some((threadId) => runningIds.has(threadId))) {
       continue;
@@ -68,7 +87,7 @@ export async function confirmStopRunningChatsIfNeeded(
     runningIds.add(threadId);
   }
   running = [...new Set(running)];
-  let count = running.length;
+  let count = running.length + unnamedPreStreamRuns;
   let hasNonChat = false;
 
   // Always merge the backend snapshot: runningByThreadId is this tab's memory, empty after a
@@ -88,8 +107,8 @@ export async function confirmStopRunningChatsIfNeeded(
     // id to merge, so add those back or the prompt names fewer chats than will stop.
     const unnamed = entries.filter((entry) => !entry.thread_id).length;
     count = entries.length
-      ? running.length + unnamed
-      : Math.max(active.count ?? 0, running.length);
+      ? running.length + unnamed + unnamedPreStreamRuns
+      : Math.max(active.count ?? 0, running.length) + unnamedPreStreamRuns;
     // Embeddings / completions / audio share the model but are not conversations, so the
     // prompt must not offer to stop chats that do not exist.
     hasNonChat = entries.some((entry) => (entry.kind ?? "chat") !== "chat");
@@ -102,6 +121,7 @@ export async function confirmStopRunningChatsIfNeeded(
       proceed: true,
       forceCancelActive: false,
       promptQueueThreadIds: [],
+      preStreamRunTokens: [],
     };
   }
 
@@ -135,10 +155,16 @@ export async function confirmStopRunningChatsIfNeeded(
       proceed: false,
       forceCancelActive: false,
       promptQueueThreadIds: [],
+      preStreamRunTokens: [],
     };
   }
 
   // Deliberately no local stop: the backend holds the cancel until the load clears preflight,
   // so stopping now would truncate every chat even for a rejected load.
-  return { proceed: true, forceCancelActive: true, promptQueueThreadIds };
+  return {
+    proceed: true,
+    forceCancelActive: true,
+    promptQueueThreadIds,
+    preStreamRunTokens,
+  };
 }

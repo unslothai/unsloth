@@ -2007,11 +2007,10 @@ const Composer: FC<{
       return;
     }
     adoptPreStreamRunReservation(token, preStreamThreadIds);
-    if (threadIsRunning) {
-      releasePreStreamRunReservation(token);
-      preStreamRunReservationRef.current = null;
-    }
-  }, [preStreamThreadIds, threadIsRunning]);
+    // Keep the reservation until the adapter consumes or fails it. React can
+    // expose isRunning before persistence and model preflight finish; releasing
+    // here would hide that accepted send from a concurrent model-change gate.
+  }, [preStreamThreadIds]);
   const promptQueueActive = usePromptQueueUI((s) =>
     Boolean(findPromptQueueEntry(s, promptQueueThreadIds)),
   );
@@ -2532,7 +2531,19 @@ const Composer: FC<{
   );
 
   const sendReservedComposer = useCallback(() => {
-    const reservationToken = reservePreStreamRun(preStreamThreadIds);
+    let reservationToken: symbol | null = null;
+    reservationToken = reservePreStreamRun(preStreamThreadIds, {
+      usesLocalModel:
+        parseExternalModelId(
+          useChatRuntimeStore.getState().params.checkpoint,
+        ) === null,
+      cancel: () => {
+        if (preStreamRunReservationRef.current === reservationToken) {
+          preStreamRunReservationRef.current = null;
+        }
+        aui.thread().cancelRun();
+      },
+    });
     if (!reservationToken) {
       toast.error("Wait for the current response to finish");
       return;

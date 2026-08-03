@@ -32,6 +32,7 @@ import {
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { confirmStopRunningChatsIfNeeded } from "../utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "../utils/prompt-queue-boundary";
+import { cancelPreStreamRunReservations } from "../utils/pre-stream-run-reservation";
 import type { ModelLifecycleLease } from "../utils/model-lifecycle-gate";
 import {
   GPU_LAYERS_AUTO,
@@ -1032,6 +1033,7 @@ export function useChatModelRuntime() {
               ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
               : undefined;
 
+            cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
             requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
             if (currentCheckpoint) {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
@@ -1866,6 +1868,7 @@ export function useChatModelRuntime() {
       if (!stopDecision.proceed) return false;
 
       async function performUnload(): Promise<void> {
+        cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
         requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
         await unloadModel({
           model_path: params.checkpoint,

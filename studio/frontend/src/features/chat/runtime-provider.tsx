@@ -69,6 +69,7 @@ import {
 import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
+  isPreStreamRunReservationCancelled,
   preStreamRunThreadIdsForAdapter,
   preStreamRunThreadIdsForRuntime,
   releasePreStreamRunReservation,
@@ -989,6 +990,16 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
       );
       const reservationToken =
         findPreStreamRunReservation(reservationThreadIds);
+      const throwIfReservationCancelled = () => {
+        if (
+          reservationToken &&
+          isPreStreamRunReservationCancelled(reservationToken)
+        ) {
+          releasePreStreamRunReservation(reservationToken);
+          throw new DOMException("The send was cancelled", "AbortError");
+        }
+      };
+      throwIfReservationCancelled();
       const persistedRunThreadIds = preStreamRunThreadIdsForRuntime(
         [
           ...reservationThreadIds,
@@ -999,6 +1010,7 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
       let adoptedThreadId: string | undefined;
       try {
         adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
+        throwIfReservationCancelled();
       } catch (error) {
         if (reservationToken) {
           releasePreStreamRunReservation(reservationToken);
