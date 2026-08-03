@@ -73,6 +73,7 @@ def _process_helpers(source: str) -> str:
             "Test-StudioProtectedPathMatch",
             "Test-StudioRawCommandLinePathReference",
             "Get-StudioProcessWorkingDirectories",
+            "ConvertFrom-StudioWindowsCommandLine",
             "Test-StudioCommandLinePathReference",
             "Get-RunningStudioVenvProcesses",
         )
@@ -203,6 +204,31 @@ function Get-StudioProcessWorkingDirectories {{
     env["TEST_ALIAS_SCRIPT"] = str(alias_worker)
     env["TEST_BASE_PYTHON"] = shutil.which("python") or "python.exe"
     assert _run_powershell(shell, script, env) == "4242"
+
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_command_line_parser_does_not_depend_on_preloaded_final_path_type(shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    parser = _extract(
+        r"    function ConvertFrom-StudioWindowsCommandLine \{.*?\n    \}\n",
+        source,
+    )
+    script = rf"""
+$ErrorActionPreference = "Stop"
+Add-Type -TypeDefinition @'
+public static class UnslothStudioFinalPath
+{{
+    public static string Resolve(string path) {{ return path; }}
+}}
+'@
+{parser}
+$tokens = @(ConvertFrom-StudioWindowsCommandLine -CommandLine '"C:\Program Files\Unsloth\unsloth.exe" studio update')
+Write-Output ($tokens -join "|")
+"""
+    assert _run_powershell(shell, script, os.environ.copy()) == (
+        r"C:\Program Files\Unsloth\unsloth.exe|studio|update"
+    )
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")

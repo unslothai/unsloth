@@ -9,6 +9,7 @@ import contextlib
 import ctypes
 import hashlib
 import os
+import re
 import sys
 from ctypes import wintypes
 from pathlib import Path
@@ -485,44 +486,65 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             for path in trusted_shell_spellings
         )
 
-    def command_invokes_only_update_through_shim(command_line: str) -> bool:
-        try:
-            arguments = _windows_command_line_arguments(command_line)
-        except OSError:
-            return False
-        argument_sets = [arguments]
-        for argument in arguments[1:]:
-            try:
-                nested = _windows_command_line_arguments(argument)
-            except OSError:
-                continue
-            if nested != [argument]:
-                argument_sets.append(nested)
-        for candidate_arguments in argument_sets:
-            for index, argument in enumerate(candidate_arguments[:-2]):
-                candidate = argument.strip().strip('"').strip("'")
-                if not (
-                    is_protected_shim_image(candidate)
-                    and candidate_arguments[index + 1].casefold() == "studio"
-                    and candidate_arguments[index + 2].casefold() == "update"
+    def command_invokes_only_update_through_shim(
+        command_line: str, working_directory: Path
+    ) -> bool:
+        normalized_line = command_line.replace("/", "\\").casefold()
+        before_boundaries = {" ", "\t", "\r", "\n", '"', "'", "&", "("}
+        after_boundaries = {" ", "\t", "\r", "\n", '"', "'"}
+        for shim in protected_file_spellings:
+            normalized_shim = shim.rstrip("\\/").replace("/", "\\").casefold()
+            search_from = 0
+            while search_from < len(normalized_line):
+                start = normalized_line.find(normalized_shim, search_from)
+                if start < 0:
+                    break
+                end = start + len(normalized_shim)
+                before_ok = start == 0 or normalized_line[start - 1] in before_boundaries
+                after_ok = end == len(normalized_line) or normalized_line[end] in after_boundaries
+                search_from = end
+                if not (before_ok and after_ok):
+                    continue
+                if not re.match(
+                    r"""["']?\s+studio\s+update(?:\s|["']|$)""",
+                    command_line[end:],
+                    flags = re.IGNORECASE,
                 ):
                     continue
-                for other_index, other in enumerate(candidate_arguments):
-                    if other_index == index:
-                        continue
-                    if _command_line_references_resolved_windows_path(
-                        other,
+                remaining = command_line[:start] + command_line[end:]
+                if _command_line_references_resolved_windows_path(
+                    remaining,
+                    protected_root_spellings,
+                    protected_file_spellings,
+                    working_directory,
+                ):
+                    return False
+                if any(
+                    _command_line_references_resolved_windows_path(
+                        quoted,
                         protected_root_spellings,
                         protected_file_spellings,
-                        None,
-                    ):
-                        return False
+                        working_directory,
+                    )
+                    for quoted in re.findall(r"'([^']+)'", remaining)
+                ):
+                    return False
                 return True
         return False
 
-    def is_verified_update_shell(image: str, command_line: str) -> bool:
+    def is_verified_update_shell(process_id: int, image: str, command_line: str) -> bool:
         if not is_trusted_shell_image(image):
             return False
+        if psutil is not None:
+            try:
+                working_directory = Path(psutil.Process(process_id).cwd())
+            except (psutil.Error, OSError):
+                return False
+        else:
+            working_directory_text = fallback_working_directories.get(process_id)
+            if not working_directory_text:
+                return False
+            working_directory = Path(working_directory_text)
         try:
             arguments = [
                 argument.casefold() for argument in _windows_command_line_arguments(command_line)
@@ -531,7 +553,10 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             return False
         shell_name = Path(image).name.casefold()
         noninteractive = "/c" in arguments if shell_name == "cmd.exe" else "-command" in arguments
-        return noninteractive and command_invokes_only_update_through_shim(command_line)
+        return noninteractive and command_invokes_only_update_through_shim(
+            command_line,
+            working_directory,
+        )
 
     def is_verified_update_ancestor(
         process_id: int,
@@ -544,7 +569,7 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         return (
             is_protected_shim_image(image)
             or is_verified_update_redirector(image, command_line)
-            or (allow_shell and is_verified_update_shell(image, command_line))
+            or (allow_shell and is_verified_update_shell(process_id, image, command_line))
         )
 
     def process_is_protected_shim(process_id: int) -> bool:

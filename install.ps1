@@ -1734,40 +1734,6 @@ public static class UnslothStudioFinalPath
         uint pathLength,
         uint flags);
 
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CommandLineToArgvW(
-        string commandLine,
-        out int argumentCount);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr LocalFree(IntPtr memory);
-
-    public static string[] ParseCommandLine(string commandLine)
-    {
-        if (String.IsNullOrEmpty(commandLine))
-            return new string[0];
-
-        int count;
-        IntPtr arguments = CommandLineToArgvW(commandLine, out count);
-        if (arguments == IntPtr.Zero)
-            throw new Win32Exception(Marshal.GetLastWin32Error());
-
-        try
-        {
-            string[] result = new string[count];
-            for (int index = 0; index < count; index++)
-            {
-                IntPtr item = Marshal.ReadIntPtr(arguments, index * IntPtr.Size);
-                result[index] = Marshal.PtrToStringUni(item);
-            }
-            return result;
-        }
-        finally
-        {
-            LocalFree(arguments);
-        }
-  }
-
     public static string Resolve(string path)
     {
         using (SafeFileHandle handle = CreateFileW(
@@ -1810,6 +1776,53 @@ public static class UnslothStudioFinalPath
             $resolved = $resolved.Substring(4)
         }
         return $resolved.TrimEnd('\', '/')
+    }
+
+    function ConvertFrom-StudioWindowsCommandLine {
+        param([string]$CommandLine)
+        if (-not ("UnslothStudioCommandLineV1" -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class UnslothStudioCommandLineV1
+{
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CommandLineToArgvW(
+        string commandLine,
+        out int argumentCount);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr LocalFree(IntPtr memory);
+
+    public static string[] Parse(string commandLine)
+    {
+        if (String.IsNullOrEmpty(commandLine))
+            return new string[0];
+        int count;
+        IntPtr arguments = CommandLineToArgvW(commandLine, out count);
+        if (arguments == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        try
+        {
+            string[] result = new string[count];
+            for (int index = 0; index < count; index++)
+            {
+                IntPtr item = Marshal.ReadIntPtr(arguments, index * IntPtr.Size);
+                result[index] = Marshal.PtrToStringUni(item);
+            }
+            return result;
+        }
+        finally
+        {
+            LocalFree(arguments);
+        }
+  }
+}
+'@
+        }
+        return [UnslothStudioCommandLineV1]::Parse($CommandLine)
     }
 
     function Get-StudioPathHash {
@@ -2027,7 +2040,7 @@ print(json.dumps(working_directories))
 
         # Resolve existing path arguments so a command line using a junction or
         # symlink spelling still maps to the physical managed environment.
-        foreach ($token in [UnslothStudioFinalPath]::ParseCommandLine($CommandLine)) {
+        foreach ($token in @(ConvertFrom-StudioWindowsCommandLine -CommandLine $CommandLine)) {
             $candidates = @($token)
             $equalsIndex = $token.IndexOf('=')
             if ($equalsIndex -ge 0) {

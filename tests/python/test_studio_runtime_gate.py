@@ -182,7 +182,7 @@ def test_terminal_update_idle_scan_excludes_self_and_blocks_another_consumer(tmp
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
 def test_terminal_update_only_excludes_its_verified_python_redirector(tmp_path, monkeypatch):
-    studio_home = tmp_path / "studio"
+    studio_home = tmp_path / "Studio Root"
     scripts_dir = studio_home / "unsloth_studio" / "Scripts"
     managed_python = scripts_dir / "python.exe"
     outer_shim = studio_home / "bin" / "unsloth.exe"
@@ -250,7 +250,7 @@ def test_terminal_update_only_excludes_its_verified_python_redirector(tmp_path, 
 
     def fake_process(process_id):
         return SimpleNamespace(
-            cwd = lambda: str(tmp_path),
+            cwd = lambda: str(studio_home),
             parent = lambda: redirector_process if process_id == os.getpid() else None,
         )
 
@@ -281,6 +281,12 @@ def test_terminal_update_only_excludes_its_verified_python_redirector(tmp_path, 
         f"powershell.exe -NoProfile -Command \"& '{outer_shim}' studio update --local\""
     )
     gate.ensure_managed_environment_is_idle(studio_home)
+    payload[3]["CommandLine"] = (
+        f"powershell.exe -NoProfile -Command \". '.\\unsloth_studio\\Scripts\\worker.py'; "
+        f"& '{outer_shim}' studio update --local\""
+    )
+    with pytest.raises(RuntimeError, match = "managed Studio environment is in use"):
+        gate.ensure_managed_environment_is_idle(studio_home)
 
     payload[3]["Name"] = "cmd.exe"
     payload[3]["ExecutablePath"] = system_cmd
