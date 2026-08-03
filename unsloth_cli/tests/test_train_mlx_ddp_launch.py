@@ -7,6 +7,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -175,9 +176,38 @@ def _run_collective_probe():
 
     launcher_env = (os.environ["MLX_RANK"], os.environ["MLX_HOSTFILE"])
     import unsloth_cli.commands.train as train_cmd
+    import utils.transformers_version as transformers_version
     from typer.testing import CliRunner
     from unsloth_cli import app
     from unsloth_cli.config import Config
+
+    sidecar_active = probe_dir / "sidecar-active"
+    sidecar_contender = probe_dir / "sidecar-contender"
+
+    def activate_sidecar(*_args):
+        try:
+            fd = os.open(sidecar_active, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            raise AssertionError("Transformers sidecar activation overlapped") from exc
+        try:
+            os.close(fd)
+            if rank == 0:
+                deadline = time.monotonic() + 5
+                while not sidecar_contender.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert sidecar_contender.exists(), "peer rank did not attempt sidecar activation"
+                time.sleep(0.1)
+        finally:
+            sidecar_active.unlink(missing_ok = True)
+
+    transformers_version.activate_transformers_for_subprocess = activate_sidecar
+    if rank != 0:
+        deadline = time.monotonic() + 5
+        while not sidecar_active.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert sidecar_active.exists(), "rank 0 did not start sidecar activation"
+        sidecar_contender.touch()
+    train_cmd._activate_mlx_transformers("test/model", None)
 
     cli_trainer = Mock(is_vlm = False, training_thread = None)
     cli_trainer.load_and_format_dataset.return_value = ({}, None)
@@ -194,11 +224,32 @@ def _run_collective_probe():
     (probe_dir / f"passed-{rank}.txt").touch(exist_ok = False)
 
 
+def test_mlx_sidecar_activation_failure_is_fatal_for_mpi(tmp_path, monkeypatch):
+    import unsloth_cli.commands.train as train_cmd
+
+    train_cmd.ensure_studio_backend_path()
+    import utils.transformers_version as transformers_version
+
+    monkeypatch.delenv("MLX_RANK", raising = False)
+    monkeypatch.setenv("OMPI_COMM_WORLD_RANK", "1")
+    monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "2")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+
+    def fail_activation(*_args):
+        raise RuntimeError("sidecar activation failed")
+
+    monkeypatch.setattr(
+        transformers_version, "activate_transformers_for_subprocess", fail_activation
+    )
+    with pytest.raises(RuntimeError, match = "sidecar activation failed"):
+        train_cmd._activate_mlx_transformers("test/model", None)
+
+
 @pytest.mark.skipif(
     platform.system() != "Darwin" or platform.machine() != "arm64",
     reason = "real MLX collectives require Apple Silicon",
 )
-def test_mlx_launch_finalization_collectives(tmp_path):
+def test_mlx_launch_cli_ddp_contracts(tmp_path):
     launcher = Path(sys.executable).with_name("mlx.launch")
     assert launcher.exists()
     for mode in (
@@ -213,6 +264,10 @@ def test_mlx_launch_finalization_collectives(tmp_path):
         (tmp_path / mode).mkdir()
     env = os.environ.copy()
     env["UNSLOTH_MLX_DDP_PROBE_DIR"] = str(tmp_path)
+    env["UNSLOTH_STUDIO_HOME"] = str(tmp_path / "studio")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(_REPO_ROOT), str(_REPO_ROOT / "studio" / "backend"), env.get("PYTHONPATH", "")]
+    )
     result = subprocess.run(
         [launcher, "-n", "2", "--", sys.executable, str(Path(__file__).resolve())],
         cwd = _REPO_ROOT,

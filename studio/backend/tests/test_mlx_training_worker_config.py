@@ -2,6 +2,7 @@
 
 import importlib.util
 import inspect
+import os
 import sys
 import types
 from pathlib import Path
@@ -15,6 +16,7 @@ def _load_worker_module():
         "structlog",
         "loggers",
         "utils",
+        "utils.child_stdio",
         "utils.hardware",
         "utils.training_runs",
         "utils.wheel_utils",
@@ -31,6 +33,16 @@ def _load_worker_module():
         utils = types.ModuleType("utils")
         utils.__path__ = []
         sys.modules["utils"] = utils
+
+        child_stdio = types.ModuleType("utils.child_stdio")
+
+        def utf8_child_env(env = None):
+            child = dict(os.environ if env is None else env)
+            child["PYTHONIOENCODING"] = "utf-8"
+            return child
+
+        child_stdio.utf8_child_env = utf8_child_env
+        sys.modules["utils.child_stdio"] = child_stdio
 
         hardware = types.ModuleType("utils.hardware")
         hardware.apply_gpu_ids = lambda *_args, **_kwargs: None
