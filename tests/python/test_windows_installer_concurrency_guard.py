@@ -115,9 +115,7 @@ $ErrorActionPreference = "Stop"
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_installer_decision_stops_active_process_and_allows_idle(
-    tmp_path: Path, shell: str
-):
+def test_installer_decision_stops_active_process_and_allows_idle(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     decision_start = source.index("        $protectedProcessPaths = @(")
     decision_end = source.index(
