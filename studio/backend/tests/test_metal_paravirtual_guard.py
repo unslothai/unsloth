@@ -1490,6 +1490,30 @@ def _target_state(backend, gguf, **overrides):
     return backend.adopt_load_intent_if_matched(llama_cpp.GgufLoadIntent(**kwargs))
 
 
+def test_a_forced_cpu_launch_records_no_effective_gpu_pin():
+    """--device none means the runtime uses no GPU, so echoing the requested pick as
+    effective both misreports /status and makes clearing that pick reload a CPU server
+    already in the target state. The raw pick stays, so repeating it still matches."""
+    src = _load_model_source()
+    at = src.index("effective_pin = gpu_indices if gpu_indices is not None else gpu_ids")
+    assert "not _paravirtual_cpu_forced" in src[src.rindex("if ", 0, at) : at]
+
+    backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
+    backend._is_diffusion = False
+    backend._requested_gpu_ids, backend._gpu_ids = [0], None
+    assert backend.matches_gpu_ids([0]) is True  # the same pick still dedupes
+    assert backend.matches_gpu_ids(None) is True  # and clearing it does not reload
+
+
+def test_a_real_mac_still_records_the_gpu_it_pinned(monkeypatch):
+    """The negative: on physical Apple Silicon the pick is effective and must be echoed."""
+    monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
+    backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
+    backend._is_diffusion = False
+    backend._requested_gpu_ids = backend._gpu_ids = [0]
+    assert backend.matches_gpu_ids(None) is False  # dropping a real pin must reload
+
+
 def test_a_suppressed_drafter_does_not_reload_the_server_it_left_healthy(monkeypatch, tmp_path):
     """The drop clears the launched drafter, but the file stays on disk and the caller
     keeps supplying it, so comparing against the stored None would respawn the same

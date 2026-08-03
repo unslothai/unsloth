@@ -9419,7 +9419,12 @@ class LlamaCppBackend:
                 # Status reports the explicit subset the launch actually uses,
                 # while reload dedupe compares requested_gpu_ids so repeating a
                 # wider request that fit narrowed does not restart the server.
-                if gpu_ids:
+                # A forced-CPU launch carries --device none, so it pins no GPU at all:
+                # echoing the request as effective would report devices the runtime never
+                # touched, and clearing an ineffective pick would then reload a CPU server
+                # that is already in the target state. requested_gpu_ids still holds the
+                # pick, so repeating it keeps matching.
+                if gpu_ids and not _paravirtual_cpu_forced:
                     effective_pin = gpu_indices if gpu_indices is not None else gpu_ids
                     self._gpu_ids = sorted(int(idx) for idx in effective_pin)
                 else:
