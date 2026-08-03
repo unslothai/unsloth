@@ -356,20 +356,41 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
     current_pid = os.getpid()
     excluded_pids = {current_pid}
 
-    parent_pid = -1
-    parent_images: list[str] = []
-    try:
-        parent_process = psutil.Process(current_pid).parent()
-    except (psutil.Error, OSError):
-        parent_process = None
-    if parent_process is not None:
-        parent_pid = int(parent_process.pid)
+    def is_protected_shim_image(image: str) -> bool:
         try:
-            parent_images.append(parent_process.exe())
-        except (psutil.Error, OSError):
-            pass
+            image_key = _resolved_windows_path(Path(image))
+        except OSError:
+            image_key = image
+        return any(
+            image_key.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
+            for path in protected_file_spellings
+        )
 
-    if parent_pid <= 0:
+    # The user-facing launcher can chain StudioHome\bin\unsloth.exe through
+    # venv\Scripts\unsloth.exe before Python runs the command. Exempt only
+    # consecutive, verified shim ancestors; stop at the first non-shim image.
+    try:
+        ancestor = psutil.Process(current_pid).parent()
+    except (psutil.Error, OSError):
+        ancestor = None
+    for _ in range(8):
+        if ancestor is None:
+            break
+        ancestor_pid = int(ancestor.pid)
+        try:
+            ancestor_image = ancestor.exe()
+        except (psutil.Error, OSError):
+            break
+        if not is_protected_shim_image(ancestor_image):
+            break
+        excluded_pids.add(ancestor_pid)
+        try:
+            ancestor = ancestor.parent()
+        except (psutil.Error, OSError):
+            break
+
+    # Fall back to WMI for the direct parent when psutil could not inspect it.
+    if len(excluded_pids) == 1:
         current = next(
             (
                 process
@@ -378,28 +399,17 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             ),
             None,
         )
-        if current is not None:
-            parent_pid = int(current.get("ParentProcessId") or -1)
-
-    if parent_pid > 0:
+        parent_pid = int(current.get("ParentProcessId") or -1) if current is not None else -1
         parent = next(
             (process for process in processes if int(process.get("ProcessId") or -1) == parent_pid),
             None,
         )
-        if parent is not None and parent.get("ExecutablePath"):
-            parent_images.append(str(parent["ExecutablePath"]))
-
-    for parent_image in parent_images:
-        try:
-            parent_key = _resolved_windows_path(Path(parent_image))
-        except OSError:
-            parent_key = parent_image
-        if any(
-            parent_key.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
-            for path in protected_file_spellings
+        if (
+            parent is not None
+            and parent.get("ExecutablePath")
+            and is_protected_shim_image(str(parent["ExecutablePath"]))
         ):
             excluded_pids.add(parent_pid)
-            break
 
     for process in processes:
         process_id = int(process.get("ProcessId") or -1)

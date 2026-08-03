@@ -106,10 +106,13 @@ def test_terminal_update_idle_scan_excludes_self_and_blocks_another_consumer(tmp
     worker = studio_home / "unsloth_studio" / "Lib" / "worker.py"
     worker.parent.mkdir(parents = True)
     worker.write_text("pass", encoding = "utf-8")
-    shim = studio_home / "bin" / "unsloth.exe"
-    shim.parent.mkdir(parents = True)
-    shim.write_bytes(b"MZ")
+    outer_shim = studio_home / "bin" / "unsloth.exe"
+    inner_shim = studio_home / "unsloth_studio" / "Scripts" / "unsloth.exe"
+    for shim in (outer_shim, inner_shim):
+        shim.parent.mkdir(parents = True, exist_ok = True)
+        shim.write_bytes(b"MZ")
     parent_pid = os.getppid()
+    grandparent_pid = parent_pid + 1_000_000
     base_process = {
         "ParentProcessId": parent_pid,
         "Name": "python.exe",
@@ -123,13 +126,30 @@ def test_terminal_update_idle_scan_excludes_self_and_blocks_another_consumer(tmp
         dict(
             base_process,
             ProcessId = parent_pid,
+            ParentProcessId = grandparent_pid,
+            Name = "unsloth.exe",
+            ExecutablePath = "",
+            CommandLine = "unsloth studio update",
+        ),
+        dict(
+            base_process,
+            ProcessId = grandparent_pid,
             ParentProcessId = 0,
             Name = "unsloth.exe",
             ExecutablePath = "",
             CommandLine = "unsloth studio update",
         ),
     ]
-    parent_process = SimpleNamespace(pid = parent_pid, exe = lambda: str(shim))
+    grandparent_process = SimpleNamespace(
+        pid = grandparent_pid,
+        exe = lambda: str(outer_shim),
+        parent = lambda: None,
+    )
+    parent_process = SimpleNamespace(
+        pid = parent_pid,
+        exe = lambda: str(inner_shim),
+        parent = lambda: grandparent_process,
+    )
 
     def fake_process(process_id):
         if process_id <= 0:
