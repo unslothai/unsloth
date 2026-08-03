@@ -243,8 +243,7 @@ jobs:
         # grows without one.
         #
         # Skipped:
-        #   test_install_rollback_lifecycle.sh: already runs on both platforms
-        #     in cross-platform-parity-ci.yml.
+        #   test_install_rollback_lifecycle.sh: covered by cross-platform-parity-ci.yml.
         run: |
           set -e
           skip="test_install_rollback_lifecycle.sh"

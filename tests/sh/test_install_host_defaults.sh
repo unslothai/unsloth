@@ -50,13 +50,11 @@ assert_not_contains \
     "$_launcher" "studio -H 0.0.0.0"
 
 echo ""
-# Anchored on the block's own comment, not a line count: both installers
-# outgrew their tail windows and the assertions stopped covering the prompt.
+# Anchored on content, not a line count: both installers outgrew their tail windows.
 echo "=== install.sh end-of-install block ==="
 
 _end=$(awk '/In interactive terminals/{found=1} found{print}' "$INSTALL_SH")
-# "read" alone also matches "readable" and "_can_read_tty" in this block, so the
-# assertion held with the prompt deleted. Pin the prompt itself.
+# "read" alone also matches "readable" and "_can_read_tty", so pin the full prompt.
 assert_contains \
     "install.sh: interactive block prompts user (read)" \
     "$_end" "read -r _reply"
@@ -79,9 +77,7 @@ echo ""
 echo "=== studio/setup.sh launch hint ==="
 
 _setup_tail=$(awk '/"launch"/{found=1} found{print}' "$SETUP_SH")
-# Canary: the other three windows each carry a positive assertion that fails
-# loudly if the extraction breaks. Without one here, renaming the "launch" label
-# empties the window and the negative check below passes over nothing.
+# Canary: an empty window would let the negative assertion below pass vacuously.
 assert_contains \
     "studio/setup.sh: extraction found the launch hint" \
     "$_setup_tail" "unsloth studio -p 8888"
@@ -93,9 +89,8 @@ echo ""
 echo "=== README.md Launch section ==="
 
 # The primary Launch example must not include -H 0.0.0.0; the LAN/cloud
-# note appears as an opt-in line outside the code block. Stop at the next
-# heading of any name: this used to stop at '#### Update', which was later
-# deleted, so the section silently became the rest of the file.
+# note is an opt-in line outside it. Stop at the next heading of any level:
+# '#### Update' was later deleted, silently extending the section to the file end.
 _readme_launch=$(awk '/^#### Launch$/{found=1; print; next} found && /^#{1,6} /{exit} found{print}' "$README")
 assert_contains \
     "README: Launch section exists" \
