@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import {
@@ -340,7 +341,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           ? error.message
           : "A recorded segment could not be transcribed.";
       console.error("STT transcription error:", error);
-      toast.error(message);
+      toast.error(message, {
+        action: {
+          label: "Open Voice settings",
+          onClick: () => useSettingsDialogStore.getState().openDialog("voice"),
+        },
+      });
     };
 
     const buildTranscript = () =>
