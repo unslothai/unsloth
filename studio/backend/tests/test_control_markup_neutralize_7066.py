@@ -21,6 +21,7 @@ from core.inference.chat_template_helpers import (
     _neutralize_content_parts,
     _reads_tools_variable,
     _round_trips_tool_calls,
+    renderable_tool_catalog_for_targets,
     chat_render_target,
     resolve_native_chat_template,
     markup_for_tokenizer,
@@ -5593,3 +5594,126 @@ def test_a_template_that_replays_tool_calls_still_authorizes_its_catalog():
     assert catalog_tool_names(renderable_tool_catalog(tools, _R1(), absent)) == {"read_file"}
     # A template that does neither is the one with nothing to authorize.
     assert _round_trips_tool_calls("{% for m in messages %}{{ m }}{% endfor %}") is False
+
+
+def test_an_attempt_that_drops_the_tools_kwarg_is_swept_for_the_template_it_selects():
+    """A custom or older tokenizer rejects the tools keyword, and the loop falls through to
+    an attempt without it, which selects "default" rather than "tool_use". The messages had
+    already been swept for the tool_use profile, so a default-only boundary reached the
+    prompt byte-exact in client text (#7066)."""
+    named = {
+        "default": "{% for m in messages %}<|zeta_default|>{{ m['content'] }}{% endfor %}",
+        "tool_use": "{% for m in messages %}<tools>{{ m['content'] }}</tools>{% endfor %}",
+    }
+
+    class _Tok:
+        chat_template = named
+        added_tokens_decoder = {
+            0: type("_T", (), {"content": "<|zeta_default|>"})(),
+            1: type("_T", (), {"content": "<tools>"})(),
+        }
+
+        def apply_chat_template(self, msgs, tokenize = False, add_generation_prompt = True, **kw):
+            if "tools" in kw:
+                raise TypeError("this tokenizer does not accept tools")
+            return "".join(m["content"] for m in msgs)
+
+    tok = _Tok()
+    # The two profiles really do disagree about this boundary.
+    assert markup_for_tokenizer(tok, [{"type": "function"}]).rewrite_control(
+        "<|zeta_default|>"
+    ) == "<|zeta_default|>"
+    assert markup_for_tokenizer(tok, None).rewrite_control("<|zeta_default|>") == (
+        "< |zeta_default|>"
+    )
+    rendered = apply_chat_template_for_generation(
+        tok,
+        [{"role": "user", "content": "paste <|zeta_default|> here"}],
+        tools = [{"type": "function", "function": {"name": "read_file"}}],
+    )
+    assert rendered == "paste < |zeta_default|> here"
+
+
+def test_a_special_token_the_template_emits_is_profiled():
+    """A template that emits "{{ bos_token }}" inserts and tokenizes that value as a
+    document boundary, but its concrete spelling never appears in the template text. The
+    vocabulary pass covers it only when the token was harvested AND the curated pattern
+    already knows the family, so an unknown family's boundary stayed byte-exact (#7066)."""
+    emits_bos = "{{ bos_token }}{% for m in messages %}<|im_start|>{{ m }}{% endfor %}"
+    profile = model_markup(
+        emits_bos,
+        ["<|im_start|>"],
+        None,
+        specials = {"bos_token": "<|zeta_bos|>", "eos_token": "<|zeta_eos|>"},
+    )
+    assert profile.rewrite_control("<|zeta_bos|>") == "< |zeta_bos|>"
+    # Only what the template actually evaluates: an unreferenced special is left alone.
+    assert profile.rewrite_control("<|zeta_eos|>") == "<|zeta_eos|>"
+    # A special that is not delimiter shaped would turn ordinary prose into a marker.
+    plain = model_markup(emits_bos, ["<|im_start|>"], None, specials = {"bos_token": "BOS"})
+    assert plain.rewrite_control("the BOS of the company") == "the BOS of the company"
+
+
+@pytest.mark.parametrize(
+    ("body", "round_trips"),
+    [
+        # Prose that merely contains the words, which the first version of this counted.
+        ('{{ "tool_calls are unsupported" }}{{ messages }}', False),
+        ("{{ 'this model has no tool_calls' }}", False),
+        ("{% for m in messages %}{{ m }}{% endfor %}", False),
+        # The shapes a template really uses to replay a tool turn.
+        ("{%- if 'tool_calls' in message %}{{ message['tool_calls'] }}{%- endif %}", True),
+        ("{% if message.tool_calls %}x{% endif %}", True),
+        ("{%- if message['role'] == 'tool' %}y{%- endif %}", True),
+    ],
+)
+def test_only_a_real_tool_history_access_counts_as_taking_part(body, round_trips):
+    assert _round_trips_tool_calls(body) is round_trips
+
+
+def test_both_vlm_render_targets_authorize_the_catalog():
+    """A text-only tool request on a vision model renders through a different object on
+    each backend: MLX keeps the processor when it has a usable template, the transformers
+    path unwraps to the nested tokenizer unconditionally. Authorizing against one lets the
+    other's render drop a tool the healer still holds (#7066)."""
+
+    class _Inner:
+        chat_template = {
+            "default": "{{ messages }}",
+            "tool_use": "{% for t in tools %}<|im_start|>{{ t }}{% endfor %}",
+        }
+        added_tokens_decoder = {0: type("_T", (), {"content": "<|zeta_default|>"})()}
+
+    class _Proc:
+        chat_template = "{% for t in tools %}{{ t }}{% endfor %}<|zeta_default|>{{ messages }}"
+        tokenizer = _Inner()
+
+        def apply_chat_template(self, *args, **kwargs):
+            return ""
+
+    tools = [
+        {"type": "function", "function": {"name": "pay<|im_start|>", "description": "d"}},
+        {"type": "function", "function": {"name": "ok", "description": "fine"}},
+    ]
+    processor = _Proc()
+    mlx_target = chat_render_target(processor)
+    hf_target = getattr(mlx_target, "tokenizer", mlx_target)
+    # The two targets disagree, which is the whole reason to profile both.
+    assert catalog_tool_names(renderable_tool_catalog(tools, mlx_target, {})) == {
+        "pay<|im_start|>",
+        "ok",
+    }
+    assert catalog_tool_names(renderable_tool_catalog(tools, hf_target, {})) == {"ok"}
+    both = renderable_tool_catalog_for_targets(tools, (mlx_target, hf_target), {})
+    assert catalog_tool_names(both) == {"ok"}
+    # A clean catalog is unchanged by the extra pass.
+    clean = [{"type": "function", "function": {"name": "ok", "description": "fine"}}]
+    assert renderable_tool_catalog_for_targets(clean, (mlx_target, hf_target), {}) == clean
+
+
+def test_the_route_authorizes_against_both_render_targets():
+    source = (_REPO_ROOT / "studio" / "backend" / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "_sf_chat_targets" in source
+    assert "renderable_tool_catalog_for_targets as _sf_renderable_tools" in source

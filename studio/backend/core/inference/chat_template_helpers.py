@@ -464,11 +464,26 @@ def _alternation(markers: set):
     )
 
 
+# The special-token variables a chat template may emit instead of writing the literal.
+# Llama-3.1 opens with "{{ bos_token }}", so the concrete spelling is never in the template
+# text and a literal-only scan cannot see it.
+_SPECIAL_TOKEN_VARIABLES = (
+    "bos_token",
+    "eos_token",
+    "pad_token",
+    "unk_token",
+    "sep_token",
+    "cls_token",
+    "mask_token",
+)
+
+
 def model_markup(
     chat_template,
     tokens = None,
     tools = None,
     prefer_tool_use: bool = True,
+    specials = None,
 ) -> Optional[ModelMarkup]:
     """Profile one model's structural markers, or None when nothing is known about it.
 
@@ -519,6 +534,23 @@ def model_markup(
             # tool descriptions that mention them (#7066).
             if marker in known or _CONTROL_MARKUP.search(marker):
                 markers.add(marker)
+        # A template that emits "{{ bos_token }}" inserts and tokenizes that value as a
+        # document boundary, but its concrete spelling is never in the template text. The
+        # vocabulary pass covers it only when the token was harvested, which a partial or
+        # stubbed vocabulary does not guarantee, so resolve it from the tokenizer (#7066).
+        for name, value in (specials or {}).items():
+            if not isinstance(value, str) or not value:
+                continue
+            if not any(name in code for code in _jinja_code(body)):
+                continue
+            # Shape, not the curated pattern. _CONTROL_MARKUP is this repo's record of the
+            # families it has seen, so gating on it would keep exactly the tokens the
+            # vocabulary pass already covers and miss the unknown-family boundary this is
+            # for. The tokenizer declaring the value AND the template evaluating it is the
+            # stronger proof; the shape test only keeps it from turning a plain word into
+            # a marker that would sweep ordinary prose.
+            if value in known or _DELIMITER_SHAPED.match(value):
+                markers.add(value)
         if _DYNAMIC_PIPE_ROLE.search(body):
             markers.update(f"<|{role}|>" for role in _ROLE_NAMES)
         # "<function=" built by concatenation: record the example spelling the dynamic rule
@@ -1612,7 +1644,19 @@ _JINJA_STRING = re.compile(r"'[^']*'|\"[^\"]*\"", re.S)
 # template: DeepSeek-R1 renders message['tool_calls'] and <|tool outputs|> and never reads
 # the tools variable at all. Unlike the tools read, this one keeps string literals, because
 # the name appears as a mapping key.
-_TOOL_TURN = re.compile(r"tool_calls|role\s*==\s*['\"]tool['\"]|['\"]tool['\"]\s*==\s*role")
+_TOOL_TURN = re.compile(
+    # message.tool_calls / message["tool_calls"] / "tool_calls" in message, and the role
+    # comparison a template uses to render a tool result. Matching the bare word instead
+    # let "{{ 'tool_calls are unsupported' }}" count as taking part in tool calling.
+    r"\.tool_calls\b"
+    r"|\[\s*['\"]tool_calls['\"]\s*\]"
+    r"|['\"]tool_calls['\"]\s+in\b"
+    r"|\btool_calls\s+in\b"
+    # "message['role'] == 'tool'" as well as "message.role == 'tool'": the closing quote
+    # and bracket sit between the name and the comparison.
+    r"|role['\"\]\s]*==\s*['\"]tool['\"]"
+    r"|['\"]tool['\"]\s*==[\s\['\"]*role"
+)
 
 
 def _jinja_code(body: str):
@@ -1656,6 +1700,41 @@ def _renders_tool_schema(target, template, tools) -> bool:
     if not value:
         value = getattr(getattr(target, "tokenizer", None), "chat_template", None)
     return _template_reads_tools(value, tools, prefer_tool_use = not _is_processor(target))
+
+
+def renderable_tool_catalog_for_targets(
+    tools,
+    targets,
+    model_info,
+    cache = None,
+    active_model_name = None,
+    template = None,
+):
+    """The catalog safe under every object a backend could render this turn with.
+
+    The two backends disagree about which object renders a text turn on a vision model.
+    MLX keeps the processor when it has a usable chat template (mlx_inference.py), while
+    the transformers path unwraps to the nested tokenizer unconditionally
+    (inference.py). Their profiles can differ, so authorizing against one of them lets the
+    other's render drop a tool that stays in the healer's catalog (#7066).
+
+    Rather than guessing which backend will serve the request, this takes the same
+    conservative intersection ``renderable_tool_catalog`` already takes across the active
+    and native templates: a tool has to survive every candidate to stay authorized.
+
+    Chained rather than intersected by name, so the surviving descriptions carry every
+    candidate's sweep too. Sanitizing an already-sanitized catalog is stable, since a
+    broken marker no longer matches, so a clean catalog stays byte-identical."""
+    catalog = tools
+    for target in targets:
+        if target is None:
+            continue
+        catalog = renderable_tool_catalog(
+            catalog, target, model_info, cache, active_model_name, template
+        )
+        if not catalog:
+            return catalog
+    return catalog
 
 
 def renderable_tool_catalog(
@@ -2115,6 +2194,24 @@ def _split_parallel_tool_calls(messages: list) -> list:
 _MARKUP_BY_TOKENIZER: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
+def _special_token_strings(tokenizer) -> dict:
+    """The concrete spelling of each special-token variable a template may emit."""
+    specials: dict = {}
+    for name in _SPECIAL_TOKEN_VARIABLES:
+        try:
+            value = getattr(tokenizer, name, None)
+        except Exception:
+            # A tokenizer property can raise on a partially loaded model; a missing
+            # special is simply one fewer marker, never a failed request.
+            continue
+        # AddedToken rather than str on some tokenizers, and its str() is the content.
+        if value is not None and not isinstance(value, str):
+            value = getattr(value, "content", None)
+        if isinstance(value, str) and value:
+            specials[name] = value
+    return specials
+
+
 def markup_for_tokenizer(
     tokenizer,
     tools = None,
@@ -2173,7 +2270,13 @@ def markup_for_tokenizer(
     # renders "default" unless chat_template= names another. _selected_chat_template_strings
     # already documents this, so profiling with the tokenizer rule left a processor's own
     # default-template boundary unswept while the render emitted it (#7066).
-    profile = model_markup(template, tokens, tools, prefer_tool_use = not is_processor)
+    profile = model_markup(
+        template,
+        tokens,
+        tools,
+        prefer_tool_use = not is_processor,
+        specials = _special_token_strings(inner),
+    )
     try:
         entry = cached if isinstance(cached, dict) else {}
         # Two selectors and one template per tokenizer; a template swap adds a key rather
@@ -2227,12 +2330,30 @@ def apply_chat_template_for_generation(
         attempts.append(dict(reasoning_kwargs))
     attempts.append({})
 
+    # An attempt that drops the tools kwarg selects "default" rather than "tool_use", and
+    # the messages above were swept for the profile of the template this request meant to
+    # use. A custom or older tokenizer that rejects tools= therefore rendered messages
+    # against a template they were not swept for, leaving a default-only boundary
+    # byte-exact in client text. Built at most once, and only if such an attempt is
+    # reached, so the ordinary path pays nothing (#7066).
+    _fallback_markup = _UNPARSED
+
+    def _swept_for(kwargs: dict, msgs: list) -> list:
+        nonlocal _fallback_markup
+        if not tools or "tools" in kwargs:
+            return msgs
+        if _markup is None:
+            return msgs  # already swept with the curated superset
+        if _fallback_markup is _UNPARSED:
+            _fallback_markup = markup_for_tokenizer(tokenizer, None)
+        return neutralize_control_markup_in_messages(msgs, None, _fallback_markup)
+
     def _render(msgs: list) -> str:
         last_exc: Optional[Exception] = None
         for kwargs in attempts:
             try:
                 return tokenizer.apply_chat_template(
-                    msgs,
+                    _swept_for(kwargs, msgs),
                     tokenize = False,
                     add_generation_prompt = True,
                     **kwargs,
