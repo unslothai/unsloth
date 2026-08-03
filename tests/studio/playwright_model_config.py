@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
+    dump_diagnostics,
     evaluate_fetch,
     install_view_transition_killer,
     install_wall_clock_watchdog,
@@ -67,6 +68,15 @@ MODEL_HINT = os.environ.get("STUDIO_MODEL_HINT", "gemma-3-270m")
 # Context Length, clearly not a default, so persistence is unambiguous.
 DISTINCT_CTX = int(os.environ.get("STUDIO_DISTINCT_CTX", "4096"))
 ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_modelcfg")
+# Settle window after run-settings opens, before staging an edit. An edit made in
+# the panel's first moments is silently discarded: it re-derives its baseline once
+# mount-time work lands and drops whatever was staged, so Save reports "Default
+# settings kept" and stores nothing. Measured on gemma-3-270m: fails at 0ms, passes
+# from 500ms. The panel exposes no readiness signal to poll -- the input value, the
+# Reset state and the primary button label are all identical before and after -- so
+# this is a bounded wait rather than a condition. A person cannot open the panel,
+# read it, type and click inside half a second; only a driver can.
+CONFIG_SETTLE_MS = int(os.environ.get("STUDIO_CONFIG_SETTLE_MS", "1000"))
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
@@ -79,6 +89,44 @@ LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"
 
 _n = [0]
 _failed: list[str] = []
+
+
+# Ported from features/hub/lib/local-path.ts and features/hub/lib/model-identity.ts.
+_LOCAL_PATH_PREFIX_RE = re.compile(
+    r"^(?:/|\.{1,2}(?:$|[\\/])|~(?:$|[\\/])|~[^\\/]+[\\/]|[A-Za-z]:[\\/]|\\\\)"
+)
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_WSL_DRIVE_PATH_RE = re.compile(r"^/mnt/[A-Za-z](?:/|$)")
+
+
+def _normalize_case_insensitive_path(path: str, min_length: int) -> str:
+    slashed = path.replace("\\", "/")
+    end = len(slashed)
+    while end > min_length and slashed[end - 1] == "/":
+        end -= 1
+    return slashed[:end].lower()
+
+
+def _normalize_model_identity(model_id: str) -> str:
+    """Mirror of normalizeModelIdentity in features/hub/lib/model-identity.ts.
+
+    Case folding is not unconditional there: a plain POSIX path keeps its case,
+    because /models/Foo.gguf and /models/foo.gguf are different files. Only a hub
+    id and the case-insensitive roots -- a Windows drive, a UNC share, a WSL mount
+    -- fold. Lowercasing everything here merged paths the app keeps apart, so an
+    entry belonging to one could satisfy a check that the other had saved.
+    """
+    trimmed = model_id.strip()
+    if not (trimmed and _LOCAL_PATH_PREFIX_RE.match(trimmed)):
+        return trimmed.lower()
+    slash_path = trimmed.replace("\\", "/")
+    if _WINDOWS_DRIVE_PATH_RE.match(trimmed):
+        return _normalize_case_insensitive_path(trimmed, 3)
+    if slash_path.startswith("//"):
+        return _normalize_case_insensitive_path(trimmed, 2)
+    if _WSL_DRIVE_PATH_RE.match(slash_path):
+        return _normalize_case_insensitive_path(trimmed, 6)
+    return trimmed
 
 
 def step(s: str) -> None:
@@ -107,9 +155,17 @@ def runtime_warn(m: str) -> None:
 
 
 def _count(loc) -> int:
+    """Number of matches, or 0.
+
+    A raise here is not the same as no match: a closed page or a lost execution
+    context also throws, and reporting that as "selector missing" sends the reader
+    after the markup instead of the crash. Say so, then still return 0 so callers
+    that only branch on emptiness keep working.
+    """
     try:
         return loc.count()
-    except Exception:
+    except Exception as exc:
+        info(f"WARN: locator raised (not a missing element): {type(exc).__name__}: {exc}")
         return 0
 
 
@@ -204,19 +260,61 @@ with sync_playwright() as p:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
 
     def read_configs() -> dict:
-        """Return the parsed unsloth_model_configs map (or {} if absent/invalid)."""
+        """Return the parsed unsloth_model_configs map (or {} if absent/invalid).
+
+        Absent and unreadable are not the same: "no entry" is what several assertions
+        below treat as success, so storage that failed to read must be said out loud
+        rather than passed off as a clean slate.
+        """
         raw = robust_evaluate(page, "() => localStorage.getItem('unsloth_model_configs')")
         if not raw:
             return {}
         try:
             data = json.loads(raw)
-            return data if isinstance(data, dict) else {}
-        except Exception:
+        except Exception as exc:
+            fail(f"unsloth_model_configs is unreadable ({exc}); raw={str(raw)[:200]!r}")
             return {}
+        if not isinstance(data, dict):
+            fail(f"unsloth_model_configs is not an object: {type(data).__name__}")
+            return {}
+        return data
 
     def config_entries(cfg: dict) -> list[dict]:
         """The per-model entries (dict values) of the stored map, schema-tolerant."""
         return [v for v in cfg.values() if isinstance(v, dict)]
+
+    def entries_for_model(cfg: dict) -> list[dict]:
+        """Only the entries keyed to the model under test.
+
+        The keys embed the repo id and quant (`v2:["<repo>","<quant>"]`), so scanning
+        every entry lets a value belonging to a different model -- or to another quant
+        of this one -- satisfy a persistence, reset or migration assertion. Both halves
+        have to match. Falls back to all entries only when no key has the versioned
+        shape, so a schema change degrades to the old behaviour rather than silently
+        asserting nothing.
+        """
+        want = (_normalize_model_identity(GGUF_REPO), GGUF_VARIANT.strip().lower())
+        recognised = [k for k in cfg if re.match(r"^v\d+:\[", str(k))]
+        if not recognised:
+            return config_entries(cfg)
+        matched = []
+        for key in recognised:
+            # Parse the key rather than substring-searching its serialised form: the
+            # repo alone also matches this repo's *other* quants, so a stale entry for
+            # one quant could stand in for the one under test and mask its failed save.
+            try:
+                parts = json.loads(str(key).split(":", 1)[1])
+            except Exception:
+                continue
+            if not isinstance(parts, list) or not parts:
+                continue
+            raw = (list(parts) + [""])[:2]
+            got = (_normalize_model_identity(str(raw[0])), str(raw[1]).strip().lower())
+            if got == want and isinstance(cfg[key], dict):
+                matched.append(cfg[key])
+        # Scoping is meaningful, so an empty result is a real answer: returning every
+        # entry here is what let another model's value satisfy these checks.
+        return matched
 
     # ─────────────────────────────────────────────────────
     # Setup: authenticate + model load.
@@ -358,6 +456,40 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     POPOVER = '[data-tour="chat-model-selector-popover"]'
     TRIGGER = '[data-tour="chat-model-selector"]'
+    # Unfiltered, for diagnostics: which gears exist at all when the one being
+    # looked for did not. Kept as CSS rather than reusing row_gear's role lookup,
+    # because the point here is to report what is there, not to match anything.
+    GEAR_ANY = 'button[aria-label^="Inference settings for" i]'
+
+    def diagnose(name, selector):
+        """Screenshot + JSON sidecar (URL, body, storage) for a selector that missed.
+
+        Without this a miss reaches the log as one line naming a selector, and the
+        artifact holds no record of what the picker was actually showing -- which is
+        how a picker that had closed itself read as a missing gear.
+        """
+        rows = []
+        try:
+            opts = page.locator("[data-model-picker-option]")
+            rows = [
+                (opts.nth(i).inner_text() or "").strip()[:60] for i in range(min(opts.count(), 12))
+            ]
+        except Exception:
+            pass
+        gears = []
+        try:
+            g = page.locator(GEAR_ANY)
+            gears = [g.nth(i).get_attribute("aria-label") for i in range(min(g.count(), 12))]
+        except Exception:
+            pass
+        dump_diagnostics(
+            page,
+            ART,
+            name,
+            info = info,
+            extra = {"missed_selector": selector, "option_rows": rows, "gear_labels": gears},
+        )
+        info(f"DIAG {name}: {len(rows)} option row(s), {len(gears)} gear(s); see {name}.json")
 
     def open_picker():
         popover = page.locator(POPOVER).first
@@ -376,7 +508,12 @@ with sync_playwright() as p:
             pass
 
     def reveal_on_device_row(popover, hint):
-        """Bring the row into view without clicking it."""
+        """Bring the row into view without clicking it.
+
+        Since single-quant rows collapse (#7736) the row loads its quant in one
+        click and the picker closes, so selecting first would dismiss the gear
+        this is about to press.
+        """
         od = page.get_by_role("tab", name = "On Device").first
         if _count(od):
             od.click()
@@ -400,21 +537,39 @@ with sync_playwright() as p:
         page.wait_for_timeout(800)
         return row
 
+    def config_is_open(popover):
+        """Back is unique to the config page and always rendered inside the picker."""
+        return _count(popover.get_by_role("button", name = "Back to model list")) > 0
+
     # The collapsed sole-quant row appears only after an async probe lands, so an absent
     # gear means either a multi-quant repo or a probe in flight, with no DOM state to
     # tell them apart. Only a multi-quant repo pays the full wait, once per open_config.
     SOLE_QUANT_SETTLE_MS = 30_000
 
+    # Long enough for the probe, short enough that naming a quant that is not there
+    # does not spend the whole settle window before falling back to the repo.
+    QUANT_GEAR_MS = 2_000
+
     def row_gear(
         popover,
         hint,
+        quant = None,
         timeout_ms = SOLE_QUANT_SETTLE_MS,
     ):
         # The gear is a sibling of the row, not inside [data-model-picker-option], so
         # scope it by repo id; case-insensitive to match the has_text row lookup.
+        #
+        # The quant, when given, is anchored to the end rather than searched for
+        # anywhere in the label. Every label is "<repo> <quant>", so an unanchored
+        # match lets F16 find BF16, and `.first` among variants the expander orders
+        # by fit rather than by name then opens the other one -- after which the
+        # exact-key storage checks fail on a quant that was working.
+        pattern = f"^Inference settings for .*{re.escape(hint)}"
+        if quant:
+            pattern += f".* {re.escape(quant)}$"
         gear = popover.get_by_role(
             "button",
-            name = re.compile(f"^Inference settings for .*{re.escape(hint)}", re.IGNORECASE),
+            name = re.compile(pattern, re.IGNORECASE),
         ).first
         try:
             gear.wait_for(state = "visible", timeout = timeout_ms)
@@ -428,7 +583,15 @@ with sync_playwright() as p:
         # A sole-quant repo is a collapsed row whose click selects the model and closes
         # the picker, so click its gear without touching the row; a multi-quant repo
         # shows gears only once the row is expanded.
-        gear = row_gear(popover, hint)
+        #
+        # The quant first at each step: with "Expand quantizations" on, the expander
+        # is already mounted, so a repo-only lookup finds some gear straight away and
+        # never reaches the expansion branch -- and which one it finds is then
+        # arbitrary. Repo-only stays as the fallback, for the collapsed single-quant
+        # row whose label carries its own quant and need not carry this one.
+        gear = row_gear(popover, hint, quant = GGUF_VARIANT, timeout_ms = QUANT_GEAR_MS)
+        if gear is None:
+            gear = row_gear(popover, hint)
         if gear is None:
             if select_on_device_row(popover, hint) is None:
                 return None
@@ -438,12 +601,21 @@ with sync_playwright() as p:
                 popover = open_picker()
                 if reveal_on_device_row(popover, hint) is None:
                     return None
-            gear = row_gear(popover, hint)
+            gear = row_gear(popover, hint, quant = GGUF_VARIANT, timeout_ms = QUANT_GEAR_MS) or (
+                row_gear(popover, hint)
+            )
         if gear is None:
             return None
         gear.click()
-        page.wait_for_timeout(800)
-        return popover
+        # Gate on the page itself rather than a sleep, so a slow mount is waited out
+        # and a failed open is not mistaken for a missing Context Length input below.
+        for _ in range(20):
+            if config_is_open(popover):
+                page.wait_for_timeout(CONFIG_SETTLE_MS)
+                return popover
+            page.wait_for_timeout(250)
+        diagnose("open-config-not-open", 'button[name="Back to model list"]')
+        return None
 
     def context_input(popover):
         for role in ("textbox", "spinbutton"):
@@ -454,8 +626,12 @@ with sync_playwright() as p:
         return loc if _count(loc) else None
 
     def primary_button(popover):
+        # exact: get_by_role matches the accessible name as a substring by default, so
+        # "Load model" also matches "Reload model" -- and it is swept first, so the
+        # reload case would be found under the wrong name. The panel shows exactly one
+        # of these four.
         for name in ("Load model", "Reload model", "Save settings", "Forget settings"):
-            b = popover.get_by_role("button", name = name).first
+            b = popover.get_by_role("button", name = name, exact = True).first
             if _count(b):
                 return b
         return None
@@ -469,6 +645,30 @@ with sync_playwright() as p:
     needles = ["bge-small-en-v1.5", "stories260"]
     tabs = ["Recommended", "On Device", "Connected"]
     hidden_ok = True
+    # This step asserts an absence, so it passes for free if the picker renders no rows
+    # at all -- which is exactly the state a broken picker is in. Prove it is populated
+    # first, or "hidden" means nothing.
+    od_tab = page.get_by_role("tab", name = "On Device").first
+    if _count(od_tab):
+        od_tab.click()
+        page.wait_for_timeout(400)
+    # Waited for, not counted once: until cachedReady flips the picker renders the
+    # loading state with no rows at all, so a fixed pause turns a slow cache scan
+    # into a hard failure. A populated picker attaches a row as soon as it has one,
+    # so this returns immediately in the normal case and only spends the timeout
+    # when there is genuinely nothing -- which is the case worth failing on.
+    try:
+        popover.locator("[data-model-picker-option]").first.wait_for(
+            state = "attached", timeout = 20_000
+        )
+    except Exception:
+        pass
+    populated = _count(popover.locator("[data-model-picker-option]"))
+    if populated == 0:
+        fail("picker shows no rows at all, so the hidden-model check below proves nothing")
+        diagnose("hidden-check-empty-picker", "[data-model-picker-option]")
+    else:
+        info(f"picker populated: {populated} option row(s) before the hidden check")
     for needle in needles:
         for tab_name in tabs:
             tab = page.get_by_role("tab", name = tab_name).first
@@ -539,7 +739,7 @@ with sync_playwright() as p:
 
                 # (a) localStorage stored the distinctive context.
                 cfg = read_configs()
-                entries = config_entries(cfg)
+                entries = entries_for_model(cfg)
                 got_ls = any(e.get("customContextLength") == DISTINCT_CTX for e in entries)
                 if got_ls:
                     info(f"OK persist(localStorage): customContextLength={DISTINCT_CTX} stored")
@@ -613,7 +813,7 @@ with sync_playwright() as p:
             page.wait_for_timeout(1500)
         cfg = read_configs()
         pinned = any(
-            _as_int(e.get("customContextLength")) == DISTINCT_CTX for e in config_entries(cfg)
+            _as_int(e.get("customContextLength")) == DISTINCT_CTX for e in entries_for_model(cfg)
         )
         if pinned:
             fail("Reset left the distinctive context pinned in unsloth_model_configs")
@@ -629,10 +829,21 @@ with sync_playwright() as p:
     # number, or doing so before a Reset, recreates a phantom context pin.
     # ─────────────────────────────────────────────────────
     step("re-typing the shown context does not pin an override")
-    ctx_in = context_input(popover)
-    native_default = _as_int(ctx_in.input_value()) if ctx_in else None
+    # Own its state instead of inheriting the step above: the previous step commits a
+    # Reset, which can close the picker, and inheriting turned that into a silent skip
+    # that let this regression go unchecked.
+    popover = open_picker()
+    if open_config(popover, MODEL_HINT) is None:
+        fail("could not open run-settings for the re-type-shown check")
+        ctx_in = None
+        native_default = None
+    else:
+        ctx_in = context_input(popover)
+        native_default = _as_int(ctx_in.input_value()) if ctx_in else None
     if ctx_in is None or native_default is None:
-        info("skip re-type-shown: Context Length input has no numeric default")
+        # A skip here is not a pass: this step is the only guard on the phantom-pin
+        # regression, so say so at the level STRICT gates rather than as prose.
+        soft_fail("re-type-shown did not run: Context Length input has no numeric default")
     else:
         remember = popover.get_by_label("Remember for this model").first
         if _count(remember):
@@ -651,7 +862,7 @@ with sync_playwright() as p:
             page.wait_for_timeout(1500)
         cfg = read_configs()
         pinned = any(
-            _as_int(e.get("customContextLength")) == native_default for e in config_entries(cfg)
+            _as_int(e.get("customContextLength")) == native_default for e in entries_for_model(cfg)
         )
         if pinned:
             fail(
@@ -702,7 +913,7 @@ with sync_playwright() as p:
                 page.wait_for_timeout(1500)
             cfg = read_configs()
             has_adv = any(
-                e.get("tensorParallel") or e.get("kvCacheDtype") for e in config_entries(cfg)
+                e.get("tensorParallel") or e.get("kvCacheDtype") for e in entries_for_model(cfg)
             )
             if toggled and has_adv:
                 info("OK advanced: tensorParallel/kvCacheDtype persisted")
@@ -753,7 +964,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(800)
         cfg_first = read_configs()
         migrated_ctx = any(
-            e.get("customContextLength") == DISTINCT_CTX for e in config_entries(cfg_first)
+            e.get("customContextLength") == DISTINCT_CTX for e in entries_for_model(cfg_first)
         )
         if migrated_ctx:
             info(f"OK migration: legacy context {DISTINCT_CTX} preserved after migrating")
@@ -793,7 +1004,7 @@ with sync_playwright() as p:
             keys_second = set(cfg_second.keys())
             new_keys = keys_second - keys_first
             still_has_ctx = any(
-                e.get("customContextLength") == DISTINCT_CTX for e in config_entries(cfg_second)
+                e.get("customContextLength") == DISTINCT_CTX for e in entries_for_model(cfg_second)
             )
             if new_keys:
                 soft_fail(
