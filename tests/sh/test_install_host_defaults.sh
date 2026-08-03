@@ -79,6 +79,12 @@ echo ""
 echo "=== studio/setup.sh launch hint ==="
 
 _setup_tail=$(awk '/"launch"/{found=1} found{print}' "$SETUP_SH")
+# Canary: the other three windows each carry a positive assertion that fails
+# loudly if the extraction breaks. Without one here, renaming the "launch" label
+# empties the window and the negative check below passes over nothing.
+assert_contains \
+    "studio/setup.sh: extraction found the launch hint" \
+    "$_setup_tail" "unsloth studio -p 8888"
 assert_not_contains \
     "studio/setup.sh: launch hint has no '-H 0.0.0.0'" \
     "$_setup_tail" "studio -H 0.0.0.0"
@@ -90,7 +96,7 @@ echo "=== README.md Launch section ==="
 # note appears as an opt-in line outside the code block. Stop at the next
 # heading of any name: this used to stop at '#### Update', which was later
 # deleted, so the section silently became the rest of the file.
-_readme_launch=$(awk '/^#### Launch$/{found=1; print; next} found && /^#### /{exit} found{print}' "$README")
+_readme_launch=$(awk '/^#### Launch$/{found=1; print; next} found && /^#{1,6} /{exit} found{print}' "$README")
 assert_contains \
     "README: Launch section exists" \
     "$_readme_launch" "unsloth studio"
