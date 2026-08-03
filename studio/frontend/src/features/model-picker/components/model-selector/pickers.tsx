@@ -605,7 +605,7 @@ const META_COLUMN = {
 const ROW_ACTIONS_BASE =
   "mr-0.5 flex w-[38px] shrink-0 items-center justify-end -space-x-0.5";
 const ROW_HOVER_ONLY =
-  "opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100";
+  "opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
 const ROW_ACTIONS_CLASS = `${ROW_ACTIONS_BASE} ${ROW_HOVER_ONLY}`;
 
 function ModelRow({
@@ -863,21 +863,35 @@ function ModelRow({
     </span>
   ) : null;
 
+  // The dot names its format on hover only, which keyboard focus never
+  // reaches, so the row tooltip carries it too.
+  const formatLine = formatDot ? (
+    <span className="block text-ui-10 mt-1">{formatDot.label}</span>
+  ) : null;
+
   const tooltipBody = vramTooltipText ? (
     <>
       {label}
       <span className="block text-ui-10 mt-1">{vramTooltipText}</span>
+      {formatLine}
       {hubUrlLine}
     </>
   ) : tooltipText ? (
     <>
       {tooltipText}
+      {formatLine}
       {hubUrlLine}
     </>
   ) : hubUrl ? (
     <>
       <span className="block break-words">{label}</span>
+      {formatLine}
       {hubUrlLine}
+    </>
+  ) : formatLine ? (
+    <>
+      <span className="block break-words">{label}</span>
+      {formatLine}
     </>
   ) : null;
 
@@ -3189,7 +3203,6 @@ export function HubModelPicker({
       "pinned-quant",
       pinKey(entry.repoId, entry.quant),
     );
-    const { owner, name } = splitRepoLabel(entry.repoId);
     const isSelected =
       value === entry.repoId && activeGgufVariant === entry.quant;
     const isLoaded =
@@ -3198,52 +3211,30 @@ export function HubModelPicker({
       ggufVariantsMatchForPicker(activeGgufVariant, entry.quant);
     return (
       <div key={optionKey} className={downloadedRowShellClassName(isSelected)}>
-        <button
-          type="button"
-          {...hubModelList.getOptionProps(optionKey, isSelected)}
-          onClick={() =>
-            onSelect(entry.repoId, {
-              source: "hub",
-              isLora: false,
-              ggufVariant: entry.quant,
-              isDownloaded: true,
-            })
-          }
-          className={cn(
-            "flex min-w-0 flex-1 items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45",
-            downloadedRowButtonClassName,
-          )}
-          title={`${entry.repoId} (${entry.quant})`}
-        >
-          <span className="flex min-w-0 flex-1 items-baseline">
-            {owner && !isUnslothOwner(owner) ? (
-              <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-ui-13 text-muted-foreground/90">
-                <span className="truncate">{owner}</span>
-                <span className="shrink-0 text-muted-foreground/45">/</span>
-              </span>
-            ) : null}
-            <span className="min-w-0 flex-1 truncate">{name}</span>
-            {isLoaded && (
-              <DotTag
-                tone="success"
-                label="Loaded"
-                className="ml-2 h-[18px] shrink-0 gap-1 rounded-md px-1.5"
-                dotClassName="size-[5px]"
-              />
-            )}
-          </span>
-          {/* Same quant column as the sections below. */}
-          <span
-            className={cn(
-              "flex shrink-0 items-baseline font-mono text-ui-10",
-              META_COLUMN.quant,
-            )}
-          >
-            <span className="max-w-full truncate rounded-md bg-black/[0.06] px-1.5 py-px text-muted-foreground dark:bg-white/[0.1]">
-              {entry.quant}
-            </span>
-          </span>
-        </button>
+        {/* Through ModelRow, so a pinned quant lands in the same columns as
+            the rows below it. */}
+        <div className="min-w-0 flex-1">
+          <ModelRow
+            label={entry.repoId}
+            tooltipText={`${entry.repoId} (${entry.quant})`}
+            meta="GGUF"
+            quantChip={entry.quant}
+            alignMeta="device"
+            selected={isSelected}
+            loaded={isLoaded}
+            optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+            onClick={() =>
+              onSelect(entry.repoId, {
+                source: "hub",
+                isLora: false,
+                ggufVariant: entry.quant,
+                isDownloaded: true,
+              })
+            }
+            vramStatus={null}
+            className={downloadedRowButtonClassName}
+          />
+        </div>
         <span className={ROW_ACTIONS_CLASS}>
           {onConfigure && (
             <ModelLoadSettingsAction
