@@ -103,6 +103,13 @@ const toast: any = Object.assign(
 );
 
 async function tryAdoptServerActiveModel() { return false; }
+// Upserts the loaded model into the catalog; undefined here made a successful load
+// throw, which the sweep then read as a failure.
+function syncModelCapabilities(id: string, resp: any) {
+  if (!STORE.models.some((m: any) => m.id === id)) {
+    STORE.setModels([...STORE.models, { id, name: resp?.display_name ?? id }]);
+  }
+}
 function resolveSpeculativeSettingsForLoad() {
   return { speculativeType: null, specDraftNMax: 0 };
 }
