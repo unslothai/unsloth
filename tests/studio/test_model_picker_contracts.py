@@ -1982,3 +1982,65 @@ def test_clearing_the_log_keeps_a_request_that_is_still_running():
     zero and the finish or fail that follows has no entry left to land on."""
     monitor = " ".join(_read_backend("core/inference/api_monitor.py").split())
     assert 'if entry.shared or entry.subject != subject or entry.status == "running"' in monitor
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test hooks the Playwright driver depends on.
+#
+# tests/studio/playwright_model_config.py drives the picker through these exact
+# attributes and accessible names. Renaming one is a source-only edit that type
+# checks, lints and passes every unit test, and then fails a 25-minute browser job
+# with "selector not found" -- which is how the collapsed-row regression (#7736)
+# sat on main. Pin them here so that break costs two seconds instead.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_picker_rows_keep_their_automation_attributes():
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    # On the row button itself, not a wrapper: the driver scopes row text to it.
+    assert '"data-model-picker-option": true;' in pickers
+    assert '"data-model-picker-option": true,' in pickers
+    assert "data-model-picker-search-input" in pickers
+    assert "data-model-picker-list" in pickers
+
+
+def test_picker_popover_and_trigger_keep_their_tour_hooks():
+    chat = _read("features/chat/chat-page.tsx")
+    assert 'chat-model-selector-popover' in chat
+    assert 'dataTour="chat-model-selector"' in chat or "chat-model-selector" in chat
+
+
+def test_run_settings_gear_label_names_its_model():
+    """The driver cannot reach the gear through the row -- it is a sibling at 2 of its
+    render sites and an uncle at the rest -- so it matches on this label, and the model
+    name in it is what keeps it off another row's gear."""
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert "Inference settings for ${" in pickers
+    action = _read(
+        "features/model-picker/components/model-selector/model-load-settings-action.tsx"
+    )
+    assert "aria-label={ariaLabel}" in action
+
+
+def test_a_multi_quant_parent_row_still_has_no_gear():
+    """The driver reads the absence of a gear as "this row expands rather than loads".
+    Give the parent row a gear and that inference silently inverts."""
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert 'aria-hidden="true"' in pickers
+    assert "w-[42px]" in pickers
+
+
+def test_run_settings_page_keeps_its_identifying_controls():
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # How the driver knows run-settings actually opened.
+    assert '"Back to model list"' in page or "Back to model list" in page
+    assert 'ariaLabel="Context Length"' in page
+    assert 'aria-label="Context Length"' in page
+    assert ">\n            Reset" in page or "Reset" in page
+
+
+def test_the_primary_action_keeps_its_four_labels():
+    """The driver sweeps these names to find the one button the panel shows."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    for label in ('"Save settings"', '"Forget settings"', '"Reload model"', '"Load model"'):
+        assert label in page, label
