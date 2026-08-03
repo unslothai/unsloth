@@ -2515,8 +2515,7 @@ def test_identical_variant_scans_in_flight_run_once(monkeypatch):
 
     async def drive():
         pending = [
-            asyncio.ensure_future(GV.get_gguf_variants_response("/models/x"))
-            for _ in range(8)
+            asyncio.ensure_future(GV.get_gguf_variants_response("/models/x")) for _ in range(8)
         ]
         await asyncio.sleep(0.1)
         release.set()
