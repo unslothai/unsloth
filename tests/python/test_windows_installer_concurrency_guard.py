@@ -162,6 +162,51 @@ function Get-StudioProcessWorkingDirectories {{
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
+def test_attached_quoted_junction_path_is_reported(tmp_path: Path, shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    detector = _process_helpers(source)
+    venv = tmp_path / "physical" / "unsloth_studio"
+    worker = venv / "Lib" / "worker.py"
+    worker.parent.mkdir(parents = True)
+    worker.write_text("pass", encoding = "utf-8")
+    alias = tmp_path / "Alias Root"
+    subprocess.run(
+        [os.environ["COMSPEC"], "/d", "/c", "mklink", "/J", str(alias), str(venv)],
+        check = True,
+        capture_output = True,
+        text = True,
+    )
+    alias_worker = alias / "Lib" / "worker.py"
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+function Get-Process {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) return @() }}
+function Get-CimInstance {{
+    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
+    [pscustomobject]@{{
+        ProcessId = 4242
+        Name = "python.exe"
+        ExecutablePath = $env:TEST_BASE_PYTHON
+        CommandLine = ('"' + $env:TEST_BASE_PYTHON + '" --script="' + $env:TEST_ALIAS_SCRIPT + '"')
+    }}
+}}
+{detector}
+function Get-StudioProcessWorkingDirectories {{
+    param([string]$VenvPath)
+    return @{{}}
+}}
+@(Get-RunningStudioVenvProcesses -VenvPath $env:TEST_VENV) |
+    ForEach-Object {{ Write-Output $_.Id }}
+"""
+    env = os.environ.copy()
+    env["TEST_VENV"] = str(venv)
+    env["TEST_ALIAS_SCRIPT"] = str(alias_worker)
+    env["TEST_BASE_PYTHON"] = shutil.which("python") or "python.exe"
+    assert _run_powershell(shell, script, env) == "4242"
+
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
 def test_command_line_sibling_venv_is_not_reported(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     detector = _process_helpers(source)

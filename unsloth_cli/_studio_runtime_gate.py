@@ -283,6 +283,50 @@ def _command_line_references_resolved_windows_path(
     return False
 
 
+def _managed_windows_process_working_directories(managed_python: Path) -> dict[int, str]:
+    """Read process CWDs with psutil from the managed environment."""
+
+    import json
+    import subprocess
+
+    script = """
+import json
+import psutil
+
+working_directories = {}
+for process in psutil.process_iter():
+    try:
+        working_directories[str(process.pid)] = process.cwd()
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        pass
+print(json.dumps(working_directories))
+"""
+    result = subprocess.run(
+        [str(managed_python), "-I", "-c", script],
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        check = False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(
+            "Could not inspect process working directories before Studio update "
+            f"with the managed Python: {detail}"
+        )
+    try:
+        payload = json.loads(result.stdout or "{}")
+        if not isinstance(payload, dict):
+            raise ValueError("expected a JSON object")
+        return {int(process_id): str(path) for process_id, path in payload.items()}
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        raise RuntimeError(
+            f"Could not decode managed process working directories before Studio update: {error}"
+        ) from error
+
+
 def ensure_managed_environment_is_idle(studio_home: Path) -> None:
     """Reject a Windows update while another process consumes managed Studio files."""
 
@@ -290,14 +334,14 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         return
 
     import json
+    import shutil
     import subprocess
 
+    psutil = None
     try:
         import psutil
-    except ImportError as error:
-        raise RuntimeError(
-            "Could not inspect process working directories before Studio update: psutil is unavailable"
-        ) from error
+    except ImportError:
+        pass
 
     venv = studio_home / "unsloth_studio"
     protected_root_spellings = tuple(
@@ -337,6 +381,33 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             )
         )
     )
+
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    trusted_shell_candidates = [
+        system_root / "System32" / "cmd.exe",
+        system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+    ]
+    pwsh = shutil.which("pwsh.exe")
+    if pwsh:
+        trusted_shell_candidates.append(Path(pwsh))
+    trusted_shell_spellings = tuple(
+        dict.fromkeys(
+            spelling
+            for candidate in trusted_shell_candidates
+            if candidate.is_file()
+            for spelling in (str(candidate.absolute()), _resolved_windows_path(candidate))
+        )
+    )
+
+    fallback_working_directories: dict[int, str] = {}
+    if psutil is None:
+        managed_python = venv / "Scripts" / "python.exe"
+        if not managed_python.is_file():
+            raise RuntimeError(
+                "Could not inspect process working directories before Studio update: "
+                f"psutil is unavailable and {managed_python} is missing"
+            )
+        fallback_working_directories = _managed_windows_process_working_directories(managed_python)
 
     script = (
         "$ErrorActionPreference='Stop';"
@@ -404,17 +475,93 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             and arguments[3].casefold() == "update"
         )
 
-    def is_verified_update_ancestor(process_id: int, image: str) -> bool:
+    def is_trusted_shell_image(image: str) -> bool:
+        try:
+            image_key = _resolved_windows_path(Path(image))
+        except OSError:
+            image_key = image
+        return any(
+            image_key.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
+            for path in trusted_shell_spellings
+        )
+
+    def command_invokes_only_update_through_shim(command_line: str) -> bool:
+        try:
+            arguments = _windows_command_line_arguments(command_line)
+        except OSError:
+            return False
+        argument_sets = [arguments]
+        for argument in arguments[1:]:
+            try:
+                nested = _windows_command_line_arguments(argument)
+            except OSError:
+                continue
+            if nested != [argument]:
+                argument_sets.append(nested)
+        for candidate_arguments in argument_sets:
+            for index, argument in enumerate(candidate_arguments[:-2]):
+                candidate = argument.strip().strip('"').strip("'")
+                if not (
+                    is_protected_shim_image(candidate)
+                    and candidate_arguments[index + 1].casefold() == "studio"
+                    and candidate_arguments[index + 2].casefold() == "update"
+                ):
+                    continue
+                for other_index, other in enumerate(candidate_arguments):
+                    if other_index == index:
+                        continue
+                    if _command_line_references_resolved_windows_path(
+                        other,
+                        protected_root_spellings,
+                        protected_file_spellings,
+                        None,
+                    ):
+                        return False
+                return True
+        return False
+
+    def is_verified_update_shell(image: str, command_line: str) -> bool:
+        if not is_trusted_shell_image(image):
+            return False
+        try:
+            arguments = [
+                argument.casefold() for argument in _windows_command_line_arguments(command_line)
+            ]
+        except OSError:
+            return False
+        shell_name = Path(image).name.casefold()
+        noninteractive = "/c" in arguments if shell_name == "cmd.exe" else "-command" in arguments
+        return noninteractive and command_invokes_only_update_through_shim(command_line)
+
+    def is_verified_update_ancestor(
+        process_id: int,
+        image: str,
+        *,
+        allow_shell: bool = False,
+    ) -> bool:
         process = process_by_pid.get(process_id)
         command_line = str(process.get("CommandLine") or "") if process is not None else ""
-        return is_protected_shim_image(image) or is_verified_update_redirector(image, command_line)
+        return (
+            is_protected_shim_image(image)
+            or is_verified_update_redirector(image, command_line)
+            or (allow_shell and is_verified_update_shell(image, command_line))
+        )
+
+    def process_is_protected_shim(process_id: int) -> bool:
+        process = process_by_pid.get(process_id)
+        return bool(
+            process
+            and process.get("ExecutablePath")
+            and is_protected_shim_image(str(process["ExecutablePath"]))
+        )
 
     # The user-facing launcher can chain StudioHome\bin\unsloth.exe through
     # the venv's Python redirector before base Python runs the command. Exempt
-    # only that exact update redirector and exact shim ancestors; stop at the
-    # first process that does not have either verified role.
+    # only verified update redirectors, shims, and their one direct launcher
+    # shell; stop at the first process that does not have one of those roles.
+    descendant_pid = current_pid
     try:
-        ancestor = psutil.Process(current_pid).parent()
+        ancestor = psutil.Process(current_pid).parent() if psutil is not None else None
     except (psutil.Error, OSError):
         ancestor = None
     for _ in range(8):
@@ -425,9 +572,14 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             ancestor_image = ancestor.exe()
         except (psutil.Error, OSError):
             break
-        if not is_verified_update_ancestor(ancestor_pid, ancestor_image):
+        if not is_verified_update_ancestor(
+            ancestor_pid,
+            ancestor_image,
+            allow_shell = process_is_protected_shim(descendant_pid),
+        ):
             break
         excluded_pids.add(ancestor_pid)
+        descendant_pid = ancestor_pid
         try:
             ancestor = ancestor.parent()
         except (psutil.Error, OSError):
@@ -446,7 +598,11 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             break
         if parent_pid not in excluded_pids:
             parent_image = parent.get("ExecutablePath")
-            if not parent_image or not is_verified_update_ancestor(parent_pid, str(parent_image)):
+            if not parent_image or not is_verified_update_ancestor(
+                parent_pid,
+                str(parent_image),
+                allow_shell = process_is_protected_shim(descendant_pid),
+            ):
                 break
             excluded_pids.add(parent_pid)
         descendant_pid = parent_pid
@@ -477,10 +633,14 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
                 for image in image_spellings
             )
         command_line = process.get("CommandLine") or ""
-        try:
-            working_directory = Path(psutil.Process(process_id).cwd())
-        except (psutil.Error, OSError):
-            working_directory = None
+        if psutil is not None:
+            try:
+                working_directory = Path(psutil.Process(process_id).cwd())
+            except (psutil.Error, OSError):
+                working_directory = None
+        else:
+            fallback_cwd = fallback_working_directories.get(process_id)
+            working_directory = Path(fallback_cwd) if fallback_cwd else None
         command_line_match = bool(command_line) and _command_line_references_resolved_windows_path(
             command_line,
             protected_root_spellings,

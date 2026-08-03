@@ -195,9 +195,10 @@ def test_terminal_update_only_excludes_its_verified_python_redirector(tmp_path, 
     redirector_pid = os.getpid() + 1_100_000
     shim_pid = redirector_pid + 1
     shell_pid = shim_pid + 1
+    system_cmd = str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe")
     base_process = {
         "Name": "python.exe",
-        "ExecutablePath": str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"),
+        "ExecutablePath": system_cmd,
         "CommandLine": r"python.exe worker.py",
     }
     redirector_command = f'"{managed_python}" "{outer_shim}" studio update --local'
@@ -226,12 +227,14 @@ def test_terminal_update_only_excludes_its_verified_python_redirector(tmp_path, 
             base_process,
             ProcessId = shell_pid,
             ParentProcessId = 0,
-            Name = "bash.exe",
+            Name = "cmd.exe",
+            ExecutablePath = system_cmd,
+            CommandLine = f'cmd.exe /d /c ""{outer_shim}" studio update --local"',
         ),
     ]
     shell_process = SimpleNamespace(
         pid = shell_pid,
-        exe = lambda: str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"),
+        exe = lambda: system_cmd,
         parent = lambda: None,
     )
     shim_process = SimpleNamespace(
@@ -265,6 +268,32 @@ def test_terminal_update_only_excludes_its_verified_python_redirector(tmp_path, 
 
     gate.ensure_managed_environment_is_idle(studio_home)
 
+    powershell = str(
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    payload[3]["Name"] = "powershell.exe"
+    payload[3]["ExecutablePath"] = powershell
+    payload[3]["CommandLine"] = (
+        f"powershell.exe -NoProfile -Command \"& '{outer_shim}' studio update --local\""
+    )
+    gate.ensure_managed_environment_is_idle(studio_home)
+
+    payload[3]["Name"] = "cmd.exe"
+    payload[3]["ExecutablePath"] = system_cmd
+    payload[3]["CommandLine"] = f'cmd.exe /d /c ""{outer_shim}" studio update --local"'
+    valid_shell_command = payload[3]["CommandLine"]
+    payload[3]["CommandLine"] = f'cmd.exe /d /k ""{outer_shim}" studio update --local"'
+    with pytest.raises(RuntimeError, match = "managed Studio environment is in use"):
+        gate.ensure_managed_environment_is_idle(studio_home)
+    payload[3]["CommandLine"] = f'cmd.exe /d /c ""{outer_shim}" studio update --local "{worker}""'
+    with pytest.raises(RuntimeError, match = "managed Studio environment is in use"):
+        gate.ensure_managed_environment_is_idle(studio_home)
+    payload[3]["CommandLine"] = valid_shell_command
+
     payload[1]["CommandLine"] = f'"{managed_python}" "{outer_shim}" studio --api-only'
     with pytest.raises(RuntimeError, match = "managed Studio environment is in use"):
         gate.ensure_managed_environment_is_idle(studio_home)
@@ -285,6 +314,70 @@ def test_terminal_update_only_excludes_its_verified_python_redirector(tmp_path, 
     )
     with pytest.raises(RuntimeError, match = "managed Studio environment is in use"):
         gate.ensure_managed_environment_is_idle(studio_home)
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
+def test_base_cli_uses_managed_psutil_fallback(tmp_path, monkeypatch):
+    studio_home = tmp_path / "studio"
+    managed_python = studio_home / "unsloth_studio" / "Scripts" / "python.exe"
+    worker = studio_home / "unsloth_studio" / "Lib" / "worker.py"
+    managed_python.parent.mkdir(parents = True)
+    managed_python.write_bytes(b"MZ")
+    worker.parent.mkdir(parents = True)
+    worker.write_text("pass", encoding = "utf-8")
+
+    current_pid = os.getpid()
+    consumer_pid = current_pid + 1_050_000
+    base_process = {
+        "ParentProcessId": 0,
+        "Name": "python.exe",
+        "ExecutablePath": str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"),
+        "CommandLine": "python.exe",
+    }
+    payload = [dict(base_process, ProcessId = current_pid)]
+    working_directories = {current_pid: str(tmp_path)}
+
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(
+        gate,
+        "_managed_windows_process_working_directories",
+        lambda python: working_directories if python == managed_python else {},
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps(payload),
+            stderr = "",
+        ),
+    )
+
+    gate.ensure_managed_environment_is_idle(studio_home)
+
+    payload.append(
+        dict(
+            base_process,
+            ProcessId = consumer_pid,
+            CommandLine = "python.exe worker.py",
+        )
+    )
+    working_directories[consumer_pid] = str(worker.parent)
+    with pytest.raises(RuntimeError, match = "managed Studio environment is in use"):
+        gate.ensure_managed_environment_is_idle(studio_home)
+
+
+def test_managed_process_cwd_fallback_uses_isolated_managed_python(tmp_path, monkeypatch):
+    managed_python = tmp_path / "Scripts" / "python.exe"
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return SimpleNamespace(returncode = 0, stdout = '{"42":"C:/work"}', stderr = "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert gate._managed_windows_process_working_directories(managed_python) == {42: "C:/work"}
+    assert captured["command"][:2] == [str(managed_python), "-I"]
 
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows named mutexes are required")
