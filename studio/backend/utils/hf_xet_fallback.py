@@ -401,8 +401,18 @@ def start_watchdog(**kwargs: Any) -> Any:
     silently never start and a stalled Xet worker would never be killed or retried over HTTP. That
     is the feature being entirely off, not degraded. Filtering here keeps newer knobs live on a
     newer zoo without breaking the floor, and makes the NEXT new kwarg a no-op rather than a repeat
-    of this bug. Dropping the pre-byte budget on 2026.8.1 is safe: that release resets its timer
-    whenever the child owns no ``.incomplete``, which is exactly the connect phase.
+    of this bug.
+
+    Dropping the pre-byte budget on 2026.8.1 costs less than it looks. That release does reset its
+    timer whenever the child owns no ``.incomplete``, but huggingface_hub opens the partial BEFORE
+    it calls ``xet_get`` (``file_download.py`` opens ``incomplete_path`` and invokes ``xet_get``
+    inside that ``with``), and the floor counts a partial by presence rather than size -- so a
+    hf_xet hang still sits behind an open zero-byte partial and still trips the floor's 180s data
+    clock. Verified against the released wheel: wedged inside ``xet_get`` trips, wedged before the
+    open does not. What stays uncovered there is the metadata phase, which is where
+    ``snapshot_download`` calls ``repo_info`` with no timeout. That gap predates this shim and the
+    connect clock closes it only once a zoo carrying it is released; passing the kwarg through
+    early would not close it, it would disable the watchdog outright.
     """
     impl = _shared.start_watchdog if _load_shared() else _degraded_start_watchdog
     return impl(**_supported_kwargs(impl, kwargs))
