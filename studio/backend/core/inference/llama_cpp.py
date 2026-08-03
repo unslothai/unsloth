@@ -9314,13 +9314,9 @@ class LlamaCppBackend:
                     # offloads layers to host and decode collapses ~3x (#6718). Retry the fit
                     # at fewer slots, keeping the largest count that stays fully on GPU and the
                     # chosen context. Skips tensor mode / Metal / KV-inestimable paths.
-                    # An extras-owned MTP already cut n_parallel to 1 above, so this fit
-                    # would be skipped and the slots the startup retry hands back would
-                    # never have been budgeted. Size against that count instead.
-                    _fit_slots = n_parallel if n_parallel > 1 else _pv_extras_clamped_slots
                     if (
                         use_fit
-                        and _fit_slots > 1
+                        and n_parallel > 1
                         and gpus
                         and self._can_estimate_kv()
                         and effective_ctx > 0
@@ -9334,7 +9330,7 @@ class LlamaCppBackend:
                             + _cc_bytes(effective_ctx)
                         )
                         _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
-                            _fit_slots,
+                            n_parallel,
                             effective_ctx,
                             gpus,
                             total_by_idx,
@@ -9353,16 +9349,11 @@ class LlamaCppBackend:
                             logger.info(
                                 "Serving slots reduced %d -> %d to keep the model on GPU "
                                 "(avoid --fit offload) at context %d.",
-                                _fit_slots,
+                                n_parallel,
                                 _slots,
                                 effective_ctx,
                             )
-                            if n_parallel > 1:
-                                gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
-                            else:
-                                # MTP owns this launch at its single slot, so only cap what
-                                # the startup retry may hand back; placement stays as-is.
-                                _pv_extras_clamped_slots = max(1, _slots)
+                            gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
 
                     # MTP reserve at the final context, for the logs below.
                     _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
@@ -10564,7 +10555,13 @@ class LlamaCppBackend:
                         # above makes this retry genuinely non-MTP, so hand those back
                         # too, or --parallel 1 sticks and the requested-vs-requested
                         # dedupe keeps every later load on the same one-slot server.
-                        _mtp_clamped_slots = max(_mtp_clamped_slots, _pv_extras_clamped_slots)
+                        # Only where no GPU had to admit them: that clamp runs before the
+                        # slot fit, so on a GPU box the count was never budgeted and the
+                        # retry would size buffers nothing approved.
+                        if not _detected_gpus:
+                            _mtp_clamped_slots = max(
+                                _mtp_clamped_slots, _pv_extras_clamped_slots
+                            )
                     fallback_cmd = cmd[:_spec_start] + ["--spec-default"] + _fb_tail
                     # fallback_cmd inherits the MTP slot clamp, but this retry is not
                     # MTP: hand back the slots the KV fit was sized for, or --parallel N

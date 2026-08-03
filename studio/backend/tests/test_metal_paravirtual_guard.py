@@ -1336,55 +1336,33 @@ def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
     ) == ["--top-k", "40"]
 
 
-def test_the_slots_the_retry_hands_back_are_budgeted_first():
-    """The extras clamp cuts n_parallel to 1 before the GPU slot fit, whose gate needs
-    >1, so the fit used to be skipped entirely and the retry handed back a count nothing
-    had admitted: on a tight placement that launches buffers for N slots and spills or
-    OOMs. The fit now sizes against that count and caps it, without moving the MTP
-    launch off its single slot."""
-    fit = _if_block(lambda t: "_fit_slots" in _names(t))
-    src = ast.unparse(fit)
-    assert "_slots_that_fit_on_gpu(_fit_slots" in src.replace("\n", "").replace(" ", "")
-    # The cap lands on the retry's count; n_parallel keeps the MTP clamp.
-    assert "_pv_extras_clamped_slots = max(1, _slots)" in src
-    # ...and the count sized is the clamped-away one, not the launch's single slot.
-    assert (
-        "_fit_slots = n_parallel if n_parallel > 1 else _pv_extras_clamped_slots"
-        in _load_model_source()
-    )
+def test_the_retry_only_hands_back_slots_no_gpu_had_to_admit():
+    """The extras clamp cuts n_parallel to 1 before the GPU slot fit, whose gate needs >1,
+    so on a GPU box that count is never admitted and restoring it would size buffers
+    nothing approved. Off GPU there is nothing to budget, so the slots come back."""
+    def _restored(detected_gpus):
+        scope = {
+            "cmd": ["llama-server", "--parallel", "1", "--spec-type", "draft-mtp"],
+            "_spec_start": 3,
+            "spec_flags": [],
+            "_fb_tail": ["--spec-type", "draft-mtp"],
+            "extra_args": ["--spec-type", "draft-mtp"],
+            "_launch_spec_env": {},
+            "env": {},
+            "n_parallel": 1,
+            "_pv_extras_clamped_slots": 4,
+            "_mtp_clamped_slots": 0,
+            "_detected_gpus": detected_gpus,
+            "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
+            "strip_shadowing_flags": llama_cpp.strip_shadowing_flags,
+            "_SPEC_ENV_VARS": llama_cpp._SPEC_ENV_VARS,
+            "logger": llama_cpp.logger,
+        }
+        exec(ast.unparse(_if_block(_is_retry_spec_strip)), scope)
+        return scope["_mtp_clamped_slots"]
 
-    scope = {
-        "_fit_slots": 8,
-        "use_fit": True,
-        "gpus": [(0, 8 << 30)],
-        "effective_ctx": 8192,
-        "n_parallel": 1,  # already clamped for MTP
-        "_pv_extras_clamped_slots": 8,  # what the caller asked for
-        "gpu_indices": None,
-        "model_size_fit": 1,
-        "_compute_buffer_pipeline": 0,
-        "total_by_idx": {0: 8 << 30},
-        "cache_type_kv": None,
-        "_pin_fraction": 0.9,
-        "_pipeline_overhead_bytes": 0,
-        "_layer_min_gpus": 1,
-        "_effective_ubatch": 512,
-        "swa_full": False,
-        "planned_kv_unified": True,
-        "planned_flash_attn": False,
-        "_mtp_bytes": lambda _c: 0,
-        "_cc_bytes": lambda _c: 0,
-        "_cc_split_extra": lambda _c: 0,
-        "logger": llama_cpp.logger,
-        # Only two of the eight slots fit.
-        "self": types.SimpleNamespace(
-            _can_estimate_kv = lambda: True,
-            _slots_that_fit_on_gpu = lambda *a, **k: ([0], False, 2),
-        ),
-    }
-    exec(ast.unparse(fit), {}, scope)
-    assert scope["_pv_extras_clamped_slots"] == 2, "the retry could restore unbudgeted slots"
-    assert scope["n_parallel"] == 1, "the MTP launch must keep its single slot"
+    assert _restored([]) == 4, "a CPU launch must get its slots back"
+    assert _restored([(0, 8 << 30)]) == 0, "a GPU launch must not restore unbudgeted slots"
 
 
 def test_the_extras_own_clamp_comes_back_from_the_startup_retry_too():
@@ -1404,6 +1382,7 @@ def test_the_extras_own_clamp_comes_back_from_the_startup_retry_too():
         # What the extras clamp displaced, and what the Unsloth-resolved clamp holds.
         "_pv_extras_clamped_slots": 4,
         "_mtp_clamped_slots": 0,
+        "_detected_gpus": [],  # CPU launch: nothing had to budget the slots
         "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
         "strip_shadowing_flags": llama_cpp.strip_shadowing_flags,
         "_SPEC_ENV_VARS": llama_cpp._SPEC_ENV_VARS,
