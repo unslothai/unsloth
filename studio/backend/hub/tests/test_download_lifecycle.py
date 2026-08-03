@@ -56,6 +56,10 @@ def test_resolve_effective_use_xet(monkeypatch):
 def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    # _ImmediateThread mutates the stdlib threading module, which the shared Zoo watchdog
+    # also imports, so the watchdog would run INLINE and block in Event.wait() before
+    # finalize_worker_exit could ever set its stop flag. Stub the seam instead.
+    monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
     register_worker = download_lifecycle.register_worker
 
     for repo_type, repo_id, variant, expected_args in (
@@ -115,6 +119,10 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
 def test_http_failure_remains_terminal(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    # _ImmediateThread mutates the stdlib threading module, which the shared Zoo watchdog
+    # also imports, so the watchdog would run INLINE and block in Event.wait() before
+    # finalize_worker_exit could ever set its stop flag. Stub the seam instead.
+    monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
     register_worker = download_lifecycle.register_worker
     registry = download_registry.DownloadRegistry()
     key = download_registry.normalize_repo_key("Org/Data")

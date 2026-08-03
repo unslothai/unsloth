@@ -636,6 +636,15 @@ def _record_xet_failure(reason: str, logger) -> None:
         logger.debug("could not record Xet outcome: %s", exc)
 
 
+def _record_xet_success(logger) -> None:
+    """Tell the health tracker a Xet transfer completed here, which resets the failure streak."""
+    try:
+        from utils.hf_xet_fallback import record_xet_outcome
+        record_xet_outcome(True, "Xet download completed")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("could not record Xet outcome: %s", exc)
+
+
 def _start_stall_watchdog(
     registry: download_registry.DownloadRegistry,
     key: str,
@@ -686,6 +695,11 @@ def _start_stall_watchdog(
             cache_dir = cache_dir,
             on_stall = _on_stall,
             child_pid = proc.pid,
+            # Scope the measurement to partials this worker actually holds open. Without it the
+            # shared helper stays repo-wide and child_pid does nothing, so two same-transport GGUF
+            # variants of one repo (which the registry deliberately allows to run concurrently)
+            # reset each other's stall timer and a hung variant never falls back.
+            watch_new_partials_only = True,
             xet_disabled = False,
         )
     except Exception as exc:  # noqa: BLE001
@@ -763,6 +777,11 @@ def register_worker(
             if stalled:
                 # A machine whose Xet transfers hang is one that should stop starting on Xet.
                 _record_xet_failure(stalled[0], logger)
+            elif transport == download_registry.TRANSPORT_XET and state == "complete":
+                # Clear the streak, so "two failures in a row" means in a row. Without this a
+                # stall today and another next week are counted as consecutive despite every
+                # download in between succeeding, pinning Auto to HTTP for no reason.
+                _record_xet_success(logger)
             # XET-to-HTTP recovery: when a non-cancelled XET worker fails and
             # HTTP is available, attempt one automatic retry over HTTP.  The
             # transport check is the recursion guard: an HTTP worker that errors

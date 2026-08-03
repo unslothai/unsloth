@@ -401,6 +401,15 @@ def hf_hub_download_with_xet_fallback(
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)
+    # Omit rather than forward None. No production caller passes these, and an older unsloth_zoo
+    # takes the value literally: its watchdog hands `interval` straight to Event.wait(), where None
+    # blocks forever, so a hung Xet download would never fall back. Omitting them also lets the
+    # shared layer pick its own per-transport defaults instead of freezing one here.
+    optional: dict[str, Any] = {}
+    if stall_timeout is not None:
+        optional["stall_timeout"] = stall_timeout
+    if interval is not None:
+        optional["interval"] = interval
     return _shared_hf_hub_download_with_xet_fallback(
         repo_id,
         filename,
@@ -408,8 +417,7 @@ def hf_hub_download_with_xet_fallback(
         cancel_event = cancel_event,
         repo_type = repo_type,
         revision = revision,
-        stall_timeout = stall_timeout,
-        interval = interval,
+        **optional,
         grace_period = grace_period,
         on_status = on_status,
         force_download = force_download,

@@ -104,20 +104,6 @@ export interface TransportStatus {
   resumable: boolean;
 }
 
-export interface DownloadTransportCapability {
-  available: boolean | null;
-  reason: string | null;
-}
-
-export interface DownloadTransportCapabilities {
-  http: DownloadTransportCapability;
-  xet: DownloadTransportCapability;
-  // What the backend's "auto" mode resolves to right now, and why. Computed server-side because
-  // only the backend can see this machine's RAM, hf_xet build, and recent Xet failures.
-  auto_resolves_to?: "xet" | "http";
-  auto_reason?: string | null;
-}
-
 export interface DownloadProgressResponse {
   downloaded_bytes: number;
   completed_bytes: number;
@@ -137,68 +123,37 @@ export type GgufDownloadProgressOptions = DownloadProgressOptions & {
   variant: string;
 };
 
-const DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK: DownloadTransportCapabilities = {
-  http: { available: true, reason: null },
-  xet: {
-    available: null,
-    reason: "Couldn't verify Xet support with the Unsloth backend.",
-  },
-  // Unknown backend state: stay on Xet, since the download-time ladder still falls back to HTTP
-  // if Xet turns out to be broken here.
-  auto_resolves_to: "xet",
-  auto_reason: null,
-};
-let downloadTransportCapabilitiesCache: DownloadTransportCapabilities | null =
-  null;
+export type {
+  DownloadTransportCapability,
+  DownloadTransportCapabilities,
+} from "./transport-capabilities";
+import {
+  DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK,
+  normalizeDownloadTransportCapabilities,
+} from "./transport-capabilities";
+import type { DownloadTransportCapabilities } from "./transport-capabilities";
+
+// The Auto verdict is dynamic: a stalled transfer demotes this machine mid-session. An
+// indefinite cache would keep resolving Auto to the pre-stall answer until the page reloads, so
+// give it the same TTL shape activeModelDownloadsCache already uses. Refreshing is cheap because
+// the endpoint answers from cached health without a network probe.
+const DOWNLOAD_TRANSPORT_CAPABILITIES_TTL_MS = 30_000;
+let downloadTransportCapabilitiesCache: {
+  expiresAt: number;
+  capabilities: DownloadTransportCapabilities;
+} | null = null;
 let downloadTransportCapabilitiesInFlight: Promise<DownloadTransportCapabilities> | null =
   null;
-
-function normalizeDownloadTransportCapability(
-  value: unknown,
-  fallback: DownloadTransportCapability,
-): DownloadTransportCapability {
-  if (!value || typeof value !== "object") {
-    return fallback;
-  }
-  const candidate = value as { available?: unknown; reason?: unknown };
-  return {
-    available:
-      typeof candidate.available === "boolean"
-        ? candidate.available
-        : fallback.available,
-    reason:
-      typeof candidate.reason === "string"
-        ? candidate.reason
-        : candidate.reason === null
-          ? null
-          : fallback.reason,
-  };
-}
-
-function normalizeDownloadTransportCapabilities(
-  value: unknown,
-): DownloadTransportCapabilities {
-  if (!value || typeof value !== "object") {
-    return DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK;
-  }
-  const candidate = value as { http?: unknown; xet?: unknown };
-  return {
-    http: normalizeDownloadTransportCapability(candidate.http, {
-      available: true,
-      reason: null,
-    }),
-    xet: normalizeDownloadTransportCapability(
-      candidate.xet,
-      DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK.xet,
-    ),
-  };
-}
 
 export async function getDownloadTransportCapabilities(options: {
   force?: boolean;
 } = {}): Promise<DownloadTransportCapabilities> {
-  if (!options.force && downloadTransportCapabilitiesCache) {
-    return downloadTransportCapabilitiesCache;
+  if (
+    !options.force &&
+    downloadTransportCapabilitiesCache &&
+    downloadTransportCapabilitiesCache.expiresAt > Date.now()
+  ) {
+    return downloadTransportCapabilitiesCache.capabilities;
   }
   if (!options.force && downloadTransportCapabilitiesInFlight) {
     return downloadTransportCapabilitiesInFlight;
@@ -207,7 +162,10 @@ export async function getDownloadTransportCapabilities(options: {
     .then(parseJsonOrThrow<unknown>)
     .then(normalizeDownloadTransportCapabilities)
     .then((capabilities) => {
-      downloadTransportCapabilitiesCache = capabilities;
+      downloadTransportCapabilitiesCache = {
+        expiresAt: Date.now() + DOWNLOAD_TRANSPORT_CAPABILITIES_TTL_MS,
+        capabilities,
+      };
       return capabilities;
     })
     .catch(() => DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK)
