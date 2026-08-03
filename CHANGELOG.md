@@ -52,6 +52,15 @@ rename the heading at release time.
 - New **Text to Rust** learning recipe demonstrates the Advanced custom check
   with a Python function that runs `cargo check`.
 
+## 2026.8.2
+
+### What's Changed
+
+- More efficient downloading. Auto XET to HTTP fallback after XET stalling.
+- UI designing and alignment improvements.
+- Chat UI and many other bug fixes.
+- A continued update from the 2026.7.6 Kimi K3 + DeepSeek-V4 0731 release
+
 ## 2026.8.1
 
 ### What's Changed
