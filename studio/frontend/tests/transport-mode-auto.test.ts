@@ -8,10 +8,9 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-// constants.ts only, deliberately: transport-preference.ts reaches lib/toast -> a .tsx component
-// barrel, which node's type stripping cannot load. It adds no decision logic of its own -- its
-// readStored() is exactly `isTransportMode(raw) ? raw : DEFAULT_TRANSPORT_MODE` -- so the storage
-// contract is fully pinned by the two exports tested here.
+// constants.ts only: transport-preference.ts reaches lib/toast -> a .tsx barrel node's type
+// stripping cannot load. It adds no decision logic (readStored() is exactly
+// `isTransportMode(raw) ? raw : DEFAULT_TRANSPORT_MODE`), so these two exports pin the contract.
 const {
   DEFAULT_TRANSPORT_MODE,
   RESOLVED_TRANSPORTS,
@@ -22,14 +21,14 @@ const {
 } = await import("../src/features/hub/download-manager/constants.ts");
 
 test("auto is the default transport preference", () => {
-  // The backend picks per machine (RAM, hf_xet build, recent Xet failures); a user who never
-  // touches this control is exactly the one who most needs that.
+  // The backend picks per machine (RAM, hf_xet build, recent Xet failures), and a user who never
+  // touches this control is the one who most needs that.
   assert.equal(DEFAULT_TRANSPORT_MODE, TRANSPORT.AUTO);
 });
 
 test("auto is a preference, not a transport a download can run on", () => {
-  // Only "xet"/"http" ever reach a .transport marker on disk: the marker records which writer
-  // produced a partial, and a resume picks its strategy from it.
+  // Only "xet"/"http" reach a .transport marker: it records which writer produced a partial, and
+  // a resume picks its strategy from it.
   assert.ok(TRANSPORT_MODES.includes(TRANSPORT.AUTO));
   assert.ok(!RESOLVED_TRANSPORTS.includes(TRANSPORT.AUTO as never));
   assert.ok(isResolvedTransport("xet"));
@@ -38,7 +37,7 @@ test("auto is a preference, not a transport a download can run on", () => {
 });
 
 test("a previously stored explicit preference is still valid", () => {
-  // Someone who deliberately pinned HTTP (or Xet) before this change must not be moved onto Auto:
+  // Someone who pinned HTTP (or Xet) before this change must not be moved onto Auto:
   // isTransportMode() accepting the old values is what keeps readStored() returning them.
   assert.ok(isTransportMode("http"));
   assert.ok(isTransportMode("xet"));

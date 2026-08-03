@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Transport-capability shapes and their wire normalization, kept OUT of api.ts on purpose: api.ts
-// imports the auth barrel, which the test runner cannot load, so anything defined there is
-// untestable. That is how a normalizer silently dropping the backend's Auto verdict shipped green.
+// Kept OUT of api.ts on purpose: api.ts imports the auth barrel, which the test runner cannot
+// load, so anything defined there is untestable. That is how a normalizer silently dropping the
+// backend's Auto verdict shipped green.
 
 export interface DownloadTransportCapability {
   available: boolean | null;
@@ -13,8 +13,8 @@ export interface DownloadTransportCapability {
 export interface DownloadTransportCapabilities {
   http: DownloadTransportCapability;
   xet: DownloadTransportCapability;
-  // What the backend's "auto" mode resolves to right now, and why. Computed server-side because
-  // only the backend can see this machine's RAM, hf_xet build, and recent Xet failures.
+  // What "auto" resolves to right now, and why. Server-side because only the backend can see this
+  // machine's RAM, hf_xet build, and recent Xet failures.
   auto_resolves_to?: "xet" | "http";
   auto_reason?: string | null;
 }
@@ -25,8 +25,7 @@ export const DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK: DownloadTransportCapabili
     available: null,
     reason: "Couldn't verify Xet support with the Unsloth backend.",
   },
-  // Unknown backend state: stay on Xet, since the download-time ladder still falls back to HTTP
-  // if Xet turns out to be broken here.
+  // Unknown backend state: stay on Xet, the download-time ladder still falls back to HTTP.
   auto_resolves_to: "xet",
   auto_reason: null,
 };
@@ -74,8 +73,7 @@ export function normalizeDownloadTransportCapabilities(
       DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK.xet,
     ),
     // Carry the backend's verdict through. Dropping these left effectiveTransportMode("auto")
-    // reading undefined, so Auto always resolved to Xet and the toggle always said "Xet" no
-    // matter what the machine's health actually was.
+    // reading undefined, so Auto always resolved to Xet whatever the machine's health was.
     auto_resolves_to:
       candidate.auto_resolves_to === "http" || candidate.auto_resolves_to === "xet"
         ? candidate.auto_resolves_to

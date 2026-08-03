@@ -95,9 +95,8 @@ export function apiStart(
   useXet: boolean,
   hfToken: string | null,
 ): Promise<DownloadStartResult> {
-  // `transport_mode` is already RESOLVED ("xet"/"http"), never "auto": effectiveTransportMode()
-  // asked the backend what auto means on this machine, and that same answer has to reach both the
-  // worker and the on-disk transport marker.
+  // Already RESOLVED ("xet"/"http"), never "auto": effectiveTransportMode() asked the backend what
+  // auto means here, and that answer must reach both the worker and the on-disk transport marker.
   const transport_mode = useXet ? TRANSPORT.XET : TRANSPORT.HTTP;
   return req.kind === DOWNLOAD_KIND.DATASET
     ? startDatasetDownload({
@@ -186,16 +185,14 @@ export async function effectiveTransportMode(
   if (preferred === TRANSPORT.HTTP) {
     return TRANSPORT.HTTP;
   }
-  // Probe only for Auto. This runs at download start, not on render, and it is the one moment
-  // worth paying a connection attempt for: a host whose CAS is unreachable but which has not
-  // recorded a failure yet would otherwise discover that by stalling for 30s.
+  // Probe only for Auto, and only at download start: a host whose CAS is unreachable but which has
+  // recorded no failure yet would otherwise discover that by stalling for 30s.
   const capabilities = await getDownloadTransportCapabilities(
     preferred === TRANSPORT.AUTO ? { probe: true } : {},
   );
   if (preferred === TRANSPORT.AUTO) {
-    // Resolve "auto" HERE, from the backend's own verdict, rather than letting the client and the
-    // server decide independently: the resolved transport is compared against the `.transport`
-    // marker of any existing partial, so the two must agree or a resume would be misjudged.
+    // Resolve "auto" from the backend's own verdict, not independently: the resolved transport is
+    // compared against an existing partial's `.transport` marker, so the two must agree.
     return capabilities.auto_resolves_to === TRANSPORT.HTTP
       ? TRANSPORT.HTTP
       : TRANSPORT.XET;

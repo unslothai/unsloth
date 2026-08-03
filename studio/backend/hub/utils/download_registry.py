@@ -97,18 +97,15 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
         try:
             from utils.hf_xet_fallback import xet_health
 
-            # Default probe = False: the UI polls this endpoint, so it normally answers from the
-            # cached verdict and local signals rather than opening a connection every time. The
-            # download-start path opts in, because that is the one moment worth paying a probe for
-            # -- otherwise a host with an unreachable CAS and no recorded failures yet would learn
-            # that only by stalling.
+            # Default probe = False: the UI polls this endpoint, so it answers from the cached
+            # verdict and local signals. The download-start path opts in, since otherwise a host
+            # with an unreachable CAS and no recorded failures yet would learn only by stalling.
             health = xet_health(probe = probe)
             if health is not None:
                 auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
                 auto_reason = str(health.reason)
         except Exception:
-            # No opinion available: leave the optimistic default; the download-time ladder still
-            # recovers if Xet turns out to be broken here.
+            # No opinion: keep the optimistic default; the download-time ladder still recovers.
             pass
     return DownloadTransportCapabilities(
         http = DownloadTransportCapability(available = True),
@@ -571,9 +568,8 @@ def prepare_cache_for_transport(
     """
     if mode not in VALID_TRANSPORTS:
         if mode == TRANSPORT_AUTO:
-            # "auto" is a request preference, not something that can write a cache: only the server
-            # can see the machine, so it must be resolved to xet/http before reaching this layer.
-            # Naming that explicitly turns a confusing "invalid transport" into the actual bug.
+            # "auto" is a request preference, not a cache writer: it must be resolved to xet/http
+            # before reaching this layer. Naming it turns "invalid transport" into the actual bug.
             raise ValueError(
                 f"{TRANSPORT_AUTO!r} must be resolved to a concrete transport before preparing the "
                 f"cache; expected one of {sorted(VALID_TRANSPORTS)}"

@@ -13,9 +13,8 @@ const { normalizeDownloadTransportCapabilities } = await import(
 );
 
 test("the backend's auto verdict survives normalization", () => {
-  // Only the backend can see this machine's RAM, hf_xet build and recent Xet stalls. Rebuilding
-  // the object from http/xet alone discarded that verdict, so Auto silently resolved to Xet on
-  // every machine -- including ones the backend had just demoted to HTTP.
+  // Rebuilding the object from http/xet alone discarded the verdict, so Auto resolved to Xet on
+  // every machine, including ones the backend had just demoted to HTTP.
   const caps = normalizeDownloadTransportCapabilities({
     http: { available: true, reason: null },
     xet: { available: true, reason: null },
@@ -28,8 +27,8 @@ test("the backend's auto verdict survives normalization", () => {
 });
 
 test("a backend with no auto fields still resolves to xet", () => {
-  // Older backend, or a response that predates the Auto mode: the download-time ladder still
-  // falls back to HTTP if Xet turns out to be broken, so Xet is the safe assumption.
+  // Older backend, predating Auto: the download-time ladder still falls back to HTTP, so Xet is
+  // the safe assumption.
   const caps = normalizeDownloadTransportCapabilities({
     http: { available: true, reason: null },
     xet: { available: true, reason: null },

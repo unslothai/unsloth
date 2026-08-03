@@ -735,14 +735,10 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
 def _force_stall_for_tests(repo_id: str, repo_type: str) -> None:
     """Test-only fault injection: hang the Xet attempt so the stall watchdog can be exercised.
 
-    Never set in production. ``unsloth_zoo.hf_xet_fallback`` has the same hook for the downloads it
-    spawns itself, but the hub worker is a different process launched a different way, so without
-    this there is no way to make a *real* hub download hang on demand -- and the hub path is
-    precisely the one that had no stall detection at all before this change.
-
-    A partial has to exist and stay open: the watchdog counts only ``.incomplete`` files held open
-    by the child it is watching, which is what stops it from mistaking an unrelated cache entry for
-    live progress.
+    Never set in production. ``unsloth_zoo.hf_xet_fallback`` has the same hook for its own spawns,
+    but the hub worker is a different process launched a different way, so without this there is no
+    way to hang a *real* hub download on demand. A partial has to exist and stay open: the watchdog
+    counts only ``.incomplete`` files held open by the child it is watching.
     """
     from huggingface_hub.constants import HF_HUB_CACHE
 

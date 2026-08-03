@@ -63,19 +63,18 @@ def _isolate_xet_health_home(tmp_path_factory):
     """Point HF_HOME at a temp dir for the whole session, before any server is spawned.
 
     Session scope is load-bearing: pytest builds higher-scoped fixtures first, so setting HF_HOME
-    from the function-scoped fixture below landed AFTER ``studio_server`` had already snapshotted
-    os.environ into the spawned server's environment, leaving that server reading and rewriting the
-    developer's real unsloth_xet_health.json.
+    function-scoped landed AFTER ``studio_server`` snapshotted os.environ, leaving that server
+    rewriting the developer's real unsloth_xet_health.json.
     """
     from _pytest.monkeypatch import MonkeyPatch
 
     from huggingface_hub import constants as hf_constants
 
     mp = MonkeyPatch()
-    # Pin these to what the hub resolved from the REAL environment before moving HF_HOME. HF_HOME
-    # also defaults HF_HUB_CACHE, HF_XET_CACHE and HF_TOKEN_PATH, so moving it alone would send the
-    # spawned E2E server to an empty cache and an empty token store: a ~1.1GB GGUF redownload
-    # inside the 120s startup deadline, and no credentials for a private --unsloth-model.
+    # Pin these to what the hub resolved from the REAL environment before moving HF_HOME, which
+    # also defaults HF_HUB_CACHE, HF_XET_CACHE and HF_TOKEN_PATH: moving it alone would send the
+    # E2E server to an empty cache and token store, so a ~1.1GB GGUF redownload inside the 120s
+    # startup deadline and no credentials for a private --unsloth-model.
     mp.setenv("HF_HUB_CACHE", hf_constants.HF_HUB_CACHE)
     mp.setenv("HF_TOKEN_PATH", hf_constants.HF_TOKEN_PATH)
     xet_cache = getattr(hf_constants, "HF_XET_CACHE", None)
@@ -90,17 +89,14 @@ def _isolate_xet_health_home(tmp_path_factory):
 def _isolate_xet_health_state():
     """Keep the persisted Xet health verdict out of the developer's real HF home.
 
-    The verdict is deliberately sticky across sessions -- two consecutive Xet failures pin a machine
-    to HTTP for 24h -- which also means any machine that has genuinely had a Xet stall would start
-    the ladder on HTTP inside a test that expects it to start on Xet. That reproduced here: the
-    verdict file said ``http`` and `test_shim_injects_studio_prepare_on_http_retry` saw the fallback
-    happen without the Xet attempt it was asserting. Clean CI runners hide it, developer machines
-    do not.
+    The verdict is sticky across sessions (two consecutive failures pin a machine to HTTP for 24h),
+    so a machine that has genuinely stalled starts the ladder on HTTP inside a test expecting Xet.
+    That reproduced: `test_shim_injects_studio_prepare_on_http_retry` saw the fallback without the
+    Xet attempt it asserts. Clean CI runners hide it, developer machines do not.
     """
-    # Load it the way the shim does. A bare `from unsloth_zoo import ...` raises
-    # NotImplementedError on a CPU-only host, because unsloth_zoo's __init__ runs accelerator
-    # detection -- so the plain import silently skipped this isolation on exactly the hosts the
-    # shim's GPU-init retry exists to support, while the module itself was perfectly available.
+    # Load it the way the shim does: a bare `from unsloth_zoo import ...` raises NotImplementedError
+    # on a CPU-only host (its __init__ runs accelerator detection), so a plain import would skip
+    # this isolation on exactly the hosts the shim's GPU-init retry exists to support.
     from utils.hf_xet_fallback import _load_optional
 
     hf_xet_health = _load_optional("unsloth_zoo.hf_xet_health")
@@ -257,10 +253,8 @@ def stub_embeddings(monkeypatch):
 def _reset_optional_module_memo():
     """Forget the shim's memoised optional-module results between tests.
 
-    ``_load_optional`` caches the outcome per module name, including the failure, because on an
-    older zoo the import can never start succeeding and re-running it would re-open the process-wide
-    GPU-init env window on every download. Tests deliberately swap that import in and out, so the
-    memo has to be per test or one test's fake module answers the next test's question.
+    ``_load_optional`` caches per module name including failures, so without this one test's fake
+    module would answer the next test's question.
     """
     import utils.hf_xet_fallback as _shim
 

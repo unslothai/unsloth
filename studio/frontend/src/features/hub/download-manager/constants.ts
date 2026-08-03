@@ -7,9 +7,9 @@ export const TRANSPORT = {
   AUTO: "auto",
 } as const;
 
-// The two transports a download can actually run on. "auto" is a preference, not a transport: it
-// is resolved to one of these before a download starts, and only these ever reach a `.transport`
-// marker on disk (which records the writer, so a resume picks the right resume strategy).
+// The two transports a download can run on. "auto" is a preference, resolved to one of these
+// before a download starts; only these reach a `.transport` marker on disk, which records the
+// writer so a resume picks the right strategy.
 export const RESOLVED_TRANSPORTS = [TRANSPORT.HTTP, TRANSPORT.XET] as const;
 export type ResolvedTransport = (typeof RESOLVED_TRANSPORTS)[number];
 
@@ -19,8 +19,8 @@ export const TRANSPORT_MODES = [
   TRANSPORT.XET,
 ] as const;
 export type TransportMode = (typeof TRANSPORT_MODES)[number];
-// Auto by default: the backend picks per machine (RAM, hf_xet build, recent Xet failures) and
-// effectiveTransportMode() turns that into a concrete transport before any download starts.
+// Auto by default: the backend picks per machine (RAM, hf_xet build, recent Xet failures), and
+// effectiveTransportMode() resolves that to a concrete transport before any download starts.
 export const DEFAULT_TRANSPORT_MODE: TransportMode = TRANSPORT.AUTO;
 
 export function isTransportMode(value: unknown): value is TransportMode {

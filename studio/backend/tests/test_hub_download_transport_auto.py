@@ -3,9 +3,9 @@
 
 """Tests for the hub download path's transport selection, RAM caps, and stall -> HTTP recovery.
 
-The model-hub page is how most users download, and until now it was the ONE download path with no
-stall detection at all: it relied on the worker's exit code, and a Xet transfer that hangs with no
-progress and no error never produces one. These tests pin the three pieces that close that gap.
+The model-hub page is how most users download, and it was the ONE download path with no stall
+detection: it relied on the worker's exit code, and a Xet transfer that hangs with no progress and
+no error never produces one. These tests pin the three pieces that close that gap.
 
 CPU-only, no network, no real worker subprocess.
 """
@@ -49,8 +49,8 @@ def test_explicit_modes_are_honoured(monkeypatch):
 
 
 def test_explicit_xet_beats_an_unhealthy_verdict(monkeypatch):
-    """The user asked for Xet. They still get the memory caps and the stall fallback, but the
-    health verdict must not silently overrule an explicit choice."""
+    """An explicit choice is not overruled by the health verdict; it still gets the memory caps and
+    the stall fallback."""
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
     monkeypatch.setattr(dl, "resolve_auto_use_xet", lambda: (False, "demoted"))
     assert dl.resolve_requested_use_xet("xet", True)[0] is True
@@ -87,8 +87,8 @@ def test_auto_reports_http_when_hf_xet_is_missing(monkeypatch):
 
 
 def test_auto_is_not_a_real_transport():
-    """ "auto" is a request preference. The on-disk .transport marker must keep naming the writer
-    that produced a partial, or a resume would pick the wrong resume strategy."""
+    """ "auto" is a request preference: the .transport marker must keep naming the writer that
+    produced a partial, or a resume picks the wrong strategy."""
     assert download_registry.TRANSPORT_AUTO not in download_registry.VALID_TRANSPORTS
     assert download_registry.TRANSPORT_AUTO in download_registry.VALID_TRANSPORT_MODES
 
@@ -160,10 +160,9 @@ def test_high_performance_is_cleared_not_merely_defaulted(monkeypatch):
 
 
 def test_high_performance_is_cleared_even_without_the_tuning_module(monkeypatch):
-    """The Studio can run against an unsloth_zoo that has no `hf_xet_tuning`, and that is exactly
-    the version that sets HF_XET_HIGH_PERFORMANCE=1 at import. If clearing the flag were routed
-    through the (then empty) overrides, the worker would inherit a 64GB buffer ceiling on precisely
-    the installs that cannot be fixed by upgrading Studio alone. CI caught this, not review."""
+    """An unsloth_zoo with no `hf_xet_tuning` is exactly the version that sets
+    HF_XET_HIGH_PERFORMANCE=1 at import, so routing the clear through the (then empty) overrides
+    would hand the worker a 64GB buffer ceiling on the installs Studio alone cannot fix."""
     import utils.hf_xet_fallback as shim
 
     monkeypatch.setattr(shim, "xet_env_overrides", lambda *a, **k: {})
@@ -218,8 +217,7 @@ def _registry_stub():
 
 
 def test_stall_watchdog_kills_the_worker(monkeypatch):
-    """The kill is what converts an invisible hang into an "error" exit, which is the state the
-    existing HTTP-retry path keys on."""
+    """The kill converts an invisible hang into an "error" exit, the state the HTTP-retry keys on."""
     proc = _KillablePopen()
     seen: list[str] = []
     started = {}
@@ -359,9 +357,9 @@ def test_capabilities_stay_optimistic_when_health_raises(monkeypatch):
 
 
 def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
-    """unsloth_zoo.__init__ runs torch accelerator detection and raises on a CPU-only host -- which
-    is exactly the small machine these caps exist to protect. Without the retry the caps would
-    switch themselves off precisely where they are needed. Caught by CI, not by review."""
+    """unsloth_zoo.__init__ runs torch accelerator detection and raises on a CPU-only host, which is
+    exactly the small machine these caps protect, so without the retry they switch off where they
+    are needed."""
     import importlib
 
     import utils.hf_xet_fallback as shim
@@ -406,11 +404,9 @@ def test_optional_loader_returns_none_when_truly_absent(monkeypatch):
 
 
 def test_capabilities_probe_is_opt_in(monkeypatch):
-    """The UI polls this endpoint on render, so it must stay cheap by default.
-
-    The download-start path opts in, because that is the one moment worth a connection attempt: a
-    host with an unreachable CAS and no recorded failure yet would otherwise learn by stalling.
-    """
+    """The UI polls this endpoint on render, so it must stay cheap by default. The download-start
+    path opts in: a host with an unreachable CAS and no recorded failure yet would otherwise learn
+    by stalling."""
     from hub.utils import download_registry
 
     seen: list[bool] = []
@@ -423,8 +419,8 @@ def test_capabilities_probe_is_opt_in(monkeypatch):
         seen.append(probe)
         return _Health()
 
-    # Patch the sys.modules entry, not an imported alias: get_download_transport_capabilities does
-    # a local `from utils.hf_xet_fallback import xet_health`, and test_hf_xet_fallback.py swaps that
+    # Patch the sys.modules entry, not an imported alias: the endpoint does a local
+    # `from utils.hf_xet_fallback import xet_health`, and test_hf_xet_fallback.py swaps that
     # sys.modules entry in and out, so an alias captured here can be a different module object.
     import sys
     import types
@@ -436,7 +432,7 @@ def test_capabilities_probe_is_opt_in(monkeypatch):
     caps = download_registry.get_download_transport_capabilities()
     if not caps.xet.available:
         # The health lookup sits behind an hf_xet availability check, so with no hf_xet installed
-        # neither call reaches it. Same guard the neighbouring capability tests use.
+        # neither call reaches it.
         pytest.skip("hf_xet is not installed in this environment")
     download_registry.get_download_transport_capabilities(probe = True)
 
@@ -444,16 +440,12 @@ def test_capabilities_probe_is_opt_in(monkeypatch):
 
 
 def test_gpu_init_override_is_serialized(monkeypatch):
-    """The optional-module retry must not leak the process-wide GPU-init override.
+    """The optional-module retry must not leak the process-wide GPU-init override: a leaked
+    UNSLOTH_ZOO_DISABLE_GPU_INIT=1 is inherited by every spawned worker for the life of the process.
 
-    A leaked UNSLOTH_ZOO_DISABLE_GPU_INIT=1 is inherited by every spawned worker, which then skips
-    Zoo's GPU init for the life of the process.
-
-    Scope of this test, stated honestly: it races the loader against itself, which pins the
-    single-loader path. It does NOT reproduce the cross-loader interleave with _load_shared -- that
-    needs A and B to be inside their env blocks at once, and thread timing would not reproduce it
-    reliably here. That property is instead established by construction: both loaders take the same
-    `_load_lock` around their save/set/restore, so only one can be inside at a time.
+    Scope: this races the loader against itself. The cross-loader interleave with _load_shared is
+    not reproducible by thread timing, and is established by construction instead (both take the
+    same `_load_lock` around their save/set/restore) -- see the test below.
     """
     import importlib
     import os
@@ -482,11 +474,8 @@ def test_gpu_init_override_is_serialized(monkeypatch):
 
 
 def test_both_loaders_share_one_env_lock():
-    """The cross-loader guarantee, checked structurally rather than by racing threads.
-
-    Two separate locks would each be correct in isolation and still allow the interleave that
-    leaves the override set permanently, so what matters is that it is one lock, not two.
-    """
+    """The cross-loader guarantee, checked structurally. Two separate locks would each be correct in
+    isolation and still allow the interleave that leaves the override set permanently."""
     import inspect
 
     import utils.hf_xet_fallback as shim

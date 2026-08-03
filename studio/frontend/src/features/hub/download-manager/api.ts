@@ -133,10 +133,9 @@ import {
 } from "./transport-capabilities";
 import type { DownloadTransportCapabilities } from "./transport-capabilities";
 
-// The Auto verdict is dynamic: a stalled transfer demotes this machine mid-session. An
-// indefinite cache would keep resolving Auto to the pre-stall answer until the page reloads, so
-// give it the same TTL shape activeModelDownloadsCache already uses. Refreshing is cheap because
-// the endpoint answers from cached health without a network probe.
+// The Auto verdict is dynamic: a stalled transfer demotes this machine mid-session, so an
+// indefinite cache would keep serving the pre-stall answer until the page reloads. Refreshing is
+// cheap because the endpoint answers from cached health without a network probe.
 const DOWNLOAD_TRANSPORT_CAPABILITIES_TTL_MS = 30_000;
 let downloadTransportCapabilitiesCache: {
   expiresAt: number;
@@ -148,14 +147,12 @@ let downloadTransportCapabilitiesInFlight: Promise<DownloadTransportCapabilities
 
 export async function getDownloadTransportCapabilities(options: {
   force?: boolean;
-  // Ask the backend to actually reach for the Xet endpoint rather than answering from its cached
-  // verdict. Only the download-start path sets this: the UI polls this endpoint on render, and a
-  // connection attempt per poll is exactly what the cheap default avoids.
+  // Reach for the Xet endpoint instead of answering from the cached verdict. Only the
+  // download-start path sets this; the UI polls on render and must not connect per poll.
   probe?: boolean;
 } = {}): Promise<DownloadTransportCapabilities> {
   const cached = downloadTransportCapabilitiesCache;
-  // A cheap cached answer cannot satisfy a caller that asked for a probe, but a probed one
-  // satisfies everybody.
+  // A cheap cached answer cannot satisfy a probe request, but a probed one satisfies everybody.
   const cacheUsable =
     cached !== null &&
     cached.expiresAt > Date.now() &&

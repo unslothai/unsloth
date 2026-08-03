@@ -113,10 +113,8 @@ import pytest
 def _reset_optional_module_memo():
     """Forget the shim's memoised optional-module results between tests.
 
-    ``_load_optional`` caches the outcome per module name, including the failure, because on an
-    older zoo the import can never start succeeding and re-running it would re-open the process-wide
-    GPU-init env window on every download. Tests deliberately swap that import in and out, so the
-    memo has to be per test or one test's fake module answers the next test's question.
+    ``_load_optional`` caches per module name including failures, so without this one test's fake
+    module would answer the next test's question.
     """
     try:
         import utils.hf_xet_fallback as _shim

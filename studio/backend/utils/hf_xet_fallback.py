@@ -29,9 +29,9 @@ from typing import Any, Callable, Optional
 # default args below) without importing unsloth_zoo/transformers.
 DEFAULT_GRACE_PERIOD = 10.0
 DEFAULT_HEARTBEAT_INTERVAL = 30.0
-# Xet gets 30s of zero progress before the HTTP retry; HTTP, as the last resort, keeps 180s. The
-# wrappers below pass None so the shared layer picks per transport -- these literals exist for
-# callers that want an explicit value without triggering the heavy import.
+# Xet gets 30s of zero progress before the HTTP retry; HTTP, the last resort, keeps 180s. The
+# wrappers pass None so the shared layer picks per transport; these literals are for callers that
+# want an explicit value without the heavy import.
 DEFAULT_STALL_TIMEOUT = 30.0
 DEFAULT_CONNECT_TIMEOUT = 90.0
 DEFAULT_HTTP_STALL_TIMEOUT = 180.0
@@ -40,13 +40,11 @@ DEFAULT_HTTP_STALL_TIMEOUT = 180.0
 _shared: Any = None
 _shared_available: Optional[bool] = None  # None = not yet attempted
 _shared_import_error: Optional[BaseException] = None
-# Guards the memoized _shared_available AND every UNSLOTH_ZOO_DISABLE_GPU_INIT save/set/restore in
-# this module. Both loaders below mutate that one process-wide variable, so they must serialize
-# against each other, not merely against themselves: two locks would still allow A-saves-unset /
-# B-saves-"1" / A-restores-unset / B-restores-"1", leaving it set for the life of the process.
-# Reentrant on purpose. It still excludes OTHER threads, which is all the env save/set/restore
-# sequence needs, but child_environment_for_spawn now holds it across a spawn and that context
-# manager legitimately nests -- its own _spawn_env_lock is an RLock for exactly the same reason.
+# Guards _shared_available AND every UNSLOTH_ZOO_DISABLE_GPU_INIT save/set/restore here. Both
+# loaders mutate that one process-wide variable, so they must serialize against each other: two
+# locks would still allow A-saves-unset / B-saves-"1" / A-restores-unset / B-restores-"1", leaving
+# it set for the life of the process. RLock because child_environment_for_spawn holds it across a
+# spawn and legitimately nests (its own _spawn_env_lock is an RLock for the same reason).
 _load_lock = threading.RLock()
 
 
@@ -105,10 +103,10 @@ def _load_shared() -> bool:
                 _gpu_init_override_depth -= _ours
 
 
-# Result cache for _load_optional, keyed by module name. Memoising the FAILURE is the point: on a
-# zoo that predates these modules the import can never start succeeding, and without this every
-# xet_health / record_xet_outcome / xet_env_overrides call re-ran the whole GPU-init retry --
-# re-opening the process-wide env window on every single download.
+# _load_optional results by module name. Memoising the FAILURE is the point: on a zoo that predates
+# these modules the import can never start succeeding, so without this every xet_health /
+# record_xet_outcome / xet_env_overrides call re-ran the GPU-init retry, re-opening the
+# process-wide env window on every download. With it the window opens once per module per process.
 _UNTRIED = object()
 _optional_modules: "dict[str, Any]" = {}
 
@@ -120,16 +118,13 @@ def _reset_optional_module_cache() -> None:
 
 
 def _load_optional(module_name: str) -> Any:
-    """Import an optional shared Xet helper module, or return ``None``.
+    """Import an optional shared Xet helper module (health / tuning), or return ``None``.
 
-    Separate from ``_load_shared`` because these modules (health / tuning) are pure stdlib and
-    exist only in newer unsloth_zoo: a Studio pinned to an older zoo must keep downloading, just
-    without the preflight verdict or the buffer caps.
-
-    The GPU-init retry matters more here than anywhere else. ``unsloth_zoo.__init__`` runs torch
-    accelerator detection and raises ``NotImplementedError`` on a CPU-only host -- and a CPU-only
-    host is precisely the small machine whose RAM these caps exist to protect. Without the retry
-    the caps would silently switch themselves off exactly where they are needed.
+    Separate from ``_load_shared``: these modules exist only in newer unsloth_zoo, and a Studio
+    pinned to an older one must keep downloading without the preflight verdict or buffer caps.
+    The GPU-init retry matters most here: ``unsloth_zoo.__init__`` runs torch accelerator detection
+    and raises ``NotImplementedError`` on a CPU-only host, which is precisely the small machine
+    whose RAM these caps protect, so without the retry they switch off where they are needed.
     """
     import importlib
     import os as _os
@@ -145,11 +140,8 @@ def _load_optional(module_name: str) -> Any:
     except Exception as exc:  # noqa: BLE001 - an older/absent unsloth_zoo must degrade, not crash
         first_error = exc
 
-    # The retry mutates process-wide state, so it must not run concurrently with itself. Two
-    # requests could otherwise interleave save/set/restore -- A saves unset and sets 1, B saves 1,
-    # A restores unset, B restores 1 -- and leave UNSLOTH_ZOO_DISABLE_GPU_INIT set for the life of
-    # the process, so every later worker inherits it and skips Zoo's GPU init. Deliberately the
-    # SAME lock _load_shared holds while it runs its own copy of this sequence.
+    # Deliberately the SAME lock _load_shared uses: interleaved save/set/restore would leave
+    # UNSLOTH_ZOO_DISABLE_GPU_INIT set for the life of the process (see _load_lock).
     with _load_lock:
         cached = _optional_modules.get(module_name, _UNTRIED)
         if cached is not _UNTRIED:
@@ -157,10 +149,9 @@ def _load_optional(module_name: str) -> Any:
         global _gpu_init_override_depth
         previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
         ours = previous != "1"
-        # Claim ownership BEFORE the write and release it AFTER the restore, so the window in which
-        # the variable is set sits strictly inside the window in which a spawning thread can see
-        # that it is ours. The other order leaves a gap at each end where a child is handed a flag
-        # nobody is claiming, and a child that inherits it never clears it.
+        # Claim BEFORE the write, release AFTER the restore, so the set window sits strictly inside
+        # the window where a spawning thread can see the flag is ours. The other order leaves a gap
+        # at each end where a child inherits an unclaimed flag and never clears it.
         _gpu_init_override_depth += ours
         try:
             _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
@@ -186,8 +177,7 @@ def _load_optional(module_name: str) -> Any:
 def xet_health(**kwargs: Any) -> Any:
     """The machine's Xet verdict, or ``None`` when unsloth_zoo cannot answer.
 
-    ``None`` means "no opinion": callers keep their existing default (Xet) rather than treating a
-    missing health module as a reason to downgrade.
+    ``None`` means "no opinion": callers keep their default (Xet), they do not downgrade.
     """
     module = _load_optional("unsloth_zoo.hf_xet_health")
     if module is None:
@@ -351,11 +341,10 @@ _DEGRADED_ATTRS = {
 }
 
 
-# Nonzero while a loader is inside its UNSLOTH_ZOO_DISABLE_GPU_INIT retry, during which that
-# variable is set process-wide. Read by utf8_child_env so a child spawned in that window does not
-# inherit it: unsloth_zoo injects triton and bitsandbytes STUBS when it is set, so a training child
-# that inherited it would silently run against no-ops. Only counted when the loader actually
-# introduced the value -- an operator who exported it themselves keeps it.
+# Nonzero while a loader has UNSLOTH_ZOO_DISABLE_GPU_INIT set process-wide for its retry. Read by
+# utf8_child_env so a child spawned in that window does not inherit it: unsloth_zoo injects triton
+# and bitsandbytes STUBS when it is set, so a training child would silently run against no-ops.
+# Only counted when the loader introduced the value; an operator who exported it keeps it.
 _gpu_init_override_depth = 0
 
 
@@ -367,11 +356,11 @@ def gpu_init_override_active() -> bool:
 def env_override_barrier() -> Any:
     """Context manager a caller holds across a spawn so no loader can be mid-override.
 
-    ``multiprocessing`` spawn children inherit the parent's live ``os.environ`` -- there is no env
-    dict to filter -- so the only way to keep UNSLOTH_ZOO_DISABLE_GPU_INIT out of a worker is to
-    make sure no loader has it set at the moment the child is created. The loaders never spawn, so
-    holding this alongside the spawn lock cannot deadlock. It is uncontended in practice because
-    ``_load_optional`` memoises: the window opens at most once per module per process.
+    Spawn children inherit the parent's live ``os.environ`` and there is no env dict to filter, so
+    the only way to keep UNSLOTH_ZOO_DISABLE_GPU_INIT out of a worker is that no loader has it set
+    when the child is created. Loaders never spawn, so holding this with the spawn lock cannot
+    deadlock, and ``_load_optional`` memoises so the window opens at most once per module per
+    process.
     """
     return _load_lock
 
@@ -395,24 +384,20 @@ def _supported_kwargs(fn: Any, kwargs: "dict[str, Any]") -> "dict[str, Any]":
 def start_watchdog(**kwargs: Any) -> Any:
     """Shared stall watchdog, minus any kwarg the INSTALLED unsloth_zoo does not accept.
 
-    This is a version-skew adapter, and it is load-bearing: the supported floor (2026.8.1) has no
-    ``connect_timeout`` or ``heartbeat_interval`` and no ``**kwargs`` to absorb them, so passing one
-    raises TypeError -- and every caller wraps this in ``except Exception``, so the watchdog would
-    silently never start and a stalled Xet worker would never be killed or retried over HTTP. That
-    is the feature being entirely off, not degraded. Filtering here keeps newer knobs live on a
-    newer zoo without breaking the floor, and makes the NEXT new kwarg a no-op rather than a repeat
-    of this bug.
+    Load-bearing version-skew adapter: the supported floor (2026.8.1) has no ``connect_timeout`` or
+    ``heartbeat_interval`` and no ``**kwargs``, so passing one raises TypeError into the caller's
+    ``except Exception`` -- the watchdog then never starts and a stalled Xet worker is never killed
+    or retried over HTTP. That is the feature entirely off, not degraded. Filtering keeps newer
+    knobs live on a newer zoo and makes the NEXT new kwarg a no-op instead of a repeat of this bug.
 
-    Dropping the pre-byte budget on 2026.8.1 costs less than it looks. That release does reset its
-    timer whenever the child owns no ``.incomplete``, but huggingface_hub opens the partial BEFORE
-    it calls ``xet_get`` (``file_download.py`` opens ``incomplete_path`` and invokes ``xet_get``
-    inside that ``with``), and the floor counts a partial by presence rather than size -- so a
-    hf_xet hang still sits behind an open zero-byte partial and still trips the floor's 180s data
-    clock. Verified against the released wheel: wedged inside ``xet_get`` trips, wedged before the
-    open does not. What stays uncovered there is the metadata phase, which is where
-    ``snapshot_download`` calls ``repo_info`` with no timeout. That gap predates this shim and the
-    connect clock closes it only once a zoo carrying it is released; passing the kwarg through
-    early would not close it, it would disable the watchdog outright.
+    Dropping the pre-byte budget on 2026.8.1 costs little: huggingface_hub opens the ``.incomplete``
+    BEFORE calling ``xet_get`` (``file_download.py`` opens ``incomplete_path`` and calls ``xet_get``
+    inside that ``with``) and the floor counts a partial by presence, not size, so a hf_xet hang
+    still trips the floor's 180s data clock. Verified against the released wheel: wedged inside
+    ``xet_get`` trips, wedged before the open does not. The uncovered window is the metadata phase,
+    where ``snapshot_download`` calls ``repo_info`` with no timeout. That gap predates this shim;
+    the connect clock closes it only once a zoo carrying it ships, and passing the kwarg early would
+    not close it, it would disable the watchdog outright.
     """
     impl = _shared.start_watchdog if _load_shared() else _degraded_start_watchdog
     return impl(**_supported_kwargs(impl, kwargs))
@@ -519,10 +504,9 @@ def hf_hub_download_with_xet_fallback(
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)
-    # Omit rather than forward None. No production caller passes these, and an older unsloth_zoo
-    # takes the value literally: its watchdog hands `interval` straight to Event.wait(), where None
-    # blocks forever, so a hung Xet download would never fall back. Omitting them also lets the
-    # shared layer pick its own per-transport defaults instead of freezing one here.
+    # Omit rather than forward None: an older unsloth_zoo hands `interval` straight to Event.wait(),
+    # where None blocks forever and a hung Xet download never falls back. Omitting also lets the
+    # shared layer pick its per-transport defaults.
     optional: dict[str, Any] = {}
     if stall_timeout is not None:
         optional["stall_timeout"] = stall_timeout

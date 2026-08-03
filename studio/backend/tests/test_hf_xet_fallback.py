@@ -365,10 +365,8 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
 
 def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_override(monkeypatch):
     """The shim sets UNSLOTH_ZOO_DISABLE_GPU_INIT=1 process-wide while it retries an optional
-    import. unsloth_zoo answers that flag by installing STUB triton and bitsandbytes modules, so a
-    training or inference child that inherited it would run its whole life against no-ops -- and
-    unlike the parent it never clears it. Any child spawned in that window must be handed an
-    environment without it."""
+    import, and unsloth_zoo answers that flag with STUB triton and bitsandbytes, so a child that
+    inherited it would run for life against no-ops and never clear it."""
     import importlib
     import os
 
@@ -418,14 +416,11 @@ def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_overrid
 
 
 def test_a_spawn_cannot_overlap_the_loader_env_override_window():
-    """multiprocessing spawn copies the parent's LIVE os.environ; it takes no env argument, so the
-    training and inference workers cannot be handed a filtered dict. The only way to keep the
-    shim's transient UNSLOTH_ZOO_DISABLE_GPU_INIT out of them is for the spawn to be unable to
-    start while a loader holds it. A child that inherited it gets stub triton and bitsandbytes from
-    unsloth_zoo and trains against no-ops, silently.
-
-    Structural on purpose: it asserts the two really share one lock, which is the property that
-    makes the exclusion true, rather than trying to hit a microsecond window by timing."""
+    """multiprocessing spawn copies the parent's LIVE os.environ and takes no env argument, so the
+    only way to keep the shim's transient UNSLOTH_ZOO_DISABLE_GPU_INIT out of a worker is that a
+    spawn cannot start while a loader holds it; a child that inherits it silently trains against
+    unsloth_zoo's stub triton and bitsandbytes. Structural on purpose: it asserts the two share one
+    lock rather than trying to hit a microsecond window by timing."""
     import threading
 
     from utils.hf_cache_settings import child_environment_for_spawn
@@ -462,11 +457,9 @@ def test_a_spawn_cannot_overlap_the_loader_env_override_window():
 
 
 def test_the_spawn_barrier_is_reentrant():
-    """child_environment_for_spawn nests -- an inference respawn inside a training start, and the
-    repo's own test_nested_child_environment_for_spawn -- and its _spawn_env_lock is an RLock so
-    that works. The barrier it now takes alongside must be reentrant too, or the inner enter
-    deadlocks. Bounded on purpose: a plain Lock here hangs the suite rather than failing it, which
-    is a much worse way to find out."""
+    """child_environment_for_spawn nests (an inference respawn inside a training start), which its
+    RLock _spawn_env_lock allows, so the barrier it now takes alongside must be reentrant too or the
+    inner enter deadlocks. Bounded on purpose: a plain Lock hangs the suite rather than failing."""
     import threading
 
     from utils.hf_cache_settings import child_environment_for_spawn
@@ -524,12 +517,9 @@ def test_importing_child_should_disable_xet_stays_light(monkeypatch):
 
 
 def test_start_watchdog_drops_kwargs_the_installed_zoo_cannot_take(monkeypatch):
-    """Version-skew adapter, and load-bearing.
-
-    The supported floor's start_watchdog is keyword-only with no **kwargs and no connect_timeout,
-    so passing one raises TypeError -- and every caller wraps this in `except Exception`, so the
-    watchdog silently never starts and a stalled Xet worker is never killed or retried over HTTP.
-    That is the feature entirely off, not degraded.
+    """Version-skew adapter, and load-bearing: the floor's start_watchdog is keyword-only with no
+    **kwargs and no connect_timeout, so passing one raises TypeError into the caller's
+    `except Exception` and the watchdog silently never starts. That is the feature entirely off.
     """
     import threading
 

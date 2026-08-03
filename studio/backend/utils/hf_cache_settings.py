@@ -176,11 +176,10 @@ def child_environment_for_spawn(environment: Mapping[str, str]) -> Iterator[None
 
     from utils.utils import hf_environment_restored_for_spawn
 
-    # Also exclude the Xet shim's GPU-init override window. That override is set on os.environ
-    # process-wide for the length of one optional import, and a spawn child started inside it
-    # inherits it for life -- whereupon unsloth_zoo hands the child STUB triton and bitsandbytes
-    # modules and the run silently produces nothing, with no log line saying why. Filtering a child
-    # env dict cannot help here: spawn copies the live environment, it takes no env argument.
+    # Also exclude the Xet shim's GPU-init override window: a child spawned inside it inherits the
+    # flag for life, whereupon unsloth_zoo hands it STUB triton and bitsandbytes and the run
+    # silently produces nothing. Filtering a child env dict cannot help here, since spawn copies the
+    # live environment and takes no env argument.
     with _spawn_env_lock, _xet_loader_barrier(), hf_environment_restored_for_spawn():
         missing = object()
         saved_environment: dict[str, str | object] = {}

@@ -58,9 +58,9 @@ def test_resolve_effective_use_xet(monkeypatch):
 def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
-    # _ImmediateThread mutates the stdlib threading module, which the shared Zoo watchdog
-    # also imports, so the watchdog would run INLINE and block in Event.wait() before
-    # finalize_worker_exit could ever set its stop flag. Stub the seam instead.
+    # _ImmediateThread mutates the stdlib threading module, which the shared Zoo watchdog also
+    # imports, so it would run INLINE and block in Event.wait() before finalize_worker_exit could
+    # set its stop flag. Stub the seam instead.
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
     register_worker = download_lifecycle.register_worker
 
@@ -121,9 +121,9 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
 def test_http_failure_remains_terminal(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
-    # _ImmediateThread mutates the stdlib threading module, which the shared Zoo watchdog
-    # also imports, so the watchdog would run INLINE and block in Event.wait() before
-    # finalize_worker_exit could ever set its stop flag. Stub the seam instead.
+    # _ImmediateThread mutates the stdlib threading module, which the shared Zoo watchdog also
+    # imports, so it would run INLINE and block in Event.wait() before finalize_worker_exit could
+    # set its stop flag. Stub the seam instead.
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
     register_worker = download_lifecycle.register_worker
     registry = download_registry.DownloadRegistry()
@@ -200,11 +200,8 @@ def _run_completed_xet_worker(monkeypatch, tmp_path, *, bytes_before, bytes_afte
 
 
 def test_a_cached_xet_job_does_not_clear_the_failure_streak(monkeypatch, tmp_path):
-    """A fully cached repo exits 0 without touching the network.
-
-    Recording that as a Xet success wipes a correctly earned demotion, putting a machine that
-    genuinely stalls back on Xet. Reachable from the UI's re-download action on an up-to-date model.
-    """
+    """A fully cached repo exits 0 without touching the network (the UI's re-download on an
+    up-to-date model), and recording that as a Xet success wipes a correctly earned demotion."""
     recorded = _run_completed_xet_worker(
         monkeypatch, tmp_path, bytes_before = 5_000, bytes_after = 5_000
     )
@@ -218,11 +215,9 @@ def test_a_real_xet_transfer_does_clear_the_failure_streak(monkeypatch, tmp_path
 
 
 def test_a_sibling_variants_bytes_do_not_count_as_this_jobs_progress(monkeypatch, tmp_path):
-    """Two same-transport GGUF variants of one repo may run concurrently and share one blobs/ dir.
-
-    A repo-wide measure credited a cached no-op worker with its sibling's bytes, which clears a
-    legitimate stall streak and flips an already demoted verdict back to Xet.
-    """
+    """Two same-transport GGUF variants of one repo may run concurrently over one blobs/ dir, and a
+    repo-wide measure credited a cached no-op worker with its sibling's bytes, clearing a legitimate
+    stall streak and flipping an already demoted verdict back to Xet."""
     seen = []
 
     def _fake_completed(
@@ -343,11 +338,9 @@ def test_a_data_phase_stall_is_recorded_against_the_machine(monkeypatch, tmp_pat
 
 
 def test_a_pre_byte_trip_does_not_poison_the_machines_health_record(monkeypatch, tmp_path):
-    """Two recorded failures pin this machine to HTTP for 24h, so a pre-byte trip must not count.
-
-    "no data after Ns" means not one byte ever arrived, which is as likely to be slow metadata, a
-    queue of HEADs, or a cache lock as a broken Xet. The HTTP retry still happens either way.
-    """
+    """Two recorded failures pin this machine to HTTP for 24h, and "did not start" means not one
+    byte arrived, as likely slow metadata, a queue of HEADs or a cache lock as a broken Xet. The
+    HTTP retry still happens either way."""
     monkeypatch.setattr(
         download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
     )
@@ -362,12 +355,9 @@ def test_a_pre_byte_trip_does_not_poison_the_machines_health_record(monkeypatch,
 
 
 def test_a_post_byte_hang_between_files_is_recorded(monkeypatch, tmp_path):
-    """ "did not resume" fires only after bytes HAVE flowed, so it is real Xet evidence.
-
-    It is also the shape this worker hangs in most often: snapshot_download owns no partial between
-    files, so a mid-snapshot hang lands here rather than in the data branch. An earlier allow-list
-    keyed on "no progress" silently dropped it, leaving the dominant hang invisible to Auto.
-    """
+    """ "did not resume" fires only after bytes HAVE flowed, so it is real Xet evidence, and it is
+    the shape this worker hangs in most often since snapshot_download owns no partial between
+    files. An earlier allow-list keyed on "no progress" silently dropped it."""
     monkeypatch.setattr(
         download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
     )
@@ -379,11 +369,9 @@ def test_a_post_byte_hang_between_files_is_recorded(monkeypatch, tmp_path):
 
 
 def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_path):
-    """A fast child can finalize its blobs while we are still registering the process.
-
-    A baseline taken after that shows no growth for a transfer that really happened, so the streak
-    is never cleared and two stalls either side of it read as consecutive, demoting Auto for 24h.
-    """
+    """A fast child can finalize its blobs while we are still registering the process, so a later
+    baseline shows no growth for a real transfer: the streak is never cleared and two stalls either
+    side of it read as consecutive, demoting Auto for 24h."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
@@ -433,12 +421,9 @@ def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_p
 
 
 def test_a_stall_verdict_racing_a_completed_worker_is_not_recorded(monkeypatch, tmp_path):
-    """The watchdog appends its verdict BEFORE the kill lands.
-
-    So a worker that completed in that same instant would be charged a failure it did not earn --
-    and on the completed path that also skips the success-clearing, costing two streak steps in the
-    wrong direction from one race.
-    """
+    """The watchdog appends its verdict BEFORE the kill lands, so a worker that completed in that
+    instant would be charged a failure it did not earn, and on the completed path that also skips
+    the success-clearing: two streak steps the wrong way from one race."""
     monkeypatch.setattr(
         download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
     )
