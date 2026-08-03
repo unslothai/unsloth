@@ -291,6 +291,13 @@ _BLOCK_METADATA = frozenset({"[ARGS]", "[CALL_ID]", "[TOOL_CONTENT]"})
 _DYNAMIC_PIPE_ROLE = re.compile(r"""['"]<\|['"]\s*\+|\+\s*['"]\|>['"]""")
 # The roles a chat template can interpolate. Closed on purpose: this adds exactly what the
 # construction can emit, rather than re-enabling a match on any "<|word|>".
+# A template can build the equals-form opener from fragments too, "{{ '<function=' +
+# call.name + '>' }}", so no complete literal ever appears. Harvesting closers alone left a
+# NON-EMPTY profile -- which disables the curated fallback -- while "<function=pay>" stayed
+# byte-exact, and tool_call_parser treats that as a live call envelope (#7066).
+_CONCATENATED_OPENER = re.compile(r"""['"]<(/?[A-Za-z_][A-Za-z0-9_.\-]{0,30})=['"]\s*\+""")
+
+
 _ROLE_NAMES = (
     "system",
     "user",
@@ -409,10 +416,16 @@ class ModelMarkup:
     so a user pasting a script that contains one keeps their text byte-for-byte (#7066).
     """
 
-    __slots__ = ("control", "boundary", "markers", "rewrite_control", "rewrite_boundary")
+    __slots__ = (
+        "control", "boundary", "markers", "rewrite_control", "rewrite_boundary",
+        # Which named template this profile was selected for, so a caller whose catalog
+        # emptied during sanitizing can tell its profile is now for the wrong one (#7066).
+        "selected_with_tools",
+    )
 
-    def __init__(self, markers: set):
+    def __init__(self, markers: set, selected_with_tools: bool = False):
         self.markers = markers
+        self.selected_with_tools = selected_with_tools
         self.control = _alternation(markers)
         # Which of the model's own markers open a turn. The curated patterns hold the one
         # thing a vocabulary cannot say: whether the ASSISTANT legitimately emits a marker.
@@ -491,7 +504,11 @@ def model_markup(
                 markers.add(marker)
         if _DYNAMIC_PIPE_ROLE.search(body):
             markers.update(f"<|{role}|>" for role in _ROLE_NAMES)
-    return ModelMarkup(markers) if markers else None
+        # "<function=" built by concatenation: record the example spelling the dynamic rule
+        # already knows how to generalize, so any render-time name matches.
+        for built in _CONCATENATED_OPENER.findall(body):
+            markers.add(f"<{built}=example>")
+    return ModelMarkup(markers, bool(tools)) if markers else None
 
 
 def _spaced_out(pattern, text: str) -> str:
@@ -1488,9 +1505,11 @@ def mapped_chat_template(model_info: dict, active_model_name):
     tool whose schema carries a delimiter the mapped template introduces was then dropped
     from the prompt but still authorized for healing or execution (#7066).
 
-    Resolved to a template string rather than installed on the shared tokenizer: mutating
-    that object outside the generation lock races concurrent requests, which is why
-    ``render_native_template`` renders on a clone."""
+    Resolved on a COPY of the tokenizer: ``get_chat_template`` assigns
+    ``tokenizer.chat_template`` (unsloth/chat_templates.py), and this runs before the
+    generation lock, so handing it the shared object would let this setup mutate a tokenizer
+    another request is rendering with. ``render_native_template`` clones for the same
+    reason. Only the resulting template string is kept."""
     if not isinstance(model_info, dict):
         return None
     if "mapped_chat_template" in model_info:
@@ -1502,8 +1521,17 @@ def mapped_chat_template(model_info: dict, active_model_name):
 
         name = (active_model_name or "").lower()
         if name in MODEL_TO_TEMPLATE_MAPPER:
+            source = model_info.get("tokenizer")
+            # Shallow copy: get_chat_template writes chat_template onto whatever it is
+            # given, and a concurrent generation may be rendering with the shared object.
+            try:
+                probe = copy.copy(source)
+            except Exception:
+                probe = None
+            if probe is None:
+                return None  # cannot resolve safely; retry next turn
             remapped = get_chat_template(
-                model_info.get("tokenizer"), chat_template = MODEL_TO_TEMPLATE_MAPPER[name]
+                probe, chat_template = MODEL_TO_TEMPLATE_MAPPER[name]
             )
             mapped = getattr(remapped, "chat_template", None)
     except Exception as exc:
@@ -2042,8 +2070,14 @@ def apply_chat_template_for_generation(
     # Shared choke point for the transformers and MLX backends (#7066). Gated on the
     # loaded model's own markers, so text naming another family's sentinel is left alone.
     _markup = markup_for_tokenizer(tokenizer, tools)
-    messages = neutralize_control_markup_in_messages(messages, None, _markup)
     tools = neutralize_tool_descriptions(tools, None, _markup)
+    # Sanitizing can empty the catalog, and an empty catalog renders with "default" rather
+    # than "tool_use". Re-profile before sweeping the messages, or they are swept against a
+    # template this request will not use and a default-only delimiter reaches the prompt
+    # raw. Order matters: the catalog is sanitized first so the selector is settled (#7066).
+    if bool(tools) != bool(_markup and getattr(_markup, "selected_with_tools", False)):
+        _markup = markup_for_tokenizer(tokenizer, tools)
+    messages = neutralize_control_markup_in_messages(messages, None, _markup)
     reasoning_kwargs: dict = {}
     if enable_thinking is not None:
         reasoning_kwargs["enable_thinking"] = enable_thinking
