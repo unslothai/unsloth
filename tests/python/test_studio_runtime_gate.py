@@ -46,6 +46,15 @@ def test_custom_root_mutex_name_matches_installer_hash(monkeypatch):
         f"Global\\UnslothStudioManagedEnvironmentPath-{expected_hash}"
     )
 
+@pytest.mark.skipif(os.name != "nt", reason = "Windows ordinal comparison is required")
+def test_tauri_root_classification_uses_windows_ordinal_case_semantics(monkeypatch):
+    profile = Path(r"C:\Users\Straße")
+    monkeypatch.setattr(gate, "_windows_profile_path", lambda: profile)
+
+    assert gate.uses_tauri_managed_root(Path(r"C:\Users\straße\.unsloth\studio"))
+    assert not gate.uses_tauri_managed_root(Path(r"C:\Users\Strasse\.unsloth\studio"))
+
+
 
 def test_runtime_gate_handoff_is_one_shot(monkeypatch):
     monkeypatch.setenv(gate._RUNTIME_GATE_HANDOFF_ENV, "1")

@@ -241,8 +241,16 @@ function Install-UnslothStudio {
     function Get-StudioFinalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
         $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
-        if (-not (Test-Path -LiteralPath $fullPath)) {
-            return $fullPath
+        $existingPath = $fullPath
+        $missingSegments = @()
+        while (-not (Test-Path -LiteralPath $existingPath)) {
+            $leaf = [System.IO.Path]::GetFileName($existingPath)
+            $parent = [System.IO.Path]::GetDirectoryName($existingPath)
+            if ([string]::IsNullOrEmpty($leaf) -or [string]::IsNullOrEmpty($parent)) {
+                return $fullPath
+            }
+            $missingSegments = @($leaf) + $missingSegments
+            $existingPath = $parent
         }
         if (-not ("UnslothStudioFinalPath" -as [type])) {
             Add-Type -TypeDefinition @'
@@ -277,6 +285,22 @@ public static class UnslothStudioFinalPath
         uint pathLength,
         uint flags);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(
+        uint desiredAccess,
+        bool inheritHandle,
+        int processId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageNameW(
+        IntPtr process,
+        uint flags,
+        StringBuilder path,
+        ref uint pathLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
     public static string Resolve(string path)
     {
         using (SafeFileHandle handle = CreateFileW(
@@ -309,14 +333,39 @@ public static class UnslothStudioFinalPath
             return buffer.ToString();
         }
   }
+
+    public static string GetProcessImagePath(int processId)
+    {
+        const uint ProcessQueryLimitedInformation = 0x1000;
+        IntPtr process = OpenProcess(ProcessQueryLimitedInformation, false, processId);
+        if (process == IntPtr.Zero)
+        {
+            return null;
+        }
+        try
+        {
+            StringBuilder path = new StringBuilder(32768);
+            uint pathLength = (uint)path.Capacity;
+            return QueryFullProcessImageNameW(process, 0, path, ref pathLength)
+                ? path.ToString()
+                : null;
+        }
+        finally
+        {
+            CloseHandle(process);
+        }
+  }
 }
 '@
         }
-        $resolved = [UnslothStudioFinalPath]::Resolve($fullPath)
+        $resolved = [UnslothStudioFinalPath]::Resolve($existingPath)
         if ($resolved.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolved = '\\' + $resolved.Substring(8)
         } elseif ($resolved.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolved = $resolved.Substring(4)
+        }
+        foreach ($segment in $missingSegments) {
+            $resolved = [System.IO.Path]::Combine($resolved, $segment)
         }
         return $resolved.TrimEnd('\', '/')
     }
@@ -1482,7 +1531,7 @@ exit 0
         # process has Studio files open and should not create a false abort.
         foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
             $executable = $null
-            try { $executable = $process.Path } catch { continue }
+            try { $executable = [UnslothStudioFinalPath]::GetProcessImagePath($process.Id) } catch { continue }
             if (-not $executable) { continue }
             try { $executable = Get-StudioFinalPath -Path $executable } catch { continue }
             if (Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact) {

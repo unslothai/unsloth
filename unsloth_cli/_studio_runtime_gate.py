@@ -73,11 +73,31 @@ def _canonical_windows_path(path: Path) -> str:
     return _resolved_windows_path(path).casefold()
 
 
+def _windows_paths_equal(left: str, right: str) -> bool:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    compare = kernel32.CompareStringOrdinal
+    compare.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+        wintypes.BOOL,
+    ]
+    compare.restype = ctypes.c_int
+    result = compare(left, -1, right, -1, True)
+    if result == 0:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return result == 2  # CSTR_EQUAL
+
+
 def uses_tauri_managed_root(studio_home: Path) -> bool:
     if sys.platform != "win32":
         return False
     managed_root = _windows_profile_path() / ".unsloth" / "studio"
-    return _canonical_windows_path(studio_home) == _canonical_windows_path(managed_root)
+    return _windows_paths_equal(
+        _resolved_windows_path(studio_home),
+        _resolved_windows_path(managed_root),
+    )
 
 
 def runtime_mutex_name_for_studio_home(studio_home: Path) -> str:

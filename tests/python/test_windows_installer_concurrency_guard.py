@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -112,6 +113,47 @@ $ErrorActionPreference = "Stop"
         child.terminate()
         child.wait(timeout = 10)
 
+@pytest.mark.skipif(
+    os.name != "nt" or sys.maxsize <= 2**32,
+    reason = "A 64-bit Windows test host is required",
+)
+def test_x86_powershell_reports_64_bit_managed_process(tmp_path: Path):
+    x86_shell = (
+        Path(os.environ["SystemRoot"])
+        / "SysWOW64"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    if not x86_shell.is_file():
+        pytest.skip("32-bit Windows PowerShell is unavailable")
+
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    detector = _process_helpers(source)
+    scripts = tmp_path / "unsloth_studio" / "Scripts"
+    scripts.mkdir(parents = True)
+    probe = scripts / "guard-probe.exe"
+    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
+    child = subprocess.Popen(
+        [str(probe), "-n", "6", "127.0.0.1"],
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        script = f"""
+$ErrorActionPreference = "Stop"
+{detector}
+@(Get-RunningStudioVenvProcesses -VenvPath $env:TEST_VENV) |
+    ForEach-Object {{ Write-Output $_.Id }}
+"""
+        env = os.environ.copy()
+        env["TEST_VENV"] = str(scripts.parent)
+        observed = _run_powershell(str(x86_shell), script, env).splitlines()
+        assert str(child.pid) in observed
+    finally:
+        child.terminate()
+        child.wait(timeout = 10)
+
+
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
@@ -194,6 +236,9 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     ]
     assert "Get-CimInstance" not in detector
     assert ".CommandLine" not in detector
+    assert "$process.Path" not in detector
+    assert "[UnslothStudioFinalPath]::GetProcessImagePath($process.Id)" in detector
+    assert "QueryFullProcessImageNameW" in source
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
@@ -362,6 +407,52 @@ Write-Output "accepted"
     env["TEST_TAURI_OVERRIDE"] = str(junction / ".unsloth" / "studio")
     env["TEST_TAURI_PROFILE"] = str(profile)
     assert _run_powershell(shell, script, env) == "accepted"
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_missing_root_beneath_junction_uses_the_physical_mutex_identity(
+    tmp_path: Path, shell: str
+):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    junction = tmp_path / "profile-alias"
+    junction_result = subprocess.run(
+        [os.environ["COMSPEC"], "/d", "/c", "mklink", "/J", str(junction), str(profile)],
+        capture_output = True,
+        text = True,
+    )
+    if junction_result.returncode != 0:
+        pytest.skip(f"Could not create a directory junction: {junction_result.stderr}")
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{_mutex_helpers(source)}
+$aliasRoot = $env:TEST_ALIAS_ROOT
+$physicalRoot = $env:TEST_PHYSICAL_ROOT
+$aliasMatch = Test-StudioPathEqual -Left $aliasRoot -Right $physicalRoot
+$physicalMatch = Test-StudioPathEqual -Left $physicalRoot -Right $physicalRoot
+$aliasRuntime = @(Get-StudioRuntimeMutexNames -TauriRootMatch $aliasMatch -Path $aliasRoot)
+$physicalRuntime = @(Get-StudioRuntimeMutexNames -TauriRootMatch $physicalMatch -Path $physicalRoot)
+Write-Output $aliasMatch
+Write-Output ((Get-StudioInstallMutexName -Path $aliasRoot) -eq (Get-StudioInstallMutexName -Path $physicalRoot))
+Write-Output $aliasRuntime.Count
+Write-Output $physicalRuntime.Count
+Write-Output ($aliasRuntime[0] -eq $physicalRuntime[0])
+Write-Output ($aliasRuntime[0].StartsWith("Global\\UnslothStudioManagedEnvironment-"))
+"""
+    env = os.environ.copy()
+    env["TEST_ALIAS_ROOT"] = str(junction / ".unsloth" / "studio")
+    env["TEST_PHYSICAL_ROOT"] = str(profile / ".unsloth" / "studio")
+    assert _run_powershell(shell, script, env).splitlines() == [
+        "True",
+        "True",
+        "1",
+        "1",
+        "True",
+        "True",
+    ]
+
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
