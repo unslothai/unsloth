@@ -108,11 +108,7 @@ $ErrorActionPreference = "Stop"
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("path_style", ["backslash", "forward"])
-def test_command_line_only_venv_consumer_is_reported(
-    tmp_path: Path,
-    shell: str,
-    path_style: str,
-):
+def test_command_line_only_venv_consumer_is_reported(tmp_path: Path, shell: str, path_style: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     detector = _process_helpers(source)
     venv = tmp_path / "unsloth_studio"
@@ -328,9 +324,7 @@ $names | ForEach-Object {{ Write-Output $_ }}
     names = _run_powershell(shell, script, env).splitlines()
     assert len(names) == 2
     assert any(name.startswith("Global\\UnslothStudioManagedEnvironment-S-1-") for name in names)
-    assert any(
-        name.startswith("Global\\UnslothStudioManagedEnvironmentPath-") for name in names
-    )
+    assert any(name.startswith("Global\\UnslothStudioManagedEnvironmentPath-") for name in names)
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
@@ -427,9 +421,7 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     restore = source.rindex("Restore-StudioVenvRollback")
     prompt = source.index("Start Unsloth Studio now?", restore)
     autostart = source.index("Start-Process -FilePath $UnslothExe", prompt)
-    release_runtime = source.rindex(
-        "Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]"
-    )
+    release_runtime = source.rindex("Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]")
     release_install = source.rindex("Exit-StudioInstallMutex -Mutex $studioInstallMutex")
     wait_for_exit = source.rindex("$studioAutoStartProcess.WaitForExit()")
 
