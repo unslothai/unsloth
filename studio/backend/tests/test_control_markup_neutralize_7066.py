@@ -5752,9 +5752,10 @@ def test_a_processor_target_is_profiled_against_its_own_template():
     # The processor keeps its own template, so the delimiter its render emits is profiled.
     assert catalog_tool_names(renderable_tool_catalog(tools, _Proc(), info)) == {"ok"}
     # Profiling it against the mapped template is what let the tool through.
-    assert catalog_tool_names(
-        renderable_tool_catalog(tools, _Proc(), info, template = mapped)
-    ) == {"pay<|zeta_proc|>", "ok"}
+    assert catalog_tool_names(renderable_tool_catalog(tools, _Proc(), info, template = mapped)) == {
+        "pay<|zeta_proc|>",
+        "ok",
+    }
     # A plain tokenizer still gets the mapped template, which its render does install.
     assert "mapped_chat_template(model_info or {}, active_model_name)" in (
         _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "chat_template_helpers.py"
