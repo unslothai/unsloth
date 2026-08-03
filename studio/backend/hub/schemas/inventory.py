@@ -177,6 +177,14 @@ class CachedRepoBase(BaseModel):
 
 class CachedGgufRepo(CachedRepoBase):
     model_format: ModelFormat = "gguf"
+    has_variant_state: bool = Field(
+        False,
+        description = (
+            "Whether a download manifest or cancel marker exists for some quant. A sibling "
+            "cancelled before any file landed changes nothing else on this row, so callers "
+            "watching for on-disk change need this to notice it."
+        ),
+    )
 
 
 class CachedGgufResponse(BaseModel):

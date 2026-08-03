@@ -145,6 +145,10 @@ export {
 } from "./hooks/use-chat-projects";
 export { subscribeDictationLevel } from "./adapters/dictation-level";
 export {
+  dictationFailed,
+  dictationProducedTranscript,
+} from "./adapters/dictation-outcome";
+export {
   StudioDictationAdapter,
   cancelActiveStudioDictation,
   isStudioDictationAvailable,

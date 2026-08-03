@@ -94,6 +94,44 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+/// A Tauri quit never fires beforeunload, so the frontend mirrors run state here.
+pub type TrainingActivityState = std::sync::Arc<std::sync::Mutex<bool>>;
+
+fn new_training_activity_state() -> TrainingActivityState {
+    std::sync::Arc::new(std::sync::Mutex::new(false))
+}
+
+#[tauri::command]
+fn set_training_active(state: tauri::State<'_, TrainingActivityState>, active: bool) {
+    if let Ok(mut running) = state.lock() {
+        *running = active;
+    }
+}
+
+/// Ask before quitting mid-training (true to proceed). Tray Quit only, as below.
+fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let Some(state) = app.try_state::<TrainingActivityState>() else {
+        return true;
+    };
+    if !state.lock().map(|running| *running).unwrap_or(false) {
+        return true;
+    }
+    app.dialog()
+        .message(
+            "Training is still running. Quitting now stops the run and the \
+             progress since the last checkpoint is lost.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Training in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep training".to_string(),
+        ))
+        .blocking_show()
+}
+
 /// Ask before quitting mid-install (true to proceed): `cleanup_child_processes` SIGTERMs the
 /// installer, leaving a venv that looks healthy but cannot start. Tray Quit only, since
 /// RunEvent::Exit must never block on a dialog nobody can answer.
@@ -248,6 +286,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     if !confirm_quit_during_install(&app_handle) {
                         return;
                     }
+                    if !confirm_quit_during_training(&app_handle) {
+                        return;
+                    }
                     cleanup_child_processes(&app_handle);
                     app_handle.exit(0);
                 });
@@ -298,11 +339,13 @@ fn main() {
         )
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
+        .manage(new_training_activity_state())
         .manage(native_intents::new_native_intake_state())
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
         .invoke_handler(tauri::generate_handler![
+            set_training_active,
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
             app_layout::reset_app_window_layout_initialized,

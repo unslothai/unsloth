@@ -75,8 +75,8 @@ def test_autoload_records_backend_loaded_model_identity():
     autoload = autoload.split("\n  try {", 1)[0]
     assert "const loadedModelId = loadResp.model || modelPath" in autoload
     assert "setCheckpoint(loadedModelId," in autoload
-    assert "id: loadedModelId" in autoload
-    assert "m.id === loadedModelId" in autoload
+    # syncModelCapabilities upserts the summary, matching on the id it is handed.
+    assert "syncModelCapabilities(loadedModelId," in autoload
 
 
 def test_chat_autoload_toast_is_persistent_and_dismissible():
@@ -395,8 +395,15 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
 
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert "loadId={c.load_id}" in picker, "the quant list cannot pass on a pin it never gets"
-    # Both rows and the gear beside each: Run reloads through the same meta.
-    assert picker.count("loadId: c.load_id") == 2, "the safetensors row and its gear need the pin"
+    # Every row that can start a load, and every gear beside one, reloads through
+    # the same meta and so has to carry the pin. Counted rather than matched
+    # loosely, so a new row that forgets it is a failure here rather than a load
+    # that silently follows the default ref. #7736 added the third: the collapsed
+    # single-quant GGUF row, which is a load site like the other two.
+    assert picker.count("loadId: c.load_id") == 3, (
+        "a row or gear that can start a load is missing the pin, or a new one was "
+        "added and this count needs to follow it"
+    )
     block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.

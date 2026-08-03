@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, Callable, List, Literal, Optional, Union
+from typing import Any, Callable, List, NamedTuple, Optional, Union
 import json
 import httpx
 from loggers import get_logger
@@ -22,6 +22,7 @@ import asyncio
 import threading
 import weakref
 from contextlib import ExitStack
+from dataclasses import replace
 
 
 import re as _re
@@ -1001,14 +1002,13 @@ if str(backend_path) not in sys.path:
 try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
+        GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
-        _canonicalize_spec_mode,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _extra_args_set_spec_type,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
@@ -1021,7 +1021,6 @@ try:
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
-        _tensor_parallel_matches_loaded,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
         parse_split_mode_override,
@@ -1053,14 +1052,13 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
+        GgufLoadIntent,
         LlamaCppBackend,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
-        _canonicalize_spec_mode,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _extra_args_set_spec_type,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
@@ -1073,7 +1071,6 @@ except ImportError:
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
-        _tensor_parallel_matches_loaded,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
         parse_split_mode_override,
@@ -1828,6 +1825,7 @@ async def _aiter_llama_stream_items(
 
 
 from models.inference import (
+    _InferenceRuntimeFields,
     LoadRequest,
     UnloadRequest,
     TranscribeRequest,
@@ -3250,14 +3248,30 @@ def _monitor_anthropic_response(
     return response
 
 
+def _peek_inference_backend() -> Any:
+    """The orchestrator if one already exists, else None. Never constructs one.
+
+    Constructing reaches get_default_models() -> get_device(), so during the warm a caller
+    that only describes what is loaded would block uvicorn on the torch import to answer
+    "nothing". A patched module getter still wins: that is this module's injection seam.
+    """
+    from core.inference import orchestrator as _orch
+
+    if get_inference_backend is not _orch.get_inference_backend:
+        return get_inference_backend()
+    return _orch.peek_inference_backend()
+
+
 def _monitor_context_length() -> Optional[int]:
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
         context_length = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if context_length is not None:
             return context_length
-    backend = get_inference_backend()
-    if not backend.active_model_name:
+    # Peek, not the constructing getter: called inline from the OpenAI, Responses and
+    # Anthropic monitor paths, and no orchestrator already means nothing is loaded.
+    backend = _peek_inference_backend()
+    if backend is None or not backend.active_model_name:
         return None
     models = getattr(backend, "models", {}) or {}
     model_info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
@@ -3302,7 +3316,11 @@ def _monitor_active_model() -> Optional[str]:
         if model_id and variant and ":" not in model_id:
             return f"{model_id}:{variant}"
         return model_id
-    backend = get_inference_backend()
+    # Peek: the monitor overlay is on by default and polls this read-only, so building
+    # the singleton to answer "nothing loaded" would import torch on a warm-disabled host.
+    backend = _peek_inference_backend()
+    if backend is None:
+        return None
     return public_model_id(backend.active_model_name) or backend.active_model_name
 
 
@@ -3405,24 +3423,17 @@ def _native_gguf_companion_usable(
     gguf_path: str | None,
     *,
     mtp_search_root: str | Path | None = None,
+    log_rejection: bool = False,
 ) -> bool:
     """Whether a native load would accept this MTP drafter, as a predicate for
     reload dedup. Same rules, so the two cannot disagree."""
     try:
         _validate_native_mtp_drafter(companion_path, gguf_path, mtp_search_root = mtp_search_root)
-    except HTTPException:
+    except HTTPException as exc:
+        if log_rejection:
+            logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
         return False
     return True
-
-
-def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
-    """Lowercase + strip a settings string, mapping blank/None to None."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip().lower()
-        return stripped or None
-    return value
 
 
 def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[str]]) -> bool:
@@ -3488,88 +3499,128 @@ def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
     return override is not None and override.strip().lower() != "tensor"
 
 
-def _parallel_slot_echo(llama_backend: LlamaCppBackend) -> dict:
-    """requested/effective parallel-slot fields for /load and /status echoes.
-
-    The diffusion runner ignores ``--parallel`` and never commits a count, so it
-    reports None like the non-GGUF paths; echoing the reset placeholder 1 would
-    fabricate an "invoked with 1 slot"."""
-    if llama_backend.is_diffusion:
-        return {"requested_parallel_slots": None, "parallel_slots": None}
-    return {
-        "requested_parallel_slots": llama_backend.requested_parallel_slots,
-        "parallel_slots": llama_backend.effective_parallel_slots,
+def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
+    """Runtime state shared by load, dedupe, and status; duplicates echo active settings."""
+    fields = {
+        name: getattr(llama_backend, name, getattr(llama_backend, f"_{name}", None))
+        for name in _InferenceRuntimeFields.model_fields
+        if hasattr(llama_backend, name) or hasattr(llama_backend, f"_{name}")
     }
+    fields.update(
+        speculative_type = llama_backend.requested_spec_mode,
+        requested_parallel_slots = (
+            None if llama_backend.is_diffusion else llama_backend.requested_parallel_slots
+        ),
+        parallel_slots = (
+            None if llama_backend.is_diffusion else llama_backend.effective_parallel_slots
+        ),
+    )
+    unresolved = (
+        set(_InferenceRuntimeFields.model_fields) - fields.keys() - {"requires_trust_remote_code"}
+    )
+    if unresolved:
+        raise AttributeError(
+            f"GGUF backend is missing runtime response fields: {sorted(unresolved)}"
+        )
+    return fields
 
 
-def _request_matches_loaded_settings(
+def _gguf_load_response(
+    llama_backend: LlamaCppBackend,
+    status: str,
+    model: str,
+    *,
+    display_name: Optional[str] = None,
+    is_local_model: bool,
+    inference_identifier: Optional[str] = None,
+) -> LoadResponse:
+    return LoadResponse(
+        status = status,
+        model = model,
+        display_name = display_name or model,
+        is_lora = False,
+        is_gguf = True,
+        is_local_model = is_local_model,
+        inference = load_inference_config(
+            inference_identifier or llama_backend.model_identifier or model
+        ),
+        **_llama_runtime_fields(llama_backend),
+    )
+
+
+def _gguf_request_intent(
+    source: GgufLoadIntent,
+    request: LoadRequest,
+    *,
+    chat_template_override: Optional[str],
+    extra_args: Optional[list[str]],
+    gpu_ids: Optional[list[int]],
+    n_parallel: int,
+    **changes,
+) -> GgufLoadIntent:
+    settings = {
+        name: getattr(request, name)
+        for name in vars(source)
+        if hasattr(request, name) and (name != "hf_token" or source.hf_repo)
+    }
+    settings.update(
+        n_ctx = request.max_seq_length,
+        chat_template_override = chat_template_override,
+        extra_args = extra_args,
+        gpu_ids = gpu_ids,
+        n_parallel = n_parallel,
+    )
+    settings.update(changes)
+    return replace(source, **settings)
+
+
+def _mtp_draft_for_path(
+    gguf_path: Optional[str],
+    native_grant_backed: bool,
+    *,
+    log_native_fallback: bool = False,
+) -> Optional[str]:
+    if not gguf_path:
+        return None
+    root = _local_gguf_companion_search_root(gguf_path, gguf_path)
+    rejected = False
+    accept = None
+    if native_grant_backed:
+
+        def accept(candidate):
+            nonlocal rejected
+            usable = _native_gguf_companion_usable(
+                candidate,
+                gguf_path,
+                mtp_search_root = root,
+                log_rejection = log_native_fallback,
+            )
+            rejected |= not usable
+            return usable
+
+    detected = detect_mtp_file(
+        gguf_path,
+        search_root = root,
+        accept = accept,
+    )
+    if log_native_fallback and rejected and detected:
+        logger.info("Using MTP subdirectory drafter for native load: %s", detected)
+    return detected
+
+
+def _active_gguf_intent(
     request: LoadRequest,
     llama_backend: LlamaCppBackend,
-    effective_chat_template_override: Optional[str] = None,
-    requested_parallel_slots: Optional[int] = None,
-    native_grant_backed: bool = False,
-) -> bool:
-    """True iff every runtime setting on the request matches the loaded server.
-    Caller has already checked model+variant+is_loaded. See #5401.
-
-    ``effective_chat_template_override`` is the resolved template that will be
-    launched (user override, else a bundled family template such as the
-    gemma-4 override), so the dedup compares against what the backend actually
-    holds rather than the raw request field. Defaults to the request field for
-    callers that do not resolve a bundled override.
-
-    ``requested_parallel_slots`` is the resolved count the load would use
-    (per-load ``n_parallel``, else the server-wide default); None skips it."""
-    # A virtualised Metal device corrupts every offloaded layer, so load_model rewrites
-    # the placement to CPU and records THAT. This check runs first, so compare the
-    # rewritten request: a browser adopts the normalized echo, but an API client, second
-    # tab or saved preset keeps sending Auto and would mismatch on every call, tearing
-    # down a healthy CPU server (and 409-ing or cancelling a live generation). Applied
-    # to the compared values only -- the raw request still drives _should_strip_*, which
-    # must keep describing what the reload's inheritance resolver would do.
-    _pv_forced = _metal_device_is_paravirtual()
-    _pv = (
-        paravirtual_normalized_request(
-            gpu_memory_mode = request.gpu_memory_mode,
-            gpu_layers = request.gpu_layers,
-            tensor_parallel = request.tensor_parallel,
-            tensor_split = request.tensor_split,
-            n_cpu_moe = request.n_cpu_moe,
-            extra_args = request.llama_extra_args,
-            log_dropped = False,
-        )
-        if _pv_forced
-        else None
-    )
-    _req_gpu_memory_mode = _pv.gpu_memory_mode if _pv else request.gpu_memory_mode
-    _req_gpu_layers = _pv.gpu_layers if _pv else request.gpu_layers
-    _req_n_cpu_moe = _pv.n_cpu_moe if _pv else request.n_cpu_moe
-    _req_tensor_split = _pv.tensor_split if _pv else request.tensor_split
-    _req_extra_args = _pv.extra_args if _pv else request.llama_extra_args
-    # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask an
-    # Auto-vs-explicit slider flip.
-    if request.max_seq_length != llama_backend.requested_n_ctx:
-        return False
-    # Requested-vs-requested for the same reason: the fitter may launch fewer
-    # slots. Diffusion ignores --parallel, so a change there must not reload.
-    if (
-        requested_parallel_slots is not None
-        and not llama_backend.is_diffusion
-        and int(requested_parallel_slots) != llama_backend.requested_parallel_slots
-    ):
-        return False
-    if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
-        llama_backend.cache_type_kv
-    ):
-        return False
-    # Reconcile a user --split-mode in extras into the effective tensor state.
-    # When the request omits llama_extra_args ("inherit"), compare using the
-    # stored extras stripped the way the reload strips them, so an extras-driven
-    # tensor load isn't seen as a mismatch that needlessly reloads the server.
-    backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
+    *,
+    model_identifier: str,
+    chat_template_override: Optional[str],
+    n_parallel: int,
+    native_grant_backed: bool,
+) -> GgufLoadIntent:
+    backend_extra = list(llama_backend.extra_args or ())
     effective_extra = (
-        _req_extra_args
-        if _req_extra_args is not None
+        request.llama_extra_args
+        if request.llama_extra_args is not None
         else strip_shadowing_flags(
             backend_extra,
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
@@ -3577,198 +3628,31 @@ def _request_matches_loaded_settings(
             strip_offload = request.gpu_memory_mode == "manual",
         )
     )
-    if _pv_forced and effective_extra:
-        # The inherit branch above covers the shadow strip only; the reload would run
-        # the CPU pin over it too.
-        effective_extra = paravirtual_normalized_request(
-            extra_args = effective_extra, log_dropped = False
-        ).extra_args
-    if not llama_backend.is_diffusion and llama_backend.swa_full != _swa_full_from_args_or_env(
-        effective_extra
-    ):
-        return False
-    # Nothing launches a tensor split on a virtualised Metal device (CPU pin, and
-    # --split-mode is overridden with the default layer split), so judge the normalized
-    # request there: an extras `-sm tensor`, which the pin deliberately leaves in place,
-    # would otherwise never match the stored False.
-    if _pv_forced:
-        if llama_backend.tensor_parallel:
-            return False
-    elif not _tensor_parallel_matches_loaded(
-        effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
-    ):
-        return False
-    # The diffusion runner takes the layer split but ignores the MoE/split knobs, so only
-    # the GPU pick and the effective --ngl matter for it.
-    if llama_backend.is_diffusion:
-        # Compare the EFFECTIVE split, not the raw mode: a standing manual preference would
-        # reload forever, while raw gpu_layers would miss that Auto(-1) and Unsloth mode both
-        # mean "runner default". And compare against what the runner was ASKED for, not what
-        # it applied: without --ngl the two differ and the same request mismatches forever.
-        from core.inference.llama_cpp import _diffusion_manual_ngl
-
-        loaded_ngl = llama_backend.diffusion_requested_ngl
-        requested_ngl = _diffusion_manual_ngl(_req_gpu_memory_mode, _req_gpu_layers)
-        if requested_ngl != loaded_ngl:
-            return False
-        # A dropped split (old shim) still dedupes, unless the shim has gained --ngl
-        # since (zoo upgraded mid-session). Mirrors _already_in_target_state.
-        if (
-            requested_ngl is not None
-            and llama_backend.gpu_layers != requested_ngl
-            and llama_backend.diffusion_split_supported()
-        ):
-            return False
-    else:
-        if _req_gpu_memory_mode != llama_backend.gpu_memory_mode:
-            return False
-        # Manual: a layer-count change always reloads; MoE/split only matter with
-        # an explicit offload (gpu_layers >= 0), so a leftover value under Auto
-        # must not force one. Mirrors LlamaCppBackend._already_in_target_state.
-        if _req_gpu_memory_mode == "manual" and (
-            _req_gpu_layers != llama_backend.gpu_layers
-            or (
-                _req_gpu_layers >= 0
-                and (
-                    _req_n_cpu_moe != llama_backend.n_cpu_moe
-                    or (_req_tensor_split or None) != (llama_backend.tensor_split or None)
-                )
-            )
-        ):
-            return False
-    # A regular GGUF may narrow the requested placement pool. Accept either the
-    # original request or the effective status-echoed subset; diffusion keeps
-    # its single-device normalization.
-    if not llama_backend.matches_gpu_ids(request.gpu_ids):
-        return False
-    # Preserved tensor->layer fallback (both report tensor=off, so the check above
-    # matches): if the user now explicitly drops tensor intent, reload so placement
-    # re-selects instead of keeping the all-GPU mask (#6659). The effective check
-    # includes the env, so an env-only tensor (LLAMA_ARG_SPLIT_MODE=tensor) that
-    # can't actually be dropped falls through to the env-downgrade match, not a loop.
-    if llama_backend.layer_preserves_tensor_intent and _is_explicit_tensor_drop(request):
-        return False
-    # Spec decoding works on vision models too (MTP is mmproj-compatible,
-    # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
-    # the real requested mode -- coercing vision to ``off`` here used to
-    # swallow every spec-mode change on a vision model as already_loaded.
-    req_mode = _canonicalize_spec_mode(request.speculative_type) or "auto"
-    backend_mode = llama_backend.requested_spec_mode or "auto"
-    if req_mode != backend_mode:
-        return False
-    # Prior HF load fell back with drafter_not_found: a same-settings reload must
-    # retry the download, not dedupe to the stale fallback. HF only (hf_repo set);
-    # local/native loads have no download to retry (handled by the path compare).
-    if (
-        llama_backend.hf_repo
-        and llama_backend.spec_fallback_reason == "drafter_not_found"
-        and req_mode in ("auto", "mtp", "mtp+ngram")
-        and not _extra_args_set_spec_type(effective_extra)
-    ):
-        return False
-    # spec_draft_n_max only matters with an MTP variant; None means "platform
-    # default" and matches whatever the backend chose.
-    if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
-        if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):
-            return False
-    _effective_cto = (
-        effective_chat_template_override
-        if effective_chat_template_override is not None
-        else request.chat_template_override
+    source = llama_backend.last_load_intent or GgufLoadIntent(
+        model_identifier = model_identifier,
+        gguf_path = None if llama_backend.hf_repo else llama_backend.gguf_path,
+        hf_repo = llama_backend.hf_repo,
+        hf_variant = llama_backend.hf_variant,
     )
-    if (_effective_cto or None) != (llama_backend.chat_template_override or None):
-        return False
-    # llama_extra_args=None means "inherit"; only an explicit differing list
-    # forces a reload. On the inherit path, refuse to match if stored extras
-    # contain any shadow flag, so the reload path strips them rather than
-    # leaving a stale override in effect. (backend_extra computed above.)
-    if _req_extra_args is None:
-        # Mirror the reload's conditional strips, so a preserved non-tensor mode
-        # (row/none/layer) isn't seen as stale and doesn't trigger a needless
-        # reload of a healthy server, while an inherited offload/ratio flag that
-        # the reload *would* strip is correctly seen as stale.
-        if (
-            backend_extra
-            and strip_shadowing_flags(
-                backend_extra,
-                strip_split_mode = _should_strip_split_mode(request, backend_extra),
-                strip_tensor_split = _should_strip_tensor_split(request),
-                strip_offload = request.gpu_memory_mode == "manual",
-            )
-            != backend_extra
-        ):
-            return False
-    else:
-        # Compare against what the last load was INVOKED with, not what it launched: a
-        # rewrite the caller cannot see (the virtualised-Metal drafter drop strips the
-        # whole spec group) would never match the list the client keeps sending.
-        _strip_dev = bool(request.gpu_ids)
-        _request_extra = (
-            strip_shadowing_flags(
-                _req_extra_args,
-                strip_context = False,
-                strip_cache = False,
-                strip_spec = False,
-                strip_template = False,
-                strip_split_mode = False,
-                strip_device = _strip_dev,
-            )
-            if _strip_dev
-            else list(_req_extra_args)
-        )
-        if _request_extra != (llama_backend.requested_extra_args or []):
-            return False
-    # A separate drafter (Gemma's root mtp-*.gguf) appearing or disappearing
-    # next to the loaded weights changes the launch command (--model-draft),
-    # so a duplicate /load must reload rather than dedupe. Always compare the
-    # detected vs stored drafter when the mode can use one and the user does
-    # not own --spec-type: the resolved-path compare is cheap and handles all
-    # four cases (both None -> match; one None -> reload; equal -> match;
-    # different -> reload), including a drafter deleted out from under a
-    # running server. Runs last: it stats the filesystem, so every pure-memory
-    # comparison above short-circuits first. Resolve both sides since the
-    # stored launch path may be a snapshot symlink while detect_mtp_file
-    # returns the resolved blob.
-    if req_mode in ("auto", "mtp", "mtp+ngram") and llama_backend.gguf_path:
-        effective_extras = (
-            _req_extra_args if _req_extra_args is not None else llama_backend.requested_extra_args
-        )
-        if not _extra_args_set_spec_type(effective_extras):
-            companion_root = _local_gguf_companion_search_root(
-                llama_backend.gguf_path, llama_backend.gguf_path
-            )
-            detected = detect_mtp_file(llama_backend.gguf_path, search_root = companion_root)
-            if native_grant_backed:
-                # Mirror the load path's choice, or the comparison is against a
-                # drafter that never launched. A native grant cannot reach a
-                # root drafter outside it, so the load falls back to the MTP/
-                # copy and, failing that, to no drafter at all. An ordinary
-                # load reaches the root drafter, so it keeps root-first
-                # detection and reloads when one appears.
-                def _usable(candidate: str) -> bool:
-                    return _native_gguf_companion_usable(
-                        candidate, llama_backend.gguf_path, mtp_search_root = companion_root
-                    )
-
-                if detected and not _usable(detected):
-                    detected = detect_mtp_file(
-                        llama_backend.gguf_path,
-                        search_root = companion_root,
-                        skip_root = True,
-                        accept = _usable,
-                    )
-            # A drafter the load deliberately suppressed (virtualised Metal with no
-            # draft-layer flag) counts as stored: it is still on disk, so detecting it
-            # again must not read as a settings change and reload.
-            stored = llama_backend.mtp_draft_path or llama_backend.mtp_draft_suppressed_path
-            try:
-                detected_resolved = Path(detected).resolve() if detected else None
-                stored_resolved = Path(stored).resolve() if stored else None
-            except OSError:
-                return False
-            if detected_resolved != stored_resolved:
-                return False
-    return True
+    return _gguf_request_intent(
+        source,
+        request,
+        model_identifier = model_identifier,
+        # A repo or directory variant has not been resolved to a file yet. Do
+        # not inherit the resident file or source matching would compare that
+        # file with itself and ignore a requested quant switch.
+        gguf_path = source.gguf_path if model_identifier.lower().endswith(".gguf") else None,
+        hf_variant = request.gguf_variant or source.hf_variant,
+        chat_template_override = chat_template_override,
+        extra_args = effective_extra,
+        gpu_ids = request.gpu_ids,
+        n_parallel = n_parallel,
+        preserve_multi_gpu_on_layer = (
+            llama_backend.layer_preserves_tensor_intent and not _is_explicit_tensor_drop(request)
+        ),
+        mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
+        compare_mtp_draft = True,
+    )
 
 
 def _resolve_model_identifier_for_request(
@@ -4112,7 +3996,7 @@ async def _no_model_loaded_error(
     if named is None or not get_openai_auto_switch_enabled():
         return status, _no_model_loaded_detail(base)
     try:
-        if _loaded_satisfies(named):
+        if await asyncio.to_thread(_loaded_satisfies, named):
             # Resident but on a backend this endpoint can't use, so "not downloaded" is false.
             return status, _no_model_loaded_detail(base)
         if await asyncio.to_thread(resolve_local_gguf, named) is not None:
@@ -4175,7 +4059,7 @@ async def _maybe_auto_download_model(
     if not is_downloadable_ref(requested_model):
         return
     # An Ollama-style tag (":latest") names no quant, so the resolver misses a servable model.
-    if _loaded_satisfies(requested_model):
+    if await asyncio.to_thread(_loaded_satisfies, requested_model):
         return
     try:
         refusal = await maybe_auto_download(
@@ -4420,11 +4304,11 @@ async def _reject_unservable_model(
 
     still_indexing = False
     try:
-        if _loaded_satisfies(requested_model):
+        if await asyncio.to_thread(_loaded_satisfies, requested_model):
             return
         if not (
             get_llama_cpp_backend().is_loaded
-            or getattr(get_inference_backend(), "active_model_name", None)
+            or getattr(await asyncio.to_thread(get_inference_backend), "active_model_name", None)
         ):
             return
         # Refresh in the background and read the index as-is: scanning here would stall the
@@ -4451,9 +4335,11 @@ async def _reject_unservable_model(
         # so match on the path too. Quants of one repo share a directory, so the path
         # alone cannot tell them apart: without the variant check an explicit :Q8_0
         # would be answered by a resident Q4_K_M.
+        # Off-loop: reads the Transformers singleton, and the llama.cpp short-circuits above
+        # skip the offloaded reads, so on a restart this built the singleton on the loop.
         if (
             resolved is not None
-            and _resolves_to_resident(resolved[0], llama_only = quantified)
+            and await asyncio.to_thread(_resolves_to_resident, resolved[0], llama_only = quantified)
             and (not quantified or _resident_quant_is(variant))
         ):
             return
@@ -4462,7 +4348,7 @@ async def _reject_unservable_model(
         advertised = _advertised_local_path(base)
         if (
             advertised is not None
-            and _resolves_to_resident(advertised, llama_only = quantified)
+            and await asyncio.to_thread(_resolves_to_resident, advertised, llama_only = quantified)
             and (not quantified or _resident_quant_is(variant))
         ):
             return
@@ -4599,7 +4485,9 @@ async def _maybe_auto_switch_model(
             if (
                 not last
                 or get_llama_cpp_backend().is_loaded
-                or getattr(get_inference_backend(), "active_model_name", None)
+                or getattr(
+                    await asyncio.to_thread(get_inference_backend), "active_model_name", None
+                )
             ):
                 return
             if len(last) == 3:
@@ -5048,11 +4936,20 @@ async def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
         from utils.hardware import DeviceType, get_device
         from utils.hardware.hardware import resolve_requested_gpu_ids
 
-        is_vulkan = LlamaCppBackend._is_vulkan_backend()
-        if get_device() == DeviceType.XPU and not is_vulkan:
+        # One hop for the whole device-dependent block: resolve_requested_gpu_ids() reaches
+        # get_device() itself, so both wait on the detection lock during the warm.
+        def _device_and_resolution() -> tuple[object, bool, list]:
+            is_vulkan = LlamaCppBackend._is_vulkan_backend()
+            return (
+                get_device(),
+                is_vulkan,
+                resolve_requested_gpu_ids(gpu_ids, is_vulkan = is_vulkan),
+            )
+
+        device, is_vulkan, resolved = await asyncio.to_thread(_device_and_resolution)
+        if device == DeviceType.XPU and not is_vulkan:
             # Rejected outright on XPU.
             return False
-        resolved = resolve_requested_gpu_ids(gpu_ids, is_vulkan = is_vulkan)
         if is_vulkan and resolved:
             # Vulkan ordinals are their own index space, so presence needs the ggml probe.
             binary = LlamaCppBackend._find_llama_server_binary()
@@ -5112,7 +5009,8 @@ async def _resolve_gguf_gpu_ids_for_request(
         diffusion_kind = _classify_diffusion_gguf(config)
     confirmed_diffusion = diffusion_kind is True
     definitively_non_diffusion = diffusion_kind is False
-    device = get_device()
+    # Off-loop: get_device() waits on the detection lock, i.e. the cold torch import.
+    device = await asyncio.to_thread(get_device)
     lacks_gpu_lib = getattr(llama_backend, "_backend_lacks_gpu_lib", None)
 
     # ROCm is deliberately DeviceType.CUDA internally because it uses
@@ -5194,22 +5092,94 @@ async def _resolve_gguf_gpu_ids_for_request(
     return resolved, ids_are_vulkan_ordinals
 
 
+class _LoadPlacement(NamedTuple):
+    requested_gpu_ids: Optional[List[int]]
+    resolved_gpu_ids: Optional[List[int]]
+    gpu_ids_are_vulkan_ordinals: bool
+    diffusion_kind: Optional[bool]
+
+
+def _resolve_parallel_slots(request, fastapi_request: Optional[Request]) -> int:
+    if request.n_parallel is not None:
+        return request.n_parallel
+    state = getattr(getattr(fastapi_request, "app", None), "state", None)
+    return getattr(state, "llama_parallel_slots", 1)
+
+
+async def _prepare_load_placement(
+    config: ModelConfig,
+    request: LoadRequest | ValidateModelRequest,
+    extra_args: Optional[list[str]],
+) -> _LoadPlacement:
+    requested = request.gpu_ids or None
+    if not config.is_gguf:
+        return _LoadPlacement(requested, None, False, False)
+    diffusion_kind = _classify_diffusion_gguf(config)
+    resolved, is_vulkan = await _resolve_gguf_gpu_ids_for_request(
+        config, requested, diffusion_kind = diffusion_kind
+    )
+    _reject_draft_device_with_gpu_ids(resolved, extra_args, gpu_ids_are_vulkan_ordinals = is_vulkan)
+    return _LoadPlacement(requested, resolved, is_vulkan, diffusion_kind)
+
+
+def _resolve_gguf_load_intent(
+    config: ModelConfig,
+    request: LoadRequest,
+    *,
+    native_grant_backed: bool,
+    chat_template_override: Optional[str],
+    extra_args: Optional[list[str]],
+    placement: _LoadPlacement,
+    n_parallel: int,
+) -> GgufLoadIntent:
+    """Resolve source, companions, settings, and placement into one load value."""
+    if config.gguf_hf_repo:
+        source = GgufLoadIntent(
+            model_identifier = config.identifier,
+            hf_repo = config.gguf_hf_repo,
+            hf_variant = config.gguf_variant,
+            hf_token = request.hf_token,
+        )
+    else:
+        if native_grant_backed:
+            if config.gguf_mmproj_file:
+                _validate_native_gguf_companion(
+                    config.gguf_mmproj_file, config.gguf_file, "vision companion"
+                )
+            if config.gguf_mtp_file:
+                config.gguf_mtp_file = _mtp_draft_for_path(
+                    config.gguf_file,
+                    True,
+                    log_native_fallback = True,
+                )
+        source = GgufLoadIntent(
+            model_identifier = config.identifier,
+            gguf_path = config.gguf_file,
+            mmproj_path = config.gguf_mmproj_file,
+            mtp_draft_path = config.gguf_mtp_file,
+            hf_variant = config.gguf_variant,
+        )
+
+    return _gguf_request_intent(
+        source,
+        request,
+        chat_template_override = chat_template_override,
+        extra_args = extra_args,
+        gpu_ids = placement.resolved_gpu_ids,
+        n_parallel = n_parallel,
+        is_vision = config.is_vision,
+        gpu_ids_are_vulkan_ordinals = placement.gpu_ids_are_vulkan_ordinals,
+    )
+
+
 def _guard_chat_load_against_training(
     config: ModelConfig,
+    request: LoadRequest | ValidateModelRequest,
     *,
-    model_identifier: str,
-    hf_token: Optional[str],
     load_in_4bit: bool,
-    max_seq_length: int,
-    requested_gpu_ids: Optional[List[int]],
+    placement: _LoadPlacement,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
-    cache_type_kv: Optional[str] = None,
-    tensor_parallel: bool = False,
-    gpu_memory_mode: Literal["auto", "manual"] = "auto",
-    gpu_layers: int = -1,
-    gpu_ids_are_vulkan_ordinals: bool = False,
-    diffusion_kind: Optional[bool] | object = _DIFFUSION_KIND_UNSET,
 ) -> None:
     """Protect active training from automatically placed chat-model loads.
 
@@ -5225,6 +5195,9 @@ def _guard_chat_load_against_training(
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
 
+    requested_gpu_ids = placement.requested_gpu_ids
+    gpu_ids_are_vulkan_ordinals = placement.gpu_ids_are_vulkan_ordinals
+    diffusion_kind = placement.diffusion_kind
     try:
         if not get_training_backend().is_training_active():
             return
@@ -5238,29 +5211,32 @@ def _guard_chat_load_against_training(
     # load_model rewrites a GGUF placement to CPU on a virtualised Metal device, so guard
     # what will run, not what was asked: sized as the raw Auto request, a CPU-only chat
     # load can be refused for competing over VRAM it never takes. Same helper the launch
-    # and both duplicate-load comparators use.
+    # and the duplicate-load comparator use.
+    _guard_gpu_memory_mode = request.gpu_memory_mode
+    _guard_gpu_layers = request.gpu_layers
+    _guard_tensor_parallel = request.tensor_parallel
     if is_gguf and _metal_device_is_paravirtual():
         _pv = paravirtual_normalized_request(
-            gpu_memory_mode = gpu_memory_mode,
-            gpu_layers = gpu_layers,
-            tensor_parallel = tensor_parallel,
+            gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
+            tensor_parallel = request.tensor_parallel,
             tensor_split = None,
             n_cpu_moe = 0,
             extra_args = llama_extra_args,
             log_dropped = False,
         )
-        gpu_memory_mode = _pv.gpu_memory_mode
-        gpu_layers = _pv.gpu_layers
-        tensor_parallel = _pv.tensor_parallel
+        _guard_gpu_memory_mode = _pv.gpu_memory_mode
+        _guard_gpu_layers = _pv.gpu_layers
+        _guard_tensor_parallel = _pv.tensor_parallel
         llama_extra_args = _pv.extra_args
-    if diffusion_kind is _DIFFUSION_KIND_UNSET:
-        diffusion_kind = _classify_diffusion_gguf(config) if is_gguf else False
-    if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
+    if is_gguf and _guard_gpu_memory_mode == "manual" and (diffusion_kind is False):
         return
     # A zero-layer diffusion split places no model layers on any device, so it cannot compete
     # with training for VRAM. Mirrors the loader, which folds the same condition into its
     # cpu_only (core/inference/llama_cpp.py).
-    diffusion_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers) if is_gguf else None
+    diffusion_ngl = (
+        _diffusion_manual_ngl(_guard_gpu_memory_mode, _guard_gpu_layers) if is_gguf else None
+    )
     if diffusion_ngl is not None and diffusion_kind is not False:
         # The loader drops the split when the shim has no --ngl and launches GPU-resident.
         # Guard what will run, not what was asked, or a zero-layer request skips the VRAM
@@ -5327,13 +5303,13 @@ def _guard_chat_load_against_training(
     required_override_gb = (
         _estimate_gguf_required_gb(
             config,
-            hf_token = hf_token,
-            max_seq_length = max_seq_length,
+            hf_token = request.hf_token,
+            max_seq_length = request.max_seq_length,
             llama_extra_args = llama_extra_args,
             n_parallel = n_parallel,
-            cache_type_kv = cache_type_kv,
+            cache_type_kv = request.cache_type_kv,
             tensor_parallel = (
-                _effective_tensor_parallel(llama_extra_args, tensor_parallel)
+                _effective_tensor_parallel(llama_extra_args, _guard_tensor_parallel)
                 and (
                     is_vulkan_backend
                     or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2
@@ -5375,10 +5351,10 @@ def _guard_chat_load_against_training(
             vulkan_free_vram_gb = {}
 
     ok, info = can_load_chat_during_training(
-        model_name = model_identifier,
-        hf_token = hf_token,
+        model_name = getattr(config, "identifier", request.model_path),
+        hf_token = request.hf_token,
         load_in_4bit = load_in_4bit,
-        max_seq_length = max_seq_length,
+        max_seq_length = request.max_seq_length,
         requested_gpu_ids = requested_gpu_ids,
         is_gguf = is_gguf,
         gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
@@ -5962,100 +5938,47 @@ async def _load_model_impl(
         )
 
         # ── Already-loaded check: skip reload if the exact model is active ──
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         llama_backend = get_llama_cpp_backend()
 
-        # Resolve the slot count once (per-load field, else the server-wide
-        # --parallel default) so the dedupe, the training guard and the load
-        # kwargs all size against what launches. app.state stays the launch
-        # intent / admission fallback; getattr because direct callers have no app.
-        _app_state = getattr(getattr(fastapi_request, "app", None), "state", None)
-        _n_parallel = (
-            request.n_parallel
-            if request.n_parallel is not None
-            else getattr(_app_state, "llama_parallel_slots", 1)
-        )
+        # Resolve once so dedupe, admission and launch use the same slot count.
+        _n_parallel = _resolve_parallel_slots(request, fastapi_request)
 
-        is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
-        if request.gguf_variant or is_direct_gguf_request:
-            gguf_variant_matches = is_direct_gguf_request or bool(
-                llama_backend.hf_variant
-                and request.gguf_variant
-                and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
-            )
-            if (
-                llama_backend.is_loaded
-                and gguf_variant_matches
-                and llama_backend.model_identifier
-                and llama_backend.model_identifier.lower() == model_identifier.lower()
-                # Match runtime settings so Apply isn't dropped (#5401).
-                and _request_matches_loaded_settings(
-                    request,
-                    llama_backend,
-                    effective_chat_template_override,
-                    requested_parallel_slots = _n_parallel,
-                    native_grant_backed = native_grant_backed,
-                )
-                # Skip if a prior audio probe failed -- let load_model retry.
+        def _reuse_loaded_gguf(
+            intent: GgufLoadIntent, *, display_name: Optional[str] = None
+        ) -> Optional[LoadResponse]:
+            if not (
+                llama_backend.adopt_load_intent_if_matched(intent)
                 and getattr(llama_backend, "_audio_probed", True)
             ):
-                llama_backend._record_matching_gpu_request(request.gpu_ids)
-                # Nothing was loaded, so the monitor must not show a load row.
-                api_monitor.discard(_load_event)
-                logger.info(
-                    "Model already loaded (GGUF): "
-                    f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"
-                )
-                inference_config = load_inference_config(llama_backend.model_identifier)
+                return None
+            api_monitor.discard(_load_event)
+            logger.info("Model already loaded (GGUF): %s, skipping reload", model_log_label)
+            return _gguf_load_response(
+                llama_backend,
+                "already_loaded",
+                model_log_label if native_grant_backed else llama_backend.model_identifier,
+                display_name = model_log_label if native_grant_backed else display_name,
+                is_local_model = _loaded_is_local_model(
+                    llama_backend, native_grant_backed, llama_backend.model_identifier
+                ),
+            )
 
-                _gguf_audio = getattr(llama_backend, "_audio_type", None)
-                _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
-                return LoadResponse(
-                    status = "already_loaded",
-                    model = model_log_label
-                    if native_grant_backed
-                    else llama_backend.model_identifier,
-                    display_name = model_log_label
-                    if native_grant_backed
-                    else llama_backend.model_identifier,
-                    is_vision = llama_backend._is_vision,
-                    is_lora = False,
-                    is_gguf = True,
-                    is_local_model = _loaded_is_local_model(
-                        llama_backend, native_grant_backed, llama_backend.model_identifier
-                    ),
-                    is_diffusion = llama_backend.is_diffusion,
-                    diffusion_requested_ngl = llama_backend.diffusion_requested_ngl,
-                    is_audio = _gguf_is_audio,
-                    audio_type = _gguf_audio,
-                    has_audio_input = getattr(llama_backend, "_has_audio_input", False),
-                    inference = inference_config,
-                    # GGUF loads via llama.cpp: auto_map never executes, so inert (matches validate_model).
-                    requires_trust_remote_code = False,
-                    context_length = llama_backend.context_length,
-                    max_context_length = llama_backend.max_context_length,
-                    native_context_length = llama_backend.native_context_length,
-                    supports_reasoning = llama_backend.supports_reasoning,
-                    reasoning_style = llama_backend.reasoning_style,
-                    reasoning_effort_levels = llama_backend.reasoning_effort_levels,
-                    reasoning_always_on = llama_backend.reasoning_always_on,
-                    supports_preserve_thinking = llama_backend.supports_preserve_thinking,
-                    supports_tools = llama_backend.supports_tools,
-                    chat_template = llama_backend.chat_template,
-                    speculative_type = llama_backend.requested_spec_mode,
-                    spec_draft_n_max = llama_backend.spec_draft_n_max,
-                    tensor_parallel = llama_backend.tensor_parallel,
-                    gpu_memory_mode = llama_backend.gpu_memory_mode,
-                    gpu_layers = llama_backend.gpu_layers,
-                    n_cpu_moe = llama_backend.n_cpu_moe,
-                    tensor_split = llama_backend.tensor_split,
-                    n_layers = llama_backend.n_layers,
-                    n_moe_layers = llama_backend.n_moe_layers,
-                    gpu_ids = llama_backend.gpu_ids,
-                    requested_gpu_ids = llama_backend.requested_gpu_ids,
-                    **_parallel_slot_echo(llama_backend),
+        is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
+        if llama_backend.is_loaded and (request.gguf_variant or is_direct_gguf_request):
+            reused = _reuse_loaded_gguf(
+                _active_gguf_intent(
+                    request,
+                    llama_backend,
+                    model_identifier = model_identifier,
+                    chat_template_override = effective_chat_template_override,
+                    n_parallel = _n_parallel,
+                    native_grant_backed = native_grant_backed,
                 )
-        else:
+            )
+            if reused is not None:
+                return reused
+        if not (request.gguf_variant or is_direct_gguf_request):
             if (
                 backend.active_model_name
                 and backend.active_model_name.lower() == model_identifier.lower()
@@ -6103,19 +6026,6 @@ async def _load_model_impl(
                     chat_template = _chat_template,
                 )
 
-        # Past every already_loaded fast return, so this really will replace the running model: gate
-        # it on the chats that would stop. Refusal only, so a non-forced swap fails fast; the checks
-        # between here and the teardown (identifier, GPU, training guard, downloads) can still
-        # reject the load, and cancelling now would stop every chat for a model that never loads.
-        # Auto-switch passes no hook and keeps its current behaviour.
-        if on_reload_confirmed is not None:
-            on_reload_confirmed(cancel = False)
-
-        # Destructive cancel still owed at the teardown below, so it can be deferred past every
-        # remaining check; the drains key off this. Only a forced swap cancels: unforced already
-        # 409'd above, auto-switch has no hook.
-        cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active)
-
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # Probe wrap so offline loads skip 30-60s of soft-failed network checks before
         # the worker starts. Off-loop: the guard can spend seconds on DNS plus a HEAD and
@@ -6129,6 +6039,8 @@ async def _load_model_impl(
                     gguf_variant = request.gguf_variant,
                 )
 
+        # Guard and call go to the worker together: from_identifier can import transformers
+        # to build the detection registry, and the guard's probe is a network round trip.
         config = await asyncio.to_thread(_resolve_config)
 
         if not config:
@@ -6146,27 +6058,52 @@ async def _load_model_impl(
             effective_chat_template_override,
         )
 
-        # Normalize gpu_ids: empty list means auto-selection, same as None
-        effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
-        gpu_ids_are_vulkan_ordinals = False
-        diffusion_kind = _classify_diffusion_gguf(config) if config.is_gguf else False
-
         # Invalid GPU IDs must fail before the training coexistence guard.
-        gguf_gpu_ids: Optional[List[int]] = None
+        placement = await _prepare_load_placement(config, request, extra_llama_args)
+        gguf_intent: Optional[GgufLoadIntent] = None
+        _tensor_intent_overall = False
         if config.is_gguf:
-            (
-                gguf_gpu_ids,
-                gpu_ids_are_vulkan_ordinals,
-            ) = await _resolve_gguf_gpu_ids_for_request(
+            gguf_intent = _resolve_gguf_load_intent(
                 config,
-                effective_gpu_ids,
-                diffusion_kind = diffusion_kind,
+                request,
+                native_grant_backed = native_grant_backed,
+                chat_template_override = effective_chat_template_override,
+                extra_args = extra_llama_args,
+                placement = placement,
+                n_parallel = _n_parallel,
             )
-            _reject_draft_device_with_gpu_ids(
-                gguf_gpu_ids,
-                extra_llama_args,
-                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
+            same_loaded_model = llama_backend.matches_load_source(gguf_intent)
+            if same_loaded_model and config.gguf_hf_repo and llama_backend.gguf_path:
+                gguf_intent = replace(
+                    gguf_intent,
+                    mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, False),
+                    compare_mtp_draft = True,
+                )
+            _effective_tensor = _effective_tensor_parallel(
+                extra_llama_args, request.tensor_parallel
             )
+            _tensor_intent_overall = _effective_tensor or _carry_preserved_tensor_intent(
+                preserved = getattr(llama_backend, "layer_preserves_tensor_intent", False),
+                same_model = same_loaded_model,
+                explicit_drop = _is_explicit_tensor_drop(request),
+            )
+            gguf_intent = replace(
+                gguf_intent,
+                preserve_multi_gpu_on_layer = (_tensor_intent_overall and not _effective_tensor),
+            )
+            reused = _reuse_loaded_gguf(
+                gguf_intent,
+                display_name = config.display_name,
+            )
+            if reused is not None:
+                return reused
+
+        # Config-resolved dedupe must run first: a duplicate must not refuse/cancel active chats.
+        # Refusal is non-destructive; defer forced cancellation past every remaining rejection.
+        if on_reload_confirmed is not None:
+            on_reload_confirmed(cancel = False)
+        cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active)
+
         if not config.is_gguf and _mlx_distributed_launch_detected():
             raise HTTPException(
                 status_code = 400,
@@ -6209,25 +6146,17 @@ async def _load_model_impl(
             (model_identifier, config.identifier, getattr(config, "base_model", None)),
             _guard_chat_load_against_training,
             config,
-            model_identifier = model_identifier,
-            hf_token = request.hf_token,
+            request,
             load_in_4bit = effective_load_in_4bit,
-            max_seq_length = request.max_seq_length,
-            requested_gpu_ids = effective_gpu_ids,
+            placement = placement,
             llama_extra_args = extra_llama_args,
             n_parallel = _n_parallel,
-            cache_type_kv = request.cache_type_kv,
-            tensor_parallel = bool(request.tensor_parallel),
-            gpu_memory_mode = request.gpu_memory_mode,
-            gpu_layers = request.gpu_layers,
-            gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
-            diffusion_kind = diffusion_kind,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
             llama_backend = get_llama_cpp_backend()
-            unsloth_backend = get_inference_backend()
+            unsloth_backend = await asyncio.to_thread(get_inference_backend)
 
             if config.gguf_hf_repo:
                 from core.inference.llama_cpp import gguf_load_in_flight
@@ -6292,152 +6221,30 @@ async def _load_model_impl(
                     unsloth_backend.unload_model, unsloth_backend.active_model_name
                 )
 
-            # Route to HF or local mode based on config. Run in a thread so the
-            # event loop stays free for progress polling and other requests
-            # during the (potentially long) GGUF download + llama-server start.
-
-            # Load kwargs common to HF and local modes; the two differ only by
-            # the model-source args (hf_repo/-token vs gguf_path/mmproj).
-            _common_load_kwargs = dict(
-                model_identifier = config.identifier,
-                is_vision = config.is_vision,
-                n_ctx = request.max_seq_length,
-                chat_template_override = effective_chat_template_override,
-                cache_type_kv = request.cache_type_kv,
-                speculative_type = request.speculative_type,
-                spec_draft_n_max = request.spec_draft_n_max,
-                gpu_memory_mode = request.gpu_memory_mode,
-                gpu_layers = request.gpu_layers,
-                n_cpu_moe = request.n_cpu_moe,
-                tensor_split = request.tensor_split,
-                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
-                n_parallel = _n_parallel,
-                # Issue #7164: explicit GPU pin resolved to physical ids above.
-                gpu_ids = gguf_gpu_ids,
-            )
-            if config.gguf_hf_repo:
-                # HF mode: download via huggingface_hub then start llama-server
-                _source_load_kwargs = dict(
-                    hf_repo = config.gguf_hf_repo,
-                    hf_variant = config.gguf_variant,
-                    hf_token = request.hf_token,
-                )
-            else:
-                # Local mode: llama-server loads via -m <path>
-                if native_grant_backed:
-                    if config.gguf_mmproj_file:
-                        _validate_native_gguf_companion(
-                            config.gguf_mmproj_file, config.gguf_file, "vision companion"
-                        )
-                    if config.gguf_mtp_file:
-                        # The drafter is optional (unlike mmproj for a vision
-                        # model): drop it rather than fail the load.
-                        mtp_search_root = _local_gguf_companion_search_root(
-                            config.gguf_file, config.gguf_file
-                        )
-
-                        def _mtp_allowed(candidate: str) -> bool:
-                            try:
-                                _validate_native_mtp_drafter(
-                                    candidate,
-                                    config.gguf_file,
-                                    mtp_search_root = mtp_search_root,
-                                )
-                                return True
-                            except HTTPException as exc:
-                                logger.warning(
-                                    "Dropping MTP drafter for native load: %s", exc.detail
-                                )
-                                return False
-
-                        if not _mtp_allowed(config.gguf_mtp_file):
-                            # The preferred root drafter is out of bounds for a
-                            # grant on a quant subdir, but an MTP/ copy may not
-                            # be. Scan them in preference order rather than
-                            # dropping MTP on the first rejection.
-                            fallback = detect_mtp_file(
-                                config.gguf_file,
-                                search_root = mtp_search_root,
-                                skip_root = True,
-                                accept = _mtp_allowed,
-                            )
-                            if fallback:
-                                logger.info(
-                                    "Using MTP subdirectory drafter for native load: %s",
-                                    fallback,
-                                )
-                            config.gguf_mtp_file = fallback
-                _source_load_kwargs = dict(
-                    gguf_path = config.gguf_file,
-                    mmproj_path = config.gguf_mmproj_file,
-                    mtp_draft_path = config.gguf_mtp_file,
-                    # Pass the resolved variant so _extra_args_source keys off
-                    # the same string the inheritance check at the top of /load
-                    # uses (#5401 followup).
-                    hf_variant = config.gguf_variant,
-                )
-
-            # Tensor intent for this load: the request itself, or a preserved
-            # multi-GPU layer fallback carried across a reload of the SAME model that
-            # doesn't drop it (e.g. a ctx-only change), so a fitting model doesn't
-            # silently collapse to one GPU. Only an explicit non-tensor --split-mode
-            # override counts as the drop -- the tensor field echo / unrelated extras keep
-            # the preserved placement; the same-model guard stops a switch-without-unload
-            # inheriting the prior model's intent.
-            _explicit_tensor_drop = _is_explicit_tensor_drop(request)
-            # Compare the resolved config.identifier (what load_model stores), not the
-            # raw request id: from_identifier normalizes shorthands (adds unsloth/, fixes
-            # case), so a reload with the shorthand would otherwise miss the match and
-            # drop the carry-forward. #6659
-            _same_model_loaded = (
-                llama_backend.is_loaded
-                and (llama_backend.model_identifier or "").lower()
-                == (config.identifier or "").lower()
-            )
-            # model_identifier is variant-agnostic for HF repos and dir-level for a
-            # local multi-variant directory, so also require the loaded quant to match
-            # (path else variant, mirroring _already_in_target_state) -- otherwise a
-            # different variant inherits the prior one's preserved intent. #6659
-            if _same_model_loaded:
-                if config.gguf_file and llama_backend.gguf_path:
-                    try:
-                        _same_model_loaded = (
-                            Path(llama_backend.gguf_path).resolve()
-                            == Path(config.gguf_file).resolve()
-                        )
-                    except OSError:
-                        _same_model_loaded = False
-                else:
-                    _same_model_loaded = (llama_backend.hf_variant or "").lower() == (
-                        config.gguf_variant or ""
-                    ).lower()
-            _tensor_intent_overall = _effective_tensor_parallel(
-                extra_llama_args, request.tensor_parallel
-            ) or _carry_preserved_tensor_intent(
-                preserved = llama_backend.layer_preserves_tensor_intent,
-                same_model = _same_model_loaded,
-                explicit_drop = _explicit_tensor_drop,
-            )
+            # Every rejection and source check has completed. The immutable
+            # intent resolved before teardown is now the only launch input.
+            if gguf_intent is None:
+                raise RuntimeError("GGUF load intent was not resolved")
+            load_intent = gguf_intent
 
             # Run a single load attempt with the given tensor flag + extras.
             async def _attempt_gguf_load(
                 tensor_parallel: bool, attempt_extra_args: Optional[list[str]]
             ) -> bool:
-                attempt_kwargs = {
-                    **_common_load_kwargs,
-                    "extra_args": attempt_extra_args,
-                }
-                return await asyncio.to_thread(
-                    llama_backend.load_model,
-                    **_source_load_kwargs,
-                    **attempt_kwargs,
+                attempt = replace(
+                    load_intent,
+                    extra_args = (
+                        tuple(attempt_extra_args) if attempt_extra_args is not None else None
+                    ),
                     tensor_parallel = tensor_parallel,
-                    # True on the layer fallback retry (tensor wanted overall but not on
-                    # this attempt): keep multi-GPU. Mirrors the fallback's key.
                     preserve_multi_gpu_on_layer = bool(
                         _tensor_intent_overall
                         and not _effective_tensor_parallel(attempt_extra_args, tensor_parallel)
                     ),
+                )
+                return await asyncio.to_thread(
+                    llama_backend.load_model,
+                    intent = attempt,
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
@@ -6487,51 +6294,17 @@ async def _load_model_impl(
             if _gguf_is_audio:
                 logger.info(f"GGUF model detected as audio: audio_type={_gguf_audio}")
 
-            inference_config = load_inference_config(config.identifier)
-
-            return LoadResponse(
-                status = "loaded",
-                model = model_log_label if native_grant_backed else config.identifier,
+            return _gguf_load_response(
+                llama_backend,
+                "loaded",
+                model_log_label if native_grant_backed else config.identifier,
                 display_name = model_log_label if native_grant_backed else config.display_name,
-                is_vision = llama_backend.is_vision,
-                is_lora = False,
-                is_gguf = True,
                 is_local_model = config.is_local,
-                is_diffusion = llama_backend.is_diffusion,
-                diffusion_requested_ngl = llama_backend.diffusion_requested_ngl,
-                is_audio = _gguf_is_audio,
-                audio_type = _gguf_audio,
-                has_audio_input = llama_backend._has_audio_input,
-                inference = inference_config,
-                # GGUF loads via llama.cpp: auto_map never executes, so inert (matches validate_model).
-                requires_trust_remote_code = False,
-                context_length = llama_backend.context_length,
-                max_context_length = llama_backend.max_context_length,
-                native_context_length = llama_backend.native_context_length,
-                supports_reasoning = llama_backend.supports_reasoning,
-                reasoning_style = llama_backend.reasoning_style,
-                reasoning_effort_levels = llama_backend.reasoning_effort_levels,
-                reasoning_always_on = llama_backend.reasoning_always_on,
-                supports_preserve_thinking = llama_backend.supports_preserve_thinking,
-                supports_tools = llama_backend.supports_tools,
-                cache_type_kv = llama_backend.cache_type_kv,
-                chat_template = llama_backend.chat_template,
-                speculative_type = llama_backend.requested_spec_mode,
-                spec_draft_n_max = llama_backend.spec_draft_n_max,
-                tensor_parallel = llama_backend.tensor_parallel,
-                gpu_memory_mode = llama_backend.gpu_memory_mode,
-                gpu_layers = llama_backend.gpu_layers,
-                n_cpu_moe = llama_backend.n_cpu_moe,
-                tensor_split = llama_backend.tensor_split,
-                n_layers = llama_backend.n_layers,
-                n_moe_layers = llama_backend.n_moe_layers,
-                gpu_ids = llama_backend.gpu_ids,
-                requested_gpu_ids = llama_backend.requested_gpu_ids,
-                **_parallel_slot_echo(llama_backend),
+                inference_identifier = config.identifier,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
 
         # Same sidecar rejection as GGUF: fast path ahead of the drain, rechecked after.
         _raise_if_sidecar_swap_in_progress()
@@ -6585,7 +6358,7 @@ async def _load_model_impl(
             hf_token = request.hf_token,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
-            gpu_ids = effective_gpu_ids,
+            gpu_ids = placement.requested_gpu_ids,
             subject = current_subject,
         )
 
@@ -6661,9 +6434,10 @@ async def _load_model_impl(
             is_lora = config.is_lora,
             is_gguf = False,
             is_local_model = config.is_local,
-            is_audio = config.is_audio,
-            audio_type = config.audio_type,
-            has_audio_input = config.has_audio_input,
+            # Post-load classification (mirrored from the worker) wins here.
+            is_audio = _model_info.get("is_audio", config.is_audio),
+            audio_type = _model_info.get("audio_type", config.audio_type),
+            has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
             inference = inference_config,
             requires_trust_remote_code = _requires_rc,
             supports_reasoning = _sf_flags["supports_reasoning"],
@@ -6874,6 +6648,8 @@ async def validate_model(
 
         # The frontend validates before it loads, so this needs the same guard as
         # /load; otherwise the stall just moves here and /load is never reached.
+        # Off-loop twice over: the guard is a network round trip, and the first
+        # from_identifier builds the detection registry (transformers, or the warm's lock).
         def _resolve_config():
             with _hf_offline_if_unreachable_for(model_identifier):
                 return ModelConfig.from_identifier(
@@ -6894,25 +6670,9 @@ async def validate_model(
             request, config, model_identifier, None
         )
 
-        # Apply the same training coexistence policy as /load before the frontend
-        # unloads the current model.
-        effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
-        gpu_ids_are_vulkan_ordinals = False
-        diffusion_kind = _classify_diffusion_gguf(config) if config.is_gguf else False
-        if config.is_gguf:
-            (
-                validated_gpu_ids,
-                gpu_ids_are_vulkan_ordinals,
-            ) = await _resolve_gguf_gpu_ids_for_request(
-                config,
-                effective_gpu_ids,
-                diffusion_kind = diffusion_kind,
-            )
-            _reject_draft_device_with_gpu_ids(
-                validated_gpu_ids,
-                effective_extra_args,
-                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
-            )
+        # Apply the same placement policy as /load before the frontend unloads
+        # the current model.
+        placement = await _prepare_load_placement(config, request, effective_extra_args)
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
@@ -7005,28 +6765,11 @@ async def validate_model(
                 (model_identifier, config.identifier, getattr(config, "base_model", None)),
                 _guard_chat_load_against_training,
                 config,
-                model_identifier = model_identifier,
-                hf_token = request.hf_token,
+                request,
                 load_in_4bit = effective_load_in_4bit,
-                max_seq_length = request.max_seq_length,
-                requested_gpu_ids = effective_gpu_ids,
+                placement = placement,
                 llama_extra_args = effective_extra_args,
-                n_parallel = (
-                    request.n_parallel
-                    if request.n_parallel is not None
-                    # Same getattr chain as the load path: preflight must size like the load.
-                    else getattr(
-                        getattr(getattr(fastapi_request, "app", None), "state", None),
-                        "llama_parallel_slots",
-                        1,
-                    )
-                ),
-                cache_type_kv = request.cache_type_kv,
-                tensor_parallel = request.tensor_parallel,
-                gpu_memory_mode = request.gpu_memory_mode,
-                gpu_layers = request.gpu_layers,
-                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
-                diffusion_kind = diffusion_kind,
+                n_parallel = _resolve_parallel_slots(request, fastapi_request),
             )
 
         # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
@@ -7107,9 +6850,9 @@ async def validate_model(
             if native_grant_backed
             else getattr(config, "display_name", config.identifier),
             is_gguf = is_gguf,
-            is_diffusion = is_gguf and diffusion_kind is True,
-            # None = unreadable header + no family in the name, not "ordinary GGUF".
-            diffusion_unknown = is_gguf and diffusion_kind is None,
+            is_diffusion = is_gguf and placement.diffusion_kind is True,
+            # An unavailable header is inconclusive, not proof of an ordinary GGUF.
+            diffusion_unknown = is_gguf and placement.diffusion_kind is None,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
             requires_trust_remote_code = requires_trust_remote_code,
@@ -7276,7 +7019,7 @@ async def install_latest_transformers_route(
         # before_swap, only once the staged install succeeded: a failed pip/compat check
         # must not leave the user with their model gone. GGUF stays loaded (llama-server
         # never imports transformers).
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         export_backend = get_export_backend()
 
         unloaded_chat = {"v": False}
@@ -7433,7 +7176,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load only
         # tears the loading subprocess down, so it is safe off-gate -- and ahead of the
         # active-generation refusal below, which it can never need (see there).
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         loading = getattr(backend, "get_loading_model", lambda: None)()
         if (
             loading is not None
@@ -7476,7 +7219,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         # anything yet, so neither can interrupt a chat, and refusing them counted a teardown that
         # cannot happen (unretryably -- the frontend's Cancel sends this unload unforced and drops
         # the error). Any other name still falls through here.
-        if _unload_may_evict(request.model_path):
+        if await asyncio.to_thread(_unload_may_evict, request.model_path):
             _raise_or_cancel_active_generations(
                 force = request.force_cancel_active,
                 action = "Unloading the model",
@@ -7491,7 +7234,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # Rechecked under the gate, like /load: a chat can register while this one queues here (the
             # middleware takes and releases the same gate). Still refusal only, and re-read rather
             # than carried down, since a load may have finished meanwhile.
-            if _unload_may_evict(request.model_path):
+            if await asyncio.to_thread(_unload_may_evict, request.model_path):
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active,
                     action = "Unloading the model",
@@ -7537,7 +7280,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # Unload from Unsloth backend off the event loop: unload takes _gen_lock, which
             # a slow SSE stream paused between tokens still holds, so a sync call would block
             # the loop that drives the stream's next token and the lock release.
-            backend = get_inference_backend()
+            backend = await asyncio.to_thread(get_inference_backend)
             if _unload_evicts_standard_backend(backend, request.model_path):
                 # Point of no return for the standard path, same rule as above.
                 _raise_or_cancel_active_generations(
@@ -7622,7 +7365,11 @@ async def confirm_tool_call(
 @studio_router.get("/monitor")
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Unsloth."""
-    active_model = _monitor_active_model()
+    # Off-loop: both helpers reach get_inference_backend(), whose first call waits on
+    # hardware detection, and this is polled from first paint.
+    active_model, context_length = await asyncio.to_thread(
+        lambda: (_monitor_active_model(), _monitor_context_length())
+    )
     active_requests = api_monitor.active_count(subject = current_subject)
     if active_requests:
         operating_status = "generating"
@@ -7639,7 +7386,7 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         # against this, since the browser's clock need not agree over a tunnel.
         "server_time": time.time(),
         "active_model": active_model,
-        "context_length": _monitor_context_length(),
+        "context_length": context_length,
         "active_requests": active_requests,
         "logging_enabled": api_monitor.enabled,
         "entries": api_monitor.snapshot(include_details = False, subject = current_subject),
@@ -7682,7 +7429,7 @@ async def generate_stream(
 
     For vision models, provide image_base64 (base64-encoded image).
     """
-    backend = get_inference_backend()
+    backend = await asyncio.to_thread(get_inference_backend)
 
     if not backend.active_model_name:
         raise HTTPException(
@@ -7849,7 +7596,6 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 # No label registered, so report the clean public id, not the snapshot's sha.
                 _display_model_id = _llama_public_model_id(llama_backend) or _display_model_id
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
-            _audio_type = getattr(llama_backend, "_audio_type", None)
             # Don't surface Unsloth's auto-applied bundled family template (e.g. the
             # gemma-4 override) as a user-authored override: the frontend adopts
             # status.chat_template_override as editable state and would otherwise
@@ -7868,47 +7614,17 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 model_identifier = None if _native_grant_backed else _model_id,
-                is_vision = llama_backend.is_vision,
                 is_gguf = True,
                 is_local_model = _loaded_is_local_model(
                     llama_backend, _native_grant_backed, _model_id
                 ),
-                is_diffusion = llama_backend.is_diffusion,
-                diffusion_requested_ngl = llama_backend.diffusion_requested_ngl,
                 gguf_variant = llama_backend.hf_variant,
-                is_audio = getattr(llama_backend, "_is_audio", False),
-                audio_type = _audio_type,
-                has_audio_input = getattr(llama_backend, "_has_audio_input", False),
                 loading = [],
                 loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
-                # GGUF status: auto_map never executes, so inert (matches validate_model).
-                requires_trust_remote_code = False,
-                supports_reasoning = llama_backend.supports_reasoning,
-                reasoning_style = llama_backend.reasoning_style,
-                reasoning_effort_levels = llama_backend.reasoning_effort_levels,
-                reasoning_always_on = llama_backend.reasoning_always_on,
-                supports_preserve_thinking = llama_backend.supports_preserve_thinking,
-                supports_tools = llama_backend.supports_tools,
-                chat_template = llama_backend.chat_template,
-                context_length = llama_backend.context_length,
-                max_context_length = llama_backend.max_context_length,
-                native_context_length = llama_backend.native_context_length,
-                cache_type_kv = llama_backend.cache_type_kv,
+                **_llama_runtime_fields(llama_backend),
                 chat_template_override = _reported_chat_template_override,
-                speculative_type = llama_backend.requested_spec_mode,
-                spec_draft_n_max = llama_backend.spec_draft_n_max,
-                tensor_parallel = llama_backend.tensor_parallel,
-                gpu_memory_mode = llama_backend.gpu_memory_mode,
-                gpu_layers = llama_backend.gpu_layers,
-                n_cpu_moe = llama_backend.n_cpu_moe,
-                tensor_split = llama_backend.tensor_split,
                 requested_context_length = llama_backend.requested_n_ctx,
-                n_layers = llama_backend.n_layers,
-                n_moe_layers = llama_backend.n_moe_layers,
-                gpu_ids = llama_backend.gpu_ids,
-                requested_gpu_ids = llama_backend.requested_gpu_ids,
-                **_parallel_slot_echo(llama_backend),
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
@@ -7916,8 +7632,16 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_latest_tag = _latest_tag,
             )
 
-        # Otherwise, report Unsloth backend status
-        backend = get_inference_backend()
+        # Otherwise report Unsloth backend status. Peek rather than build: no singleton means
+        # nothing is loaded, and the chat UI polls this from first paint.
+        backend = _peek_inference_backend()
+        if backend is None:
+            return InferenceStatusResponse(
+                llama_cpp_supports_mtp = _supports_mtp,
+                llama_cpp_prebuilt_stale = _stale,
+                llama_cpp_installed_tag = _installed_tag,
+                llama_cpp_latest_tag = _latest_tag,
+            )
 
         is_vision = False
         is_audio = False
@@ -8093,7 +7817,7 @@ async def generate_audio(
             cancel_event = _audio_cancel,
         )
     else:
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         if not backend.active_model_name:
             raise HTTPException(status_code = 400, detail = "No model loaded.")
         model_info = backend.models.get(backend.active_model_name, {})
@@ -9761,7 +9485,7 @@ async def openai_chat_completions(
                 context_length = llama_backend.context_length,
             )
     else:
-        backend = get_inference_backend()
+        backend = await asyncio.to_thread(get_inference_backend)
         if not backend.active_model_name:
             _status, _detail = await _no_model_loaded_error(
                 "No model loaded. Call POST /inference/load first.",
@@ -9835,6 +9559,8 @@ async def openai_chat_completions(
                     min_p = payload.min_p,
                     max_new_tokens = _effective_max_tokens(payload) or 2048,
                     repetition_penalty = payload.repetition_penalty,
+                    # Compare sends audio_base64 and use_adapter in one body.
+                    use_adapter = payload.use_adapter,
                     cancel_event = cancel_event,
                 )
 
@@ -12709,7 +12435,9 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
-    for entry in _openai_model_objects():
+    # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
+    # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
+    for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
 
     # Locally available (downloaded/cached) models that are not already loaded.
@@ -12783,7 +12511,8 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # Loaded models resolve without a catalog scan (the common case); only build
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
-    _loaded = _openai_model_objects()
+    # Off-loop like the catalog helper: the singleton's cold build waits on detection.
+    _loaded = await asyncio.to_thread(_openai_model_objects)
     for entry in _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
@@ -12803,7 +12532,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # path, so public_model_id(path) would miss the advertised entry and 404 a
     # model that is in fact loaded.
     llama_backend = get_llama_cpp_backend()
-    backend = get_inference_backend()
+    backend = await asyncio.to_thread(get_inference_backend)
     raw_to_public: list[tuple[str, Optional[str]]] = []
     if llama_backend.is_loaded and llama_backend.model_identifier:
         raw_to_public.append(

@@ -556,6 +556,7 @@ _VLM_ARCH_SUFFIXES = ("ForVisionText2Text",)
 _CURATED_REMOTE_VLM_TYPES = frozenset(
     {
         "phi3_v",
+        "phi4mm",
         "llava",
         "llava_next",
         "llava_onevision",
@@ -612,7 +613,24 @@ def _build_detection_sets():
         )
 
 
-_VLM_MODEL_TYPES, _VLM_CLASS_NAMES, _AUDIO_ONLY_MODEL_TYPES = _build_detection_sets()
+# Reading the registry imports transformers, hence torch: most of `import main` on a GPU
+# host, spent before the port can bind. Only the capability checks need the sets, so build
+# on first use, double-checked. _build_detection_sets() never raises (curated fallback).
+_DETECTION_SETS: Optional[Tuple[frozenset, frozenset, frozenset]] = None
+_DETECTION_SETS_LOCK = threading.Lock()
+
+
+def _detection_sets() -> Tuple[frozenset, frozenset, frozenset]:
+    """(vlm_model_types, vlm_class_names, audio_model_types), built once."""
+    global _DETECTION_SETS
+    sets = _DETECTION_SETS
+    if sets is None:
+        with _DETECTION_SETS_LOCK:
+            sets = _DETECTION_SETS
+            if sets is None:
+                sets = _DETECTION_SETS = _build_detection_sets()
+    return sets
+
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses the Gemma 4 5.5 sidecar for existing Gemma 4 architectures.
@@ -623,6 +641,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
 
 
 def _is_vlm(config) -> bool:
+    vlm_types, vlm_classes, audio_types = _detection_sets()
     architectures = getattr(config, "architectures", None) or []
     model_type = getattr(config, "model_type", None)
     explicit_vision = (
@@ -632,13 +651,13 @@ def _is_vlm(config) -> bool:
         or hasattr(config, "projector_config")
     )
     # Audio-only models are vision only if they carry an explicit vision sub-config.
-    if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:
+    if model_type in audio_types and not explicit_vision:
         return False
     return (
         explicit_vision
-        or any(x in _VLM_CLASS_NAMES for x in architectures)
+        or any(x in vlm_classes for x in architectures)
         or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
-        or model_type in _VLM_MODEL_TYPES
+        or model_type in vlm_types
     )
 
 
@@ -670,14 +689,15 @@ def _raw_config_has_vision_config(
             or "image_token_index" in config
             or "projector_config" in config
         )
+        vlm_types, vlm_classes, audio_types = _detection_sets()
         # Audio-only models are vision only if they carry an explicit vision sub-config.
-        if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:
+        if model_type in audio_types and not explicit_vision:
             return False
         return (
             explicit_vision
-            or any(isinstance(x, str) and x in _VLM_CLASS_NAMES for x in architectures)
+            or any(isinstance(x, str) and x in vlm_classes for x in architectures)
             or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
-            or model_type in _VLM_MODEL_TYPES
+            or model_type in vlm_types
         )
     except Exception as exc:
         logger.warning("Could not read config.json for '%s': %s", model_name, exc)
@@ -686,34 +706,39 @@ def _raw_config_has_vision_config(
 
 # why: inline _is_vlm and constants are prepended so the subprocess stays
 # self-contained and does not import the parent backend module graph.
-_VISION_CHECK_INLINE_HELPERS = (
-    "_VLM_ARCH_SUFFIXES = " + repr(tuple(_VLM_ARCH_SUFFIXES)) + "\n"
-    "_VLM_MODEL_TYPES = " + repr(set(_VLM_MODEL_TYPES)) + "\n"
-    "_VLM_CLASS_NAMES = " + repr(set(_VLM_CLASS_NAMES)) + "\n"
-    "_AUDIO_ONLY_MODEL_TYPES = " + repr(set(_AUDIO_ONLY_MODEL_TYPES)) + "\n"
-    "def _is_vlm(config):\n"
-    "    architectures = getattr(config, 'architectures', None) or []\n"
-    "    model_type = getattr(config, 'model_type', None)\n"
-    "    explicit_vision = (\n"
-    "        hasattr(config, 'vision_config')\n"
-    "        or hasattr(config, 'img_processor')\n"
-    "        or hasattr(config, 'image_token_index')\n"
-    "        or hasattr(config, 'projector_config')\n"
-    "    )\n"
-    "    if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:\n"
-    "        return False\n"
-    "    return (\n"
-    "        explicit_vision\n"
-    "        or any(x in _VLM_CLASS_NAMES for x in architectures)\n"
-    "        or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)\n"
-    "        or model_type in _VLM_MODEL_TYPES\n"
-    "    )\n"
-)
+# Built on demand: interpolating the sets eagerly forces the registry read this module defers.
+def _build_vision_check_inline_helpers() -> str:
+    vlm_types, vlm_classes, audio_types = _detection_sets()
+    return (
+        "_VLM_ARCH_SUFFIXES = " + repr(tuple(_VLM_ARCH_SUFFIXES)) + "\n"
+        "_VLM_MODEL_TYPES = " + repr(set(vlm_types)) + "\n"
+        "_VLM_CLASS_NAMES = " + repr(set(vlm_classes)) + "\n"
+        "_AUDIO_ONLY_MODEL_TYPES = " + repr(set(audio_types)) + "\n"
+        "def _is_vlm(config):\n"
+        "    architectures = getattr(config, 'architectures', None) or []\n"
+        "    model_type = getattr(config, 'model_type', None)\n"
+        "    explicit_vision = (\n"
+        "        hasattr(config, 'vision_config')\n"
+        "        or hasattr(config, 'img_processor')\n"
+        "        or hasattr(config, 'image_token_index')\n"
+        "        or hasattr(config, 'projector_config')\n"
+        "    )\n"
+        "    if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:\n"
+        "        return False\n"
+        "    return (\n"
+        "        explicit_vision\n"
+        "        or any(x in _VLM_CLASS_NAMES for x in architectures)\n"
+        "        or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)\n"
+        "        or model_type in _VLM_MODEL_TYPES\n"
+        "    )\n"
+    )
+
 
 # Subprocess script run with transformers 5.x active. Takes model_name and
 # token via argv, prints JSON result to stdout.
-_VISION_CHECK_SCRIPT = (
-    r"""
+def _build_vision_check_script() -> str:
+    return (
+        r"""
 import sys, os, json
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -728,8 +753,8 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 """
-    + _VISION_CHECK_INLINE_HELPERS
-    + r"""
+        + _build_vision_check_inline_helpers()
+        + r"""
 try:
     from transformers import AutoConfig
 
@@ -768,7 +793,36 @@ except Exception as exc:
     print(json.dumps({"error": str(exc)}))
     sys.exit(1)
 """
-)
+    )
+
+
+# PEP 562 keeps the two script strings and three detection sets reachable under their
+# original module-level names, including `from ... import _VLM_...`. Memoised so
+# repeated access does not rebuild the ~40 KB script.
+_LAZY_MODULE_ATTRS = {
+    "_VLM_MODEL_TYPES": lambda: _detection_sets()[0],
+    "_VLM_CLASS_NAMES": lambda: _detection_sets()[1],
+    "_AUDIO_ONLY_MODEL_TYPES": lambda: _detection_sets()[2],
+    "_VISION_CHECK_INLINE_HELPERS": _build_vision_check_inline_helpers,
+    "_VISION_CHECK_SCRIPT": _build_vision_check_script,
+}
+_LAZY_MODULE_CACHE: Dict[str, Any] = {}
+_LAZY_MODULE_LOCK = threading.Lock()
+
+
+def _lazy_module_attr(name: str) -> Any:
+    """Build-once accessor. Also for in-module callers, where a bare global read would
+    not reach PEP 562."""
+    with _LAZY_MODULE_LOCK:
+        if name not in _LAZY_MODULE_CACHE:
+            _LAZY_MODULE_CACHE[name] = _LAZY_MODULE_ATTRS[name]()
+        return _LAZY_MODULE_CACHE[name]
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _LAZY_MODULE_ATTRS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return _lazy_module_attr(name)
 
 
 def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
@@ -796,7 +850,7 @@ def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None)
             [
                 sys.executable,
                 "-c",
-                _VISION_CHECK_SCRIPT,
+                _lazy_module_attr("_VISION_CHECK_SCRIPT"),
                 sidecar_dir,
                 _BACKEND_DIR,
                 model_name,

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from dataclasses import asdict
 import sys
 import textwrap
 import types
@@ -200,7 +201,7 @@ def test_fallback_is_settled_before_the_duplicate_load_check():
     must be normalized before comparison, or every duplicate /load tears down a healthy
     CPU server."""
     src = _load_model_source()
-    assert src.index("_metal_device_is_paravirtual()") < src.index("self._already_in_target_state(")
+    assert src.index("_metal_device_is_paravirtual()") < src.index("self.adopt_load_intent_if_matched(")
 
 
 def test_repeat_auto_load_does_not_reload_a_healthy_cpu_server(monkeypatch, tmp_path):
@@ -229,12 +230,14 @@ def test_repeat_auto_load_does_not_reload_a_healthy_cpu_server(monkeypatch, tmp_
 
     assert (
         backend.load_model(
-            model_identifier = "owner/repo",
-            gguf_path = str(gguf),
-            n_ctx = 8192,
-            gpu_memory_mode = "auto",
-            gpu_layers = -1,
-            n_parallel = 1,
+            llama_cpp.GgufLoadIntent(
+                model_identifier = "owner/repo",
+                gguf_path = str(gguf),
+                n_ctx = 8192,
+                gpu_memory_mode = "auto",
+                gpu_layers = -1,
+                n_parallel = 1,
+            )
         )
         is True
     )
@@ -247,20 +250,27 @@ def test_a_pass_through_layer_flag_cannot_re_enable_the_corrupt_offload(monkeypa
     backend = llama_cpp.LlamaCppBackend()
     seen = {}
 
-    def _capture(**kwargs):
-        seen.update(kwargs)
+    def _capture(intent):
+        captured = asdict(intent)
+        # The intent freezes its sequences into tuples; compare on content.
+        for _key in ("extra_args", "tensor_split", "gpu_ids"):
+            if captured.get(_key) is not None:
+                captured[_key] = list(captured[_key])
+        seen.update(captured)
         return True
 
-    monkeypatch.setattr(backend, "_already_in_target_state", _capture)
+    monkeypatch.setattr(backend, "adopt_load_intent_if_matched", _capture)
     monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d: True)
     backend._audio_probed = True
     backend._healthy = True
     backend.load_model(
-        model_identifier = "owner/repo",
-        gguf_path = "/nonexistent/model.gguf",
-        gpu_memory_mode = "auto",
-        gpu_layers = -1,
-        extra_args = ["-ngl", "99", "--top-k", "40"],
+        llama_cpp.GgufLoadIntent(
+            model_identifier = "owner/repo",
+            gguf_path = "/nonexistent/model.gguf",
+            gpu_memory_mode = "auto",
+            gpu_layers = -1,
+            extra_args = ["-ngl", "99", "--top-k", "40"],
+        )
     )
     assert seen["gpu_memory_mode"] == "manual"
     assert seen["gpu_layers"] == 0
@@ -273,20 +283,27 @@ def test_a_real_mac_keeps_its_offload_flags(monkeypatch):
     backend = llama_cpp.LlamaCppBackend()
     seen = {}
 
-    def _capture(**kwargs):
-        seen.update(kwargs)
+    def _capture(intent):
+        captured = asdict(intent)
+        # The intent freezes its sequences into tuples; compare on content.
+        for _key in ("extra_args", "tensor_split", "gpu_ids"):
+            if captured.get(_key) is not None:
+                captured[_key] = list(captured[_key])
+        seen.update(captured)
         return True
 
-    monkeypatch.setattr(backend, "_already_in_target_state", _capture)
+    monkeypatch.setattr(backend, "adopt_load_intent_if_matched", _capture)
     monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d: True)
     backend._audio_probed = True
     backend._healthy = True
     backend.load_model(
-        model_identifier = "owner/repo",
-        gguf_path = "/nonexistent/model.gguf",
-        gpu_memory_mode = "auto",
-        gpu_layers = -1,
-        extra_args = ["-ngl", "99"],
+        llama_cpp.GgufLoadIntent(
+            model_identifier = "owner/repo",
+            gguf_path = "/nonexistent/model.gguf",
+            gpu_memory_mode = "auto",
+            gpu_layers = -1,
+            extra_args = ["-ngl", "99"],
+        )
     )
     assert seen["gpu_memory_mode"] == "auto"
     assert seen["extra_args"] == ["-ngl", "99"]
@@ -926,11 +943,11 @@ def test_the_crash_replay_keeps_the_extras_the_caller_still_sends():
     """The replay launches a stripped list but the caller keeps sending the original, so
     a comparator seeing only the stripped one would reload the MTP setup that crashed."""
     src = inspect.getsource(llama_cpp.LlamaCppBackend._maybe_recover_from_mtp_crash)
-    load_at = src.index("self.load_model(**snapshot)")
+    load_at = src.index("self.load_model(fallback)")
     restore_at = src.index("self._requested_extra_args = (")
     assert load_at < restore_at
     # Only when the strip actually rewrote the list.
-    assert 'snapshot.get("extra_args") is not _ea' in src
+    assert "if fallback_extra_args is not snapshot.extra_args:" in src
     # Device-stripped the same way the launch records it, so both sides match.
     assert "self._strip_device_extra_args(_ea)" in src
 
@@ -1468,7 +1485,7 @@ def _target_state(backend, gguf, **overrides):
         n_parallel = 1,
     )
     kwargs.update(overrides)
-    return backend._already_in_target_state(**kwargs)
+    return backend.adopt_load_intent_if_matched(llama_cpp.GgufLoadIntent(**kwargs))
 
 
 def test_a_suppressed_drafter_does_not_reload_the_server_it_left_healthy(monkeypatch, tmp_path):
@@ -1487,13 +1504,15 @@ def test_a_suppressed_drafter_does_not_reload_the_server_it_left_healthy(monkeyp
 
     assert (
         backend.load_model(
-            model_identifier = "owner/repo",
-            gguf_path = str(gguf),
-            mtp_draft_path = str(drafter),
-            n_ctx = 8192,
-            gpu_memory_mode = "auto",
-            gpu_layers = -1,
-            n_parallel = 1,
+            llama_cpp.GgufLoadIntent(
+                model_identifier = "owner/repo",
+                gguf_path = str(gguf),
+                mtp_draft_path = str(drafter),
+                n_ctx = 8192,
+                gpu_memory_mode = "auto",
+                gpu_layers = -1,
+                n_parallel = 1,
+            )
         )
         is True
     )
@@ -1503,7 +1522,7 @@ def test_the_route_dedupe_reads_the_suppressed_drafter_too(monkeypatch, tmp_path
     """The route re-detects the sibling before load_model runs, so handling it on the
     backend path alone would still reload on every Apply."""
     from models.inference import LoadRequest
-    from routes.inference import _request_matches_loaded_settings
+    from routes.inference import _active_gguf_intent
 
     # _paravirtual alone leaves the route's own binding on real hardware.
     _paravirtual_everywhere(monkeypatch)
@@ -1515,18 +1534,36 @@ def test_the_route_dedupe_reads_the_suppressed_drafter_too(monkeypatch, tmp_path
     drafter = tmp_path / "mtp-model.gguf"
     drafter.write_bytes(b"GGUF")
     backend = llama_cpp.LlamaCppBackend()
+    backend._process = _FakeProcess()
+    backend._healthy = True
+    backend._model_identifier = str(gguf)
     backend._gguf_path = str(gguf)
+    backend._requested_n_ctx = 4096
+    backend._requested_n_parallel = 1
     backend._mtp_draft_path = None
     backend._mtp_draft_suppressed_path = str(drafter)
     # What the first load on a virtualised Mac left behind, so this compares against a
     # server that really launched under the pin.
     backend._gpu_memory_mode = "manual"
     backend._gpu_layers = 0
-    request = LoadRequest(model_path = str(gguf))
-    assert _request_matches_loaded_settings(request, backend)
+    request = LoadRequest(model_path = str(gguf), max_seq_length = 4096)
+
+    def _intent():
+        # The route rebuilds the intent from the request, re-detecting the sibling
+        # drafter, so the dedupe has to hold on what it hands the backend.
+        return _active_gguf_intent(
+            request,
+            backend,
+            model_identifier = str(gguf),
+            chat_template_override = None,
+            n_parallel = 1,
+            native_grant_backed = False,
+        )
+
+    assert backend.adopt_load_intent_if_matched(_intent())
     # Nothing suppressed: a drafter that genuinely appeared must still reload.
     backend._mtp_draft_suppressed_path = None
-    assert not _request_matches_loaded_settings(request, backend)
+    assert not backend.adopt_load_intent_if_matched(_intent())
 
 
 def test_a_drafter_that_genuinely_appeared_still_reloads(monkeypatch, tmp_path):
@@ -1732,22 +1769,29 @@ def test_the_launch_normalizes_a_manual_cpu_request_too(monkeypatch):
     backend = llama_cpp.LlamaCppBackend()
     seen = {}
 
-    def _capture(**kwargs):
-        seen.update(kwargs)
+    def _capture(intent):
+        captured = asdict(intent)
+        # The intent freezes its sequences into tuples; compare on content.
+        for _key in ("extra_args", "tensor_split", "gpu_ids"):
+            if captured.get(_key) is not None:
+                captured[_key] = list(captured[_key])
+        seen.update(captured)
         return True
 
-    monkeypatch.setattr(backend, "_already_in_target_state", _capture)
+    monkeypatch.setattr(backend, "adopt_load_intent_if_matched", _capture)
     monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d: True)
     backend._audio_probed = True
     backend._healthy = True
     backend.load_model(
-        model_identifier = "owner/repo",
-        gguf_path = "/nonexistent/model.gguf",
-        gpu_memory_mode = "manual",
-        gpu_layers = 0,
-        n_cpu_moe = 8,
-        tensor_parallel = True,
-        extra_args = ["-ot", ".*=Metal", "--top-k", "40"],
+        llama_cpp.GgufLoadIntent(
+            model_identifier = "owner/repo",
+            gguf_path = "/nonexistent/model.gguf",
+            gpu_memory_mode = "manual",
+            gpu_layers = 0,
+            n_cpu_moe = 8,
+            tensor_parallel = True,
+            extra_args = ["-ot", ".*=Metal", "--top-k", "40"],
+        )
     )
     assert seen["extra_args"] == ["--top-k", "40"]
     assert seen["n_cpu_moe"] == 0
@@ -1762,21 +1806,28 @@ def test_a_real_mac_keeps_its_tensor_override_on_a_manual_cpu_load(monkeypatch):
     backend = llama_cpp.LlamaCppBackend()
     seen = {}
 
-    def _capture(**kwargs):
-        seen.update(kwargs)
+    def _capture(intent):
+        captured = asdict(intent)
+        # The intent freezes its sequences into tuples; compare on content.
+        for _key in ("extra_args", "tensor_split", "gpu_ids"):
+            if captured.get(_key) is not None:
+                captured[_key] = list(captured[_key])
+        seen.update(captured)
         return True
 
-    monkeypatch.setattr(backend, "_already_in_target_state", _capture)
+    monkeypatch.setattr(backend, "adopt_load_intent_if_matched", _capture)
     monkeypatch.setattr(backend, "_apply_detected_audio", lambda _d: True)
     backend._audio_probed = True
     backend._healthy = True
     backend.load_model(
-        model_identifier = "owner/repo",
-        gguf_path = "/nonexistent/model.gguf",
-        gpu_memory_mode = "manual",
-        gpu_layers = 0,
-        n_cpu_moe = 8,
-        extra_args = ["-ot", ".*=Metal", "--top-k", "40"],
+        llama_cpp.GgufLoadIntent(
+            model_identifier = "owner/repo",
+            gguf_path = "/nonexistent/model.gguf",
+            gpu_memory_mode = "manual",
+            gpu_layers = 0,
+            n_cpu_moe = 8,
+            extra_args = ["-ot", ".*=Metal", "--top-k", "40"],
+        )
     )
     assert seen["extra_args"] == ["-ot", ".*=Metal", "--top-k", "40"]
     assert seen["n_cpu_moe"] == 8
@@ -1817,6 +1868,21 @@ def _cpu_server(
     return backend, gguf
 
 
+def _route_matches(request, backend):
+    """What the route now does: rebuild the intent from the request, then let the single
+    backend comparator judge it. The dedupe moved off the route in #7663, so this is the
+    route-side path end to end."""
+    intent = _routes()._active_gguf_intent(
+        request,
+        backend,
+        model_identifier = "owner/repo",
+        chat_template_override = None,
+        n_parallel = 1,
+        native_grant_backed = False,
+    )
+    return backend.adopt_load_intent_if_matched(intent)
+
+
 def _load_request(gguf, **overrides):
     from models.inference import LoadRequest
 
@@ -1843,7 +1909,7 @@ def test_a_repeat_auto_request_with_extras_matches_the_cpu_server_it_left(monkey
         tensor_parallel = True,
         n_cpu_moe = 8,
     )
-    assert _routes()._request_matches_loaded_settings(request, backend) is True
+    assert _route_matches(request, backend) is True
     assert (
         _target_state(
             backend,
@@ -1865,7 +1931,7 @@ def test_the_same_pair_still_mismatches_on_a_real_mac(monkeypatch, tmp_path):
     _real_mac_everywhere(monkeypatch)
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
     request = _load_request(gguf, llama_extra_args = ["--top-k", "40"])
-    assert _routes()._request_matches_loaded_settings(request, backend) is False
+    assert _route_matches(request, backend) is False
     assert (
         _target_state(
             backend,
@@ -1885,7 +1951,7 @@ def test_a_genuinely_different_extras_box_still_reloads(monkeypatch, tmp_path):
     _paravirtual_everywhere(monkeypatch)
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
     request = _load_request(gguf, llama_extra_args = ["--top-k", "20"])
-    assert _routes()._request_matches_loaded_settings(request, backend) is False
+    assert _route_matches(request, backend) is False
     assert (
         _target_state(
             backend,
@@ -1906,7 +1972,7 @@ def test_a_tensor_split_mode_in_extras_does_not_reload_a_cpu_server(monkeypatch,
     _paravirtual_everywhere(monkeypatch)
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["-sm", "tensor"])
     request = _load_request(gguf, llama_extra_args = ["-sm", "tensor"], tensor_parallel = True)
-    assert _routes()._request_matches_loaded_settings(request, backend) is True
+    assert _route_matches(request, backend) is True
     assert (
         _target_state(
             backend,
@@ -1931,7 +1997,7 @@ def test_a_dropped_drafter_does_not_reload_over_the_extras_it_rewrote(monkeypatc
         monkeypatch, tmp_path, launched_extras = ["--top-k", "40"], requested_extras = asked
     )
     request = _load_request(gguf, llama_extra_args = list(asked))
-    assert _routes()._request_matches_loaded_settings(request, backend) is True
+    assert _route_matches(request, backend) is True
     assert (
         _target_state(
             backend,
@@ -1956,7 +2022,7 @@ def test_an_edited_spec_flag_still_reloads_after_a_dropped_drafter(monkeypatch, 
         requested_extras = ["--draft-max", "8", "--top-k", "40"],
     )
     request = _load_request(gguf, llama_extra_args = ["--draft-max", "4", "--top-k", "40"])
-    assert _routes()._request_matches_loaded_settings(request, backend) is False
+    assert _route_matches(request, backend) is False
     assert (
         _target_state(
             backend,

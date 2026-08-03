@@ -114,7 +114,20 @@ function ensureActiveModelInStoreList(
   checkpointId: string,
 ): void {
   const store = useChatRuntimeStore.getState();
-  if (store.models.some((model) => model.id === checkpointId)) {
+  const caps = {
+    isAudio: status.is_audio ?? false,
+    audioType: status.audio_type ?? null,
+    hasAudioInput: status.has_audio_input ?? false,
+  };
+  const existing = store.models.find((model) => model.id === checkpointId);
+  if (existing) {
+    // Backend capability outranks catalog metadata, and adoption has no later
+    // syncModelCapabilities call. Write only on an actual change.
+    if (Object.entries(caps).some(([k, v]) => existing[k as keyof typeof caps] !== v)) {
+      store.setModels(
+        store.models.map((m) => (m.id === checkpointId ? { ...m, ...caps } : m)),
+      );
+    }
     return;
   }
   const summary: ChatModelSummary = {
@@ -123,9 +136,7 @@ function ensureActiveModelInStoreList(
     isVision: status.is_vision ?? false,
     isLora: false,
     isGguf: status.is_gguf ?? false,
-    isAudio: status.is_audio ?? false,
-    audioType: status.audio_type ?? null,
-    hasAudioInput: status.has_audio_input ?? false,
+    ...caps,
   };
   store.setModels([...store.models, summary]);
 }
