@@ -1141,6 +1141,9 @@ def test_a_second_trigger_does_not_duplicate_an_in_flight_count():
             const second = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
             release();
             await Promise.all([first, second]);
+            // Settle: the deferred trigger is replayed off the first count's finally, so a stray
+            // replay would land after the awaits above and this is what would see it.
+            await new Promise((resolve) => setTimeout(resolve, 40));
 
             console.log(JSON.stringify({{
               counts: world.countedMessages.length,
@@ -1184,6 +1187,60 @@ def test_only_the_primary_pane_recounts_on_history_load(pane, expect_counts):
         "the primary pane still prices its branch"
         if expect_counts
         else "a compare pane must not spend a count it can never display"
+    )
+
+
+def test_a_trigger_skipped_behind_an_in_flight_count_is_replayed():
+    """The dedupe must defer a trigger, not drop it. A run that starts and is stopped before it
+    emits usage flips runActive back and fires the retry this effect depends on; if that retry is
+    discarded while the first count is still going, the first then rejects its stale branch and
+    nothing fires again, so the bar stays blank for good."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{
+              refreshContextUsage, seed, setActiveBranchReader, snapshot, world,
+            }} from "./harness.ts";
+            {LOADED_MODEL}
+            const live = [
+              {{ id: "m1", role: "user", createdAt: new Date(1), content: [{{ type: "text", text: "hi" }}] }},
+            ];
+            setActiveBranchReader(() => live.slice());
+            seed({{ activeThreadId: "thread-a", contextUsage: null, contextUsageByThreadId: {{}} }});
+
+            let release;
+            world.countGate = new Promise((resolve) => {{ release = resolve; }});
+            const first = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            await new Promise((resolve) => setTimeout(resolve, 20));
+
+            // A turn lands, so the first count is now pricing a branch that moved: it will be
+            // dropped at publish. The stopped run's retry arrives while it is still in flight.
+            live.push({{
+              id: "m2", role: "assistant", createdAt: new Date(2),
+              content: [{{ type: "text", text: "yo" }}],
+            }});
+            const second = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+
+            release();
+            await Promise.all([first, second]);
+            await new Promise((resolve) => setTimeout(resolve, 40));
+
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 2, (
+        "the skipped trigger must be replayed once the stale count settles, or it is not "
+        "deferred but lost"
+    )
+    # 62, not 12: the replay prices the branch as it is NOW, with the turn that invalidated the
+    # first count. Publishing the older total would be the bug this defers the trigger to avoid.
+    assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
+        "and the replay must publish the current branch, which is why it is deferred not dropped"
     )
 
 

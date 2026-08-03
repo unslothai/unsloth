@@ -32,10 +32,21 @@ function superseded(threadKey: string | null, generation: number): boolean {
 /**
  * Threads with a count already on the wire. A model load fires two triggers a few milliseconds
  * apart, the explicit post-load call and the effect that watches modelLoading, and both would
- * otherwise render the template and tokenize. Skipping the second is safe because it reads the
- * same branch as the first, and the publish-time branch check drops a total the branch outgrew.
+ * otherwise render the template and tokenize.
  */
 const countsInFlight = new Set<string | null>();
+
+/**
+ * The options of a trigger that arrived while a count was already going, replayed once that count
+ * settles WITHOUT publishing.
+ *
+ * Skipping outright loses the bar: a run that starts and is stopped before it emits usage flips
+ * runActive back and fires the retry this effect depends on, and if that retry is dropped while
+ * the in-flight count is still going, the in-flight one then rejects its now-stale branch and
+ * nothing changes again. Replaying only when nothing was published keeps the model-load case at
+ * one count, since there the first trigger publishes and the second has nothing left to do.
+ */
+const retryAfterInFlight = new Map<string | null, RefreshOptions>();
 
 function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
   const content =
@@ -172,12 +183,18 @@ export function setActiveBranchReader(reader: ActiveBranchReader | null): void {
   readActiveBranch = reader;
 }
 
+type RefreshOptions =
+  | {
+      threadId?: string;
+      /** When true, skip the modelLoading guard (post-load recount). */
+      afterModelLoad?: boolean;
+    }
+  | undefined;
+
 /** Re-count prompt tokens for the active local GGUF chat and fill the usage bar. */
-export async function refreshContextUsage(options?: {
-  threadId?: string;
-  /** When true, skip the modelLoading guard (post-load recount). */
-  afterModelLoad?: boolean;
-}): Promise<void> {
+export async function refreshContextUsage(
+  options?: RefreshOptions,
+): Promise<void> {
   const store = useChatRuntimeStore.getState();
   const threadId = options?.threadId ?? store.activeThreadId;
   const checkpoint = store.params.checkpoint;
@@ -214,7 +231,10 @@ export async function refreshContextUsage(options?: {
   const capturedThreadId = threadId ?? null;
   const capturedCheckpoint = checkpoint;
 
-  if (countsInFlight.has(capturedThreadId)) return;
+  if (countsInFlight.has(capturedThreadId)) {
+    retryAfterInFlight.set(capturedThreadId, options);
+    return;
+  }
 
   // Bump only once this call will do work, so a bail-out cannot cancel an in-flight recount.
   const generation = nextGeneration(capturedThreadId);
@@ -226,6 +246,7 @@ export async function refreshContextUsage(options?: {
     useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint;
 
   countsInFlight.add(capturedThreadId);
+  let published = false;
   try {
     // Prefer the mounted runtime: it is what the next request reads from (an incognito thread
     // persists nothing, and after a retry the newest stored leaf is a branch the user left). A
@@ -346,9 +367,13 @@ export async function refreshContextUsage(options?: {
       cachedTokens: 0,
       cacheWriteTokens: 0,
     });
+    published = true;
   } catch {
     // Background recount should not interrupt chat; saved usage stays visible.
   } finally {
     countsInFlight.delete(capturedThreadId);
+    const queued = retryAfterInFlight.get(capturedThreadId);
+    const hadQueued = retryAfterInFlight.delete(capturedThreadId);
+    if (hadQueued && !published) void refreshContextUsage(queued);
   }
 }
