@@ -201,7 +201,9 @@ def test_fallback_is_settled_before_the_duplicate_load_check():
     must be normalized before comparison, or every duplicate /load tears down a healthy
     CPU server."""
     src = _load_model_source()
-    assert src.index("_metal_device_is_paravirtual()") < src.index("self.adopt_load_intent_if_matched(")
+    assert src.index("_metal_device_is_paravirtual()") < src.index(
+        "self.adopt_load_intent_if_matched("
+    )
 
 
 def test_repeat_auto_load_does_not_reload_a_healthy_cpu_server(monkeypatch, tmp_path):
