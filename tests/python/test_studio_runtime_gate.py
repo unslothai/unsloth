@@ -7,8 +7,12 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import json
 import os
+import subprocess
+import sys
 import threading
+from types import SimpleNamespace
 from ctypes import wintypes
 from pathlib import Path
 
@@ -61,6 +65,74 @@ def test_terminal_launch_boundaries_use_the_runtime_gate():
     assert source.count("with _studio_runtime_launch_guard(") >= 4
     assert "runtime_gate_child_environment()" in source
     assert "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()" in source
+
+
+def test_terminal_update_holds_the_gate_through_environment_mutation():
+    source = STUDIO_COMMAND.read_text(encoding = "utf-8")
+    body = source[source.index("def update(") : source.index("def _release_self_exe_lock_windows")]
+    consume = body.index("_studio_runtime_gate.consume_runtime_gate_handoff()")
+    guard = body.index("with _studio_runtime_launch_guard(", consume)
+    idle_scan = body.index("_studio_runtime_gate.ensure_managed_environment_is_idle", guard)
+    release_self = body.index("_release_self_exe_lock_windows()", idle_scan)
+    setup = body.index("_run_setup_script(", release_self)
+    verify = body.index("_fail_if_install_damaged()", setup)
+    shortcuts = body.index("_refresh_desktop_shortcuts(", verify)
+    assert consume < guard < idle_scan < release_self < setup < verify < shortcuts
+
+    update_source = (REPO_ROOT / "studio" / "src-tauri" / "src" / "update.rs").read_text(
+        encoding = "utf-8"
+    )
+    handoff = update_source.index("STUDIO_RUNTIME_GATE_HANDOFF_ENV")
+    spawn = update_source.index(".spawn()", handoff)
+    assert handoff < spawn
+
+
+def test_command_line_path_matching_requires_component_boundaries():
+    root = r"C:\Users\pc\.unsloth\studio\unsloth_studio"
+    assert gate._command_line_references_windows_path(rf'python.exe "{root}\Lib\worker.py"', root)
+    assert not gate._command_line_references_windows_path(
+        rf'python.exe "X{root}\Lib\worker.py"',
+        root,
+    )
+    assert not gate._command_line_references_windows_path(
+        rf'python.exe "{root}_backup\Lib\worker.py"',
+        root,
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
+def test_terminal_update_idle_scan_excludes_self_and_blocks_another_consumer(tmp_path, monkeypatch):
+    studio_home = tmp_path / "studio"
+    worker = studio_home / "unsloth_studio" / "Lib" / "worker.py"
+    worker.parent.mkdir(parents = True)
+    worker.write_text("pass", encoding = "utf-8")
+    base_process = {
+        "ParentProcessId": os.getppid(),
+        "Name": "python.exe",
+        "ExecutablePath": str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"),
+        "CommandLine": r"python.exe worker.py",
+    }
+
+    payload = [dict(base_process, ProcessId = os.getpid())]
+    fake_psutil = SimpleNamespace(
+        Error = Exception,
+        Process = lambda _process_id: SimpleNamespace(cwd = lambda: str(worker.parent)),
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps(payload),
+            stderr = "",
+        ),
+    )
+    gate.ensure_managed_environment_is_idle(studio_home)
+
+    payload.append(dict(base_process, ProcessId = os.getpid() + 100000))
+    with pytest.raises(RuntimeError, match = "managed Studio environment is in use"):
+        gate.ensure_managed_environment_is_idle(studio_home)
 
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows named mutexes are required")

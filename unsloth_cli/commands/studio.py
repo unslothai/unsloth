@@ -3115,21 +3115,24 @@ def update(
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
-    _release_self_exe_lock_windows()
-    try:
-        _run_setup_script(verbose = verbose, repo_root = repo_root)
-    except BaseException:
-        # Restore unsloth.exe from .deleteme if setup failed before pip
-        # produced a replacement; otherwise the user has no CLI for recovery.
-        _restore_self_exe_lock_windows()
-        raise
-    # On Windows clear the .deleteme orphan now that pip wrote a fresh
-    # unsloth.exe; on next update os.replace would overwrite it anyway,
-    # but leaving a stale binary around invites cross-version restore
-    # confusion from _restore_self_exe_lock_windows.
-    _cleanup_self_exe_lock_windows()
-    if verify:
-        _fail_if_install_damaged()
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
+        _release_self_exe_lock_windows()
+        try:
+            _run_setup_script(verbose = verbose, repo_root = repo_root)
+        except BaseException:
+            # Restore unsloth.exe from .deleteme if setup failed before pip
+            # produced a replacement; otherwise the user has no CLI for recovery.
+            _restore_self_exe_lock_windows()
+            raise
+        # On Windows clear the .deleteme orphan now that pip wrote a fresh
+        # unsloth.exe; on next update os.replace would overwrite it anyway,
+        # but leaving a stale binary around invites cross-version restore
+        # confusion from _restore_self_exe_lock_windows.
+        _cleanup_self_exe_lock_windows()
+        if verify:
+            _fail_if_install_damaged()
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
     if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":

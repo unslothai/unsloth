@@ -70,6 +70,8 @@ fn spawn_update(
     // desktop bundle so it skips re-creating CLI launchers/.app/.desktop
     // shortcuts (Tauri owns its own bundle entries).
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
+    #[cfg(windows)]
+    cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 
     #[cfg(windows)]
     let mut child: Box<dyn ChildWrapper + Send> = {

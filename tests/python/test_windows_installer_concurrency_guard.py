@@ -68,6 +68,10 @@ def _process_helpers(source: str) -> str:
     return "\n".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Get-StudioFinalPath",
+            "Test-StudioProtectedPathMatch",
+            "Test-StudioRawCommandLinePathReference",
+            "Get-StudioProcessWorkingDirectories",
             "Test-StudioCommandLinePathReference",
             "Get-RunningStudioVenvProcesses",
         )
@@ -107,7 +111,7 @@ $ErrorActionPreference = "Stop"
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-@pytest.mark.parametrize("path_style", ["backslash", "forward"])
+@pytest.mark.parametrize("path_style", ["backslash", "forward", "relative"])
 def test_command_line_only_venv_consumer_is_reported(tmp_path: Path, shell: str, path_style: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     detector = _process_helpers(source)
@@ -126,14 +130,26 @@ function Get-CimInstance {{
     }}
 }}
 {detector}
+function Get-StudioProcessWorkingDirectories {{
+    param([string]$VenvPath)
+    return @{{ "4242" = $env:TEST_PROCESS_CWD }}
+}}
 @(Get-RunningStudioVenvProcesses -VenvPath $env:TEST_VENV) |
     ForEach-Object {{ Write-Output $_.Id }}
 """
     env = os.environ.copy()
     env["TEST_VENV"] = str(venv)
     worker = venv / "Lib" / "site-packages" / "worker.py"
-    env["TEST_SCRIPT"] = worker.as_posix() if path_style == "forward" else str(worker)
+    worker.parent.mkdir(parents = True)
+    worker.write_text("pass", encoding = "utf-8")
+    if path_style == "forward":
+        env["TEST_SCRIPT"] = worker.as_posix()
+    elif path_style == "relative":
+        env["TEST_SCRIPT"] = worker.name
+    else:
+        env["TEST_SCRIPT"] = str(worker)
     env["TEST_BASE_PYTHON"] = shutil.which("python") or "python.exe"
+    env["TEST_PROCESS_CWD"] = str(worker.parent)
     assert _run_powershell(shell, script, env) == "4242"
 
 
@@ -166,6 +182,76 @@ function Get-CimInstance {{
     env["TEST_SIBLING"] = str(sibling)
     env["TEST_BASE_PYTHON"] = shutil.which("python") or "python.exe"
     assert _run_powershell(shell, script, env) == ""
+
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_junction_alias_process_is_reported_for_physical_venv(tmp_path: Path, shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    detector = _process_helpers(source)
+    physical = tmp_path / "physical" / "unsloth_studio"
+    scripts = physical / "Scripts"
+    scripts.mkdir(parents = True)
+    alias = tmp_path / "alias"
+    subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(physical)],
+        check = True,
+        capture_output = True,
+        text = True,
+    )
+    probe = alias / "Scripts" / "guard-probe.exe"
+    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
+    child = subprocess.Popen(
+        [str(probe), "-n", "6", "127.0.0.1"],
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        script = f"""
+$ErrorActionPreference = "Stop"
+{detector}
+@(Get-RunningStudioVenvProcesses -VenvPath $env:TEST_VENV) |
+    ForEach-Object {{ Write-Output $_.Id }}
+"""
+        env = os.environ.copy()
+        env["TEST_VENV"] = str(physical)
+        assert str(child.pid) in _run_powershell(shell, script, env).splitlines()
+    finally:
+        child.terminate()
+        child.wait(timeout = 10)
+
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_exact_studio_bin_shim_process_is_reported(tmp_path: Path, shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    detector = _process_helpers(source)
+    shim = tmp_path / "studio" / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", shim)
+    child = subprocess.Popen(
+        [str(shim), "-n", "6", "127.0.0.1"],
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        script = f"""
+$ErrorActionPreference = "Stop"
+{detector}
+@(Get-RunningStudioVenvProcesses -VenvPath $env:TEST_SHIM -Exact) |
+    ForEach-Object {{ Write-Output $_.Id }}
+"""
+        env = os.environ.copy()
+        env["TEST_SHIM"] = str(shim)
+        assert str(child.pid) in _run_powershell(shell, script, env).splitlines()
+    finally:
+        child.terminate()
+        child.wait(timeout = 10)
+
+
+def test_installer_scan_protects_the_exact_studio_bin_shim():
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert 'Join-Path $StudioHome "bin\\unsloth.exe"' in source
+    assert "[pscustomobject]@{ Path = (Join-Path $StudioHome" in source
+    assert "Exact = $true" in source
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
@@ -410,10 +496,10 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
         "Enter-StudioNamedMutex -Name $studioRuntimeMutexName",
         runtime_name,
     )
-    scan_candidates = source.index("$venvPathsToScan = @($VenvDir)", runtime_lock)
+    scan_candidates = source.index("$protectedProcessPaths = @(", runtime_lock)
     legacy_source = source.index('Join-Path $StudioHome ".venv"', scan_candidates)
     cwd_source = source.index('Join-Path $env:USERPROFILE "unsloth_studio"', legacy_source)
-    runtime_guard = source.index("foreach ($candidateVenv", cwd_source)
+    runtime_guard = source.index("foreach ($candidate in $protectedProcessPaths)", cwd_source)
     desktop_guard = source.index('Get-Process -Name "unsloth-studio"', runtime_guard)
     rollback = source.index("Start-StudioVenvRollback -ExistingDir $VenvDir", desktop_guard)
     old_venv_move = source.index("Move-Item -LiteralPath $OldVenv", rollback)
@@ -539,7 +625,7 @@ def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
         studio_source.count(
             "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()"
         )
-        == 2
+        == 3
     )
     assert studio_source.count("inherited = runtime_gate_handoff") >= 4
 

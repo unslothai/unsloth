@@ -1698,7 +1698,7 @@ exit 0
     function Get-StudioFinalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
         $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
-        if (-not (Test-Path -LiteralPath $fullPath -PathType Container)) {
+        if (-not (Test-Path -LiteralPath $fullPath)) {
             return $fullPath
         }
         if (-not ("UnslothStudioFinalPath" -as [type])) {
@@ -1884,50 +1884,171 @@ public static class UnslothStudioFinalPath
         try { $Mutex.ReleaseMutex() } catch {} finally { $Mutex.Dispose() }
     }
 
-    function Test-StudioCommandLinePathReference {
+    function Test-StudioProtectedPathMatch {
+        param(
+            [Parameter(Mandatory = $true)][string]$Candidate,
+            [Parameter(Mandatory = $true)][string]$ProtectedPath,
+            [switch]$Exact
+        )
+        $candidateKey = $Candidate.TrimEnd('\', '/')
+        $protectedKey = $ProtectedPath.TrimEnd('\', '/')
+        if ([string]::Equals(
+            $candidateKey, $protectedKey, [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            return $true
+        }
+        if ($Exact) { return $false }
+        $prefix = $protectedKey + [System.IO.Path]::DirectorySeparatorChar
+        return $candidateKey.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+
+    function Test-StudioRawCommandLinePathReference {
         param(
             [string]$CommandLine,
             [Parameter(Mandatory = $true)][string]$Path
         )
         if (-not $CommandLine) { return $false }
         # Windows accepts either separator in command-line paths. Normalize both
-        # before the literal search, then apply the existing component boundary.
+        # before the literal search, then require boundaries on both sides.
         $normalizedCommandLine = $CommandLine.Replace('/', '\')
-        $normalizedPath = $Path.Replace('/', '\')
+        $normalizedPath = $Path.TrimEnd('\', '/').Replace('/', '\')
         $searchFrom = 0
         while ($searchFrom -lt $normalizedCommandLine.Length) {
-            $matchIndex = $normalizedCommandLine.IndexOf($normalizedPath, $searchFrom, [System.StringComparison]::OrdinalIgnoreCase)
+            $matchIndex = $normalizedCommandLine.IndexOf(
+                $normalizedPath,
+                $searchFrom,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
             if ($matchIndex -lt 0) { return $false }
             $endIndex = $matchIndex + $normalizedPath.Length
-            if ($endIndex -ge $normalizedCommandLine.Length) { return $true }
-            $next = $normalizedCommandLine[$endIndex]
-            if (
-                $next -eq [System.IO.Path]::DirectorySeparatorChar -or
-                $next -eq [System.IO.Path]::AltDirectorySeparatorChar -or
-                $next -eq '"' -or $next -eq "'" -or [char]::IsWhiteSpace($next)
-            ) {
-                return $true
+            $beforeMatches = $matchIndex -eq 0
+            if (-not $beforeMatches) {
+                $before = $normalizedCommandLine[$matchIndex - 1]
+                $beforeMatches = (
+                    $before -eq '"' -or $before -eq "'" -or $before -eq '=' -or
+                    [char]::IsWhiteSpace($before)
+                )
             }
+            $afterMatches = $endIndex -ge $normalizedCommandLine.Length
+            if (-not $afterMatches) {
+                $after = $normalizedCommandLine[$endIndex]
+                $afterMatches = (
+                    $after -eq [System.IO.Path]::DirectorySeparatorChar -or
+                    $after -eq [System.IO.Path]::AltDirectorySeparatorChar -or
+                    $after -eq '"' -or $after -eq "'" -or [char]::IsWhiteSpace($after)
+                )
+            }
+            if ($beforeMatches -and $afterMatches) { return $true }
             $searchFrom = $endIndex
         }
         return $false
     }
 
-    function Get-RunningStudioVenvProcesses {
+    function Get-StudioProcessWorkingDirectories {
         param([Parameter(Mandatory = $true)][string]$VenvPath)
-        try {
-            $prefix = [System.IO.Path]::GetFullPath($VenvPath).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
-        } catch {
-            return
+        $python = Join-Path $VenvPath "Scripts\python.exe"
+        if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+            return @{}
         }
-        $venvNeedle = $prefix.TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+        $pythonCode = @'
+import json
+import psutil
+
+working_directories = {}
+for process in psutil.process_iter():
+    try:
+        working_directories[str(process.pid)] = process.cwd()
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        pass
+print(json.dumps(working_directories))
+'@
+        try {
+            $json = & $python -c $pythonCode 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $json) { return @{} }
+            $decoded = $json | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            return @{}
+        }
+        $result = @{}
+        foreach ($property in $decoded.PSObject.Properties) {
+            $result[[string]$property.Name] = [string]$property.Value
+        }
+        return $result
+    }
+
+    function Test-StudioCommandLinePathReference {
+        param(
+            [string]$CommandLine,
+            [Parameter(Mandatory = $true)][string[]]$PathSpellings,
+            [Parameter(Mandatory = $true)][string]$ResolvedPath,
+            [string]$WorkingDirectory,
+            [switch]$Exact
+        )
+        if (-not $CommandLine) { return $false }
+        foreach ($spelling in $PathSpellings) {
+            if (Test-StudioRawCommandLinePathReference -CommandLine $CommandLine -Path $spelling) {
+                return $true
+            }
+        }
+
+        # Resolve existing path arguments so a command line using a junction or
+        # symlink spelling still maps to the physical managed environment.
+        foreach ($match in [regex]::Matches($CommandLine, '("[^"]*"|''[^'']*''|\S+)')) {
+            $token = $match.Value.Trim().Trim('"').Trim("'")
+            $candidates = @($token)
+            if ($token.Contains('=')) {
+                $candidates += $token.Substring($token.IndexOf('=') + 1).Trim('"').Trim("'")
+            }
+            foreach ($candidate in $candidates) {
+                if (-not $candidate) { continue }
+                try {
+                    $isRooted = [System.IO.Path]::IsPathRooted($candidate)
+                } catch {
+                    continue
+                }
+                if ($isRooted) {
+                    $candidatePaths = @($candidate)
+                } elseif ($WorkingDirectory) {
+                    $candidatePaths = @(Join-Path $WorkingDirectory $candidate)
+                } else {
+                    $candidatePaths = @()
+                }
+                foreach ($candidatePath in $candidatePaths) {
+                    if (-not (Test-Path -LiteralPath $candidatePath)) { continue }
+                    try {
+                        $resolvedCandidate = Get-StudioFinalPath -Path $candidatePath
+                    } catch {
+                        continue
+                    }
+                    if (Test-StudioProtectedPathMatch -Candidate $resolvedCandidate -ProtectedPath $ResolvedPath -Exact:$Exact) {
+                        return $true
+                    }
+                }
+            }
+        }
+        return $false
+    }
+
+    function Get-RunningStudioVenvProcesses {
+        param(
+            [Parameter(Mandatory = $true)][string]$VenvPath,
+            [switch]$Exact
+        )
+        try {
+            $lexicalPath = [System.IO.Path]::GetFullPath($VenvPath).TrimEnd('\', '/')
+            $resolvedPath = (Get-StudioFinalPath -Path $lexicalPath).TrimEnd('\', '/')
+        } catch {
+            throw "Could not resolve managed Studio process path '$VenvPath': $($_.Exception.Message)"
+        }
+        $pathSpellings = @($lexicalPath, $resolvedPath | Select-Object -Unique)
+        $workingDirectories = Get-StudioProcessWorkingDirectories -VenvPath $VenvPath
         $seenProcessIds = @{}
         foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
             $executable = $null
             try { $executable = $process.Path } catch { continue }
             if (-not $executable) { continue }
-            try { $executable = [System.IO.Path]::GetFullPath($executable) } catch { continue }
-            if ($executable.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            try { $executable = Get-StudioFinalPath -Path $executable } catch { continue }
+            if (Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact) {
                 $seenProcessIds[[string]$process.Id] = $true
                 [pscustomobject]@{
                     ProcessName = $process.ProcessName
@@ -1938,12 +2059,12 @@ public static class UnslothStudioFinalPath
         }
 
         # Some launchers hand off to a base Python while their command line still
-        # references a script inside the managed environment. CIM is best-effort:
-        # retain the executable-path matches above when policy blocks this query.
+        # references a script inside the managed environment. Failure to obtain
+        # the global snapshot is fatal because mutation cannot then be proven safe.
         try {
             $cimProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop)
         } catch {
-            return
+            throw "Could not inspect process command lines before Studio installation: $($_.Exception.Message)"
         }
         foreach ($process in $cimProcesses) {
             $processId = [string]$process.ProcessId
@@ -1951,13 +2072,11 @@ public static class UnslothStudioFinalPath
             $executableMatch = $false
             if ($process.ExecutablePath) {
                 try {
-                    $candidateExecutable = [System.IO.Path]::GetFullPath($process.ExecutablePath)
-                    $executableMatch = $candidateExecutable.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+                    $candidateExecutable = Get-StudioFinalPath -Path $process.ExecutablePath
+                    $executableMatch = Test-StudioProtectedPathMatch -Candidate $candidateExecutable -ProtectedPath $resolvedPath -Exact:$Exact
                 } catch {}
             }
-            $commandLineMatch = Test-StudioCommandLinePathReference `
-                -CommandLine $process.CommandLine `
-                -Path $venvNeedle
+            $commandLineMatch = Test-StudioCommandLinePathReference -CommandLine $process.CommandLine -PathSpellings $pathSpellings -ResolvedPath $resolvedPath -WorkingDirectory $workingDirectories[$processId] -Exact:$Exact
             if ($executableMatch -or $commandLineMatch) {
                 [pscustomobject]@{
                     ProcessName = $process.Name
@@ -2136,14 +2255,25 @@ public static class UnslothStudioFinalPath
             }
         }
 
-        $venvPathsToScan = @($VenvDir)
+        $protectedProcessPaths = @(
+            [pscustomobject]@{ Path = $VenvDir; Exact = $false }
+            [pscustomobject]@{ Path = (Join-Path $StudioHome "bin\unsloth.exe"); Exact = $true }
+        )
         if ($studioUsesLegacyLayout) {
-            $venvPathsToScan += (Join-Path $StudioHome ".venv")
-            $venvPathsToScan += (Join-Path $env:USERPROFILE "unsloth_studio")
+            $protectedProcessPaths += [pscustomobject]@{
+                Path = (Join-Path $StudioHome ".venv")
+                Exact = $false
+            }
+            $protectedProcessPaths += [pscustomobject]@{
+                Path = (Join-Path $env:USERPROFILE "unsloth_studio")
+                Exact = $false
+            }
         }
         $runningVenvProcessesById = @{}
-        foreach ($candidateVenv in @($venvPathsToScan | Select-Object -Unique)) {
-            foreach ($process in @(Get-RunningStudioVenvProcesses -VenvPath $candidateVenv)) {
+        foreach ($candidate in $protectedProcessPaths) {
+            foreach ($process in @(
+                Get-RunningStudioVenvProcesses -VenvPath $candidate.Path -Exact:$candidate.Exact
+            )) {
                 $processId = [string]$process.Id
                 if (-not $runningVenvProcessesById.ContainsKey($processId)) {
                     $runningVenvProcessesById[$processId] = $process

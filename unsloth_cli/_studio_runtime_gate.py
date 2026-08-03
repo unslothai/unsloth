@@ -191,6 +191,231 @@ def studio_runtime_launch_guard(studio_home: Path, *, inherited: bool = False) -
         kernel32.CloseHandle(handle)
 
 
+def _windows_path_is_within(candidate: str, root: str) -> bool:
+    candidate_key = candidate.rstrip("\\/").replace("/", "\\").casefold()
+    root_key = root.rstrip("\\/").replace("/", "\\").casefold()
+    return candidate_key == root_key or candidate_key.startswith(root_key + "\\")
+
+
+def _command_line_references_windows_path(command_line: str, path: str) -> bool:
+    normalized_line = command_line.replace("/", "\\").casefold()
+    normalized_path = path.rstrip("\\/").replace("/", "\\").casefold()
+    search_from = 0
+    before_boundaries = {" ", "\t", "\r", "\n", '"', "'", "="}
+    after_boundaries = before_boundaries | {"\\"}
+    while search_from < len(normalized_line):
+        match_index = normalized_line.find(normalized_path, search_from)
+        if match_index < 0:
+            return False
+        end_index = match_index + len(normalized_path)
+        before_ok = match_index == 0 or normalized_line[match_index - 1] in before_boundaries
+        after_ok = (
+            end_index == len(normalized_line) or normalized_line[end_index] in after_boundaries
+        )
+        if before_ok and after_ok:
+            return True
+        search_from = end_index
+    return False
+
+
+def _windows_command_line_arguments(command_line: str) -> list[str]:
+    shell32 = ctypes.WinDLL("shell32", use_last_error = True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    shell32.CommandLineToArgvW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.POINTER(ctypes.c_int),
+    ]
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+
+    argc = ctypes.c_int()
+    argv = shell32.CommandLineToArgvW(command_line, ctypes.byref(argc))
+    if not argv:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return [argv[index] for index in range(argc.value)]
+    finally:
+        kernel32.LocalFree(ctypes.cast(argv, ctypes.c_void_p))
+
+
+def _command_line_references_resolved_windows_path(
+    command_line: str,
+    protected_roots: tuple[str, ...],
+    protected_files: tuple[str, ...],
+    working_directory: Path | None,
+) -> bool:
+    if any(
+        _command_line_references_windows_path(command_line, path)
+        for path in (*protected_roots, *protected_files)
+    ):
+        return True
+
+    for argument in _windows_command_line_arguments(command_line):
+        candidates = [argument]
+        if "=" in argument:
+            candidates.append(argument.split("=", 1)[1])
+        for candidate in candidates:
+            candidate = candidate.strip().strip('"').strip("'")
+            if not candidate:
+                continue
+            candidate_path = Path(candidate)
+            if candidate_path.is_absolute():
+                path_candidates = (candidate_path,)
+            elif working_directory is not None:
+                path_candidates = (working_directory / candidate_path,)
+            else:
+                path_candidates = ()
+            for path_candidate in path_candidates:
+                if not path_candidate.exists():
+                    continue
+                try:
+                    resolved = _resolved_windows_path(path_candidate)
+                except OSError:
+                    continue
+                if any(_windows_path_is_within(resolved, root) for root in protected_roots):
+                    return True
+                if any(
+                    resolved.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
+                    for path in protected_files
+                ):
+                    return True
+    return False
+
+
+def ensure_managed_environment_is_idle(studio_home: Path) -> None:
+    """Reject a Windows update while another process consumes managed Studio files."""
+
+    if sys.platform != "win32":
+        return
+
+    import json
+    import subprocess
+
+    try:
+        import psutil
+    except ImportError as error:
+        raise RuntimeError(
+            "Could not inspect process working directories before Studio update: psutil is unavailable"
+        ) from error
+
+    venv = studio_home / "unsloth_studio"
+    protected_root_spellings = tuple(
+        dict.fromkeys(
+            spelling
+            for candidate in (venv,)
+            for spelling in (
+                str(candidate.absolute()),
+                _resolved_windows_path(candidate),
+            )
+        )
+    )
+    shim_candidates = (
+        venv / "Scripts" / "unsloth.exe",
+        studio_home / "bin" / "unsloth.exe",
+    )
+    protected_file_spellings = tuple(
+        dict.fromkeys(
+            spelling
+            for candidate in shim_candidates
+            if candidate.exists()
+            for spelling in (
+                str(candidate.absolute()),
+                _resolved_windows_path(candidate),
+            )
+        )
+    )
+
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+        "$items=@(Get-CimInstance Win32_Process -ErrorAction Stop|"
+        "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine);"
+        "[Console]::Out.Write(($items|ConvertTo-Json -Compress))"
+    )
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        check = False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        raise RuntimeError(f"Could not inspect running processes before Studio update: {detail}")
+
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"Could not decode the running-process list before Studio update: {error}"
+        ) from error
+    processes = payload if isinstance(payload, list) else [payload]
+    current_pid = os.getpid()
+    excluded_pids = {current_pid}
+
+    current = next(
+        (process for process in processes if int(process.get("ProcessId") or -1) == current_pid),
+        None,
+    )
+    if current is not None:
+        parent_pid = int(current.get("ParentProcessId") or -1)
+        parent = next(
+            (process for process in processes if int(process.get("ProcessId") or -1) == parent_pid),
+            None,
+        )
+        if parent is not None and parent.get("ExecutablePath"):
+            try:
+                parent_image = _resolved_windows_path(Path(parent["ExecutablePath"]))
+            except OSError:
+                parent_image = str(parent["ExecutablePath"])
+            if any(
+                parent_image.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
+                for path in protected_file_spellings
+            ):
+                excluded_pids.add(parent_pid)
+
+    for process in processes:
+        process_id = int(process.get("ProcessId") or -1)
+        if process_id in excluded_pids:
+            continue
+        executable = process.get("ExecutablePath") or ""
+        image_match = False
+        if executable:
+            image_spellings = [str(executable)]
+            try:
+                image_spellings.append(_resolved_windows_path(Path(executable)))
+            except OSError:
+                pass
+            image_match = any(
+                any(_windows_path_is_within(image, root) for root in protected_root_spellings)
+                or any(
+                    image.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
+                    for path in protected_file_spellings
+                )
+                for image in image_spellings
+            )
+        command_line = process.get("CommandLine") or ""
+        try:
+            working_directory = Path(psutil.Process(process_id).cwd())
+        except (psutil.Error, OSError):
+            working_directory = None
+        command_line_match = bool(command_line) and _command_line_references_resolved_windows_path(
+            command_line,
+            protected_root_spellings,
+            protected_file_spellings,
+            working_directory,
+        )
+        if image_match or command_line_match:
+            name = process.get("Name") or "process"
+            raise RuntimeError(
+                "The managed Studio environment is in use by "
+                f"{name} (PID {process_id}). Stop that process, then retry the update."
+            )
+
+
 def consume_runtime_gate_handoff() -> bool:
     return os.environ.pop(_RUNTIME_GATE_HANDOFF_ENV, None) == "1"
 
