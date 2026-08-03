@@ -5189,7 +5189,7 @@ def test_a_non_delimiter_vocabulary_entry_is_skipped_before_the_regex():
     body = source.split("def model_markup(", 1)[1].split("\ndef ", 1)[0]
     assert 'token[0] not in "<["' in body
     # The type check must come first, or a non-string vocabulary entry raises on indexing.
-    assert 'isinstance(token, str) or not token or token[0]' in body
+    assert "isinstance(token, str) or not token or token[0]" in body
 
 
 def test_a_vocabulary_holding_non_strings_does_not_raise():
