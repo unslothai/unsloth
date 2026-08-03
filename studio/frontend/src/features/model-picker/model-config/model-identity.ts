@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// eslint-disable-next-line no-restricted-imports
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
 } from "@/features/hub/lib/model-identity";
 
-// eslint-disable-next-line no-restricted-imports
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 export {
   isNativeFileLabel,
   isOllamaLinkPath,

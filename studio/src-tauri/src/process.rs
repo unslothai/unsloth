@@ -1557,10 +1557,7 @@ mod exit_status_after_stdout_closed_tests {
         let mut child = spawn(&["/bin/sh", "-c", "exit 3"]);
         let status = exit_status_after_stdout_closed(&mut child)
             .expect("a child that exited must be reported, not read as alive");
-        assert!(
-            status.contains('3'),
-            "expected the real exit code in {status:?}"
-        );
+        assert!(status.contains('3'), "expected the real exit code in {status:?}");
     }
 
     // The half of the contract a naive "retry until you get something" would break: a

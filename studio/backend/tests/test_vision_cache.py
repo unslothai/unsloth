@@ -285,14 +285,14 @@ class TestVisionCacheDirectPath:
     @patch("utils.transformers_version.needs_transformers_5", return_value = False)
     @patch("utils.models.model_config.load_model_config")
     def test_direct_vlm_detection_cached(self, mock_load_config, mock_needs_t5, mock_raw):
-        """A standard VLM detected via its registered model type should be cached."""
+        """A standard VLM detected via architecture suffix should be cached."""
         cfg = MagicMock(spec = [])  # strict: only explicitly set attrs exist
-        cfg.model_type = "llava"
-        cfg.architectures = ["LlavaForConditionalGeneration"]
+        cfg.model_type = "gemma3"
+        cfg.architectures = ["Gemma3ForConditionalGeneration"]
         mock_load_config.return_value = cfg
 
-        assert is_vision_model("llava-hf/llava-1.5-7b-hf") is True
-        assert is_vision_model("llava-hf/llava-1.5-7b-hf") is True
+        assert is_vision_model("google/gemma-3-4b-it") is True
+        assert is_vision_model("google/gemma-3-4b-it") is True
         # load_model_config should only be called once
         mock_load_config.assert_called_once()
 
