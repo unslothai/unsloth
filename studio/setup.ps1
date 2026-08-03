@@ -702,17 +702,32 @@ function Get-IntelRegistryAdapterNames {
     $names = @()
     $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
     try {
-        foreach ($sub in @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)) {
-            # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
-            if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
-            $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
-            if (-not $props) { continue }
-            $desc = "$($props.DriverDesc)"
-            if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086' -or $desc -match '(?i)intel') {
-                $names += if ($desc) { $desc } else { "Intel Graphics" }
-            }
-        }
+        $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
     } catch { return @() }
+    foreach ($sub in $subs) {
+        # Guarded per subkey, not around the loop: one unreadable entry must not discard the
+        # adapters enumerated after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
+        try {
+            # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
+            if ("$($sub.PSChildName)" -match '^\d+$') {
+                $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                if ($props) {
+                    $desc = "$($props.DriverDesc)"
+                    # Callers re-filter these names on "Intel", so a vendor-ID hit whose
+                    # DriverDesc is localized or OEM-branded would be found here and dropped
+                    # there. Tag it instead: enough for "an Intel GPU is present", and still
+                    # only XPU-capable if the name itself says Arc / Data Center GPU.
+                    if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
+                        $names += if ($desc -match '(?i)intel') { $desc }
+                                  elseif ($desc) { "Intel $desc" }
+                                  else { "Intel Graphics" }
+                    } elseif ($desc -match '(?i)intel') {
+                        $names += $desc
+                    }
+                }
+            }
+        } catch { }
+    }
     return $names
 }
 
@@ -3014,6 +3029,10 @@ Set-PersistedNoTorch -VenvPath $VenvDir -NoTorch $NoTorchMode
 # every accepted spelling to one value both sides parse identically.
 $env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }
 $InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
+# Only the stale-venv block below assigns this, but the XPU install reads it to decide whether
+# to force-reinstall, and a fresh install never enters that block. $null is the reading it
+# already relied on there; declaring it keeps a caller's Set-StrictMode from making the read fatal.
+$installedTorchTag = $null
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
@@ -3571,6 +3590,10 @@ $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR
 # goes through $ROCmIndexUrl; on failure the fallback uses the CPU index, not the ROCm pin.
 $TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($PinnedTorchIndexUrl) { $PinnedTorchIndexUrl } else { "$PyTorchWhlBase/$CuTag" }
 
+# Declared outside the guard because the bitsandbytes and Triton passes read it from outside
+# too, and no-torch mode never reaches the assignment below.
+$XpuIndexUrl = $null
+
 if (-not $NoTorchMode) {
 # Windows on ARM has win_arm64 torch and torchvision wheels but no torchaudio on any index,
 # so every branch below drops it. Ask the interpreter uv resolves for, not
@@ -3615,7 +3638,6 @@ if ($ROCmIndexUrl) {
 # ── Intel XPU (SYCL) ─────────────────────────────────────────────────────────
 # Its own index leaf, so it must not fall into the CUDA branch below ("CUDA support (xpu)").
 # Reached on an Arc / Data Center host and on an explicit xpu pin.
-$XpuIndexUrl = $null
 $XpuCpuFallback = $false
 if (-not $ROCmIndexUrl -and $CuTag -eq "xpu") { $XpuIndexUrl = $TorchInstallIndexUrl }
 if ($XpuIndexUrl) {
@@ -3772,7 +3794,7 @@ $stackExit = $LASTEXITCODE
 # ── Intel XPU: bitsandbytes must carry XPU kernels ──
 # unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 for device_type "xpu" and
 # only bitsandbytes' XPU library exports those, so a wheel without it turns 4-bit QLoRA off.
-# 0.49.0 is the first win_amd64 build carrying that library, but the floor is 0.50.0, the AMD
+# 0.48.2 is the first win_amd64 build carrying that library, but the floor is 0.50.0, the AMD
 # paths' floor: <=0.49.2 NaNs at 4-bit decode on AMD, and an Arc card can sit next to a Radeon.
 # unsloth's own floor (>=0.45.5) lets a MIGRATED venv keep its old wheel while the stack above
 # upgrades unsloth / unsloth-zoo alone, so run after it for the last word on both the fresh and
@@ -3800,8 +3822,9 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
 }
 
 # ── Intel XPU: triton-windows must not shadow torch's XPU triton ──
-# triton-windows and torch's XPU triton BOTH own the top-level `triton` package -- 151 shared
-# paths including __init__.py and _C/libtriton.pyd -- so an in-place cu*-to-xpu pin repair leaves
+# triton-windows and torch's XPU triton BOTH own the top-level `triton` package -- 80 to 160
+# shared paths depending on the pair, always including __init__.py and _C/libtriton.pyd -- so an
+# in-place cu*-to-xpu pin repair leaves
 # the CUDA build shadowing the XPU one. Runs AFTER the stack because unsloth declares
 # triton-windows a win32 core dep, so base.txt reinstalls anything removed earlier. Uninstall
 # paired with a reinstall, never alone: removing one drops the shared paths the other overwrote.

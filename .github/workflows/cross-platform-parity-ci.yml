@@ -23,6 +23,7 @@ on:
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
+      - 'tests/studio/test_intel_registry_fallback.ps1'
       - '.github/workflows/cross-platform-parity-ci.yml'
   push:
     branches: [main]
@@ -33,6 +34,7 @@ on:
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
+      - 'tests/studio/test_intel_registry_fallback.ps1'
       - '.github/workflows/cross-platform-parity-ci.yml'
   workflow_dispatch:
 
@@ -73,6 +75,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_install_rollback_lifecycle.ps1
+      # Mocks the registry cmdlets rather than reading a hive, so it runs on all three.
+      - name: Intel registry fallback tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_intel_registry_fallback.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh

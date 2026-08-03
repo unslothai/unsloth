@@ -2257,17 +2257,32 @@ exit 0
         $names = @()
         $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
         try {
-            foreach ($sub in @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)) {
-                # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
-                if ("$($sub.PSChildName)" -notmatch '^\d+$') { continue }
-                $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
-                if (-not $props) { continue }
-                $desc = "$($props.DriverDesc)"
-                if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086' -or $desc -match '(?i)intel') {
-                    $names += if ($desc) { $desc } else { "Intel Graphics" }
-                }
-            }
+            $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
         } catch { return @() }
+        foreach ($sub in $subs) {
+            # Guarded per subkey, not around the loop: one unreadable entry must not discard the
+            # adapters enumerated after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
+            try {
+                # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
+                if ("$($sub.PSChildName)" -match '^\d+$') {
+                    $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                    if ($props) {
+                        $desc = "$($props.DriverDesc)"
+                        # Callers re-filter these names on "Intel", so a vendor-ID hit whose
+                        # DriverDesc is localized or OEM-branded would be found here and dropped
+                        # there. Tag it instead: enough for "an Intel GPU is present", and still
+                        # only XPU-capable if the name itself says Arc / Data Center GPU.
+                        if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
+                            $names += if ($desc -match '(?i)intel') { $desc }
+                                      elseif ($desc) { "Intel $desc" }
+                                      else { "Intel Graphics" }
+                        } elseif ($desc -match '(?i)intel') {
+                            $names += $desc
+                        }
+                    }
+                }
+            } catch { }
+        }
         return $names
     }
 
@@ -2857,7 +2872,7 @@ exit 0
     # ── Intel XPU: bitsandbytes must carry XPU kernels ──
     # unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 for device_type "xpu"
     # and only bitsandbytes' XPU library exports those (the CUDA one has the naive gemm), so
-    # a wheel without it turns 4-bit QLoRA off. 0.49.0 is the first win_amd64 build carrying
+    # a wheel without it turns 4-bit QLoRA off. 0.48.2 is the first win_amd64 build carrying
     # that library, but the floor is 0.50.0, the AMD paths' floor: <=0.49.2 NaNs at 4-bit
     # decode on AMD, and an Arc card can sit next to a Radeon. unsloth's own floor (>=0.45.5)
     # lets a MIGRATED venv keep an older wheel while --reinstall-package unsloth upgrades
