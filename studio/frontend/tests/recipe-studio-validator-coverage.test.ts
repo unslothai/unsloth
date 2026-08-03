@@ -13,7 +13,11 @@ const { addToolScaffoldRow, updateToolScaffoldRow, removeToolScaffoldRow } =
   await import(
     "../src/features/recipe-studio/utils/validators/tool-scaffold.ts"
   );
-const { isValidatorConsentRequired } = await import(
+const {
+  applyValidatorContentEdit,
+  consentInvalidatedByEdit,
+  isValidatorConsentRequired,
+} = await import(
   "../src/features/recipe-studio/utils/validators/consent.ts"
 );
 const {
@@ -192,6 +196,48 @@ test("isValidatorConsentRequired flags only unacknowledged tool/custom checks", 
     }),
     false,
   );
+});
+
+test("consentInvalidatedByEdit resets on executable content changes only", () => {
+  const tool = toolConfig({ tool_acknowledged: true });
+  assert.equal(
+    consentInvalidatedByEdit(tool, { tool_command: "go build ./..." }),
+    true,
+  );
+  assert.equal(consentInvalidatedByEdit(tool, { tool_ext: "rs" }), true);
+  assert.equal(
+    consentInvalidatedByEdit(tool, { tool_scaffold: [{ path: "x", content: "y" }] }),
+    true,
+  );
+  // Same value or unrelated fields must not invalidate consent.
+  assert.equal(consentInvalidatedByEdit(tool, { tool_command: "go vet ./..." }), false);
+  assert.equal(consentInvalidatedByEdit(tool, { batch_size: "5" }), false);
+  assert.equal(consentInvalidatedByEdit(tool, { name: "renamed" }), false);
+  // Custom validators only reset on source edits.
+  const custom = customConfig({ custom_acknowledged: true });
+  assert.equal(consentInvalidatedByEdit(custom, { custom_source: "def v(df): return df" }), true);
+  assert.equal(consentInvalidatedByEdit(custom, { batch_size: "5" }), false);
+  // Non-tool/custom validators never invalidate.
+  const python = { ...tool, validator_type: "code" as const };
+  assert.equal(consentInvalidatedByEdit(python, { tool_command: "rm -rf" }), false);
+});
+
+test("applyValidatorContentEdit clears the acknowledged flags on content edits", () => {
+  const tool = toolConfig({ tool_acknowledged: true });
+  const patched = applyValidatorContentEdit(tool, { tool_command: "go build ./..." });
+  assert.equal(patched.tool_command, "go build ./...");
+  assert.equal(patched.tool_acknowledged, false);
+  // Unrelated edits leave consent untouched: the patch carries no flag.
+  const renamed = applyValidatorContentEdit(tool, { name: "renamed" });
+  assert.equal(renamed.name, "renamed");
+  assert.ok(!("tool_acknowledged" in renamed));
+
+  const custom = customConfig({ custom_acknowledged: true });
+  const sourcePatched = applyValidatorContentEdit(custom, {
+    custom_source: "def v(df): return df",
+  });
+  assert.equal(sourcePatched.custom_source, "def v(df): return df");
+  assert.equal(sourcePatched.custom_acknowledged, false);
 });
 
 test("makeValidatorConfig builds the tool flavor with defaults", () => {

@@ -22,7 +22,7 @@ from typing import Any
 
 from loggers import get_logger
 from utils.node_runtime import resolve_node_executable
-from utils.paths import ensure_dir, oxc_validator_tmp_root
+from utils.paths import oxc_validator_tmp_root
 
 logger = get_logger(__name__)
 
@@ -90,6 +90,24 @@ class ToolLocalCallableValidatorSpec:
     source_file_max_chars: int = _TOOL_SOURCE_FILE_MAX_CHARS_DEFAULT
 
 
+def _reject_malformed_marker_column(column: dict[str, Any]) -> None:
+    """Reject a marker-prefixed tool column that failed to parse.
+
+    Leaving the marker string in place would hand data_designer a non-callable
+    validation_function and fail later with an opaque error; fail early with a
+    clear message instead. Columns whose marker is not ours are left alone.
+    """
+    params = column.get("validator_params")
+    fn_raw = params.get("validation_function") if isinstance(params, dict) else None
+    fn_name = fn_raw.strip() if isinstance(fn_raw, str) else ""
+    if not fn_name.startswith(f"{TOOL_VALIDATION_FN_MARKER}:"):
+        return
+    name = str(column.get("name") or "").strip()
+    raise ValueError(
+        f"Column '{name or '?'}' has a malformed {TOOL_VALIDATION_FN_MARKER} marker.",
+    )
+
+
 def split_tool_local_callable_validators(
     recipe_core: dict[str, Any],
 ) -> tuple[dict[str, Any], list[ToolLocalCallableValidatorSpec]]:
@@ -112,6 +130,7 @@ def split_tool_local_callable_validators(
 
         maybe_spec = _parse_tool_spec(column = column)
         if maybe_spec is None:
+            _reject_malformed_marker_column(column)
             kept_columns.append(column)
             continue
         tool_specs.append(maybe_spec)
@@ -545,8 +564,12 @@ def _tool_launch_kwargs() -> dict[str, Any]:
 def _terminate_tool_process_tree(proc: subprocess.Popen[str]) -> None:
     """Best-effort kill of the tool command and every process it spawned."""
     if os.name == "posix":
+        # The command runs as a session leader (start_new_session=True), so its
+        # process group id equals its pid. killpg by that id also works when the
+        # leader has already exited and been reaped but children remain in the
+        # group (a command that backgrounded children and returned).
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            os.killpg(proc.pid, signal.SIGKILL)
             return
         except (OSError, ValueError):
             pass
@@ -588,7 +611,13 @@ class _CappedOutputReader(Thread):
         stream = self._stream
         while total < self._limit:
             remaining = self._limit - total
-            chunk = stream.read(remaining + 1)
+            try:
+                chunk = stream.read(remaining + 1)
+            except (OSError, ValueError):
+                # The stream was closed from another thread while this read was
+                # blocked (daemonized child holding the pipe open); treat it as
+                # end of output instead of dying in the reader thread.
+                break
             if not chunk:
                 break
             chunks.append(chunk)
@@ -597,6 +626,51 @@ class _CappedOutputReader(Thread):
                 self.truncated = True
                 break
         self.output = "".join(chunks)
+
+
+def _ensure_private_dir(path: Path) -> None:
+    """Create/verify ``path`` and its ancestors as private, owned dirs.
+
+    Raises OSError when any level is a symlink, is owned by another user, or
+    cannot be made private, so callers can fall back to a per-process root.
+    """
+    path.mkdir(mode = 0o700, parents = True, exist_ok = True)
+    base = Path(tempfile.gettempdir()).resolve()
+    current = path
+    while current != base and base in current.parents:
+        if current.is_symlink():
+            raise OSError(f"refusing to use symlinked temp root: {current}")
+        if not current.is_dir():
+            raise OSError(f"temp root is not a directory: {current}")
+        if os.name == "posix":
+            stat_result = current.stat()
+            getuid = getattr(os, "getuid", None)
+            if getuid is not None and stat_result.st_uid != getuid():
+                raise OSError(f"temp root is owned by another user: {current}")
+            if stat_result.st_mode & 0o077:
+                try:
+                    current.chmod(0o700)
+                except OSError:
+                    raise OSError(f"cannot secure temp root permissions: {current}")
+        current = current.parent
+
+
+@lru_cache(maxsize = 1)
+def _secure_validator_tmp_root() -> Path:
+    """Private temp root for tool checks and the OXC runner.
+
+    The default ``/tmp/unsloth-studio/oxc-validator`` is predictable and
+    world-visible; on multi-user hosts another local user could pre-create it
+    as a directory or symlink. This verifies/creates it with 0700 semantics
+    and falls back to a fresh per-process mkdtemp root when it is unusable
+    (symlink, wrong owner, or not securable).
+    """
+    root = oxc_validator_tmp_root()
+    try:
+        _ensure_private_dir(root)
+        return root
+    except OSError:
+        return Path(tempfile.mkdtemp(prefix = "unsloth-validator-", dir = tempfile.gettempdir()))
 
 
 def _run_tool_single(
@@ -608,7 +682,7 @@ def _run_tool_single(
     output_max_chars: int = _TOOL_OUTPUT_MAX_CHARS_DEFAULT,
     source_file_max_chars: int = _TOOL_SOURCE_FILE_MAX_CHARS_DEFAULT,
 ) -> dict[str, Any]:
-    tmp_root = ensure_dir(oxc_validator_tmp_root())
+    tmp_root = _secure_validator_tmp_root()
     try:
         with tempfile.TemporaryDirectory(dir = str(tmp_root), prefix = "tool-") as raw_dir:
             run_dir = Path(raw_dir)
@@ -685,8 +759,18 @@ def _run_tool_single(
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait()
-            out_reader.join(timeout = 10)
-            err_reader.join(timeout = 10)
+            if not timed_out:
+                # A command that backgrounded children (nohup x &) exits while
+                # a grandchild keeps running with the user env and holds the
+                # pipes open, stalling the joins below and keeping the temp
+                # folder in use on Windows. Reap the whole group here too.
+                _terminate_tool_process_tree(proc)
+            # Do NOT close the pipes from this thread: a reader blocked in
+            # read() makes close() wait for it, which would stall on a leaked
+            # pipe holder. Killing the group closes the write ends, so the
+            # readers hit EOF and the joins below finish immediately.
+            out_reader.join(timeout = 5)
+            err_reader.join(timeout = 5)
             stdout = out_reader.output
             stderr = err_reader.output
             if timed_out:
@@ -823,7 +907,7 @@ def _run_oxc_batch(
             "Node.js not found (install Node >= 20.19, or re-run Unsloth setup to provision it).",
         )
     try:
-        tmp_dir = ensure_dir(oxc_validator_tmp_root())
+        tmp_dir = _secure_validator_tmp_root()
         env = child_env_without_native_path_secret()
         tmp_dir_str = str(tmp_dir)
         env["TMPDIR"] = tmp_dir_str

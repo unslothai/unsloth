@@ -54,6 +54,24 @@ def decode_validation_source(value: str) -> str:
         return ""
 
 
+def _reject_malformed_marker_column(column: dict[str, Any]) -> None:
+    """Reject a marker-prefixed custom column that failed to parse.
+
+    Leaving the marker string in place would hand data_designer a non-callable
+    validation_function and fail later with an opaque error; fail early with a
+    clear message instead. Columns whose marker is not ours are left alone.
+    """
+    params = column.get("validator_params")
+    fn_raw = params.get("validation_function") if isinstance(params, dict) else None
+    fn_name = fn_raw.strip() if isinstance(fn_raw, str) else ""
+    if not fn_name.startswith(f"{CUSTOM_VALIDATION_FN_MARKER}:"):
+        return
+    name = str(column.get("name") or "").strip()
+    raise ValueError(
+        f"Column '{name or '?'}' has a malformed {CUSTOM_VALIDATION_FN_MARKER} marker.",
+    )
+
+
 def split_custom_callable_validators(
     recipe_core: dict[str, Any],
 ) -> tuple[dict[str, Any], list[CustomCallableValidatorSpec]]:
@@ -76,6 +94,7 @@ def split_custom_callable_validators(
 
         maybe_spec = _parse_custom_spec(column = column)
         if maybe_spec is None:
+            _reject_malformed_marker_column(column)
             kept_columns.append(column)
             continue
         custom_specs.append(maybe_spec)

@@ -81,7 +81,7 @@ def test_decode_rejects_oversized_marker():
     assert custom.decode_validation_source("A" * 100) != ""
 
 
-def test_split_skips_oversized_source():
+def test_split_rejects_oversized_source():
     recipe = {
         "columns": [
             _custom_column(
@@ -90,9 +90,8 @@ def test_split_skips_oversized_source():
             )
         ]
     }
-    sanitized, specs = custom.split_custom_callable_validators(recipe)
-    assert specs == []
-    assert len(sanitized["columns"]) == 1
+    with pytest.raises(ValueError, match = "malformed unsloth_custom_validator marker"):
+        custom.split_custom_callable_validators(recipe)
 
 
 def test_parse_batch_size_is_clamped():
@@ -134,7 +133,7 @@ def test_split_extracts_custom_and_leaves_other_columns():
     assert [column["name"] for column in sanitized["columns"]] == ["oxc_one", "python_one"]
 
 
-def test_split_skips_malformed_marker():
+def test_split_rejects_malformed_marker():
     recipe = {
         "columns": [
             {
@@ -147,9 +146,8 @@ def test_split_skips_malformed_marker():
             }
         ]
     }
-    sanitized, specs = custom.split_custom_callable_validators(recipe)
-    assert specs == []
-    assert len(sanitized["columns"]) == 1
+    with pytest.raises(ValueError, match = "malformed unsloth_custom_validator marker"):
+        custom.split_custom_callable_validators(recipe)
 
 
 def test_callable_contract():

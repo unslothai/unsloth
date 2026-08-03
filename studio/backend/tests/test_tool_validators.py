@@ -10,6 +10,7 @@ tool validator extends the same ``local_callable_validators.py`` module.
 import base64
 import importlib.util
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -118,6 +119,52 @@ def test_tool_spec_rejects_bad_extensions(bad_ext):
 def test_tool_spec_rejects_empty_command():
     spec = tool._parse_tool_spec(column = _tool_column(file_ext = "go", command = "  "))
     assert spec is None
+
+
+def test_split_rejects_malformed_tool_marker():
+    recipe = {
+        "columns": [
+            {
+                "column_type": "validation",
+                "name": "bad_tool",
+                "target_columns": ["code"],
+                "validator_type": "local_callable",
+                "validator_params": {"validation_function": "unsloth_tool_validator:!!bad!!"},
+                "batch_size": 10,
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match = "malformed unsloth_tool_validator marker"):
+        tool.split_tool_local_callable_validators(recipe)
+
+
+def test_split_keeps_non_tool_local_callable_columns():
+    """Markers that are not ours (OXC, or arbitrary strings) are left alone."""
+    recipe = {
+        "columns": [
+            {
+                "column_type": "validation",
+                "name": "oxc_check",
+                "target_columns": ["code"],
+                "validator_type": "local_callable",
+                "validator_params": {
+                    "validation_function": "unsloth_oxc_validator:javascript:syntax:auto"
+                },
+                "batch_size": 10,
+            },
+            {
+                "column_type": "validation",
+                "name": "foreign",
+                "target_columns": ["code"],
+                "validator_type": "local_callable",
+                "validator_params": {"validation_function": "some_other_tool:payload"},
+                "batch_size": 10,
+            },
+        ]
+    }
+    sanitized, specs = tool.split_tool_local_callable_validators(recipe)
+    assert specs == []
+    assert len(sanitized["columns"]) == 2
 
 
 def test_tool_spec_rejects_oversized_command():
@@ -447,8 +494,86 @@ def test_tool_timeout_kills_child_processes(monkeypatch, tmp_path):
     assert dead, f"child {child_pid} still alive after timeout"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups only")
+def test_tool_success_path_reaps_background_children(tmp_path):
+    """A daemonized child must be reaped on the success path too, and the row
+    must not stall on the pipe it keeps open."""
+    import os
+    import time
+
+    import pandas as pd
+
+    pid_file = tmp_path / "child.pid"
+    fn = tool._build_tool_validation_function(
+        "txt",
+        f"sh -c 'sleep 60 & echo $! > {pid_file}'",
+    )
+    start = time.monotonic()
+    out = fn(pd.DataFrame({"code": ["x"]}))
+    elapsed = time.monotonic() - start
+    assert list(out["is_valid"]) == [True]
+    assert elapsed < 5, f"row stalled {elapsed:.1f}s on the leaked child"
+    assert pid_file.exists(), "background child never started"
+    child_pid = int(pid_file.read_text().strip())
+    dead = False
+    for _ in range(50):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            dead = True
+            break
+        except PermissionError:
+            pass
+        time.sleep(0.1)
+    assert dead, f"child {child_pid} still alive after the check completed"
+
+
 def test_tool_max_workers_at_least_one():
     assert tool._tool_max_workers() >= 1
+
+
+def test_secure_tmp_root_creates_private_dir(monkeypatch, tmp_path):
+    root = tmp_path / "unsloth-studio" / "oxc-validator"
+    monkeypatch.setattr(tool, "oxc_validator_tmp_root", lambda: root)
+    tool._secure_validator_tmp_root.cache_clear()
+    result = tool._secure_validator_tmp_root()
+    assert result == root
+    assert root.is_dir()
+    if os.name == "posix":
+        assert root.stat().st_mode & 0o777 == 0o700
+        assert (root.parent.stat().st_mode & 0o777) == 0o700
+    tool._secure_validator_tmp_root.cache_clear()
+
+
+def test_secure_tmp_root_tightens_world_writable_root(monkeypatch, tmp_path):
+    root = tmp_path / "unsloth-studio" / "oxc-validator"
+    root.mkdir(parents = True, exist_ok = True)
+    root.chmod(0o777)
+    monkeypatch.setattr(tool, "oxc_validator_tmp_root", lambda: root)
+    tool._secure_validator_tmp_root.cache_clear()
+    result = tool._secure_validator_tmp_root()
+    assert result == root
+    if os.name == "posix":
+        assert root.stat().st_mode & 0o777 == 0o700
+    tool._secure_validator_tmp_root.cache_clear()
+
+
+def test_secure_tmp_root_falls_back_on_symlink(monkeypatch, tmp_path):
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    link = tmp_path / "unsloth-studio" / "oxc-validator"
+    link.parent.mkdir(parents = True, exist_ok = True)
+    link.symlink_to(target)
+    monkeypatch.setattr(tool, "oxc_validator_tmp_root", lambda: link)
+    tool._secure_validator_tmp_root.cache_clear()
+    result = tool._secure_validator_tmp_root()
+    # The symlinked default must not be used: a fresh private root is returned.
+    assert result != link
+    assert result.is_dir()
+    assert not result.is_symlink()
+    if os.name == "posix":
+        assert result.stat().st_mode & 0o777 == 0o700
+    tool._secure_validator_tmp_root.cache_clear()
 
 
 def test_tool_batch_empty_returns_empty():

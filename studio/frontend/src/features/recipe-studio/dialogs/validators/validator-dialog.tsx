@@ -57,6 +57,7 @@ import {
   TOOL_SCAFFOLD_FILE_MAX_KIB_MAX,
   TOOL_SCAFFOLD_MAX_ROWS,
 } from "../../utils/validators/validation-markers";
+import { applyValidatorContentEdit } from "../../utils/validators/consent";
 import {
   addToolScaffoldRow as addScaffoldRow,
   removeToolScaffoldRow as removeScaffoldRow,
@@ -245,15 +246,27 @@ export function ValidatorDialog({
     !toolReferencesFile;
 
   function updateToolScaffoldRow(index: number, next: ToolScaffoldFile): void {
-    onUpdate({ tool_scaffold: updateScaffoldRow(toolScaffoldRows, index, next) });
+    onUpdate(
+      applyValidatorContentEdit(config, {
+        tool_scaffold: updateScaffoldRow(toolScaffoldRows, index, next),
+      }),
+    );
   }
 
   function removeToolScaffoldRow(index: number): void {
-    onUpdate({ tool_scaffold: removeScaffoldRow(toolScaffoldRows, index) });
+    onUpdate(
+      applyValidatorContentEdit(config, {
+        tool_scaffold: removeScaffoldRow(toolScaffoldRows, index),
+      }),
+    );
   }
 
   function addToolScaffoldRow(): void {
-    onUpdate({ tool_scaffold: addScaffoldRow(toolScaffoldRows) });
+    onUpdate(
+      applyValidatorContentEdit(config, {
+        tool_scaffold: addScaffoldRow(toolScaffoldRows),
+      }),
+    );
   }
 
   return (
@@ -411,11 +424,13 @@ export function ValidatorDialog({
                   size="sm"
                   className="nodrag"
                   onClick={() =>
-                    onUpdate({
-                      tool_command: example.command,
-                      tool_ext: example.ext,
-                      tool_scaffold: example.scaffold.map((file) => ({ ...file })),
-                    })
+                    onUpdate(
+                      applyValidatorContentEdit(config, {
+                        tool_command: example.command,
+                        tool_ext: example.ext,
+                        tool_scaffold: example.scaffold.map((file) => ({ ...file })),
+                      }),
+                    )
                   }
                 >
                   {example.label}
@@ -435,7 +450,11 @@ export function ValidatorDialog({
               fieldSizing="content"
               value={config.tool_command ?? ""}
               onChange={(event) =>
-                onUpdate({ tool_command: event.target.value })
+                onUpdate(
+                  applyValidatorContentEdit(config, {
+                    tool_command: event.target.value,
+                  }),
+                )
               }
               placeholder="go vet ./..."
             />
@@ -457,7 +476,13 @@ export function ValidatorDialog({
               id={toolExtId}
               className="nodrag font-mono"
               value={config.tool_ext ?? ""}
-              onChange={(event) => onUpdate({ tool_ext: event.target.value })}
+              onChange={(event) =>
+                onUpdate(
+                  applyValidatorContentEdit(config, {
+                    tool_ext: event.target.value,
+                  }),
+                )
+              }
               placeholder="go"
             />
           </div>
@@ -567,7 +592,11 @@ export function ValidatorDialog({
               fieldSizing="content"
               value={config.custom_source ?? ""}
               onChange={(event) =>
-                onUpdate({ custom_source: event.target.value })
+                onUpdate(
+                  applyValidatorContentEdit(config, {
+                    custom_source: event.target.value,
+                  }),
+                )
               }
             />
             <div className="flex flex-wrap gap-1.5">
@@ -576,7 +605,11 @@ export function ValidatorDialog({
                 variant="outline"
                 size="sm"
                 className="nodrag"
-                onClick={() => onUpdate({ custom_source: GO_CUSTOM_SAMPLE })}
+                onClick={() =>
+                  onUpdate(
+                    applyValidatorContentEdit(config, { custom_source: GO_CUSTOM_SAMPLE }),
+                  )
+                }
               >
                 Insert Go vet + build sample
               </Button>
@@ -586,7 +619,9 @@ export function ValidatorDialog({
                 size="sm"
                 className="nodrag"
                 onClick={() =>
-                  onUpdate({ custom_source: CARGO_CUSTOM_SAMPLE })
+                  onUpdate(
+                    applyValidatorContentEdit(config, { custom_source: CARGO_CUSTOM_SAMPLE }),
+                  )
                 }
               >
                 Insert cargo check sample
@@ -597,7 +632,11 @@ export function ValidatorDialog({
                 size="sm"
                 className="nodrag"
                 onClick={() =>
-                  onUpdate({ custom_source: DEFAULT_CUSTOM_VALIDATOR_SOURCE })
+                  onUpdate(
+                    applyValidatorContentEdit(config, {
+                      custom_source: DEFAULT_CUSTOM_VALIDATOR_SOURCE,
+                    }),
+                  )
                 }
               >
                 Reset

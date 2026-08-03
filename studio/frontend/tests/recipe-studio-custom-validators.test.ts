@@ -80,13 +80,18 @@ test("tool marker encodes and decodes", () => {
   });
 });
 
-test("decodeToolSpec keeps malformed payloads rejected and bad extensions round-trippable", () => {
-  // Bad extensions are no longer rejected at decode: the config validators
-  // flag them, and rejecting them would lose the rest of the tool state on
-  // reload. The scaffold-path checks and base64/JSON shape checks stay.
+test("decodeToolSpec keeps malformed payloads rejected and drops path-hostile extensions", () => {
+  // Path-hostile extensions are dropped from the round-trip (never reaching a
+  // filename/shell string); the config validators then flag the missing
+  // extension. The rest of the tool state is preserved.
   const encoded = markers.encodeToolSpec({ ext: "../x", command: "go vet" });
   assert.deepEqual(markers.decodeToolSpec(encoded), {
-    ext: "/x",
+    ext: "",
+    command: "go vet",
+  });
+  const backslash = markers.encodeToolSpec({ ext: "a\\b", command: "go vet" });
+  assert.deepEqual(markers.decodeToolSpec(backslash), {
+    ext: "",
     command: "go vet",
   });
   assert.equal(markers.decodeToolSpec("!!not base64!!"), null);
@@ -207,15 +212,59 @@ test("tool cap KiB normalization clamps into the allowed bands", () => {
   assert.equal(markers.normalizeToolScaffoldFileMaxKib(undefined), "32");
   assert.equal(markers.normalizeToolScaffoldFileMaxKib("999"), "64");
   assert.equal(markers.normalizeToolScaffoldFileMaxKib("0"), "1");
+  // Fractional KiB values from imported markers are preserved (chars/1024 is
+  // exact), not silently reset to the default.
+  assert.equal(markers.normalizeToolOutputMaxKib("195.3125"), "195.3125");
+  assert.equal(markers.normalizeToolScaffoldFileMaxKib("4.5"), "4.5");
 });
 
-test("tool cap errors report out-of-range values", () => {
+test("tool cap errors report out-of-range and non-numeric values", () => {
   assert.equal(markers.toolOutputMaxKibError(undefined), null);
   assert.equal(markers.toolOutputMaxKibError("8"), null);
+  assert.equal(markers.toolOutputMaxKibError("195.3125"), null);
   assert.ok(markers.toolOutputMaxKibError("999")?.includes("256"));
   assert.ok(markers.toolOutputMaxKibError("0")?.includes("between"));
+  assert.ok(markers.toolOutputMaxKibError("abc")?.includes("number"));
   assert.equal(markers.toolScaffoldFileMaxKibError("32"), null);
   assert.ok(markers.toolScaffoldFileMaxKibError("999")?.includes("64"));
+  assert.ok(markers.toolScaffoldFileMaxKibError("abc")?.includes("number"));
+});
+
+test("imported non-KiB-aligned caps round-trip losslessly", () => {
+  const marker = markers.validationFunctionFromConfig(
+    toolConfig({ tool_output_max_kib: "195.3125" }),
+  );
+  assert.ok(marker?.startsWith(`${TOOL_MARKER}:`));
+  const spec = markers.decodeToolSpec(marker!.slice(TOOL_MARKER.length + 1));
+  assert.equal(spec?.output_max_chars, 200000);
+  // And the reverse: a hand-crafted marker with a non-aligned char count
+  // parses back to an exact fractional KiB value.
+  const spec2 = markers.decodeToolSpec(
+    markers.encodeToolSpec({
+      ext: "go",
+      command: "go vet ./...",
+      output_max_chars: 200000,
+    }),
+  );
+  assert.equal(spec2?.output_max_chars, 200000);
+  const config = parseValidator(
+    {
+      column_type: "validation",
+      name: "go_check",
+      drop: false,
+      target_columns: ["code"],
+      validator_type: "local_callable",
+      validator_params: {
+        validation_function: markers.validationFunctionFromConfig(
+          toolConfig({ tool_output_max_kib: "195.3125" }),
+        ),
+      },
+      batch_size: 10,
+    },
+    "go_check",
+    "n1",
+  );
+  assert.equal(config.tool_output_max_kib, "195.3125");
 });
 
 test("tool marker round-trips the configurable caps", () => {
