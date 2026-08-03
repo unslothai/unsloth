@@ -296,11 +296,7 @@ def test_tool_batch_parallel_preserves_row_order():
         max_workers = 3,
     )
     assert [result["is_valid"] for result in results] == [True, True, True]
-    assert [result["tool_output"] for result in results] == [
-        "first",
-        "second",
-        "third",
-    ]
+    assert [result["tool_output"] for result in results] == ["first", "second", "third"]
 
 
 def test_tool_batch_parallel_uses_unique_temp_dirs():
@@ -330,6 +326,133 @@ def test_tool_batch_parallel_runs_faster_than_serial():
     assert all(result["is_valid"] for result in results)
     # Serial would take ~1.5s; parallel ~0.5s. Keep a wide margin for CI.
     assert elapsed < 1.4, f"parallel batch took {elapsed:.2f}s"
+
+
+def test_parallel_batch_rows_get_distinct_file_paths():
+    """Each concurrent row must write to its own temp dir: no shared {file}."""
+    results = tool._run_tool_batch(
+        file_ext = "go",
+        command = "echo {file}",
+        scaffold = (("go.mod", "module example.com/check\n"), ("main.go", "{source}")),
+        code_values = ["a", "b", "c", "d"],
+        max_workers = 4,
+    )
+    paths = [result["tool_output"] for result in results]
+    assert all(path.endswith("main.go") for path in paths)
+    assert len(set(paths)) == 4, f"rows shared temp paths: {paths}"
+
+
+def test_parallel_batch_staggered_completion_keeps_row_order():
+    """Rows finishing out of order must still map back to their input rows."""
+    command = 'sh -c \'if [ "$(cat {file})" = "slow" ]; then sleep 0.6; fi; cat {file}\''
+    results = tool._run_tool_batch(
+        file_ext = "txt",
+        command = command,
+        scaffold = (),
+        code_values = ["slow", "fast", "fast"],
+        max_workers = 3,
+    )
+    assert [result["tool_output"] for result in results] == ["slow", "fast", "fast"]
+
+
+def test_parallel_batch_mixed_results_keep_per_row_attribution():
+    """Failing rows must carry their own error, not a neighbor's."""
+    import pandas as pd
+
+    fn = tool._build_tool_validation_function(
+        "txt",
+        'sh -c \'test "$(cat {file})" = "good"\'',
+    )
+    out = fn(pd.DataFrame({"code": ["good", "bad", "good", "bad"]}))
+    assert list(out["is_valid"]) == [True, False, True, False]
+    assert out["error_message"].iloc[0] == ""
+    assert out["error_message"].iloc[1] != ""
+    assert out["error_message"].iloc[2] == ""
+    assert out["error_message"].iloc[3] != ""
+
+
+def test_parallel_batch_concurrent_timeouts_are_graceful(monkeypatch):
+    import time
+
+    monkeypatch.setattr(tool, "_TOOL_RUN_TIMEOUT_SECONDS", 1)
+    start = time.monotonic()
+    results = tool._run_tool_batch(
+        file_ext = "txt",
+        command = "sleep 5",
+        scaffold = (),
+        code_values = ["a", "b", "c"],
+        max_workers = 3,
+    )
+    elapsed = time.monotonic() - start
+    assert len(results) == 3
+    for result in results:
+        assert result["is_valid"] is False
+        assert "timed out" in result["error_message"]
+    # All three time out at ~1s concurrently; a hang or deadlock would blow this.
+    assert elapsed < 4, f"concurrent timeouts took {elapsed:.2f}s"
+
+
+def test_parallel_batch_workers_capped_to_row_count():
+    results = tool._run_tool_batch(
+        file_ext = "txt",
+        command = "true",
+        scaffold = (),
+        code_values = ["a", "b"],
+        max_workers = 8,
+    )
+    assert len(results) == 2
+    assert all(result["is_valid"] for result in results)
+
+
+def test_parallel_batch_zero_or_negative_workers_fall_back_serial():
+    for workers in (0, -1):
+        results = tool._run_tool_batch(
+            file_ext = "txt",
+            command = "cat {file}",
+            scaffold = (),
+            code_values = ["a", "b"],
+            max_workers = workers,
+        )
+        assert [result["tool_output"] for result in results] == ["a", "b"]
+
+
+def test_serial_and_parallel_batches_are_equivalent():
+    command = 'sh -c \'test "$(cat {file})" = "good"\''
+    code_values = ["good", "bad", "good", "bad", "good"]
+    serial = tool._run_tool_batch(
+        file_ext = "txt",
+        command = command,
+        scaffold = (),
+        code_values = code_values,
+        max_workers = 1,
+    )
+    parallel = tool._run_tool_batch(
+        file_ext = "txt",
+        command = command,
+        scaffold = (),
+        code_values = code_values,
+        max_workers = 4,
+    )
+    assert serial == parallel
+
+
+def test_cached_tool_callable_is_thread_safe():
+    """The lru_cached callable is shared; concurrent calls must not interfere."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import pandas as pd
+
+    fn = tool._build_tool_validation_function(
+        "txt",
+        'sh -c \'test "$(cat {file})" = "good"\'',
+    )
+    df = pd.DataFrame({"code": ["good", "bad", "good"]})
+    with ThreadPoolExecutor(max_workers = 4) as executor:
+        outputs = list(executor.map(lambda _: fn(df), range(4)))
+    for output in outputs:
+        assert list(output["is_valid"]) == [True, False, True]
+        assert output["error_message"].iloc[0] == ""
+        assert output["error_message"].iloc[1] != ""
 
 
 def test_tool_callable_file_placeholder_uses_scaffold_source():
