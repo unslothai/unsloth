@@ -47,7 +47,10 @@ import {
   OXC_VALIDATION_MODES,
   normalizeOxcValidationMode,
 } from "../../utils/validators/oxc-mode";
-import { normalizeToolScaffold } from "../../utils/validators/validation-markers";
+import {
+  normalizeToolScaffold,
+  TOOL_SCAFFOLD_MAX_ROWS,
+} from "../../utils/validators/validation-markers";
 import {
   addToolScaffoldRow as addScaffoldRow,
   removeToolScaffoldRow as removeScaffoldRow,
@@ -503,9 +506,13 @@ export function ValidatorDialog({
                 variant="outline"
                 className="nodrag justify-self-start"
                 onClick={addToolScaffoldRow}
+                disabled={toolScaffoldRows.length >= TOOL_SCAFFOLD_MAX_ROWS}
               >
                 <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 Add file
+                {toolScaffoldRows.length >= TOOL_SCAFFOLD_MAX_ROWS
+                  ? ` (max ${TOOL_SCAFFOLD_MAX_ROWS})`
+                  : ""}
               </Button>
             </div>
           </div>

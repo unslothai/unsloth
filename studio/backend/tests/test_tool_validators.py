@@ -280,11 +280,11 @@ def test_tool_timeout_kills_child_processes(monkeypatch, tmp_path):
 
     import pandas as pd
 
-    monkeypatch.setattr(tool, "_TOOL_RUN_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(tool, "_TOOL_RUN_TIMEOUT_SECONDS", 2)
     pid_file = tmp_path / "child.pid"
     fn = tool._build_tool_validation_function(
         "txt",
-        f"sh -c 'sleep 30 & echo $! > {pid_file}; wait'",
+        f"sh -c 'sleep 60 & echo $! > {pid_file}; wait'",
     )
     out = fn(pd.DataFrame({"code": ["x"]}))
     assert list(out["is_valid"]) == [False]

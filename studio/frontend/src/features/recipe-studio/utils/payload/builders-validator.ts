@@ -3,7 +3,10 @@
 
 import type { NodeConfig, ValidatorConfig } from "../../types";
 import { isValidatorCodeLang } from "../validators/code-lang";
-import { validationFunctionFromConfig } from "../validators/validation-markers";
+import {
+  toolScaffoldLimitError,
+  validationFunctionFromConfig,
+} from "../validators/validation-markers";
 
 const OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator";
 
@@ -63,11 +66,18 @@ export function buildValidatorColumn(
   if (config.validator_type === "tool" || config.validator_type === "custom") {
     const validationFunction = validationFunctionFromConfig(config);
     if (validationFunction === null) {
-      errors.push(
-        config.validator_type === "tool"
-          ? `Validator ${config.name}: a tool command and extension are required.`
-          : `Validator ${config.name}: a custom validator source is required.`,
-      );
+      if (config.validator_type === "tool") {
+        const scaffoldError = toolScaffoldLimitError(config.tool_scaffold);
+        errors.push(
+          scaffoldError !== null
+            ? `Validator ${config.name}: ${scaffoldError}`
+            : `Validator ${config.name}: a tool command and extension are required.`,
+        );
+      } else {
+        errors.push(
+          `Validator ${config.name}: a custom validator source is required.`,
+        );
+      }
     }
     return {
       // biome-ignore lint/style/useNamingConvention: api schema

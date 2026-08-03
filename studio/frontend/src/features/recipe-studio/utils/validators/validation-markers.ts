@@ -14,8 +14,9 @@ export type ToolValidatorSpec = {
 
 const TOOL_FILE_EXT_RE = /^[A-Za-z0-9.+-]{1,20}$/;
 const TOOL_SCAFFOLD_PATH_RE = /^[A-Za-z0-9._+-]+(?:\/[A-Za-z0-9._+-]+)*$/;
-const TOOL_SCAFFOLD_MAX_ROWS = 10;
+export const TOOL_SCAFFOLD_MAX_ROWS = 10;
 const TOOL_SCAFFOLD_MAX_TOTAL_CHARS = 32 * 1024;
+
 const LEADING_DOTS_RE = /^\.+/;
 const BASE64_PLUS_RE = /\+/g;
 const BASE64_SLASH_RE = /\//g;
@@ -203,6 +204,11 @@ export function validationFunctionFromConfig(
     const command = (config.tool_command ?? "").trim();
     const ext = (config.tool_ext ?? "").trim().replace(LEADING_DOTS_RE, "");
     if (!(command && TOOL_FILE_EXT_RE.test(ext))) {
+      return null;
+    }
+    // Never serialize a marker whose scaffold silently lost rows: an
+    // over-limit scaffold must surface as a validation error instead.
+    if (toolScaffoldLimitError(config.tool_scaffold) !== null) {
       return null;
     }
     const scaffold = normalizeToolScaffold(config.tool_scaffold);
