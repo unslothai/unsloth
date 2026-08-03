@@ -5215,7 +5215,8 @@ def _guard_chat_load_against_training(
     _guard_gpu_memory_mode = request.gpu_memory_mode
     _guard_gpu_layers = request.gpu_layers
     _guard_tensor_parallel = request.tensor_parallel
-    if is_gguf and _metal_device_is_paravirtual():
+    _pv_guard_forced_cpu = is_gguf and _metal_device_is_paravirtual()
+    if _pv_guard_forced_cpu:
         _pv = paravirtual_normalized_request(
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_layers = request.gpu_layers,
@@ -5229,6 +5230,12 @@ def _guard_chat_load_against_training(
         _guard_gpu_layers = _pv.gpu_layers
         _guard_tensor_parallel = _pv.tensor_parallel
         llama_extra_args = _pv.extra_args
+    # The pin leaves nothing on the GPU (--device none, no mmproj offload, drafter on CPU),
+    # so there is nothing to budget whatever the GGUF turns out to be. Ahead of the checks
+    # below, which only exempt a CONFIRMED diffusion GGUF and would size an unclassified
+    # remote one as GPU-resident and 409 a load that never touches VRAM.
+    if _pv_guard_forced_cpu:
+        return
     if is_gguf and _guard_gpu_memory_mode == "manual" and (diffusion_kind is False):
         return
     # A zero-layer diffusion split places no model layers on any device, so it cannot compete

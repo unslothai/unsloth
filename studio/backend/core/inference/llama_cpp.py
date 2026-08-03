@@ -10542,6 +10542,7 @@ class LlamaCppBackend:
                     )
                     self._kill_process()
                     _fb_tail = cmd[_spec_start + len(spec_flags) :]
+                    _fb_stripped_extras: Optional[List[str]] = None
                     # Appending --spec-default cannot clear MTP the extras or the env
                     # carry: types accumulate, so it would retry the mode that just
                     # failed and lose a main model that loads fine without it. The
@@ -10558,6 +10559,14 @@ class LlamaCppBackend:
                         )
                         for _fb_spec_var in _SPEC_ENV_VARS:
                             env.pop(_fb_spec_var, None)
+                        _fb_stripped_extras = strip_shadowing_flags(
+                            extra_args or [],
+                            strip_context = False,
+                            strip_cache = False,
+                            strip_spec = True,
+                            strip_template = False,
+                            strip_split_mode = False,
+                        )
                         # The extras owned --spec-type, so the clamp that took the slots
                         # was the extras one and _mtp_clamped_slots stayed 0. The strip
                         # above makes this retry genuinely non-MTP, so hand those back
@@ -10581,6 +10590,18 @@ class LlamaCppBackend:
                     if healthy:
                         self._speculative_type = "default"
                         _mtp_active_for_launched_server = False
+                        # The record below stores extra_args as what LAUNCHED, but this
+                        # server launched without the spec group. Leaving the MTP list
+                        # there would have the next inheriting Apply pick it back up and
+                        # repeat the crash. Keep it as the requested state only, the way
+                        # the runtime-crash replay does.
+                        if _fb_stripped_extras is not None:
+                            _pv_suppressed_spec_extra_args = (
+                                _pv_suppressed_spec_extra_args
+                                if _pv_suppressed_spec_extra_args is not None
+                                else list(extra_args or [])
+                            )
+                            extra_args = _fb_stripped_extras
 
                 # A too-old llama.cpp can reject a model's --mmproj projector
                 # (format message or a bare SIGSEGV); retry once text-only.

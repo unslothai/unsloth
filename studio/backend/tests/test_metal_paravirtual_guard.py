@@ -1366,6 +1366,22 @@ def test_the_retry_only_hands_back_slots_no_gpu_had_to_admit():
     assert _restored([(0, 8 << 30)]) == 0, "a GPU launch must not restore unbudgeted slots"
 
 
+def test_the_startup_fallback_records_the_extras_it_actually_launched():
+    """The success path stores extra_args as the launched list, but the fallback launched
+    without the spec group. Leaving the MTP list there means the next Apply that omits
+    extras inherits it and repeats the crash, so only the requested state keeps it."""
+    src = _load_model_source()
+    strip_at = src.index("_fb_stripped_extras = strip_shadowing_flags(")
+    swap_at = src.index("extra_args = _fb_stripped_extras")
+    record_at = src.index("self._extra_args = (")
+    assert strip_at < swap_at < record_at, "the swap must land before the launch is recorded"
+    # The original survives as the requested state, which the comparators read.
+    kept = src[src.index("_pv_suppressed_spec_extra_args = (", swap_at - 400) : swap_at]
+    assert "list(extra_args or [])" in kept
+    # Only on a healthy retry: a failed one must not rewrite what was asked for.
+    assert src.index("_mtp_active_for_launched_server = False", 0, swap_at) < swap_at
+
+
 def test_the_extras_own_clamp_comes_back_from_the_startup_retry_too():
     """Extras owning --spec-type park the displaced slots in _pv_extras_clamped_slots and
     leave _mtp_clamped_slots at 0. The retry strips that MTP for real now, so a restore
