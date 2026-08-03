@@ -371,17 +371,22 @@ function handleQueuedPromptAppendFailure(
   if (!isActivePromptQueueItem(run, item, run.generation)) {
     return;
   }
-  item.target.complete();
   item.dispatched = false;
   promptQueueActiveRunIds.delete(run.id);
   syncPromptQueueUI();
   item.dispatchRetries += 1;
   if (item.dispatchRetries > PROMPT_QUEUE_MAX_DISPATCH_RETRIES) {
     console.error("Prompt queue dispatch failed permanently:", error);
+    try {
+      item.target.cancel();
+    } catch (cleanupError) {
+      console.error("Prompt queue cleanup failed:", cleanupError);
+    }
     deletePromptQueueRun(run);
     requestPromptQueuePumpIfReady();
     return;
   }
+  item.target.complete();
   scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
 }
 

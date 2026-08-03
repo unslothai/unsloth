@@ -186,6 +186,20 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "threads.getById(reservedThreadId).cancelRun()" in THREAD
     assert "adoptPreStreamRunReservation(token, preStreamThreadIds)" in THREAD
     assert "hasPreStreamRunReservation(getQueueThreadIds())" in THREAD
+    append_failure = _between(
+        THREAD,
+        "function handleQueuedPromptAppendFailure(",
+        "function consumePromptQueueDeepResearch(",
+    )
+    terminal_failure = append_failure.split(
+        "if (item.dispatchRetries > PROMPT_QUEUE_MAX_DISPATCH_RETRIES)", 1
+    )[1]
+    assert terminal_failure.index("item.target.cancel();") < terminal_failure.index(
+        "deletePromptQueueRun(run);"
+    )
+    assert terminal_failure.index("deletePromptQueueRun(run);") < terminal_failure.index(
+        "item.target.complete();"
+    )
     assert "releaseCurrentPreStreamRun();" in CHAT_ADAPTER
     assert "releasePreStreamRunReservation(reservationToken)" in CHAT_ADAPTER
     assert "class PreStreamAwareAttachmentAdapter" in RUNTIME_PROVIDER
