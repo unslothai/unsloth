@@ -113,6 +113,72 @@ $ErrorActionPreference = "Stop"
         child.wait(timeout = 10)
 
 
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_installer_decision_stops_active_process_and_allows_idle(
+    tmp_path: Path, shell: str
+):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    decision_start = source.index("        $protectedProcessPaths = @(")
+    decision_end = source.index(
+        "        if (-not $TauriMode -and $studioUsesLegacyLayout)", decision_start
+    )
+    decision = source[decision_start:decision_end]
+
+    studio_home = tmp_path / "studio"
+    venv = studio_home / "unsloth_studio"
+    scripts = venv / "Scripts"
+    scripts.mkdir(parents = True)
+    marker = venv / "must-remain.txt"
+    marker.write_text("untouched", encoding = "utf-8")
+    worker = scripts / "worker.exe"
+    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", worker)
+    child = subprocess.Popen(
+        [str(worker), "-n", "30", "127.0.0.1"],
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{_process_helpers(source)}
+function Exit-InstallFailure {{
+    param([string]$Message)
+    return "blocked"
+}}
+function Invoke-InstallerDecision {{
+    $VenvDir = $env:TEST_VENV
+    $StudioHome = $env:TEST_STUDIO_HOME
+    $studioUsesLegacyLayout = $false
+{decision}
+    return "continued"
+}}
+$result = Invoke-InstallerDecision
+Write-Output ("RESULT:" + $result)
+Write-Output ("MARKER:" + (Get-Content -LiteralPath $env:TEST_MARKER -Raw))
+"""
+    env = os.environ.copy()
+    env["TEST_VENV"] = str(venv)
+    env["TEST_STUDIO_HOME"] = str(studio_home)
+    env["TEST_MARKER"] = str(marker)
+    try:
+        active = [
+            line
+            for line in _run_powershell(shell, script, env).splitlines()
+            if line.startswith(("RESULT:", "MARKER:"))
+        ]
+        assert active == ["RESULT:blocked", "MARKER:untouched"]
+    finally:
+        child.terminate()
+        child.wait(timeout = 10)
+
+    idle = [
+        line
+        for line in _run_powershell(shell, script, env).splitlines()
+        if line.startswith(("RESULT:", "MARKER:"))
+    ]
+    assert idle == ["RESULT:continued", "MARKER:untouched"]
+
+
 def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     for removed_helper in (
@@ -262,6 +328,42 @@ Write-Output (Test-StudioPathEqual -Left $env:TEST_STUDIO_HOME -Right $env:TEST_
     env["TEST_JUNCTION"] = str(junction_studio)
     env["TEST_SIBLING"] = str(profile / ".unsloth" / "studio-backup")
     assert _run_powershell(shell, script, env).splitlines() == ["True", "True", "True", "False"]
+
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_tauri_override_accepts_junction_alias_of_managed_root(tmp_path: Path, shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    profile = tmp_path / "profile"
+    studio_home = profile / ".unsloth" / "studio"
+    studio_home.mkdir(parents = True)
+    junction = tmp_path / "profile-alias"
+    junction_result = subprocess.run(
+        [os.environ["COMSPEC"], "/d", "/c", "mklink", "/J", str(junction), str(profile)],
+        capture_output = True,
+        text = True,
+    )
+    if junction_result.returncode != 0:
+        pytest.skip(f"Could not create a directory junction: {junction_result.stderr}")
+
+    validation_start = source.index("    # Custom Unsloth roots are not supported with --tauri")
+    validation_end = source.index("    # LOCALAPPDATA may be unset", validation_start)
+    validation = source[validation_start:validation_end]
+    final_path_helper = _extract(r"    function Get-StudioFinalPath \{.*?\n    \}\n", source)
+    script = f"""
+$ErrorActionPreference = "Stop"
+{final_path_helper}
+$TauriMode = $true
+$envOverride = $env:TEST_TAURI_OVERRIDE
+$envOverrideVar = "UNSLOTH_STUDIO_HOME"
+$tauriProfile = $env:TEST_TAURI_PROFILE
+{validation}
+Write-Output "accepted"
+"""
+    env = os.environ.copy()
+    env["TEST_TAURI_OVERRIDE"] = str(junction / ".unsloth" / "studio")
+    env["TEST_TAURI_PROFILE"] = str(profile)
+    assert _run_powershell(shell, script, env) == "accepted"
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")

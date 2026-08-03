@@ -238,6 +238,89 @@ function Install-UnslothStudio {
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
     $tauriProfile = if ($defaultProfile) { $defaultProfile } else { $env:USERPROFILE }
 
+    function Get-StudioFinalPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+        if (-not (Test-Path -LiteralPath $fullPath)) {
+            return $fullPath
+        }
+        if (-not ("UnslothStudioFinalPath" -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public static class UnslothStudioFinalPath
+{
+    private const uint FileShareRead = 0x00000001;
+    private const uint FileShareWrite = 0x00000002;
+    private const uint FileShareDelete = 0x00000004;
+    private const uint OpenExisting = 3;
+    private const uint FileFlagBackupSemantics = 0x02000000;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandleW(
+        SafeFileHandle file,
+        StringBuilder path,
+        uint pathLength,
+        uint flags);
+
+    public static string Resolve(string path)
+    {
+        using (SafeFileHandle handle = CreateFileW(
+            path,
+            0,
+            FileShareRead | FileShareWrite | FileShareDelete,
+            IntPtr.Zero,
+            OpenExisting,
+            FileFlagBackupSemantics,
+            IntPtr.Zero))
+        {
+            if (handle.IsInvalid)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+
+            StringBuilder buffer = new StringBuilder(512);
+            uint length = GetFinalPathNameByHandleW(
+                handle, buffer, (uint)buffer.Capacity, 0);
+            if (length == 0)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (length >= buffer.Capacity)
+            {
+                buffer = new StringBuilder((int)length + 1);
+                length = GetFinalPathNameByHandleW(
+                    handle, buffer, (uint)buffer.Capacity, 0);
+                if (length == 0)
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            if (length >= buffer.Capacity)
+                throw new InvalidOperationException("Final path exceeded the allocated buffer");
+            return buffer.ToString();
+        }
+  }
+}
+'@
+        }
+        $resolved = [UnslothStudioFinalPath]::Resolve($fullPath)
+        if ($resolved.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $resolved = '\\' + $resolved.Substring(8)
+        } elseif ($resolved.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $resolved = $resolved.Substring(4)
+        }
+        return $resolved.TrimEnd('\', '/')
+    }
+
 
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
     # the Windows profile folder). Pass through if the override is that same root.
@@ -247,11 +330,11 @@ function Install-UnslothStudio {
             $_tauriOverride = (Join-Path $env:USERPROFILE $_tauriOverride.Substring(1).TrimStart('/','\'))
         }
         try {
-            $_tauriOverride = [System.IO.Path]::GetFullPath($_tauriOverride)
+            $_tauriOverride = Get-StudioFinalPath -Path $_tauriOverride
         } catch {}
         $_legacyTauriRoot = Join-Path $tauriProfile ".unsloth\studio"
         try {
-            $_legacyTauriRoot = [System.IO.Path]::GetFullPath($_legacyTauriRoot)
+            $_legacyTauriRoot = Get-StudioFinalPath -Path $_legacyTauriRoot
         } catch {}
         # Strip trailing separators so ".../studio\" matches ".../studio".
         $_trimSeps = @(
@@ -1257,89 +1340,6 @@ exit 0
             return $null
         }
         return $mutex
-    }
-
-    function Get-StudioFinalPath {
-        param([Parameter(Mandatory = $true)][string]$Path)
-        $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
-        if (-not (Test-Path -LiteralPath $fullPath)) {
-            return $fullPath
-        }
-        if (-not ("UnslothStudioFinalPath" -as [type])) {
-            Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Text;
-using Microsoft.Win32.SafeHandles;
-
-public static class UnslothStudioFinalPath
-{
-    private const uint FileShareRead = 0x00000001;
-    private const uint FileShareWrite = 0x00000002;
-    private const uint FileShareDelete = 0x00000004;
-    private const uint OpenExisting = 3;
-    private const uint FileFlagBackupSemantics = 0x02000000;
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern SafeFileHandle CreateFileW(
-        string fileName,
-        uint desiredAccess,
-        uint shareMode,
-        IntPtr securityAttributes,
-        uint creationDisposition,
-        uint flagsAndAttributes,
-        IntPtr templateFile);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern uint GetFinalPathNameByHandleW(
-        SafeFileHandle file,
-        StringBuilder path,
-        uint pathLength,
-        uint flags);
-
-    public static string Resolve(string path)
-    {
-        using (SafeFileHandle handle = CreateFileW(
-            path,
-            0,
-            FileShareRead | FileShareWrite | FileShareDelete,
-            IntPtr.Zero,
-            OpenExisting,
-            FileFlagBackupSemantics,
-            IntPtr.Zero))
-        {
-            if (handle.IsInvalid)
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-
-            StringBuilder buffer = new StringBuilder(512);
-            uint length = GetFinalPathNameByHandleW(
-                handle, buffer, (uint)buffer.Capacity, 0);
-            if (length == 0)
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            if (length >= buffer.Capacity)
-            {
-                buffer = new StringBuilder((int)length + 1);
-                length = GetFinalPathNameByHandleW(
-                    handle, buffer, (uint)buffer.Capacity, 0);
-                if (length == 0)
-                    throw new Win32Exception(Marshal.GetLastWin32Error());
-            }
-            if (length >= buffer.Capacity)
-                throw new InvalidOperationException("Final path exceeded the allocated buffer");
-            return buffer.ToString();
-        }
-  }
-}
-'@
-        }
-        $resolved = [UnslothStudioFinalPath]::Resolve($fullPath)
-        if ($resolved.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
-            $resolved = '\\' + $resolved.Substring(8)
-        } elseif ($resolved.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
-            $resolved = $resolved.Substring(4)
-        }
-        return $resolved.TrimEnd('\', '/')
     }
 
     function Get-StudioPathHash {
