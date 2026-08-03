@@ -325,6 +325,18 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             )
         )
     )
+    managed_python_candidates = (venv / "Scripts" / "python.exe",)
+    managed_python_spellings = tuple(
+        dict.fromkeys(
+            spelling
+            for candidate in managed_python_candidates
+            if candidate.exists()
+            for spelling in (
+                str(candidate.absolute()),
+                _resolved_windows_path(candidate),
+            )
+        )
+    )
 
     script = (
         "$ErrorActionPreference='Stop';"
@@ -354,6 +366,11 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         ) from error
     processes = payload if isinstance(payload, list) else [payload]
     current_pid = os.getpid()
+    process_by_pid = {
+        int(process.get("ProcessId") or -1): process
+        for process in processes
+        if int(process.get("ProcessId") or -1) > 0
+    }
     excluded_pids = {current_pid}
 
     def is_protected_shim_image(image: str) -> bool:
@@ -366,9 +383,36 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             for path in protected_file_spellings
         )
 
+    def is_verified_update_redirector(image: str, command_line: str) -> bool:
+        try:
+            image_key = _resolved_windows_path(Path(image))
+        except OSError:
+            image_key = image
+        if not any(
+            image_key.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
+            for path in managed_python_spellings
+        ):
+            return False
+        try:
+            arguments = _windows_command_line_arguments(command_line)
+        except OSError:
+            return False
+        return (
+            len(arguments) >= 4
+            and is_protected_shim_image(arguments[1])
+            and arguments[2].casefold() == "studio"
+            and arguments[3].casefold() == "update"
+        )
+
+    def is_verified_update_ancestor(process_id: int, image: str) -> bool:
+        process = process_by_pid.get(process_id)
+        command_line = str(process.get("CommandLine") or "") if process is not None else ""
+        return is_protected_shim_image(image) or is_verified_update_redirector(image, command_line)
+
     # The user-facing launcher can chain StudioHome\bin\unsloth.exe through
-    # venv\Scripts\unsloth.exe before Python runs the command. Exempt only
-    # consecutive, verified shim ancestors; stop at the first non-shim image.
+    # the venv's Python redirector before base Python runs the command. Exempt
+    # only that exact update redirector and exact shim ancestors; stop at the
+    # first process that does not have either verified role.
     try:
         ancestor = psutil.Process(current_pid).parent()
     except (psutil.Error, OSError):
@@ -381,7 +425,7 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             ancestor_image = ancestor.exe()
         except (psutil.Error, OSError):
             break
-        if not is_protected_shim_image(ancestor_image):
+        if not is_verified_update_ancestor(ancestor_pid, ancestor_image):
             break
         excluded_pids.add(ancestor_pid)
         try:
@@ -389,27 +433,23 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         except (psutil.Error, OSError):
             break
 
-    # Fall back to WMI for the direct parent when psutil could not inspect it.
-    if len(excluded_pids) == 1:
-        current = next(
-            (
-                process
-                for process in processes
-                if int(process.get("ProcessId") or -1) == current_pid
-            ),
-            None,
-        )
-        parent_pid = int(current.get("ParentProcessId") or -1) if current is not None else -1
-        parent = next(
-            (process for process in processes if int(process.get("ProcessId") or -1) == parent_pid),
-            None,
-        )
-        if (
-            parent is not None
-            and parent.get("ExecutablePath")
-            and is_protected_shim_image(str(parent["ExecutablePath"]))
-        ):
+    # Continue the same verified walk through WMI when psutil cannot inspect
+    # every ancestor. A partially visible launch chain is common under Git Bash.
+    descendant_pid = current_pid
+    for _ in range(8):
+        descendant = process_by_pid.get(descendant_pid)
+        if descendant is None:
+            break
+        parent_pid = int(descendant.get("ParentProcessId") or -1)
+        parent = process_by_pid.get(parent_pid)
+        if parent is None:
+            break
+        if parent_pid not in excluded_pids:
+            parent_image = parent.get("ExecutablePath")
+            if not parent_image or not is_verified_update_ancestor(parent_pid, str(parent_image)):
+                break
             excluded_pids.add(parent_pid)
+        descendant_pid = parent_pid
 
     for process in processes:
         process_id = int(process.get("ProcessId") or -1)

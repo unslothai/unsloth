@@ -180,6 +180,113 @@ def test_terminal_update_idle_scan_excludes_self_and_blocks_another_consumer(tmp
         gate.ensure_managed_environment_is_idle(studio_home)
 
 
+@pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
+def test_terminal_update_only_excludes_its_verified_python_redirector(tmp_path, monkeypatch):
+    studio_home = tmp_path / "studio"
+    scripts_dir = studio_home / "unsloth_studio" / "Scripts"
+    managed_python = scripts_dir / "python.exe"
+    outer_shim = studio_home / "bin" / "unsloth.exe"
+    worker = scripts_dir / "worker.py"
+    for executable in (managed_python, outer_shim):
+        executable.parent.mkdir(parents = True, exist_ok = True)
+        executable.write_bytes(b"MZ")
+    worker.write_text("pass", encoding = "utf-8")
+
+    redirector_pid = os.getpid() + 1_100_000
+    shim_pid = redirector_pid + 1
+    shell_pid = shim_pid + 1
+    base_process = {
+        "Name": "python.exe",
+        "ExecutablePath": str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"),
+        "CommandLine": r"python.exe worker.py",
+    }
+    redirector_command = f'"{managed_python}" "{outer_shim}" studio update --local'
+    payload = [
+        dict(
+            base_process,
+            ProcessId = os.getpid(),
+            ParentProcessId = redirector_pid,
+        ),
+        dict(
+            base_process,
+            ProcessId = redirector_pid,
+            ParentProcessId = shim_pid,
+            ExecutablePath = str(managed_python),
+            CommandLine = redirector_command,
+        ),
+        dict(
+            base_process,
+            ProcessId = shim_pid,
+            ParentProcessId = shell_pid,
+            Name = "unsloth.exe",
+            ExecutablePath = str(outer_shim),
+            CommandLine = "unsloth studio update --local",
+        ),
+        dict(
+            base_process,
+            ProcessId = shell_pid,
+            ParentProcessId = 0,
+            Name = "bash.exe",
+        ),
+    ]
+    shell_process = SimpleNamespace(
+        pid = shell_pid,
+        exe = lambda: str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"),
+        parent = lambda: None,
+    )
+    shim_process = SimpleNamespace(
+        pid = shim_pid,
+        exe = lambda: str(outer_shim),
+        parent = lambda: shell_process,
+    )
+    redirector_process = SimpleNamespace(
+        pid = redirector_pid,
+        exe = lambda: str(managed_python),
+        parent = lambda: shim_process,
+    )
+
+    def fake_process(process_id):
+        return SimpleNamespace(
+            cwd = lambda: str(tmp_path),
+            parent = lambda: redirector_process if process_id == os.getpid() else None,
+        )
+
+    fake_psutil = SimpleNamespace(Error = Exception, Process = fake_process)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps(payload),
+            stderr = "",
+        ),
+    )
+
+    gate.ensure_managed_environment_is_idle(studio_home)
+
+    payload[1]["CommandLine"] = f'"{managed_python}" "{outer_shim}" studio --api-only'
+    with pytest.raises(RuntimeError, match = "managed Studio environment is in use"):
+        gate.ensure_managed_environment_is_idle(studio_home)
+
+    payload[1]["CommandLine"] = f'"{managed_python}" "{worker}" studio update --local'
+    with pytest.raises(RuntimeError, match = "managed Studio environment is in use"):
+        gate.ensure_managed_environment_is_idle(studio_home)
+
+    payload[1]["CommandLine"] = redirector_command
+    payload.append(
+        dict(
+            base_process,
+            ProcessId = shell_pid + 100,
+            ParentProcessId = 0,
+            ExecutablePath = str(managed_python),
+            CommandLine = redirector_command,
+        )
+    )
+    with pytest.raises(RuntimeError, match = "managed Studio environment is in use"):
+        gate.ensure_managed_environment_is_idle(studio_home)
+
+
 @pytest.mark.skipif(os.name != "nt", reason = "Windows named mutexes are required")
 def test_runtime_gate_blocks_another_thread_and_recovers():
     kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
