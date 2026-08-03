@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import copy
 import contextlib
 import json
 import subprocess
@@ -617,12 +618,13 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     assert order == ["adapter_enter", "adapter_exit"]
 
 
+# fmt: off
 def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     from core.inference import mlx_inference
 
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
 
-    calls = {"generic": [], "model": [], "stream": []}
+    calls = {name: [] for name in ("generic", "model", "model_messages", "template_messages", "stream")}
     adapter_events = []
     adapter_active = {"value": False}
 
@@ -639,11 +641,41 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
 
     monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
     state = {"generic": "serialized", "model": "<image> model-aware"}
+
+    def model_render(_processor, _config, messages, **kwargs):
+        calls["model"].append(kwargs)
+        calls["model_messages"].append(messages)
+        assert kwargs.get("return_messages")
+        if state["model"] in ("return messages", "require lists", "reject structured"):
+            if messages["role"] == "assistant":
+                return [messages["content"]]
+            content = [{"type": "text", "text": messages["content"], "content": messages["content"]}]
+            if kwargs["num_images"]:
+                content[:0] = [{"type": "image"}, ""]
+            if kwargs.get("num_audios"):
+                content[:0] = [{"type": "audio"}, ""]
+            return [{"role": messages["role"], "content": content}]
+        return [{"role": messages["role"], "content": messages["content"]}]
+
+    def model_template(_processor, messages, *_args, **kwargs):
+        calls["template_messages"].append((messages, kwargs))
+        def joined(selected):
+            return " ".join(" ".join(str(part.get(field, "")) for part in message["content"] if isinstance(part, dict) for field in ("text", "content")) if isinstance(message.get("content"), list) else str(message.get("content")) for message in selected)
+        if state["model"] == "return messages":
+            return joined(messages)
+        if state["model"] == "require lists":
+            return joined(messages) if all(isinstance(message.get("content"), list) for message in messages) else ""
+        if state["model"] == "reject structured":
+            if any(isinstance(message.get("content"), list) for message in messages):
+                raise TypeError("string-only template")
+            return joined(messages) + " flattened model-aware"
+        return state["model"]
+
     prompt_utils = SimpleNamespace(
         MODEL_CONFIG = {"deepseek_vl_v2": object()},
-        apply_chat_template = lambda *_args, **kwargs: (
-            calls["model"].append(kwargs) or state["model"]
-        ),
+        apply_chat_template = model_render,
+        extract_text_from_content = lambda content: content if isinstance(content, str) else " ".join(item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") in ("text", "input_text")).strip(),
+        get_chat_template = model_template,
     )
     mlx_vlm = types.ModuleType("mlx_vlm")
     mlx_vlm.prompt_utils = prompt_utils
@@ -660,8 +692,11 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
         calls["generic"].append(kwargs)
         if isinstance(state["generic"], Exception):
             raise state["generic"]
-        if state["generic"] == "serialized":
-            return f"User: {_messages[0]['content']}"
+        if state["generic"] == "generic text":
+            return f"generic prompt {_messages[0]['content']}"
+        if state["generic"].startswith("serialized"):
+            index = -1 if state["generic"] == "serialized_last" else 0
+            return f"User: {_messages[index]['content']}"
         return state["generic"]
 
     monkeypatch.setattr(
@@ -682,29 +717,97 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     assert calls["stream"][0][0][2] == "<image> model-aware"
     with pytest.raises(RuntimeError, match = "dropping requested tools"):
         list(backend._generate_vlm(*args, tools = tools))
-    with pytest.raises(RuntimeError, match = "dropping requested tools or reasoning"):
-        list(backend._generate_vlm(*args, enable_thinking = False))
+    assert list(backend._generate_vlm(*args, enable_thinking = False)) == ["ok"]
+    assert calls["model"][-1]["enable_thinking"] is False
+    state["generic"] = ValueError("generic rendering failed")
+    state["model"] = "return messages"
+    multi_turn = [
+        {"role": "user", "content": [{"type": "input_image"}, {"type": "input_text", "text": "Read."}, {"type": "input_text", "text": "Now."}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Seen."}]},
+        {"role": "user", "content": [{"type": "text", "text": "Again."}]},
+    ]
+    recovered = backend._generate_vlm(*((multi_turn,) + args[1:]), enable_thinking = True, reasoning_effort = "high", preserve_thinking = False)
+    assert list(recovered) == ["ok"]
+    assert [message["content"] for message in calls["model_messages"][-3:]] == ["Read.Now.", "Seen.", "Again."]
+    assert [call["num_images"] for call in calls["model"][-3:]] == [1, 0, 0]
+    roles_and_content = [(message["role"], mlx_inference._flatten_registered_vlm_content(backend._processor, message["content"])) for message in calls["template_messages"][-1][0]]
+    assert roles_and_content == [("user", "<image> Read.Now."), ("assistant", "Seen."), ("user", "Again.")]
+    reasoning_kwargs = {"enable_thinking": True, "reasoning_effort": "high", "preserve_thinking": False}
+    assert all(calls["model"][-1][name] == value for name, value in reasoning_kwargs.items())
+    assert calls["template_messages"][-1][1] == reasoning_kwargs
+    state["model"] = "require lists"; assert list(backend._generate_vlm(*((multi_turn,) + args[1:]))) == ["ok"]
+    assert all(isinstance(message["content"], list) for message in calls["template_messages"][-1][0])
+    assert all(calls["stream"][-1][0][2].count(text) == 1 for text in ("Read.Now.", "Seen.", "Again."))
+    state["model"] = "reject structured"; assert list(backend._generate_vlm(*((multi_turn,) + args[1:]))) == ["ok"]
+    assert [message["content"] for message in calls["template_messages"][-1][0]] == ["<image> Read.Now.", "Seen.", "Again."]
+    state["generic"] = "serialized_last"
+    later_image = [{"role": "user", "content": "First."}, {"role": "assistant", "content": "Seen."}, {"role": "user", "content": [{"type": "input_image"}, {"type": "text", "text": "  Again.\n"}]}]
+    assert list(backend._generate_vlm(*((later_image,) + args[1:]))) == ["ok"]
+    assert [call["num_images"] for call in calls["model"][-3:]] == [0, 0, 1]
+    roles_and_content = [(message["role"], mlx_inference._flatten_registered_vlm_content(backend._processor, message["content"])) for message in calls["template_messages"][-1][0]]
+    assert roles_and_content == [("user", "First."), ("assistant", "Seen."), ("user", "<image>  Again.\n")]
+    assert calls["stream"][-1][0][2] == "First. Seen. <image>  Again.\n flattened model-aware"
+    whitespace_image = [{"role": "user", "content": [{"type": "input_image"}, {"type": "text", "text": "   "}]}]
+    assert list(backend._generate_vlm(*((whitespace_image,) + args[1:]))) == ["ok"]
+    assert calls["model_messages"][-1]["content"] == "   "
+    assert mlx_inference._flatten_registered_vlm_content(backend._processor, calls["template_messages"][-1][0][0]["content"]) == "<image>   "
+    assert calls["stream"][-1][0][2] == "<image>    flattened model-aware"
+    audio_messages = [{"role": "system", "content": "System."}, {"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": "Transcribe."}]}]
+    assert mlx_inference._render_registered_vlm_prompt(backend._processor, backend._model, audio_messages, 0, num_audios = 1) == "System. <audio> Transcribe. flattened model-aware"
+    assert [call.get("num_audios", 0) for call in calls["model"][-2:]] == [0, 1]
+    assert mlx_inference._render_registered_vlm_prompt(backend._processor, backend._model, [{"role": "user", "content": "Audio."}], 0, num_audios = 1) == "<audio> Audio. flattened model-aware"
+    assert calls["model"][-1]["num_audios"] == 1
+    boundary_messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "foo "}, {"type": "text", "text": "bar\n"}]}]
+    assert mlx_inference._render_registered_vlm_prompt(backend._processor, backend._model, boundary_messages, 1) == "<image> foo bar\n flattened model-aware"
+    non_user_image = [{"role": "user", "content": "First."}, {"role": "assistant", "content": [{"type": "input_image"}]}]
+    with pytest.raises(RuntimeError, match = "media on a user turn"):
+        list(backend._generate_vlm(*((non_user_image,) + args[1:])))
     backend._processor = SimpleNamespace(chat_template = "template")
     state["generic"] = "<image> healthy generic"
+    state["model"] = "<image> model-aware"
     assert list(backend._generate_vlm(*args, tools = tools, enable_thinking = False)) == ["ok"]
     assert calls["generic"][-1]["enable_thinking"] is False
     assert calls["stream"][-1][0][2] == "<image> healthy generic"
-    state["generic"] = "generic prompt"
+    state["generic"] = "generic text"
     text_messages = [{"role": "user", "content": "hello"}]
     assert list(backend._generate_vlm(*((text_messages, None) + args[2:]), tools = tools)) == ["ok"]
     assert calls["generic"][-1]["tools"] == tools
-    assert calls["stream"][-1][0][2] == "generic prompt"
+    assert calls["stream"][-1][0][2] == "generic prompt hello"
     two_images = [{"role": "user", "content": [{"type": "image"}, {"type": "image"}]}]
     with pytest.raises(RuntimeError, match = "2 structured image item"):
         list(backend._generate_vlm(*((two_images,) + args[1:]), tools = tools))
+    padding_attempts = []
+
+    def padding_stream(*stream_args, **stream_kwargs):
+        padding_attempts.append((stream_args, stream_kwargs))
+        if len(padding_attempts) == 1:
+            raise ValueError("Failed to process inputs with error: ImagesKwargs.__init__() got an unexpected keyword argument 'padding'")
+        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = padding_stream
+    state["generic"] = "<image> healthy generic"
+    processor_calls, exact_commits = [], []
+    backend._processor = lambda **kwargs: processor_calls.append(kwargs)
+    backend._vlm_prompt_cache_history = SimpleNamespace(insert = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("inserted abandoned block state")))
+    backend._prepare_vlm_prompt_cache = lambda *_args: (SimpleNamespace(), ("scope", "prompt", None), [], SimpleNamespace(commit = lambda: exact_commits.append(True)))
+    assert list(backend._generate_vlm(*args)) == ["ok"]
+    assert len(padding_attempts) == 2 and {"prompt_cache_state", "apc_manager"} <= padding_attempts[0][1].keys()
+    assert {"prompt_cache_state", "apc_manager", "prefill_step_size"}.isdisjoint(padding_attempts[1][1])
+    padding_attempts[1][0][1].process("prompt", images = ["image"], padding = True)
+    assert processor_calls == [{"text": "prompt", "images": ["image"], "return_tensors": "mlx"}]
+    assert isinstance(padding_attempts[1][0][1], mlx_inference._VLMProcessorWithoutImagePadding) and not exact_commits
+    assert backend._vlm_prompt_cache_unavailable and backend._vlm_prompt_cache_history is None
     state["generic"] = "serialized"
     tool_history = args[0] + [{"role": "assistant", "tool_calls": [{"id": "call-1"}]}]
     with pytest.raises(RuntimeError, match = "tool-call history"):
         list(backend._generate_vlm(*((tool_history,) + args[1:]), tools = tools))
     state["generic"] = ValueError("generic rendering failed")
     state["model"] = f"User: {args[0][0]['content']}"
+    untyped = copy.deepcopy(multi_turn)
+    untyped[0]["content"][1].pop("type")
     with pytest.raises(ValueError, match = "generic rendering failed"):
-        list(backend._generate_vlm(*args))
+        list(backend._generate_vlm(*((untyped,) + args[1:])))
+# fmt: on
 
 
 def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
@@ -724,6 +827,27 @@ def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
         f"<image>\nExplain {json_repr}",
         [{"content": json_media}, {"content": f"Explain {json_repr}"}],
     )
+    module = sys.modules[MLXInferenceBackend.__module__]
+    processor = SimpleNamespace()
+    assert (
+        module._flatten_registered_vlm_content(
+            processor, [{"type": "text", "text": "  indented\n"}]
+        )
+        == "  indented\n"
+    )
+    assert (
+        module._flatten_registered_vlm_content(
+            processor, [{"type": "image"}, {"type": "text", "text": "caption "}]
+        )
+        == "<image> caption "
+    )
+    repeated, markers = module._vlm_text_probe([{"content": "repeat"}, {"content": "repeat"}])
+    assert all(
+        module._vlm_prompt_issue(prompt, repeated, markers)
+        for prompt in (markers[0], " ".join(reversed(markers)), " ".join((markers[0], *markers)))
+    )
+    many, wide_markers = module._vlm_text_probe([{"content": str(index)} for index in range(11)])
+    assert module._vlm_prompt_issue(" ".join(wide_markers), many, wide_markers) is None
 
     backend = MLXInferenceBackend()
     backend._model = object()
@@ -1001,13 +1125,18 @@ def test_mlx_text_native_metadata_preserves_prefilled_think_snapshots(monkeypatc
     assert all(current.startswith(previous) for previous, current in zip(snapshots, snapshots[1:]))
 
 
+# fmt: off
 def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
     _install_fake_mlx(monkeypatch)
-    from core.inference.mlx_inference import MLXInferenceBackend
+    from core.inference.mlx_inference import MLXInferenceBackend, content_to_text
+
+    def render(_target, messages, **kwargs):
+        prompt = " ".join(content_to_text(message.get("content")) for message in messages)
+        return prompt.replace("<think>private chain</think>", "") if kwargs.get("preserve_thinking") is False else prompt
 
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda *_args, **_kwargs: "prompt",
+        render,
         raising = True,
     )
 
@@ -1019,6 +1148,7 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
             self.token = tok
 
     def _stream_generate(_model, _processor, _prompt, _images, **_kw):
+        assert "private chain" not in _prompt and "visible answer" in _prompt
         yield _Resp("<|channel>thought\n", 10)
         yield _Resp("vision", 11)
         yield _Resp("<channel|>", 12)
@@ -1035,12 +1165,12 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
         apply_chat_template = lambda *_args, **_kwargs: "prompt",
     )
     backend._is_vlm = True
-
     assert list(
         backend.generate_chat_response(
-            messages = [{"role": "user", "content": "describe"}],
+            messages = [{"role": "assistant", "content": "<think>private chain</think>visible answer"}, {"role": "user", "content": "again"}],
             image = object(),
             max_new_tokens = 4,
+            preserve_thinking = False,
         )
     ) == [
         "<think>",
@@ -1048,6 +1178,406 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
         "<think>vision</think>",
         "<think>vision</think> answer",
     ]
+# fmt: on
+
+
+# Turn 2 literally extends turn 1 as an append-only chat render does; the fork
+# shares only the opening turn and the unrelated prompt shares no prefix.
+_VLM_TURN1, _VLM_TURN2, _VLM_FORK, _VLM_OTHER = "P11", "P11 A1 P2", "P11 A1 P3", "Q11"
+
+
+class _FakeKV:
+    def __init__(self, length):
+        self.shape = (1, 1, length, 8)
+
+    def __getitem__(self, item):
+        return _FakeKV(item[2].stop)
+
+
+def _fake_entries(length, offset = 0):
+    kv = dict(nbytes = 64, keys = _FakeKV(length), values = _FakeKV(length + 4))
+    ring = dict(max_size = 4096, keep = 0, _idx = offset)
+    return [SimpleNamespace(offset = offset, **kv), SimpleNamespace(offset = offset, **kv, **ring)]
+
+
+def _fake_vlm_cache_backend(monkeypatch):
+    from core.inference import mlx_inference
+
+    control = {"mode": "ok"}
+
+    def stream(_model, _processor, prompt, _images, **kwargs):
+        state = kwargs.get("prompt_cache_state")
+        control["state"] = state
+        control["seeded"] = list(getattr(state, "token_ids", None) or ())
+        ids = [ord(character) for character in prompt]
+        manager = kwargs.get("apc_manager")
+        control["manager"] = manager
+        if manager is not None:
+            cache, prefix = manager.lookup_exact_cache(ids)
+            control["returned"] = prefix
+            if cache is None:
+                checkpoint = len(ids) - manager.exact_cache_guard_tokens
+                if 0 < checkpoint < len(ids):
+                    manager.store_exact_cache(
+                        ids[:checkpoint], _fake_entries(checkpoint, checkpoint)
+                    )
+                manager.store_exact_cache(ids, _fake_entries(len(ids) + 1, len(ids) + 1))
+            if control["mode"] == "error":
+                raise RuntimeError("vlm failed")
+            yield SimpleNamespace(
+                text = "x", prompt_tokens = len(ids), generation_tokens = 1, cached_tokens = prefix
+            )
+            if control["mode"] == "cancel_after_update":
+                control["cancel"].set()
+            return
+        cache = state.cache if state and state.cache else _fake_entries(64)
+        if state is not None:
+            control["returned"] = state.find_prefix_length(ids)
+            control["cut"] = [(e.keys.shape[2], e.values.shape[2], e.offset) for e in cache]
+            control["idx"] = [getattr(e, "_idx", 0) for e in cache]
+        for entry in cache:
+            entry.offset = len(ids) + 1
+            entry.keys = entry.values = _FakeKV(entry.offset)
+            if hasattr(entry, "_idx"):
+                entry._idx = entry.offset
+        if control["mode"] == "error":
+            raise RuntimeError("vlm failed")
+        yield SimpleNamespace(text = "x", prompt_tokens = len(ids), generation_tokens = 1)
+        if state is not None:
+            state.token_ids, state.cache = ids + [9], cache
+        if control["mode"] == "cancel_after_update":
+            control["cancel"].set()
+
+    package = types.ModuleType("mlx_vlm")
+
+    class _State:
+        def __init__(self):
+            self.cache, self.token_ids = None, None
+
+        def find_prefix_length(self, new_ids):
+            stored = self.token_ids or []
+            common = 0
+            for old, new in zip(stored, new_ids):
+                if old != new:
+                    break
+                common += 1
+            return common
+
+    package.PromptCacheState = _State
+    package.stream_generate = stream
+    package.__version__ = "0.6.8"
+    monkeypatch.setitem(sys.modules, "mlx_vlm", package)
+    apc = types.ModuleType("mlx_vlm.apc")
+    apc.model_apc_mode = lambda _model: "block"
+    apc._clone_prompt_cache_for_apc = lambda cache, **_kwargs: copy.deepcopy(cache)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.apc", apc)
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_logits_processors = lambda **_kwargs: []
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _target, messages, **_kwargs: messages[-1]["content"][-1]["text"],
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    monkeypatch.setattr(mlx_inference, "MLX_VLM_PREFILL_STEP_SIZE", 1)
+    backend._model = SimpleNamespace(
+        config = SimpleNamespace(image_token_id = 99),
+        language_model = SimpleNamespace(),
+        named_modules = lambda: (),
+    )
+    backend._processor = SimpleNamespace(chat_template = "x", apply_chat_template = lambda: None)
+    backend._is_vlm, backend.active_model_name = True, "model-a"
+    return backend, control
+
+
+def _cached_vlm_turn(backend, prompt, image, **overrides):
+    messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": prompt}]}]
+    kwargs = {"max_new_tokens": 1, **overrides}
+    consume = kwargs.pop("_consume", True)
+    stream = backend.generate_chat_response(messages, image = image, **kwargs)
+    return list(stream) if consume else stream
+
+
+def test_mlx_vlm_cache_reuses_only_compatible_state_and_reports_timing(monkeypatch):
+    from PIL import Image as PILImage
+
+    backend, control = _fake_vlm_cache_backend(monkeypatch)
+    image, recolored = PILImage.new("RGB", (1, 1), (255, 0, 0)), PILImage.new("RGB", (1, 1))
+    _cached_vlm_turn(backend, _VLM_TURN1, image)
+    _cached_vlm_turn(backend, _VLM_TURN2, image)
+    timings = backend.last_generation_stats["timings"]
+    assert timings["cache_n"] == 2 and timings["prompt_n"] == 7 and control["seeded"]
+    entries = backend._vlm_prompt_cache_history._entries
+    # Continuing supersedes the entry it grew from; a branch is retained beside it.
+    assert len(entries) == 1
+    assert (
+        control["cut"] == [(2, 2, 2)] * 2 and control["idx"] == [0, 2] and control["returned"] == 2
+    )
+    _cached_vlm_turn(backend, _VLM_TURN2, image)
+    assert control["seeded"] and backend.last_generation_stats["timings"]["cache_n"] == 7
+    _cached_vlm_turn(backend, _VLM_FORK, image)
+    assert {_VLM_TURN2, _VLM_FORK} <= {entry[3] for entry in entries.values()}
+    for kwargs in (
+        {"prompt": _VLM_OTHER},
+        {"_adapter_state": False},
+        {"image": recolored},
+        {"model": "model-b"},
+        {"repetition_penalty": 1.1},
+        {"presence_penalty": 1.1},
+    ):
+        media, prompt = kwargs.pop("image", image), kwargs.pop("prompt", _VLM_TURN2)
+        backend.active_model_name = kwargs.pop("model", backend.active_model_name)
+        _cached_vlm_turn(backend, prompt, media, **kwargs)
+        assert backend.last_generation_stats["timings"]["cache_n"] == 0
+
+
+def test_mlx_vlm_cache_rolls_back_failures_cancellation_and_cleans_up(monkeypatch):
+    backend, control = _fake_vlm_cache_backend(monkeypatch)
+    image = bytearray(b"a")
+    _cached_vlm_turn(backend, _VLM_TURN1, image)
+    history = backend._vlm_prompt_cache_history
+    retained = next(iter(history._entries.values()))[0]
+    control["mode"] = "error"
+    with pytest.raises(RuntimeError, match = "vlm failed"):
+        _cached_vlm_turn(backend, _VLM_TURN2, image)
+    cancel = __import__("threading").Event()
+    control.update(mode = "cancel_after_update", cancel = cancel)
+    _cached_vlm_turn(backend, _VLM_TURN2, image, cancel_event = cancel)
+    control["mode"] = "ok"
+    closing = _cached_vlm_turn(backend, _VLM_TURN2, image, _consume = False)
+    next(closing), closing.close()
+    monkeypatch.setattr(history, "insert", lambda *_: (_ for _ in ()).throw(ValueError("insert")))
+    _cached_vlm_turn(backend, _VLM_TURN2, image)
+    assert next(iter(history._entries.values()))[0] is retained and retained.cache[0].offset == 2
+    history.fetch = lambda *_: (_ for _ in ()).throw(ValueError("lookup"))
+    assert _cached_vlm_turn(backend, _VLM_TURN2, image) == ["x"]
+    assert next(iter(history._entries.values()))[0] is retained
+    scope = ("model-a", "None", "fingerprint")
+
+    def kv(nbytes, tokens = (1,)):
+        keys = SimpleNamespace(shape = (1, 1, len(tokens), 8))
+        cache = [SimpleNamespace(offset = len(tokens), nbytes = nbytes, keys = keys, values = keys)]
+        return SimpleNamespace(token_ids = list(tokens), cache = cache)
+
+    bounded, tiny, counted = type(history)(2, 100), type(history)(1, 10), type(history)(1, 1000)
+    assert all(h.insert((scope, p, None), kv(64)) for h in (bounded, counted) for p in "ab")
+    assert len(bounded._entries) == 1 and len(counted._entries) == 1
+    assert not tiny.insert((scope, "a", None), kv(20)) and not tiny._entries
+    for insertion_order in ((("a", (1,)), ("ab", (1, 2))), (("ab", (1, 2)), ("a", (1,)))):
+        picker = type(history)(4, 1000)
+        for prompt, tokens in insertion_order:
+            picker.insert((scope, prompt, None), kv(64, tokens))
+        assert picker.fetch(SimpleNamespace, scope, "abc")[1] == [1, 2]
+        assert picker.fetch(SimpleNamespace, scope, "ab rewritten suffix")[1]
+    for unsupported in ({"keys": None}, {"window_size": 8}, {"offset": 9}, {"values": _FakeKV(0)}):
+        entry = SimpleNamespace(**{**vars(kv(64).cache[0]), **unsupported})
+        state = SimpleNamespace(token_ids = [1] * 9, cache = [entry], observed_prefix = 0)
+        assert not picker.insert((scope, "x", None), state)
+    _, _, matched = picker.fetch(SimpleNamespace, scope, "abc")
+    assert picker.insert((scope, "abc", matched), kv(64, (1, 2, 3)))
+    retained = list(picker._entries.values())
+    assert {entry[3] for entry in retained} == {"a", "abc"}
+    assert picker._nbytes == sum(entry[1] for entry in retained)
+    fingerprint = sys.modules["core.inference.mlx_inference"]._vlm_media_fingerprint
+    assert fingerprint(__file__) is None and fingerprint(b"x.png") is None
+    backend._clear_prompt_cache()
+    backend._model.language_model = SimpleNamespace(_image_cache = None)
+    assert (
+        sys.modules["core.inference.mlx_inference"]._mlx_vlm_prompt_cache_api(backend._model)
+        is None
+    )
+    module = sys.modules["core.inference.mlx_inference"]
+    ring = _fake_entries(64, offset = 8)[1]
+    ring._idx = 3
+    assert module._vlm_cache_entry_shape(ring) is None
+    backend._model.language_model = SimpleNamespace(_rope_deltas = None)
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    backend._model.language_model = SimpleNamespace()
+    package = sys.modules["mlx_vlm"]
+    package.__version__ = "0.6.7"
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    _cached_vlm_turn(backend, _VLM_TURN1, image)
+    assert control["state"] is control["manager"] is None
+    assert backend.last_generation_stats["timings"]["cache_n"] == 0
+    package.__version__ = "0.6.8"
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is not None
+    backend._model.config = SimpleNamespace(
+        model_type = "supported",
+        text_config = SimpleNamespace(cross_attention_layers = [3, 8]),
+    )
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    backend._model.config.text_config.cross_attention_layers = []
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is not None
+    backend._model._config = {"text_config": {"cross_attention_layers": [3, 8]}}
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    del backend._model._config
+    for config in (
+        SimpleNamespace(model_type = "idefics2"),
+        {"model_type": "kimi_vl"},
+        SimpleNamespace(model_type = "llava"),
+        {"model_type": "llava_next"},
+    ):
+        backend._model.config = config
+        assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    backend._model.config, backend._model._config = SimpleNamespace(), {"model_type": "kimi_vl"}
+    assert module._mlx_vlm_prompt_cache_api(backend._model) is None
+    del backend._model._config
+    del sys.modules["mlx_vlm"].PromptCacheState
+    _cached_vlm_turn(backend, _VLM_TURN1, image)
+    assert control["state"] is None
+    monkeypatch.setattr(
+        module,
+        "_vlm_media_fingerprint",
+        lambda _media: (_ for _ in ()).throw(AssertionError("fingerprinted after disable")),
+    )
+    _cached_vlm_turn(backend, _VLM_TURN1, image)
+
+
+def test_mlx_vlm_exact_manager_commits_only_aligned_completed_snapshots():
+    from core.inference import mlx_inference as module
+
+    history = module._MLXVLMPromptCacheHistory(2, 1000, step_size = 4)
+    scope = ("model", "adapter", "media")
+    clone = lambda cache, **_kwargs: copy.deepcopy(cache)
+    manager = module._StudioVLMExactCacheManager(history, scope, "first", clone, 4)
+    tokens = list(range(13))
+    assert (manager.lookup_exact_cache(tokens), manager.exact_cache_guard_tokens) == ((None, 0), 5)
+    cache = [SimpleNamespace(nbytes = 32, state = [1], meta_state = ()) for _ in range(2)]
+    cache[0].offset = 8
+    full_cache = copy.deepcopy(cache)
+    full_cache[0].offset = len(tokens) + 1
+    assert manager.store_exact_cache(tokens[:8], cache)
+    assert not manager.store_exact_cache(tokens, full_cache)
+    assert manager.commit() and len(history._entries) == 1
+    limited = module._StudioVLMExactCacheManager(history, scope, "limited", clone, 4)
+    assert limited.lookup_exact_cache(tokens, max_prefix_tokens = 7) == (None, 0)
+    allowed = module._StudioVLMExactCacheManager(history, scope, "allowed", clone, 4)
+    assert allowed.lookup_exact_cache(tokens, max_prefix_tokens = 8)[1] == 8
+
+    mismatched = module._StudioVLMExactCacheManager(
+        type(history)(2, 1000, step_size = 4), scope, "expanded", clone, 4
+    )
+    assert mismatched.lookup_exact_cache(tokens) == (None, 0)
+    assert mismatched.store_exact_cache(tokens[:8], cache)
+    expanded_cache = copy.deepcopy(full_cache)
+    expanded_cache[0].offset = len(tokens) + 2
+    assert not mismatched.store_exact_cache(tokens, expanded_cache)
+    assert not mismatched.commit()
+    short = module._StudioVLMExactCacheManager(history, scope, "short", clone, 4)
+    assert (short.lookup_exact_cache(list(range(7))), short.exact_cache_guard_tokens) == (
+        (None, 0),
+        0,
+    )
+
+
+def test_mlx_vlm_exact_cache_refreshes_after_completed_warm_turn(monkeypatch):
+    backend, control = _fake_vlm_cache_backend(monkeypatch)
+    sys.modules["mlx_vlm.apc"].model_apc_mode = lambda _model: "exact"
+    image = bytearray(b"a")
+    turn3, turn4 = _VLM_TURN2 + " A2 P3", _VLM_TURN2 + " A2 P3 A3 P4"
+    _cached_vlm_turn(backend, _VLM_TURN1, image)
+    _cached_vlm_turn(backend, _VLM_TURN2, image)
+    history = backend._vlm_prompt_cache_history
+    retained = next(iter(history._entries.values()))[0]
+    assert backend.last_generation_stats["timings"]["cache_n"] == 1
+    cancel = __import__("threading").Event()
+    control.update(mode = "cancel_after_update", cancel = cancel)
+    _cached_vlm_turn(backend, turn3, image, cancel_event = cancel)
+    assert next(iter(history._entries.values()))[0] is retained
+    control["mode"] = "ok"
+    _cached_vlm_turn(backend, turn3, image)
+    assert backend.last_generation_stats["timings"]["cache_n"] == 0
+    assert len(next(iter(history._entries.values()))[0].token_ids) == len(turn3) - 2
+    _cached_vlm_turn(backend, turn4, image)
+    assert backend.last_generation_stats["timings"]["cache_n"] == len(turn3) - 2
+
+
+def _mrope_model(arch = "qwen2_vl", **lm):
+    """Qwen-style mRoPE model; pass an attribute as None to omit it."""
+    fields = {
+        "_rope_deltas": object(),
+        "_position_ids": object(),
+        "get_rope_index": lambda *a, **k: None,
+        **lm,
+    }
+    kept = {k: v for k, v in fields.items() if v is not None}
+    return SimpleNamespace(
+        config = SimpleNamespace(model_type = arch), language_model = SimpleNamespace(**kept)
+    )
+
+
+# fmt: off
+def test_mlx_vlm_mrope_admission_and_rope_suppression(monkeypatch):
+    from core.inference import mlx_inference as module
+
+    monkeypatch.setattr(module, "_runtime_primes_rope", lambda: True)
+    for arch in ("qwen2_vl", "qwen2_5_vl", "qwen3_5"):
+        assert module._vlm_mrope_reuse_arch(_mrope_model(arch)) == arch
+    dict_config = SimpleNamespace(
+        config = {"model_type": "qwen2_vl"}, language_model = _mrope_model().language_model
+    )
+    assert module._vlm_mrope_reuse_arch(dict_config) == "qwen2_vl"
+    # Refused: missing Qwen-style state or Falcon spatial state.
+    assert module._vlm_mrope_reuse_arch(_mrope_model(_rope_deltas = None)) is None
+    assert module._vlm_mrope_reuse_arch(_mrope_model(_position_ids = None)) is None
+    assert module._vlm_mrope_reuse_arch(_mrope_model(get_rope_index = None)) is None
+    assert module._vlm_mrope_reuse_arch(_mrope_model(_pos_hw = object())) is None
+
+    ids = lambda n: SimpleNamespace(shape = (1, n))
+
+    class _Model:
+        config = SimpleNamespace(model_type = "qwen2_vl")
+        language_model = SimpleNamespace(
+            _rope_deltas = object(), _position_ids = None, get_rope_index = lambda *a, **k: None
+        )
+
+        def get_input_embeddings(
+            self,
+            input_ids = None,
+            pixel_values = None,
+            **kwargs,
+        ):
+            return SimpleNamespace(rope_deltas = object(), position_ids = object())
+
+        def _set_position_state(self, input_ids):
+            self.language_model._position_ids = SimpleNamespace(shape = (3, 1, input_ids.shape[-1]))
+            self.language_model._rope_deltas = "wrapper delta"
+
+    model = _Model()
+    original_rope_index = model.language_model.get_rope_index
+    # Reuse: the runtime primes a 12-token map and trims the ids to the 7-token suffix, so
+    # the map is exactly the cut length longer and the suffix-derived fields are dropped.
+    with module._temporary_mlx_vlm_rope_suppression(model, SimpleNamespace(observed_prefix = 5)):
+        assert "get_input_embeddings" in vars(model)
+        position_ids, rope_deltas = model.language_model.get_rope_index(ids(12))
+        assert position_ids.shape == (3, 1, 12) and rope_deltas == "wrapper delta"
+        reused = model.get_input_embeddings(ids(7), pixel_values = None)
+        assert reused.rope_deltas is None and reused.position_ids is None
+    assert "get_input_embeddings" not in vars(model)
+    assert model.language_model.get_rope_index is original_rope_index
+    # A cold request keeps the state it just computed.
+    with module._temporary_mlx_vlm_rope_suppression(model, SimpleNamespace(observed_prefix = 0)):
+        cold = model.get_input_embeddings(ids(12), pixel_values = None)
+        assert cold.rope_deltas is not None and cold.position_ids is not None
+
+    _Language = type("_Language", (), {"_rope_deltas": object(), "_position_ids": None, "get_rope_index": lambda *_args, **_kwargs: None})
+    class _RejectingModel(_Model):
+        language_model = _Language()
+        get_input_embeddings = property(lambda self: _Model.get_input_embeddings.__get__(self))
+    rejecting = _RejectingModel()
+    with pytest.raises(AttributeError): module._temporary_mlx_vlm_rope_suppression(rejecting, SimpleNamespace(observed_prefix = 5)).__enter__()
+    assert "get_rope_index" not in vars(rejecting.language_model)
+    assert rejecting.language_model.get_rope_index.__func__ is _Language.get_rope_index
+    cleanup_rejecting = _Model()
+    monkeypatch.setattr(_Model, "__delattr__", lambda *_args: (_ for _ in ()).throw(RuntimeError("cleanup refused")))
+    cleanup_rope_index = cleanup_rejecting.language_model.get_rope_index
+    with pytest.raises(RuntimeError, match = "cleanup refused"), module._temporary_mlx_vlm_rope_suppression(cleanup_rejecting, SimpleNamespace(observed_prefix = 5)): pass
+    assert "get_input_embeddings" in vars(cleanup_rejecting)
+    assert cleanup_rejecting.language_model.get_rope_index is cleanup_rope_index
+    # A measured architecture is refused on a runtime that cannot prime.
+    monkeypatch.setattr(module, "_runtime_primes_rope", lambda: False)
+    assert module._vlm_mrope_reuse_arch(_mrope_model("qwen2_vl")) is None
+# fmt: on
 
 
 class _FakeLRUPromptCache:
@@ -1373,12 +1903,14 @@ def test_mlx_prompt_cache_survives_reset_but_not_unload(monkeypatch):
     backend.active_model_name = "model-a"
     history = backend._prompt_cache()
     assert history is not None
+    backend._vlm_prompt_cache_history = object()
 
     backend.reset_generation_state()
     assert backend._prompt_cache_history is history
 
     backend.unload_model("model-a")
     assert backend._prompt_cache_history is None
+    assert backend._vlm_prompt_cache_history is None
 
 
 def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):

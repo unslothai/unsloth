@@ -8444,6 +8444,35 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
     return "\n\n".join(p for p in system_parts if p), chat_messages, first_image_b64
 
 
+def _restore_first_vlm_image_marker(source_messages, chat_messages, image_base64):
+    """Restore the exact flattened data-URL image at its original turn."""
+    chat_index = -1
+    for source_message in source_messages:
+        if source_message.role in ("system", "developer"):
+            continue
+        parts = source_message.content
+        if not isinstance(parts, (str, list)):
+            continue
+        chat_index += 1
+        if not isinstance(parts, list):
+            continue
+        matched = False
+        for part in parts:
+            if part.type != "image_url":
+                continue
+            url = part.image_url.url
+            if url.startswith("data:") and "," in url and url.split(",", 1)[1] == image_base64:
+                matched = True
+                break
+        if not matched:
+            continue
+        text = chat_messages[chat_index].get("content", "")
+        chat_messages[chat_index]["content"] = [{"type": "image"}]
+        if text:
+            chat_messages[chat_index]["content"].append({"type": "text", "text": text})
+        return
+
+
 # ── External provider proxy ──────────────────────────────────────
 
 
@@ -11240,6 +11269,11 @@ async def openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
+    if extracted_image_b64 and image is not None and _sf_model_info.get("is_mlx"):
+        # _extract_content_parts flattens media for the shared CUDA path. Restore
+        # the first image marker at its original turn so an MLX VLM conversation
+        # keeps an append-only token prefix instead of moving the image every turn.
+        _restore_first_vlm_image_marker(payload.messages, chat_messages, extracted_image_b64)
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     # Named templates may expose native reasoning only in their ``tool_use``
     # branch. Use a truthy placeholder for Unsloth-managed tools, whose concrete

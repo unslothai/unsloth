@@ -52,6 +52,7 @@ from routes.inference import (
     _effective_openai_max_tokens,
     _effective_openai_max_tokens_from_values,
     _extract_content_parts,
+    _restore_first_vlm_image_marker,
     _friendly_error,
     _friendly_upstream_error,
     _merge_user_content,
@@ -1745,6 +1746,23 @@ class TestOpenAICompatibilityHelpers:
         assert system_prompt == "original system\n\ndeveloper rules"
         assert chat_messages == [{"role": "user", "content": "hi"}]
         assert image_b64 is None
+
+    def test_mlx_vlm_image_marker_stays_on_its_original_turn_with_null_history(self):
+        def image_message(url):
+            part = SimpleNamespace(type = "image_url", image_url = SimpleNamespace(url = url))
+            return SimpleNamespace(role = "user", content = [part])
+
+        messages = [
+            SimpleNamespace(role = "assistant", content = None),
+            image_message("https://invalid.test/image.png"),
+            image_message("data:image/png;base64,aW1hZ2U="),
+            SimpleNamespace(role = "user", content = "latest"),
+        ]
+        chat_messages = [{"content": "remote"}, {"content": "describe"}, {"content": "latest"}]
+        _restore_first_vlm_image_marker(messages, chat_messages, "aW1hZ2U=")
+        assert chat_messages[0]["content"] == "remote"
+        assert chat_messages[1]["content"][0] == {"type": "image"}
+        assert chat_messages[2]["content"] == "latest"
 
 
 # =====================================================================
