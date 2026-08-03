@@ -2812,6 +2812,10 @@ def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     return kwargs
 
 
+class CountAborted(Exception):
+    """A token count stood down mid-flight because its answer stopped mattering."""
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -14624,39 +14628,26 @@ class LlamaCppBackend:
         system = None,
         tools = None,
         strict: bool = False,
+        chat_template_kwargs = None,
+        should_abort = None,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
-        Non-strict callers keep the historical best-effort behavior and receive
-        0 when a count cannot be determined. Strict callers (public count_tokens
-        endpoints) get an exception instead of a successful-looking zero when
-        tokenizer/template calls fail or a multimodal prompt would fall back to a
-        text-only approximation.
+        Non-strict callers keep the historical best-effort behavior and get 0 when a
+        count cannot be determined. Strict callers (public count_tokens endpoints)
+        raise instead: the text-only fallback is an approximation, not a count.
+
+        ``chat_template_kwargs`` reaches /apply-template unchanged, so a caller can
+        price a request rendered in a non-default reasoning mode.
+
+        ``should_abort`` is polled between the two llama-server calls. Admission is the
+        caller's job; this only stops a count that was admitted while idle from spending its
+        second round trip once the answer stopped mattering. Raises when it fires.
         """
         if not self.is_loaded:
             if strict:
                 raise RuntimeError("llama-server is not loaded")
             return 0
-
-        def _has_non_text_content(content) -> bool:
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, str):
-                        continue
-                    if not isinstance(block, dict):
-                        return True
-                    if isinstance(block.get("text"), str):
-                        continue
-                    return True
-            return False
-
-        def _has_non_text_prompt_parts() -> bool:
-            if _has_non_text_content(system):
-                return True
-            for msg in messages or []:
-                if isinstance(msg, dict) and _has_non_text_content(msg.get("content", "")):
-                    return True
-            return False
 
         def _block_text(content) -> str:
             if isinstance(content, str):
@@ -14704,6 +14695,9 @@ class LlamaCppBackend:
                     template_messages = [
                         {"role": "system", "content": system_text}
                     ] + template_messages
+                # An empty list is passed through as-is: llama-server renders through minja, not
+                # jinja2, so messages[0] yields undefined rather than raising and the template
+                # returns its bare preamble. A placeholder turn would add a system block instead.
                 apply_template_failed = False
                 try:
                     # llama-server's /apply-template renders tool declarations
@@ -14712,6 +14706,9 @@ class LlamaCppBackend:
                     template_body = {"messages": template_messages}
                     if tools:
                         template_body["tools"] = tools
+                    # Layered over the load-time --chat-template-kwargs: only keys sent here move.
+                    if chat_template_kwargs:
+                        template_body["chat_template_kwargs"] = chat_template_kwargs
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,
@@ -14719,15 +14716,21 @@ class LlamaCppBackend:
                     if resp.status_code == 200:
                         prompt = resp.json().get("prompt", "")
                         if isinstance(prompt, str):
+                            if should_abort is not None and should_abort():
+                                raise CountAborted()
                             return _tokenize(prompt)
                     apply_template_failed = True
+                except CountAborted:
+                    # Not a template failure: swallowed, the text fallback tokenizes anyway,
+                    # which is the work being declined. Must precede the generic except.
+                    raise
                 except Exception:
                     apply_template_failed = True
 
-                if strict and apply_template_failed and _has_non_text_prompt_parts():
-                    raise RuntimeError(
-                        "cannot fall back to text-only token counting for multimodal messages"
-                    )
+                # The fallback drops role markers, special tokens and tool schemas (~30% of a
+                # six-turn two-tool prompt), so strict callers error rather than undercount.
+                if strict and apply_template_failed:
+                    raise RuntimeError("llama-server could not render the chat template")
 
                 # 2. Fallback: concatenate plain text and tokenize. Append a
                 # serialized form of the tools so they still contribute to the
