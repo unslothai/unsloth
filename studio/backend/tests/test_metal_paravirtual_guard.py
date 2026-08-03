@@ -1340,6 +1340,7 @@ def test_the_retry_only_hands_back_slots_no_gpu_had_to_admit():
     """The extras clamp cuts n_parallel to 1 before the GPU slot fit, whose gate needs >1,
     so on a GPU box that count is never admitted and restoring it would size buffers
     nothing approved. Off GPU there is nothing to budget, so the slots come back."""
+
     def _restored(detected_gpus):
         scope = {
             "cmd": ["llama-server", "--parallel", "1", "--spec-type", "draft-mtp"],

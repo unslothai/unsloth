@@ -10559,9 +10559,7 @@ class LlamaCppBackend:
                         # slot fit, so on a GPU box the count was never budgeted and the
                         # retry would size buffers nothing approved.
                         if not _detected_gpus:
-                            _mtp_clamped_slots = max(
-                                _mtp_clamped_slots, _pv_extras_clamped_slots
-                            )
+                            _mtp_clamped_slots = max(_mtp_clamped_slots, _pv_extras_clamped_slots)
                     fallback_cmd = cmd[:_spec_start] + ["--spec-default"] + _fb_tail
                     # fallback_cmd inherits the MTP slot clamp, but this retry is not
                     # MTP: hand back the slots the KV fit was sized for, or --parallel N
