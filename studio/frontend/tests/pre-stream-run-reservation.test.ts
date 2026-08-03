@@ -93,7 +93,8 @@ test("local reservations can be snapshotted and cancelled before streaming", () 
   let cancelCount = 0;
   const local = reservePreStreamRun(["local-thread"], {
     usesLocalModel: true,
-    cancel: () => {
+    cancel: (threadIds) => {
+      assert.deepEqual(threadIds, ["local-thread", "remote-thread"]);
       cancelCount += 1;
     },
   });
@@ -102,8 +103,12 @@ test("local reservations can be snapshotted and cancelled before streaming", () 
   });
   assert.ok(local);
   assert.ok(external);
+  assert.equal(
+    adoptPreStreamRunReservation(local, ["remote-thread"]),
+    true,
+  );
   assert.deepEqual(listLocalPreStreamRunReservations(), [
-    { token: local, threadIds: ["local-thread"] },
+    { token: local, threadIds: ["local-thread", "remote-thread"] },
   ]);
   assert.equal(cancelPreStreamRunReservations([local]), 1);
   assert.equal(cancelCount, 1);

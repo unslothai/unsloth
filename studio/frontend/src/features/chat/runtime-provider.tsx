@@ -70,7 +70,6 @@ import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
   isPreStreamRunReservationCancelled,
-  preStreamRunThreadIdsForAdapter,
   preStreamRunThreadIdsForRuntime,
   releasePreStreamRunReservation,
 } from "./utils/pre-stream-run-reservation";
@@ -984,8 +983,11 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
   return {
     ...adapter,
     async *run(options) {
-      const reservationThreadIds = preStreamRunThreadIdsForAdapter(
-        options.unstable_threadId,
+      const trackedRunStartThreadIds = runStartThreadIdsForMessages(
+        options.messages,
+      );
+      const reservationThreadIds = preStreamRunThreadIdsForRuntime(
+        [options.unstable_threadId, ...trackedRunStartThreadIds],
         useChatRuntimeStore.getState().activeThreadId,
       );
       const reservationToken =
@@ -1003,7 +1005,7 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
       const persistedRunThreadIds = preStreamRunThreadIdsForRuntime(
         [
           ...reservationThreadIds,
-          ...runStartThreadIdsForMessages(options.messages),
+          ...trackedRunStartThreadIds,
         ],
         undefined,
       );

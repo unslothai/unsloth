@@ -1695,8 +1695,103 @@ type QueuedResolvedModelRuntime = {
   loadedIsMultimodal: boolean;
 };
 
+type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
+
+// A background auto-load may enrich models[] with the loaded catalog entry,
+// but every field describing the model visible in the current chat must return
+// to its prior value after the queued run captures its private runtime.
+const VISIBLE_MODEL_RUNTIME_KEYS = [
+  "activeLoadId",
+  "activeGgufVariant",
+  "activeModelIsLocal",
+  "contextUsage",
+  "contextUsageByThreadId",
+  "ggufContextLength",
+  "ggufMaxContextLength",
+  "ggufNativeContextLength",
+  "modelRequiresTrustRemoteCode",
+  "supportsReasoning",
+  "reasoningAlwaysOn",
+  "reasoningEnabled",
+  "reasoningStyle",
+  "supportsReasoningOff",
+  "reasoningEffortLevels",
+  "supportsPreserveThinking",
+  "supportsTools",
+  "toolsEnabled",
+  "codeToolsEnabled",
+  "kvCacheDtype",
+  "loadedKvCacheDtype",
+  "nParallel",
+  "loadedNParallel",
+  "tensorParallel",
+  "loadedTensorParallel",
+  "gpuMemoryMode",
+  "loadedGpuMemoryMode",
+  "gpuLayers",
+  "loadedGpuLayers",
+  "nCpuMoe",
+  "loadedNCpuMoe",
+  "splitRatio",
+  "loadedSplitRatio",
+  "ggufLayerCount",
+  "moeLayerCount",
+  "selectedGpuIds",
+  "selectedGpuIndexKind",
+  "loadedGpuIds",
+  "loadedGpuIndexKind",
+  "customContextLength",
+  "loadedCustomContextLength",
+  "defaultChatTemplate",
+  "chatTemplateOverride",
+  "loadedChatTemplateOverride",
+  "loadedIsMultimodal",
+  "loadedIsDiffusion",
+  "speculativeType",
+  "loadedSpeculativeType",
+  "specFallbackReason",
+  "specDraftNMax",
+  "loadedSpecDraftNMax",
+] as const satisfies readonly (keyof ChatRuntimeState)[];
+
+type VisibleModelRuntimeState = Pick<
+  ChatRuntimeState,
+  (typeof VISIBLE_MODEL_RUNTIME_KEYS)[number]
+>;
+
+type VisibleModelStateSnapshot = {
+  settings: ReturnType<typeof snapshotQueuedChatRunSettings>;
+  runtime: VisibleModelRuntimeState;
+};
+
+function snapshotVisibleModelState(
+  state: ChatRuntimeState,
+): VisibleModelStateSnapshot {
+  const runtime = {} as VisibleModelRuntimeState;
+  for (const key of VISIBLE_MODEL_RUNTIME_KEYS) {
+    Object.assign(runtime, { [key]: state[key] });
+  }
+  return {
+    settings: snapshotQueuedChatRunSettings(state),
+    runtime,
+  };
+}
+
+function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
+  useChatRuntimeStore
+    .getState()
+    .setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
+      trackQueuedSettings: false,
+    });
+  useChatRuntimeStore.setState({
+    ...snapshot.runtime,
+    ...snapshot.settings,
+    params: { ...snapshot.settings.params },
+  });
+}
+
 function queuedResolvedModelFromStore(
-  state: ReturnType<typeof useChatRuntimeStore.getState>,
+  state: ChatRuntimeState,
 ): QueuedResolvedModelRuntime {
   return {
     checkpoint: state.params.checkpoint,
@@ -1723,11 +1818,8 @@ function applyAutoLoadRuntimeState(
   options: AutoLoadOptions | undefined,
   apply: () => void,
 ) {
-  const visibleActiveLoadId = options?.preserveVisibleSettings
-    ? useChatRuntimeStore.getState().activeLoadId
-    : null;
-  const visibleSettings = options?.preserveVisibleSettings
-    ? snapshotQueuedChatRunSettings(useChatRuntimeStore.getState())
+  const visibleState = options?.preserveVisibleSettings
+    ? snapshotVisibleModelState(useChatRuntimeStore.getState())
     : null;
   try {
     apply();
@@ -1735,17 +1827,8 @@ function applyAutoLoadRuntimeState(
       queuedResolvedModelFromStore(useChatRuntimeStore.getState()),
     );
   } finally {
-    if (visibleSettings) {
-      useChatRuntimeStore
-        .getState()
-        .setCheckpoint(visibleSettings.params.checkpoint, undefined, {
-          trackQueuedSettings: false,
-        });
-      useChatRuntimeStore.setState({
-        ...visibleSettings,
-        activeLoadId: visibleActiveLoadId,
-        params: { ...visibleSettings.params },
-      });
+    if (visibleState) {
+      restoreVisibleModelState(visibleState);
     }
   }
 }
@@ -2594,8 +2677,7 @@ async function resolveQueuedEmptyLocalModel(
         };
       }
 
-      const visibleExternalSettings =
-        snapshotQueuedChatRunSettings(visibleState);
+      const visibleExternalState = snapshotVisibleModelState(visibleState);
       const visibleThreadEpoch = visibleState.activeThreadEpoch;
       const visibleSettingsEpoch = visibleState.queuedSettingsEpoch;
       const visibleRoute = window.location.href;
@@ -2623,17 +2705,7 @@ async function resolveQueuedEmptyLocalModel(
             visibleSettingsEpoch &&
           window.location.href === visibleRoute
         ) {
-          useChatRuntimeStore
-            .getState()
-            .setCheckpoint(
-              visibleExternalSettings.params.checkpoint,
-              undefined,
-              { trackQueuedSettings: false },
-            );
-          useChatRuntimeStore.setState({
-            ...visibleExternalSettings,
-            params: { ...visibleExternalSettings.params },
-          });
+          restoreVisibleModelState(visibleExternalState);
         }
       }
       return { ...result, modelRuntime };

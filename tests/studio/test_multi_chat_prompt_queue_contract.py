@@ -182,7 +182,8 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "sendReservedComposer();" in submit
     assert "reservePreStreamRun(preStreamThreadIds, {" in THREAD
     assert "usesLocalModel:" in THREAD
-    assert "aui.thread().cancelRun()" in THREAD
+    assert "aui.threads().__internal_getAssistantRuntime?.()" in THREAD
+    assert "threads.getById(reservedThreadId).cancelRun()" in THREAD
     assert "adoptPreStreamRunReservation(token, preStreamThreadIds)" in THREAD
     assert "hasPreStreamRunReservation(getQueueThreadIds())" in THREAD
     assert "releaseCurrentPreStreamRun();" in CHAT_ADAPTER
@@ -206,6 +207,10 @@ def test_composer_only_queues_behind_the_current_chat():
         "function createPersistedRunAdapter(",
         "function useStudioRuntimeAdapters(",
     )
+    assert persisted_wrapper.index(
+        "const trackedRunStartThreadIds = runStartThreadIdsForMessages("
+    ) < persisted_wrapper.index("findPreStreamRunReservation(reservationThreadIds)")
+    assert "[options.unstable_threadId, ...trackedRunStartThreadIds]" in persisted_wrapper
     assert "findPreStreamRunReservation(reservationThreadIds)" in persisted_wrapper
     assert "await waitForRunStartHistoryAppend(options.messages)" in persisted_wrapper
     assert "releasePreStreamRunReservation(reservationToken)" in persisted_wrapper
@@ -313,9 +318,13 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "isExternalModelId(visibleState.params.checkpoint)" in CHAT_ADAPTER
     assert "resolveInferenceCheckpointId(status)" in CHAT_ADAPTER
     assert "skipAdoptServerModel: true" in CHAT_ADAPTER
-    assert "snapshotQueuedChatRunSettings(" in CHAT_ADAPTER
-    assert "...visibleExternalSettings" in CHAT_ADAPTER
-    assert "activeLoadId: visibleActiveLoadId" in CHAT_ADAPTER
+    assert "snapshotVisibleModelState(" in CHAT_ADAPTER
+    assert "restoreVisibleModelState(visibleExternalState)" in CHAT_ADAPTER
+    assert '"ggufContextLength"' in CHAT_ADAPTER
+    assert '"ggufMaxContextLength"' in CHAT_ADAPTER
+    assert '"ggufNativeContextLength"' in CHAT_ADAPTER
+    assert '"loadedIsMultimodal"' in CHAT_ADAPTER
+    assert '"loadedIsDiffusion"' in CHAT_ADAPTER
     assert "visibleState.activeThreadEpoch" in CHAT_ADAPTER
     assert "activeThreadEpoch ===" in CHAT_ADAPTER
     assert "visibleState.queuedSettingsEpoch" in CHAT_ADAPTER
@@ -326,7 +335,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert CHAT_ADAPTER.count("trackQueuedSettings: !options?.preserveVisibleSettings") >= 4
     assert "const visibleRoute = window.location.href" in CHAT_ADAPTER
     assert "window.location.href === visibleRoute" in CHAT_ADAPTER
-    assert "{ trackQueuedSettings: false }" in CHAT_ADAPTER
+    assert "trackQueuedSettings: false" in CHAT_ADAPTER
     assert CHAT_ADAPTER.count("await resolveQueuedEmptyLocalModel(abortSignal)") >= 2
     assert "persist: !options?.preserveVisibleSettings" in CHAT_ADAPTER
     assert "beginModelLoading()" in CHAT_ADAPTER
@@ -465,7 +474,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "function createPersistedRunAdapter(",
         "function useStudioRuntimeAdapters(",
     )
-    assert "runStartThreadIdsForMessages(options.messages)" in persisted_adapter
+    assert "const trackedRunStartThreadIds = runStartThreadIdsForMessages(" in persisted_adapter
     assert "isPreStreamRunReservationCancelled(reservationToken)" in persisted_adapter
     assert persisted_adapter.count("throwIfReservationCancelled();") == 2
     assert persisted_adapter.index(

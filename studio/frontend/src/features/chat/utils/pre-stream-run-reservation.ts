@@ -3,7 +3,7 @@ const DEFAULT_THREAD_ID = "__default";
 type PreStreamRunReservation = {
   threadIds: Set<string>;
   usesLocalModel: boolean;
-  cancel?: () => void;
+  cancel?: (threadIds: string[]) => void;
   cancelled: boolean;
 };
 
@@ -14,7 +14,7 @@ export interface LocalPreStreamRunReservation {
 
 export interface PreStreamRunReservationOptions {
   usesLocalModel: boolean;
-  cancel?: () => void;
+  cancel?: (threadIds: string[]) => void;
 }
 
 const reservations = new Map<symbol, PreStreamRunReservation>();
@@ -111,7 +111,11 @@ export function cancelPreStreamRunReservations(
     reservation.cancelled = true;
     cancelled += 1;
     try {
-      reservation.cancel?.();
+      reservation.cancel?.(
+        [...reservation.threadIds].filter(
+          (threadId) => threadId !== DEFAULT_THREAD_ID,
+        ),
+      );
     } catch {
       // The run may have ended between the confirmation snapshot and cancellation.
     }

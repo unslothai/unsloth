@@ -2531,17 +2531,26 @@ const Composer: FC<{
   );
 
   const sendReservedComposer = useCallback(() => {
+    const assistantRuntime =
+      aui.threads().__internal_getAssistantRuntime?.();
     let reservationToken: symbol | null = null;
     reservationToken = reservePreStreamRun(preStreamThreadIds, {
       usesLocalModel:
         parseExternalModelId(
           useChatRuntimeStore.getState().params.checkpoint,
         ) === null,
-      cancel: () => {
+      cancel: (reservedThreadIds) => {
         if (preStreamRunReservationRef.current === reservationToken) {
           preStreamRunReservationRef.current = null;
         }
-        aui.thread().cancelRun();
+        for (const reservedThreadId of reservedThreadIds) {
+          try {
+            assistantRuntime?.threads.getById(reservedThreadId).cancelRun();
+            return;
+          } catch {
+            // Thread hydration can retire an alias; try the next captured id.
+          }
+        }
       },
     });
     if (!reservationToken) {
