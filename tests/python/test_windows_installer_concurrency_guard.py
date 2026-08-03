@@ -45,6 +45,7 @@ def _mutex_helpers(source: str) -> str:
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
             "Enter-StudioNamedMutex",
+            "Get-StudioFinalPath",
             "Get-StudioPathHash",
             "Get-StudioInstallMutexName",
             "Test-StudioPathEqual",
@@ -193,19 +194,44 @@ def test_tauri_managed_root_path_classification(tmp_path: Path, shell: str):
     studio_home = profile / ".unsloth" / "studio"
     studio_home.mkdir(parents = True)
     alias = studio_home / ".." / "studio"
+    junction = tmp_path / "profile-alias"
+    junction_result = subprocess.run(
+        [os.environ["COMSPEC"], "/d", "/c", "mklink", "/J", str(junction), str(profile)],
+        capture_output = True,
+        text = True,
+    )
+    if junction_result.returncode != 0:
+        pytest.skip(f"Could not create a directory junction: {junction_result.stderr}")
+    junction_studio = junction / ".unsloth" / "studio"
     script = f"""
 $ErrorActionPreference = "Stop"
 {_mutex_helpers(source)}
 Write-Output (Test-StudioPathEqual -Left $env:TEST_STUDIO_HOME -Right $env:TEST_ALIAS)
 Write-Output (Test-StudioPathEqual -Left $env:TEST_STUDIO_HOME -Right $env:TEST_CASE_VARIANT)
+Write-Output (Test-StudioPathEqual -Left $env:TEST_STUDIO_HOME -Right $env:TEST_JUNCTION)
 Write-Output (Test-StudioPathEqual -Left $env:TEST_STUDIO_HOME -Right $env:TEST_SIBLING)
 """
     env = os.environ.copy()
     env["TEST_STUDIO_HOME"] = str(studio_home)
     env["TEST_ALIAS"] = str(alias)
     env["TEST_CASE_VARIANT"] = str(studio_home).upper()
+    env["TEST_JUNCTION"] = str(junction_studio)
     env["TEST_SIBLING"] = str(profile / ".unsloth" / "studio-backup")
-    assert _run_powershell(shell, script, env).splitlines() == ["True", "True", "False"]
+    assert _run_powershell(shell, script, env).splitlines() == ["True", "True", "True", "False"]
+
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_path_identity_failure_is_reported_as_unknown(shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    script = f"""
+$ErrorActionPreference = "Stop"
+{_mutex_helpers(source)}
+function Get-StudioFinalPath {{ throw "identity unavailable" }}
+$match = Test-StudioPathEqual -Left "C:\\one" -Right "C:\\two"
+Write-Output ($null -eq $match)
+"""
+    assert _run_powershell(shell, script, os.environ.copy()).splitlines()[-1] == "True"
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
@@ -321,8 +347,10 @@ Exit-StudioInstallMutex -Mutex $mutex
 def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     acquire = source.index("$studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome")
-    managed_root = source.index("$studioUsesTauriManagedRoot =", acquire)
-    legacy_layout = source.index("$studioUsesLegacyLayout =", managed_root)
+    root_match = source.index("$studioTauriRootMatch =", acquire)
+    managed_root = source.index("$studioUsesTauriManagedRoot =", root_match)
+    runtime_lock_needed = source.index("$studioNeedsRuntimeLock =", managed_root)
+    legacy_layout = source.index("$studioUsesLegacyLayout =", runtime_lock_needed)
     runtime_name = source.index("Get-StudioRuntimeMutexName", legacy_layout)
     legacy_scan = source.index("if ($studioUsesLegacyLayout)", runtime_name)
     runtime_lock = source.index(
@@ -344,10 +372,22 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     release_install = source.rindex("Exit-StudioInstallMutex -Mutex $studioInstallMutex")
     wait_for_exit = source.rindex("$studioAutoStartProcess.WaitForExit()")
 
-    assert acquire < managed_root < legacy_layout < runtime_name < runtime_lock
+    assert (
+        acquire
+        < root_match
+        < managed_root
+        < runtime_lock_needed
+        < legacy_layout
+        < runtime_name
+        < runtime_lock
+    )
     assert runtime_lock < scan_candidates < legacy_scan < legacy_source < cwd_source
     assert cwd_source < runtime_guard < desktop_guard
     assert source.count("$studioUsesLegacyLayout `") >= 2
+    assert "if ($studioNeedsRuntimeLock)" in source
+    assert (
+        "$studioUsesLegacyLayout = ($StudioRedirectMode -ne 'env') -or $studioUsesTauriManagedRoot"
+    ) in source
     assert "-not $TauriMode -and $studioUsesLegacyLayout" in source
     assert runtime_guard < rollback < old_venv_move < cwd_venv_move
     assert (

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import contextlib
 import importlib.util
 import hashlib
 import hmac
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import List, Literal, Optional, Sequence
 import typer
 
-from unsloth_cli import _studio_deps
+from unsloth_cli import _studio_deps, _studio_runtime_gate
 from unsloth_cli.commands import _password_prompt
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
@@ -151,6 +152,31 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
         kwargs["startupinfo"] = startupinfo
 
     return kwargs
+
+
+@contextlib.contextmanager
+def _studio_runtime_launch_guard(*, inherited: bool = False):
+    guard = _studio_runtime_gate.studio_runtime_launch_guard(
+        STUDIO_HOME,
+        inherited = inherited,
+    )
+    try:
+        acquired = guard.__enter__()
+    except _studio_runtime_gate.StudioRuntimeGateBusy:
+        typer.echo(
+            "Error: Unsloth Studio installation is modifying the managed environment. "
+            "Wait for it to finish, then try again.",
+            err = True,
+        )
+        raise typer.Exit(1)
+    except OSError as exc:
+        typer.echo(f"Error: could not coordinate the Studio launch: {exc}", err = True)
+        raise typer.Exit(1)
+
+    try:
+        yield acquired
+    finally:
+        guard.__exit__(None, None, None)
 
 
 def _stream_for_subprocess(stream):
@@ -1596,7 +1622,8 @@ def studio_default(
             if sys.platform == "win32":
                 import subprocess as _sp
 
-                proc = _sp.Popen(args, **_windows_hidden_subprocess_kwargs())
+                with _studio_runtime_launch_guard():
+                    proc = _sp.Popen(args, **_windows_hidden_subprocess_kwargs())
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -1641,7 +1668,8 @@ def studio_default(
     # in-process server serves exactly the dist we vouched for.
     if resolved_frontend is not None:
         run_kwargs["frontend_path"] = resolved_frontend
-    run_server(**run_kwargs)
+    with _studio_runtime_launch_guard():
+        run_server(**run_kwargs)
 
     try:
         if run_mod._shutdown_event is not None:
@@ -2007,6 +2035,7 @@ def run(
     # env so an older child ignores it instead of treating it as a llama-server arg.
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
 
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
@@ -2258,7 +2287,11 @@ def run(
             os.environ[_START_API_KEY_MARKER_ENV] = "1"
         try:
             if sys.platform == "win32":
-                proc = subprocess.Popen(args)
+                with _studio_runtime_launch_guard(inherited = runtime_gate_handoff) as gate_held:
+                    popen_kwargs = {}
+                    if gate_held:
+                        popen_kwargs["env"] = _studio_runtime_gate.runtime_gate_child_environment()
+                    proc = subprocess.Popen(args, **popen_kwargs)
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -2300,7 +2333,8 @@ def run(
     # Forward the frontend validated before the gate (in-venv path).
     if resolved_frontend is not None:
         run_kwargs["frontend_path"] = resolved_frontend
-    app = run_server(**run_kwargs)
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
 
     # Steps 3-5 can abort (health timeout, model-load error, or Ctrl+C during the
