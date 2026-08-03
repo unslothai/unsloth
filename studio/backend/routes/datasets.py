@@ -523,6 +523,17 @@ def _is_local_dataset_reference(raw: str) -> bool:
     return bool(parts) and parts[0] in ("uploads", "recipes")
 
 
+def _local_dataset_missing(raw: str) -> bool:
+    """Only true when the reference is local AND its file is really gone, so a
+    parse failure on a file that still exists keeps its own error."""
+    if not _is_local_dataset_reference(raw):
+        return False
+    try:
+        return not resolve_dataset_path(raw).exists()
+    except ValueError:
+        return False
+
+
 @router.post("/check-format", response_model = CheckFormatResponse)
 def check_format(request: CheckFormatRequest, current_subject: str = Depends(get_current_subject)):
     """Check if a dataset requires manual column mapping.
@@ -692,7 +703,7 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
         raise
     except Exception as e:
         logger.error(f"Error checking dataset format: {e}", exc_info = True)
-        if _is_local_dataset_reference(request.dataset_name):
+        if _local_dataset_missing(request.dataset_name):
             raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL) from e
         raise HTTPException(status_code = 500, detail = "Failed to check dataset format")
 

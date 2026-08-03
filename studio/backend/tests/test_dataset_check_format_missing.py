@@ -59,3 +59,20 @@ def test_missing_relative_recipe_reports_404(monkeypatch):
 )
 def test_local_reference_detection(dataset_name, expected):
     assert datasets_route._is_local_dataset_reference(dataset_name) is expected
+
+
+def test_corrupt_local_file_keeps_its_own_error(monkeypatch):
+    from utils.paths import dataset_uploads_root
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("HF_DATASETS_OFFLINE", "1")
+    corrupt = dataset_uploads_root() / "corrupt-test-fixture.jsonl"
+    corrupt.parent.mkdir(parents = True, exist_ok = True)
+    corrupt.write_text("{not valid json at all\n")
+    try:
+        request = datasets_route.CheckFormatRequest(dataset_name = str(corrupt))
+        with pytest.raises(HTTPException) as exc:
+            datasets_route.check_format(request, current_subject = "test")
+        assert exc.value.status_code != 404
+    finally:
+        corrupt.unlink(missing_ok = True)
