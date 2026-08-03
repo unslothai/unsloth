@@ -4193,17 +4193,6 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
         _gfx906_bnb_prune
     fi
-    # Same reason the Windows XPU path installs it: the bitsandbytes on a migrated environment
-    # predates the XPU kernels, and nothing else here touches it (both dedicated paths above
-    # are gated on the ROCm family), so 4-bit QLoRA would be unavailable on a torch that
-    # otherwise works. manylinux 0.50.0 carries libbitsandbytes_xpu2025.so and _xpu2026.so.
-    # --no-deps: torch and numpy are already in. Best effort, like the Windows pass.
-    if [ "$SKIP_TORCH" = false ] && [ "$(_torch_index_url_leaf "$TORCH_INDEX_URL")" = "xpu" ]; then
-        substep "installing bitsandbytes with Intel XPU kernels..."
-        run_install_cmd "install bitsandbytes (xpu)" uv pip install --python "$_VENV_PY" \
-            --no-deps "$_BNB_XPU_SPEC" || \
-            substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable." "$C_WARN"
-    fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
     tauri_log "STEP" "Installing Unsloth"
@@ -4261,6 +4250,22 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" \"$TORCHVISION_CONSTRAINT\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $(_strip_index_url_credentials "$TORCH_INDEX_URL") --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
     fi
+fi
+
+# ── Intel XPU: bitsandbytes with XPU kernels ──
+# manylinux 0.50.0 is the first with libbitsandbytes_xpu2025.so / _xpu2026.so, and nothing
+# else here touches bitsandbytes on this index (both ROCm passes are gated on that family),
+# so a migrated environment keeps a pre-XPU build and loses 4-bit QLoRA on a torch that
+# otherwise works. Same floor the Windows XPU pass installs.
+# Out here rather than in the install branches above: those are mutually exclusive, so a
+# copy in the fresh arm never runs for a migrated env -- which is how the ROCm passes ended
+# up duplicated. This gate needs nothing branch-specific and matches the one just above.
+# --no-deps: torch and numpy are already in. Best effort, like the Windows pass.
+if [ "$SKIP_TORCH" = false ] && [ "$(_torch_index_url_leaf "${TORCH_INDEX_URL:-}")" = "xpu" ]; then
+    substep "installing bitsandbytes with Intel XPU kernels..."
+    run_install_cmd "install bitsandbytes (xpu)" uv pip install --python "$_VENV_PY" \
+        --no-deps "$_BNB_XPU_SPEC" || \
+        substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable." "$C_WARN"
 fi
 
 # ── CI only: overlay a source checkout over the package just installed ──
