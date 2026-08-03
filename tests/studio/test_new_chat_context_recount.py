@@ -1239,9 +1239,9 @@ def test_a_trigger_skipped_behind_an_in_flight_count_is_replayed():
     )
     # 62, not 12: the replay prices the branch as it is NOW, with the turn that invalidated the
     # first count. Publishing the older total would be the bug this defers the trigger to avoid.
-    assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
-        "and the replay must publish the current branch, which is why it is deferred not dropped"
-    )
+    assert (
+        (out["contextUsage"] or {}).get("totalTokens") == 62
+    ), "and the replay must publish the current branch, which is why it is deferred not dropped"
 
 
 def test_a_new_chat_recount_is_retried_after_a_background_run_ends():
