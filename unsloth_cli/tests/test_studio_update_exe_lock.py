@@ -406,9 +406,9 @@ def test_the_recovery_command_keeps_no_torch_after_the_reader_is_gone(
 
     err = capsys.readouterr().err
     assert "install.ps1" in err, "the reinstall fallback was hidden"
-    assert "UNSLOTH_NO_TORCH" in err, (
-        "the recovery command lost no-torch mode, so it reinstalls the PyTorch stack"
-    )
+    assert (
+        "UNSLOTH_NO_TORCH" in err
+    ), "the recovery command lost no-torch mode, so it reinstalls the PyTorch stack"
 
 
 def test_no_torch_is_not_invented_when_nothing_recorded_it(monkeypatch, tmp_path, capsys):
@@ -419,9 +419,7 @@ def test_no_torch_is_not_invented_when_nothing_recorded_it(monkeypatch, tmp_path
     monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
     _as_windows(monkeypatch, scripts)
     monkeypatch.setattr(studio, "_RECORDED_NO_TORCH", None)
-    monkeypatch.setattr(
-        studio._studio_deps, "load_install_manifest_module", lambda *a, **k: None
-    )
+    monkeypatch.setattr(studio._studio_deps, "load_install_manifest_module", lambda *a, **k: None)
 
     studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
 
