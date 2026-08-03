@@ -279,7 +279,7 @@ def test_a_sibling_variants_bytes_do_not_count_as_this_jobs_progress(monkeypatch
     assert seen and all(h == frozenset({"mine"}) for h in seen), seen
 
 
-def _trip_xet_worker(monkeypatch, tmp_path, message):
+def _trip_xet_worker(monkeypatch, tmp_path, message, rc = 1):
     """Run a Xet worker whose watchdog trips with *message*; return the health failures recorded."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
@@ -311,7 +311,7 @@ def _trip_xet_worker(monkeypatch, tmp_path, message):
     (_real or _register)(
         registry,
         key,
-        _Proc(1, b"killed"),
+        _Proc(rc, b"killed" if rc else b""),
         hf_token = None,
         label = "Org/Model",
         log_prefix = "Download",
@@ -338,20 +338,32 @@ def test_a_data_phase_stall_is_recorded_against_the_machine(monkeypatch, tmp_pat
 
 
 def test_a_pre_byte_trip_does_not_poison_the_machines_health_record(monkeypatch, tmp_path):
-    """Two recorded failures pin this machine to HTTP for 24h, so only a real stall may count.
+    """Two recorded failures pin this machine to HTTP for 24h, so a pre-byte trip must not count.
 
-    A connect-phase trip means no byte ever arrived, which is as likely to be slow metadata, a long
+    "no data after Ns" means not one byte ever arrived, which is as likely to be slow metadata, a
     queue of HEADs, or a cache lock as a broken Xet. The HTTP retry still happens either way.
     """
-    monkeypatch.setattr(
-        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
-    )
-    for message in (
+    monkeypatch.setattr(download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker,
+                        raising = False)
+    assert _trip_xet_worker(
+        monkeypatch, tmp_path,
         "Download did not start (xet transport) -- no data after 600s",
-        "Download did not resume (xet transport) -- no data for 600s",
-    ):
-        assert _trip_xet_worker(monkeypatch, tmp_path, message) == [], message
+    ) == []
 
+
+def test_a_post_byte_hang_between_files_is_recorded(monkeypatch, tmp_path):
+    """"did not resume" fires only after bytes HAVE flowed, so it is real Xet evidence.
+
+    It is also the shape this worker hangs in most often: snapshot_download owns no partial between
+    files, so a mid-snapshot hang lands here rather than in the data branch. An earlier allow-list
+    keyed on "no progress" silently dropped it, leaving the dominant hang invisible to Auto.
+    """
+    monkeypatch.setattr(download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker,
+                        raising = False)
+    assert _trip_xet_worker(
+        monkeypatch, tmp_path,
+        "Download did not resume (xet transport) -- no data for 600s",
+    ), "a post-byte Xet hang was not recorded against the machine"
 
 def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_path):
     """A fast child can finalize its blobs while we are still registering the process.
@@ -405,3 +417,19 @@ def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_p
 
     assert order[0] == "sample" and order[1] == "spawn", order
     assert recorded == [True], "a real transfer did not clear the failure streak"
+
+
+def test_a_stall_verdict_racing_a_completed_worker_is_not_recorded(monkeypatch, tmp_path):
+    """The watchdog appends its verdict BEFORE the kill lands.
+
+    So a worker that completed in that same instant would be charged a failure it did not earn --
+    and on the completed path that also skips the success-clearing, costing two streak steps in the
+    wrong direction from one race.
+    """
+    monkeypatch.setattr(download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker,
+                        raising = False)
+    assert _trip_xet_worker(
+        monkeypatch, tmp_path,
+        "Download appears stalled (xet transport) -- no progress for 30s",
+        rc = 0,                                  # the worker actually finished
+    ) == [], "a completed worker was charged a stall it raced"

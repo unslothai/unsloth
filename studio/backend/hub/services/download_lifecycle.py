@@ -849,16 +849,27 @@ def register_worker(
                 # verification) makes no byte-level progress and must not read as a stall.
                 watchdog_stop.set()
             if stalled:
-                # Only a DATA-phase stall says anything about Xet's health. A connect-phase trip
-                # means no byte ever arrived, which is just as likely to be slow metadata, a long
-                # queue of HEADs, or a cache lock -- and two recorded failures pin this machine to
-                # HTTP for 24h, the expensive direction of error. Still retry over HTTP either way.
-                if "no progress" in stalled[0]:
+                # Exclude only the PRE-BYTE trip. "no data after Ns" means not one byte ever
+                # arrived, which is as likely to be slow metadata, a queue of HEADs, or a cache lock
+                # as a broken Xet, and two recorded failures pin this machine to HTTP for 24h.
+                #
+                # Everything else is real evidence. "did not resume" in particular fires only after
+                # bytes HAVE flowed, and it is the shape this worker hangs in most often, since
+                # snapshot_download owns no partial between files -- an earlier allow-list keyed on
+                # "no progress" silently dropped it. Excluding one wording rather than allowing one
+                # also fails in the cheap direction if the shared wording ever changes.
+                #
+                # `state == "error"` is the other half: the watchdog appends its verdict before the
+                # kill lands, so a worker that completed or was cancelled in that same instant would
+                # otherwise be charged a failure it did not earn -- and on the completed path that
+                # also skips the success-clearing below, costing two streak steps the wrong way.
+                if state == "error" and "did not start" not in stalled[0]:
                     _record_xet_failure(stalled[0], logger)
                 else:
                     logger.debug(
-                        "%s not recording a Xet health failure for a pre-byte trip: %s",
+                        "%s not recording a Xet health failure (state=%s): %s",
                         log_prefix,
+                        state,
                         stalled[0],
                     )
             elif transport == download_registry.TRANSPORT_XET and state == "complete":
