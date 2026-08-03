@@ -804,6 +804,8 @@ def test_normalize_compute_caps(values, expected):
         ("0", ["0"]),
         ("0,1,2", ["0", "1", "2"]),
         (" 0 , 1 ", ["0", "1"]),
+        ("0,,2", ["0", "", "2"]),
+        ("0,-1,2", ["0", "-1", "2"]),
     ],
 )
 def test_parse_cuda_visible_devices(value, expected):
@@ -811,17 +813,23 @@ def test_parse_cuda_visible_devices(value, expected):
 
 
 @pytest.mark.parametrize(
-    "visible,expected",
+    "visible,device_order,expected",
     [
-        (["0", "1", "2"], True),
-        (["GPU-abc123"], True),
-        (None, False),
-        ([], False),
-        (["0", "MIG-device"], False),
+        (["0", "1", "2"], "PCI_BUS_ID", True),
+        (["0", "1", "2"], "FASTEST_FIRST", False),
+        (["0", "1", "2"], None, False),
+        (["GPU-abc123"], None, True),
+        (["0", "-1", "1"], "PCI_BUS_ID", True),
+        (["0", "bad", "1"], "PCI_BUS_ID", True),
+        (["GPU-abc123", "-1", "0"], "FASTEST_FIRST", True),
+        (None, None, False),
+        ([], None, False),
+        (["MIG-device"], None, False),
+        (["GPU-abc123", "MIG-device"], None, False),
     ],
 )
-def test_supports_explicit_visible_device_matching(visible, expected):
-    assert core.supports_explicit_visible_device_matching(visible) is expected
+def test_can_resolve_cuda_visible_device_tokens(visible, device_order, expected):
+    assert core.can_resolve_cuda_visible_device_tokens(visible, device_order) is expected
 
 
 _GPU_ROWS = [
@@ -837,8 +845,13 @@ _GPU_ROWS = [
         (None, [0, 1, 2]),  # no filter returns all
         ([], []),
         (["0", "2"], [0, 2]),  # filter by index
+        (["00"], [0]),  # integer tokens may contain leading zeroes
         (["gpu-bbb"], [1]),  # UUID match is case insensitive
-        (["0", "0"], [0]),  # same device requested twice is deduplicated
+        (["GPU-b"], [1]),  # unique abbreviated GPU UUID
+        (["GPU-"], []),  # ambiguous UUID prefix is invalid
+        (["0", "0"], [0]),  # duplicate stops after the first visible device
+        (["0", "-1", "2"], [0]),  # CUDA stops at the first invalid token
+        (["0", "", "2"], [0]),  # empty tokens are invalid too
         (["99"], []),  # unknown token matches nothing
     ],
 )

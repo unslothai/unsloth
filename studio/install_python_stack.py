@@ -30,6 +30,13 @@ if str(_BACKEND_DIR) not in sys.path:
 
 # setup.sh/setup.ps1 invoke this by path, so its directory is sys.path[0].
 import install_manifest  # noqa: E402
+from prebuilt_core import (  # noqa: E402
+    can_resolve_cuda_visible_device_tokens,
+    normalize_compute_cap,
+    normalize_compute_caps,
+    parse_cuda_visible_devices,
+    select_visible_gpu_rows,
+)
 
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
@@ -46,6 +53,9 @@ IS_MACOS = sys.platform == "darwin"
 IS_MAC_INTEL = IS_MACOS and platform.machine() == "x86_64"
 IS_MAC_ARM = IS_MACOS and platform.machine() == "arm64"
 IS_LINUX = sys.platform.startswith("linux")
+_VISIBLE_NVIDIA_CAPS_CACHE: dict[
+    tuple[str, str | None, str | None], tuple[tuple[str, ...], bool]
+] = {}
 
 # amd-smi auto-elevates on Windows (UAC/DiskPart prompt mid-install). This installer
 # only spawns probes and pip/uv (no elevation), so set __COMPAT_LAYER=RunAsInvoker
@@ -1327,14 +1337,207 @@ def _install_bnb_windows_rocm() -> bool:
     return True
 
 
-def _detect_cuda_torch_index_url() -> str:
-    """Return the pytorch.org CUDA wheel index URL for the host's NVIDIA driver.
+def _cuda_torch_tag_for_host(
+    driver_version: tuple[int, int] | None,
+    compute_caps: list[str],
+) -> str:
+    """Choose a wheel family supported by the driver and every visible GPU."""
+    major, minor = driver_version or (12, 6)
+    if major >= 13:
+        tag = "cu130"
+    elif major == 12 and minor >= 8:
+        tag = "cu128"
+    elif major == 12 and minor >= 6:
+        tag = "cu126"
+    elif major >= 12:
+        tag = "cu124"
+    elif major >= 11:
+        tag = "cu118"
+    else:
+        return "cpu"
+
+    if not IS_LINUX or platform.machine().lower() not in {"x86_64", "amd64"}:
+        return tag
+    sms = [int(cap) for cap in normalize_compute_caps(compute_caps)]
+    has_legacy = any(sm < 75 for sm in sms)
+    has_blackwell = any(sm >= 100 for sm in sms)
+    if has_legacy and has_blackwell:
+        raise RuntimeError(
+            "The visible NVIDIA GPUs include both pre-Turing (sm_<75) and Blackwell "
+            "(sm_>=100) devices. PyTorch 2.11 has no CUDA wheel family that supports "
+            "both. Set CUDA_VISIBLE_DEVICES to a compatible GPU group and retry."
+        )
+    if _cuda_torch_family_supports_compute_caps(tag, compute_caps):
+        return tag
+    if has_legacy:
+        return "cu126"
+    if driver_version is None:
+        raise RuntimeError(
+            "The visible NVIDIA GPUs require cu128 or newer, but the NVIDIA "
+            "driver's CUDA compatibility could not be determined. Verify or "
+            "update the NVIDIA driver and retry."
+        )
+    raise RuntimeError(
+        f"The visible NVIDIA GPUs require cu128 or newer, but the installed "
+        f"driver supports only {tag}. Update the NVIDIA driver and retry."
+    )
+
+
+def _visible_nvidia_compute_caps(exe: str) -> tuple[list[str], bool]:
+    """Return visible capabilities and whether the inventory was fully resolved."""
+    visible_value = os.environ.get("CUDA_VISIBLE_DEVICES")
+    # Studio defaults CUDA to PCI ordering before runtime GPU use. Mirror that
+    # default here so numeric masks name the same nvidia-smi rows.
+    device_order = os.environ.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    cache_key = (exe, visible_value, device_order)
+    if cache_key in _VISIBLE_NVIDIA_CAPS_CACHE:
+        cached_caps, cached_resolved = _VISIBLE_NVIDIA_CAPS_CACHE[cache_key]
+        return list(cached_caps), cached_resolved
+
+    try:
+        result = subprocess.run(
+            [
+                exe,
+                "--query-gpu=index,uuid,compute_cap",
+                "--format=csv,noheader,nounits",
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 10,
+        )
+    except Exception:
+        result = None
+
+    if result is None or result.returncode != 0:
+        return [], False
+
+    rows: list[tuple[str, str, str]] = []
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) != 3:
+            return [], False
+        rows.append((parts[0], parts[1], parts[2]))
+    if not rows:
+        return [], False
+
+    visible_devices = parse_cuda_visible_devices(visible_value)
+    if visible_devices and visible_devices[0].isdigit() and (
+        int(visible_devices[0]) >= len(rows)
+    ):
+        _VISIBLE_NVIDIA_CAPS_CACHE[cache_key] = ((), True)
+        return [], True
+    if visible_devices is not None and visible_devices and not (
+        can_resolve_cuda_visible_device_tokens(visible_devices, device_order)
+    ):
+        # The exact ordinal or MIG parent is unknown. Evaluating every physical
+        # row is conservative: the chosen family can serve any possible subset.
+        normalized_rows: list[str] = []
+        for _, _, raw_cap in rows:
+            normalized_cap = normalize_compute_cap(raw_cap)
+            if normalized_cap is None:
+                return [], False
+            normalized_rows.append(normalized_cap)
+        caps = normalize_compute_caps(normalized_rows)
+        _VISIBLE_NVIDIA_CAPS_CACHE[cache_key] = (tuple(caps), False)
+        return caps, False
+    selected = select_visible_gpu_rows(rows, visible_devices)
+    normalized_selected: list[str] = []
+    for _, _, raw_cap in selected:
+        normalized_cap = normalize_compute_cap(raw_cap)
+        if normalized_cap is None:
+            return [], False
+        normalized_selected.append(normalized_cap)
+    caps = normalize_compute_caps(normalized_selected)
+    _VISIBLE_NVIDIA_CAPS_CACHE[cache_key] = (tuple(caps), True)
+    return caps, True
+
+
+def _nvidia_driver_cuda_version(exe: str) -> tuple[int, int] | None:
+    try:
+        result = subprocess.run(
+            [exe],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 10,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _cuda_torch_family_within_driver(
+    family: str,
+    driver_version: tuple[int, int],
+) -> bool:
+    family_match = re.fullmatch(r"cu(\d+)", family)
+    driver_family = _cuda_torch_tag_for_host(driver_version, [])
+    driver_match = re.fullmatch(r"cu(\d+)", driver_family)
+    return bool(
+        family_match
+        and driver_match
+        and int(family_match.group(1)) <= int(driver_match.group(1))
+    )
+
+
+def _cuda_torch_family_supports_compute_caps(
+    family: str,
+    compute_caps: list[str],
+    torch_version: str | None = None,
+) -> bool:
+    """Whether a PyTorch 2.11 CUDA family crosses a known architecture cutoff."""
+    if not IS_LINUX or platform.machine().lower() not in {"x86_64", "amd64"}:
+        return True
+    sms = [int(cap) for cap in normalize_compute_caps(compute_caps)]
+    if not sms:
+        return True
+    match = re.fullmatch(r"cu(\d+)", family)
+    if match is None:
+        return False
+    family_number = int(match.group(1))
+    if family_number >= 128:
+        version_match = re.match(r"(\d+)\.(\d+)", torch_version or "")
+        if (
+            family_number < 130
+            and version_match is not None
+            and (int(version_match.group(1)), int(version_match.group(2))) < (2, 11)
+        ):
+            return all(sm >= 70 for sm in sms)
+        return all(sm >= 75 for sm in sms)
+    return all(sm < 100 for sm in sms)
+
+
+def _cuda_torch_index_url_for_host(
+    driver_version: tuple[int, int] | None,
+    compute_caps: list[str],
+) -> str:
+    tag = _cuda_torch_tag_for_host(driver_version, compute_caps)
+    if compute_caps and tag == "cu126" and driver_version is not None:
+        major, minor = driver_version
+        if major >= 13 or (major == 12 and minor >= 8):
+            print(
+                "   pre-Turing NVIDIA GPU detected; selecting cu126 because "
+                "PyTorch 2.11 cu128/cu130 require sm_75 or newer"
+            )
+    return f"{_PYTORCH_WHL_BASE}/{tag}"
+
+
+def _detect_cuda_torch_index_url(compute_caps: list[str] | None = None) -> str:
+    """Return the pytorch.org CUDA wheel index URL for the NVIDIA host.
 
     Mirrors install.sh::get_torch_index_url's CUDA ladder so `studio update` repairs
     to the same wheel family a fresh install would pick. Honours the explicit
     overrides first (UNSLOTH_TORCH_INDEX_URL / _FAMILY) so a headless / CI install
     never lets the host GPU decide. Otherwise probes nvidia-smi (parsing both "CUDA
-    Version:" and "CUDA UMD Version:"), defaulting to cu126 when unreadable.
+    Version:" and "CUDA UMD Version:"). Driver support is an upper bound; the
+    visible GPU architectures can cap the family at cu126. Defaults to cu126
+    when the driver version is unreadable.
     """
     _override_url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if _override_url:
@@ -1345,35 +1548,13 @@ def _detect_cuda_torch_index_url() -> str:
     exe = shutil.which("nvidia-smi")
     if not exe and os.path.isfile("/usr/bin/nvidia-smi"):
         exe = "/usr/bin/nvidia-smi"
-    tag = "cu126"  # default when the driver CUDA version cannot be read
+    driver_version: tuple[int, int] | None = None
+    visible_caps = compute_caps or []
     if exe:
-        try:
-            result = subprocess.run(
-                [exe],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                timeout = 10,
-            )
-            if result.returncode == 0:
-                m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
-                if m:
-                    major, minor = int(m.group(1)), int(m.group(2))
-                    if major >= 13:
-                        tag = "cu130"
-                    elif major == 12 and minor >= 8:
-                        tag = "cu128"
-                    elif major == 12 and minor >= 6:
-                        tag = "cu126"
-                    elif major >= 12:
-                        tag = "cu124"
-                    elif major >= 11:
-                        tag = "cu118"
-                    else:
-                        tag = "cpu"  # ancient driver: no usable CUDA wheels
-        except Exception:
-            pass
-    return f"{_PYTORCH_WHL_BASE}/{tag}"
+        driver_version = _nvidia_driver_cuda_version(exe)
+        if compute_caps is None:
+            visible_caps, _ = _visible_nvidia_compute_caps(exe)
+    return _cuda_torch_index_url_for_host(driver_version, visible_caps)
 
 
 def _explicit_torch_index_url() -> "str | None":
@@ -1528,7 +1709,7 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
 
 
 def _ensure_cuda_torch() -> None:
-    """Repair a venv whose torch is a ROCm build on an NVIDIA host.
+    """Repair a venv whose torch backend or CUDA family cannot serve the host.
 
     Counterpart to _ensure_rocm_torch. A venv poisoned by the pre-fix KFD
     gpu_id false positive (ROCm torch installed on an NVIDIA-only machine)
@@ -1536,8 +1717,8 @@ def _ensure_cuda_torch() -> None:
     satisfies the version constraint and nothing force-reinstalls it. This
     detects that exact case and reinstalls CUDA torch.
 
-    Only repairs when torch actually links against HIP/ROCm. Healthy CUDA
-    torch and deliberate CPU-only torch are left untouched.
+    Repairs a ROCm build on NVIDIA and a CUDA family whose published kernels do
+    not cover the visible GPUs. Healthy CUDA and deliberate CPU builds stay.
     """
     # Respect install.sh's backend: only "" (standalone update) or "cuda" force CUDA
     # wheels; "rocm"/"cpu"/unrecognised are deliberate.
@@ -1578,8 +1759,11 @@ def _ensure_cuda_torch() -> None:
                     "cuda = getattr(torch.version, 'cuda', '') or ''; "
                     "ver = getattr(torch, '__version__', '').lower(); "
                     "m = re.search(r'\\+(cu\\d+)', ver); "
+                    "runtime = cuda.replace('.', '') if cuda else ''; "
+                    "family = m.group(1) if m else (('cu' + runtime) if runtime else ''); "
                     "marker = 'hip' if (hip or 'rocm' in ver) else ('cuda' if cuda else 'cpu'); "
-                    "print(marker + '|' + (m.group(1) if m else ''))"
+                    "release = ver.split('+', 1)[0]; "
+                    "print(marker + '|' + family + '|' + release)"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -1618,13 +1802,36 @@ def _ensure_cuda_torch() -> None:
     ]
     if not _marker_lines:
         return
-    _marker, _, _installed_cu = _marker_lines[-1].partition("|")
+    _installed_parts = _marker_lines[-1].split("|", 2)
+    _marker = _installed_parts[0]
+    _installed_cu = _installed_parts[1] if len(_installed_parts) > 1 else ""
+    _installed_torch_version = _installed_parts[2] if len(_installed_parts) > 2 else ""
     # Reinstall CUDA torch on a ROCm build on an NVIDIA host (poisoning signature), or when a
     # CUDA index is pinned but the venv has the wrong family (CPU or a different cuXXX). A
     # healthy match, or a CPU wheel with no CUDA pin, is left alone.
     _pin = _explicit_torch_index_url()
     _pin_leaf = _torch_index_leaf(_pin) if _pin else ""
     _pinned_cuda = _is_cuda_family_leaf(_pin_leaf)
+    _architecture_policy_host = IS_LINUX and platform.machine().lower() in {
+        "x86_64",
+        "amd64",
+    }
+    if _marker == "cuda" and not _pinned_cuda and not _architecture_policy_host:
+        return
+    _smi: str | None = None
+    _compute_caps: list[str] = []
+    _caps_resolved = False
+    _driver_version: tuple[int, int] | None = None
+    if _marker in {"hip", "cuda"} and not _pinned_cuda:
+        _smi = shutil.which("nvidia-smi")
+        if not _smi and os.path.isfile("/usr/bin/nvidia-smi"):
+            _smi = "/usr/bin/nvidia-smi"
+        if _smi:
+            _compute_caps, _caps_resolved = _visible_nvidia_compute_caps(_smi)
+            _driver_version = _nvidia_driver_cuda_version(_smi)
+            if _architecture_policy_host and _caps_resolved and not _compute_caps:
+                return
+    index_url: str | None = None
     if _marker == "hip":
         _why = "torch is a ROCm build on an NVIDIA host"
     elif _marker == "cpu" and _pinned_cuda:
@@ -1634,10 +1841,36 @@ def _ensure_cuda_torch() -> None:
         # the family can't be confirmed, so reinstall to enforce it (idempotent).
         _installed_desc = _installed_cu if _installed_cu else "an untagged CUDA build"
         _why = f"torch is {_installed_desc} but the pinned CUDA index is {_pin_leaf}"
+    elif _marker == "cuda" and not _pinned_cuda:
+        _architecture_compatible = _cuda_torch_family_supports_compute_caps(
+            _installed_cu, _compute_caps, _installed_torch_version
+        )
+        _driver_compatible = _driver_version is None or _cuda_torch_family_within_driver(
+            _installed_cu, _driver_version
+        )
+        if _architecture_compatible and _driver_compatible:
+            return
+        index_url = _cuda_torch_index_url_for_host(_driver_version, _compute_caps)
+        _expected_leaf = _torch_index_leaf(index_url)
+        _installed_desc = _installed_cu or "an unknown CUDA family"
+        if not _architecture_compatible:
+            _why = (
+                f"torch is {_installed_desc} but the visible GPU architectures "
+                f"require {_expected_leaf}"
+            )
+        else:
+            _why = (
+                f"torch is {_installed_desc} but the NVIDIA driver supports only "
+                f"{_expected_leaf}"
+            )
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
 
-    index_url = _detect_cuda_torch_index_url()
+    if index_url is None:
+        if not _pinned_cuda and _marker == "hip":
+            index_url = _cuda_torch_index_url_for_host(_driver_version, _compute_caps)
+        else:
+            index_url = _detect_cuda_torch_index_url()
     _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
     print(
         f"   {_why} -- reinstalling CUDA torch from {_strip_index_url_credentials(index_url)}\n"

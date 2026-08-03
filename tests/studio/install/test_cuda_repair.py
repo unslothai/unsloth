@@ -23,11 +23,13 @@ _STACK_SPEC.loader.exec_module(stack_mod)
 
 _ensure_cuda_torch = stack_mod._ensure_cuda_torch
 _detect_cuda_torch_index_url = stack_mod._detect_cuda_torch_index_url
+_cuda_torch_tag_for_host = stack_mod._cuda_torch_tag_for_host
 
 
 def _make_run(
     torch_state = "hip",
     cuda_version = "12.8",
+    compute_caps = ("8.6",),
     torch_rc = 0,
     smi_rc = 0,
 ):
@@ -41,9 +43,15 @@ def _make_run(
             result.returncode = torch_rc
             result.stdout = (torch_state + "\n").encode()
             return result
-        # nvidia-smi version probe (text = True)
+        # nvidia-smi version / compute-capability probes (text = True)
         result.returncode = smi_rc
-        out = f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices found\n"
+        if len(cmd) > 1 and cmd[1] == "--query-gpu=index,uuid,compute_cap":
+            out = "".join(
+                f"{index}, GPU-fake-{index}, {cap}\n"
+                for index, cap in enumerate(compute_caps)
+            )
+        else:
+            out = f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices found\n"
         result.stdout = out if kwargs.get("text") else out.encode()
         return result
 
@@ -56,6 +64,7 @@ def _run_cuda_repair(
     nvidia = True,
     torch_state = "hip",
     cuda_version = "12.8",
+    compute_caps = ("8.6",),
     torch_rc = 0,
     smi_rc = 0,
     is_macos = False,
@@ -64,6 +73,7 @@ def _run_cuda_repair(
     rocm_marker = False,
     smi_path = "/usr/bin/nvidia-smi",
     cvd = None,
+    device_order = None,
     index_family = None,
     index_url = None,
 ):
@@ -77,6 +87,8 @@ def _run_cuda_repair(
         env["UNSLOTH_ROCM_TORCH_INSTALLED"] = "1"
     if cvd is not None:
         env["CUDA_VISIBLE_DEVICES"] = cvd
+    if device_order is not None:
+        env["CUDA_DEVICE_ORDER"] = device_order
     if index_family is not None:
         env["UNSLOTH_TORCH_INDEX_FAMILY"] = index_family
     if index_url is not None:
@@ -92,6 +104,7 @@ def _run_cuda_repair(
         patch.object(stack_mod, "IS_MACOS", is_macos),
         patch.object(stack_mod, "IS_WINDOWS", is_windows),
         patch.object(stack_mod, "NO_TORCH", no_torch),
+        patch.object(stack_mod, "_VISIBLE_NVIDIA_CAPS_CACHE", {}),
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
         patch.object(stack_mod.shutil, "which", side_effect = _which),
         patch.object(stack_mod.os.path, "isfile", return_value = bool(smi_path)),
@@ -99,7 +112,9 @@ def _run_cuda_repair(
         patch.object(
             stack_mod.subprocess,
             "run",
-            side_effect = _make_run(torch_state, cuda_version, torch_rc, smi_rc),
+            side_effect = _make_run(
+                torch_state, cuda_version, compute_caps, torch_rc, smi_rc
+            ),
         ),
         patch.dict(stack_mod.os.environ, env, clear = False),
     ):
@@ -107,6 +122,8 @@ def _run_cuda_repair(
             stack_mod.os.environ.pop("UNSLOTH_ROCM_TORCH_INSTALLED", None)
         if cvd is None:
             stack_mod.os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        if device_order is None:
+            stack_mod.os.environ.pop("CUDA_DEVICE_ORDER", None)
         if index_family is None:
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
         if index_url is None:
@@ -209,7 +226,7 @@ class TestCudaRepairFires:
 
 class TestCudaRepairSkips:
     def test_healthy_cuda_torch_no_repair(self):
-        mock_pip = _run_cuda_repair(torch_state = "cuda")
+        mock_pip = _run_cuda_repair(torch_state = "cuda|cu128")
         mock_pip.assert_not_called()
 
     def test_deliberate_cpu_wheel_no_repair(self):
@@ -375,11 +392,236 @@ class TestTorchBackendDerivationFromPin:
 
 
 class TestCudaIndexResolution:
+    def test_failed_capability_probe_is_retried(self):
+        success = MagicMock(
+            returncode = 0,
+            stdout = "0, GPU-fake-0, 7.0\n",
+        )
+        with (
+            patch.object(stack_mod, "_VISIBLE_NVIDIA_CAPS_CACHE", {}),
+            patch.object(
+                stack_mod.subprocess,
+                "run",
+                side_effect = [OSError("transient failure"), success],
+            ) as mock_run,
+            patch.dict(stack_mod.os.environ, {}, clear = False),
+        ):
+            stack_mod.os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+            stack_mod.os.environ.pop("CUDA_DEVICE_ORDER", None)
+            assert stack_mod._visible_nvidia_compute_caps("nvidia-smi") == ([], False)
+            assert stack_mod._visible_nvidia_compute_caps("nvidia-smi") == (["70"], True)
+        assert mock_run.call_count == 2
+
+    def test_complete_conservative_inventory_is_cached(self):
+        success = MagicMock(
+            returncode = 0,
+            stdout = "0, GPU-fake-0, 7.0\n",
+        )
+        with (
+            patch.object(stack_mod, "_VISIBLE_NVIDIA_CAPS_CACHE", {}),
+            patch.object(stack_mod.subprocess, "run", return_value = success) as mock_run,
+            patch.dict(
+                stack_mod.os.environ,
+                {"CUDA_VISIBLE_DEVICES": "0", "CUDA_DEVICE_ORDER": "FASTEST_FIRST"},
+                clear = False,
+            ),
+        ):
+            expected = (["70"], False)
+            assert stack_mod._visible_nvidia_compute_caps("nvidia-smi") == expected
+            assert stack_mod._visible_nvidia_compute_caps("nvidia-smi") == expected
+        assert mock_run.call_count == 1
+
     def test_cuda_128_selects_cu128(self):
         assert "cu128" in _index_url(_run_cuda_repair(cuda_version = "12.8"))
 
     def test_cuda_130_selects_cu130(self):
         assert "cu130" in _index_url(_run_cuda_repair(cuda_version = "13.0"))
+
+    def test_cuda_130_volta_selects_cu126(self):
+        assert "cu126" in _index_url(
+            _run_cuda_repair(cuda_version = "13.0", compute_caps = ("7.0",))
+        )
+
+    def test_incompatible_cuda_family_is_repaired_for_volta(self):
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu130",
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+        )
+        assert mock_pip.call_count == 1
+        assert "cu126" in _index_url(mock_pip)
+
+    def test_cuda_129_family_is_repaired_for_volta(self):
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu129",
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+        )
+        assert mock_pip.call_count == 1
+        assert "cu126" in _index_url(mock_pip)
+
+    def test_pre_211_cu128_volta_build_is_retained(self):
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu128|2.10.0",
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+        )
+        assert mock_pip.call_count == 0
+
+    def test_cuda_126_family_is_repaired_for_blackwell(self):
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu126",
+            cuda_version = "13.0",
+            compute_caps = ("12.0",),
+        )
+        assert mock_pip.call_count == 1
+        assert "cu130" in _index_url(mock_pip)
+
+    def test_family_newer_than_driver_is_repaired(self):
+        cu130 = _run_cuda_repair(
+            torch_state = "cuda|cu130",
+            cuda_version = "12.8",
+            compute_caps = ("8.6",),
+        )
+        assert "cu128" in _index_url(cu130)
+
+        cu128 = _run_cuda_repair(
+            torch_state = "cuda|cu128",
+            cuda_version = "12.6",
+            compute_caps = ("8.6",),
+        )
+        assert "cu126" in _index_url(cu128)
+
+    def test_mixed_volta_blackwell_is_rejected(self):
+        with pytest.raises(RuntimeError, match = "no CUDA wheel family"):
+            _run_cuda_repair(
+                cuda_version = "13.0",
+                compute_caps = ("7.0", "12.0"),
+            )
+
+    def test_blackwell_with_old_driver_is_rejected(self):
+        with pytest.raises(RuntimeError, match = "driver supports only cu126"):
+            _run_cuda_repair(
+                cuda_version = "12.6",
+                compute_caps = ("12.0",),
+            )
+
+    def test_blackwell_with_unreadable_driver_is_rejected(self):
+        with pytest.raises(RuntimeError, match = "could not be determined"):
+            _run_cuda_repair(
+                torch_state = "cuda|cu126",
+                cuda_version = "",
+                compute_caps = ("12.0",),
+            )
+
+    def test_visibility_mask_selects_one_mixed_generation(self):
+        volta = _run_cuda_repair(
+            cuda_version = "13.0",
+            compute_caps = ("7.0", "12.0"),
+            cvd = "0",
+        )
+        assert "cu126" in _index_url(volta)
+
+        blackwell = _run_cuda_repair(
+            cuda_version = "13.0",
+            compute_caps = ("7.0", "12.0"),
+            cvd = "1",
+            device_order = "PCI_BUS_ID",
+        )
+        assert "cu130" in _index_url(blackwell)
+
+        abbreviated_uuid = _run_cuda_repair(
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+            cvd = "GPU-f",
+        )
+        assert "cu126" in _index_url(abbreviated_uuid)
+
+        stopped_at_invalid = _run_cuda_repair(
+            cuda_version = "13.0",
+            compute_caps = ("7.0", "12.0"),
+            cvd = "0,-1,1",
+            device_order = "PCI_BUS_ID",
+        )
+        assert "cu126" in _index_url(stopped_at_invalid)
+
+    def test_unresolved_numeric_mask_uses_conservative_inventory(self):
+        with pytest.raises(RuntimeError, match = "no CUDA wheel family"):
+            _run_cuda_repair(
+                cuda_version = "13.0",
+                compute_caps = ("7.0", "12.0"),
+                cvd = "0",
+                device_order = "FASTEST_FIRST",
+            )
+
+        volta = _run_cuda_repair(
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+            cvd = "0",
+            device_order = "FASTEST_FIRST",
+        )
+        assert "cu126" in _index_url(volta)
+
+    def test_mig_mask_uses_conservative_inventory(self):
+        with pytest.raises(RuntimeError, match = "no CUDA wheel family"):
+            _run_cuda_repair(
+                cuda_version = "13.0",
+                compute_caps = ("7.0", "12.0"),
+                cvd = "0,MIG-bogus",
+                device_order = "PCI_BUS_ID",
+            )
+
+    def test_resolved_empty_mask_does_not_force_cuda(self):
+        mock_pip = _run_cuda_repair(
+            torch_state = "hip",
+            cuda_version = "13.0",
+            compute_caps = ("7.0", "12.0"),
+            cvd = "99",
+            device_order = "PCI_BUS_ID",
+        )
+        assert mock_pip.call_count == 0
+
+        fastest_first = _run_cuda_repair(
+            torch_state = "hip",
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+            cvd = "99",
+            device_order = "FASTEST_FIRST",
+        )
+        assert fastest_first.call_count == 0
+
+    def test_partial_capability_inventory_uses_driver_fallback(self):
+        mock_pip = _run_cuda_repair(
+            cuda_version = "13.0",
+            compute_caps = ("7.0", "N/A"),
+        )
+        assert "cu130" in _index_url(mock_pip)
+
+    def test_hidden_unreadable_capability_does_not_poison_selected_gpu(self):
+        mock_pip = _run_cuda_repair(
+            cuda_version = "13.0",
+            compute_caps = ("7.0", "N/A"),
+            cvd = "0",
+            device_order = "PCI_BUS_ID",
+        )
+        assert "cu126" in _index_url(mock_pip)
+
+    def test_unreadable_compute_capability_keeps_driver_family(self):
+        assert "cu130" in _index_url(
+            _run_cuda_repair(cuda_version = "13.0", compute_caps = ())
+        )
+
+    def test_non_linux_and_non_x86_hosts_keep_driver_family(self):
+        with patch.object(stack_mod, "IS_LINUX", False):
+            assert _cuda_torch_tag_for_host((13, 0), ["70"]) == "cu130"
+        with patch.object(stack_mod.platform, "machine", return_value = "aarch64"):
+            assert _cuda_torch_tag_for_host((13, 0), ["70"]) == "cu130"
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu130",
+                cuda_version = "12.8",
+                compute_caps = ("8.6",),
+            )
+            assert mock_pip.call_count == 0
 
     def test_cuda_126_selects_cu126(self):
         assert "cu126" in _index_url(_run_cuda_repair(cuda_version = "12.6"))

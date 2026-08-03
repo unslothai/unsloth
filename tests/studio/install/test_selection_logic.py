@@ -456,7 +456,7 @@ def test_core_helper_aliases_bound_to_prebuilt_core():
         "normalize_compute_cap",
         "normalize_compute_caps",
         "parse_cuda_visible_devices",
-        "supports_explicit_visible_device_matching",
+        "can_resolve_cuda_visible_device_tokens",
         "select_visible_gpu_rows",
         "compatible_linux_runtime_lines",
         "runtime_line_from_cuda_version",

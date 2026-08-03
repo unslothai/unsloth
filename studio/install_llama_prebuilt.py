@@ -1187,7 +1187,7 @@ def normalized_requested_llama_tag(requested_tag: str | None) -> str:
 normalize_compute_cap = _core.normalize_compute_cap
 normalize_compute_caps = _core.normalize_compute_caps
 parse_cuda_visible_devices = _core.parse_cuda_visible_devices
-supports_explicit_visible_device_matching = _core.supports_explicit_visible_device_matching
+can_resolve_cuda_visible_device_tokens = _core.can_resolve_cuda_visible_device_tokens
 select_visible_gpu_rows = _core.select_visible_gpu_rows
 dir_provides_exact_library = _core.dir_provides_exact_library
 
@@ -2383,24 +2383,36 @@ def detect_host() -> HostInfo:
                 ],
                 timeout = 20,
             )
-            visible_gpu_rows: list[tuple[str, str, str]] = []
+            gpu_rows: list[tuple[str, str, str]] = []
+            inventory_complete = True
             for raw in caps.stdout.splitlines():
                 parts = [part.strip() for part in raw.split(",")]
                 if len(parts) != 3:
-                    continue
+                    inventory_complete = False
+                    break
                 index, uuid, cap = parts
-                visible_gpu_row = select_visible_gpu_rows(
-                    [(index, uuid, cap)],
+                gpu_rows.append((index, uuid, cap))
+
+            tokens_resolvable = visible_device_tokens is None or not visible_device_tokens or (
+                can_resolve_cuda_visible_device_tokens(
                     visible_device_tokens,
+                    os.environ.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID"),
                 )
-                if not visible_gpu_row:
-                    continue
-                visible_gpu_rows.extend(visible_gpu_row)
-                normalized_cap = normalize_compute_cap(cap)
-                if normalized_cap is None:
-                    continue
-                if normalized_cap not in compute_caps:
-                    compute_caps.append(normalized_cap)
+            )
+            inventory_resolved = inventory_complete and bool(gpu_rows) and tokens_resolvable
+            if inventory_resolved:
+                visible_gpu_rows = select_visible_gpu_rows(gpu_rows, visible_device_tokens)
+            elif inventory_complete and gpu_rows and not tokens_resolvable:
+                # Exact ordinal/MIG mapping is unavailable. All physical rows
+                # conservatively cover every GPU the mask could expose.
+                visible_gpu_rows = gpu_rows
+            else:
+                visible_gpu_rows = []
+            normalized_caps = [normalize_compute_cap(row[2]) for row in visible_gpu_rows]
+            if all(cap is not None for cap in normalized_caps):
+                compute_caps.extend(
+                    cap for cap in normalized_caps if cap is not None and cap not in compute_caps
+                )
 
             if visible_gpu_rows:
                 has_usable_nvidia = True
@@ -2412,7 +2424,7 @@ def detect_host() -> HostInfo:
                     has_physical_nvidia = True
             elif visible_device_tokens == []:
                 has_usable_nvidia = False
-            elif supports_explicit_visible_device_matching(visible_device_tokens):
+            elif inventory_resolved:
                 has_usable_nvidia = False
             elif has_physical_nvidia:
                 has_usable_nvidia = True

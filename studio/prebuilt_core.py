@@ -1183,17 +1183,33 @@ def parse_cuda_visible_devices(value: str | None) -> list[str] | None:
     raw = value.strip()
     if not raw or raw == "-1":
         return []
-    return [token.strip() for token in raw.split(",") if token.strip()]
+    # Preserve empty and invalid tokens. CUDA stops enumerating at the first
+    # invalid entry, so dropping one could expose a later GPU that CUDA hides.
+    return [token.strip() for token in raw.split(",")]
 
 
-def supports_explicit_visible_device_matching(visible_devices: list[str] | None) -> bool:
+def can_resolve_cuda_visible_device_tokens(
+    visible_devices: list[str] | None,
+    cuda_device_order: str | None = None,
+) -> bool:
     if not visible_devices:
         return False
     for token in visible_devices:
         lowered = token.lower()
-        if token.isdigit() or lowered.startswith("gpu-"):
+        if token.isdigit() and (cuda_device_order or "").upper() != "PCI_BUS_ID":
+            # Numeric CUDA ordinals can differ from nvidia-smi indices under
+            # FASTEST_FIRST. Only match them when both use PCI ordering.
+            return False
+        if token.isdigit():
             continue
-        return False
+        if lowered.startswith("mig-"):
+            # The physical-GPU query cannot identify the MIG instance's parent
+            # or model driver-dependent mixed MIG and non-MIG enumeration.
+            return False
+        if lowered.startswith("gpu-"):
+            continue
+        # Any other token is invalid, so CUDA ignores it and the suffix.
+        return True
     return True
 
 
@@ -1207,23 +1223,21 @@ def select_visible_gpu_rows(
         return []
 
     by_index = {index: (index, uuid, cap) for index, uuid, cap in rows}
-    by_uuid = {uuid.lower(): (index, uuid, cap) for index, uuid, cap in rows}
     selected: list[tuple[str, str, str]] = []
     seen_indices: set[str] = set()
     for token in visible_devices:
-        row = by_index.get(token)
-        if row is None:
+        row = by_index.get(str(int(token))) if token.isdigit() else None
+        if row is None and token.lower().startswith("gpu-"):
             normalized_token = token.lower()
-            row = by_uuid.get(normalized_token)
-            if row is None and normalized_token.startswith("gpu-"):
-                row = by_uuid.get(normalized_token)
-            if row is None and not normalized_token.startswith("gpu-"):
-                row = by_uuid.get("gpu-" + normalized_token)
+            uuid_matches = [
+                candidate for candidate in rows if candidate[1].lower().startswith(normalized_token)
+            ]
+            row = uuid_matches[0] if len(uuid_matches) == 1 else None
         if row is None:
-            continue
+            break
         index = row[0]
         if index in seen_indices:
-            continue
+            break
         seen_indices.add(index)
         selected.append(row)
     return selected

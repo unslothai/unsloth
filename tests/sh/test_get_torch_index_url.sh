@@ -49,6 +49,10 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_visible_nvidia_compute_caps()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_cuda_torch_tag_for_host()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
 } | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
@@ -73,11 +77,15 @@ assert_eq() {
 # _has_usable_nvidia_gpu sees a valid GPU.
 make_mock_smi() {
     _dir=$(mktemp -d)
+    _cap="${2:-8.6}"
     cat > "$_dir/nvidia-smi" <<MOCK
 #!/bin/sh
 case "\$1" in
     -L)
         echo "GPU 0: NVIDIA GeForce RTX 3090 (UUID: GPU-fake-uuid)"
+        ;;
+    --query-gpu=index,uuid,compute_cap)
+        echo "0, GPU-fake-uuid, $_cap"
         ;;
     *)
         cat <<'SMI_OUT'
@@ -96,11 +104,15 @@ MOCK
 # layout used by newer NVIDIA drivers (e.g. 610.x on Windows).  See issue #5812.
 make_mock_smi_umd() {
     _dir=$(mktemp -d)
+    _cap="${2:-12.0}"
     cat > "$_dir/nvidia-smi" <<MOCK
 #!/bin/sh
 case "\$1" in
     -L)
         echo "GPU 0: NVIDIA GeForce RTX 5090 Laptop GPU (UUID: GPU-fake-uuid)"
+        ;;
+    --query-gpu=index,uuid,compute_cap)
+        echo "0, GPU-fake-uuid, $_cap"
         ;;
     *)
         cat <<'SMI_OUT'
@@ -108,6 +120,53 @@ case "\$1" in
 | NVIDIA-SMI 610.47                 KMD Version: 610.47        CUDA UMD Version: $1     |
 +-----------------------------------------------------------------------------------------+
 SMI_OUT
+        ;;
+esac
+MOCK
+    chmod +x "$_dir/nvidia-smi"
+    echo "$_dir"
+}
+
+# Helper: create a mixed Volta + Blackwell host for visibility and coverage tests.
+make_mock_smi_mixed() {
+    _dir=$(mktemp -d)
+    cat > "$_dir/nvidia-smi" <<'MOCK'
+#!/bin/sh
+case "$1" in
+    -L)
+        echo "GPU 0: NVIDIA Tesla V100 (UUID: GPU-volta)"
+        echo "GPU 1: NVIDIA B200 (UUID: GPU-blackwell)"
+        ;;
+    --query-gpu=index,uuid,compute_cap)
+        echo "0, GPU-volta, 7.0"
+        echo "1, GPU-blackwell, 10.0"
+        ;;
+    *)
+        echo "| NVIDIA-SMI 580.00 Driver Version: 580.00 CUDA Version: 13.0 |"
+        ;;
+esac
+MOCK
+    chmod +x "$_dir/nvidia-smi"
+    echo "$_dir"
+}
+
+make_mock_smi_partial_caps() {
+    _dir=$(mktemp -d)
+    _query_rc="${1:-0}"
+    cat > "$_dir/nvidia-smi" <<MOCK
+#!/bin/sh
+case "\$1" in
+    -L)
+        echo "GPU 0: NVIDIA Tesla V100 (UUID: GPU-volta)"
+        echo "GPU 1: NVIDIA GPU (UUID: GPU-unknown)"
+        ;;
+    --query-gpu=index,uuid,compute_cap)
+        echo "0, GPU-volta, 7.0"
+        echo "1, GPU-unknown, N/A"
+        exit $_query_rc
+        ;;
+    *)
+        echo "| NVIDIA-SMI 580.00 Driver Version: 580.00 CUDA Version: 13.0 |"
         ;;
 esac
 MOCK
@@ -156,12 +215,17 @@ run_func() {
     else
         _cvd_setup="unset CUDA_VISIBLE_DEVICES"
     fi
+    if [ "$#" -ge 3 ]; then
+        _order_setup="export CUDA_DEVICE_ORDER='$3'"
+    else
+        _order_setup="unset CUDA_DEVICE_ORDER"
+    fi
     if [ "$_mock_dir" = "none" ]; then
         # Minimal PATH with only basic tools, no nvidia-smi anywhere
-        PATH="$_TOOLS_DIR" bash -c "$_cvd_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
+        PATH="$_TOOLS_DIR" bash -c "$_cvd_setup; $_order_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
     else
         # Put mock nvidia-smi dir first, then basic tools
-        PATH="$_mock_dir:$_TOOLS_DIR" bash -c "$_cvd_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
+        PATH="$_mock_dir:$_TOOLS_DIR" bash -c "$_cvd_setup; $_order_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
     fi
 }
 
@@ -355,7 +419,7 @@ assert_eq "CUDA UMD Version 12.8 -> cu128" "https://download.pytorch.org/whl/cu1
 rm -rf "$_dir"
 
 # 31) "CUDA UMD Version: 11.8" header (newer layout on an older driver) -> cu118
-_dir=$(make_mock_smi_umd "11.8")
+_dir=$(make_mock_smi_umd "11.8" "8.6")
 _result=$(run_func "$_dir")
 assert_eq "CUDA UMD Version 11.8 -> cu118" "https://download.pytorch.org/whl/cu118" "$_result"
 rm -rf "$_dir"
@@ -370,6 +434,89 @@ rm -rf "$_dir"
 _dir=$(make_mock_smi "13.7")
 _result=$(run_func "$_dir")
 assert_eq "CUDA Version 13.7 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
+rm -rf "$_dir"
+
+# A CUDA 13 driver can run older wheel families, and PyTorch 2.11 cu126 is
+#      the current family that still includes Volta sm_70 kernels.
+_dir=$(make_mock_smi "13.0" "7.0")
+_result=$(run_func "$_dir")
+assert_eq "CUDA 13.0 + Volta sm_70 -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+_result=$(run_func "$_dir" "0" "FASTEST_FIRST")
+assert_eq "single Volta FASTEST_FIRST mask -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+_result=$(_ARCH=aarch64 run_func "$_dir")
+assert_eq "aarch64 retains driver-only selection" "https://download.pytorch.org/whl/cu130" "$_result"
+rm -rf "$_dir"
+
+# Turing is the minimum architecture in PyTorch 2.11 cu130.
+_dir=$(make_mock_smi "13.0" "7.5")
+_result=$(run_func "$_dir")
+assert_eq "CUDA 13.0 + Turing sm_75 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
+rm -rf "$_dir"
+
+# Blackwell needs a wheel family that a CUDA 12.6 driver cannot run.
+_dir=$(make_mock_smi "12.6" "12.0")
+set +e
+run_func "$_dir" >/dev/null
+_blackwell_old_driver_rc=$?
+set -e
+assert_eq "CUDA 12.6 + Blackwell rejected" "1" "$_blackwell_old_driver_rc"
+rm -rf "$_dir"
+
+_dir=$(make_mock_smi "" "12.0")
+set +e
+run_func "$_dir" >/dev/null
+_blackwell_unknown_driver_rc=$?
+set -e
+assert_eq "unreadable driver + Blackwell rejected" "1" "$_blackwell_unknown_driver_rc"
+rm -rf "$_dir"
+
+# A partial visibility mask selects a compatible family for that GPU. With
+#      both incompatible generations visible, no PyTorch 2.11 family covers all.
+_dir=$(make_mock_smi_mixed)
+_result=$(run_func "$_dir" "0" "PCI_BUS_ID")
+assert_eq "mixed host CVD=0 (Volta) -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+_result=$(run_func "$_dir" "1" "PCI_BUS_ID")
+assert_eq "mixed host CVD=1 (Blackwell) -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
+_result=$(run_func "$_dir" "GPU-vol")
+assert_eq "abbreviated Volta UUID -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+_result=$(run_func "$_dir" "0,-1,1" "PCI_BUS_ID")
+assert_eq "invalid CVD token stops after Volta" "https://download.pytorch.org/whl/cu126" "$_result"
+set +e
+run_func "$_dir" "0" "FASTEST_FIRST" >/dev/null
+_fastest_mixed_rc=$?
+run_func "$_dir" "0" "" >/dev/null
+_empty_order_mixed_rc=$?
+run_func "$_dir" "0,MIG-bogus" "PCI_BUS_ID" >/dev/null
+_mig_mixed_rc=$?
+set -e
+assert_eq "FASTEST_FIRST mixed mask rejected" "1" "$_fastest_mixed_rc"
+assert_eq "empty CUDA_DEVICE_ORDER mixed mask rejected" "1" "$_empty_order_mixed_rc"
+assert_eq "unresolved MIG mixed mask rejected" "1" "$_mig_mixed_rc"
+_result=$(run_func "$_dir" "GPU-vol,-1,1" "FASTEST_FIRST")
+assert_eq "invalid token shields later numeric token" "https://download.pytorch.org/whl/cu126" "$_result"
+set +e
+run_func "$_dir" >/dev/null
+_mixed_rc=$?
+set -e
+assert_eq "mixed Volta + Blackwell rejected" "1" "$_mixed_rc"
+rm -rf "$_dir"
+
+# If compute capability cannot be read, retain the existing driver-only fallback.
+_dir=$(make_mock_smi "13.0" "unknown")
+_result=$(run_func "$_dir")
+assert_eq "unreadable compute capability -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
+rm -rf "$_dir"
+
+_dir=$(make_mock_smi_partial_caps)
+_result=$(run_func "$_dir")
+assert_eq "partial compute capability inventory -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
+_result=$(run_func "$_dir" "0" "PCI_BUS_ID")
+assert_eq "hidden unreadable capability does not poison Volta" "https://download.pytorch.org/whl/cu126" "$_result"
+rm -rf "$_dir"
+
+_dir=$(make_mock_smi_partial_caps 1)
+_result=$(run_func "$_dir")
+assert_eq "failed capability query discards partial output" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
 # 34) CUDA_VISIBLE_DEVICES="" hides the NVIDIA GPU -> cpu (no AMD present)

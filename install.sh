@@ -2672,6 +2672,179 @@ _probe_amd_gfx_arch() {
     printf '%s\n' "$_pg"
 }
 
+# Print the compute capabilities for NVIDIA GPUs visible to CUDA. Querying index
+# and UUID lets a partial CUDA_VISIBLE_DEVICES mask select the same physical rows
+# that torch will see. When exact mask resolution is unsafe, all physical rows
+# provide a conservative architecture set.
+_visible_nvidia_compute_caps() {
+    _vncc_smi="$1"
+    [ -n "$_vncc_smi" ] || return 2
+    if ! _vncc_rows=$(_run_bounded "$_vncc_smi" \
+        --query-gpu=index,uuid,compute_cap --format=csv,noheader,nounits 2>/dev/null); then
+        return 2
+    fi
+    [ -n "$_vncc_rows" ] || return 2
+
+    _vncc_mask_set=0
+    _vncc_mask=""
+    if [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ]; then
+        _vncc_mask_set=1
+        _vncc_mask="$CUDA_VISIBLE_DEVICES"
+    fi
+    printf '%s\n' "$_vncc_rows" | awk -F',' \
+        -v mask_set="$_vncc_mask_set" -v mask="$_vncc_mask" \
+        -v device_order="${CUDA_DEVICE_ORDER-PCI_BUS_ID}" '
+        function trim(value) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            return value
+        }
+        BEGIN {
+            if (mask_set) {
+                count = split(mask, raw_tokens, ",")
+                for (i = 1; i <= count; i++) {
+                    tokens[++token_count] = tolower(trim(raw_tokens[i]))
+                }
+            }
+        }
+        {
+            if (NF != 3) inventory_invalid = 1
+            gpu_index[++row_count] = trim($1)
+            uuid[row_count] = tolower(trim($2))
+            cap[row_count] = trim($3)
+        }
+        END {
+            if (inventory_invalid) exit 2
+            if (!mask_set) {
+                for (row = 1; row <= row_count; row++) {
+                    if (cap[row] !~ /^[0-9]+\.[0-9]+$/) exit 2
+                }
+                for (row = 1; row <= row_count; row++) {
+                    print cap[row]
+                }
+                exit
+            }
+            for (i = 1; i <= token_count; i++) {
+                token = tokens[i]
+                matched_row = 0
+                match_count = 0
+                if (token ~ /^[0-9]+$/) {
+                    if (toupper(device_order) != "PCI_BUS_ID") {
+                        unresolved_mask = 1
+                        break
+                    }
+                    for (row = 1; row <= row_count; row++) {
+                        if (token == gpu_index[row]) {
+                            matched_row = row
+                            match_count = 1
+                            break
+                        }
+                    }
+                } else if (token ~ /^gpu-/) {
+                    for (row = 1; row <= row_count; row++) {
+                        if (index(uuid[row], token) == 1) {
+                            matched_row = row
+                            match_count++
+                        }
+                    }
+                } else if (token ~ /^mig-/) {
+                    unresolved_mask = 1
+                    break
+                }
+                # CUDA exposes the valid prefix and stops at an invalid,
+                # ambiguous, or duplicate token.
+                if (match_count != 1 || seen[matched_row]) break
+                seen[matched_row] = 1
+                selected_cap[++selected_count] = cap[matched_row]
+            }
+            if (unresolved_mask) {
+                for (row = 1; row <= row_count; row++) {
+                    if (cap[row] !~ /^[0-9]+\.[0-9]+$/) exit 2
+                }
+                for (row = 1; row <= row_count; row++) {
+                    print cap[row]
+                }
+                exit 2
+            }
+            for (i = 1; i <= selected_count; i++) {
+                if (selected_cap[i] !~ /^[0-9]+\.[0-9]+$/) exit 2
+            }
+            for (i = 1; i <= selected_count; i++) {
+                print selected_cap[i]
+            }
+        }
+    '
+}
+
+# Driver compatibility is only an upper bound. PyTorch 2.11's cu128/cu130
+# wheels start at sm_75, while cu126 is the current family that still contains
+# Maxwell, Pascal, and Volta kernels. No 2.11 family spans those legacy GPUs and
+# Blackwell, so require the user to choose a compatible visible GPU set.
+_cuda_torch_tag_for_host() {
+    _cttfh_major="$1"
+    _cttfh_minor="$2"
+    _cttfh_caps="$3"
+
+    _cttfh_driver_known=1
+    if [ -z "$_cttfh_major" ] || [ -z "$_cttfh_minor" ]; then
+        _cttfh_driver_known=0
+        _cttfh_major=12
+        _cttfh_minor=6
+    fi
+    if [ "$_cttfh_major" -ge 13 ]; then _cttfh_tag="cu130"
+    elif [ "$_cttfh_major" -eq 12 ] && [ "$_cttfh_minor" -ge 8 ]; then _cttfh_tag="cu128"
+    elif [ "$_cttfh_major" -eq 12 ] && [ "$_cttfh_minor" -ge 6 ]; then _cttfh_tag="cu126"
+    elif [ "$_cttfh_major" -ge 12 ]; then _cttfh_tag="cu124"
+    elif [ "$_cttfh_major" -ge 11 ]; then _cttfh_tag="cu118"
+    else _cttfh_tag="cpu"
+    fi
+
+    # This cutoff is the PyTorch 2.11 Linux x86_64 wheel matrix. Other
+    # architectures retain the existing driver-only selection.
+    case "$(uname -s):${_ARCH:-$(uname -m)}" in
+        Linux:x86_64|Linux:amd64) ;;
+        *) printf '%s\n' "$_cttfh_tag"; return ;;
+    esac
+    [ -n "$_cttfh_caps" ] || { printf '%s\n' "$_cttfh_tag"; return; }
+    _cttfh_flags=$(printf '%s\n' "$_cttfh_caps" | awk -F. '
+        /^[0-9]+\.[0-9]+$/ {
+            sm = ($1 * 10) + $2
+            if (sm < 75) legacy = 1
+            if (sm >= 100) blackwell = 1
+        }
+        END { print legacy + 0, blackwell + 0 }
+    ')
+    _cttfh_legacy=${_cttfh_flags%% *}
+    _cttfh_blackwell=${_cttfh_flags#* }
+    if [ "$_cttfh_legacy" -eq 1 ] && [ "$_cttfh_blackwell" -eq 1 ]; then
+        echo "[ERROR] The visible NVIDIA GPUs include both pre-Turing (sm_<75) and Blackwell (sm_>=100) devices." >&2
+        echo "[ERROR] PyTorch 2.11 has no CUDA wheel family that supports both. Set CUDA_VISIBLE_DEVICES to a compatible GPU group and re-run the installer." >&2
+        return 1
+    fi
+    if [ "$_cttfh_legacy" -eq 1 ]; then
+        case "$_cttfh_tag" in
+            cu128|cu130)
+                echo "[WARN] A pre-Turing NVIDIA GPU was detected; selecting cu126 because PyTorch 2.11 cu128/cu130 require sm_75 or newer." >&2
+                _cttfh_tag="cu126"
+                ;;
+        esac
+    fi
+    if [ "$_cttfh_blackwell" -eq 1 ]; then
+        case "$_cttfh_tag" in
+            cu118|cu124|cu126)
+                if [ "$_cttfh_driver_known" -eq 0 ]; then
+                    echo "[ERROR] The visible NVIDIA GPUs require cu128 or newer, but the NVIDIA driver's CUDA compatibility could not be determined." >&2
+                    echo "[ERROR] Verify or update the NVIDIA driver and re-run the installer." >&2
+                else
+                    echo "[ERROR] The visible NVIDIA GPUs require cu128 or newer, but the installed driver supports only $_cttfh_tag." >&2
+                    echo "[ERROR] Update the NVIDIA driver and re-run the installer." >&2
+                fi
+                return 1
+                ;;
+        esac
+    fi
+    printf '%s\n' "$_cttfh_tag"
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -2841,18 +3014,18 @@ get_torch_index_url() {
             -e 's/.*CUDA UMD Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
             -e 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
         | head -1)
+    # Unresolved visibility can still return conservative physical caps.
+    if ! _compute_caps=$(_visible_nvidia_compute_caps "$_smi"); then :; fi
     if [ -z "$_cuda_ver" ]; then
-        echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
-        echo "$_base/cu126"; return
+        echo "[WARN] Could not determine CUDA version from nvidia-smi, using the cu126 driver fallback" >&2
+        _major=""
+        _minor=""
+    else
+        _major=${_cuda_ver%%.*}
+        _minor=${_cuda_ver#*.}
     fi
-    _major=${_cuda_ver%%.*}
-    _minor=${_cuda_ver#*.}
-    if [ "$_major" -ge 13 ]; then echo "$_base/cu130"
-    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 8 ]; then echo "$_base/cu128"
-    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then echo "$_base/cu126"
-    elif [ "$_major" -ge 12 ]; then echo "$_base/cu124"
-    elif [ "$_major" -ge 11 ]; then echo "$_base/cu118"
-    else echo "$_base/cpu"; fi
+    _cuda_tag=$(_cuda_torch_tag_for_host "$_major" "$_minor" "$_compute_caps") || return 1
+    echo "$_base/$_cuda_tag"
 }
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
