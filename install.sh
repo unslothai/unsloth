@@ -2678,12 +2678,12 @@ _probe_amd_gfx_arch() {
 # provide a conservative architecture set.
 _visible_nvidia_compute_caps() {
     _vncc_smi="$1"
-    [ -n "$_vncc_smi" ] || return 2
+    [ -n "$_vncc_smi" ] || return 0
     if ! _vncc_rows=$(_run_bounded "$_vncc_smi" \
         --query-gpu=index,uuid,compute_cap --format=csv,noheader,nounits 2>/dev/null); then
-        return 2
+        return 0
     fi
-    [ -n "$_vncc_rows" ] || return 2
+    [ -n "$_vncc_rows" ] || return 0
 
     _vncc_mask_set=0
     _vncc_mask=""
@@ -2713,10 +2713,10 @@ _visible_nvidia_compute_caps() {
             cap[row_count] = trim($3)
         }
         END {
-            if (inventory_invalid) exit 2
+            if (inventory_invalid) exit
             if (!mask_set) {
                 for (row = 1; row <= row_count; row++) {
-                    if (cap[row] !~ /^[0-9]+\.[0-9]+$/) exit 2
+                    if (cap[row] !~ /^[0-9]+\.[0-9]+$/) exit
                 }
                 for (row = 1; row <= row_count; row++) {
                     print cap[row]
@@ -2758,15 +2758,15 @@ _visible_nvidia_compute_caps() {
             }
             if (unresolved_mask) {
                 for (row = 1; row <= row_count; row++) {
-                    if (cap[row] !~ /^[0-9]+\.[0-9]+$/) exit 2
+                    if (cap[row] !~ /^[0-9]+\.[0-9]+$/) exit
                 }
                 for (row = 1; row <= row_count; row++) {
                     print cap[row]
                 }
-                exit 2
+                exit
             }
             for (i = 1; i <= selected_count; i++) {
-                if (selected_cap[i] !~ /^[0-9]+\.[0-9]+$/) exit 2
+                if (selected_cap[i] !~ /^[0-9]+\.[0-9]+$/) exit
             }
             for (i = 1; i <= selected_count; i++) {
                 print selected_cap[i]
@@ -3014,8 +3014,7 @@ get_torch_index_url() {
             -e 's/.*CUDA UMD Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
             -e 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
         | head -1)
-    # Unresolved visibility can still return conservative physical caps.
-    if ! _compute_caps=$(_visible_nvidia_compute_caps "$_smi"); then :; fi
+    _compute_caps=$(_visible_nvidia_compute_caps "$_smi")
     if [ -z "$_cuda_ver" ]; then
         echo "[WARN] Could not determine CUDA version from nvidia-smi, using the cu126 driver fallback" >&2
         _major=""

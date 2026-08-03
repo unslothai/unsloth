@@ -222,10 +222,10 @@ run_func() {
     fi
     if [ "$_mock_dir" = "none" ]; then
         # Minimal PATH with only basic tools, no nvidia-smi anywhere
-        PATH="$_TOOLS_DIR" bash -c "$_cvd_setup; $_order_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
+        PATH="$_TOOLS_DIR" sh -c "$_cvd_setup; $_order_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
     else
         # Put mock nvidia-smi dir first, then basic tools
-        PATH="$_mock_dir:$_TOOLS_DIR" bash -c "$_cvd_setup; $_order_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
+        PATH="$_mock_dir:$_TOOLS_DIR" sh -c "$_cvd_setup; $_order_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
     fi
 }
 
