@@ -2002,6 +2002,16 @@ def test_picker_rows_keep_their_automation_attributes():
     assert '"data-model-picker-option": true,' in pickers
     assert "data-model-picker-search-input" in pickers
     assert "data-model-picker-list" in pickers
+    # And that ModelRow still spreads them onto the button. Without this the two
+    # above only prove the props are declared and returned: ModelRow reads
+    # optionProps?.onKeyDown separately, so the prop stays used and type checks
+    # while data-model-picker-option leaves the DOM and every row lookup in the
+    # driver fails.
+    row_button = re.search(r"const content = \(\s*<button\b(.*?)>", pickers, re.S)
+    assert row_button, "ModelRow no longer renders its content as a <button>"
+    assert "{...optionProps}" in row_button.group(1), (
+        "ModelRow stopped spreading optionProps onto the row button"
+    )
 
 
 def test_picker_popover_and_trigger_keep_their_tour_hooks():
@@ -2019,7 +2029,13 @@ def test_run_settings_gear_label_names_its_model():
     render sites and an uncle at the rest -- so it matches on this label, and the model
     name in it is what keeps it off another row's gear."""
     pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
-    assert "Inference settings for ${" in pickers
+    # The expander's own label, not any of them: pickers.tsx interpolates this
+    # string at five sites, so a file-wide match stays green while the one the
+    # driver depends on drops its repo or its quant. That is the only label with
+    # both, and naming the quant is how the driver tells one variant from another.
+    assert "ariaLabel={`Inference settings for ${repoId} ${v.quant}`}" in pickers, (
+        "the variant gear label no longer names both the repo and the quant"
+    )
     action = _read("features/model-picker/components/model-selector/model-load-settings-action.tsx")
     assert "aria-label={ariaLabel}" in action
 
@@ -2028,8 +2044,19 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
     """The driver reads the absence of a gear as "this row expands rather than loads".
     Give the parent row a gear and that inference silently inverts."""
     pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
-    assert 'aria-hidden="true"' in pickers
-    assert "w-[42px]" in pickers
+    # Inside the parent row, not anywhere in the file. Adding a gear to the parent
+    # while leaving the spacer in place satisfies a file-wide search, and that is
+    # exactly the change that would invert the driver's inference.
+    start = pickers.index("const renderDownloadedGgufRow")
+    parent = pickers[start:pickers.index("const renderDownloadedModelRow", start)]
+    parent_row = parent[: parent.index("{expanderOpen && (")]
+    assert 'aria-hidden="true"' in parent_row and "w-[42px]" in parent_row, (
+        "the multi-quant parent row lost the spacer that stands in for a gear"
+    )
+    assert "ModelLoadSettingsAction" not in parent_row, (
+        "the multi-quant parent row grew a gear, so the driver's 'no gear means "
+        "this row expands rather than loads' inference is now wrong"
+    )
 
 
 def test_run_settings_page_keeps_its_identifying_controls():
@@ -2052,3 +2079,15 @@ def test_the_primary_action_keeps_its_four_labels():
     page = _read("features/model-picker/components/model-config-page.tsx")
     for label in ('"Save settings"', '"Forget settings"', '"Reload model"', '"Load model"'):
         assert label in page, label
+    # And that the label is rendered by a button the driver can press. The four
+    # literals above live in the primaryActionLabel calculation, so they survive
+    # the button being deleted or turned into a non-button, and get_by_role finds
+    # nothing while this stays green.
+    # Whole elements, then the one that is both: other props on the opening tag
+    # contain braces of their own, so a pattern that tries to reach onClick
+    # through a negated class stops at the first `disabled={...}`.
+    primary = any(
+        "onClick={handleRun}" in el.group(0) and "{primaryActionLabel}" in el.group(0)
+        for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
+    )
+    assert primary, "primaryActionLabel is no longer rendered inside the handleRun Button"

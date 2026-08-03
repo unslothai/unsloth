@@ -531,7 +531,16 @@ with sync_playwright() as p:
         if row is None:
             diagnose("open-config-no-row", f"[data-model-picker-option] has_text={hint!r}")
             return None
-        gear = find_gear(popover, hint)
+        # The quant first, here too, not only in the expansion branch below. With
+        # "Expand quantizations" on, the expander is already mounted, so a repo-only
+        # lookup finds a gear straight away and never reaches that branch -- and
+        # GgufVariantExpander orders variants by fit and recommendation, not by
+        # GGUF_VARIANT, so `.first` among them opens an arbitrary quant. Repo-only
+        # stays as the fallback for the single-quant row, whose label still carries
+        # its own quant but need not be the one this job names.
+        gear = find_gear(popover, hint, quant = GGUF_VARIANT, timeout = 2000) or find_gear(
+            popover, hint
+        )
         if gear is None:
             # No gear beside the row means a multi-quant parent, which renders an
             # aria-hidden 42px spacer in its place and mounts one gear per variant
