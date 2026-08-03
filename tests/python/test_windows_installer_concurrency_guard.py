@@ -836,13 +836,27 @@ def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
     )
     assert save < set_handoff < autostart < restore
 
+    setup_python = install_source.index("$env:UNSLOTH_SETUP_PYTHON =")
+    setup_save = install_source.index("$previousSetupRuntimeGateHandoff =", setup_python)
+    setup_set = install_source.index(
+        '$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"',
+        setup_save,
+    )
+    setup_invoke = install_source.index("& $UnslothExe @studioArgs", setup_set)
+    setup_restore = install_source.index(
+        "$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff",
+        setup_invoke,
+    )
+    assert setup_python < setup_save < setup_set < setup_invoke < setup_restore
+
+
     assert (
         studio_source.count(
             "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()"
         )
-        == 3
+        == 4
     )
-    assert studio_source.count("inherited = runtime_gate_handoff") >= 4
+    assert studio_source.count("inherited = runtime_gate_handoff") >= 5
 
 
 def test_tauri_start_install_rejects_backend_conflicts_before_spawn():

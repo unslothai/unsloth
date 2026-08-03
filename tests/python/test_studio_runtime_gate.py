@@ -79,6 +79,52 @@ def test_terminal_update_holds_the_gate_through_environment_mutation():
     setup = body.index("_run_setup_script(", release_self)
     verify = body.index("_fail_if_install_damaged()", setup)
     assert consume < guard < idle_scan < release_self < setup < verify
+def test_terminal_setup_holds_the_gate_through_environment_mutation():
+    source = STUDIO_COMMAND.read_text(encoding = "utf-8")
+    body = source[source.index("def setup(") : source.index("def _fail_if_install_damaged")]
+    consume = body.index("_studio_runtime_gate.consume_runtime_gate_handoff()")
+    guard = body.index("with _studio_runtime_launch_guard(", consume)
+    idle_scan = body.index("_studio_runtime_gate.ensure_managed_environment_is_idle", guard)
+    setup = body.index("_run_setup_script(", idle_scan)
+    assert consume < guard < idle_scan < setup
+
+
+def test_interrupted_windows_setup_kills_tree_before_return(monkeypatch):
+    from unsloth_cli.commands import studio as studio_command
+
+    events = []
+
+    class InterruptedProcess:
+        pid = 4242
+        returncode = None
+
+        def wait(self):
+            events.append("wait")
+            if self.returncode is None and events.count("wait") == 1:
+                raise KeyboardInterrupt
+            self.returncode = -1
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+    def fake_taskkill(argv, **kwargs):
+        events.append(("taskkill", argv, kwargs))
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(studio_command.subprocess, "run", fake_taskkill)
+    monkeypatch.setattr(studio_command, "_windows_hidden_subprocess_kwargs", lambda: {})
+
+    with pytest.raises(KeyboardInterrupt):
+        studio_command._wait_for_windows_setup_process(InterruptedProcess())
+
+    assert events[0] == "wait"
+    assert events[1][0] == "taskkill"
+    assert events[1][1] == ["taskkill", "/PID", "4242", "/T", "/F"]
+    assert events[1][2]["check"] is False
+    assert events[2] == "wait"
+
+
 
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows ordinal comparison is required")

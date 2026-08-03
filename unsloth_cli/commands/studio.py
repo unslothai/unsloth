@@ -2730,6 +2730,35 @@ def stop():
 # ── unsloth studio setup / update ─────────────────────────────────────
 
 
+def _wait_for_windows_setup_process(process) -> int:
+    """Reap setup and its descendants before a runtime-gate owner can unwind."""
+
+    try:
+        return process.wait()
+    except BaseException:
+        if process.poll() is not None:
+            raise
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin = subprocess.DEVNULL,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                check = False,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except BaseException:
+            # If taskkill itself is interrupted or unavailable, keep the gate
+            # until setup exits naturally rather than exposing a live mutator.
+            pass
+        while process.poll() is None:
+            try:
+                process.wait()
+            except KeyboardInterrupt:
+                continue
+        raise
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     """Find and run the studio setup/update script."""
     script = _find_setup_script(repo_root)
@@ -2765,13 +2794,13 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
             ]
         )
         # Explicitly hand std handles to the child so CI tee sees setup.ps1's
-        # output. On Windows, subprocess.run defaults to close_fds=True
+        # output. On Windows, subprocess.Popen defaults to close_fds=True
         # (bInheritHandles=False); combined with CREATE_NO_WINDOW the child
         # has no console and no inherited handles, so Write-Host writes to
         # nothing. Passing stdout/stderr makes Python mark the std handles
         # inheritable via PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Empty update.log
         # on windows-latest CI was the smoking gun (runs 25533694490/25534292239).
-        result = subprocess.run(
+        process = subprocess.Popen(
             powershell_args,
             env = env,
             stdin = _stream_for_subprocess(sys.stdin),
@@ -2779,11 +2808,13 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
             stderr = _stream_for_subprocess(sys.stderr),
             **_windows_hidden_subprocess_kwargs(),
         )
+        returncode = _wait_for_windows_setup_process(process)
     else:
         result = subprocess.run(["bash", str(script)], env = env)
+        returncode = result.returncode
 
-    if result.returncode != 0:
-        raise typer.Exit(result.returncode)
+    if returncode != 0:
+        raise typer.Exit(returncode)
 
 
 _INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
@@ -2946,7 +2977,10 @@ def setup(
     ),
 ):
     """Run Unsloth setup (called by install.ps1 / install.sh)."""
-    _run_setup_script(verbose = verbose)
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
+        _run_setup_script(verbose = verbose)
 
 
 def _fail_if_install_damaged() -> None:

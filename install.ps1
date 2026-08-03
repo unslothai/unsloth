@@ -3419,6 +3419,11 @@ exit 0
     # can trip over an unsupported `python` 3.14 or a Store stub on PATH even
     # though the venv is fine). setup.ps1 Test-Path-guards this before use.
     $env:UNSLOTH_SETUP_PYTHON = Join-Path $VenvDir "Scripts\python.exe"
+    # The installer already owns the runtime mutex; let the setup child inherit
+    # that admission instead of deadlocking while trying to reacquire it.
+    $previousSetupRuntimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
+    $hadPreviousSetupRuntimeGateHandoff = ($null -ne $previousSetupRuntimeGateHandoff)
+    $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
@@ -3431,6 +3436,11 @@ exit 0
         if ($hadPreviousTauriMode) {
             $env:UNSLOTH_TAURI_MODE = $previousTauriMode
         } else {
+        if ($hadPreviousSetupRuntimeGateHandoff) {
+            $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff
+        } else {
+            Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue
+        }
             Remove-Item Env:UNSLOTH_TAURI_MODE -ErrorAction SilentlyContinue
         }
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
