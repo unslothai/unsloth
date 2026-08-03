@@ -10417,6 +10417,12 @@ class LlamaCppBackend:
                         )
                         for _fb_spec_var in _SPEC_ENV_VARS:
                             env.pop(_fb_spec_var, None)
+                        # The extras owned --spec-type, so the clamp that took the slots
+                        # was the extras one and _mtp_clamped_slots stayed 0. The strip
+                        # above makes this retry genuinely non-MTP, so hand those back
+                        # too, or --parallel 1 sticks and the requested-vs-requested
+                        # dedupe keeps every later load on the same one-slot server.
+                        _mtp_clamped_slots = max(_mtp_clamped_slots, _pv_extras_clamped_slots)
                     fallback_cmd = cmd[:_spec_start] + ["--spec-default"] + _fb_tail
                     # fallback_cmd inherits the MTP slot clamp, but this retry is not
                     # MTP: hand back the slots the KV fit was sized for, or --parallel N

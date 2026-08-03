@@ -1235,6 +1235,10 @@ def _is_slot_restore(test) -> bool:
     return "_mtp_clamped_slots" in _names(test)
 
 
+def _is_retry_spec_strip(test) -> bool:
+    return "_launch_spec_env" in _names(test)
+
+
 def _run_clamp_then_fallback(
     *,
     n_parallel,
@@ -1311,6 +1315,36 @@ def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
         strip_template = False,
         strip_split_mode = False,
     ) == ["--top-k", "40"]
+
+
+def test_the_extras_own_clamp_comes_back_from_the_startup_retry_too():
+    """Extras owning --spec-type park the displaced slots in _pv_extras_clamped_slots and
+    leave _mtp_clamped_slots at 0. The retry strips that MTP for real now, so a restore
+    reading only _mtp_clamped_slots would leave --parallel 1 forever: _requested_n_parallel
+    still holds the original ask, so every later identical load dedupes onto it."""
+    scope = {
+        "cmd": ["llama-server", "--parallel", "1", "--spec-type", "draft-mtp"],
+        "_spec_start": 3,
+        "spec_flags": [],
+        "_fb_tail": ["--spec-type", "draft-mtp"],
+        "extra_args": ["--spec-type", "draft-mtp"],
+        "_launch_spec_env": {},
+        "env": {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"},
+        "n_parallel": 1,
+        # What the extras clamp displaced, and what the Unsloth-resolved clamp holds.
+        "_pv_extras_clamped_slots": 4,
+        "_mtp_clamped_slots": 0,
+        "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
+        "strip_shadowing_flags": llama_cpp.strip_shadowing_flags,
+        "_SPEC_ENV_VARS": llama_cpp._SPEC_ENV_VARS,
+        "logger": llama_cpp.logger,
+    }
+    exec(ast.unparse(_if_block(_is_retry_spec_strip)), scope)
+    assert scope["env"] == {}, "the child kept the spec env the retry dropped"
+    scope["fallback_cmd"] = ["llama-server", "--parallel", "1", "--spec-default"]
+    exec(ast.unparse(_if_block(_is_slot_restore)), scope)
+    assert scope["fallback_cmd"][scope["fallback_cmd"].index("--parallel") + 1] == "4"
+    assert scope["n_parallel"] == 4
 
 
 def test_the_fallback_gets_back_what_the_fit_sized_not_what_the_user_asked():
