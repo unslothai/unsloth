@@ -366,7 +366,7 @@ export function ValidatorDialog({
             <FieldLabel
               label="Tool command"
               htmlFor={toolCommandId}
-              hint="Use {file} for the generated source file and {dir} for its temp folder. Runs locally in a temp directory; quote the placeholders if your temp path contains spaces."
+              hint="Use {file} for the generated source file and {dir} for its temp folder. Commands run from that temp folder, so relative paths like ./... already cover the generated file. Quote the placeholders if your temp path contains spaces."
             />
             <Textarea
               id={toolCommandId}
