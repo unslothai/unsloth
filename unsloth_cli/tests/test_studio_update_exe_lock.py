@@ -441,9 +441,9 @@ def test_a_later_call_reflects_the_install_it_is_actually_for(monkeypatch, tmp_p
     )
     studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
 
-    assert "UNSLOTH_NO_TORCH" in capsys.readouterr().err, (
-        "the second call answered for the first install"
-    )
+    assert (
+        "UNSLOTH_NO_TORCH" in capsys.readouterr().err
+    ), "the second call answered for the first install"
 
 
 def test_no_torch_is_not_invented_when_nothing_recorded_it(monkeypatch, tmp_path, capsys):
