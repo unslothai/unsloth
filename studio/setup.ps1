@@ -1780,7 +1780,19 @@ if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
         # Bounded, registry as the fallback when WMI does not answer: an unbounded query hangs
         # `studio update`, a swallowed one silently reports no GPU.
         $_gpuScan = Invoke-BoundedVideoControllerScan
-        $_gpuNames = if ($_gpuScan.Ok) { $_gpuScan.Names } else { @(Get-IntelRegistryAdapterNames) }
+        $_gpuNames = if ($_gpuScan.Ok) { @($_gpuScan.Names) } else { @(Get-IntelRegistryAdapterNames) }
+        # WMI reports the localized adapter name, which on non-English Windows carries no ASCII
+        # "Intel" for the filter below to find. The registry helper resolves the PCI vendor id,
+        # so use it to RE-LABEL an adapter WMI already reported, never to add one: an entry
+        # matching nothing WMI listed is a driver record outliving its card, and a host WMI
+        # answered for must not be promoted by it.
+        if ($_gpuScan.Ok -and -not ($_gpuNames | Where-Object { $_ -match "(?i)intel" })) {
+            foreach ($_reg in @(Get-IntelRegistryAdapterNames)) {
+                foreach ($_wmiName in $_gpuNames) {
+                    if ($_wmiName -and $_reg.Contains($_wmiName)) { $_gpuNames += $_reg; break }
+                }
+            }
+        }
         $xpuGpu = $_gpuNames | Where-Object { $_ -match "(?i)Intel.*(Arc|Data Center GPU)" } | Select-Object -First 1
         if ($xpuGpu) { $script:IsIntelXpu = $true; $IntelGpuLabel = $xpuGpu }
     } catch {}
@@ -3382,6 +3394,34 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             if (-not $_torchIsXpu) {
                 substep "Intel GPU detected but PyTorch XPU is unavailable -- reinstalling XPU PyTorch" "Cyan"
                 $SkipPythonDeps = $false
+            } else {
+                # XPU torch is already in place, but the bitsandbytes floor and the Triton
+                # replacement live in the dependency pass below. A venv that reached +xpu
+                # without them -- an explicit xpu pin, or an update whose first pass ran the
+                # pre-XPU setup.ps1 -- would take this fast path on every later update and
+                # never get them. Same two conditions those passes install for.
+                $_xpuDepsCode = "import importlib.metadata as m; " +
+                    "print('BNB=' + next((d.version for d in m.distributions() " +
+                    "if (d.metadata['Name'] or '').lower() == 'bitsandbytes'), '')); " +
+                    "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
+                    "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
+                $_xpuDeps = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_xpuDepsCode
+                if ($_xpuDeps.Ok) {
+                    $_bnbVer = if ($_xpuDeps.Output -match '(?m)^BNB=(\S+)\s*$') { $Matches[1] } else { "" }
+                    # An unreadable or unparseable version is treated as stale, the safe
+                    # direction: one extra dependency pass, never a venv left on kernels that
+                    # cannot do 4-bit. Trailing suffixes (0.51.0.dev0) are dropped, not cast.
+                    $_bnbNum = ($_bnbVer -replace '[^0-9.].*$', '').TrimEnd('.')
+                    $_bnbStale = $true
+                    if ($_bnbNum -match '^\d+\.\d+') {
+                        try { $_bnbStale = [version]$_bnbNum -lt [version]"0.50.0" } catch {}
+                    }
+                    $_tritonWinPresent = $_xpuDeps.Output -match '(?m)^TRITONWIN=\S+\s*$'
+                    if ($_bnbStale -or $_tritonWinPresent) {
+                        substep "Intel XPU dependencies are stale -- running the dependency pass" "Cyan"
+                        $SkipPythonDeps = $false
+                    }
+                }
             }
         }
     } elseif ($InstalledVer -and $LatestVer) {
@@ -3643,13 +3683,15 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "xpu") { $XpuIndexUrl = $TorchInstallInde
 if ($XpuIndexUrl) {
     substep "installing PyTorch (Intel XPU)..."
     # Bounded like install.ps1's XPU install: the xpu index serves torch past what Unsloth
-    # supports, so a bare trio could resolve out of range.
-    $_xpuTrio = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0")
-    if ($WinArm64NoAudio) { $_xpuTrio = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0") }
+    # supports, so a bare trio could resolve out of range. The floor is 2.6, not the usual 2.4:
+    # unsloth/models/_utils.py raises at import for an XPU device below that, so an older wheel
+    # would be kept as "satisfies the range" and then fail on the first import.
+    $_xpuTrio = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0", "torchaudio>=2.6,<2.11.0")
+    if ($WinArm64NoAudio) { $_xpuTrio = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0") }
     # Gated like $cpuForce below, NOT unconditional: install.ps1 already installed the XPU trio
     # before calling setup with SKIP_STUDIO_BASE=1, so forcing every pass re-downloads GB there
     # and again on every `studio update`. Force only on a flavor change -- a CPU (or cu*/rocm)
-    # wheel already satisfies torch>=2.4,<2.11.0, so uv would keep it and never migrate to XPU.
+    # wheel already satisfies the range, so uv would keep it and never migrate to XPU.
     # An unreadable flavor ($installedTorchTag $null) forces too, the safe direction.
     $xpuForce = @()
     if ($installedTorchTag -ne "xpu") { $xpuForce = @("--force-reinstall") }
@@ -3845,6 +3887,23 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
     # torch is not the +xpu wheel this branch assumes, and doing nothing is the safe answer.
     if ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
         substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"
+        # Asked for rather than assembled, so it cannot drift from install_manifest's own idea
+        # of where the manifest lives. Empty on an older tree, which skips the hold below.
+        $_manifestPath = ""
+        try {
+            $_mp = & python -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    raise SystemExit(0)
+print(install_manifest.manifest_path())
+" "$PSScriptRoot" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $_manifestPath = ("$_mp" -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1).Trim()
+            }
+        } catch {}
         # Fetch, THEN uninstall, THEN install the file. The uninstall cannot go last -- it drops
         # the paths in triton-windows' OWN record, which are the shared ones -- so pre-fetching is
         # what keeps a dead mirror from stranding the venv between the two steps. A local wheel
@@ -3866,6 +3925,19 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                 substep "[WARN] could not fetch $_tritonXpuSpec (exit $tritonDlExit); triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
                 Write-Host (Redact-InstallOutput $tritonDlOutput) -ForegroundColor Yellow
             } else {
+                # install_python_stack.py writes its completion manifest immediately before
+                # returning, so from here to the reinstall below is a window where a kill
+                # leaves a venv with no triton that the next update still reads as complete
+                # and fast-paths straight past. Hold the manifest aside for the swap and put
+                # the same bytes back after: gone means "not finished", which is the truth
+                # while the venv has no triton.
+                $_manifestSaved = $null
+                if ($_manifestPath -and (Test-Path -LiteralPath $_manifestPath -PathType Leaf)) {
+                    try {
+                        $_manifestSaved = Get-Content -Raw -LiteralPath $_manifestPath -ErrorAction Stop
+                        Remove-Item -LiteralPath $_manifestPath -Force -ErrorAction Stop
+                    } catch { $_manifestSaved = $null }
+                }
                 Fast-Uninstall "triton-windows" | Out-Null
                 if ($script:UnslothVerbose) {
                     Fast-Install --force-reinstall --no-deps $_tritonWheel | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
@@ -3875,12 +3947,14 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                     $tritonOutput = Fast-Install --force-reinstall --no-deps $_tritonWheel | Out-String
                     $tritonXpuExit = $LASTEXITCODE
                 }
+                $_tritonPresent = ($tritonXpuExit -eq 0)
                 if ($tritonXpuExit -ne 0) {
                     # Off the network by now, so this is disk/permissions. triton-windows is
                     # already gone and took the shared paths with it, so put SOME working triton
                     # back rather than leave the venv unable to import one at all.
                     Fast-Install --force-reinstall --no-deps "triton-windows<3.7" | Out-Null
                     $tritonBackExit = $LASTEXITCODE
+                    $_tritonPresent = ($tritonBackExit -eq 0)
                     Write-Host (Redact-InstallOutput $tritonOutput) -ForegroundColor Yellow
                     if ($tritonBackExit -eq 0) {
                         substep "[WARN] could not install $_tritonXpuSpec (exit $tritonXpuExit); restored triton-windows, so triton still imports -- but torch.compile will not use the XPU." "Yellow"
@@ -3891,6 +3965,12 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                         Write-Host "[ERROR] triton-windows was removed and neither triton would reinstall -- torch.compile is broken." -ForegroundColor Red
                         Write-Host "        Repair with: python -m pip install --force-reinstall --no-deps $_tritonXpuSpec --index-url $_tritonRepairUrl" -ForegroundColor Red
                     }
+                }
+                # Only once a triton is importable again. If neither would reinstall the venv
+                # really is incomplete, and leaving the manifest gone is what makes the next
+                # update repair it instead of fast-pathing past a broken torch.compile.
+                if ($_manifestSaved -and $_tritonPresent) {
+                    try { Set-Content -LiteralPath $_manifestPath -Value $_manifestSaved -NoNewline -ErrorAction Stop } catch {}
                 }
             }
         } finally {

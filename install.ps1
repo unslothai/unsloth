@@ -2303,7 +2303,19 @@ exit 0
         try {
             # Bounded, registry as the fallback when WMI does not answer; same match either way.
             $_gpuScan = Invoke-BoundedVideoControllerScan
-            $_gpuNames = if ($_gpuScan.Ok) { $_gpuScan.Names } else { @(Get-IntelRegistryAdapterNames) }
+            $_gpuNames = if ($_gpuScan.Ok) { @($_gpuScan.Names) } else { @(Get-IntelRegistryAdapterNames) }
+            # WMI reports the localized adapter name, which on non-English Windows carries no
+            # ASCII "Intel" for the filter below to find. The registry helper resolves the PCI
+            # vendor id, so use it to RE-LABEL an adapter WMI already reported, never to add
+            # one: an entry matching nothing WMI listed is a driver record outliving its card,
+            # and a host WMI answered for must not be promoted by it.
+            if ($_gpuScan.Ok -and -not ($_gpuNames | Where-Object { $_ -match "(?i)intel" })) {
+                foreach ($_reg in @(Get-IntelRegistryAdapterNames)) {
+                    foreach ($_wmiName in $_gpuNames) {
+                        if ($_wmiName -and $_reg.Contains($_wmiName)) { $_gpuNames += $_reg; break }
+                    }
+                }
+            }
             $intelGpus = @($_gpuNames | Where-Object { $_ -match "(?i)Intel" })
             if ($intelGpus.Count -gt 0) {
                 $HasIntelGpu = $true
@@ -2749,8 +2761,10 @@ exit 0
             Write-TauriLog "STEP" "Installing PyTorch (Intel XPU)"
             substep "installing PyTorch from $(Remove-IndexUrlCredentials $TorchIndexUrl)..."
             # Bound the trio like every other index: the xpu index serves torch past our
-            # ceiling (up to 2.13.0), and torchaudio dropped its exact torch pin.
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $TorchIndexUrl }
+            # ceiling (up to 2.13.0), and torchaudio dropped its exact torch pin. The floor is
+            # 2.6 rather than the usual 2.4: unsloth/models/_utils.py raises at import for an
+            # XPU device below that, so an older wheel is an install that cannot run.
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.6,<2.11.0" "torchvision>=0.21,<0.26.0" "torchaudio>=2.6,<2.11.0" --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 # Transient XPU-index failure: fall back to CPU base.
                 $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
@@ -2929,7 +2943,10 @@ exit 0
                 } elseif ($expectedTorchTag -ne 'rocm') {
                     # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    # Same 2.6 floor as the XPU install above, for the same reason.
+                    $_fixSpecs = if ($expectedTorchTag -eq 'xpu') { @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0", "torchaudio>=2.6,<2.11.0") }
+                                 else { @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0") }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { uv pip install --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
