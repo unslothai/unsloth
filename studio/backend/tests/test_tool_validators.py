@@ -37,12 +37,15 @@ def _load_module():
 tool = _load_module()
 
 
-def _tool_marker(file_ext: str, command: str) -> str:
-    payload = (
-        base64.urlsafe_b64encode(json.dumps({"ext": file_ext, "command": command}).encode("utf-8"))
-        .decode("ascii")
-        .rstrip("=")
-    )
+def _tool_marker(
+    file_ext: str,
+    command: str,
+    scaffold: list[dict] | None = None,
+) -> str:
+    spec: dict = {"ext": file_ext, "command": command}
+    if scaffold is not None:
+        spec["scaffold"] = scaffold
+    payload = base64.urlsafe_b64encode(json.dumps(spec).encode("utf-8")).decode("ascii").rstrip("=")
     return f"{tool.TOOL_VALIDATION_FN_MARKER}:{payload}"
 
 
@@ -51,6 +54,7 @@ def _tool_column(
     name: str = "tool_check",
     file_ext: str,
     command: str,
+    scaffold: list[dict] | None = None,
     batch_size: int = 7,
 ) -> dict:
     return {
@@ -59,7 +63,7 @@ def _tool_column(
         "drop": False,
         "target_columns": ["code"],
         "validator_type": "local_callable",
-        "validator_params": {"validation_function": _tool_marker(file_ext, command)},
+        "validator_params": {"validation_function": _tool_marker(file_ext, command, scaffold)},
         "batch_size": batch_size,
     }
 
@@ -74,6 +78,32 @@ def test_tool_marker_round_trip():
     assert spec.command == "go vet ./..."
     assert spec.batch_size == 7
     assert spec.drop is False
+    assert spec.scaffold == ()
+
+
+def test_tool_spec_parses_scaffold_rows():
+    scaffold = [
+        {"path": "go.mod", "content": "module example.com/check\n\ngo 1.21\n"},
+        {"path": "main.go", "content": "{source}"},
+    ]
+    spec = tool._parse_tool_spec(
+        column = _tool_column(
+            file_ext = "go",
+            command = "go vet {file}",
+            scaffold = scaffold,
+        )
+    )
+    assert spec is not None
+    assert spec.scaffold == (
+        ("go.mod", "module example.com/check\n\ngo 1.21\n"),
+        ("main.go", "{source}"),
+    )
+
+
+def test_tool_spec_scaffold_is_optional():
+    spec = tool._parse_tool_spec(column = _tool_column(file_ext = "go", command = "go vet ./..."))
+    assert spec is not None
+    assert spec.scaffold == ()
 
 
 @pytest.mark.parametrize(
@@ -88,6 +118,66 @@ def test_tool_spec_rejects_bad_extensions(bad_ext):
 def test_tool_spec_rejects_empty_command():
     spec = tool._parse_tool_spec(column = _tool_column(file_ext = "go", command = "  "))
     assert spec is None
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "../escape.txt",
+        "a/../../b.txt",
+        "/absolute.txt",
+        "C:/drive.txt",
+        "a\\backslash.txt",
+        ".",
+        "..",
+        "a/./b",
+    ],
+)
+def test_tool_spec_rejects_bad_scaffold_paths(bad_path):
+    spec = tool._parse_tool_spec(
+        column = _tool_column(
+            file_ext = "txt",
+            command = "cat {file}",
+            scaffold = [{"path": bad_path, "content": "x"}],
+        )
+    )
+    assert spec is None
+
+
+@pytest.mark.parametrize(
+    "scaffold",
+    [
+        ["not-a-dict"],
+        [{"path": "a.txt", "content": 42}],
+        [{"path": "a.txt"}],
+        [{"path": "a.txt", "content": "x"}, {"path": "b.txt", "content": "x"}] * 6,
+        [{"path": "big.txt", "content": "x" * (32 * 1024)}],
+    ],
+)
+def test_tool_spec_rejects_bad_scaffold_entries(scaffold):
+    spec = tool._parse_tool_spec(
+        column = _tool_column(
+            file_ext = "txt",
+            command = "cat {file}",
+            scaffold = scaffold,
+        )
+    )
+    assert spec is None
+
+
+def test_tool_spec_skips_empty_scaffold_paths():
+    spec = tool._parse_tool_spec(
+        column = _tool_column(
+            file_ext = "txt",
+            command = "cat {file}",
+            scaffold = [
+                {"path": "", "content": "ignored"},
+                {"path": "main.txt", "content": "{source}"},
+            ],
+        )
+    )
+    assert spec is not None
+    assert spec.scaffold == (("main.txt", "{source}"),)
 
 
 def test_tool_spec_rejects_non_tool_markers():
@@ -182,6 +272,76 @@ def test_tool_callable_timeout_is_graceful(monkeypatch):
     assert "timed out" in out["error_message"].iloc[0]
 
 
+def test_tool_callable_file_placeholder_uses_scaffold_source():
+    import pandas as pd
+
+    fn = tool._build_tool_validation_function(
+        "txt",
+        'sh -c \'test "$(cat {file})" = "hello world"\'',
+        (("src/check.txt", "{source}"),),
+    )
+    out = fn(pd.DataFrame({"code": ["hello world", "other"]}))
+    assert list(out["is_valid"]) == [True, False]
+
+
+def test_tool_callable_file_placeholder_path_is_scaffold_path():
+    import pandas as pd
+
+    fn = tool._build_tool_validation_function(
+        "txt",
+        "echo {file}",
+        (("src/check.txt", "{source}"),),
+    )
+    out = fn(pd.DataFrame({"code": ["x"]}))
+    assert out["tool_output"].iloc[0].endswith("src/check.txt")
+
+
+def test_tool_callable_file_placeholder_falls_back_to_main_ext():
+    import pandas as pd
+
+    fn = tool._build_tool_validation_function(
+        "txt",
+        "echo {file}",
+        (("notes.txt", "config"),),
+    )
+    out = fn(pd.DataFrame({"code": ["x"]}))
+    assert out["tool_output"].iloc[0].endswith("main.txt")
+
+
+def test_tool_callable_writes_nested_scaffold_parents():
+    import pandas as pd
+
+    fn = tool._build_tool_validation_function(
+        "rs",
+        "test -f src/main.rs",
+        (("Cargo.toml", '[package]\nname = "check"\n'), ("src/main.rs", "{source}")),
+    )
+    out = fn(pd.DataFrame({"code": ["fn main() {}"]}))
+    assert list(out["is_valid"]) == [True]
+
+
+def test_tool_callable_scaffold_path_escape_is_graceful():
+    import pandas as pd
+
+    out = tool._run_tool_single(
+        file_ext = "txt",
+        command = "true",
+        scaffold = (("../escape.txt", "x"),),
+        code_value = "hello",
+    )
+    assert out["is_valid"] is False
+    assert "escapes" in out["error_message"]
+
+
+def test_tool_callable_legacy_go_marker_fails_gracefully_without_scaffold():
+    import pandas as pd
+
+    fn = tool._build_tool_validation_function("go", "go vet ./...")
+    out = fn(pd.DataFrame({"code": ["package main\n\nfunc main() {}\n"]}))
+    assert list(out["is_valid"]) == [False]
+    assert out["error_message"].iloc[0] != ""
+
+
 @pytest.mark.skipif(shutil.which("go") is None, reason = "go toolchain not installed")
 def test_go_scaffold_and_vet():
     import pandas as pd
@@ -189,9 +349,29 @@ def test_go_scaffold_and_vet():
     go_source = (
         "package main\n\n" 'import "fmt"\n\n' "func main() {\n" '\tfmt.Println("hi")\n' "}\n"
     )
-    fn = tool._build_tool_validation_function("go", "go vet ./...")
+    fn = tool._build_tool_validation_function(
+        "go",
+        "go vet ./...",
+        (("go.mod", "module example.com/check\n\ngo 1.21\n"), ("main.go", "{source}")),
+    )
     out = fn(pd.DataFrame({"code": [go_source]}))
     assert list(out["is_valid"]) == [True]
+
+
+@pytest.mark.skipif(shutil.which("go") is None, reason = "go toolchain not installed")
+def test_go_vet_direct_file_reference():
+    import pandas as pd
+
+    good = "package main\n\nfunc main() {}\n"
+    bad = "package main\n\nfunc main() { undefined }\n"
+    fn = tool._build_tool_validation_function(
+        "go",
+        "go vet {file}",
+        (("go.mod", "module example.com/check\n\ngo 1.21\n"), ("main.go", "{source}")),
+    )
+    out = fn(pd.DataFrame({"code": [good, bad]}))
+    assert list(out["is_valid"]) == [True, False]
+    assert out["error_message"].iloc[1] != ""
 
 
 @pytest.mark.skipif(shutil.which("cargo") is None, reason = "cargo toolchain not installed")
@@ -199,7 +379,14 @@ def test_cargo_scaffold_and_check():
     import pandas as pd
 
     rs_source = 'fn main() {\n    println!("hi");\n}\n'
-    fn = tool._build_tool_validation_function("rs", "cargo check")
+    fn = tool._build_tool_validation_function(
+        "rs",
+        "cargo check",
+        (
+            ("Cargo.toml", '[package]\nname = "check"\nversion = "0.1.0"\nedition = "2021"\n'),
+            ("src/main.rs", "{source}"),
+        ),
+    )
     out = fn(pd.DataFrame({"code": [rs_source]}))
     assert list(out["is_valid"]) == [True]
 
@@ -227,6 +414,7 @@ def test_register_tool_creates_local_callable_column():
                 batch_size = 5,
                 file_ext = "go",
                 command = "go vet ./...",
+                scaffold = (("go.mod", "module example.com/check\n"), ("main.go", "{source}")),
             )
         ],
     )

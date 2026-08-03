@@ -27,6 +27,9 @@ OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator"
 TOOL_VALIDATION_FN_MARKER = "unsloth_tool_validator"
 
 _TOOL_FILE_EXT_RE = re.compile(r"^[A-Za-z0-9.+-]{1,20}$")
+_TOOL_SCAFFOLD_PATH_RE = re.compile(r"^[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$")
+_TOOL_SCAFFOLD_MAX_ROWS = 10
+_TOOL_SCAFFOLD_MAX_TOTAL_CHARS = 32 * 1024
 _TOOL_RUN_TIMEOUT_SECONDS = 60
 
 _OXC_LANG_TO_NODE_LANG = {
@@ -67,6 +70,7 @@ class ToolLocalCallableValidatorSpec:
     batch_size: int
     file_ext: str
     command: str
+    scaffold: tuple[tuple[str, str], ...] = ()
 
 
 def split_tool_local_callable_validators(
@@ -115,6 +119,7 @@ def register_tool_local_callable_validators(
         validation_function = _build_tool_validation_function(
             spec.file_ext,
             spec.command,
+            spec.scaffold,
         )
         builder.add_column(
             ValidationColumnConfig(
@@ -316,6 +321,10 @@ def _parse_tool_spec(*, column: dict[str, Any]) -> ToolLocalCallableValidatorSpe
     if not target_columns:
         return None
 
+    scaffold = _parse_tool_scaffold(spec)
+    if scaffold is None:
+        return None
+
     return ToolLocalCallableValidatorSpec(
         name = name,
         drop = bool(column.get("drop") is True),
@@ -323,13 +332,57 @@ def _parse_tool_spec(*, column: dict[str, Any]) -> ToolLocalCallableValidatorSpe
         batch_size = _parse_batch_size(column.get("batch_size")),
         file_ext = file_ext,
         command = command,
+        scaffold = scaffold,
     )
 
 
+def _parse_tool_scaffold(spec: dict[str, Any]) -> tuple[tuple[str, str], ...] | None:
+    """Parse and validate the optional ``scaffold`` rows from a tool spec.
+
+    Returns an empty tuple when no scaffold is present, a tuple of
+    ``(path, content)`` rows when valid, or None when the scaffold is present
+    but malformed (the column is then rejected like any other bad marker).
+    """
+    raw = spec.get("scaffold")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        return None
+
+    rows: list[tuple[str, str]] = []
+    total_chars = 0
+    for entry in raw:
+        if not isinstance(entry, dict):
+            return None
+        path = str(entry.get("path") or "").strip()
+        content = entry.get("content")
+        if not isinstance(content, str):
+            return None
+        if not path:
+            continue
+        if not _TOOL_SCAFFOLD_PATH_RE.fullmatch(path):
+            return None
+        if any(segment in (".", "..") for segment in path.split("/")):
+            return None
+        rows.append((path, content))
+        total_chars += len(path) + len(content)
+
+    if len(rows) > _TOOL_SCAFFOLD_MAX_ROWS:
+        return None
+    if total_chars > _TOOL_SCAFFOLD_MAX_TOTAL_CHARS:
+        return None
+    return tuple(rows)
+
+
 @lru_cache(maxsize = 8)
-def _build_tool_validation_function(file_ext: str, command: str):
+def _build_tool_validation_function(
+    file_ext: str,
+    command: str,
+    scaffold: tuple[tuple[str, str], ...] = (),
+):
     normalized_ext = file_ext
     normalized_command = command
+    normalized_scaffold = scaffold
 
     def _validator(df):
         import pandas as pd  # lazy import for local callable runtime
@@ -348,6 +401,7 @@ def _build_tool_validation_function(file_ext: str, command: str):
         results = _run_tool_batch(
             file_ext = normalized_ext,
             command = normalized_command,
+            scaffold = normalized_scaffold,
             code_values = code_values,
         )
         if len(results) != row_count:
@@ -361,40 +415,49 @@ def _build_tool_validation_function(file_ext: str, command: str):
     return _validator
 
 
-def _run_tool_batch(*, file_ext: str, command: str, code_values: list[str]) -> list[dict[str, Any]]:
+def _run_tool_batch(
+    *, file_ext: str, command: str, scaffold: tuple[tuple[str, str], ...], code_values: list[str]
+) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for code_value in code_values:
         results.append(
             _run_tool_single(
                 file_ext = file_ext,
                 command = command,
+                scaffold = scaffold,
                 code_value = code_value,
             )
         )
     return results
 
 
-def _run_tool_single(*, file_ext: str, command: str, code_value: str) -> dict[str, Any]:
+def _run_tool_single(
+    *, file_ext: str, command: str, scaffold: tuple[tuple[str, str], ...], code_value: str
+) -> dict[str, Any]:
     tmp_root = ensure_dir(oxc_validator_tmp_root())
     try:
         with tempfile.TemporaryDirectory(dir = str(tmp_root), prefix = "tool-") as raw_dir:
             run_dir = Path(raw_dir)
-            if file_ext == "go":
-                (run_dir / "go.mod").write_text(
-                    "module example.com/check\n\ngo 1.21\n",
-                    encoding = "utf-8",
-                )
-                source_path = run_dir / "main.go"
-            elif file_ext == "rs":
-                (run_dir / "Cargo.toml").write_text(
-                    '[package]\nname = "check"\nversion = "0.1.0"\nedition = "2021"\n',
-                    encoding = "utf-8",
-                )
-                source_path = run_dir / "src" / "main.rs"
-                source_path.parent.mkdir()
-            else:
+            source_path: Path | None = None
+            for path, content in scaffold:
+                target = run_dir / path
+                resolved = target.resolve()
+                if not resolved.is_relative_to(run_dir.resolve()):
+                    return _tool_result(
+                        is_valid = False,
+                        error_count = 1,
+                        error_message = "Tool check scaffold path escapes the temp folder.",
+                        tool_output = "",
+                    )
+                target.parent.mkdir(parents = True, exist_ok = True)
+                if "{source}" in content:
+                    content = content.replace("{source}", code_value)
+                    if source_path is None:
+                        source_path = target
+                target.write_text(content, encoding = "utf-8")
+            if source_path is None:
                 source_path = run_dir / f"main.{file_ext}"
-            source_path.write_text(code_value, encoding = "utf-8")
+                source_path.write_text(code_value, encoding = "utf-8")
 
             substituted = command.replace("{file}", str(source_path)).replace("{dir}", str(run_dir))
             env = child_env_without_native_path_secret()
