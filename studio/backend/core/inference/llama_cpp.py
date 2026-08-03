@@ -3188,10 +3188,15 @@ class LlamaCppBackend:
             and not spec_owned_by_extra_args
         ):
             return False
+        compared_draft_n_max = self._spec_draft_n_max
+        if self._spec_fallback_reason == "runtime_error" and self._last_load_intent is not None:
+            # The MTP-free recovery clears the runtime value but retains the
+            # user's prior value in its intent. Only a changed value should retry MTP.
+            compared_draft_n_max = self._last_load_intent.spec_draft_n_max
         if (
             (self._speculative_type == "draft-mtp" or self._spec_fallback_reason == "runtime_error")
             and intent.spec_draft_n_max is not None
-            and intent.spec_draft_n_max != (self._spec_draft_n_max or 0)
+            and intent.spec_draft_n_max != (compared_draft_n_max or 0)
         ):
             return False
         if (self._chat_template_override or None) != (intent.chat_template_override or None):

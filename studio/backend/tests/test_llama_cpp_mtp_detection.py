@@ -1019,74 +1019,56 @@ def test_probe_server_capabilities_caches_by_mtime(tmp_path):
 # spec_draft_n_max plumbing (first-class --spec-draft-n-max override).
 
 
-def test_already_in_target_state_matches_when_draft_n_max_unset():
-    # None on the request means "platform default"; matches any backend.
-    backend = _mtp_backend(_spec_draft_n_max = None)
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
-
-
-def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
-    backend = _mtp_backend(_spec_draft_n_max = 4)
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = 4,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
-
-
-@pytest.mark.parametrize(
-    "backend_kwargs",
-    [
-        {"_spec_draft_n_max": 4},
-        {
-            "_requested_spec_mode": "mtp",
-            "_speculative_type": None,
-            "_spec_draft_n_max": None,
-            "_spec_fallback_reason": "runtime_error",
-        },
-    ],
-)
-def test_mtp_draft_n_max_mismatch_survives_runtime_state(backend_kwargs):
-    backend = _mtp_backend(**backend_kwargs)
-    assert not _matches(
+def _draft_n_max_matches(
+    backend,
+    requested,
+    *,
+    speculative_type = None,
+):
+    return _matches(
         backend,
         gguf_path = None,
         model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
         hf_variant = "Q4_K_M",
         n_ctx = 8192,
         cache_type_kv = None,
-        speculative_type = "mtp",
-        spec_draft_n_max = 8,
+        speculative_type = speculative_type,
+        spec_draft_n_max = requested,
         chat_template_override = None,
         extra_args = None,
         is_vision = False,
     )
+
+
+def test_already_in_target_state_matches_when_draft_n_max_unset():
+    # None on the request means "platform default"; matches any backend.
+    assert _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = None), None)
+
+
+def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
+    assert _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 4)
+
+
+def test_mtp_draft_n_max_mismatch_survives_active_runtime_state():
+    assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 8, speculative_type = "mtp")
+
+
+@pytest.mark.parametrize(
+    ("saved_draft_n_max", "expected_match"),
+    [(8, True), (4, False), (None, False)],
+)
+def test_mtp_draft_n_max_compares_saved_runtime_fallback_intent(saved_draft_n_max, expected_match):
+    backend = _mtp_backend(
+        _requested_spec_mode = "mtp",
+        _speculative_type = None,
+        _spec_draft_n_max = None,
+        _spec_fallback_reason = "runtime_error",
+        _last_load_intent = GgufLoadIntent(
+            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+            spec_draft_n_max = saved_draft_n_max,
+        ),
+    )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "mtp") is expected_match
 
 
 def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
@@ -1096,19 +1078,7 @@ def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
         _spec_draft_n_max = None,
         _spec_fallback_reason = "binary_no_mtp",
     )
-    assert _matches(
-        backend,
-        gguf_path = None,
-        model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "mtp",
-        spec_draft_n_max = 8,
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-    )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "mtp")
 
 
 def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
@@ -1119,22 +1089,7 @@ def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
         _requested_spec_mode = "ngram",
         _spec_draft_n_max = None,
     )
-    assert (
-        _matches(
-            backend,
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "ngram-mod",
-            spec_draft_n_max = 8,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "ngram-mod")
 
 
 # Sub-3B MTP gate -- tiny dense models regress with the MTP draft head, so
