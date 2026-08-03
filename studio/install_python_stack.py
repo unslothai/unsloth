@@ -651,12 +651,17 @@ _SHADOWING_INTEGRATED_GFX: "frozenset[str]" = frozenset(
 
 
 def _visible_devices_pinned() -> bool:
-    """True when the user pinned a GPU via HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES.
+    """True when the user pinned a GPU via HIP_VISIBLE_DEVICES /
+    ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES.
 
     Any explicit selection (other than the "no mask" spellings "" and "-1") must
     be honoured verbatim, so the iGPU-shadowing preference below never overrides
-    a device the user named on purpose."""
-    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+    a device the user named on purpose. CUDA_VISIBLE_DEVICES counts as a pin
+    because the HIP runtime honours it with the same semantics -- the ROCm
+    target picker in install_llama_prebuilt.py (`_pick_rocm_gfx_target`) already
+    resolves all three masks identically, so a host that exposed only its iGPU
+    that way must keep getting the iGPU's wheels."""
+    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         _val = os.environ.get(_env)
         if _val is None:
             continue

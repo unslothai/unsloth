@@ -647,5 +647,29 @@ class TestTorch211PinAllowlistParity:
         assert leaves == self._EXPECTED, f"studio/setup.ps1 pins {sorted(leaves)}"
 
 
+class TestShadowingIntegratedGfxParity:
+    """The shadowing-APU skip (#7776) exists twice: studio/setup.ps1 resolves the
+    arch and builds $ROCmIndexUrl before it ever invokes the Python stack
+    installer, so both copies of the list have to agree or one entry point keeps
+    installing the iGPU's wheel family."""
+
+    _STRIX = {"gfx1150", "gfx1151", "gfx1152"}
+
+    def _setup_ps1_list(self):
+        source = _SETUP_PS1.read_text(encoding = "utf-8")
+        m = re.search(r"\$script:ShadowingIntegratedGfx\s*=\s*@\(([^)]*)\)", source)
+        assert m, "$script:ShadowingIntegratedGfx not found in studio/setup.ps1"
+        return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    def test_setup_ps1_matches_install_python_stack(self):
+        assert self._setup_ps1_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
+
+    def test_strix_is_excluded_from_both_copies(self):
+        # gfx1150/1151/1152 are supported unified-memory training targets, not
+        # shadowing APUs -- listing them would silently redirect Strix hosts.
+        assert not (self._STRIX & set(stack_mod._SHADOWING_INTEGRATED_GFX))
+        assert not (self._STRIX & self._setup_ps1_list())
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

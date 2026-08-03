@@ -1511,6 +1511,37 @@ $HasROCm = $false
 $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
 $ROCmGpuLabel = $null
 $script:ROCmGfxArch = $null
+# Integrated (APU) gfx arches whose host board also commonly carries a discrete
+# Radeon. HIP enumerates the APU first on such boards, so an index-0 pick reads
+# the iGPU's arch and the dGPU never gets its wheels (#7776: a gfx1036 Raphael
+# iGPU shadowing a gfx1200 RX 9060 XT). Kept in sync with
+# _SHADOWING_INTEGRATED_GFX in studio/install_python_stack.py. The Strix arches
+# (gfx1150/1151/1152) are deliberately absent: those are first-class
+# unified-memory training targets, so their selection must stay untouched.
+$script:ShadowingIntegratedGfx = @("gfx90c", "gfx1013", "gfx1035", "gfx1036", "gfx1037", "gfx1103")
+
+# Mirrors _dedup_pick() in studio/install_python_stack.py. setup.ps1 resolves the
+# arch itself and builds $ROCmIndexUrl from it before ever invoking the Python
+# stack installer, so the shadowing-iGPU skip has to happen here too or a fresh
+# Windows install still pulls the iGPU's wheel family. Returns $Picked unchanged
+# when the user pinned a device, when only one distinct arch was enumerated, or
+# when no discrete arch is available.
+function Resolve-ShadowingGfxPick {
+    param([AllowNull()][string]$Picked, [AllowNull()][string[]]$AllArches)
+    if (-not $Picked) { return $Picked }
+    # HIP honours CUDA_VISIBLE_DEVICES with the same semantics as its own masks.
+    foreach ($visEnv in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
+        if ($visEnv -and $visEnv.Trim() -and $visEnv.Trim() -ne "-1") { return $Picked }
+    }
+    if ($script:ShadowingIntegratedGfx -notcontains $Picked) { return $Picked }
+    $distinctArches = @($AllArches | Select-Object -Unique)
+    if ($distinctArches.Count -lt 2) { return $Picked }
+    $discreteArch = @($AllArches | Where-Object { $script:ShadowingIntegratedGfx -notcontains $_ }) | Select-Object -First 1
+    if (-not $discreteArch) { return $Picked }
+    substep "multiple AMD GPUs detected ($($distinctArches -join ', ')); installing for the discrete $discreteArch instead of the integrated $Picked" "Cyan"
+    substep "Set HIP_VISIBLE_DEVICES to the GPU index you want (then rerun) to install for a different device" "Cyan"
+    return $discreteArch
+}
 if (-not $HasNvidiaSmi) {
     # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
     # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
@@ -1601,6 +1632,7 @@ if (-not $HasNvidiaSmi) {
                 $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                 if ($_hipAllArches.Count -gt 0) {
                     $script:ROCmGfxArch = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
+                    $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $_hipAllArches
                     $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                 } else {
                     $ROCmGpuLabel = "AMD ROCm"
@@ -1666,6 +1698,7 @@ if (-not $HasNvidiaSmi) {
                             $gpuIdx = 0
                         }
                         $script:ROCmGfxArch = $allGfxArches[$gpuIdx]
+                        $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $allGfxArches
                         $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                     } else {
                         # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,

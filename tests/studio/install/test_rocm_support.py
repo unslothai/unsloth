@@ -2968,6 +2968,7 @@ class TestDetectWindowsGfxArch:
         # gfx103X-all wheels and the dGPU was never loaded into.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1200\n"
@@ -2980,6 +2981,7 @@ class TestDetectWindowsGfxArch:
         # The maintainer ask on #7776: say a second GPU is there and how to pick it.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1200\n"
@@ -2994,6 +2996,7 @@ class TestDetectWindowsGfxArch:
         # A user who pinned the iGPU on purpose must keep getting the iGPU.
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1200\n"
@@ -3007,6 +3010,7 @@ class TestDetectWindowsGfxArch:
         # APU: a Strix host must keep resolving to its own arch-specific wheels.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = b"gcnArchName : gfx1151\ngcnArchName : gfx1200\n"
@@ -3019,6 +3023,7 @@ class TestDetectWindowsGfxArch:
         # Nothing to prefer: an APU-only box still installs for the APU.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = b"gcnArchName : gfx1036\n"
@@ -3026,6 +3031,35 @@ class TestDetectWindowsGfxArch:
             with patch("subprocess.run", return_value = mock_result):
                 result = stack_mod._detect_windows_gfx_arch()
         assert result == "gfx1036"
+
+    def test_cuda_visible_devices_also_pins_the_igpu(self, monkeypatch):
+        # HIP honours CUDA_VISIBLE_DEVICES with the same semantics as its own
+        # masks (cf. _pick_rocm_gfx_target in studio/install_llama_prebuilt.py),
+        # so a host that exposed only GPU 0 that way keeps getting the iGPU.
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1200\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1036"
+
+    def test_empty_cuda_visible_devices_is_not_a_pin(self, monkeypatch):
+        # "" and "-1" mean "no mask", not "the user chose GPU 0", so the
+        # shadowing-iGPU skip must still apply.
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1200\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1200"
 
     def test_returns_none_on_nonzero_returncode_without_gcnarchname(self):
         # Non-zero exit without gcnArchName must return None (fall through to amd-smi/WMI).
