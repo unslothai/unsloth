@@ -81,10 +81,18 @@ def test_terminal_update_holds_the_gate_through_environment_mutation():
     assert consume < guard < idle_scan < release_self < setup < verify
 
 
+@pytest.mark.skipif(os.name != "nt", reason = "Windows ordinal comparison is required")
 def test_windows_path_containment_requires_component_boundaries():
     root = r"C:\Users\pc\.unsloth\studio\unsloth_studio"
     assert gate._windows_path_is_within(root + r"\Scripts\python.exe", root)
     assert not gate._windows_path_is_within(root + "_backup" + r"\python.exe", root)
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows ordinal comparison is required")
+def test_windows_path_containment_uses_ordinal_case_semantics():
+    root = r"D:\Straße\studio"
+    assert gate._windows_path_is_within(r"D:\straße\studio\python.exe", root)
+    assert not gate._windows_path_is_within(r"D:\Strasse\studio\python.exe", root)
 
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")

@@ -74,7 +74,7 @@ def _resolved_windows_path(path: Path) -> str:
 
 
 def _canonical_windows_path(path: Path) -> str:
-    return _resolved_windows_path(path).casefold()
+    return _resolved_windows_path(path).replace("/", "\\")
 
 
 def _windows_paths_equal(left: str, right: str) -> bool:
@@ -216,9 +216,14 @@ def studio_runtime_launch_guard(studio_home: Path, *, inherited: bool = False) -
 
 
 def _windows_path_is_within(candidate: str, root: str) -> bool:
-    candidate_key = candidate.rstrip("\\/").replace("/", "\\").casefold()
-    root_key = root.rstrip("\\/").replace("/", "\\").casefold()
-    return candidate_key == root_key or candidate_key.startswith(root_key + "\\")
+    candidate_key = candidate.rstrip("\\/").replace("/", "\\")
+    root_key = root.rstrip("\\/").replace("/", "\\")
+    if _windows_paths_equal(candidate_key, root_key):
+        return True
+    prefix = root_key + "\\"
+    if len(candidate_key) < len(prefix):
+        return False
+    return _windows_paths_equal(candidate_key[: len(prefix)], prefix)
 
 
 def ensure_managed_environment_is_idle(studio_home: Path) -> None:
@@ -293,7 +298,9 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         if not parent_executable:
             break
         parent_image = _canonical_windows_path(Path(str(parent_executable)))
-        if parent_image not in protected_files:
+        if not any(
+            _windows_paths_equal(parent_image, protected_file) for protected_file in protected_files
+        ):
             break
         excluded_pids.add(parent_pid)
         descendant_pid = parent_pid
@@ -305,7 +312,10 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         if not executable:
             continue
         image = _canonical_windows_path(Path(str(executable)))
-        if _windows_path_is_within(image, protected_root) or image in protected_files:
+        if _windows_path_is_within(image, protected_root) or any(
+            _windows_paths_equal(image, protected_file)
+            for protected_file in protected_files
+        ):
             name = process.get("Name") or "process"
             raise RuntimeError(
                 "The managed Studio environment is in use by "
