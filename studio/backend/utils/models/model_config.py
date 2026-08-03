@@ -556,6 +556,7 @@ _VLM_ARCH_SUFFIXES = ("ForVisionText2Text",)
 _CURATED_REMOTE_VLM_TYPES = frozenset(
     {
         "phi3_v",
+        "phi4mm",
         "llava",
         "llava_next",
         "llava_onevision",
