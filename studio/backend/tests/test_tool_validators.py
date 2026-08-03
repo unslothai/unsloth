@@ -183,7 +183,7 @@ def test_tool_callable_timeout_is_graceful(monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("go") is None, reason = "go toolchain not installed")
-def test_go_scaffold_and_vet(tmp_path):
+def test_go_scaffold_and_vet():
     import pandas as pd
 
     go_source = (
