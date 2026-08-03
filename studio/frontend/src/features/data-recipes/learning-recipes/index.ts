@@ -16,6 +16,7 @@ const instructionFromAnswerUrl = new URL(
 const textToPythonUrl = new URL("./text-to-python.json", import.meta.url).href;
 const textToSqlUrl = new URL("./text-to-sql.json", import.meta.url).href;
 const textToGoUrl = new URL("./text-to-go.json", import.meta.url).href;
+const textToRustUrl = new URL("./text-to-rust.json", import.meta.url).href;
 const ocrDocumentExtractionUrl = new URL(
   "./ocr-document-extraction.json",
   import.meta.url,
@@ -141,6 +142,13 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
     description:
       "Generate Go code and filter out anything that fails go vet and go build with a custom check.",
     loadPayload: () => loadPayloadFromUrl(textToGoUrl),
+  },
+  {
+    id: "text-to-rust",
+    title: "Text to Rust",
+    description:
+      "Generate Rust code and filter out anything that fails cargo check with an advanced custom check.",
+    loadPayload: () => loadPayloadFromUrl(textToRustUrl),
   },
   {
     id: "ocr-document-extraction",

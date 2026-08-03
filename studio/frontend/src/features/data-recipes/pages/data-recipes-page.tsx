@@ -165,6 +165,22 @@ const TEMPLATE_CARDS: TemplateCard[] = [
     learningRecipeId: "text-to-go",
   },
   {
+    title: "Text to Rust",
+    description:
+      "Generate Rust code and keep only rows that pass a cargo check via a Python-based custom check.",
+    icon: CommandLineIcon,
+    difficulty: "Advanced",
+    learningBadges: ["LLM Code", "Advanced Custom Check", "Python"],
+    surfaceClassName:
+      "from-orange-500/15 via-rose-500/5 to-transparent dark:from-orange-400/20 dark:via-rose-400/10 dark:to-orange-950/16",
+    shineColor: [
+      "rgb(251 146 60 / 0.45)",
+      "rgb(244 63 94 / 0.4)",
+      "rgb(251 113 133 / 0.45)",
+    ],
+    learningRecipeId: "text-to-rust",
+  },
+  {
     title: "Structured Outputs + Jinja Expressions",
     description:
       "Support ticket triage dataset with structured JSON outputs and Jinja if/else refs.",

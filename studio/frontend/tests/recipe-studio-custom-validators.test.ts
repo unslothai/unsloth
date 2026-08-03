@@ -288,3 +288,40 @@ test("text-to-go learning recipe round-trips the tool validator", async () => {
   );
   assert.equal(config.tool_acknowledged, true);
 });
+
+test("text-to-go learning recipe carries the go scaffold", async () => {
+  const recipeJson = await import(
+    "../src/features/data-recipes/learning-recipes/text-to-go.json",
+    { with: { type: "json" } }
+  );
+  const payload = recipeJson.default;
+  const goCheck = payload.recipe.columns.find(
+    (column) => column.name === "go_check",
+  );
+  assert.ok(goCheck, "go_check column exists");
+  const params = goCheck.validator_params as Record<string, unknown>;
+  const marker = String(params.validation_function);
+  const spec = markers.decodeToolSpec(marker.slice(TOOL_MARKER.length + 1));
+  assert.ok(spec?.scaffold, "go_check marker carries scaffold rows");
+  assert.deepEqual(spec.scaffold, [
+    { path: "go.mod", content: "module example.com/check\n\ngo 1.21\n" },
+    { path: "main.go", content: "{source}" },
+  ]);
+});
+
+test("text-to-rust learning recipe round-trips the custom validator", async () => {
+  const recipeJson = await import(
+    "../src/features/data-recipes/learning-recipes/text-to-rust.json",
+    { with: { type: "json" } }
+  );
+  const payload = recipeJson.default;
+  const columns = payload.recipe.columns;
+  const rustCheck = columns.find((column) => column.name === "rust_check");
+  assert.ok(rustCheck, "rust_check column exists");
+  assert.equal(rustCheck.validator_type, "local_callable");
+  const config = parseValidator(rustCheck, "rust_check", "n9");
+  assert.equal(config.validator_type, "custom");
+  assert.ok((config.custom_source ?? "").includes("cargo check"));
+  assert.ok((config.custom_source ?? "").includes("Cargo.toml"));
+  assert.equal(config.custom_acknowledged, true);
+});
