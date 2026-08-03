@@ -514,24 +514,6 @@ function VramBadge({ status }: { status?: VramFitStatus | null }) {
 
 const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
 
-/** Marks a row that opens into its quants. The row itself is the toggle. */
-function ExpandChevron({ open }: { open: boolean }) {
-  return (
-    <span
-      aria-hidden="true"
-      // The chevron's glyph is wider than the dots menu's, so on its own at the
-      // end of a row it needs a nudge left to sit under it.
-      className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/60 last:mr-1"
-    >
-      {open ? (
-        <ChevronDownIcon className="size-3" />
-      ) : (
-        <ChevronRightIcon className="size-3" />
-      )}
-    </span>
-  );
-}
-
 /** A size in mono: the dot pulled in, a hair of air before the unit. */
 function SizeText({ value }: { value: string }) {
   const parts = SIZE_PARTS_RE.exec(value);
@@ -603,12 +585,10 @@ const META_COLUMN = {
 } as const;
 
 // One gutter for every row, gear or no gear, so the columns never shift by a
-// button. The gutter stays open; what sits in it shows on hover.
-const ROW_ACTIONS_BASE =
-  "mr-0.5 flex w-[38px] shrink-0 items-center justify-end -space-x-0.5";
-const ROW_HOVER_ONLY =
-  "opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
-const ROW_ACTIONS_CLASS = `${ROW_ACTIONS_BASE} ${ROW_HOVER_ONLY}`;
+// button. The buttons show on the hovered row, or while their menu is open;
+// the gutter stays open so nothing moves as they appear.
+const ROW_ACTIONS_CLASS =
+  "mr-0.5 flex w-[38px] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
 
 function ModelRow({
   label,
@@ -630,7 +610,6 @@ function ModelRow({
   quantChip,
   alignMeta,
   showSize,
-  expander,
   className,
 }: {
   label: string;
@@ -665,9 +644,6 @@ function ModelRow({
   /** Hold the size column open. Hub rows pass this on the MLX and Safetensors
    *  filters, where a repo is one download with one size. */
   showSize?: boolean;
-  /** Trailing chevron for rows that open into their quants. "none" holds the
-   *  slot without a glyph, so a list of mixed rows still lines up. */
-  expander?: "open" | "closed" | "none";
   className?: string;
 }) {
   const exceeds = vramStatus === "exceeds";
@@ -848,11 +824,6 @@ function ModelRow({
             <SizeText value={parsed.size} />
           </span>
         ) : null}
-        {expander === undefined ? null : expander === "none" ? (
-          <span aria-hidden="true" className="size-5 shrink-0" />
-        ) : (
-          <ExpandChevron open={expander === "open"} />
-        )}
       </span>
     </button>
   );
@@ -3427,10 +3398,8 @@ export function HubModelPicker({
               className={downloadedRowButtonClassName}
             />
           </div>
-          {/* Sits where the other rows' buttons do, so the tags line up. */}
-          <span className={cn(ROW_ACTIONS_CLASS, "h-6 opacity-100")}>
-            <ExpandChevron open={expanderOpen} />
-          </span>
+          {/* Stands in for the other rows' buttons, so the tags line up. */}
+          <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
         </div>
         {expanderOpen && (
           <GgufVariantExpander
@@ -4203,15 +4172,7 @@ export function HubModelPicker({
                                   vramStatus={null}
                                 />
                               </div>
-                              <span
-                                className={cn(
-                                  ROW_ACTIONS_CLASS,
-                                  isGguf && !isDirectGguf && "opacity-100",
-                                )}
-                              >
-                                {isGguf && !isDirectGguf ? (
-                                  <ExpandChevron open={isGgufExpanded(m.id)} />
-                                ) : null}
+                              <span className={ROW_ACTIONS_CLASS}>
                                 {isDirectGguf && onConfigure && (
                                   <ModelLoadSettingsAction
                                     ariaLabel={`Inference settings for ${
@@ -4342,15 +4303,7 @@ export function HubModelPicker({
                                   vramStatus={null}
                                 />
                               </div>
-                              <span
-                                className={cn(
-                                  ROW_ACTIONS_CLASS,
-                                  isGguf && !isGgufFile && "opacity-100",
-                                )}
-                              >
-                                {isGguf && !isGgufFile ? (
-                                  <ExpandChevron open={isGgufExpanded(m.id)} />
-                                ) : null}
+                              <span className={ROW_ACTIONS_CLASS}>
                                 {isGgufFile && onConfigure && (
                                   <ModelLoadSettingsAction
                                     ariaLabel={`Inference settings for ${
@@ -4469,15 +4422,7 @@ export function HubModelPicker({
                                   vramStatus={null}
                                 />
                               </div>
-                              <span
-                                className={cn(
-                                  ROW_ACTIONS_CLASS,
-                                  isGguf && !isGgufFile && "opacity-100",
-                                )}
-                              >
-                                {isGguf && !isGgufFile ? (
-                                  <ExpandChevron open={isGgufExpanded(m.id)} />
-                                ) : null}
+                              <span className={ROW_ACTIONS_CLASS}>
                                 {isGgufFile && onConfigure && (
                                   <ModelLoadSettingsAction
                                     ariaLabel={`Inference settings for ${
@@ -4557,13 +4502,6 @@ export function HubModelPicker({
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
                               showSize={hubRowsShowSize}
-                              expander={
-                                isG
-                                  ? expandedGguf === id
-                                    ? "open"
-                                    : "closed"
-                                  : "none"
-                              }
                               hideOwner={true}
                               downloaded={downloadedSet.has(id.toLowerCase())}
                               capabilities={capsById.get(id)}
@@ -4675,13 +4613,6 @@ export function HubModelPicker({
                             hubUrl={hubRepoUrl(id)}
                             alignMeta="hub"
                             showSize={hubRowsShowSize}
-                            expander={
-                              isKnownGgufRepo(id)
-                                ? expandedGguf === id
-                                  ? "open"
-                                  : "closed"
-                                : "none"
-                            }
                             capabilities={capsById.get(id)}
                             meta={
                               isKnownGgufRepo(id)
@@ -4796,13 +4727,6 @@ export function HubModelPicker({
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
                               showSize={hubRowsShowSize}
-                              expander={
-                                isSearchGguf
-                                  ? expandedGguf === id
-                                    ? "open"
-                                    : "closed"
-                                  : "none"
-                              }
                               capabilities={capsById.get(id)}
                               meta={
                                 isSearchGguf
@@ -5056,48 +4980,38 @@ function FineTunedRows({
                   alignMeta="device"
                 />
               </div>
-              <span className={ROW_ACTIONS_BASE}>
-                {isLocalGgufDir || isExportedGguf ? (
-                  <ExpandChevron open={expandedGguf === adapter.id} />
-                ) : null}
-                <span
-                  className={cn(
-                    "flex items-center -space-x-0.5",
-                    ROW_HOVER_ONLY,
-                  )}
-                >
-                  {canConfigure && onConfigure && (
-                    <ModelLoadSettingsAction
-                      ariaLabel={`Inference settings for ${adapter.name}`}
-                      onConfigure={() => onConfigure(adapter.id, selectionMeta)}
-                    />
-                  )}
-                  {canDelete && (
-                    <ModelDeleteAction
-                      ariaLabel={`Delete ${adapter.name}`}
-                      title="Delete fine-tuned model?"
-                      description={
-                        <>
-                          This will remove{" "}
-                          <span className="font-medium text-foreground">
-                            {adapter.name}
-                          </span>{" "}
-                          from disk. This cannot be undone.
-                        </>
-                      }
-                      successMessage={`Deleted ${adapter.name}`}
-                      disabled={deleteDisabled}
-                      onConfirm={() =>
-                        deleteFineTunedModel({
-                          modelPath: adapter.id,
-                          source: isExported ? "exported" : "training",
-                          exportType: adapter.exportType,
-                        })
-                      }
-                      onDeleted={() => onModelsChange?.({ id: adapter.id })}
-                    />
-                  )}
-                </span>
+              <span className={ROW_ACTIONS_CLASS}>
+                {canConfigure && onConfigure && (
+                  <ModelLoadSettingsAction
+                    ariaLabel={`Inference settings for ${adapter.name}`}
+                    onConfigure={() => onConfigure(adapter.id, selectionMeta)}
+                  />
+                )}
+                {canDelete && (
+                  <ModelDeleteAction
+                    ariaLabel={`Delete ${adapter.name}`}
+                    title="Delete fine-tuned model?"
+                    description={
+                      <>
+                        This will remove{" "}
+                        <span className="font-medium text-foreground">
+                          {adapter.name}
+                        </span>{" "}
+                        from disk. This cannot be undone.
+                      </>
+                    }
+                    successMessage={`Deleted ${adapter.name}`}
+                    disabled={deleteDisabled}
+                    onConfirm={() =>
+                      deleteFineTunedModel({
+                        modelPath: adapter.id,
+                        source: isExported ? "exported" : "training",
+                        exportType: adapter.exportType,
+                      })
+                    }
+                    onDeleted={() => onModelsChange?.({ id: adapter.id })}
+                  />
+                )}
               </span>
             </div>
             {expandedGguf === adapter.id && (
