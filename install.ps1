@@ -3436,12 +3436,12 @@ exit 0
         if ($hadPreviousTauriMode) {
             $env:UNSLOTH_TAURI_MODE = $previousTauriMode
         } else {
+            Remove-Item Env:UNSLOTH_TAURI_MODE -ErrorAction SilentlyContinue
+        }
         if ($hadPreviousSetupRuntimeGateHandoff) {
             $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff
         } else {
             Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue
-        }
-            Remove-Item Env:UNSLOTH_TAURI_MODE -ErrorAction SilentlyContinue
         }
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue

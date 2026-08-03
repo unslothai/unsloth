@@ -847,7 +847,8 @@ def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
         "$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff",
         setup_invoke,
     )
-    assert setup_python < setup_save < setup_set < setup_invoke < setup_restore
+    tauri_remove = install_source.index("Remove-Item Env:UNSLOTH_TAURI_MODE", setup_invoke)
+    assert setup_python < setup_save < setup_set < setup_invoke < tauri_remove < setup_restore
 
     assert (
         studio_source.count(
