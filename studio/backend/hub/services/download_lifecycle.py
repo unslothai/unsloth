@@ -842,9 +842,7 @@ def register_worker(
                 # without touching the network, and clearing a correctly earned demotion on that
                 # would put a bad machine back on Xet. Unmeasurable means do not clear -- a missed
                 # clear costs one extra streak entry, a wrong clear undoes the demotion.
-                bytes_after = _job_bytes_on_disk(
-                    repo_type, repo_id, _cache_dir, _own_blob_hashes
-                )
+                bytes_after = _job_bytes_on_disk(repo_type, repo_id, _cache_dir, _own_blob_hashes)
                 if (
                     _bytes_before is not None
                     and bytes_after is not None

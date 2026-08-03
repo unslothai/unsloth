@@ -225,7 +225,13 @@ def test_a_sibling_variants_bytes_do_not_count_as_this_jobs_progress(monkeypatch
     """
     seen = []
 
-    def _fake_completed(repo_type, repo_id, blob_hashes, *, root = None):
+    def _fake_completed(
+        repo_type,
+        repo_id,
+        blob_hashes,
+        *,
+        root = None,
+    ):
         seen.append(frozenset(blob_hashes))
         return 1_000  # this variant's own blobs never grow: it was already cached
 
