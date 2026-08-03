@@ -250,33 +250,28 @@ fn run_backend_update_with_terminal_events(
     };
     let _ = app.emit(progress_event, "Starting backend update...");
 
-    let (stdout, stderr) = match spawn_update(&bin, &state) {
-        Ok(handles) => handles,
-        Err(msg) => {
-            diagnostics::finish_attempt(
-                &diagnostics,
-                &attempt,
-                None,
-                false,
-                Some(format!("spawn_update: {msg}")),
-            );
-            clear_current_attempt(&state);
-            return Err(msg);
-        }
-    };
-    let threads = stream_output(
-        &app,
-        progress_event,
-        diagnostics.clone(),
-        attempt.clone(),
-        stdout,
-        stderr,
-    );
+    // Unlike read-only probes, update mutates the managed environment for its
+    // entire lifetime. This function is synchronous, so the thread-owned Win32
+    // mutex is acquired and released on the same thread without crossing await.
+    let result = crate::process::with_studio_runtime_launch_guard(|| {
+        crate::process::ensure_managed_environment_is_idle(&bin)?;
+        let (stdout, stderr) =
+            spawn_update(&bin, &state).map_err(|msg| format!("spawn_update: {msg}"))?;
+        let threads = stream_output(
+            &app,
+            progress_event,
+            diagnostics.clone(),
+            attempt.clone(),
+            stdout,
+            stderr,
+        );
 
-    let result = wait_for_exit(&state);
-    for handle in threads {
-        let _ = handle.join();
-    }
+        let result = wait_for_exit(&state);
+        for handle in threads {
+            let _ = handle.join();
+        }
+        result
+    });
 
     match result {
         Ok((status, _)) if status.success() => {

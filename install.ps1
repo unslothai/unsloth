@@ -3432,9 +3432,19 @@ public static class UnslothStudioFinalPath
             # Keep both locks until Windows has created the process. A second
             # installer can then acquire the locks, but its process scan sees
             # the new Studio process before it can mutate the environment.
-            $studioAutoStartProcess = Start-Process -FilePath $UnslothExe `
-                -ArgumentList @("studio", "-p", "8888") `
-                -NoNewWindow -PassThru
+            $_runtimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
+            try {
+                $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
+                $studioAutoStartProcess = Start-Process -FilePath $UnslothExe `
+                    -ArgumentList @("studio", "-p", "8888") `
+                    -NoNewWindow -PassThru
+            } finally {
+                if ($null -eq $_runtimeGateHandoff) {
+                    Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue
+                } else {
+                    $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $_runtimeGateHandoff
+                }
+            }
         } else {
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"

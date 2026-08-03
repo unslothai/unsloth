@@ -1485,6 +1485,8 @@ def studio_default(
             raise typer.Exit(2)
         return
 
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+
     # --secure requires the tunnel; force a loopback bind.
     if secure:
         if cloudflare is False:
@@ -1622,7 +1624,7 @@ def studio_default(
             if sys.platform == "win32":
                 import subprocess as _sp
 
-                with _studio_runtime_launch_guard():
+                with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
                     proc = _sp.Popen(args, **_windows_hidden_subprocess_kwargs())
                 try:
                     rc = proc.wait()
@@ -1668,7 +1670,7 @@ def studio_default(
     # in-process server serves exactly the dist we vouched for.
     if resolved_frontend is not None:
         run_kwargs["frontend_path"] = resolved_frontend
-    with _studio_runtime_launch_guard():
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
         run_server(**run_kwargs)
 
     try:

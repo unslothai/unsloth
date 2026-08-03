@@ -139,7 +139,9 @@ pub async fn check_install_status() -> bool {
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
 
-    let mut child = match cmd.spawn() {
+    let mut child = match process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    }) {
         Ok(c) => c,
         Err(e) => {
             warn!("Install check: failed to spawn {:?}: {}", bin, e);

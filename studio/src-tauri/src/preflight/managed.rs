@@ -325,7 +325,9 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let Ok(mut child) = cmd.spawn() else {
+    let Ok(mut child) = crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    }) else {
         info!(
             "Managed preflight probe {:?} failed to spawn in {}ms",
             args,
@@ -376,7 +378,9 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let Ok(mut child) = cmd.spawn() else {
+    let Ok(mut child) = crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    }) else {
         info!(
             "Managed desktop-capabilities probe failed to spawn in {}ms",
             started.elapsed().as_millis()

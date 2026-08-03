@@ -19,6 +19,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 COMMANDS_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "commands.rs"
 PROCESS_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs"
+PREFLIGHT_MANAGED_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "preflight" / "managed.rs"
+DESKTOP_AUTH_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "desktop_auth.rs"
+UPDATE_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "update.rs"
+STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 POWERSHELLS = [shell for shell in ("pwsh", "powershell") if shutil.which(shell)]
 
 
@@ -412,9 +416,80 @@ def test_tauri_runtime_uses_the_same_gate_before_backend_spawn():
     start = process_source.index("pub fn start_backend(")
     guard = process_source.index("acquire_studio_runtime_launch_guard()?", start)
     resolve = process_source.index("resolve_backend_binary()", guard)
-    spawn = process_source.index("cmd.spawn()", resolve)
+    handoff = process_source.index("STUDIO_RUNTIME_GATE_HANDOFF_ENV", resolve)
+    spawn = process_source.index("cmd.spawn()", handoff)
     store = process_source.index("proc.owned = Some(", spawn)
-    assert guard < resolve < spawn < store
+    assert guard < resolve < handoff < spawn < store
+
+
+def test_every_tauri_managed_child_spawn_uses_the_runtime_gate():
+    process_source = PROCESS_RS.read_text(encoding = "utf-8")
+    commands_source = COMMANDS_RS.read_text(encoding = "utf-8")
+    preflight_source = PREFLIGHT_MANAGED_RS.read_text(encoding = "utf-8")
+    desktop_auth_source = DESKTOP_AUTH_RS.read_text(encoding = "utf-8")
+    update_source = UPDATE_RS.read_text(encoding = "utf-8")
+
+    assert "pub(crate) fn with_studio_runtime_launch_guard<T>" in process_source
+
+    install_check = commands_source.index("pub async fn check_install_status()")
+    install_guard = commands_source.index("with_studio_runtime_launch_guard", install_check)
+    install_spawn = commands_source.index("cmd.spawn()", install_guard)
+    assert install_guard < install_spawn
+
+    first_probe = preflight_source.index("async fn run_cli_probe(")
+    first_guard = preflight_source.index("with_studio_runtime_launch_guard", first_probe)
+    first_spawn = preflight_source.index("cmd.spawn()", first_guard)
+    capability_probe = preflight_source.index("async fn probe_cli_capability(", first_spawn)
+    capability_guard = preflight_source.index("with_studio_runtime_launch_guard", capability_probe)
+    capability_spawn = preflight_source.index("cmd.spawn()", capability_guard)
+    assert first_guard < first_spawn < capability_probe < capability_guard < capability_spawn
+
+    provision = desktop_auth_source.index("async fn provision_desktop_auth()")
+    provision_guard = desktop_auth_source.index("with_studio_runtime_launch_guard", provision)
+    provision_spawn = desktop_auth_source.index("cmd.spawn()", provision_guard)
+    provision_wait = desktop_auth_source.index("child.wait_with_output()", provision_spawn)
+    assert provision_guard < provision_spawn < provision_wait
+
+    update_call = update_source.index(
+        "let result = crate::process::with_studio_runtime_launch_guard"
+    )
+    update_scan = update_source.index(
+        "ensure_managed_environment_is_idle(&bin)",
+        update_call,
+    )
+    update_spawn = update_source.index("spawn_update(&bin, &state)", update_scan)
+    update_wait = update_source.index("wait_for_exit(&state)", update_spawn)
+    update_guard_release = update_source.index("\n    });", update_wait)
+    assert update_call < update_scan < update_spawn < update_wait < update_guard_release
+
+
+def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
+    process_source = PROCESS_RS.read_text(encoding = "utf-8")
+    install_source = INSTALL_PS1.read_text(encoding = "utf-8")
+    studio_source = STUDIO_COMMAND.read_text(encoding = "utf-8")
+
+    start = process_source.index("pub fn start_backend(")
+    handoff = process_source.index('cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1")', start)
+    spawn = process_source.index("cmd.spawn()", handoff)
+    assert handoff < spawn
+
+    prompt = install_source.index("Start Unsloth Studio now?")
+    save = install_source.index("$_runtimeGateHandoff =", prompt)
+    set_handoff = install_source.index(
+        '$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"',
+        save,
+    )
+    autostart = install_source.index("Start-Process -FilePath $UnslothExe", set_handoff)
+    restore = install_source.index(
+        "$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $_runtimeGateHandoff",
+        autostart,
+    )
+    assert save < set_handoff < autostart < restore
+
+    assert studio_source.count(
+        "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()"
+    ) == 2
+    assert studio_source.count("inherited = runtime_gate_handoff") >= 4
 
 
 def test_tauri_start_install_rejects_backend_conflicts_before_spawn():
