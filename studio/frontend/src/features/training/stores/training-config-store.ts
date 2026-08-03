@@ -518,8 +518,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           })
           .catch((error: unknown) => {
             if (controller.signal.aborted) return;
-            // A deleted upload stays selected forever otherwise, re-failing on
-            // every visit.
+            // Otherwise a deleted upload stays selected and re-fails every visit.
             if (error instanceof DatasetFormatError && error.status === 404) {
               if (get().dataset === datasetName) {
                 get().setDataset("");

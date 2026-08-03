@@ -529,8 +529,7 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
         dataset_path = resolve_dataset_path(request.dataset_name)
         total_rows = None
 
-        # An absolute path is a local file, never a HuggingFace repo id. Saying so
-        # beats failing later as a repo lookup with a 500.
+        # An absolute path is a local file, never a HuggingFace repo id.
         if not dataset_path.exists() and Path(request.dataset_name).is_absolute():
             raise HTTPException(
                 status_code = 404,

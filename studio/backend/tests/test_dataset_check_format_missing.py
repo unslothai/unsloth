@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A deleted upload must report itself, not fail as a HuggingFace repo lookup."""
+"""A deleted upload must report itself, not fail as a repo lookup."""
 
 import sys
 from pathlib import Path
