@@ -113,6 +113,7 @@ $ErrorActionPreference = "Stop"
         child.terminate()
         child.wait(timeout = 10)
 
+
 @pytest.mark.skipif(
     os.name != "nt" or sys.maxsize <= 2**32,
     reason = "A 64-bit Windows test host is required",
@@ -152,7 +153,6 @@ $ErrorActionPreference = "Stop"
     finally:
         child.terminate()
         child.wait(timeout = 10)
-
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
@@ -408,11 +408,10 @@ Write-Output "accepted"
     env["TEST_TAURI_PROFILE"] = str(profile)
     assert _run_powershell(shell, script, env) == "accepted"
 
+
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_missing_root_beneath_junction_uses_the_physical_mutex_identity(
-    tmp_path: Path, shell: str
-):
+def test_missing_root_beneath_junction_uses_the_physical_mutex_identity(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     profile = tmp_path / "profile"
     profile.mkdir()
@@ -452,7 +451,6 @@ Write-Output ($aliasRuntime[0].StartsWith("Global\\UnslothStudioManagedEnvironme
         "True",
         "True",
     ]
-
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
