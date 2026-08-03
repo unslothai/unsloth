@@ -5724,3 +5724,95 @@ def test_the_route_authorizes_against_both_render_targets():
     )
     assert "_sf_chat_targets" in source
     assert "renderable_tool_catalog_for_targets as _sf_renderable_tools" in source
+
+
+def test_a_processor_target_is_profiled_against_its_own_template():
+    """The generate-time mapper installs its template on the TOKENIZER. A processor render
+    reads processor.chat_template and never sees it, so profiling a processor against the
+    mapped text template described a prompt that render cannot produce and left a tool
+    carrying a processor-only delimiter authorized (#7066)."""
+
+    class _Inner:
+        chat_template = "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}"
+        added_tokens_decoder = {0: type("_T", (), {"content": "<|zeta_proc|>"})()}
+
+    class _Proc:
+        chat_template = "{% for t in tools %}{{ t }}{% endfor %}<|zeta_proc|>{{ messages }}"
+        tokenizer = _Inner()
+
+        def apply_chat_template(self, *args, **kwargs):
+            return ""
+
+    tools = [
+        {"type": "function", "function": {"name": "pay<|zeta_proc|>", "description": "d"}},
+        {"type": "function", "function": {"name": "ok", "description": "f"}},
+    ]
+    mapped = "{% for t in tools %}{{ t }}{% endfor %}<|im_start|>{{ messages }}"
+    info = {"mapped_chat_template": mapped}
+    # The processor keeps its own template, so the delimiter its render emits is profiled.
+    assert catalog_tool_names(renderable_tool_catalog(tools, _Proc(), info)) == {"ok"}
+    # Profiling it against the mapped template is what let the tool through.
+    assert catalog_tool_names(
+        renderable_tool_catalog(tools, _Proc(), info, template = mapped)
+    ) == {"pay<|zeta_proc|>", "ok"}
+    # A plain tokenizer still gets the mapped template, which its render does install.
+    assert "mapped_chat_template(model_info or {}, active_model_name)" in (
+        _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "chat_template_helpers.py"
+    ).read_text(encoding = "utf-8")
+
+
+def test_the_token_count_sweeps_a_separate_system_prompt_with_the_model_profile():
+    """count_chat_tokens swept its system prompt with the curated patterns while messages
+    and tools used the model's own profile, so the public count described a different
+    prompt from the one generation sends (#7066)."""
+    import sys
+    from pathlib import Path
+
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+
+    import core.inference.llama_cpp as llama_cpp
+
+    class _Backend(llama_cpp.LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:8080"
+        _auth_headers: dict = {}
+
+        @property
+        def markup_profile(self):
+            # A Llama-shaped profile: it has no "</think>", so generation leaves that text
+            # alone and the count has to as well.
+            return model_markup(
+                "{% for m in messages %}<|start_header_id|>{{ m }}{% endfor %}",
+                ["<|start_header_id|>"],
+            )
+
+    captured: dict = {}
+    original = llama_cpp.httpx.Client
+    llama_cpp.httpx.Client = _fake_llama_http(captured)
+    try:
+        _Backend.__new__(_Backend).count_chat_tokens(
+            [{"role": "user", "content": "hello"}],
+            "a system prompt mentioning </think> in passing",
+            None,
+        )
+    finally:
+        llama_cpp.httpx.Client = original
+
+    sent = json.dumps(captured.get("template_body"), ensure_ascii = False)
+    assert "</think>" in sent
+    assert "< /think>" not in sent
+    # The profile's own marker is still broken in that same system text.
+    captured.clear()
+    llama_cpp.httpx.Client = _fake_llama_http(captured)
+    try:
+        _Backend.__new__(_Backend).count_chat_tokens(
+            [{"role": "user", "content": "hello"}],
+            "a system prompt with <|start_header_id|> in it",
+            None,
+        )
+    finally:
+        llama_cpp.httpx.Client = original
+    sent = json.dumps(captured.get("template_body"), ensure_ascii = False)
+    assert "< |start_header_id|>" in sent

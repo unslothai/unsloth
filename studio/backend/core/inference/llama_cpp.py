@@ -13371,9 +13371,18 @@ class LlamaCppBackend:
             neutralize_tool_descriptions,
         )
 
-        messages = neutralize_control_markup_in_messages(messages, None, self.markup_profile)
-        system_text = neutralize_control_markup(system_text)
-        tools = neutralize_tool_descriptions(tools, None, self.markup_profile)
+        _profile = self.markup_profile
+        messages = neutralize_control_markup_in_messages(messages, None, _profile)
+        # The model's own profile, like its two neighbours. The curated sweep here made the
+        # count describe a different prompt from the one generation sends: a Llama profile
+        # has no "</think>", so generation leaves that text byte-exact while the count path
+        # was turning it into "< /think>" before /apply-template (#7066).
+        system_text = (
+            neutralize_control_markup(system_text)
+            if _profile is None
+            else _profile.rewrite_control(system_text)
+        )
+        tools = neutralize_tool_descriptions(tools, None, _profile)
 
         try:
             with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:

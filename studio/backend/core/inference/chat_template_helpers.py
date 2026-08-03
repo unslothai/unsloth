@@ -1757,7 +1757,12 @@ def renderable_tool_catalog(
     the template that did NOT get selected stays advertised and directly callable; it just
     is not auto-healed out of text-form output that round.
     """
-    if template is None:
+    # The mapper installs its template on the TOKENIZER at generate time. A processor
+    # render reads the processor's own chat_template and never sees it (_generate_vlm),
+    # so resolving it for a processor target profiled a prompt that render cannot
+    # produce, and a tool carrying a processor-only delimiter survived the catalog while
+    # the actual render dropped it (#7066).
+    if template is None and not _is_processor(tokenizer):
         template = mapped_chat_template(model_info or {}, active_model_name)
     safe = neutralize_tool_descriptions(
         tools, cache, markup_for_tokenizer(tokenizer, tools, template)
