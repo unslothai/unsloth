@@ -1220,6 +1220,19 @@ export const zhCN = {
       trainingConfig: "训练配置",
     },
     dataset: {
+      selectors: {
+        subset: "子集",
+        subsetTooltip: "选择要使用的数据集子集（配置）。",
+        trainSplit: "训练拆分",
+        trainSplitTooltip: "选择用于训练的拆分。",
+        evaluationSplit: "评估拆分",
+        evaluationSplitTooltip:
+          "选择用于评估的拆分。“无”表示训练期间不进行评估。",
+        selectSubset: "选择子集...",
+        selectSplit: "选择拆分...",
+        none: "无",
+        loading: "正在加载数据集配置和拆分...",
+      },
       source: "数据集来源",
       sourceAriaLabel: "数据集来源",
       localDataset: "本地数据集",

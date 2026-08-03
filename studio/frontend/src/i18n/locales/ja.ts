@@ -1225,6 +1225,19 @@ export const ja = {
       trainingConfig: "トレーニング構成",
     },
     dataset: {
+      selectors: {
+        subset: "サブセット",
+        subsetTooltip: "使用するデータセットのサブセット（設定）を選択します。",
+        trainSplit: "学習用分割",
+        trainSplitTooltip: "学習に使用する分割を選択します。",
+        evaluationSplit: "評価用分割",
+        evaluationSplitTooltip:
+          "評価に使用する分割を選択します。「なし」を選ぶと学習中に評価を行いません。",
+        selectSubset: "サブセットを選択...",
+        selectSplit: "分割を選択...",
+        none: "なし",
+        loading: "データセットの設定と分割を読み込んでいます...",
+      },
       source: "データセットのソース",
       sourceAriaLabel: "データセットのソース",
       localDataset: "ローカルデータセット",

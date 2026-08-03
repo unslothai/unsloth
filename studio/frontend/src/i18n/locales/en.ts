@@ -1272,6 +1272,19 @@ export const en = {
       trainingConfig: "Training Config",
     },
     dataset: {
+      selectors: {
+        subset: "Subset",
+        subsetTooltip: "Select which subset (config) of the dataset to use.",
+        trainSplit: "Train Split",
+        trainSplitTooltip: "Select which split to use for training.",
+        evaluationSplit: "Evaluation Split",
+        evaluationSplitTooltip:
+          "Select which split to use for evaluation. None means no evaluation during training.",
+        selectSubset: "Select a subset...",
+        selectSplit: "Select a split...",
+        none: "None",
+        loading: "Loading dataset configs and splits...",
+      },
       source: "Dataset source",
       sourceAriaLabel: "Dataset source",
       localDataset: "Local dataset",

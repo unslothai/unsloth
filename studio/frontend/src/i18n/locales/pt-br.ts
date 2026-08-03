@@ -1273,6 +1273,20 @@ export const ptBR = {
       trainingConfig: "Configuração de Treino",
     },
     dataset: {
+      selectors: {
+        subset: "Subconjunto",
+        subsetTooltip:
+          "Selecione qual subconjunto (configuração) do dataset usar.",
+        trainSplit: "Divisão de treino",
+        trainSplitTooltip: "Selecione qual divisão usar para o treinamento.",
+        evaluationSplit: "Divisão de avaliação",
+        evaluationSplitTooltip:
+          "Selecione qual divisão usar para a avaliação. Nenhuma significa que não haverá avaliação durante o treinamento.",
+        selectSubset: "Selecione um subconjunto...",
+        selectSplit: "Selecione uma divisão...",
+        none: "Nenhuma",
+        loading: "Carregando configurações e divisões do dataset...",
+      },
       source: "Origem do dataset",
       sourceAriaLabel: "Origem do dataset",
       localDataset: "Dataset local",

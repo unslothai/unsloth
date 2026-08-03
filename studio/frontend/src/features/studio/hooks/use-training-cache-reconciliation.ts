@@ -10,6 +10,7 @@ import {
   normalizeModelIdentity,
   useHfTokenStore,
   useInventoryVersion,
+  useTokenScopedInventoryRequestOptions,
 } from "@/features/hub";
 import {
   cachedInventoryPathMatchesSelection,
@@ -175,6 +176,10 @@ function reconcileModelReference(
 export function useTrainingCacheReconciliation(): void {
   const inventoryVersion = useInventoryVersion();
   const hfToken = useHfTokenStore((s) => s.token);
+  const modelInventoryOptions = useTokenScopedInventoryRequestOptions(
+    inventoryVersion,
+    hfToken,
+  );
   const {
     selectedModel,
     modelKnownCached,
@@ -244,8 +249,8 @@ export function useTrainingCacheReconciliation(): void {
     const expectedLocalPath = modelLocalPath;
     const wasKnownCached = modelKnownCached;
     Promise.all([
-      fetchInventorySource("cachedModels", { inventoryVersion, hfToken }),
-      fetchInventorySource("localModels", { inventoryVersion, hfToken }),
+      fetchInventorySource("cachedModels", modelInventoryOptions),
+      fetchInventorySource("localModels", modelInventoryOptions),
     ])
       .then(([cachedRows, localRows]) => {
         if (cancelled) {
@@ -263,11 +268,5 @@ export function useTrainingCacheReconciliation(): void {
     return () => {
       cancelled = true;
     };
-  }, [
-    inventoryVersion,
-    hfToken,
-    selectedModel,
-    modelKnownCached,
-    modelLocalPath,
-  ]);
+  }, [modelInventoryOptions, selectedModel, modelKnownCached, modelLocalPath]);
 }

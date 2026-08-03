@@ -1259,6 +1259,20 @@ export const ar = {
       trainingConfig: "تكوين التدريب",
     },
     dataset: {
+      selectors: {
+        subset: "المجموعة الفرعية",
+        subsetTooltip:
+          "اختر المجموعة الفرعية (الإعداد) من مجموعة البيانات لاستخدامها.",
+        trainSplit: "قسم التدريب",
+        trainSplitTooltip: "اختر القسم الذي سيُستخدم للتدريب.",
+        evaluationSplit: "قسم التقييم",
+        evaluationSplitTooltip:
+          "اختر القسم الذي سيُستخدم للتقييم. يعني «بلا» عدم إجراء تقييم أثناء التدريب.",
+        selectSubset: "اختر مجموعة فرعية...",
+        selectSplit: "اختر قسمًا...",
+        none: "بلا",
+        loading: "جارٍ تحميل إعدادات مجموعة البيانات وأقسامها...",
+      },
       source: "مصدر مجموعة البيانات",
       sourceAriaLabel: "مصدر مجموعة البيانات",
       localDataset: "مجموعة بيانات محلية",

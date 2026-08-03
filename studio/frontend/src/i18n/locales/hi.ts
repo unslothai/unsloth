@@ -1267,6 +1267,19 @@ export const hi = {
       trainingConfig: "ट्रेनिंग कॉन्फ़िग",
     },
     dataset: {
+      selectors: {
+        subset: "सबसेट",
+        subsetTooltip: "उपयोग करने के लिए डेटासेट का सबसेट (कॉन्फ़िगरेशन) चुनें।",
+        trainSplit: "ट्रेनिंग स्प्लिट",
+        trainSplitTooltip: "ट्रेनिंग के लिए उपयोग होने वाला स्प्लिट चुनें।",
+        evaluationSplit: "मूल्यांकन स्प्लिट",
+        evaluationSplitTooltip:
+          "मूल्यांकन के लिए उपयोग होने वाला स्प्लिट चुनें। कोई नहीं का अर्थ है कि ट्रेनिंग के दौरान मूल्यांकन नहीं होगा।",
+        selectSubset: "सबसेट चुनें...",
+        selectSplit: "स्प्लिट चुनें...",
+        none: "कोई नहीं",
+        loading: "डेटासेट कॉन्फ़िगरेशन और स्प्लिट लोड हो रहे हैं...",
+      },
       source: "डेटासेट स्रोत",
       sourceAriaLabel: "डेटासेट स्रोत",
       localDataset: "स्थानीय डेटासेट",

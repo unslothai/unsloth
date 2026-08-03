@@ -566,9 +566,9 @@ def test_unavailable_probe_inspects_unadvertised_cache(tmp_path):
     assert "Adapter-only local models" in exc_info.value.detail
 
 
-def test_unavailable_probe_uses_cached_shorthand_model(tmp_path):
-    route = _load_route_module("training_route_outage_shorthand_cache")
-    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+def test_unavailable_probe_uses_cached_root_level_model(tmp_path):
+    route = _load_route_module("training_route_outage_root_level_cache")
+    snapshot = tmp_path / "models--bert-base-uncased" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text("{}")
     (snapshot / "model.safetensors").write_bytes(b"x")
@@ -578,9 +578,11 @@ def test_unavailable_probe_uses_cached_shorthand_model(tmp_path):
         "_remote_untrainable_model_format",
         side_effect = HTTPException(status_code = 503, detail = "unavailable"),
     ):
-        result = route._reject_untrainable_model_request(_request(model_name = "test"))
+        result = route._reject_untrainable_model_request(
+            _request(model_name = "bert-base-uncased")
+        )
 
-    assert result.cached_model_pin == ("unsloth/test", str(snapshot.resolve()))
+    assert result.cached_model_pin == ("bert-base-uncased", str(snapshot.resolve()))
 
 
 @pytest.mark.parametrize("status_code", [400, 401, 403, 404, 429])
@@ -759,7 +761,7 @@ def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
     from core.training.training import _apply_cache_pins, _build_training_worker_config
 
     route = _load_route_module(f"training_route_cache_pin_to_worker_{offline}")
-    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot = tmp_path / "models--bert-base-uncased" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text("{}")
     (snapshot / "model.safetensors").write_bytes(b"x")
@@ -797,10 +799,10 @@ def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
             return_value = type("ExportBackend", (), {"current_checkpoint": None})(),
         ),
     ):
-        response = _start(route, _request(model_name = "test"))
+        response = _start(route, _request(model_name = "bert-base-uncased"))
 
     assert response.status == "queued"
-    assert captured["actual_model_repo_id"] == "unsloth/test"
+    assert captured["actual_model_repo_id"] == "bert-base-uncased"
     assert captured["model_snapshot_path"] == str(snapshot.resolve())
     assert captured["require_validated_model_snapshot"] is True
 
@@ -808,7 +810,7 @@ def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
     _apply_cache_pins(config)
     events: list[dict] = []
     assert worker._verify_config_pins(config, SimpleNamespace(put = events.append)) is True
-    assert config["actual_model_repo_id"] == "unsloth/test"
+    assert config["actual_model_repo_id"] == "bert-base-uncased"
     assert config["model_snapshot_path"] == str(snapshot.resolve())
     assert config["require_validated_model_snapshot"] is True
     assert (
@@ -845,15 +847,18 @@ def test_untrainable_gate_rejects_remote_gguf_only_repository():
     assert "GGUF-only remote models are inference-only" in exc_info.value.detail
 
 
-def test_remote_format_probe_uses_token_and_shorthand():
+def test_remote_format_probe_preserves_root_level_repo_id():
     route = _load_route_module("training_route_remote_adapter_metadata")
     info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
 
     with _patch_model_info(return_value = info) as model_info:
-        assert route._remote_untrainable_model_format("test", "hf-token") == "adapter"
+        assert (
+            route._remote_untrainable_model_format("bert-base-uncased", "hf-token")
+            == "adapter"
+        )
 
     model_info.assert_called_once_with(
-        "unsloth/test",
+        "bert-base-uncased",
         token = "hf-token",
         timeout = route._REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
     )
@@ -866,16 +871,19 @@ def test_remote_format_probe_retries_transient_failure():
     with _patch_model_info(
         side_effect = [OSError("timed out"), info],
     ) as model_info:
-        assert route._remote_untrainable_model_format("test", "hf-token") == "adapter"
+        assert (
+            route._remote_untrainable_model_format("bert-base-uncased", "hf-token")
+            == "adapter"
+        )
 
     assert model_info.call_args_list == [
         call(
-            "unsloth/test",
+            "bert-base-uncased",
             token = "hf-token",
             timeout = route._REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
         ),
         call(
-            "unsloth/test",
+            "bert-base-uncased",
             token = "hf-token",
             timeout = route._REMOTE_MODEL_METADATA_RETRY_TIMEOUT_SECONDS,
         ),

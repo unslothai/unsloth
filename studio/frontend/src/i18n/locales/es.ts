@@ -1295,6 +1295,22 @@ export const es = {
       trainingConfig: "Configuración de entrenamiento",
     },
     dataset: {
+      selectors: {
+        subset: "Subconjunto",
+        subsetTooltip:
+          "Selecciona el subconjunto (configuración) del conjunto de datos que se utilizará.",
+        trainSplit: "División de entrenamiento",
+        trainSplitTooltip:
+          "Selecciona la división que se utilizará para el entrenamiento.",
+        evaluationSplit: "División de evaluación",
+        evaluationSplitTooltip:
+          "Selecciona la división que se utilizará para la evaluación. Ninguna significa que no se evaluará durante el entrenamiento.",
+        selectSubset: "Selecciona un subconjunto...",
+        selectSplit: "Selecciona una división...",
+        none: "Ninguna",
+        loading:
+          "Cargando configuraciones y divisiones del conjunto de datos...",
+      },
       source: "Origen del conjunto de datos",
       sourceAriaLabel: "Origen del conjunto de datos",
       localDataset: "Conjunto de datos local",

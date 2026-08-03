@@ -1305,6 +1305,21 @@ export const de = {
       trainingConfig: "Trainingskonfiguration",
     },
     dataset: {
+      selectors: {
+        subset: "Teilmenge",
+        subsetTooltip:
+          "Wähle die zu verwendende Teilmenge (Konfiguration) des Datensatzes aus.",
+        trainSplit: "Trainingsaufteilung",
+        trainSplitTooltip:
+          "Wähle die Aufteilung aus, die für das Training verwendet werden soll.",
+        evaluationSplit: "Evaluierungsaufteilung",
+        evaluationSplitTooltip:
+          "Wähle die Aufteilung für die Evaluierung aus. Keine bedeutet, dass während des Trainings keine Evaluierung stattfindet.",
+        selectSubset: "Teilmenge auswählen...",
+        selectSplit: "Aufteilung auswählen...",
+        none: "Keine",
+        loading: "Datensatzkonfigurationen und -aufteilungen werden geladen...",
+      },
       source: "Datensatzquelle",
       sourceAriaLabel: "Datensatzquelle",
       localDataset: "Lokaler Datensatz",

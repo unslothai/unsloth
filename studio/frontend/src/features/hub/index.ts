@@ -78,6 +78,7 @@ export {
   resolveInventoryResource,
   useDeviceInventorySources,
   useDeviceInventoryStore,
+  useTokenScopedInventoryRequestOptions,
   useGgufVariantsCacheVersion,
   useGgufVariantsCacheVersions,
   useHubInventory,

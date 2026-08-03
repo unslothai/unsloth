@@ -1260,6 +1260,19 @@ export const ko = {
       trainingConfig: "학습 구성",
     },
     dataset: {
+      selectors: {
+        subset: "하위 집합",
+        subsetTooltip: "사용할 데이터셋 하위 집합(구성)을 선택하세요.",
+        trainSplit: "학습 분할",
+        trainSplitTooltip: "학습에 사용할 분할을 선택하세요.",
+        evaluationSplit: "평가 분할",
+        evaluationSplitTooltip:
+          "평가에 사용할 분할을 선택하세요. 없음을 선택하면 학습 중 평가를 수행하지 않습니다.",
+        selectSubset: "하위 집합 선택...",
+        selectSplit: "분할 선택...",
+        none: "없음",
+        loading: "데이터셋 구성과 분할을 불러오는 중...",
+      },
       source: "데이터셋 소스",
       sourceAriaLabel: "데이터셋 소스",
       localDataset: "로컬 데이터셋",

@@ -1302,6 +1302,22 @@ export const fr = {
       trainingConfig: "Configuration d'entraînement",
     },
     dataset: {
+      selectors: {
+        subset: "Sous-ensemble",
+        subsetTooltip:
+          "Sélectionnez le sous-ensemble (configuration) du jeu de données à utiliser.",
+        trainSplit: "Partition d’entraînement",
+        trainSplitTooltip:
+          "Sélectionnez la partition à utiliser pour l’entraînement.",
+        evaluationSplit: "Partition d’évaluation",
+        evaluationSplitTooltip:
+          "Sélectionnez la partition à utiliser pour l’évaluation. Aucune signifie qu’aucune évaluation ne sera effectuée pendant l’entraînement.",
+        selectSubset: "Sélectionnez un sous-ensemble...",
+        selectSplit: "Sélectionnez une partition...",
+        none: "Aucune",
+        loading:
+          "Chargement des configurations et partitions du jeu de données...",
+      },
       source: "Source du jeu de données",
       sourceAriaLabel: "Source du jeu de données",
       localDataset: "Jeu de données local",

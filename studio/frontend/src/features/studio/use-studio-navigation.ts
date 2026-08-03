@@ -125,10 +125,6 @@ export function useStudioNavigation() {
   );
 
   useEffect(() => {
-    return () => setSelectedHistoryRunId(null);
-  }, [setSelectedHistoryRunId]);
-
-  useEffect(() => {
     setCurrentRunViewActive(activeTab === "current-run");
     return () => setCurrentRunViewActive(false);
   }, [activeTab, setCurrentRunViewActive]);

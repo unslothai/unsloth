@@ -119,35 +119,10 @@ const overlays: Record<string, Tree> = {
   it: it as unknown as Tree,
 };
 
-const requiredOverlayPrefixes = [
-  "picker.",
-  "studio.wizard.",
-  "studio.preview.",
-  "studio.datasetPicker.",
-  "studio.modelPicker.",
-  "studio.methods.",
-  "studio.dataset.streaming.",
-  "studio.params.mode.",
-  "studio.training.",
-  "studio.history.",
-] as const;
-
-const requiredOverlayKeys = new Set([
-  "studio.dataset.sourceAriaLabel",
-  "studio.dataset.streamingInfoAriaLabel",
-  "studio.dataset.uploadDetails",
-  "studio.dataset.uploadDetailsTooltip",
-]);
-
-// Italian landed upstream before the local training surfaces. Keep validating
-// its existing keys while allowing English fallback for those newer surfaces.
-const requiredOverlayFallbackLocales = new Set(["it"]);
+const requiredOverlayPrefixes = ["picker.", "studio."] as const;
 
 function requiresOverlay(key: string): boolean {
-  return (
-    requiredOverlayKeys.has(key) ||
-    requiredOverlayPrefixes.some((prefix) => key.startsWith(prefix))
-  );
+  return requiredOverlayPrefixes.some((prefix) => key.startsWith(prefix));
 }
 
 let anyError = false;
@@ -158,10 +133,7 @@ for (const [locale, overlay] of Object.entries(overlays)) {
   checkOverlay(en as unknown as Tree, overlay, "", errors, missing);
   checkExtras(overlay, en as unknown as Tree, "", errors);
   for (const key of missing) {
-    if (
-      !requiredOverlayFallbackLocales.has(locale) &&
-      requiresOverlay(key)
-    ) {
+    if (requiresOverlay(key)) {
       errors.push(`${key} must be localized`);
     }
   }

@@ -41,11 +41,8 @@ def hf_env_offline() -> bool:
 
 
 def canonical_model_repo_id(model_name: str) -> str:
-    """Resolve Studio's slashless model shorthand to the Unsloth namespace."""
-    repo_id = model_name.strip()
-    if not repo_id:
-        return repo_id
-    return repo_id if "/" in repo_id else f"unsloth/{repo_id}"
+    """Normalize a Hugging Face model repository ID selected in Studio."""
+    return model_name.strip()
 
 
 def hf_endpoint_url() -> str:
