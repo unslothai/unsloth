@@ -91,6 +91,16 @@ jobs:
           npm run build
           test -f dist/index.html
 
+      # The crate carries ~100 unit tests (native_file_dialogs, preflight,
+      # install, desktop_auth, ...) that nothing ran until now: this workflow
+      # only ever built. Run them here, where the toolchain and the WebKit dev
+      # packages are already installed, so a broken assertion fails the PR
+      # instead of sitting unnoticed. `--no-fail-fast` reports every failing
+      # test in one run rather than stopping at the first.
+      - name: Rust unit tests (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo test --no-fail-fast
+
       - name: Tauri debug build (Linux, no bundle, no codesign)
         # `--debug` + `--no-bundle` keeps this lean: compiles the Rust crate,
         # confirms the frontend dist is wired into Tauri, but skips the AppImage

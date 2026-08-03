@@ -24,7 +24,9 @@ import platform
 import re
 import subprocess
 import sys
+import threading
 import types
+from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 import structlog
 from loggers import get_logger
@@ -78,6 +80,103 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 CHAT_ONLY_REASON: Optional[str] = None
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
+# Detection has concurrent callers (the warm thread plus any early get_device()).
+# Unlocked, two runs interleave on the globals above and a reader between the reset and
+# the CUDA branch sees "chat only" on a GPU host. Re-entrant: get_device() nests.
+_DETECT_LOCK = threading.RLock()
+
+# Bumped by shutdown so a detection still inside the torch import cannot publish over
+# the reset, leaving the next lifespan a non-None DEVICE that makes it skip detection.
+# An epoch, not _DETECT_LOCK: taking that lock would park teardown behind the import.
+_EPOCH_LOCK = threading.Lock()
+DETECTION_EPOCH = 0
+
+
+def invalidate_detection() -> int:
+    """Retire any detection in flight. Returns the new epoch."""
+    global DETECTION_EPOCH
+    with _EPOCH_LOCK:
+        DETECTION_EPOCH += 1
+        return DETECTION_EPOCH
+
+
+def current_detection_epoch() -> int:
+    with _EPOCH_LOCK:
+        return DETECTION_EPOCH
+
+
+# The epoch nested detections on this thread belong to. get_device() takes no epoch and
+# the warm builds the orchestrator, whose constructor reaches it; without this a shutdown
+# mid-stage lets the nested pass republish DEVICE over the teardown, so the next lifespan
+# skips detection. Thread-local, so only the warm's own call stack is bound.
+_OWNING_EPOCH = threading.local()
+
+
+@contextmanager
+def owning_detection_epoch(epoch: Optional[int]):
+    """Bind epoch-less detections on this thread to ``epoch`` for the block. Nested, not
+    assigned: restoring the previous value keeps concurrent scopes on other threads apart."""
+    previous = getattr(_OWNING_EPOCH, "value", None)
+    _OWNING_EPOCH.value = epoch
+    try:
+        yield
+    finally:
+        _OWNING_EPOCH.value = previous
+
+
+def _discard_detection_locked() -> None:
+    """Drop a verdict produced for an epoch that has been retired."""
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
+    DEVICE = None
+    CHAT_ONLY = True
+    CHAT_ONLY_REASON = None
+    IS_ROCM = False
+    DETECTION_COMPLETE.clear()
+
+
+# Set once detection has a settled answer, including its CPU/chat-only fallback. Poll
+# this, not DEVICE: DEVICE is assigned mid-detection and can be revised.
+DETECTION_COMPLETE = threading.Event()
+# Bumped every time detection settles. Detection is not once-per-process (the MLX
+# self-heal re-detects and flips CHAT_ONLY), so snapshot holders can spot staleness.
+DETECTION_GENERATION = 0
+
+# Drives start_background_detection(). Separate from _DETECT_LOCK: never held across the import.
+_DETECT_KICK_LOCK = threading.Lock()
+_DETECT_THREAD: Optional[threading.Thread] = None
+
+
+def start_background_detection() -> None:
+    """Run detection on a daemon thread if nothing is running it yet.
+
+    For callers on a deadline that cannot await ensure_hardware_detected(), such as
+    /api/health under the launcher's 2s timeout. They poll DEVICE against their own budget;
+    this guarantees someone is filling it in even when the warm is past its hardware stage
+    or a shutdown cleared the verdict. Callers skip it under
+    UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1, which means no background import at all.
+
+    At most one thread, and none once DEVICE is set, so a route polling "still detecting"
+    cannot pile them up. Not the asyncio executor: a to_thread outliving its awaiter holds
+    a slot, and a polled endpoint would exhaust the pool during a slow import.
+    """
+    global _DETECT_THREAD
+    if DEVICE is not None:
+        return
+    with _DETECT_KICK_LOCK:
+        if DEVICE is not None:
+            return
+        if _DETECT_THREAD is not None and _DETECT_THREAD.is_alive():
+            return
+        # Epoch read before start(): the thread can be scheduled after a shutdown
+        # retires this epoch, and it must lose to that, not adopt it.
+        _DETECT_THREAD = threading.Thread(
+            target = ensure_hardware_detected,
+            args = (current_detection_epoch(),),
+            daemon = True,
+            name = "hardware-detect",
+        )
+        _DETECT_THREAD.start()
+
 
 def _backend_label(device: DeviceType) -> str:
     """Return the user-facing backend name for API responses.
@@ -98,12 +197,41 @@ def is_apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
+# Set by _has_torch() when torch is installed but its import blew up (unresolved CUDA
+# libs). The CPU fallback reports that as a detection failure, not as "no GPU".
+TORCH_IMPORT_ERROR: Optional[str] = None
+
+
 def _has_torch() -> bool:
-    """True if PyTorch is importable."""
+    """True if PyTorch is importable.
+
+    Any failure counts as "no torch", not just ImportError: ensure_hardware_detected()
+    re-runs while DEVICE is None, so an escaping OSError would make every request retry the
+    import. Take the CPU path, but record the error, or the host is told to install the
+    torch it already has.
+    """
+    global TORCH_IMPORT_ERROR
     try:
         import torch
+        TORCH_IMPORT_ERROR = None
         return True
-    except ImportError:
+    except Exception as exc:
+        # ImportError does NOT mean "not installed": a wheel with unresolved native libs
+        # raises it from torch's own __init__ (OSError on Windows). Only ModuleNotFoundError
+        # naming torch itself is absent; a failed submodule is a broken install. Both purge.
+        absent = isinstance(exc, ModuleNotFoundError) and exc.name == "torch"
+        TORCH_IMPORT_ERROR = None if absent else repr(exc)
+        if TORCH_IMPORT_ERROR is not None:
+            logger.error("torch is installed but failed to import: %r", exc)
+        # A part-way failure leaves submodules cached under an evicted parent, so the next
+        # importer gets a torch missing pieces. purge_partial_import() clears that.
+        try:
+            from utils.torch_warmup import purge_partial_import
+        except Exception:
+            # Also exec'd standalone (tests/python/test_e2e_no_torch_sandbox.py); nothing to purge.
+            pass
+        else:
+            purge_partial_import("torch")
         return False
 
 
@@ -185,13 +313,123 @@ def detect_hardware() -> DeviceType:
       4. MLX   (Apple Silicon via MLX framework)
       5. CPU   (fallback)
     """
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM, DETECTION_GENERATION
+    with _DETECT_LOCK:
+        # A forced pass mutates the globals partway through; leaving the event set lets
+        # /api/health serve that as settled, so the sidebar MLX poll caches reason=None,
+        # stops, and leaves Train hidden on a repaired host. Republished once it settles.
+        was_complete = DETECTION_COMPLETE.is_set()
+        # Snapshot the whole verdict, not just the event: a raise mid-pass leaves a
+        # half-written answer the autorepair path swallows, and losing "mlx_unavailable"
+        # stops the sidebar poll for good.
+        published = (DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM)
+        # Owning epoch first, current only as a fallback. The MLX self-heal calls this
+        # after a pip install that can outlast the lifespan; reading current would adopt
+        # the epoch shutdown moved to, so the next lifespan finds DEVICE set and skips
+        # its own detection.
+        epoch = getattr(_OWNING_EPOCH, "value", None)
+        if epoch is None:
+            epoch = current_detection_epoch()
+        elif current_detection_epoch() != epoch:
+            # Retired before this pass began, so leave the running lifespan alone. Going on
+            # would clear DETECTION_COMPLETE over a settled verdict, probe, then discard: a
+            # late repair would erase the restart's verdict, not merely fail to add its own.
+            return DEVICE
+        DETECTION_COMPLETE.clear()
+        try:
+            device = _detect_hardware_locked()
+        except BaseException:
+            if current_detection_epoch() != epoch:
+                # Shutdown ran mid-pass. Restoring would put back the verdict it just
+                # cleared, and the next lifespan would treat that as measured.
+                _discard_detection_locked()
+                raise
+            DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM = published
+            # Restore rather than leave it clear: start_background_detection() declines
+            # once DEVICE is set, so an unset event keeps health provisional forever.
+            if was_complete:
+                DETECTION_COMPLETE.set()
+            raise
+        if current_detection_epoch() != epoch:
+            # Shutdown ran mid-pass; this verdict belongs to a lifespan that ended.
+            _discard_detection_locked()
+            return device
+        DETECTION_GENERATION += 1
+        DETECTION_COMPLETE.set()
+        return device
+
+
+def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
+    """Detect once, from any thread. Prefer this to detect_hardware() unless you want a
+    forced re-detect: it collapses the warm thread and an early request into one pass, and
+    a caller arriving mid-detection waits rather than starts a second.
+
+    Never raises. A raise on the warm thread is swallowed and leaves DEVICE None, so every
+    later request retries the failing import and /api/health, which waits on this, would
+    500. Record CPU + chat-only with a reason instead.
+
+    ``epoch`` is the epoch this pass belongs to; a spawner passes the one it read before
+    Thread.start(), since the thread can be scheduled after a shutdown retired it and
+    reading it here would bind the pass to the retirement it must lose to. Direct callers
+    pass nothing and own the current epoch."""
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, DETECTION_GENERATION
+    with _DETECT_LOCK:
+        if epoch is None:
+            # A nested read inside an owning scope belongs to that pass, not to whatever
+            # is current by the time it reaches here. See owning_detection_epoch().
+            epoch = getattr(_OWNING_EPOCH, "value", None)
+        if epoch is None:
+            epoch = current_detection_epoch()
+        elif DEVICE is None and current_detection_epoch() != epoch:
+            # Retired before this worker reached the lock. Probing would import torch for a
+            # stopped lifespan and the next warm would queue behind it only to re-detect.
+            # Mid-probe shutdown: below.
+            return DEVICE
+        produced_here = DEVICE is None
+        if produced_here:
+            # Same reason detect_hardware() clears it: the pass below assigns DEVICE and
+            # CHAT_ONLY before probes that can still fall back to CPU. A stale set event
+            # (shutdown cleared DEVICE while a cached waiter went on to set it) would
+            # publish the XPU candidate as settled. Republished below once final.
+            DETECTION_COMPLETE.clear()
+            try:
+                _detect_hardware_locked()
+            except BaseException as exc:  # noqa: BLE001 - degrade, never 500 the health check
+                logger.error("Hardware detection failed; falling back to CPU: %r", exc)
+                DEVICE = DeviceType.CPU
+                CHAT_ONLY = True
+                CHAT_ONLY_REASON = "detection_failed"
+            # Inside the branch: the orchestrator rebuilds its curated defaults whenever this
+            # counter moves, so bumping on the cached path caused needless rebuilds. Forced
+            # detect_hardware() bumps it too.
+            DETECTION_GENERATION += 1
+        if produced_here and current_detection_epoch() != epoch:
+            # See detect_hardware(): a retired pass must not publish -- but only what this
+            # call produced. A retired worker that waited out the lock and found DEVICE set
+            # is looking at the new lifespan's verdict; discarding it would leave the
+            # restart provisional.
+            _discard_detection_locked()
+            return DEVICE
+        # Set only here, where a final value is guaranteed: a non-None DEVICE means only that
+        # a candidate was picked (the XPU branch assigns before a probe that can raise), so a
+        # waiter trusting it could publish training-enabled for a CPU/chat-only host.
+        # Unconditional, unlike the counter: re-setting is a no-op and a late waiter needs it.
+        DETECTION_COMPLETE.set()
+        return DEVICE
+
+
+def _detect_hardware_locked() -> DeviceType:
+    """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
     CHAT_ONLY_REASON = None
     IS_ROCM = False
 
+    # Probe torch once per pass: a failed probe is expensive and a second can disagree.
+    torch_ok = _has_torch()
+
     # --- CUDA / ROCm / XPU: try PyTorch ---
-    if _has_torch():
+    if torch_ok:
         import torch
 
         # --- Explicit-XPU hint ---
@@ -255,7 +493,7 @@ def detect_hardware() -> DeviceType:
             return DEVICE
 
     # --- XPU: Intel GPU ---
-    if _has_torch():
+    if torch_ok:
         import torch
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             DEVICE = DeviceType.XPU
@@ -292,11 +530,14 @@ def detect_hardware() -> DeviceType:
             "Train/Export disabled (chat-only). Run `unsloth studio update` to "
             "restore MLX training."
         )
+    elif TORCH_IMPORT_ERROR is not None:
+        # torch installed but broken, so this host was never measured. "no_gpu" would lie.
+        CHAT_ONLY_REASON = "detection_failed"
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:
         CHAT_ONLY_REASON = "no_gpu"
-    print("Hardware detected: CPU (no GPU backend available)")
+    print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
 
@@ -308,10 +549,7 @@ def get_device() -> DeviceType:
     Return the detected device, auto-detecting if detect_hardware() hasn't run.
     Prefer calling detect_hardware() explicitly at startup.
     """
-    global DEVICE
-    if DEVICE is None:
-        detect_hardware()
-    return DEVICE
+    return ensure_hardware_detected()
 
 
 def export_capability() -> dict:
@@ -329,9 +567,15 @@ def export_capability() -> dict:
             "export_unsupported_reason": None,
             "export_unsupported_message": None,
         }
-    # No accelerator: name the blocker. Apple Silicon first -- its path is MLX, so "install PyTorch"
-    # would be wrong advice on a Mac even when torch is also absent.
-    if is_apple_silicon():
+    # No accelerator: name the blocker. Detection failure first -- the branches below all
+    # describe a measured host, so a broken probe would tell a GPU box to install PyTorch.
+    if CHAT_ONLY_REASON == "detection_failed":
+        reason = "detection_failed"
+        message = (
+            "Hardware detection failed on this host, so export is disabled. The server log records "
+            "the underlying error; restart Unsloth Studio to retry detection."
+        )
+    elif is_apple_silicon():
         reason = "mlx_unavailable"
         message = (
             "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
@@ -776,7 +1020,7 @@ def _rocm_linux_sysfs_gpu_busy_pct() -> Optional[float]:
         files = glob.glob("/sys/class/drm/card*/device/gpu_busy_percent")
         if not files:
             return None
-        values = [int(open(f).read().strip()) for f in files]
+        values = [int(open(f, encoding = "utf-8").read().strip()) for f in files]
         return round(sum(values) / len(values), 1)
     except Exception:
         return None
@@ -790,7 +1034,7 @@ def _rocm_linux_sysfs_temp_c() -> Optional[float]:
         files = glob.glob("/sys/class/drm/card*/device/hwmon/hwmon*/temp1_input")
         if not files:
             return None
-        temps = [int(open(f).read().strip()) / 1000.0 for f in files]
+        temps = [int(open(f, encoding = "utf-8").read().strip()) / 1000.0 for f in files]
         return round(max(temps), 1)
     except Exception:
         return None
@@ -807,7 +1051,9 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
         ):
             files = glob.glob(pattern)
             if files:
-                watts = sum(int(open(f).read().strip()) / 1_000_000.0 for f in files)
+                watts = sum(
+                    int(open(f, encoding = "utf-8").read().strip()) / 1_000_000.0 for f in files
+                )
                 return round(watts, 1)
         return None
     except Exception:
@@ -828,6 +1074,8 @@ def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
         )
         if r.returncode != 0 or not r.stdout.strip():
@@ -852,8 +1100,8 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
         total_files = glob.glob("/sys/class/drm/card*/device/mem_info_vram_total")
         if not used_files or not total_files:
             return None, None
-        used_bytes = sum(int(open(f).read().strip()) for f in used_files)
-        total_bytes = sum(int(open(f).read().strip()) for f in total_files)
+        used_bytes = sum(int(open(f, encoding = "utf-8").read().strip()) for f in used_files)
+        total_bytes = sum(int(open(f, encoding = "utf-8").read().strip()) for f in total_files)
         if total_bytes == 0:
             return None, None
         return round(used_bytes / (1024**3), 2), round(total_bytes / (1024**3), 2)
@@ -893,7 +1141,7 @@ def _rocm_kfd_gpu_pci_ids() -> list[str]:
             continue
         props: dict[str, int] = {}
         try:
-            with open(os.path.join(node_dir, "properties")) as f:
+            with open(os.path.join(node_dir, "properties"), encoding = "utf-8") as f:
                 for line in f:
                     parts = line.split()
                     if len(parts) == 2:
@@ -901,7 +1149,7 @@ def _rocm_kfd_gpu_pci_ids() -> list[str]:
                             props[parts[0]] = int(parts[1])
                         except ValueError:
                             continue
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return []  # unreadable node could be a GPU: fail closed, don't shift
         if props.get("simd_count", 0) <= 0:
             continue  # CPU node, not a GPU
@@ -979,9 +1227,9 @@ def _rocm_linux_sysfs_vram_by_pci_gb() -> dict[str, tuple[float, float]]:
             if not bdf:
                 continue
             try:
-                with open(os.path.join(dev_dir, "mem_info_vram_used")) as f:
+                with open(os.path.join(dev_dir, "mem_info_vram_used"), encoding = "utf-8") as f:
                     used_bytes = int(f.read().strip())
-                with open(os.path.join(dev_dir, "mem_info_vram_total")) as f:
+                with open(os.path.join(dev_dir, "mem_info_vram_total"), encoding = "utf-8") as f:
                     total_bytes = int(f.read().strip())
             except (OSError, ValueError):
                 continue
@@ -1025,6 +1273,8 @@ def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, flo
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
         )
         if r.returncode != 0 or not r.stdout.strip():
@@ -1704,7 +1954,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         "backend": _backend_label(device),
         "parent_visible_gpu_ids": [],
         "devices": [],
-        "index_kind": "relative",
+        "index_kind": "vulkan",
     }
 
 
@@ -2575,8 +2825,70 @@ def _backend_visible_devices_env() -> Optional[str]:
     return os.environ.get("CUDA_VISIBLE_DEVICES")
 
 
+def get_vulkan_inference_gpu_info() -> Optional[Dict[str, Any]]:
+    """Return llama.cpp Vulkan devices, or None when Vulkan is not installed."""
+    # Vulkan is a llama.cpp inference backend, not a PyTorch training device, so
+    # keep it separate from the PyTorch/MLX training-device report.
+    try:
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _apply_igpu_host_reserve_mib,
+        )
+    except Exception as e:
+        logger.debug("Could not inspect the llama.cpp Vulkan backend: %s", e)
+        return None
+
+    try:
+        if not LlamaCppBackend._is_vulkan_backend():
+            return None
+    except Exception as e:
+        logger.debug("Could not identify the llama.cpp Vulkan backend: %s", e)
+        return None
+
+    result = {
+        "available": False,
+        "backend": "vulkan",
+        "backend_cuda_visible_devices": None,
+        "parent_visible_gpu_ids": [],
+        "devices": [],
+        "index_kind": "vulkan",
+    }
+    try:
+        for row in LlamaCppBackend.vulkan_device_inventory():
+            ordinal = row["index"]
+            shared_memory = bool(row["is_igpu"])
+            free_mib = _apply_igpu_host_reserve_mib(row["free_mib"], shared_memory)
+            total_mib = 0 if shared_memory else row["total_mib"]
+            budget_mib = total_mib or free_mib
+            used_mib = max(0, total_mib - free_mib) if total_mib else None
+            result["devices"].append(
+                {
+                    "index": ordinal,
+                    # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins,
+                    # so unlike a torch-xpu relative ordinal these are selectable.
+                    "index_kind": "vulkan",
+                    "visible_ordinal": ordinal,
+                    "name": row["name"],
+                    "memory_total_gb": round(budget_mib / 1024, 2),
+                    "vram_used_gb": round(used_mib / 1024, 2) if used_mib is not None else None,
+                    "vram_free_gb": round(free_mib / 1024, 2),
+                    "vram_utilization_pct": round((used_mib / total_mib) * 100, 1)
+                    if used_mib is not None and total_mib > 0
+                    else None,
+                    "shared_memory": shared_memory,
+                }
+            )
+    except Exception as e:
+        logger.debug("Vulkan GPU visibility query failed: %s", e)
+        return result
+
+    result["available"] = bool(result["devices"])
+    return result
+
+
 def get_backend_visible_gpu_info() -> Dict[str, Any]:
     device = get_device()
+
     if device in (DeviceType.CUDA, DeviceType.XPU):
         parent_visible_ids = get_parent_visible_gpu_ids()
         # Try native SMI first (nvidia-smi; skipped for ROCm).
@@ -2668,7 +2980,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
         "backend_cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "parent_visible_gpu_ids": [],
         "devices": [],
-        "index_kind": "relative",
+        "index_kind": "vulkan",
     }
 
 

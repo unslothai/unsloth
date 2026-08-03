@@ -326,6 +326,58 @@ def _normalize_tool_call_arguments(messages: list) -> list:
     return out if mutated else messages
 
 
+def _take_tool_result(pending: list, call_id) -> Optional[dict]:
+    if call_id:
+        for i, result in enumerate(pending):
+            if result.get("tool_call_id") == call_id:
+                return pending.pop(i)
+    for i, result in enumerate(pending):
+        if not result.get("tool_call_id"):
+            return pending.pop(i)
+    return None
+
+
+def _split_parallel_tool_calls(messages: list) -> list:
+    """Llama 3.x templates render one call per message, so split parallel calls
+    into consecutive single-call messages, each followed by its own result."""
+    if not any(isinstance(m, dict) and len(m.get("tool_calls") or ()) > 1 for m in messages):
+        return messages
+
+    out: list = []
+    i = 0
+    total = len(messages)
+    while i < total:
+        msg = messages[i]
+        calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+        if not calls or len(calls) <= 1:
+            out.append(msg)
+            i += 1
+            continue
+
+        # Tool results right after this message answer its calls.
+        j = i + 1
+        pending: list = []
+        while (
+            j < total
+            and isinstance(messages[j], dict)
+            and messages[j].get("role") in ("tool", "ipython")
+        ):
+            pending.append(messages[j])
+            j += 1
+
+        for idx, call in enumerate(calls):
+            piece = {**msg, "tool_calls": [call]}
+            if idx:
+                piece["content"] = ""
+            out.append(piece)
+            result = _take_tool_result(pending, call.get("id") if isinstance(call, dict) else None)
+            if result is not None:
+                out.append(result)
+        out.extend(pending)
+        i = j
+    return out
+
+
 def apply_chat_template_for_generation(
     tokenizer,
     messages: list,
@@ -378,13 +430,21 @@ def apply_chat_template_for_generation(
     try:
         return _render(messages)
     except Exception:
-        # Strict tool templates reject the JSON-string ``arguments`` form via
-        # TypeError or a broad Jinja raise_exception, so retry with dicts coerced.
-        # Original messages render first, so working templates stay byte-identical.
+        # Retry with repairs applied cumulatively. Originals render first, so
+        # working templates stay byte-identical.
+        candidates: list = []
         normalized = _normalize_tool_call_arguments(messages)
-        if normalized is messages:
-            raise
-        return _render(normalized)
+        if normalized is not messages:
+            candidates.append(normalized)
+        split = _split_parallel_tool_calls(normalized)
+        if split is not normalized:
+            candidates.append(split)
+        for candidate in candidates:
+            try:
+                return _render(candidate)
+            except Exception:
+                continue
+        raise
 
 
 def render_native_template(

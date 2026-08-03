@@ -19,7 +19,9 @@ on:
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'unsloth_cli/__init__.py'
       - 'tests/test_installer_skip_autostart.py'
+      - 'tests/test_installer_system32_guard.py'
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
@@ -29,7 +31,9 @@ on:
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'unsloth_cli/__init__.py'
       - 'tests/test_installer_skip_autostart.py'
+      - 'tests/test_installer_system32_guard.py'
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
@@ -68,6 +72,7 @@ jobs:
           python -m pytest
           tests/python/test_cross_platform_parity.py
           tests/test_installer_skip_autostart.py
+          tests/test_installer_system32_guard.py
           -q
       - name: PowerShell rollback lifecycle tests
         if: runner.os == 'Windows'

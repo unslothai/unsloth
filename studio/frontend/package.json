@@ -11,7 +11,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "typecheck": "tsc -b --pretty false",
+    "test": "node --experimental-strip-types --test \"tests/**/*.test.ts\"",
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
     "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
     "biome:check": "biome check",
     "biome:fix": "biome check --write"
@@ -43,6 +44,7 @@
     "@tanstack/react-virtual": "3.13.25",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
+    "@tauri-apps/plugin-deep-link": "2.4.9",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-opener": "^2.5.3",
     "@tauri-apps/plugin-process": "^2.3.1",

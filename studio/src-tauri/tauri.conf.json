@@ -16,7 +16,7 @@
   "app": {
     "withGlobalTauri": true,
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:* ws://localhost:* ws://127.0.0.1:* http://127.0.0.1:* https://huggingface.co https://*.huggingface.co https://datasets-server.huggingface.co; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-src 'self' http://localhost:* http://127.0.0.1:*"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://localhost:* ws://localhost:* ws://127.0.0.1:* http://127.0.0.1:* https://huggingface.co https://*.huggingface.co https://datasets-server.huggingface.co; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-src 'self' http://localhost:* http://127.0.0.1:*"
     },
     "windows": [
       {
@@ -35,8 +35,13 @@
     ]
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["unsloth"]
+      }
+    },
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE0NjlBNkEwQTc0QjY0Q0UKUldUT1pFdW5vS1pwRkl3TXRrOGlYdDNMeTh1bEhSbURrM3IyT2lTK1BiekpTc0Z2SXZFeVNibDIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFBQzA4RjczODM0RjE1QjcKUldTM0ZVK0RjNC9BR2t4R0RVaFR5cTkyUlRVQ1FwaGV0Nk04eWNwWXBhZnlzalJydllmZm1QTS8K",
       "endpoints": [
         "https://github.com/unslothai/unsloth/releases/download/desktop-latest/latest.json"
       ],
@@ -80,6 +85,7 @@
         "bundleMediaFramework": false
       },
       "deb": {
+        "desktopTemplate": "./linux/unsloth.desktop",
         "postRemoveScript": "./linux/postremove.sh"
       }
     }

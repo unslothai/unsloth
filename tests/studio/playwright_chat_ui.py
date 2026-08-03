@@ -98,7 +98,7 @@ def expected_default_model():
         / "defaults.py"
     )
     try:
-        tree = ast.parse(defaults_path.read_text())
+        tree = ast.parse(defaults_path.read_text(encoding = "utf-8"))
     except Exception as exc:
         fail(f"could not read {defaults_path}: {exc}")
     models = None
@@ -261,6 +261,266 @@ def login_via_api(pw):
 def parse_rgb(s):
     m = re.search(r"rgba?\((\d+),\s*(\d+),\s*(\d+)", s or "")
     return tuple(int(x) for x in m.groups()) if m else None
+
+
+def exercise_floating_monitor_geometry(page):
+    """Exercise content, drag, native resize, and viewport geometry."""
+    monitor = page.get_by_test_id("floating-monitor")
+    monitor.wait_for(state = "visible", timeout = 10_000)
+    monitor_handle = page.get_by_test_id("floating-monitor-drag-handle")
+    viewport = page.viewport_size
+    if viewport is None:
+        fail("Playwright viewport unavailable for floating monitor check")
+    inset = 16
+    tolerance = 1
+
+    def monitor_box(label):
+        box = monitor.bounding_box()
+        if box is None:
+            fail(f"floating monitor has no bounding box during {label}")
+        return box
+
+    def wait_for_box(label, predicate):
+        deadline = time.time() + 5
+        box = monitor_box(label)
+        while not predicate(box) and time.time() < deadline:
+            page.wait_for_timeout(50)
+            box = monitor_box(label)
+        if not predicate(box):
+            fail(f"floating monitor did not settle during {label}: {box!r}")
+        return box
+
+    def pointer_drag(start_x, start_y, end_x, end_y):
+        page.mouse.move(start_x, start_y)
+        page.mouse.down()
+        page.mouse.move(end_x, end_y, steps = 10)
+        page.mouse.up()
+        page.wait_for_timeout(100)
+
+    def drag_monitor_to(x, y):
+        box = monitor_handle.bounding_box()
+        if box is None:
+            fail("floating monitor handle has no bounding box")
+        pointer_drag(
+            box["x"] + box["width"] / 2,
+            box["y"] + box["height"] / 2,
+            x,
+            y,
+        )
+        return monitor_box("drag")
+
+    def resize_monitor_to(
+        x,
+        y,
+        grip_inset = 8,
+    ):
+        before = monitor_box("resize")
+        pointer_drag(
+            before["x"] + before["width"] - grip_inset,
+            before["y"] + before["height"] - grip_inset,
+            x,
+            y,
+        )
+        return before, monitor_box("resize")
+
+    def expect_close(actual, expected, label):
+        if abs(actual - expected) > tolerance:
+            fail(f"{label}: expected {expected!r}, got {actual!r}")
+
+    def is_inside(box, surface):
+        return (
+            box["x"] >= inset - tolerance
+            and box["y"] >= inset - tolerance
+            and box["x"] + box["width"] <= surface["width"] - inset + tolerance
+            and box["y"] + box["height"] <= surface["height"] - inset + tolerance
+        )
+
+    # Every assertion below compares heights sampled seconds apart against this
+    # baseline, so the panel must already be showing its final row set. Until the
+    # first /api/system response is applied the panel paints use-system.ts's
+    # zero-filled DEFAULT_SYSTEM, which has no GPU: on a host that reports one
+    # (macos-14 reports a single MLX device) the VRAM row then appears and adds
+    # ~59px permanently. The caller only waited for the /api/system *request*, so
+    # sampling here can capture the pre-payload height -- a height the panel never
+    # returns to, which "content shrink" would then wait out its whole deadline
+    # chasing. Wait for the payload itself, and for the panel to have finished
+    # resizing to it.
+    try:
+        page.wait_for_function(
+            r"""() => {
+                const monitor = document.querySelector(
+                    '[data-testid="floating-monitor"]'
+                );
+                const content = document.querySelector(
+                    '[data-testid="floating-monitor-content"]'
+                );
+                if (!(monitor && content)) return false;
+                // DEFAULT_SYSTEM reports a 0 GiB RAM total; a real payload never does.
+                const readout = content.innerText.match(
+                    /([\d.]+)\s*GiB\s*\/\s*([\d.]+)\s*GiB/
+                );
+                if (!readout || !(Number.parseFloat(readout[2]) > 0)) return false;
+                // The rows commit a pass before the panel resizes to them, so the
+                // panel is only done reacting once its scroll region exactly fits
+                // the content it was reconciled against.
+                const scroll = content.parentElement;
+                const monitorHeight = monitor.getBoundingClientRect().height;
+                const contentHeight = content.getBoundingClientRect().height;
+                const scrollHeight = scroll.getBoundingClientRect().height;
+                if (Math.abs(scrollHeight - contentHeight) > 1) return false;
+                // Row insertion also lands a frame before the gap between rows
+                // does, and that intermediate state is self-consistent. Require
+                // the geometry to hold for two consecutive animation frames --
+                // this runs under the default polling="raf", and it is how
+                // Playwright itself defines a stable element.
+                //
+                // Position belongs in the signature as well as size. An undragged
+                // panel is bottom-anchored by re-clamping its top against the new
+                // height, and that lands a frame AFTER the height it reacts to, so
+                // a size-only signature reports settled while the panel is still
+                // where the shorter version put it. Sampling there reads a bottom
+                // inset that is exactly the growth too low. Deliberately not
+                // waiting on the expected inset itself: that would gate on the
+                // very thing the assertions below check and turn a real
+                // misplacement into a timeout instead of a failure.
+                const rect = monitor.getBoundingClientRect();
+                const signature = [
+                    monitorHeight, contentHeight,
+                    Math.round(rect.top), Math.round(rect.left),
+                ].join("x");
+                const settled = window.__unslothMonitorGeometry === signature;
+                window.__unslothMonitorGeometry = signature;
+                return settled;
+            }""",
+            timeout = 30_000,
+        )
+    except Exception as exc:
+        fail(f"floating monitor never settled on an /api/system payload: {exc!r}")
+
+    initial_box = monitor_box("initial placement")
+    expect_close(
+        initial_box["x"] + initial_box["width"],
+        viewport["width"] - inset,
+        "initial right inset",
+    )
+    expect_close(
+        initial_box["y"] + initial_box["height"],
+        viewport["height"] - inset,
+        "initial bottom inset",
+    )
+
+    # Delayed GPU rows must expand upward and retain the initial bottom anchor.
+    # The probe goes in the content region, where a real row is rendered.
+    monitor.get_by_test_id("floating-monitor-content").evaluate(
+        """node => {
+            const probe = document.createElement("div");
+            probe.dataset.testid = "floating-monitor-growth-probe";
+            probe.style.height = "48px";
+            node.appendChild(probe);
+        }"""
+    )
+    grown_box = wait_for_box(
+        "content growth",
+        lambda box: box["height"] >= initial_box["height"] + 47,
+    )
+    expect_close(
+        grown_box["y"] + grown_box["height"],
+        viewport["height"] - inset,
+        "content growth bottom inset",
+    )
+    monitor.get_by_test_id("floating-monitor-growth-probe").evaluate("node => node.remove()")
+    initial_box = wait_for_box(
+        "content shrink",
+        lambda box: (
+            abs(box["height"] - initial_box["height"]) <= tolerance
+            and abs(box["y"] + box["height"] - viewport["height"] + inset) <= tolerance
+        ),
+    )
+
+    # Chromium retains a blocked inline resize request. A subsequent drag must
+    # not reveal that hidden size.
+    _, blocked_box = resize_monitor_to(
+        viewport["width"] - 2,
+        viewport["height"] - 2,
+    )
+    expect_close(blocked_box["width"], initial_box["width"], "blocked width")
+    expect_close(blocked_box["height"], initial_box["height"], "blocked height")
+    left_box = drag_monitor_to(0, viewport["height"] / 2)
+    expect_close(left_box["x"], inset, "left inset")
+    expect_close(left_box["width"], initial_box["width"], "post-drag width")
+    expect_close(left_box["height"], initial_box["height"], "post-drag height")
+    right_box = drag_monitor_to(viewport["width"], viewport["height"] / 2)
+    expect_close(
+        right_box["x"] + right_box["width"],
+        viewport["width"] - inset,
+        "right inset",
+    )
+
+    # Constraint changes during pointer capture must rebase the active drag.
+    handle_box = monitor_handle.bounding_box()
+    if handle_box is None:
+        fail("floating monitor handle has no active-drag bounding box")
+    page.mouse.move(
+        handle_box["x"] + handle_box["width"] / 2,
+        handle_box["y"] + handle_box["height"] / 2,
+    )
+    page.mouse.down()
+    reduced_viewport = {"width": 500, "height": 400}
+    page.set_viewport_size(reduced_viewport)
+    page.mouse.move(498, 398, steps = 10)
+    page.mouse.up()
+    wait_for_box(
+        "active viewport shrink",
+        lambda box: is_inside(box, reduced_viewport),
+    )
+
+    narrow_viewport = {"width": 260, "height": 400}
+    page.set_viewport_size(narrow_viewport)
+    wait_for_box("narrow viewport", lambda box: is_inside(box, narrow_viewport))
+    page.set_viewport_size(viewport)
+    wait_for_box("viewport restore", lambda box: is_inside(box, viewport))
+
+    resize_start = drag_monitor_to(0, 0)
+    _, resized_box = resize_monitor_to(
+        resize_start["x"] + resize_start["width"] - 8 + 40,
+        resize_start["y"] + resize_start["height"] - 8 + 30,
+    )
+    expect_close(resized_box["width"], resize_start["width"] + 40, "resize width")
+    expect_close(resized_box["height"], resize_start["height"] + 30, "resize height")
+    expect_close(resized_box["x"], resize_start["x"], "resize left edge")
+    expect_close(resized_box["y"], resize_start["y"], "resize top edge")
+
+    _, minimum_box = resize_monitor_to(
+        resized_box["x"] + resized_box["width"] - 102,
+        resized_box["y"] + resized_box["height"] - 102,
+        grip_inset = 2,
+    )
+    expect_close(minimum_box["width"], resize_start["width"], "minimum width")
+    expect_close(minimum_box["height"], resize_start["height"], "minimum height")
+
+    drag_monitor_to(0, 0)
+    _, maximum_box = resize_monitor_to(
+        viewport["width"] - 2,
+        viewport["height"] - 2,
+    )
+    expect_close(
+        maximum_box["x"] + maximum_box["width"],
+        viewport["width"] - inset,
+        "maximum resize right inset",
+    )
+    expect_close(
+        maximum_box["y"] + maximum_box["height"],
+        viewport["height"] - inset,
+        "maximum resize bottom inset",
+    )
+
+    # Do not leave the maximum-size overlay above the shutdown controls.
+    monitor.get_by_role("button", name = "Close").click()
+    monitor.wait_for(state = "hidden")
+    info(
+        "OK floating monitor preserves native resize and stays stable across "
+        "content, drag, and viewport changes"
+    )
 
 
 with sync_playwright() as p:
@@ -1647,6 +1907,9 @@ with sync_playwright() as p:
     if page.get_by_role("dialog", name = re.compile(r"^Settings$")).count() != 0:
         fail("settings shortcut on /login left the dialog open after authentication")
     info("OK persisted monitor stayed dormant on /login and resumed after authentication")
+
+    exercise_floating_monitor_geometry(page)
+
     shoot("18-relogin-with-NEW2")
 
     step("Shutdown via account menu")

@@ -704,7 +704,7 @@ def test_accelerate_find_device_skips_empty_logits():
 def test_accelerate_patch_wired_into_gpu_init():
     """The patch must be installed at startup, not only importable."""
     source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
-    source = source.read_text()
+    source = source.read_text(encoding = "utf-8")
     assert "patch_accelerate_recursively_apply()" in source, (
         "DRIFT DETECTED: patch_accelerate_recursively_apply is defined but "
         "never called in _gpu_init.py, so real imports never install it."

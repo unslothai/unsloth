@@ -241,7 +241,7 @@ def _offline_window_if(local_files_only):
 def _is_wsl():
     """Detect if running under Windows Subsystem for Linux."""
     try:
-        return "microsoft" in open("/proc/version").read().lower()
+        return "microsoft" in open("/proc/version", encoding = "utf-8").read().lower()
     except Exception:
         return False
 
@@ -574,7 +574,7 @@ class ExportBackend:
             )
             metadata = {"base_model": base_model}
             metadata_path = os.path.join(save_directory, "export_metadata.json")
-            with open(metadata_path, "w") as f:
+            with open(metadata_path, "w", encoding = "utf-8") as f:
                 json.dump(metadata, f, indent = 2)
             logger.info(f"Wrote export metadata to {metadata_path}")
         except Exception as e:

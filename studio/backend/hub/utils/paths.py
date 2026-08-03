@@ -103,7 +103,7 @@ def _is_wsl() -> bool:
     if sys.platform == "win32":
         return False
     try:
-        return "microsoft" in Path("/proc/version").read_text().lower()
+        return "microsoft" in Path("/proc/version").read_text(encoding = "utf-8").lower()
     except Exception:
         return False
 
@@ -124,7 +124,7 @@ def _wsl_automount_root() -> str:
         import configparser
 
         parser = configparser.ConfigParser(inline_comment_prefixes = ("#", ";"))
-        parser.read("/etc/wsl.conf")
+        parser.read("/etc/wsl.conf", encoding = "utf-8")
         root = parser.get("automount", "root", fallback = "").strip().strip("\"'")
     except Exception:
         return default

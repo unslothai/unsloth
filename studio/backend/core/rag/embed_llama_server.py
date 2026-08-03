@@ -103,6 +103,8 @@ class LlamaServerBackend:
                 [binary, "--help"],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 30,
                 **windows_hidden_subprocess_kwargs(),
             )
@@ -331,6 +333,8 @@ class LlamaServerBackend:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             env = env,
             **windows_hidden_subprocess_kwargs(),
             **child_popen_kwargs(),

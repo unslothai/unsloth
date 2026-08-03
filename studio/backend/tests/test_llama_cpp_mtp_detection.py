@@ -54,6 +54,7 @@ sys.modules.setdefault("httpx", _httpx_stub)
 import pytest
 
 from core.inference.llama_cpp import (
+    GgufLoadIntent,
     LlamaCppBackend,
     _GPU_OFFLOAD_OVERRIDE_FLAGS,
     _THREAD_OVERRIDE_FLAGS,
@@ -63,8 +64,14 @@ from core.inference.llama_cpp import (
     _extra_args_set_any_flag,
     _extra_args_set_spec_type,
     _is_mtp_model_name,
+    _kv_unified_from_args,
     _mla_mtp_auto_enabled,
+    _swa_full_from_args_or_env,
 )
+
+
+def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
+    return backend.adopt_load_intent_if_matched(GgufLoadIntent(**kwargs))
 
 
 # Synthetic GGUF helper (mirrors test_gguf_metadata.py).
@@ -147,6 +154,41 @@ def test_is_mtp_model_name_handles_none():
     assert _is_mtp_model_name("", "") is False
 
 
+@pytest.mark.parametrize("flag", ["--swa-full", "--swa_full"])
+def test_swa_full_detects_llama_cpp_long_flag_spellings(flag):
+    assert _swa_full_from_args_or_env([flag], {}) is True
+
+
+@pytest.mark.parametrize("value", ["on", "enabled", "true", "1"])
+def test_swa_full_detects_llama_cpp_env_truth_values(value):
+    assert _swa_full_from_args_or_env([], {"LLAMA_ARG_SWA_FULL": value}) is True
+
+
+@pytest.mark.parametrize("value", ["", "off", "yes", "TRUE", " true ", "0"])
+def test_swa_full_rejects_values_llama_cpp_treats_as_false(value):
+    assert _swa_full_from_args_or_env([], {"LLAMA_ARG_SWA_FULL": value}) is False
+
+
+def test_swa_full_cli_wins_when_env_is_false():
+    assert _swa_full_from_args_or_env(["--swa-full"], {"LLAMA_ARG_SWA_FULL": "0"}) is True
+
+
+@pytest.mark.parametrize("flag", ["--kv-unified", "--kv_unified", "-kvu"])
+def test_kv_unified_detects_enable_aliases(flag):
+    assert _kv_unified_from_args([flag]) is True
+
+
+@pytest.mark.parametrize("flag", ["--no-kv-unified", "--no_kv_unified", "-no-kvu"])
+def test_kv_unified_detects_disable_aliases(flag):
+    assert _kv_unified_from_args(["--kv-unified", flag]) is False
+
+
+def test_kv_unified_uses_environment_before_cli():
+    assert _kv_unified_from_args([], env = {"LLAMA_ARG_KV_UNIFIED": "true"}) is True
+    assert _kv_unified_from_args([], default = True, env = {"LLAMA_ARG_KV_UNIFIED": "false"}) is True
+    assert _kv_unified_from_args(["--kv-unified"], env = {"LLAMA_ARG_KV_UNIFIED": "false"}) is True
+
+
 def test_is_mtp_model_name_detects_marker_in_filename(tmp_path):
     gguf = tmp_path / "Qwen3.6-27B-MTP-Q4_K_M.gguf"
     gguf.write_bytes(b"")
@@ -212,7 +254,8 @@ def test_already_in_target_state_matches_when_request_omits_spec_for_mtp_model()
     # Duplicate /load with no spec must match a running draft-mtp backend.
     backend = _mtp_backend()
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -230,7 +273,8 @@ def test_already_in_target_state_matches_when_request_omits_spec_for_mtp_model()
 def test_already_in_target_state_matches_when_request_uses_default_for_mtp_model():
     backend = _mtp_backend()
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -255,7 +299,8 @@ def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_m
         _speculative_type = "default",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-GGUF",
             hf_variant = "Q4_K_M",
@@ -273,7 +318,8 @@ def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_m
 def test_already_in_target_state_explicit_off_still_mismatches_mtp_backend():
     backend = _mtp_backend()
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -422,7 +468,8 @@ def test_already_in_target_state_user_spec_type_override_matches_clean_backend()
         _extra_args = ["--spec-type", "none"],
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -447,7 +494,8 @@ def test_already_in_target_state_local_file_mtp_match(tmp_path):
         _hf_variant = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = str(gguf),
             model_identifier = "local-qwen-mtp",
             hf_variant = None,
@@ -467,7 +515,8 @@ def test_already_in_target_state_vision_mtp_match():
     # with auto/default spec must match a backend already running draft-mtp.
     backend = _mtp_backend(_is_vision = True)
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -485,7 +534,8 @@ def test_already_in_target_state_vision_mtp_match():
 def test_already_in_target_state_vision_mtp_default_matches():
     backend = _mtp_backend(_is_vision = True)
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -511,7 +561,8 @@ def test_already_in_target_state_vision_off_matches_vision_backend():
         _requested_spec_mode = "off",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3-VL-4B-Instruct-GGUF",
             hf_variant = "Q4_K_M",
@@ -968,62 +1019,66 @@ def test_probe_server_capabilities_caches_by_mtime(tmp_path):
 # spec_draft_n_max plumbing (first-class --spec-draft-n-max override).
 
 
+def _draft_n_max_matches(
+    backend,
+    requested,
+    *,
+    speculative_type = None,
+):
+    return _matches(
+        backend,
+        gguf_path = None,
+        model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = speculative_type,
+        spec_draft_n_max = requested,
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+    )
+
+
 def test_already_in_target_state_matches_when_draft_n_max_unset():
     # None on the request means "platform default"; matches any backend.
-    backend = _mtp_backend(_spec_draft_n_max = None)
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = None), None)
 
 
 def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
-    backend = _mtp_backend(_spec_draft_n_max = 4)
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = 4,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 4)
 
 
-def test_already_in_target_state_mismatches_when_draft_n_max_differs():
-    backend = _mtp_backend(_spec_draft_n_max = 4)
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
+def test_mtp_draft_n_max_mismatch_survives_active_runtime_state():
+    assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 8, speculative_type = "mtp")
+
+
+@pytest.mark.parametrize(
+    ("saved_draft_n_max", "expected_match"),
+    [(8, True), (4, False), (None, False)],
+)
+def test_mtp_draft_n_max_compares_saved_runtime_fallback_intent(saved_draft_n_max, expected_match):
+    backend = _mtp_backend(
+        _requested_spec_mode = "mtp",
+        _speculative_type = None,
+        _spec_draft_n_max = None,
+        _spec_fallback_reason = "runtime_error",
+        _last_load_intent = GgufLoadIntent(
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = 8,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is False
+            spec_draft_n_max = saved_draft_n_max,
+        ),
     )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "mtp") is expected_match
+
+
+def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
+    backend = _mtp_backend(
+        _requested_spec_mode = "mtp",
+        _speculative_type = "default",
+        _spec_draft_n_max = None,
+        _spec_fallback_reason = "binary_no_mtp",
+    )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "mtp")
 
 
 def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
@@ -1034,21 +1089,7 @@ def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
         _requested_spec_mode = "ngram",
         _spec_draft_n_max = None,
     )
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "ngram-mod",
-            spec_draft_n_max = 8,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "ngram-mod")
 
 
 # Sub-3B MTP gate -- tiny dense models regress with the MTP draft head, so
@@ -1090,7 +1131,8 @@ def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(m
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1114,7 +1156,8 @@ def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypa
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1138,7 +1181,8 @@ def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1163,7 +1207,8 @@ def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypa
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1733,7 +1778,8 @@ def test_reload_skip_auto_mla_ngram_is_idempotent():
         _requested_spec_mode = "auto",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = _GLM_MLA_MODEL,
             hf_variant = "Q4_K_M",
@@ -1757,7 +1803,8 @@ def test_reload_forced_mtp_bounces_auto_mla():
         _requested_spec_mode = "auto",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = _GLM_MLA_MODEL,
             hf_variant = "Q4_K_M",
@@ -2148,7 +2195,7 @@ def test_already_in_target_state_retries_after_hf_drafter_not_found():
         _mtp_draft_path = None,
         _gguf_path = None,
     )
-    assert backend._already_in_target_state(**_drafter_not_found_kwargs()) is False
+    assert _matches(backend, **_drafter_not_found_kwargs()) is False
     # Sanity: with no fallback reason the same request still dedupes (matches).
     ok = _mtp_backend(_model_identifier = "unsloth/gemma-4-E4B-it-GGUF", _gguf_path = None)
-    assert ok._already_in_target_state(**_drafter_not_found_kwargs()) is True
+    assert _matches(ok, **_drafter_not_found_kwargs()) is True

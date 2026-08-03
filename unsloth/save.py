@@ -32,8 +32,20 @@ except ImportError:
     import sys
     IS_WINDOWS = sys.platform == "win32"
     LLAMA_CPP_DEFAULT_DIR = "llama.cpp"
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+# Without bnb, peft stops exporting its 4bit LoRA layer too. Both names only feed
+# isinstance checks, so placeholders nothing can match are exact stand-ins.
+try:
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+except Exception:
+
+    class Bnb_Linear4bit:
+        pass
+
+    class Peft_Linear4bit:
+        pass
+
+
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import sys
@@ -52,7 +64,13 @@ import traceback
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
-from .models.loader_utils import get_model_name
+from .models.loader_utils import (
+    get_model_name,
+    _resolve_hub_repo_cached_file,
+    _tokenizer_cache_dir,
+    _tokenizer_revision,
+    _tokenizer_wants_local_only,
+)
 from .models._utils import _convert_torchao_model
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
@@ -443,18 +461,43 @@ def _has_tokenizer_model(tokenizer, token = None):
         return False
     if os.path.isdir(source):
         return os.path.isfile(os.path.join(source, "tokenizer.model"))
-    if source in _TOKENIZER_MODEL_CACHE:
-        return _TOKENIZER_MODEL_CACHE[source]
+    # Refs of one repo can differ in whether they ship the asset, so memoize per ref.
+    revision = _tokenizer_revision(tokenizer)
+    cache_key = (source, revision)
+    if cache_key in _TOKENIZER_MODEL_CACHE:
+        return _TOKENIZER_MODEL_CACHE[cache_key]
+
+    # Hub repo id: probe local cache before model_info (issue #7481).
+    cache_dir = _tokenizer_cache_dir(tokenizer) or os.environ.get("HF_HUB_CACHE")
+    if not cache_dir:
+        hf_home = os.environ.get("HF_HOME")
+        if hf_home:
+            cache_dir = os.path.join(hf_home, "hub")
+
+    cached_path = _resolve_hub_repo_cached_file(
+        source,
+        "tokenizer.model",
+        token = token,
+        local_files_only = True,
+        cache_dir = cache_dir,
+        revision = revision,
+    )
+    if cached_path is not None:
+        _TOKENIZER_MODEL_CACHE[cache_key] = True
+        return True
+
+    if _tokenizer_wants_local_only(tokenizer):
+        return False
 
     try:
-        repo_info = HfApi(token = token).model_info(source, files_metadata = False)
+        repo_info = HfApi(token = token).model_info(source, revision = revision, files_metadata = False)
     except Exception:
         return False
 
     has_tokenizer_model = any(
         sibling.rfilename == "tokenizer.model" for sibling in (repo_info.siblings or [])
     )
-    _TOKENIZER_MODEL_CACHE[source] = has_tokenizer_model
+    _TOKENIZER_MODEL_CACHE[cache_key] = has_tokenizer_model
     return has_tokenizer_model
 
 
@@ -505,15 +548,35 @@ def _preserve_sentencepiece_tokenizer_assets(
                 if os.path.isfile(local_path):
                     downloaded_path = local_path
             else:
-                from huggingface_hub import hf_hub_download
-                try:
-                    downloaded_path = hf_hub_download(
-                        repo_id = source,
-                        filename = "tokenizer.model",
-                        token = token,
-                    )
-                except Exception:
-                    downloaded_path = None
+                cache_dir = _tokenizer_cache_dir(tokenizer) or os.environ.get("HF_HUB_CACHE")
+                if not cache_dir:
+                    hf_home = os.environ.get("HF_HOME")
+                    if hf_home:
+                        cache_dir = os.path.join(hf_home, "hub")
+
+                cached_path = _resolve_hub_repo_cached_file(
+                    source,
+                    "tokenizer.model",
+                    token = token,
+                    local_files_only = True,
+                    cache_dir = cache_dir,
+                    revision = _tokenizer_revision(tokenizer),
+                )
+                if cached_path is not None:
+                    downloaded_path = cached_path
+                else:
+                    from huggingface_hub import hf_hub_download
+                    try:
+                        downloaded_path = hf_hub_download(
+                            repo_id = source,
+                            filename = "tokenizer.model",
+                            token = token,
+                            local_files_only = _tokenizer_wants_local_only(tokenizer),
+                            cache_dir = cache_dir,
+                            revision = _tokenizer_revision(tokenizer),
+                        )
+                    except Exception:
+                        downloaded_path = None
 
     if not os.path.isfile(tokenizer_model) and downloaded_path is not None:
         shutil.copy2(downloaded_path, tokenizer_model)
@@ -661,6 +724,16 @@ def _is_gpt_oss(model):
     return "GptOssForCausalLM" in architectures or getattr(config, "model_type", None) in (
         "gpt-oss",
         "gpt_oss",
+    )
+
+
+def _is_vlm(model):
+    config = getattr(model, "config", None)
+    if config is None:
+        return False
+    architectures = getattr(config, "architectures", None) or ()
+    return hasattr(config, "vision_config") or any(
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
     )
 
 
@@ -2892,13 +2965,7 @@ def unsloth_save_pretrained_gguf(
         )
 
     # Step 1: Check if this is a VLM (Vision-Language Model) and check if gpt-oss
-    is_vlm = False
-    if hasattr(self, "config") and hasattr(self.config, "architectures"):
-        is_vlm = any(
-            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-            for x in self.config.architectures
-        )
-        is_vlm = is_vlm or hasattr(self.config, "vision_config")
+    is_vlm = _is_vlm(self)
 
     is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
@@ -3793,11 +3860,16 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = outtype)
 
 
-from .models.loader_utils import get_model_name
-from unsloth_zoo.saving_utils import (
-    merge_and_overwrite_lora,
-    prepare_saving,
+from .models.loader_utils import (
+    get_model_name,
+    _resolve_hub_repo_cached_file,
+    _tokenizer_cache_dir,
+    _tokenizer_wants_local_only,
 )
+
+# Imported lazily at the two call sites below: a zoo older than the one that made
+# its own bitsandbytes import optional would otherwise break `import unsloth` on a
+# host without bnb, which is the whole point of the guards above.
 from unsloth_zoo.llama_cpp import (
     install_llama_cpp,
     convert_to_gguf as _convert_to_gguf,
@@ -4045,6 +4117,8 @@ def save_to_gguf_generic(
             quantization_type = quantization_type,
         )
         if repo_id is not None:
+            from unsloth_zoo.saving_utils import prepare_saving
+
             prepare_saving(
                 model,
                 repo_id,
@@ -4176,6 +4250,7 @@ def unsloth_generic_save(
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     else:
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
+        from unsloth_zoo.saving_utils import merge_and_overwrite_lora
         merge_and_overwrite_lora(
             get_model_name,
             model = model,
@@ -4524,13 +4599,7 @@ def _unsloth_save_torchao_with_given_config(
         quantization_config = TorchAoConfig(quant_type = torchao_config)
 
     # Determine if this is a VLM
-    is_vlm = False
-    if hasattr(model, "config") and hasattr(model.config, "architectures"):
-        is_vlm = any(
-            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-            for x in model.config.architectures
-        )
-        is_vlm = is_vlm or hasattr(model.config, "vision_config")
+    is_vlm = _is_vlm(model)
     auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
     auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 

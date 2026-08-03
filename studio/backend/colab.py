@@ -90,7 +90,7 @@ def _store_colab_login_credentials(username: str, password: str) -> None:
     path = _colab_login_credentials_path()
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text(f"{username}\n{password}\n")
+        path.write_text(f"{username}\n{password}\n", encoding = "utf-8")
         try:
             import os
             os.chmod(path, 0o600)
@@ -106,10 +106,10 @@ def _load_colab_login_credentials() -> "tuple[str, str] | None":
     try:
         if not path.is_file():
             return None
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding = "utf-8").splitlines()
         if len(lines) >= 2 and lines[0] and lines[1]:
             return lines[0], lines[1]
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         logger.info(f"Could not load Colab login credentials ({e}).")
     return None
 

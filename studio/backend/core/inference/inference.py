@@ -567,7 +567,7 @@ class InferenceBackend:
                         _meta_path = Path(config.path) / "export_metadata.json"
                         try:
                             if _meta_path.exists():
-                                _meta = json.loads(_meta_path.read_text())
+                                _meta = json.loads(_meta_path.read_text(encoding = "utf-8-sig"))
                                 if _meta.get("base_model"):
                                     processor_source = _meta["base_model"]
                         except Exception:
@@ -1400,11 +1400,13 @@ class InferenceBackend:
         min_p,
         max_new_tokens,
         repetition_penalty,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """Audio-input (ASR) generation: takes an audio numpy array, streams text.
 
         Uses processor.apply_chat_template with audio embedded in messages (Gemma 3n pattern).
+        use_adapter: see _apply_adapter_state; None leaves the loaded state alone.
         """
         import threading
         import numpy as np
@@ -1473,6 +1475,9 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
+                        # As in the text path: apply under the lock so Base-vs-LoRA
+                        # compare doesn't run the adapter on both sides (None = no-op).
+                        self._apply_adapter_state(use_adapter)
                         model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
@@ -2281,8 +2286,13 @@ class InferenceBackend:
         except Exception as e:
             logger.warning(f"Could not fully reset model state for {model_name}: {e}")
 
-    def reset_generation_state(self):
-        """Reset any cached generation state to prevent hanging after errors"""
+    def reset_generation_state(self, caller_cancel_event = None):
+        """Reset any cached generation state to prevent hanging after errors
+
+        ``caller_cancel_event`` is accepted for signature parity with the
+        orchestrator, which uses it to drop a reset from a request that never
+        started. Nothing here cancels a live generation, so it is unused.
+        """
         try:
             # Clear cached state for ALL loaded models
             for model_name in self.models.keys():

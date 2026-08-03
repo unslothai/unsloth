@@ -323,7 +323,9 @@ function NavItem({
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
           {spinner && (
-            <Spinner className="ml-auto size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+            // mr-1.5 over the row's pr-2.5 = 16px, matching the chat rows'
+            // pr-4 so nav and Recents spinners share one column.
+            <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
           )}
         </SidebarMenuButton>
         {spinner && (
@@ -370,6 +372,7 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
   // Explain a greyed-out Train (chat-only host) on hover instead of disabling silently. Export is
   // no longer disabled here: it stays navigable so its page can show a precise grayed-out reason.
   const trainDisabledHint: string | undefined = !chatOnly
@@ -388,12 +391,14 @@ export function AppSidebar() {
   // recoverable mlx_unavailable case; the effect stops once Train/Export become
   // available (chatOnly flips false and this effect's guard returns early).
   useEffect(() => {
-    if (!chatOnly || chatOnlyReason !== "mlx_unavailable") return;
+    // Also while deferred: under the kill switch health settles nothing, so only a
+    // first-use operation detects and a GPU host would stay chat-only until a refresh.
+    if (!chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred)) return;
     const id = window.setInterval(() => {
       void fetchDeviceType({ force: true }).catch(() => undefined);
     }, 15000);
     return () => window.clearInterval(id);
-  }, [chatOnly, chatOnlyReason]);
+  }, [chatOnly, chatOnlyReason, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
@@ -520,15 +525,46 @@ export function AppSidebar() {
     });
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
-  const anyChatRunning = useChatRuntimeStore((s) =>
-    Object.values(s.runningByThreadId).some(Boolean),
-  );
-  // The thread currently generating (if any), so "Return to Chat" lands on the
-  // live chat rather than an empty new-chat draft left active after New Chat.
-  const runningThreadId = useChatRuntimeStore((s) => {
-    const entry = Object.entries(s.runningByThreadId).find(([, on]) => on);
-    return entry ? entry[0] : null;
-  });
+  // The whole map, so each row can show its own spinner.
+  const runningThreadIds = useChatRuntimeStore((s) => s.runningByThreadId);
+  // Rows, not raw thread ids: a compare conversation runs two pane threads but is one chat
+  // in the sidebar, so counting the map said "2 Chats" for a single compare row.
+  const runningChatCount = useMemo(() => {
+    const running = new Set(
+      Object.entries(runningThreadIds)
+        .filter(([, on]) => on)
+        .map(([id]) => id),
+    );
+    if (running.size === 0) return 0;
+    let rows = 0;
+    for (const item of allChatItems) {
+      const ids = item.type === "compare" ? (item.threadIds ?? []) : [item.id];
+      let claimed = false;
+      for (const id of ids) {
+        if (running.delete(id)) claimed = true;
+      }
+      if (claimed) rows += 1;
+    }
+    // Anything left belongs to no known row (a first turn mid-persist); count it as one.
+    return rows + running.size;
+  }, [runningThreadIds, allChatItems]);
+  const anyChatRunning = runningChatCount > 0;
+  // Where "Return to Chat" lands: the newest running chat, not the empty draft New Chat left
+  // active (map insertion order is start order). A compare row runs pane threads that /chat
+  // cannot address, so resolve those back to the pair id the route expects.
+  const runningTarget = useMemo(() => {
+    const ids = Object.entries(runningThreadIds)
+      .filter(([, on]) => on)
+      .map(([id]) => id);
+    const id = ids.length > 0 ? ids[ids.length - 1] : null;
+    if (!id) return null;
+    const pair = allChatItems.find(
+      (item) => item.type === "compare" && (item.threadIds ?? []).includes(id),
+    );
+    return pair
+      ? { id: pair.id, compare: true as const }
+      : { id, compare: false as const };
+  }, [runningThreadIds, allChatItems]);
   const activeThreadId = isChatRoute
     ? (search.thread as string | undefined) ??
       (search.compare as string | undefined) ??
@@ -892,6 +928,12 @@ export function AppSidebar() {
     variant: "project" | "recent",
   ) {
     const isPinned = pinnedIdSet.has(item.id);
+    // A compare row's id is the pair id while runningByThreadId is keyed per pane thread,
+    // so aggregate its member threads instead.
+    const isGenerating =
+      item.type === "compare"
+        ? (item.threadIds ?? []).some((id) => Boolean(runningThreadIds[id]))
+        : Boolean(runningThreadIds[item.id]);
     const itemClass =
       variant === "project"
         ? "group/project-chat-item relative"
@@ -951,6 +993,8 @@ export function AppSidebar() {
           data-testid="recent-thread"
           data-thread-type={item.type}
           data-thread-id={item.id}
+          data-generating={isGenerating ? "true" : undefined}
+          aria-busy={isGenerating || undefined}
           isActive={activeThreadId === item.id}
           className={buttonClass}
           onClick={() => {
@@ -976,6 +1020,14 @@ export function AppSidebar() {
           <span className="truncate">
             {pendingRename?.id === item.id ? pendingRename.title : item.title}
           </span>
+          {isGenerating && (
+            <Spinner
+              data-testid="chat-row-spinner"
+              // role="status" + label: announced, not motion-only.
+              label={translate("shell.navigation.chatGenerating")}
+              className="ml-auto size-3.5 shrink-0 text-muted-foreground"
+            />
+          )}
         </SidebarMenuButton>
         {variant === "project" && (
           <button
@@ -1136,7 +1188,13 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       variant="sidebar"
-      className="font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-white dark:group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-background"
+      className={cn(
+        // Rail background comes from --sidebar-surface (index.css) so the
+        // footer fade below can match it in every theme.
+        "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
+        usesNativeMacTitlebar &&
+          "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
+      )}
     >
       <SidebarHeader
         className={cn(
@@ -1158,6 +1216,7 @@ export function AppSidebar() {
               />
             )}
             <div
+              data-tauri-drag-region={usesNativeMacTitlebar || undefined}
               className={cn(
                 "relative z-10 flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
                 showCompactMacBrand &&
@@ -1174,7 +1233,9 @@ export function AppSidebar() {
                     openNewChat(null);
                   }}
                   className={cn(
-                    "flex items-center gap-[6px] select-none transition-opacity",
+                    // min-w-0 so a narrow sidebar truncates the wordmark
+                    // instead of pushing the search icon over the logo.
+                    "flex min-w-0 items-center gap-[6px] select-none transition-opacity",
                     chatDisabled && "pointer-events-none opacity-50",
                   )}
                   aria-label={t("shell.aria.home")}
@@ -1186,17 +1247,17 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="h-[calc(26px+0.5rem*var(--ui-font-scale,1))] w-[calc(26px+0.5rem*var(--ui-font-scale,1))] rounded-full object-cover"
+                    className="h-[calc(26px+0.5rem*var(--ui-font-scale,1))] w-[calc(26px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
                   />
-                  <span className="font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
+                  <span className="truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-white dark:tracking-[0.02em]">
                     unsloth
                   </span>
-                  <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+                  <span className="nav-badge ml-0.5 inline-flex shrink-0 items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
                     {t("shell.beta")}
                   </span>
                 </Link>
               )}
-              <div className="flex items-center gap-0.5">
+              <div className="flex shrink-0 items-center gap-0.25">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
                     <button
@@ -1205,7 +1266,7 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="inline-flex size-[28px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
                       <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
@@ -1229,7 +1290,7 @@ export function AppSidebar() {
                       <button
                         type="button"
                         onClick={togglePinned}
-                        className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        className="inline-flex size-[28px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
                         <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -1273,10 +1334,10 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
+      {/* Uniform pl-1.5 pr-1.75 keeps every hover pill the same width, inset from the edge. */}
       <SidebarGroup
         className={cn(
-          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 shrink-0 transition-[padding]",
+          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 shrink-0 transition-[padding]",
           showCompactMacBrand ? "pt-0" : "pt-[9px]",
           // Scrolled: New Chat is pinned, give a little gap below it.
           scrolled ? "pb-[5px]" : "pb-px",
@@ -1288,9 +1349,16 @@ export function AppSidebar() {
               icon={PencilEdit02Icon}
               label={
                 showReturnToChat
-                  ? t("shell.navigation.returnToChat")
+                  ? runningChatCount > 1
+                    // Name the count rather than imply a single live chat.
+                    ? t("shell.navigation.returnToChats", {
+                        count: runningChatCount,
+                      })
+                    : t("shell.navigation.returnToChat")
                   : t("shell.navigation.newChat")
               }
+              // Off-route this row is the only sign chats are still running.
+              spinner={anyChatRunning && !isChatRoute}
               active={
                 isChatRoute &&
                 !search.thread &&
@@ -1301,8 +1369,13 @@ export function AppSidebar() {
                 if (showReturnToChat) {
                   // Prefer the running thread so we return to the live generation,
                   // not the empty new chat that became active after New Chat.
-                  if (runningThreadId && runningThreadId !== storeThreadId) {
-                    navigate({ to: "/chat", search: { thread: runningThreadId } });
+                  if (runningTarget && runningTarget.id !== storeThreadId) {
+                    navigate({
+                      to: "/chat",
+                      search: runningTarget.compare
+                        ? { compare: runningTarget.id }
+                        : { thread: runningTarget.id },
+                    });
                   } else {
                     navigate({ to: "/chat" });
                   }
@@ -1353,7 +1426,7 @@ export function AppSidebar() {
           scrolled && "is-scrolled",
         )}
       >
-        <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 py-0 shrink-0">
+        <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 py-0 shrink-0">
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
@@ -1370,7 +1443,7 @@ export function AppSidebar() {
               />
               <NavItem
                 icon={Folder01Icon}
-                label="Projects"
+                label={t("shell.navigation.projects")}
                 active={
                   pathname === "/projects" || pathname.startsWith("/projects/")
                 }
@@ -1435,7 +1508,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="pl-1.5 pr-2">
+              <SidebarGroupContent className="pl-1.5 pr-1.75">
                 <SidebarMenu>
                   <NavItem
                     icon={TestTubeOutlineIcon}
@@ -1510,7 +1583,7 @@ export function AppSidebar() {
                   </CollapsibleTrigger>
                 </SidebarGroupLabel>
                 <CollapsibleContent>
-                  <SidebarGroupContent className="pl-1.5 pr-2">
+                  <SidebarGroupContent className="pl-1.5 pr-1.75">
                     <SidebarMenu>
                       {pinnedProjectRecords.map((project) => {
                         const projectChats =
@@ -1657,7 +1730,7 @@ export function AppSidebar() {
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="pl-1.5 pr-2">
+                <SidebarGroupContent className="pl-1.5 pr-1.75">
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -1689,7 +1762,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="pl-1.5 pr-2">
+              <SidebarGroupContent className="pl-1.5 pr-1.75">
                 <SidebarMenu>
                   {runItems.map((run) => {
                     // Explicit selection wins. Otherwise highlight the active
@@ -1795,7 +1868,7 @@ export function AppSidebar() {
         <div
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar)] to-[rgb(from_var(--sidebar)_r_g_b/0)] transition-opacity duration-200",
+            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             // Shorter fade when the update card sits above the profile so the
             // list reads closer to it.
             showUpdateCard ? "h-3" : "h-10",
