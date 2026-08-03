@@ -486,9 +486,12 @@ def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
     )
     assert save < set_handoff < autostart < restore
 
-    assert studio_source.count(
-        "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()"
-    ) == 2
+    assert (
+        studio_source.count(
+            "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()"
+        )
+        == 2
+    )
     assert studio_source.count("inherited = runtime_gate_handoff") >= 4
 
 
