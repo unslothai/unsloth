@@ -371,7 +371,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     kind: "validator",
     type: "validator_tool",
     title: "Custom check",
-    description: "Run any tool command over generated code, like go vet or sqlfluff.",
+    description: "Run any tool command over generated code, like go vet, cargo check, or sqlfluff.",
     icon: Shield02Icon,
     dialogKey: "validator",
     createConfig: (id, existing) =>

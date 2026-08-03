@@ -370,7 +370,7 @@ export function ValidatorDialog({
             <FieldLabel
               label="File extension"
               htmlFor={toolExtId}
-              hint="Generated code is written to a temp file with this extension before the command runs."
+              hint="Generated code is written to a temp file with this extension before the command runs. go scaffolds a go.mod, and rs scaffolds a Cargo.toml with a src/ layout."
             />
             <Input
               id={toolExtId}
