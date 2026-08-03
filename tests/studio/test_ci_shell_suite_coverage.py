@@ -40,7 +40,6 @@ _SH_DIR = REPO_ROOT / "tests" / "sh"
 # Files deliberately not run by the auto-discovered Backend CI step. Each needs
 # a reason here AND in the workflow; anything else in tests/sh must run.
 _EXPECTED_CI_SKIPS = {
-    "test_install_host_defaults.sh": "asserts an install.ps1 layout that has drifted",
     "test_install_rollback_lifecycle.sh": "runs on both platforms in cross-platform-parity-ci.yml",
 }
 

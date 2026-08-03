@@ -50,12 +50,16 @@ assert_not_contains \
     "$_launcher" "studio -H 0.0.0.0"
 
 echo ""
+# Anchored on the block's own comment, not a line count: both installers
+# outgrew their tail windows and the assertions stopped covering the prompt.
 echo "=== install.sh end-of-install block ==="
 
-_end=$(tail -50 "$INSTALL_SH")
+_end=$(awk '/In interactive terminals/{found=1} found{print}' "$INSTALL_SH")
+# "read" alone also matches "readable" and "_can_read_tty" in this block, so the
+# assertion held with the prompt deleted. Pin the prompt itself.
 assert_contains \
     "install.sh: interactive block prompts user (read)" \
-    "$_end" "read"
+    "$_end" "read -r _reply"
 assert_not_contains \
     "install.sh: no 'studio -H 0.0.0.0' in end-of-install commands" \
     "$_end" "studio -H 0.0.0.0"
@@ -63,7 +67,7 @@ assert_not_contains \
 echo ""
 echo "=== install.ps1 end-of-install block ==="
 
-_ps1_end=$(tail -25 "$INSTALL_PS1")
+_ps1_end=$(awk '/In interactive terminals/{found=1} found{print}' "$INSTALL_PS1")
 assert_contains \
     "install.ps1: interactive block prompts user (Read-Host)" \
     "$_ps1_end" "Read-Host"
@@ -74,7 +78,7 @@ assert_not_contains \
 echo ""
 echo "=== studio/setup.sh launch hint ==="
 
-_setup_tail=$(tail -30 "$SETUP_SH")
+_setup_tail=$(awk '/"launch"/{found=1} found{print}' "$SETUP_SH")
 assert_not_contains \
     "studio/setup.sh: launch hint has no '-H 0.0.0.0'" \
     "$_setup_tail" "studio -H 0.0.0.0"
@@ -83,8 +87,10 @@ echo ""
 echo "=== README.md Launch section ==="
 
 # The primary Launch example must not include -H 0.0.0.0; the LAN/cloud
-# note appears as an opt-in line outside the code block.
-_readme_launch=$(awk '/^#### Launch$/{found=1} found{print} /^#### Update$/{found=0}' "$README")
+# note appears as an opt-in line outside the code block. Stop at the next
+# heading of any name: this used to stop at '#### Update', which was later
+# deleted, so the section silently became the rest of the file.
+_readme_launch=$(awk '/^#### Launch$/{found=1; print; next} found && /^#### /{exit} found{print}' "$README")
 assert_contains \
     "README: Launch section exists" \
     "$_readme_launch" "unsloth studio"
