@@ -299,7 +299,7 @@ function SttModelPicker({
 }
 
 const TTS_PREVIEW_TEXT =
-  "Hello from Unsloth Studio! This is a preview of the selected voice.";
+  "Hello from Unsloth! This is a preview of the selected voice.";
 
 function useAudioInputDevices() {
   const t = useT();
