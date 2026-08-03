@@ -186,8 +186,7 @@ def _install_reexec_capture(monkeypatch, *, platform):
     )
 
     monkeypatch.setattr(sys, "platform", platform)
-    # These tests emulate Windows re-exec behavior on every host. Keep the
-    # launch-gate boundary in place without invoking Win32 mutex APIs on Linux.
+    # Emulate Windows re-exec without calling Win32 APIs on non-Windows hosts.
     monkeypatch.setattr(
         studio_mod,
         "_studio_runtime_launch_guard",
