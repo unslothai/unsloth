@@ -3234,11 +3234,25 @@ def _is_usable_launcher(shim: Path) -> bool:
     case here rather than a hypothetical: a damaged shim is a reason to have run the
     venv copy directly in the first place. Recommending it then sends the user back
     to the file that already does not start, and hides the reinstall fallback.
+
+    Size and readability do not cover it either. A truncated or half-written copy is
+    nonempty and readable, and Windows has no execute bit to consult, so the loader
+    is the only thing that would reject it -- after the refusal has already stopped
+    an intact update. The image header is the cheapest stand-in for the loader, and
+    is the same check find_unsloth_launcher_in_studio_dir makes in the Rust
+    launcher selector (studio/src-tauri/src/process.rs), so the two agree on which
+    shims count as runnable.
     """
     try:
         if not shim.is_file() or shim.stat().st_size <= 0:
             return False
-        return os.access(shim, os.R_OK)
+        if not os.access(shim, os.R_OK):
+            return False
+        if platform.system() == "Windows":
+            with open(shim, "rb") as f:
+                if f.read(2) != b"MZ":
+                    return False
+        return True
     except OSError:
         return False
 

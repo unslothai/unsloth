@@ -283,6 +283,51 @@ def test_a_zero_byte_launcher_is_not_recommended(monkeypatch, tmp_path, capsys):
     assert "install.ps1" in err, "the reinstall fallback was hidden"
 
 
+def test_a_truncated_launcher_is_not_recommended(monkeypatch, tmp_path, capsys):
+    """Nonempty and readable is not runnable. A half-written Copy-Item fallback
+    leaves a file that passes both and that Windows still cannot execute, and
+    accepting it aborts an intact update towards a launcher that does not start.
+    b"PK" rather than b"" so only the image-header check can reject it."""
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    shim = tmp_path / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"PK\x03\x04not an image")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+
+    assert studio._is_usable_launcher(shim) is False
+    # So the refusal does not fire either: it stops updates, and stopping one
+    # towards a launcher that cannot run leaves nothing to update with.
+    studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
+    capsys.readouterr()
+
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
+
+    err = capsys.readouterr().err
+    assert str(shim) not in err, "an unusable launcher was recommended anyway"
+    assert "install.ps1" in err, "the reinstall fallback was hidden"
+
+
+def test_a_real_image_is_still_accepted(monkeypatch, tmp_path):
+    """The header check has to keep the working case working, or it would disable
+    the launcher route altogether rather than narrowing it."""
+    _scripts_dir, shim = _shimmed(monkeypatch, tmp_path)
+    shim.write_bytes(b"MZ\x90\x00" + b"\x00" * 64)
+
+    assert studio._is_usable_launcher(shim) is True
+
+
+def test_the_header_check_is_windows_only(monkeypatch, tmp_path):
+    """Unix has an execute bit and no PE images, so requiring MZ there would reject
+    the symlinked shim every time."""
+    _scripts_dir, shim = _shimmed(monkeypatch, tmp_path)
+    shim.write_bytes(b"#!/bin/sh\nexec unsloth \"$@\"\n")
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+
+    assert studio._is_usable_launcher(shim) is True
+
+
 def test_the_note_says_another_process_can_hold_the_lock(monkeypatch, tmp_path, capsys):
     """The OSError says the entry is locked, not who by. If a second process
     launched from the same copy holds it, the retry changes nothing, because it is

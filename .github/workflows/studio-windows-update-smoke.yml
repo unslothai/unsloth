@@ -276,8 +276,22 @@ jobs:
           SCRIPTS="$HOME/.unsloth/studio/unsloth_studio/Scripts"
           SHIM="$HOME/.unsloth/studio/bin/unsloth.exe"
           test -f "$SHIM" || { echo "::error::no launcher at $SHIM"; exit 1; }
-          "$PY" -m pip install --no-deps --force-reinstall --no-build-isolation . 2>&1 | tail -5
+          # With build isolation, not without. The build backend and setuptools-scm
+          # are build requirements, not runtime deps of the --no-torch install, so
+          # --no-build-isolation would rest on whatever happens to be in the Studio
+          # venv -- and if that ever stops including setuptools, this fails here and
+          # the lock coverage below never runs at all.
+          "$PY" -m pip install --no-deps --force-reinstall . 2>&1 | tail -5
           test -f "$SCRIPTS/unsloth.exe" || { echo "::error::pip left no unsloth.exe"; exit 1; }
+
+          # The reinstall above replaced the editable install with a site-packages
+          # copy, so the CLI can no longer derive the checkout from __file__ and
+          # --local would exit at the argument guard without ever reaching the lock.
+          # A Windows path: MSYS rewrites arguments that look like paths but not
+          # environment variables, so the native python would not resolve /d/a/...
+          STUDIO_LOCAL_REPO="$(cygpath -w "$PWD")"
+          export STUDIO_LOCAL_REPO
+          test -f "$PWD/pyproject.toml" || { echo "::error::not a checkout: $PWD"; exit 1; }
 
           # Through the launcher, which is a second link to the same binary. Windows
           # locks the entry an image was launched from, not the file, so this leaves
@@ -287,6 +301,12 @@ jobs:
                  logs/update_replace.log; then
             echo "::error::the launcher path hit the unsloth.exe lock (issue #7697)."
             grep -iE "WinError|rename|permission" logs/update_replace.log | tail -30
+            exit 1
+          fi
+          # Guard against passing for the wrong reason: exiting at the argument
+          # guard would satisfy every assertion below while testing none of them.
+          if grep -q "needs an Unsloth checkout to install from" logs/update_replace.log; then
+            echo "::error::the update never started; this step proved nothing."
             exit 1
           fi
           grep -q "" logs/update_replace.log || { echo "::error::no output, step is vacuous"; exit 1; }
@@ -335,7 +355,8 @@ jobs:
           SCRIPTS="$HOME/.unsloth/studio/unsloth_studio/Scripts"
           PY="$SCRIPTS/python.exe"
           SHIM_UPD="$HOME/.unsloth/studio/bin/unsloth.exe"
-          "$PY" -m pip install --no-deps --force-reinstall --no-build-isolation . 2>&1 | tail -3
+          # Build isolation here for the same reason as the step above.
+          "$PY" -m pip install --no-deps --force-reinstall . 2>&1 | tail -3
 
           # The step above already reinstalled unsloth non-editably, so the CLI now
           # runs out of site-packages and cannot derive the checkout from __file__.
