@@ -1336,9 +1336,8 @@ exit 0
                     $out = & $cmd.Source --version 2>&1 | Out-String
                     if ($out -match "Python (3\.1[1-3])\.\d+") {
                         $ver = $Matches[1]
-                        # PATH entries can be launchers (for example pyenv-win's
-                        # python.bat shim). Give uv the real CPython executable so
-                        # the venv does not depend on wrapper re-resolution.
+                        # PATH entries may be wrappers (e.g. pyenv-win's python.bat).
+                        # Resolve the real executable so uv bypasses wrapper re-resolution.
                         $resolvedExe = (& $cmd.Source -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
                             if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
@@ -1924,8 +1923,7 @@ exit 0
         substep "$VenvDir"
     }
 
-    # Mark the managed venv before probing it so an installer-created but
-    # unlaunchable environment remains eligible for replacement on rerun.
+    # Mark the managed venv before probing so failed installs can be replaced on rerun.
     if (Test-Path -LiteralPath $VenvDir -PathType Container) {
         try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
     }
