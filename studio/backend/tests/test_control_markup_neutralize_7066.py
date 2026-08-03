@@ -5876,9 +5876,10 @@ def test_a_tilde_built_role_sentinel_is_profiled():
     profile = model_markup(tilde, ["<|end|>"], None)
     assert profile.rewrite_control("<|assistant|>") == "< |assistant|>"
     # The "+" spelling is unchanged.
-    assert model_markup(tilde.replace("~", "+"), ["<|end|>"], None).rewrite_control(
-        "<|assistant|>"
-    ) == "< |assistant|>"
+    assert (
+        model_markup(tilde.replace("~", "+"), ["<|end|>"], None).rewrite_control("<|assistant|>")
+        == "< |assistant|>"
+    )
 
 
 def test_a_renderer_that_rejects_the_tools_kwarg_advertises_nothing():
@@ -5890,12 +5891,21 @@ def test_a_renderer_that_rejects_the_tools_kwarg_advertises_nothing():
         chat_template = "{% for t in tools %}{{ t }}{% endfor %}{{ messages }}"
         added_tokens_decoder: dict = {}
 
-        def apply_chat_template(self, messages, tokenize = False, add_generation_prompt = True):
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = True,
+        ):
             return ""
 
     class _Accepts(_Rejects):
         def apply_chat_template(
-            self, messages, tokenize = False, add_generation_prompt = True, tools = None
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = True,
+            tools = None,
         ):
             return ""
 
