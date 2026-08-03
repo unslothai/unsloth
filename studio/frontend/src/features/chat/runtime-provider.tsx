@@ -1189,7 +1189,11 @@ function useStudioRuntimeAdapters(
         // refreshContextUsage does NOT stand down for usage already there, so it would overwrite
         // them with an estimate whose completionTokens is 0. A thread opened after a model switch
         // fails modelMatches and still gets priced (#7450).
-        if (!restoredUsage) {
+        // Primary pane only, the same condition ThreadContextUsageRecount and
+        // ActiveBranchRegistrar use. A compare pane never owns the global bar, so its count is
+        // rebuilt from storage, sent to llama-server, and then dropped at publish for not being
+        // activeThreadId: a two-pane open would pay for that twice and show neither result.
+        if (!restoredUsage && modelType === "base" && !pairId) {
           void refreshContextUsage({ threadId: remoteId });
         }
 

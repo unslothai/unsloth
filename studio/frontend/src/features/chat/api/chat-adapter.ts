@@ -1231,6 +1231,32 @@ function extractAudioPartBase64(
 }
 
 // Exported for tests.
+/**
+ * Whether any message carries an image, by the same rule collectImageParts pushes one.
+ *
+ * A predicate rather than collectImageParts itself: the counter only needs to know, and building
+ * the parts would copy every base64 payload it is trying to avoid touching.
+ */
+export function messagesContainImage(messages: RunMessages): boolean {
+  const isImage = (part: { type: string }) =>
+    part.type === "image" &&
+    "image" in part &&
+    Boolean((part as { image: string }).image);
+  for (const message of messages) {
+    for (const part of message.content ?? []) {
+      if (isImage(part)) return true;
+    }
+    if ("attachments" in message) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          if (isImage(part)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export function findLatestUserAudioBase64(
   messages: RunMessages,
 ): string | undefined {

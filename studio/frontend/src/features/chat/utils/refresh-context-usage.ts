@@ -7,6 +7,7 @@ import {
   buildLocalTokenCountReasoning,
   buildOutboundMessagesForTokenCount,
   findLatestUserAudioBase64,
+  messagesContainImage,
 } from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
 import { isExternalModelId } from "../external-providers";
@@ -27,6 +28,14 @@ function nextGeneration(threadKey: string | null): number {
 function superseded(threadKey: string | null, generation: number): boolean {
   return refreshGenerations.get(threadKey) !== generation;
 }
+
+/**
+ * Threads with a count already on the wire. A model load fires two triggers a few milliseconds
+ * apart, the explicit post-load call and the effect that watches modelLoading, and both would
+ * otherwise render the template and tokenize. Skipping the second is safe because it reads the
+ * same branch as the first, and the publish-time branch check drops a total the branch outgrew.
+ */
+const countsInFlight = new Set<string | null>();
 
 function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
   const content =
@@ -189,6 +198,12 @@ export async function refreshContextUsage(options?: {
   );
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
 
+  // Deep Research does not send this history at all: the adapter routes the turn to a server-side
+  // research run, whose response carries no usage. A total counted here would describe a request
+  // that is never made and nothing would later correct it. The run's own running-state transition
+  // re-fires this once the report lands.
+  if (store.deepResearchEnabled) return;
+
   // Never count while anything is generating: the endpoint refuses, and the recount effect depends
   // on this, so the last run finishing re-fires it. runningByThreadId, not the narrower
   // localRunByThreadId: the endpoint refuses during an external-provider run too, so gating on less
@@ -199,6 +214,8 @@ export async function refreshContextUsage(options?: {
   const capturedThreadId = threadId ?? null;
   const capturedCheckpoint = checkpoint;
 
+  if (countsInFlight.has(capturedThreadId)) return;
+
   // Bump only once this call will do work, so a bail-out cannot cancel an in-flight recount.
   const generation = nextGeneration(capturedThreadId);
 
@@ -208,6 +225,7 @@ export async function refreshContextUsage(options?: {
     superseded(capturedThreadId, generation) ||
     useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint;
 
+  countsInFlight.add(capturedThreadId);
   try {
     // Prefer the mounted runtime: it is what the next request reads from (an incognito thread
     // persists nothing, and after a retry the newest stored leaf is a branch the user left). A
@@ -227,21 +245,32 @@ export async function refreshContextUsage(options?: {
     // The stored fallback's witness: storage records and ThreadMessages hash differently, so only
     // ids survive both, and the last one moves as soon as a turn is sent or an edit mints one.
     let countedLastId: string | null = null;
-    if (liveBranch && liveBranch.length > 0) {
-      runMessages = liveBranch;
-      countedBranch = branchSignature(liveBranch);
+    const fromLiveBranch = Boolean(liveBranch && liveBranch.length > 0);
+    if (fromLiveBranch) {
+      runMessages = liveBranch as readonly ThreadMessage[];
     } else {
       const records = threadId ? await listStoredChatMessages(threadId) : [];
       if (stale()) return;
       runMessages = orderBySelectedBranch(records).map(
         storedMessageToRunMessage,
       );
-      countedLastId = runMessages.at(-1)?.id ?? "";
     }
+
+    // /chat/count_tokens always 503s on images, because /apply-template swaps each one for a
+    // short marker. Declining here rather than letting the server say no keeps the base64 out of
+    // the branch hash and out of a request body that can run to megabytes, both on the main
+    // thread. Before the hash below for that reason.
+    if (messagesContainImage(runMessages)) return;
 
     // The real request replays the newest user audio as audio_base64 but toOpenAIMessages has
     // no audio branch, so counting would price a text-only prompt. Decline as images do.
     if (findLatestUserAudioBase64(runMessages)) return;
+
+    if (fromLiveBranch) {
+      countedBranch = branchSignature(runMessages);
+    } else {
+      countedLastId = runMessages.at(-1)?.id ?? "";
+    }
 
     // A completion finishing mid-count writes exact usage for a turn this count predates, so drop
     // the recount rather than roll the bar backwards. Sampled once runMessages is fixed.
@@ -319,5 +348,7 @@ export async function refreshContextUsage(options?: {
     });
   } catch {
     // Background recount should not interrupt chat; saved usage stays visible.
+  } finally {
+    countsInFlight.delete(capturedThreadId);
   }
 }

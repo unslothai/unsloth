@@ -158,6 +158,9 @@ const state: any = {
   localRunByThreadId: {},
   // What the recount reads to tell an output-only audio GGUF from a chat one.
   models: [],
+  // Deep Research sends a research run instead of this history, so the count would price
+  // a request that is never made.
+  deepResearchEnabled: false,
 };
 
 function set(updater: any): void {
@@ -213,6 +216,18 @@ function isExternalModelId(id: string): boolean {
 
 function findLatestUserAudioBase64(_messages: any): string | null {
   return null;
+}
+
+// The real predicate's rule, so a test can put an image on a branch and see it declined.
+function messagesContainImage(messages: any): boolean {
+  const isImage = (p: any) => p?.type === "image" && Boolean(p?.image);
+  for (const message of messages) {
+    for (const part of message.content ?? []) if (isImage(part)) return true;
+    for (const attachment of message.attachments ?? []) {
+      for (const part of attachment.content ?? []) if (isImage(part)) return true;
+    }
+  }
+  return false;
 }
 
 // The adapter's own prompt build is exercised by the request tests; here it only has
@@ -382,6 +397,9 @@ HARNESS_HISTORY = """
 export async function hydrateThreadUsage(props: any): Promise<void> {
   const remoteId: string = props.remoteId;
   const savedUsage = props.savedUsage;
+  // The loader is created per pane; a compare pane carries a pairId and never owns the bar.
+  const modelType: string = props.modelType ?? "base";
+  const pairId = props.pairId ?? undefined;
   // Read once, as the loader does, just above the sliced block.
   const store = useChatRuntimeStore.getState();
 __RESTORE__
@@ -1045,6 +1063,128 @@ def test_history_hydration_keeps_saved_usage_it_restored(
     assert (
         usage.get("completionTokens") == expect_completion
     ), "the completion half of an exact total must survive hydration"
+
+
+def test_deep_research_declines_the_recount():
+    """With Deep Research on, the next send creates a server-side research run instead of posting
+    this history, and the research reply carries no usage to correct a guess with. Counting would
+    put a total on the bar describing a request that is never made, and leave it there."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ refreshContextUsage, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{ activeThreadId: "thread-a", contextUsage: null, deepResearchEnabled: true }});
+            await refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 0, "a research turn must not be priced as a chat completion"
+    assert out["contextUsage"] is None
+
+
+def test_an_image_branch_is_declined_before_it_is_sent():
+    """The endpoint always 503s on images: /apply-template swaps each one for a short marker.
+    Declining client-side keeps the base64 out of the branch hash and out of a request body that
+    can run to megabytes, both of which are synchronous work on the UI thread."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{
+              refreshContextUsage, seed, setActiveBranchReader, snapshot, world,
+            }} from "./harness.ts";
+            {LOADED_MODEL}
+            const live = [
+              {{ id: "m1", role: "user", createdAt: new Date(1), content: [
+                {{ type: "text", text: "what is this" }},
+                {{ type: "image", image: "data:image/png;base64,AAAA" }},
+              ] }},
+            ];
+            setActiveBranchReader(() => live.slice());
+            seed({{ activeThreadId: "thread-a", contextUsage: null }});
+            await refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 0, "an image branch must never reach the endpoint"
+    assert out["contextUsage"] is None
+
+
+def test_a_second_trigger_does_not_duplicate_an_in_flight_count():
+    """A model load fires two triggers milliseconds apart: the explicit post-load call and the
+    effect watching modelLoading. Both would render the template and tokenize. The generation map
+    discards one RESULT but neither request, which is the work the recount is trying to keep off
+    the machine."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ refreshContextUsage, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{ activeThreadId: "thread-a", contextUsage: null }});
+
+            let release;
+            world.countGate = new Promise((resolve) => {{ release = resolve; }});
+            const first = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            // The second trigger, while the first is still on the wire.
+            const second = refreshContextUsage({{ threadId: "thread-a", afterModelLoad: true }});
+            release();
+            await Promise.all([first, second]);
+
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == 1, "the second trigger must not put a second count on the wire"
+    assert (out["contextUsage"] or {}).get("totalTokens") == 12, "and the first must still publish"
+
+
+@pytest.mark.parametrize(
+    ("pane", "expect_counts"),
+    [
+        ('{ modelType: "base" }', 1),
+        # Compare panes never own the global bar, so this count could only be discarded.
+        ('{ modelType: "base", pairId: "pair-1" }', 0),
+        ('{ modelType: "finetuned", pairId: "pair-1" }', 0),
+    ],
+    ids = ["primary_pane", "compare_pane", "compare_finetuned_pane"],
+)
+def test_only_the_primary_pane_recounts_on_history_load(pane, expect_counts):
+    """refreshContextUsage drops a total whose thread is not activeThreadId, and a compare pane
+    deliberately never writes that. Counting there rebuilds the branch from storage and pays for
+    /apply-template and /tokenize to produce a number that cannot be shown."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ hydrateThreadUsage, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{ activeThreadId: "thread-a", contextUsage: null, contextUsageByThreadId: {{}} }});
+            await hydrateThreadUsage({{ remoteId: "thread-a", savedUsage: null, ...{pane} }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{ counts: world.countedMessages.length }}));
+            """
+        )
+    )
+    assert out["counts"] == expect_counts, (
+        "the primary pane still prices its branch"
+        if expect_counts
+        else "a compare pane must not spend a count it can never display"
+    )
 
 
 def test_a_new_chat_recount_is_retried_after_a_background_run_ends():
