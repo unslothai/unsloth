@@ -199,8 +199,10 @@ function TrainingMethodSelect() {
       >
         {TRAINING_METHOD_ORDER.map((method) => {
           const meta = TRAINING_METHOD_META[method];
-          const unsupportedOnMlx =
-            !isTrainingMethodSupportedOnDevice(method, deviceType);
+          const unsupportedOnMlx = !isTrainingMethodSupportedOnDevice(
+            method,
+            deviceType,
+          );
           return (
             <Tooltip key={method} delayDuration={300}>
               <TooltipTrigger asChild={true} disableClickToggle={true}>

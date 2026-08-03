@@ -41,12 +41,12 @@ import {
 } from "@/features/hub";
 import {
   type ModelTypeCapabilityFlags,
+  TRAINING_MODEL_PICKER_TAB_STORAGE_KEY,
   buildCachedTrainingModelLookup,
   buildLocalTrainingModelLookup,
   inferTrainingModelTypeFromFlags,
   isLocalTrainingModelSelection,
   isTrainingModelTypeSupportedOnDevice,
-  TRAINING_MODEL_PICKER_TAB_STORAGE_KEY,
   trainingModelMatchesTypeConstraint,
   trainingModelTypeFlagsFromMetadata,
   useTrainingConfigStore,
@@ -194,13 +194,7 @@ function commitTrainingModelPick({
     toast.error(mismatchTitle, { description: unsupportedOnDeviceDescription });
     return;
   }
-  if (
-    !trainingModelMatchesTypeConstraint(
-      inferredModelType,
-      requiredModelType,
-      inferredFlags.hasModelTypeSignal === true,
-    )
-  ) {
+  if (!trainingModelMatchesTypeConstraint(inferredFlags, requiredModelType)) {
     toast.error(mismatchTitle, { description: mismatchDescription });
     return;
   }
@@ -437,9 +431,8 @@ export function TrainModelSelector({
     () =>
       trainableLocalModels.filter((model) =>
         trainingModelMatchesTypeConstraint(
-          inferTrainingModelTypeFromFlags(model.modelTypeFlags),
+          model.modelTypeFlags,
           requiredModelType,
-          model.modelTypeFlags.hasModelTypeSignal === true,
         ),
       ),
     [requiredModelType, trainableLocalModels],

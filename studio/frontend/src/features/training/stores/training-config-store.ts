@@ -24,7 +24,10 @@ import { cacheReferenceMatchesSelection } from "../lib/cache-reference";
 import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
 import { trainingConfigPatchTouchesModelDefaults } from "../lib/model-defaults-edit-policy";
-import { inferTrainingModelTypeFromFlags } from "../lib/model-type-inference";
+import {
+  inferTrainingModelTypeFromFlags,
+  resolveTrainingModelType,
+} from "../lib/model-type-capabilities";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import type {
   DatasetCacheReferenceOptions,
@@ -384,17 +387,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               patch.trainOnCompletions = false;
             }
 
-            // Use backend model_type when available, else infer from flags.
             const isEmbedding = !!modelDetails.is_embedding;
-            const inferredModelType: ModelType =
-              modelDetails.model_type ??
-              (isEmbedding
-                ? "embeddings"
-                : modelDetails.is_vision
-                  ? "vision"
-                  : modelDetails.is_audio
-                    ? "audio"
-                    : "text");
+            const inferredModelType = resolveTrainingModelType({
+              modelType: modelDetails.model_type,
+              isEmbedding,
+              isVision: modelDetails.is_vision,
+              isAudio: modelDetails.is_audio,
+            });
 
             const modelSizeBytes = modelDetails.model_size_bytes;
             const autoSelectionPromise =

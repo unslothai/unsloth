@@ -136,6 +136,21 @@ test("training validation rejects audio training on MLX", () => {
   );
 });
 
+test("training validation allows audio-capable vision models on MLX with image data", () => {
+  assert.deepEqual(
+    validateTrainingConfig(
+      {
+        ...validConfig,
+        modelType: "vision",
+        isVisionModel: true,
+        isAudioModel: true,
+      },
+      "mac",
+    ),
+    { ok: true, errorKey: null },
+  );
+});
+
 test("training validation rejects unsupported LoRA variants on MLX", () => {
   for (const loraVariant of ["loftq", "dora"] as const) {
     assert.deepEqual(

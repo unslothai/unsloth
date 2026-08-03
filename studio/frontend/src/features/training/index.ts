@@ -108,8 +108,8 @@ export {
 export {
   inferTrainingModelTypeFromFlags,
   type ModelTypeCapabilityFlags,
-  trainingModelTypeFlagsFromMetadata,
-} from "./lib/model-type-inference";
+} from "./lib/model-type-capabilities";
+export { trainingModelTypeFlagsFromMetadata } from "./lib/model-type-inference";
 export { trainingModelMatchesTypeConstraint } from "./lib/model-type-constraint";
 export {
   buildCachedTrainingModelLookup,

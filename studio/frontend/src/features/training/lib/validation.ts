@@ -38,11 +38,7 @@ function isTrainingConfigSupportedOnDevice(
   if (deviceType !== "mac") {
     return true;
   }
-  return !(
-    config.isEmbeddingModel ||
-    config.isAudioModel ||
-    config.isDatasetAudio === true
-  );
+  return !(config.isEmbeddingModel || config.isDatasetAudio === true);
 }
 
 export function hasIncompatibleTrainingModalities(

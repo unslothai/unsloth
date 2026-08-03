@@ -2,37 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { EMBEDDING_TAGS } from "@/features/hub";
-import type { ModelType } from "@/types/training";
 import {
   type TrainingModelModalityMetadata,
   inferTrainingModelModalityFlags,
 } from "./model-modality-inference";
-
-export interface ModelTypeCapabilityFlags {
-  isEmbedding?: boolean | null;
-  isAudio?: boolean | null;
-  isVision?: boolean | null;
-  hasModelTypeSignal?: boolean;
-}
+import type { ModelTypeCapabilityFlags } from "./model-type-capabilities";
 
 const TEXT_MODEL_TAGS = new Set(["text-generation"]);
-
-export function inferTrainingModelTypeFromFlags({
-  isEmbedding,
-  isAudio,
-  isVision,
-}: ModelTypeCapabilityFlags): ModelType {
-  if (isEmbedding) {
-    return "embeddings";
-  }
-  if (isAudio) {
-    return "audio";
-  }
-  if (isVision) {
-    return "vision";
-  }
-  return "text";
-}
 
 export type TrainingModelTypeMetadata = TrainingModelModalityMetadata;
 
