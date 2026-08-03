@@ -6,7 +6,7 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { useCallback } from "react";
 import { toast } from "@/lib/toast";
-import { checkDatasetFormat } from "../api/datasets-api";
+import { checkDatasetFormat, DatasetFormatError } from "../api/datasets-api";
 import { emitTrainingRunsChanged } from "../events";
 import { getTrainingRun } from "../api/history-api";
 import { buildTrainingStartPayload } from "../api/mappers";
@@ -15,7 +15,7 @@ import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
-import { useTrainingConfigStore } from "../stores/training-config-store";
+import { clearDeletedDataset, useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
@@ -182,6 +182,10 @@ export function useTrainingActions() {
       await syncTrainingRuntimeFromBackend();
       return true;
     } catch (error) {
+      // A dataset deleted since the last check must not stay startable.
+      if (error instanceof DatasetFormatError && error.status === 404) {
+        clearDeletedDataset(getDatasetName(config) ?? "");
+      }
       const rawMessage =
         error instanceof Error ? error.message : "Failed to start training";
       const safeMessage = normalizeTrainingStartError(rawMessage);

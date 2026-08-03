@@ -505,6 +505,17 @@ async def get_dataset_download_progress(
     )
 
 
+def _is_local_dataset_reference(raw: str) -> bool:
+    """Local upload/recipe reference, absolute or relative, vs a HuggingFace repo id."""
+    path = Path(raw)
+    if path.is_absolute():
+        return True
+    parts = [part for part in path.parts if part not in ("", ".")]
+    if parts[:2] == ["assets", "datasets"]:
+        parts = parts[2:]
+    return bool(parts) and parts[0] in ("uploads", "recipes")
+
+
 @router.post("/check-format", response_model = CheckFormatResponse)
 def check_format(request: CheckFormatRequest, current_subject: str = Depends(get_current_subject)):
     """Check if a dataset requires manual column mapping.
@@ -529,8 +540,7 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
         dataset_path = resolve_dataset_path(request.dataset_name)
         total_rows = None
 
-        # An absolute path is a local file, never a HuggingFace repo id.
-        if not dataset_path.exists() and Path(request.dataset_name).is_absolute():
+        if not dataset_path.exists() and _is_local_dataset_reference(request.dataset_name):
             raise HTTPException(
                 status_code = 404,
                 detail = (

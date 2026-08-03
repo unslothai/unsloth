@@ -16,24 +16,40 @@ if str(_BACKEND_ROOT) not in sys.path:
 from routes import datasets as datasets_route  # noqa: E402
 
 
-def test_missing_local_dataset_file_reports_404():
-    from utils.paths import dataset_uploads_root
-
-    missing = dataset_uploads_root() / "deleted-upload-test-fixture.jsonl"
-    assert not missing.exists()
-    request = datasets_route.CheckFormatRequest(dataset_name = str(missing))
-
+def _expect_missing_file_404(dataset_name: str) -> None:
+    request = datasets_route.CheckFormatRequest(dataset_name = dataset_name)
     with pytest.raises(HTTPException) as exc:
         datasets_route.check_format(request, current_subject = "test")
-
     assert exc.value.status_code == 404
     assert "no longer exists" in exc.value.detail
 
 
-def test_hf_repo_id_is_not_treated_as_a_missing_file():
-    request = datasets_route.CheckFormatRequest(dataset_name = "unsloth/does-not-exist")
+def test_missing_absolute_upload_reports_404():
+    from utils.paths import dataset_uploads_root
 
-    with pytest.raises(HTTPException) as exc:
-        datasets_route.check_format(request, current_subject = "test")
+    missing = dataset_uploads_root() / "deleted-upload-test-fixture.jsonl"
+    assert not missing.exists()
+    _expect_missing_file_404(str(missing))
 
-    assert exc.value.status_code != 404
+
+def test_missing_relative_upload_reports_404():
+    _expect_missing_file_404("uploads/deleted-upload-test-fixture.jsonl")
+
+
+def test_missing_relative_recipe_reports_404():
+    _expect_missing_file_404("recipes/deleted-recipe-test-fixture/parquet-files")
+
+
+@pytest.mark.parametrize(
+    "dataset_name, expected",
+    [
+        ("/tmp/some/upload.jsonl", True),
+        ("uploads/foo.jsonl", True),
+        ("assets/datasets/uploads/foo.jsonl", True),
+        ("recipes/foo/parquet-files", True),
+        ("unsloth/LaTeX_OCR", False),
+        ("squad", False),
+    ],
+)
+def test_local_reference_detection(dataset_name, expected):
+    assert datasets_route._is_local_dataset_reference(dataset_name) is expected

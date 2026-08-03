@@ -520,12 +520,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (controller.signal.aborted) return;
             // Otherwise a deleted dataset stays selected and re-fails every visit.
             if (error instanceof DatasetFormatError && error.status === 404) {
-              const { dataset, uploadedFile, setDataset, selectLocalDataset } = get();
-              if (dataset === datasetName) {
-                setDataset(null);
-              } else if (uploadedFile === datasetName) {
-                selectLocalDataset(null);
-              }
+              clearDeletedDataset(datasetName);
               toast.error(error.message);
             }
             set({ isDatasetImage: null, isCheckingDataset: false });
@@ -1047,4 +1042,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useTrainingConfigStore);
 if (import.meta.hot) {
   import.meta.hot.dispose(unsubscribeHfTokenMirror);
+}
+
+/** Drop a selection whose file the backend reports as gone (404). */
+export function clearDeletedDataset(datasetName: string): void {
+  const { dataset, uploadedFile, setDataset, selectLocalDataset } =
+    useTrainingConfigStore.getState();
+  if (dataset === datasetName) {
+    setDataset(null);
+  } else if (uploadedFile === datasetName) {
+    selectLocalDataset(null);
+  }
 }
