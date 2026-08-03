@@ -4,6 +4,7 @@
 """Model management API routes."""
 
 import asyncio
+import functools
 import hashlib
 import json
 import os
@@ -12,6 +13,7 @@ import shutil
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
@@ -2721,6 +2723,33 @@ async def check_embedding_model(
 # Budget for the walk below: a slow volume or a large tree can far outlast the
 # listing it is attached to.
 _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS = 5.0
+# Backstop for the case the walk's own budget cannot cover: a single syscall that
+# never returns, which no in-loop check can interrupt. Longer than the walk budget,
+# so a responding filesystem always ends the walk itself and this never fires.
+_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS = 8.0
+# Its own small pool, so a read stranded on a hung mount occupies these threads and
+# never the shared executor the rest of the app runs its blocking work on.
+_NATIVE_CONTEXT_EXECUTOR = ThreadPoolExecutor(
+    max_workers = 4, thread_name_prefix = "native-ctx"
+)
+
+
+async def _read_native_context_length_bounded(model: str, is_local: bool) -> Optional[int]:
+    """``_read_native_context_length`` off the event loop, with a hard bound.
+
+    Reporting None costs a pre-filled context field; waiting costs the whole variant
+    listing, which is what left the picker on "Loading variants…".
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(
+        _NATIVE_CONTEXT_EXECUTOR,
+        functools.partial(_read_native_context_length, model, is_local = is_local),
+    )
+    try:
+        return await asyncio.wait_for(future, timeout = _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.debug("native context read for '%s' did not return; reporting none", model)
+        return None
 
 
 def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
@@ -2737,6 +2766,9 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
 
+        # Before cache discovery, which touches the filesystem too: started after, a slow
+        # enumeration would hand the walk a full fresh budget on top of its own cost.
+        deadline = time.monotonic() + _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS
         if is_local:
             roots = [Path(repo_id)]
         else:
@@ -2745,7 +2777,6 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
                 return None
             roots = list(iter_repo_cache_dirs("model", repo_id))
 
-        deadline = time.monotonic() + _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS
         for root in roots:
             if time.monotonic() >= deadline:
                 logger.debug("native context read for '%s' out of budget", repo_id)
@@ -2910,9 +2941,12 @@ async def get_gguf_variants(
             hf_token = hf_token,
         )
         # A pin names the copy that will load; a repo-wide walk can read another revision's length.
+        # offline counts alongside prefer_local_cache because the service treats either as
+        # local-only, so the length has to come from the copy the variants came from.
+        local_only = prefer_local_cache or offline
         context_model = hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path) or (
             local_path
-            if prefer_local_cache and local_path and is_local_path(local_path)
+            if local_only and local_path and is_local_path(local_path)
             else repo_id
         )
         local = is_local_path(context_model)
@@ -2935,11 +2969,7 @@ async def get_gguf_variants(
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
-            # The header walk reads tokenizer arrays on dense models (tens of
-            # ms per uncached file); keep it off the event loop.
-            context_length = await asyncio.to_thread(
-                _read_native_context_length, context_model, is_local = local
-            ),
+            context_length = await _read_native_context_length_bounded(context_model, local),
         )
     except HTTPException:
         raise

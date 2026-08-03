@@ -2017,6 +2017,102 @@ def test_native_context_read_budget_is_checked_between_caches(monkeypatch, tmp_p
     assert len(walked) < 3, f"every cache was walked despite the budget: {walked}"
 
 
+def test_native_context_read_budget_covers_cache_discovery(monkeypatch, tmp_path):
+    """Cache enumeration touches the filesystem too. Started after it, the budget would hand
+    the walk a full fresh allowance on top of whatever discovery already cost."""
+    def slow_discovery(_kind, _repo):
+        time.sleep(0.4)
+        return [tmp_path / "a", tmp_path / "b", tmp_path / "c"]
+
+    def slow_walk(root, deadline = None):
+        time.sleep(0.3)
+        return iter(())
+
+    monkeypatch.setattr(models_route, "_is_valid_repo_id", lambda _r: True)
+    monkeypatch.setattr("hub.utils.hf_cache_state.iter_repo_cache_dirs", slow_discovery)
+    monkeypatch.setattr(models_route, "_iter_gguf_paths", slow_walk)
+    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.05)
+
+    started = time.monotonic()
+    assert models_route._read_native_context_length("org/repo", is_local = False) is None
+    # Discovery itself is not interruptible; a walk on top of it means the budget restarted.
+    assert time.monotonic() - started < 0.55
+
+
+def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatch, tmp_path):
+    """One syscall that never returns cannot be interrupted from inside the walk, so the
+    route bounds it. Without that the listing waits on it and the picker has nothing to click."""
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x")
+
+    def hung_read(_path):
+        time.sleep(5)
+        return 8192
+
+    monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", hung_read)
+    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS", 0.2)
+
+    async def scoped_variants(repo_id, **kwargs):
+        return SimpleNamespace(
+            repo_id = repo_id,
+            variants = [
+                SimpleNamespace(
+                    filename = "model-Q4_K_M.gguf",
+                    quant = "Q4_K_M",
+                    size_bytes = 10,
+                    download_size_bytes = 10,
+                    downloaded = True,
+                )
+            ],
+            has_vision = False,
+            default_variant = "Q4_K_M",
+        )
+
+    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+
+    async def drive():
+        began = time.monotonic()
+        answer = await models_route.get_gguf_variants(
+            repo_id = str(tmp_path), hf_token = None, current_subject = "test-user"
+        )
+        return answer, time.monotonic() - began
+
+    result, elapsed = asyncio.run(drive())
+    assert [v.quant for v in result.variants] == ["Q4_K_M"]
+    assert result.context_length is None
+    assert elapsed < 3
+
+
+def test_offline_reads_context_from_the_copy_the_variants_came_from(monkeypatch, tmp_path):
+    """offline alone makes the service local-only, so the length has to come from that
+    directory. Reading repo_id instead reports another copy's context, or none."""
+    context_calls = []
+
+    async def scoped_variants(repo_id, **kwargs):
+        return SimpleNamespace(
+            repo_id = repo_id, variants = [], has_vision = False, default_variant = None
+        )
+
+    monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
+    )
+
+    asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            offline = True,
+            prefer_local_cache = False,
+            local_path = str(tmp_path),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert context_calls == [(str(tmp_path), True)]
+
+
 def test_native_context_read_still_reports_a_length_within_budget(monkeypatch, tmp_path):
     """Control: the bound only trims a walk that drags; a header reached in time still answers."""
     gguf = tmp_path / "model-Q4_K_M.gguf"
