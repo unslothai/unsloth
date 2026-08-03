@@ -2050,8 +2050,14 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
     start = pickers.index("const renderDownloadedGgufRow")
     parent = pickers[start : pickers.index("const renderDownloadedModelRow", start)]
     parent_row = parent[: parent.index("{expanderOpen && (")]
+    # The gutter by reference, not by width. Pinning "w-[42px]" pinned two things
+    # the driver does not care about: the exact pixel width, and the fact that it
+    # was spelled inline. main has since moved to w-[38px] behind ROW_ACTIONS_CLASS,
+    # which is the same spacer doing the same job, and this assertion would have
+    # failed the moment the two met -- reporting a lost spacer that is still there.
+    gutter = "ROW_ACTIONS_CLASS" in parent_row or re.search(r"w-\[\d+px\]", parent_row)
     assert (
-        'aria-hidden="true"' in parent_row and "w-[42px]" in parent_row
+        'aria-hidden="true"' in parent_row and gutter
     ), "the multi-quant parent row lost the spacer that stands in for a gear"
     assert "ModelLoadSettingsAction" not in parent_row, (
         "the multi-quant parent row grew a gear, so the driver's 'no gear means "
