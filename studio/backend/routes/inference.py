@@ -5208,10 +5208,8 @@ def _guard_chat_load_against_training(
     from core.inference.llama_cpp import _diffusion_manual_ngl, _scale_diffusion_required_gb
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    # load_model rewrites a GGUF placement to CPU on a virtualised Metal device, so guard
-    # what will run, not what was asked: sized as the raw Auto request, a CPU-only chat
-    # load can be refused for competing over VRAM it never takes. Same helper the launch
-    # and the duplicate-load comparator use.
+    # load_model pins a GGUF to CPU on a virtualised Metal device, so guard what will run:
+    # sized as the raw Auto request, a CPU-only load is refused over VRAM it never takes.
     _guard_gpu_memory_mode = request.gpu_memory_mode
     _guard_gpu_layers = request.gpu_layers
     _guard_tensor_parallel = request.tensor_parallel

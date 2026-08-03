@@ -3480,10 +3480,9 @@ class LlamaCppBackend:
             return False
 
         extra_args = list(effective_extra_args) if effective_extra_args is not None else None
-        # A request that omits the extras field inherits them, so the candidate is then the
-        # LAUNCHED list; anything else is the caller's own. A launch-time rewrite the caller
-        # cannot see (the virtualised-Metal drafter drop, the MTP crash replay) makes the two
-        # differ, and the equality below wants what the load was INVOKED with.
+        # A request omitting the extras field inherits the LAUNCHED list; anything else is
+        # the caller's own. A launch-time rewrite (drafter drop, MTP crash replay) makes
+        # the two differ, and the equality below wants what the load was INVOKED with.
         _invoked_extras = (
             self.requested_extra_args
             if tuple(extra_args or ()) == tuple(self._extra_args or ())
@@ -7928,9 +7927,8 @@ class LlamaCppBackend:
                 # so tests/test_tp_vision_regression.py's TP-drop allowlist sees this site.
                 tensor_parallel = False
                 tensor_split = None
-                # Carry the rewrite into the intent as well: it is what the duplicate-load
-                # check below compares and what a retry replays, so leaving the raw
-                # request on it would judge this launch by placement it never used.
+                # The intent is what the duplicate-load check compares and what a retry
+                # replays, so carry the rewrite into it rather than the raw request.
                 intent = replace(
                     intent,
                     gpu_memory_mode = gpu_memory_mode,
