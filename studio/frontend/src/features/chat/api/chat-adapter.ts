@@ -40,6 +40,7 @@ import {
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
+  providerSupportsStudioTools,
 } from "../provider-capabilities";
 import {
   type PendingImageEditReference,
@@ -2814,6 +2815,9 @@ export function createOpenAIStreamAdapter(
             (provider) => provider.id === externalSelection.providerId,
           )
         : null;
+      const externalUsesStudioTools = providerSupportsStudioTools(
+        externalProvider?.providerType,
+      );
       const selectedModelSummary = runtime.models.find(
         (model) => model.id === params.checkpoint,
       );
@@ -2871,22 +2875,24 @@ export function createOpenAIStreamAdapter(
         externalProvider &&
           externalSelection &&
           toolsEnabled &&
-          providerSupportsBuiltinWebSearch(
-            externalProvider.providerType,
-            externalSelection.modelId,
-            externalProvider.baseUrl,
-          ),
+          (externalUsesStudioTools ||
+            providerSupportsBuiltinWebSearch(
+              externalProvider.providerType,
+              externalSelection.modelId,
+              externalProvider.baseUrl,
+            )),
       );
       const codeExecEnabledForThisTurn = Boolean(
         externalProvider &&
           externalSelection &&
           codeToolsEnabled &&
           !geminiImageModeForThisTurn &&
-          providerSupportsBuiltinCodeExecution(
-            externalProvider.providerType,
-            externalSelection.modelId,
-            externalProvider.baseUrl,
-          ),
+          (externalUsesStudioTools ||
+            providerSupportsBuiltinCodeExecution(
+              externalProvider.providerType,
+              externalSelection.modelId,
+              externalProvider.baseUrl,
+            )),
       );
       // Fetch pill is independent of Search (Anthropic bills web_fetch
       // separately). Sourced from `webFetchToolsEnabled`; on providers
@@ -3521,7 +3527,10 @@ export function createOpenAIStreamAdapter(
               codeExecEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
-            mcp: !isExternalRequest && supportsTools && mcpEnabledForChat,
+            mcp:
+              (!isExternalRequest || externalUsesStudioTools) &&
+              supportsTools &&
+              mcpEnabledForChat,
             docs:
               !isExternalRequest &&
               supportsTools &&
@@ -3739,6 +3748,35 @@ export function createOpenAIStreamAdapter(
                 : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
+              ...(externalUsesStudioTools &&
+                (toolsEnabled || codeToolsEnabled || mcpEnabledForChat)
+                ? {
+                    enable_tools: true,
+                    enabled_tools: [
+                      ...(toolsEnabled ? ["web_search"] : []),
+                      ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                    ],
+                    mcp_enabled: mcpEnabledForChat,
+                    permission_mode: permissionMode,
+                    ...(permissionMode === "auto"
+                      ? {}
+                      : { confirm_tool_calls: permissionMode === "ask" }),
+                    bypass_permissions: bypassPermissions,
+                    auto_heal_tool_calls:
+                      useChatRuntimeStore.getState().autoHealToolCalls,
+                    nudge_tool_calls:
+                      useChatRuntimeStore.getState().nudgeToolCalls,
+                    max_tool_calls_per_message:
+                      useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                    tool_call_timeout: (() => {
+                      const mins = useChatRuntimeStore.getState().toolCallTimeout;
+                      return mins >= 9999 ? 9999 : mins * 60;
+                    })(),
+                    cancel_id: cancelId,
+                    ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+                    ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+                  }
+                : {}),
               external_model: externalSelection.modelId,
               ...(externalApiKey
                 ? {

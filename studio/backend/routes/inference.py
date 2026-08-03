@@ -1938,6 +1938,10 @@ from core.inference.passthrough_healing import (
 )
 from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_tool_loop import (
+    stream_external_chat_with_tools,
+    supports_external_studio_tool_loop,
+)
 from core.inference.chat_templates import resolve_effective_chat_template_override
 from storage import providers_db
 from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_http_error
@@ -8962,6 +8966,81 @@ async def _proxy_to_external_provider(
     # don't silently get different sampling than before this PR. Pydantic's
     # `model_fields_set` tracks explicit-vs-default per request.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
+    # Ollama selects OpenAI-style function calls but leaves execution and the
+    # continuation turn to the caller. Only this explicit provider allow-list
+    # enters Studio's local/MCP loop; cloud providers retain hosted-tool semantics.
+    from state.tool_policy import get_tool_policy as _get_external_tool_policy
+
+    _external_tool_policy = _get_external_tool_policy()
+    _external_tools_on = payload.enable_tools is True and _external_tool_policy is not False
+    _external_mcp_allowed = bool(payload.mcp_enabled) and _external_tool_policy is not False
+    _external_tool_choice_disabled = (
+        isinstance(payload.tool_choice, str)
+        and payload.tool_choice.strip().lower() == "none"
+    )
+    _external_studio_tool_intent = (
+        supports_external_studio_tool_loop(provider_type)
+        and not _external_tool_choice_disabled
+        and (_external_tools_on or _external_mcp_allowed)
+    )
+    _external_studio_tools = (
+        await _select_request_tools(
+            payload,
+            tools_on = _external_tools_on,
+            mcp_allowed = _external_mcp_allowed,
+        )
+        if _external_studio_tool_intent
+        else []
+    )
+    _use_external_studio_tools = bool(_external_studio_tools)
+
+    # Use the resolved type, not only payload.provider_type: saved-provider
+    # requests may identify Ollama exclusively through provider_id.
+    if (
+        payload.confirm_tool_calls
+        and not supports_external_studio_tool_loop(provider_type)
+        and not payload.bypass_permissions
+        and (
+            payload.enable_tools is True
+            or bool(payload.enabled_tools)
+            or bool(payload.tools)
+            or bool(payload.openai_code_exec_container_id)
+            or bool(payload.anthropic_code_exec_container_id)
+        )
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "confirm_tool_calls is only supported for local streaming tools.",
+                status = 400,
+                code = "invalid_request_error",
+                param = "confirm_tool_calls",
+            ),
+        )
+
+    if (
+        _use_external_studio_tools
+        and _confirm_gate_needs_stream(payload)
+        and not payload.bypass_permissions
+        and not payload.stream
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "confirm_tool_calls requires stream=true for Studio tool execution.",
+                status = 400,
+                code = "invalid_request_error",
+                param = "confirm_tool_calls",
+            ),
+        )
+
+    if _use_external_studio_tools and payload.nudge_tool_calls is not False:
+        _external_nudge = _build_tool_action_nudge(
+            tools = _external_studio_tools,
+            model_name = model,
+        )
+        if _external_nudge:
+            chat_messages = _set_or_prepend_system_message(chat_messages, _external_nudge)
 
     async def _stream():
         gen = client.stream_chat_completion(
@@ -8988,6 +9067,54 @@ async def _proxy_to_external_provider(
             fast_mode = payload.fast_mode,
             stream = payload.stream,
         )
+        cancel_event = threading.Event()
+        _external_tracker = None
+        if _use_external_studio_tools:
+            gen = stream_external_chat_with_tools(
+                client = client,
+                messages = chat_messages,
+                model = model,
+                tools = _external_studio_tools,
+                request_kwargs = {
+                    "temperature": payload.temperature,
+                    "top_p": payload.top_p,
+                    "max_tokens": _effective_max_tokens(payload),
+                    "presence_penalty": payload.presence_penalty,
+                    "top_k": _top_k_explicit,
+                    "enable_thinking": payload.enable_thinking,
+                    "reasoning_effort": payload.reasoning_effort,
+                    "enable_prompt_caching": payload.enable_prompt_caching,
+                    "openai_code_exec_container_id": payload.openai_code_exec_container_id,
+                    "anthropic_code_exec_container_id": payload.anthropic_code_exec_container_id,
+                    "prompt_cache_ttl": payload.prompt_cache_ttl,
+                    "compaction_threshold": payload.compaction_threshold,
+                    "fast_mode": payload.fast_mode,
+                },
+                tool_choice = payload.tool_choice,
+                max_tool_iterations = payload.max_tool_calls_per_message
+                if payload.max_tool_calls_per_message is not None
+                else 25,
+                tool_call_timeout = payload.tool_call_timeout
+                if payload.tool_call_timeout is not None
+                else 300,
+                session_id = payload.session_id,
+                thread_id = payload.thread_id,
+                rag_scope = payload.rag_scope,
+                cancel_event = cancel_event,
+                confirm_tool_calls = _permission_mode_confirm(payload),
+                bypass_permissions = bool(payload.bypass_permissions),
+                permission_mode = payload.permission_mode,
+                auto_heal_tool_calls = payload.auto_heal_tool_calls
+                if payload.auto_heal_tool_calls is not None
+                else True,
+            )
+            _external_tracker = _TrackedCancel.for_payload(
+                cancel_event,
+                payload,
+                payload.cancel_id,
+                payload.session_id,
+            )
+            _external_tracker.__enter__()
         try:
             sent_done = False
             stream_failed = False
@@ -9025,6 +9152,9 @@ async def _proxy_to_external_provider(
             )
             yield "data: [DONE]\n\n"
         finally:
+            cancel_event.set()
+            if _external_tracker is not None:
+                _external_tracker.__exit__(None, None, None)
             try:
                 await gen.aclose()
             except RuntimeError:
@@ -9310,28 +9440,6 @@ async def openai_chat_completions(
         from core.inference.llama_keepwarm import untrack_current_request
 
         untrack_current_request(request.scope)
-        # Bypass Permissions suppresses the confirm gate, so do not reject a
-        # request that sets both flags (effective confirm is then False).
-        if (
-            payload.confirm_tool_calls
-            and not payload.bypass_permissions
-            and (
-                payload.enable_tools is True
-                or bool(payload.enabled_tools)
-                or bool(payload.tools)
-                or bool(payload.openai_code_exec_container_id)
-                or bool(payload.anthropic_code_exec_container_id)
-            )
-        ):
-            raise HTTPException(
-                status_code = 400,
-                detail = openai_error_body(
-                    "confirm_tool_calls is only supported for local streaming tools.",
-                    status = 400,
-                    code = "invalid_request_error",
-                    param = "confirm_tool_calls",
-                ),
-            )
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
         return await _proxy_to_external_provider(payload, request, current_subject)

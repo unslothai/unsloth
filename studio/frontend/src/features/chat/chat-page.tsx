@@ -156,6 +156,7 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsStudioTools,
 } from "./provider-capabilities";
 import {
   ChatActiveContext,
@@ -2128,6 +2129,9 @@ export function ChatPage({
       selection.modelId,
       provider?.baseUrl,
     );
+    const supportsStudioTools = providerSupportsStudioTools(
+      provider?.providerType,
+    );
     const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
       provider?.providerType,
       selection.modelId,
@@ -2165,7 +2169,7 @@ export function ChatPage({
     const storedWebFetchToolsEnabled = loadOptionalBool(
       CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
     );
-    const nextToolsEnabled = supportsBuiltinWebSearch
+    const nextToolsEnabled = (supportsBuiltinWebSearch || supportsStudioTools)
       ? isKimi
         ? false
         : (storedToolsEnabled ?? searchOnByDefault)
@@ -2185,18 +2189,17 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // External models have no local tool runtime, so `supportsTools` is
-      // false. The `supportsBuiltin*` flags cover providers that run tools
-      // server-side: WebSearch lights the Search pill (OpenAI/Anthropic/
-      // OpenRouter/Kimi), CodeExecution the Code pill (Claude 4.x, gpt-5.5),
-      // ImageGeneration the Images pill (OpenAI cloud Responses-API only).
-      supportsTools: false,
+      // Ollama uses Studio's local/MCP runtime. Other external providers keep
+      // supportsTools false and advertise their server-side capabilities via
+      // supportsBuiltin*: Search (OpenAI/Anthropic/OpenRouter/Kimi), Code
+      // (Claude 4.x, gpt-5.5), and Images (OpenAI cloud Responses API).
+      supportsTools: supportsStudioTools,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
       supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
-      codeToolsEnabled: supportsBuiltinCodeExecution
+      codeToolsEnabled: (supportsBuiltinCodeExecution || supportsStudioTools)
         ? (storedCodeToolsEnabled ?? false)
         : false,
       imageToolsEnabled: supportsBuiltinImageGeneration
@@ -2659,6 +2662,9 @@ export function ChatPage({
           selectedExternal?.modelId,
           selectedProvider?.baseUrl,
         );
+        const supportsStudioTools = providerSupportsStudioTools(
+          selectedProvider?.providerType,
+        );
         const supportsBuiltinCodeExecution =
           providerSupportsBuiltinCodeExecution(
             selectedProvider?.providerType,
@@ -2694,7 +2700,7 @@ export function ChatPage({
         const storedWebFetchToolsEnabled = loadOptionalBool(
           CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
         );
-        const nextToolsEnabled = supportsBuiltinWebSearch
+        const nextToolsEnabled = (supportsBuiltinWebSearch || supportsStudioTools)
           ? isKimi
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
@@ -2724,17 +2730,16 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // External models have no local tool runtime → supportsTools false.
-          // The supportsBuiltin* flags carry server-side capability per pill:
-          // Search, Code (Claude 4.x + gpt-5.5), Images (OpenAI cloud
-          // Responses-API).
-          supportsTools: false,
+          // Ollama uses Studio's local/MCP runtime. Other external providers
+          // keep supportsTools false and expose server-side capabilities via
+          // supportsBuiltin*.
+          supportsTools: supportsStudioTools,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,
           supportsBuiltinWebFetch,
           toolsEnabled: nextToolsEnabled,
-          codeToolsEnabled: supportsBuiltinCodeExecution
+          codeToolsEnabled: (supportsBuiltinCodeExecution || supportsStudioTools)
             ? (storedCodeToolsEnabled ?? false)
             : false,
           imageToolsEnabled: supportsBuiltinImageGeneration

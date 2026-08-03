@@ -186,6 +186,21 @@ function _inferProviderFromOpenrouterId(
  * path. Gemini's grounded-search can be added with the same pattern when
  * matching backend translation lands.
  */
+const STUDIO_TOOL_LOOP_PROVIDER_TYPES = new Set(["ollama"]);
+
+/**
+ * External providers whose function calls Studio executes with its local/MCP
+ * tool runtime. Keep this narrower than generic OpenAI-compatible tool support:
+ * hosted providers own their server-side tools and billing semantics.
+ */
+export function providerSupportsStudioTools(
+  providerType: string | null | undefined,
+): boolean {
+  return (
+    providerType != null &&
+    STUDIO_TOOL_LOOP_PROVIDER_TYPES.has(providerType.toLowerCase())
+  );
+}
 export function providerSupportsBuiltinWebSearch(
   providerType: string | null | undefined,
   modelId?: string | null | undefined,
