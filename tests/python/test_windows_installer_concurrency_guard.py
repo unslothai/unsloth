@@ -531,6 +531,14 @@ Exit-StudioInstallMutex -Mutex $mutex
             holder.wait(timeout = 10)
 
 
+def test_runtime_path_hash_is_defined_before_custom_root_lock_uses_it():
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    path_hash = source.index("    function Get-StudioRuntimePathHash {")
+    path_mutex = source.index("    function Get-StudioRuntimeMutexNameForPath {")
+    acquire = source.index("$studioRuntimeMutexNames = @(")
+    assert path_hash < path_mutex < acquire
+
+
 def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     acquire = source.index("$studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome")

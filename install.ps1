@@ -1383,6 +1383,21 @@ exit 0
         return "Global\UnslothStudioManagedEnvironment-$Sid"
     }
 
+    function Get-StudioRuntimePathHash {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        # Keep the resolved spelling byte-for-byte. Cross-language Unicode case
+        # conversion is not stable (for example, .NET and Python differ on ß).
+        $canonical = Get-StudioFinalPath -Path $Path
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $sha256.ComputeHash($bytes)
+        } finally {
+            $sha256.Dispose()
+        }
+        return (-join ($digest | ForEach-Object { $_.ToString('x2') }))
+    }
+
     function Get-StudioRuntimeMutexNameForPath {
         param([Parameter(Mandatory = $true)][string]$Path)
         return "Global\UnslothStudioManagedEnvironmentPath-$(Get-StudioRuntimePathHash -Path $Path)"
@@ -2011,20 +2026,6 @@ exit 0
     $script:StudioVenvRollbackTarget = $VenvDir
     $script:StudioVenvRollbackActive = $false
 
-    function Get-StudioRuntimePathHash {
-        param([Parameter(Mandatory = $true)][string]$Path)
-        # Keep the resolved spelling byte-for-byte. Cross-language Unicode case
-        # conversion is not stable (for example, .NET and Python differ on ß).
-        $canonical = Get-StudioFinalPath -Path $Path
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
-        $sha256 = [System.Security.Cryptography.SHA256]::Create()
-        try {
-            $digest = $sha256.ComputeHash($bytes)
-        } finally {
-            $sha256.Dispose()
-        }
-        return (-join ($digest | ForEach-Object { $_.ToString('x2') }))
-    }
 
     function Test-VenvPythonReady {
         param([Parameter(Mandatory = $true)][string]$PythonExe)

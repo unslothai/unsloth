@@ -251,7 +251,8 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
     }
 
     # The current updater may have been entered through the managed console shim.
-    # Ignore only its direct ancestry; unrelated managed processes still block.
+    # Ignore only verified launcher ancestors. A managed backend may start an
+    # update as its child, and that backend must still block replacement.
     excluded_pids = {os.getpid()}
     descendant_pid = os.getpid()
     for _ in range(16):
@@ -260,6 +261,15 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             break
         parent_pid = int(descendant.get("ParentProcessId") or -1)
         if parent_pid <= 0 or parent_pid in excluded_pids:
+            break
+        parent = process_by_pid.get(parent_pid)
+        if parent is None:
+            break
+        parent_executable = parent.get("ExecutablePath")
+        if not parent_executable:
+            break
+        parent_image = _canonical_windows_path(Path(str(parent_executable)))
+        if parent_image not in protected_files:
             break
         excluded_pids.add(parent_pid)
         descendant_pid = parent_pid

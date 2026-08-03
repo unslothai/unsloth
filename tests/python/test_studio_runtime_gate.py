@@ -79,13 +79,15 @@ def test_windows_path_containment_requires_component_boundaries():
 
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
-def test_idle_scan_excludes_updater_ancestors_and_blocks_another_managed_image(
+def test_idle_scan_excludes_verified_launcher_and_blocks_another_managed_image(
     tmp_path, monkeypatch
 ):
     studio_home = tmp_path / "studio"
     managed_python = studio_home / "unsloth_studio" / "Scripts" / "python.exe"
+    managed_launcher = studio_home / "unsloth_studio" / "Scripts" / "unsloth.exe"
     managed_python.parent.mkdir(parents = True)
     managed_python.write_bytes(b"MZ")
+    managed_launcher.write_bytes(b"MZ")
     current_pid = os.getpid()
     parent_pid = current_pid + 1_000_000
     consumer_pid = parent_pid + 1
@@ -100,7 +102,7 @@ def test_idle_scan_excludes_updater_ancestors_and_blocks_another_managed_image(
             "ProcessId": parent_pid,
             "ParentProcessId": 0,
             "Name": "unsloth.exe",
-            "ExecutablePath": str(managed_python),
+            "ExecutablePath": str(managed_launcher),
         },
     ]
     monkeypatch.setattr(
@@ -122,6 +124,52 @@ def test_idle_scan_excludes_updater_ancestors_and_blocks_another_managed_image(
         }
     )
     with pytest.raises(RuntimeError, match = rf"PID {consumer_pid}"):
+        gate.ensure_managed_environment_is_idle(studio_home)
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
+def test_idle_scan_does_not_exclude_managed_parent_of_updater(tmp_path, monkeypatch):
+    studio_home = tmp_path / "studio"
+    scripts = studio_home / "unsloth_studio" / "Scripts"
+    managed_python = scripts / "python.exe"
+    managed_launcher = scripts / "unsloth.exe"
+    scripts.mkdir(parents = True)
+    managed_python.write_bytes(b"MZ")
+    managed_launcher.write_bytes(b"MZ")
+    current_pid = os.getpid()
+    launcher_pid = current_pid + 1_050_000
+    managed_parent_pid = launcher_pid + 1
+    payload = [
+        {
+            "ProcessId": current_pid,
+            "ParentProcessId": launcher_pid,
+            "Name": "python.exe",
+            "ExecutablePath": str(managed_python),
+        },
+        {
+            "ProcessId": launcher_pid,
+            "ParentProcessId": managed_parent_pid,
+            "Name": "unsloth.exe",
+            "ExecutablePath": str(managed_launcher),
+        },
+        {
+            "ProcessId": managed_parent_pid,
+            "ParentProcessId": 0,
+            "Name": "python.exe",
+            "ExecutablePath": str(managed_python),
+        },
+    ]
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps(payload),
+            stderr = "",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match = rf"PID {managed_parent_pid}"):
         gate.ensure_managed_environment_is_idle(studio_home)
 
 
