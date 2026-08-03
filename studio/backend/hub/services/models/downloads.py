@@ -136,8 +136,15 @@ async def download_model_response(
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
-    use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
+    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
+    # makes that outlast its 3s budget while every other Studio request waits behind it.
+    use_xet, transport_reason = await asyncio.to_thread(
+        download_lifecycle.resolve_requested_use_xet,
+        getattr(body, "transport_mode", None),
+        body.use_xet,
+    )
     transport = download_lifecycle.resolve_transport(use_xet)
+    logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
     from utils.hf_cache_settings import get_hf_cache_paths
 
     cache_paths = get_hf_cache_paths()

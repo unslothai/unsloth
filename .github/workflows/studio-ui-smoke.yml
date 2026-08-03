@@ -35,7 +35,11 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Never on main: pushes land in bursts, so cancelling superseded runs there means
+  # a deterministic failure can go unreported for as long as the bursts continue.
+  # The collapsed-row break below sat on main for 14 hours behind four cancelled
+  # runs. On a PR branch cancelling is still what you want.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read

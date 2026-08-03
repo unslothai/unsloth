@@ -24,7 +24,7 @@ export const ko = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "{name} 계정 메뉴",
     updateAvailable: "업데이트 사용 가능",
     resize: {
@@ -481,7 +481,7 @@ export const ko = {
     },
     appearance: {
       title: "외관",
-      description: "이 기기에서 Unsloth Studio가 표시되는 방식입니다.",
+      description: "이 기기에서 Unsloth가 표시되는 방식입니다.",
       theme: {
         title: "테마",
         label: "색상 구성",
@@ -689,7 +689,7 @@ export const ko = {
       agentDocs: "{agent} 설정 문서 열기",
       copyGeneratedCommand: "생성된 명령 복사",
       modelNote:
-        "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth Studio에 이미 로드된 모델을 쓰려면 --model을 빼세요.",
+        "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 쓰려면 --model을 빼세요.",
       subagent: {
         title: "로컬 모델을 서브에이전트로 사용",
         description:
@@ -910,7 +910,7 @@ export const ko = {
       osWindows: "Windows",
       secureHttps: "보안 HTTPS",
       secureHttpsHint:
-        "0.0.0.0 포트는 여전히 전역에서 접근할 수 있습니다. 완전한 보안을 위해서는 --secure로 Unsloth Studio를 실행하여 이 HTTPS 링크만 노출하세요.",
+        "0.0.0.0 포트는 여전히 전역에서 접근할 수 있습니다. 완전한 보안을 위해서는 --secure로 Unsloth를 실행하여 이 HTTPS 링크만 노출하세요.",
       copyTunnelUrl: "터널 URL 복사",
       copySnippet: "스니펫 복사",
       copy: "복사",
@@ -964,7 +964,7 @@ export const ko = {
       reportIssue: "문제 보고",
       license: {
         sectionTitle: "라이선스",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "GNU AGPL v3.0 하에 오픈 소스입니다.",
         libraryLabel: "Unsloth Core",
@@ -972,12 +972,12 @@ export const ko = {
         libraryDescription: "Apache 2.0 하에 라이선스가 부여됩니다.",
       },
       dangerZone: "위험 구역",
-      shutDownStudio: "Unsloth Studio 종료",
+      shutDownStudio: "Unsloth 종료",
       shutDownStudioDescription:
         "Unsloth 서버를 중지하고 세션을 종료합니다.",
       shutDown: "종료",
       update: {
-        title: "Unsloth Studio 업데이트",
+        title: "Unsloth 업데이트",
         commandText: "{label} 텍스트",
         copied: "복사됨",
         copyCommand: "명령 복사",

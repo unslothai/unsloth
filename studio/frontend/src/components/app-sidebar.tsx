@@ -943,7 +943,7 @@ export function AppSidebar() {
         ? "sidebar-row-action sidebar-touch-reveal group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
         : "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
-      "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
+      "sidebar-nav-btn h-[30px] cursor-pointer rounded-full py-0 pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
       // title with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
@@ -956,9 +956,19 @@ export function AppSidebar() {
           ? // Pinned rows show an extra unpin button on hover, so reserve more room
             // (pr-8 when the menu is open keeps the unpin button clear of the title).
             "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
-          : // Hover room for the kebab only; title keeps one more character.
-            // Touch rows clear the full always-visible kebab hit area (pr-10).
-            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-10",
+          : isGenerating
+            ? // A spinner glyph cannot truncate, so clear the kebab's 30px inset (pr-1.5 + size-6).
+              "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-10"
+            : // Hover room for the kebab only; title keeps one more character.
+              // Touch rows clear the full always-visible kebab hit area (pr-10).
+              "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-10",
+      // A focused kebab is revealed without hover, so a spinner row reserves the same room.
+      isGenerating &&
+        (variant === "project"
+          ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
+          : isPinned
+            ? "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16"
+            : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-8"),
     );
 
     const isRenamingThis =
@@ -979,7 +989,7 @@ export function AppSidebar() {
             aria-label={translate("shell.dialog.renameChat.placeholder")}
             className={cn(
               // No pill or box; edit in place as plain highlighted text.
-              "text-foreground h-[33px] w-full border-0 bg-transparent pr-4 text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none",
+              "text-foreground h-[30px] w-full border-0 bg-transparent py-0 pr-4 text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none",
               variant === "project" ? "pl-[39px]" : "pl-3",
             )}
           />

@@ -1397,8 +1397,11 @@ def studio_release_notes(
     "/api/studio/download-transport-capabilities",
     response_model = TransportCapabilities,
 )
-def studio_download_transport_capabilities(_current_subject: str = Depends(get_current_subject)):
-    return asdict(get_download_transport_capabilities())
+def studio_download_transport_capabilities(
+    probe: bool = False, _current_subject: str = Depends(get_current_subject)
+):
+    # Sync def, so FastAPI runs this in the threadpool and an opted-in probe cannot block the loop.
+    return asdict(get_download_transport_capabilities(probe = probe))
 
 
 @app.post("/api/shutdown")

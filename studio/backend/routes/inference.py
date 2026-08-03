@@ -1013,9 +1013,11 @@ try:
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
+        _metal_device_is_paravirtual,
         _planned_main_cache_types,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
+        paravirtual_normalized_request,
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
@@ -1061,9 +1063,11 @@ except ImportError:
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
+        _metal_device_is_paravirtual,
         _planned_main_cache_types,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
+        paravirtual_normalized_request,
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
@@ -1832,6 +1836,7 @@ from models.inference import (
     UnloadResponse,
     InferenceStatusResponse,
     ChatCompletionRequest,
+    ChatCountTokensRequest,
     ChatCompletionChunk,
     ChatCompletion,
     ToolConfirmRequest,
@@ -2285,6 +2290,39 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
 
     policy = get_tool_policy()
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
+
+
+def _takes_tool_passthrough(payload, llama_backend) -> bool:
+    """True when a GGUF request is forwarded to llama-server verbatim.
+
+    The passthrough sends the caller's own tools, no built-in schema and no nudge, so the counter
+    must decide this BEFORE applying the process tool policy: `unsloth run --enable-tools` sets
+    that policy without asking for the tool loop, so its catalog would price a prompt never sent.
+    """
+    supports_tools = getattr(llama_backend, "supports_tools", False)
+    if supports_tools and _explicit_studio_tool_loop_requested(payload):
+        return False
+    # Read defensively: a count request carries no tool_choice, and absent withdraws nothing.
+    has_client_contract = (
+        bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
+    ) or _has_openai_tool_history(payload.messages)
+    supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
+    if supports_passthrough and has_client_contract:
+        return True
+    return _extract_response_format(payload) is not None
+
+
+def _passthrough_client_tools(payload):
+    """The caller's own tool catalog exactly as the passthrough puts it on the wire.
+
+    ``tool_choice: "none"`` withdraws it, unless tool history needs those schemas to replay.
+    /apply-template renders any ``tools`` regardless of tool_choice, so the counter shares the rule.
+    """
+    if getattr(payload, "tool_choice", None) == "none" and not _has_openai_tool_history(
+        payload.messages
+    ):
+        return None
+    return payload.tools or None
 
 
 def _permission_mode_confirm(payload) -> bool:
@@ -3648,6 +3686,7 @@ def _active_gguf_intent(
         ),
         mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         compare_mtp_draft = True,
+        extra_args_inherited = request.llama_extra_args is None,
     )
 
 
@@ -3810,6 +3849,36 @@ def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Opt
         or public_model_id(fallback)
         or fallback
     )
+
+
+def _llama_status_model_ids(llama_backend) -> "tuple[Optional[str], Optional[str]]":
+    """The ``(active_model, model_identifier)`` pair ``/api/inference/status`` publishes
+    for a loaded GGUF. A native-lease load reports only the display label, never the
+    leased on-disk path."""
+    model_id = getattr(llama_backend, "model_identifier", None)
+    native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
+    display_model_id = getattr(
+        llama_backend, "_native_display_label", None
+    ) or display_label_for_native_path(model_id)
+    if (
+        native_grant_backed
+        and model_id
+        and display_model_id == model_id
+        and os.path.isabs(model_id)
+    ):
+        display_model_id = os.path.basename(model_id)
+    elif not native_grant_backed and display_model_id == model_id:
+        # No label registered, so report the clean public id, not the snapshot's sha.
+        display_model_id = _llama_public_model_id(llama_backend) or display_model_id
+    return display_model_id, (None if native_grant_backed else model_id)
+
+
+def _llama_status_checkpoint_id(llama_backend) -> Optional[str]:
+    """The exact string a Studio client holds as ``params.checkpoint`` for the loaded
+    GGUF: ``status.model_identifier ?? status.active_model``. Built from the same pair the
+    status handler returns so the two cannot drift."""
+    display_model_id, model_identifier = _llama_status_model_ids(llama_backend)
+    return display_model_id if model_identifier is None else model_identifier
 
 
 _DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY = "_unsloth_disable_openai_auto_switch"
@@ -5165,6 +5234,7 @@ def _resolve_gguf_load_intent(
         n_parallel = n_parallel,
         is_vision = config.is_vision,
         gpu_ids_are_vulkan_ordinals = placement.gpu_ids_are_vulkan_ordinals,
+        extra_args_inherited = getattr(request, "llama_extra_args", None) is None,
     )
 
 
@@ -5204,13 +5274,39 @@ def _guard_chat_load_against_training(
     from core.inference.llama_cpp import _diffusion_manual_ngl, _scale_diffusion_required_gb
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    if is_gguf and request.gpu_memory_mode == "manual" and (diffusion_kind is False):
+    # load_model pins a GGUF to CPU on a virtualised Metal device, so guard what will run:
+    # sized as the raw Auto request, a CPU-only load is refused over VRAM it never takes.
+    _guard_gpu_memory_mode = request.gpu_memory_mode
+    _guard_gpu_layers = request.gpu_layers
+    _guard_tensor_parallel = request.tensor_parallel
+    _pv_guard_forced_cpu = is_gguf and _metal_device_is_paravirtual()
+    if _pv_guard_forced_cpu:
+        _pv = paravirtual_normalized_request(
+            gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
+            tensor_parallel = request.tensor_parallel,
+            tensor_split = None,
+            n_cpu_moe = 0,
+            extra_args = llama_extra_args,
+            log_dropped = False,
+        )
+        _guard_gpu_memory_mode = _pv.gpu_memory_mode
+        _guard_gpu_layers = _pv.gpu_layers
+        _guard_tensor_parallel = _pv.tensor_parallel
+        llama_extra_args = _pv.extra_args
+    # The pin leaves nothing on the GPU (--device none, no mmproj offload, drafter on CPU),
+    # so there is nothing to budget whatever the GGUF turns out to be. Ahead of the checks
+    # below, which only exempt a CONFIRMED diffusion GGUF and would size an unclassified
+    # remote one as GPU-resident and 409 a load that never touches VRAM.
+    if _pv_guard_forced_cpu:
+        return
+    if is_gguf and _guard_gpu_memory_mode == "manual" and (diffusion_kind is False):
         return
     # A zero-layer diffusion split places no model layers on any device, so it cannot compete
     # with training for VRAM. Mirrors the loader, which folds the same condition into its
     # cpu_only (core/inference/llama_cpp.py).
     diffusion_ngl = (
-        _diffusion_manual_ngl(request.gpu_memory_mode, request.gpu_layers) if is_gguf else None
+        _diffusion_manual_ngl(_guard_gpu_memory_mode, _guard_gpu_layers) if is_gguf else None
     )
     if diffusion_ngl is not None and diffusion_kind is not False:
         # The loader drops the split when the shim has no --ngl and launches GPU-resident.
@@ -5254,11 +5350,19 @@ def _guard_chat_load_against_training(
     )
 
     # Size with the count that will actually launch, or a load that fits gets a
-    # 409: diffusion never receives --parallel, and load_model clamps to 1 on an
-    # llama-server without --kv-unified. An unclassified GGUF keeps the ask.
+    # 409: diffusion never receives --parallel, load_model clamps to 1 on an
+    # llama-server without --kv-unified, and it clamps MTP to 1 as well. An
+    # unclassified GGUF keeps the ask.
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
             n_parallel = 1
+        # MTP is deliberately NOT clamped here even though the launch clamps it to one
+        # slot. _estimate_gguf_required_gb counts the drafter file and the main KV, but
+        # not the draft KV, the duplicated target context MLA keeps, or the draft compute
+        # reserve, all of which load_model does budget. Sizing for one slot would drop
+        # the slot KV without replacing it with those, and a guard that under-sizes
+        # evicts the training run it exists to protect: the spare slots stand in for
+        # what is not modelled.
         else:
             try:
                 caps = LlamaCppBackend.probe_server_capabilities()
@@ -5276,7 +5380,7 @@ def _guard_chat_load_against_training(
             n_parallel = n_parallel,
             cache_type_kv = request.cache_type_kv,
             tensor_parallel = (
-                _effective_tensor_parallel(llama_extra_args, request.tensor_parallel)
+                _effective_tensor_parallel(llama_extra_args, _guard_tensor_parallel)
                 and (
                     is_vulkan_backend
                     or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2
@@ -7548,20 +7652,10 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         # If a GGUF model is loaded via llama-server, report that
         if llama_backend.is_loaded:
             _model_id = llama_backend.model_identifier
+            # is_local_model below needs the flag; the helper reports identities, not provenance.
             _native_grant_backed = getattr(llama_backend, "_native_grant_backed", False)
-            _display_model_id = getattr(
-                llama_backend, "_native_display_label", None
-            ) or display_label_for_native_path(_model_id)
-            if (
-                _native_grant_backed
-                and _model_id
-                and _display_model_id == _model_id
-                and os.path.isabs(_model_id)
-            ):
-                _display_model_id = os.path.basename(_model_id)
-            elif not _native_grant_backed and _display_model_id == _model_id:
-                # No label registered, so report the clean public id, not the snapshot's sha.
-                _display_model_id = _llama_public_model_id(llama_backend) or _display_model_id
+            # Shared with /chat/count_tokens, so a client can tell whose tokenizer counted.
+            _display_model_id, _reported_model_identifier = _llama_status_model_ids(llama_backend)
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             # Don't surface Unsloth's auto-applied bundled family template (e.g. the
             # gemma-4 override) as a user-authored override: the frontend adopts
@@ -7580,7 +7674,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 _reported_chat_template_override = None
             return InferenceStatusResponse(
                 active_model = _display_model_id,
-                model_identifier = None if _native_grant_backed else _model_id,
+                model_identifier = _reported_model_identifier,
                 is_gguf = True,
                 is_local_model = _loaded_is_local_model(
                     llama_backend, _native_grant_backed, _model_id
@@ -9691,14 +9785,6 @@ async def openai_chat_completions(
     normalized_stop = _normalize_stop_sequences(payload.stop)
 
     _has_tool_messages = _has_openai_tool_history(payload.messages)
-    # Route guided-decoding requests through the verbatim passthrough so
-    # ``response_format`` (JSON schema) reaches llama-server and the model's
-    # GBNF-constrained output comes back unmodified. The non-passthrough GGUF
-    # path below calls ``generate_chat_completion`` which has no response_format
-    # kwarg, so the schema gets silently dropped and data_designer falls back to
-    # free-form sampling. Guided decoding does not require ``supports_tools`` --
-    # the grammar machinery is independent of tool-call parsing.
-    _has_response_format = _extract_response_format(payload) is not None
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
     _has_active_tool_catalog = _has_tool_catalog and payload.tool_choice != "none"
     _has_client_tool_contract = _has_active_tool_catalog or _has_tool_messages
@@ -9712,7 +9798,6 @@ async def openai_chat_completions(
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
-    _tools_passthrough = _supports_tool_passthrough and _has_client_tool_contract
     if (
         using_gguf
         and not _studio_tool_loop_requested
@@ -9731,11 +9816,11 @@ async def openai_chat_completions(
                 param = "tools" if payload.tools else "messages",
             ),
         )
-    if (
-        using_gguf
-        and not _studio_tool_loop_requested
-        and (_tools_passthrough or _has_response_format)
-    ):
+    # Shared with the token counter, so a count can never describe a route the completion does
+    # not take. Guided decoding routes here too: the non-passthrough path calls
+    # generate_chat_completion, which has no response_format kwarg and would silently drop the
+    # schema. No ``supports_tools`` needed -- grammars are independent of it.
+    if using_gguf and _takes_tool_passthrough(payload, llama_backend):
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
         if payload.audio_base64:
@@ -11737,8 +11822,50 @@ async def openai_chat_completions(
         and _sf_features.get("supports_tools", False)
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
+    # apply_chat_template sanitizes the catalog it renders, so a tool dropped for unsafe
+    # markup never reached the prompt. Gating the healer on the caller's list instead would
+    # promote a dropped tool with a clean NAME out of text-form output, handing the client a
+    # call for a tool the model was never shown (#7066).
+    from core.inference.chat_template_helpers import (
+        chat_render_target as _sf_chat_render_target,
+        markup_for_tokenizer as _sf_markup_for,
+        neutralize_tool_descriptions as _sf_neutralize_tools,
+        renderable_tool_catalog_for_targets as _sf_renderable_tools,
+    )
+
+    _sf_markup = _sf_markup_for(_sf_model_info.get("tokenizer"))
+
+    # A text-only tool request on a vision model renders through a different object on each
+    # backend: MLX keeps the PROCESSOR when it has a usable template (_generate_vlm), the
+    # transformers path unwraps to the nested tokenizer (_generate_chat_response_inner).
+    # Authorizing against one lets the other's render drop a tool the healer still holds, so
+    # both are profiled and the catalog is the intersection. The MLX rule is shared with
+    # _generate_vlm rather than restated, so the two cannot drift (#7066).
+    _sf_processor = _sf_model_info.get("processor")
+    _sf_tokenizer = _sf_model_info.get("tokenizer")
+    _sf_mlx_target = _sf_chat_render_target(_sf_processor, _sf_tokenizer)
+    _sf_hf_target = getattr(_sf_mlx_target, "tokenizer", _sf_mlx_target)
+    _sf_chat_targets = (
+        (_sf_mlx_target,) if _sf_hf_target is _sf_mlx_target else (_sf_mlx_target, _sf_hf_target)
+    )
+    _sf_healing_tools = (
+        # Safe under EVERY template this turn could select: when the active one drops the
+        # schema the render falls back to the native template, whose profile can drop a tool
+        # the active profile kept (#7066). In a thread because the first request resolves
+        # that native template through AutoTokenizer.from_pretrained, which would otherwise
+        # block the event loop for every concurrent request.
+        await asyncio.to_thread(
+            _sf_renderable_tools,
+            payload.tools,
+            _sf_chat_targets,
+            _sf_model_info,
+            active_model_name = backend.active_model_name,
+        )
+        if _sf_client_tools
+        else None
+    )
     _sf_heal = (
-        heal_gate(payload.auto_heal_tool_calls, payload.tools, payload.tool_choice)
+        heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice)
         if _sf_client_tools
         else None
     )
@@ -11828,7 +11955,7 @@ async def openai_chat_completions(
 
                 # Client-tool passthrough: heal text-form calls on the fly
                 # (None => relay verbatim).
-                healer = StreamToolCallHealer(_sf_heal, payload.tools) if _sf_heal else None
+                healer = StreamToolCallHealer(_sf_heal, _sf_healing_tools) if _sf_heal else None
                 heal_state = {"idx": 0}
 
                 prev_text = ""
@@ -12052,13 +12179,13 @@ async def openai_chat_completions(
                 _msg["reasoning_content"] = _reasoning_text
             _finish = "stop"
             if _sf_heal:
-                if heal_openai_message(_msg, _sf_heal, payload.tools):
+                if heal_openai_message(_msg, _sf_heal, _sf_healing_tools):
                     _finish = "tool_calls"
                 elif nudge_enabled(payload.nudge_tool_calls):
                     _data = {
                         "choices": [{"message": {"role": "assistant", "content": _visible_text}}]
                     }
-                    if nudge_should_retry(_data, _sf_heal, payload.tools):
+                    if nudge_should_retry(_data, _sf_heal, _sf_healing_tools):
                         # A failed retry must not 500 the request; keep the first
                         # response (GGUF nudge parity). The retry's generate()
                         # overwrites stats_holder, so save the first attempt's stats
@@ -12080,7 +12207,7 @@ async def openai_chat_completions(
                             retry_msg = {"role": "assistant", "content": _retry_visible}
                             if _retry_reasoning:
                                 retry_msg["reasoning_content"] = _retry_reasoning
-                            if heal_openai_message(retry_msg, _sf_heal, payload.tools):
+                            if heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools):
                                 _visible_text, _msg, _finish = (
                                     _retry_visible,
                                     retry_msg,
@@ -14876,6 +15003,209 @@ def _validate_anthropic_client_tools(tools) -> None:
             )
 
 
+def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]:
+    """Append text to the leading system/developer message, or prepend one."""
+    if not addition:
+        return messages
+    copied = [dict(msg) for msg in messages]
+    for msg in copied:
+        if msg.get("role") not in ("system", "developer"):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            msg["content"] = content.rstrip() + "\n\n" + addition
+            return copied
+    return [{"role": "system", "content": addition}, *copied]
+
+
+@router.post("/chat/count_tokens")
+async def chat_count_tokens(
+    payload: ChatCountTokensRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer.
+
+    Unlike the /v1 count endpoints this never auto-switches: ``model`` is informational. The
+    caller is a background recount with no abort signal, so switching could drag the backend back
+    to the model loaded when the count started, a reload the client's guards cannot undo."""
+    # Admitted only while nothing generates, and stood down at the next checkpoint if that changes:
+    # admission is not atomic with the work, and true mutual exclusion would put a lock in front of
+    # generation startup, which is the cost this avoids. Refusing here also covers the second tab or
+    # the script against /api that the client-side gate cannot. Deliberately coarse: _TrackedCancel
+    # registers external-provider runs too, so those decline a count they could have served;
+    # narrowing it means trusting a kind/model field to decide whether to work next to a decode, and
+    # being wrong there costs inference time while over-refusing only costs a redraw.
+    if active_generations.count() > 0:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens while a generation is in progress.",
+        )
+
+    # /apply-template swaps each image for a short media marker, so refuse rather than undercount.
+    if _request_has_image(payload):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for messages containing images.",
+        )
+    # Same for audio: the completion injects the recording, this cannot.
+    if getattr(payload, "audio_base64", None):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for messages containing audio.",
+        )
+
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(
+            status_code = 503,
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        )
+
+    # Same sanitization the GGUF chat path runs before generation. Route FIRST: the passthrough
+    # does not merge adjacent user turns, so coalescing here would price a prompt it never sends
+    # (two user turns split by an empty assistant sentinel, after a stopped response).
+    _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
+    openai_messages = _strip_provider_synthetic_tool_history(
+        _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
+    )
+    if not _takes_passthrough:
+        openai_messages = _coalesce_consecutive_user_turns(openai_messages)
+    _system_prompt, _, _ = _extract_content_parts(payload.messages)
+    openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
+
+    # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop
+    # answers from exactly these messages, splicing in whatever build_rag_autoinject retrieves --
+    # thousands of tokens this never sees, so the bar would claim room the generation lacks. Any
+    # other shape ends on an assistant turn, where retrieval has no user message to run against.
+    if (
+        payload.rag_scope
+        and openai_messages
+        and openai_messages[-1].get("role") in ("user", "tool")
+    ):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for a pending turn that would retrieve documents.",
+        )
+
+    # The passthrough is the only route that puts the caller's own catalog on the wire; every other
+    # renders from the selection below, so a catalog surviving here would price schemas never sent.
+    openai_tools = _passthrough_client_tools(payload) if _takes_passthrough else None
+    # The CLI hard-override still applies: _effective_enable_tools resolves it into _tools_on.
+    _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
+        _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
+    )
+    # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
+    _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
+    # Same rule the completion path resolves, so the two agree on whether MCP schemas are in the
+    # prompt at all. MCP alone turns tools on there, hence the widened branch below.
+    from state.tool_policy import get_tool_policy as _get_tool_policy_ct
+
+    _mcp_on = (
+        not _client_disabled_tool_calls
+        and bool(getattr(payload, "mcp_enabled", False))
+        and _get_tool_policy_ct() is not False
+    )
+    # Never discovery on a count: get_enabled_mcp_tools spawns stdio servers, writes cache and
+    # cool-off state, and blocks a probe timeout on a server that is down. _mcp_allowed stays
+    # False because it is the flag that reaches the network; schemas come from the cache that
+    # path fills instead, and an incomplete view is declined rather than undercounted.
+    _mcp_allowed = False
+    _mcp_tools: list[dict] = []
+    if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
+        from core.inference.tools import cached_mcp_tools
+        _mcp_tools, _mcp_complete = cached_mcp_tools()
+        if not _mcp_complete:
+            raise HTTPException(
+                status_code = 503,
+                detail = "Cannot count tokens until enabled MCP tools have been discovered.",
+            )
+    if not _takes_passthrough and (_tools_on or _mcp_on) and llama_backend.supports_tools:
+        tools_to_use = await _select_request_tools(
+            payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
+        )
+        # Appended in the position _select_request_tools would have used, so the order matches.
+        tools_to_use = tools_to_use + _mcp_tools
+        if tools_to_use:
+            openai_tools = tools_to_use
+            openai_messages = _append_to_system_message(
+                openai_messages,
+                _apply_rag_nudge(
+                    _build_tool_action_nudge(
+                        tools = tools_to_use,
+                        model_name = _llama_public_model_id(llama_backend, payload.model),
+                    ),
+                    tools_to_use,
+                    rag_scope = payload.rag_scope,
+                ),
+            )
+
+            # The GGUF tool path strips leaked markup from replayed history before rendering,
+            # so without the same strip the count prices text it removes.
+            _count_auto_heal = (
+                payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
+            )
+            _count_history_gate = _display_tool_name_gate(tools_to_use)
+            openai_messages = [dict(msg) for msg in openai_messages]
+            for _msg in openai_messages:
+                if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                    _msg["content"] = _strip_tool_xml_for_display(
+                        _msg["content"],
+                        auto_heal_tool_calls = _count_auto_heal,
+                        enabled_tool_names = _count_history_gate,
+                    ).strip()
+
+    # llama-server falls back to the load-time --chat-template-kwargs per key a request omits,
+    # so omitting these prices the template in whatever mode the model was LOADED in.
+    _template_kwargs = llama_backend._request_reasoning_kwargs(
+        payload.enable_thinking,
+        payload.reasoning_effort,
+        payload.preserve_thinking,
+    )
+
+    # Whose tokenizer this is, in the shape /api/inference/status publishes: another tab's load
+    # moves it while the caller's own checkpoint guard sees no change, so report and let it drop.
+    _tokenizer_model = _llama_status_checkpoint_id(llama_backend)
+
+    # Re-checked immediately before the only work that reaches llama-server, because everything
+    # between here and the entry check awaits, so a run can have started in the gap.
+    if active_generations.count() > 0:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens while a generation is in progress.",
+        )
+
+    from core.inference.llama_cpp import CountAborted
+
+    try:
+        count = await asyncio.to_thread(
+            llama_backend.count_chat_tokens,
+            openai_messages,
+            None,
+            openai_tools,
+            strict = True,
+            chat_template_kwargs = _template_kwargs,
+            # Polled between /apply-template and /tokenize: admission and the work are separate
+            # steps, so a run starting in between is caught here and the second round trip is not.
+            should_abort = lambda: active_generations.count() > 0,
+        )
+    except CountAborted:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens while a generation is in progress.",
+        )
+    except Exception:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Unable to count tokens with the loaded model tokenizer.",
+        )
+    # A load landing mid-count leaves the total attributable to neither model.
+    if _llama_status_checkpoint_id(llama_backend) != _tokenizer_model:
+        raise HTTPException(
+            status_code = 503,
+            detail = "The loaded model changed while counting tokens.",
+        )
+    return JSONResponse(content = {"input_tokens": int(count), "model": _tokenizer_model})
+
+
 @router.post("/messages/count_tokens")
 async def anthropic_count_tokens(
     payload: AnthropicMessagesRequest,
@@ -16203,16 +16533,35 @@ def _build_passthrough_payload(
     backend_ctx = None,
     seed = None,
     stream_options = None,
+    markup = None,
 ):
+    from core.inference.chat_template_helpers import (
+        neutralize_control_markup_in_messages,
+        neutralize_tool_descriptions,
+        reconciled_tool_choice,
+    )
+
+    # The one place to break markup: llama-server applies the template itself, and both
+    # /v1/messages bodies come from here, never the OpenAI builder below (#7066).
+    # *markup* is the loaded model's profile, so passthrough leaves another family's
+    # marker alone exactly as generate_chat_completion does (#7066).
+    _pt_markup = markup
     body = {
-        "messages": openai_messages,
+        "messages": neutralize_control_markup_in_messages(openai_messages, None, _pt_markup),
         "temperature": temperature,
         "top_p": top_p,
         "top_k": top_k,
         "stream": stream,
     }
-    if openai_tools:
-        body["tools"] = _llama_compatible_tools(openai_tools)
+    # Tested after the rewrite: an all-injected catalog drops to empty, and
+    # "tools": [] would still advertise tool use.
+    safe_tools = neutralize_tool_descriptions(openai_tools, None, _pt_markup)
+    if safe_tools:
+        body["tools"] = _llama_compatible_tools(safe_tools)
+        # A mixed catalog keeps safe_tools non-empty while dropping the one tool the client
+        # forced; forwarding that choice would name an unadvertised function and hand
+        # llama-server back the raw markup. Fall back to "auto" to stay consistent (#7066).
+        tool_choice = reconciled_tool_choice(tool_choice, openai_tools, safe_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     if seed is not None:
@@ -16246,6 +16595,32 @@ def _build_passthrough_payload(
         # of the model's load-time default.
         body["chat_template_kwargs"] = chat_template_kwargs
     return body
+
+
+def _nudge_retry_messages(
+    body,
+    data,
+    allowed_tools,
+    markup = None,
+):
+    """The nudge retry's message list, re-neutralized like the enable-tools loop.
+
+    The appended suffix is not sanitized text: the assistant turn replays the model's own
+    failed output, and the user turn interpolates ``allowed_tools``, which ``heal_gate``
+    derives from the RAW catalog on the /v1/messages path -- so a name dropped from
+    ``tools`` for carrying markup would come straight back as prose the template renders
+    as structure (#7066). Wrapping the whole concatenation rather than just the suffix is
+    free: the rewrite is idempotent and returns unchanged messages as-is, so the already
+    neutralized prefix stays byte-identical and llama-server still reuses the slot's KV
+    cache, the entire point of appending instead of rebuilding."""
+    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
+    # Same profile the body was built with: sweeping the retry with the curated patterns
+    # would rewrite a prefix the first attempt preserved, so the prefix would no longer be
+    # byte-identical and the slot's KV cache would miss (#7066).
+    return neutralize_control_markup_in_messages(
+        [*body.get("messages", []), *nudge_messages(data, allowed_tools)], None, markup
+    )
 
 
 async def _anthropic_passthrough_retry_url(llama_backend, exc):
@@ -16310,6 +16685,7 @@ async def _anthropic_passthrough_stream(
         tool_choice = tool_choice,
         backend_ctx = llama_backend.context_length,
         stream_options = {"include_usage": True},
+        markup = getattr(llama_backend, "markup_profile", None),
     )
 
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
@@ -16340,14 +16716,24 @@ async def _anthropic_passthrough_stream(
         # the opening lines are covered as well.
         _tracker.__enter__()
         emitter = AnthropicPassthroughEmitter()
-        # Promote text-form tool calls (declared client tools only) into
-        # tool_use blocks; verbatim behavior when healing is off or no tools.
-        # tool_choice arrives here already converted to the OpenAI shape.
-        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
+        # Promote text-form tool calls (declared client tools only) into tool_use blocks;
+        # verbatim when healing is off or no tools. tool_choice is already OpenAI-shaped.
+        # Sanitized catalog, not the caller's: a tool dropped for unsafe markup never reached
+        # the prompt, so promoting it would hand the client an unadvertised tool_use (#7066).
+        from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
+        _healing_tools = neutralize_tool_descriptions(
+            openai_tools, None, getattr(llama_backend, "markup_profile", None)
+        )
+        # The reconciled choice the body carries, not the caller's: a dropped forced tool
+        # was already sent as "auto", and gating on the stale name would intersect the safe
+        # names with a removed one and disable healing outright. "none" survives
+        # reconciliation, so it still forbids promotion (#7066).
+        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
         if _allowed_tools:
             emitter.enable_healing(
                 _allowed_tools,
-                openai_tools,
+                _healing_tools,
                 disable_parallel_tool_use = disable_parallel_tool_use,
             )
         # These yields sit outside the teardown try below, so a disconnect while
@@ -16541,6 +16927,7 @@ async def _anthropic_passthrough_non_streaming(
         presence_penalty = presence_penalty,
         tool_choice = tool_choice,
         backend_ctx = llama_backend.context_length,
+        markup = getattr(llama_backend, "markup_profile", None),
     )
 
     _client = _cancelable_nonstreaming_client()
@@ -16591,19 +16978,31 @@ async def _anthropic_passthrough_non_streaming(
             )
 
         data = resp.json()
-        # tool_choice arrives here already converted to the OpenAI shape.
-        _allowed_tools = heal_gate(auto_heal_tool_calls, openai_tools, tool_choice)
+        # tool_choice is already OpenAI-shaped. Sanitized as in the streaming path: with
+        # nudging on, the retry would otherwise name a tool dropped from the prompt (#7066).
+        from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
+        _healing_tools = neutralize_tool_descriptions(
+            openai_tools, None, getattr(llama_backend, "markup_profile", None)
+        )
+        # The reconciled choice the body carries, not the caller's: a dropped forced tool
+        # was already sent as "auto", and gating on the stale name would intersect the safe
+        # names with a removed one and disable healing outright. "none" survives
+        # reconciliation, so it still forbids promotion (#7066).
+        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
 
         # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
         # unusable; re-ask with the prompt prefix intact so the KV cache is reused.
         if (
             _allowed_tools
             and nudge_enabled(nudge_tool_calls)
-            and nudge_should_retry(data, _allowed_tools, openai_tools)
+            and nudge_should_retry(data, _allowed_tools, _healing_tools)
         ):
             retry_body = {
                 **body,
-                "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
+                "messages": _nudge_retry_messages(
+                    body, data, _allowed_tools, getattr(llama_backend, "markup_profile", None)
+                ),
             }
             try:
                 retry_resp = await _post(retry_body)
@@ -17031,10 +17430,9 @@ def _build_openai_passthrough_body(
     messages = _openai_messages_for_passthrough(payload)
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
+    # Markup is broken in _build_passthrough_payload, shared with both /v1/messages (#7066).
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
-    tools = payload.tools
-    if payload.tool_choice == "none" and not _has_openai_tool_history(payload.messages):
-        tools = None
+    tools = _passthrough_client_tools(payload)
     # Forward per-request reasoning fields (enable_thinking / reasoning_effort /
     # preserve_thinking) via chat_template_kwargs so the Jinja template renders
     # in the caller's mode, gated on the active template's capabilities exactly
@@ -17067,6 +17465,7 @@ def _build_openai_passthrough_body(
         backend_ctx = backend_ctx,
         seed = payload.seed,
         stream_options = payload.stream_options,
+        markup = getattr(llama_backend, "markup_profile", None),
     )
 
 
@@ -18217,7 +18616,9 @@ async def _openai_passthrough_non_streaming_upstream(
     ):
         retry_body = {
             **body,
-            "messages": [*body.get("messages", []), *nudge_messages(data, _allowed_tools)],
+            "messages": _nudge_retry_messages(
+                body, data, _allowed_tools, getattr(llama_backend, "markup_profile", None)
+            ),
         }
         try:
             retry_resp = await _post(retry_body)

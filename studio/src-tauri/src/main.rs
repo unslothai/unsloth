@@ -146,7 +146,7 @@ fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
     }
     app.dialog()
         .message(
-            "Unsloth Studio is still installing. Quitting now stops it part-way and \
+            "Unsloth is still installing. Quitting now stops it part-way and \
              leaves the installation incomplete, so it will need to be repaired before \
              it can start.",
         )
@@ -269,7 +269,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     TrayIconBuilder::new()
         .menu(&menu)
-        .tooltip("Unsloth Studio (Desktop)")
+        .tooltip("Unsloth")
         .icon(app.default_window_icon().unwrap().clone())
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
@@ -317,7 +317,7 @@ fn main() {
     let _ = fix_path_env::fix();
 
     setup_logging();
-    info!("Unsloth Studio desktop app starting");
+    info!("Unsloth desktop app starting");
     windows_job::initialize();
 
     tauri::Builder::default()

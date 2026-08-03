@@ -1415,6 +1415,57 @@ class ChatCompletionRequest(BaseModel):
         return self
 
 
+class ChatCountTokensRequest(BaseModel):
+    """Count prompt tokens for a local GGUF chat without generating."""
+
+    model_config = {"extra": "allow"}
+
+    model: str = Field(
+        "default",
+        description = "Model identifier (informational; the active model is used)",
+    )
+    messages: list[ChatMessage] = Field(
+        ...,
+        description = "Conversation messages in OpenAI chat form",
+    )
+    tools: Optional[list[dict]] = Field(
+        None,
+        description = "Optional OpenAI tool definitions included in the prompt",
+    )
+    enable_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Render the template in thinking mode, as a completion would",
+    )
+    reasoning_effort: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Reasoning effort level the completion would request",
+    )
+    preserve_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Keep historical <think> blocks in the rendered prompt",
+    )
+    enable_tools: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Enable tool calling for supported models",
+    )
+    enabled_tools: Optional[list[str]] = Field(
+        None,
+        description = "[x-unsloth] List of enabled built-in tool names",
+    )
+    mcp_enabled: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Append tools from every enabled MCP server",
+    )
+    rag_scope: Optional[dict] = Field(
+        None,
+        description = "[x-unsloth] Hidden RAG retrieval scope for search_knowledge_base",
+    )
+    auto_heal_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
+    )
+
+
 class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
     approval_id: Optional[str] = None
