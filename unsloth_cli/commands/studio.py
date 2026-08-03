@@ -3110,6 +3110,21 @@ def update(
 _RECORDED_NO_TORCH: "Optional[bool]" = None
 
 
+def _live_recorded_no_torch() -> "Optional[bool]":
+    """The mode as recorded right now, or None when nothing can answer.
+
+    None is "no answer available", not "no": the reader itself may be gone, which
+    is a different thing from a manifest that says torch was wanted.
+    """
+    try:
+        _manifest = _studio_deps.load_install_manifest_module()
+        if _manifest is None:
+            return None
+        return _manifest.recorded_no_torch() is True
+    except Exception:
+        return None
+
+
 def _snapshot_recorded_no_torch() -> None:
     """Read the recorded mode while the code that can read it still exists.
 
@@ -3121,16 +3136,18 @@ def _snapshot_recorded_no_torch() -> None:
     is not a harmless default: it drops UNSLOTH_NO_TORCH from the recovery command
     and a GGUF-only user reinstalls the whole PyTorch stack.
 
-    Best effort and never fatal. Leaves the snapshot unset when it cannot read,
-    so a later call that can read still gets the chance.
+    A fallback for exactly that case, never a cache: _reinstall_command reads live
+    first and only consults this when the live read cannot answer. Reusing a
+    snapshot while the manifest is still readable would answer for the install that
+    was current when it was taken, which is a different install root, a different
+    process lifetime, or simply a stale mode.
+
+    Best effort and never fatal.
     """
     global _RECORDED_NO_TORCH
-    try:
-        _manifest = _studio_deps.load_install_manifest_module()
-        if _manifest is not None:
-            _RECORDED_NO_TORCH = _manifest.recorded_no_torch() is True
-    except Exception:
-        pass
+    live = _live_recorded_no_torch()
+    if live is not None:
+        _RECORDED_NO_TORCH = live
 
 
 def _reinstall_command() -> str:
@@ -3143,9 +3160,12 @@ def _reinstall_command() -> str:
     stack back in. Only when the record says True: recorded_no_torch returns None
     when nothing recorded a mode, and None must not read as False.
     """
-    if _RECORDED_NO_TORCH is None:
-        _snapshot_recorded_no_torch()
-    no_torch = _RECORDED_NO_TORCH is True
+    # Live first, snapshot only when nothing can answer. The other way round
+    # answers every later call with whatever the first one happened to see, which
+    # in one process means a second install root, or a test, gets the first one's
+    # mode.
+    live = _live_recorded_no_torch()
+    no_torch = live if live is not None else _RECORDED_NO_TORCH is True
     if platform.system() == "Windows":
         prefix = ""
         if _STUDIO_HOME_IS_CUSTOM:

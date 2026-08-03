@@ -378,6 +378,12 @@ class _NoTorchManifest:
         return True
 
 
+class _TorchManifest:
+    @staticmethod
+    def recorded_no_torch(root = None):
+        return False
+
+
 def test_the_recovery_command_keeps_no_torch_after_the_reader_is_gone(
     monkeypatch, tmp_path, capsys
 ):
@@ -409,6 +415,35 @@ def test_the_recovery_command_keeps_no_torch_after_the_reader_is_gone(
     assert (
         "UNSLOTH_NO_TORCH" in err
     ), "the recovery command lost no-torch mode, so it reinstalls the PyTorch stack"
+
+
+def test_a_later_call_reflects_the_install_it_is_actually_for(monkeypatch, tmp_path, capsys):
+    """The snapshot is a fallback, not a cache. Caching it would answer every later
+    call with whatever the first one saw, so a second install root in the same
+    process -- or the next test in the file -- inherits the first one's mode."""
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+    monkeypatch.setattr(studio, "_RECORDED_NO_TORCH", None)
+
+    # A first install that wanted torch, answered and remembered.
+    monkeypatch.setattr(
+        studio._studio_deps, "load_install_manifest_module", lambda *a, **k: _TorchManifest
+    )
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
+    assert "UNSLOTH_NO_TORCH" not in capsys.readouterr().err
+
+    # A second one that did not. The manifest is still readable, so the live answer
+    # is available and must win.
+    monkeypatch.setattr(
+        studio._studio_deps, "load_install_manifest_module", lambda *a, **k: _NoTorchManifest
+    )
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
+
+    assert "UNSLOTH_NO_TORCH" in capsys.readouterr().err, (
+        "the second call answered for the first install"
+    )
 
 
 def test_no_torch_is_not_invented_when_nothing_recorded_it(monkeypatch, tmp_path, capsys):
