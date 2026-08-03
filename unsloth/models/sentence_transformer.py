@@ -32,7 +32,7 @@ import torch
 from transformers.modeling_outputs import BaseModelOutput
 from collections import OrderedDict
 from transformers.models.distilbert import modeling_distilbert
-from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask_for_sdpa
+from unsloth.models._attn_mask_compat import _prepare_4d_attention_mask_for_sdpa
 import transformers
 from packaging.version import Version
 import re
@@ -186,32 +186,23 @@ def _save_pretrained_gguf(
     if tokenizer is None:
         tokenizer = self.tokenizer
 
-    # 4. Patch environment so Unsloth treats this embedding model correctly
-    @contextlib.contextmanager
-    def patch_unsloth_gguf_save():
-        # Prevent deletion of the directory self.save_pretrained just created
-        original_rmtree = shutil.rmtree
-        try:
-            yield
-        finally:
-            shutil.rmtree = original_rmtree
+    # 4. Call Unsloth's GGUF saver on the inner model targeting the transformer subdirectory
+    # No rmtree guard here: the merge cleanup that deletes save_directory is gated on
+    # push_to_hub, which is forced False below.
+    result = unsloth_save_pretrained_gguf(
+        inner_model,
+        save_directory = transformer_dir,
+        tokenizer = tokenizer,
+        quantization_method = quantization_method,
+        first_conversion = first_conversion,
+        push_to_hub = False,  # Force local first to move files
+        token = token,
+        max_shard_size = max_shard_size,
+        temporary_location = temporary_location,
+        maximum_memory_usage = maximum_memory_usage,
+    )
 
-    # 5. Call Unsloth's GGUF saver on the inner model targeting the transformer subdirectory
-    with patch_unsloth_gguf_save():
-        result = unsloth_save_pretrained_gguf(
-            inner_model,
-            save_directory = transformer_dir,
-            tokenizer = tokenizer,
-            quantization_method = quantization_method,
-            first_conversion = first_conversion,
-            push_to_hub = False,  # Force local first to move files
-            token = token,
-            max_shard_size = max_shard_size,
-            temporary_location = temporary_location,
-            maximum_memory_usage = maximum_memory_usage,
-        )
-
-    # 6. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
+    # 5. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
     gguf_files = result.get("gguf_files", [])
 
     new_gguf_locations = []
@@ -241,7 +232,7 @@ def _save_pretrained_gguf(
 
     result["gguf_files"] = new_gguf_locations
 
-    # 7. Add branding
+    # 6. Add branding
     try:
         FastSentenceTransformer._add_unsloth_branding(save_directory)
 
@@ -256,7 +247,7 @@ def _save_pretrained_gguf(
     except:
         pass
 
-    # 8. Handle Push to Hub if requested
+    # 7. Handle Push to Hub if requested
     if push_to_hub:
         if token is None:
             token = get_token()

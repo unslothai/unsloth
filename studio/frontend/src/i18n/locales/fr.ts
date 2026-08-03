@@ -27,19 +27,30 @@ export const fr = {
     product: "Unsloth Studio",
     accountMenu: "Menu du compte de {name}",
     updateAvailable: "Mise à jour disponible",
+    resize: {
+      collapse: "Cliquez pour réduire",
+      expand: "Cliquez pour développer",
+      drag: "Faites glisser pour redimensionner",
+    },
     aria: {
       home: "Accueil Unsloth",
       closeSidebar: "Fermer la barre latérale",
       openSidebar: "Ouvrir la barre latérale",
+      resizeSidebar: "Redimensionner ou réduire la barre latérale",
+      resizeRunSettings: "Redimensionner ou fermer les paramètres d'exécution",
+      openRunSettings: "Ouvrir les paramètres d'exécution",
       chatOptions: "Options de discussion",
       runOptions: "Options d'exécution",
     },
     navigation: {
       newChat: "Nouvelle discussion",
       returnToChat: "Retour à la discussion",
+      returnToChats: "Retour à {count} discussions",
+      chatGenerating: "Génération en cours",
       compare: "Comparer",
       search: "Rechercher",
       hub: "Hub de modèles",
+      projects: "Projets",
       train: "Entraîner",
       recipes: "Recettes",
       export: "Exporter",
@@ -92,6 +103,8 @@ export const fr = {
       title: "Paramètres",
       description: "Gérez vos préférences Unsloth.",
       closeAriaLabel: "Fermer les paramètres",
+      searchPlaceholder: "Rechercher dans les paramètres…",
+      searchNoResults: "Aucun paramètre trouvé.",
     },
     tabs: {
       general: "Général",
@@ -102,6 +115,146 @@ export const fr = {
       connections: "Connexions",
       apiKeys: "API",
       about: "À propos",
+      data: "Données",
+      agents: "Agents",
+      voice: "Voix",
+    },
+    voice: {
+      title: "Voix",
+      description: "Microphone, dictée, reconnaissance vocale et lecture à voix haute",
+      dictation: {
+        sectionTitle: "Dictée",
+        engineLabel: "Moteur de dictée",
+        engineBrowser: "Navigateur",
+        engineBrowserDescription:
+          "Transcrit l'audio via le service vocal de votre navigateur. Sélectionnez « Transcription locale » pour utiliser un modèle STT.",
+        engineModel: "Transcription locale",
+        engineModelDescription:
+          "Exécute un modèle de reconnaissance vocale (STT) en local et fonctionne hors ligne. Téléchargez-le, chargez-le ; il se décharge après une période d'inactivité.",
+        sttModelLabel: "Modèle de reconnaissance vocale",
+        sttModelDescription:
+          "Choisissez ou recherchez un modèle STT à exécuter en local.",
+        sttModelSearchPlaceholder: "Rechercher un modèle",
+        sttModelSearching: "Recherche sur Hugging Face…",
+        sttModelValidating: "Vérification de la compatibilité Whisper…",
+        sttModelNoResults: "Aucun modèle Whisper trouvé",
+        sttModelInvalid: "Ce dépôt ne peut pas être utilisé pour la dictée",
+        sttModelFailed: "Impossible de charger le modèle STT",
+        sttModelUnsupported:
+          "L'enregistrement n'est pas pris en charge dans ce navigateur",
+        sttChecking: "Vérification…",
+        sttOnDemand: "Téléchargé",
+        sttLoadingModel: "Chargement du modèle…",
+        sttReady: "Chargé sur {device}",
+        sttLoaded: "Chargé",
+        sttUnavailable:
+          "Non installé sur ce serveur. Exécutez `unsloth studio update` pour activer la dictée locale.",
+        sttRetry: "Réessayer",
+        sttDownloadChecking: "Vérification de l'état du téléchargement…",
+        sttNotDownloaded: "Non téléchargé",
+        sttDownloadStatusFailed:
+          "Impossible de vérifier l'état du téléchargement",
+        sttDownload: "Télécharger",
+        sttDownloading: "Téléchargement… {progress} %",
+        sttCancelDownload: "Annuler",
+        sttCancellingDownload: "Annulation…",
+        sttDownloadComplete: "Modèle de reconnaissance vocale téléchargé",
+        sttDownloadFailed:
+          "Impossible de télécharger le modèle de reconnaissance vocale",
+        sttLoad: "Charger",
+        sttUnload: "Décharger",
+        sttUnloading: "Déchargement…",
+        microphoneLabel: "Microphone",
+        microphoneDescription: "Utilisé pour la dictée",
+        microphoneFallbackHint:
+          "Utilisé pour la dictée. Revient au périphérique par défaut du système si le moteur vocal du navigateur ne peut pas utiliser ce périphérique",
+        microphoneGrantDescription:
+          "Autorisez l'accès au micro pour afficher le nom des périphériques",
+        allowMicrophone: "Autoriser le microphone",
+        micAccessBlocked:
+          "L'accès au microphone a été bloqué. Autorisez l'accès au microphone pour cette page Unsloth, puis réessayez.",
+        micAccessUnsupported:
+          "L'accès au microphone n'est pas pris en charge dans ce navigateur ou ce contexte.",
+        systemDefault: "Par défaut",
+        savedMicDisconnected: "Microphone enregistré (non connecté)",
+        languageLabel: "Langue de la dictée",
+        languageDescription: "Langue à reconnaître",
+        languageAuto: "Auto (langue du navigateur)",
+      },
+      dictionary: {
+        sectionTitle: "Dictionnaire de dictée",
+        sectionDescription:
+          "Définissez l'orthographe employée par la dictée pour certains mots ou expressions",
+        manageLabel: "Orthographes personnalisées",
+        manage: "Gérer",
+        backToVoice: "Retour à la section Voix",
+        addEntry: "Ajouter une entrée",
+      },
+      recents: {
+        sectionTitle: "Historique des dictées",
+        sectionDescription:
+          "Chaque dictée est enregistrée ici pour vous permettre de récupérer le texte",
+        manageLabel: "Historique des dictées",
+        manage: "Gérer",
+        pageDescription:
+          "Toutes les dictées sont enregistrées. Consultez-les, copiez-les ou supprimez-les, ou ouvrez la discussion dans laquelle une dictée a été utilisée.",
+        searchPlaceholder: "Rechercher des dictées",
+        sortLabel: "Trier les dictées",
+        sortNewest: "Plus récentes",
+        sortOldest: "Plus anciennes",
+        sortAlpha: "De A à Z",
+        noMatches: "Aucune dictée ne correspond à votre recherche",
+        detailTitle: "Dictée enregistrée",
+        backToVoice: "Retour à la section Voix",
+        backToRecents: "Retour aux dictées récentes",
+        view: "Voir la dictée complète",
+        empty: "Aucune dictée pour le moment",
+        dictationColumn: "Dictée",
+        dateColumn: "Date de création",
+        copy: "Copier la dictée",
+        copied: "Copié dans le presse-papiers",
+        copyFailed: "Impossible de copier dans le presse-papiers",
+        delete: "Supprimer la dictée",
+        deleteTitle: "Supprimer la dictée",
+        deleteDescription:
+          "Supprimer cette dictée enregistrée ? Cette action est irréversible.",
+        deleteLinkedDescription:
+          "Supprimer cette dictée enregistrée ? Vous pouvez aussi supprimer la discussion dans laquelle elle a été utilisée. Cette action est irréversible.",
+        deleteWithChat: "Supprimer la discussion et la dictée",
+        deleteWithChatFailed: "Impossible de supprimer la discussion",
+        clear: "Effacer l'historique",
+        clearTitle: "Effacer l'historique des dictées",
+        clearDescription:
+          "Supprimer toutes les dictées enregistrées ? Cette action est irréversible.",
+        clearConfirm: "Tout effacer",
+        showMore: "Afficher plus ({count})",
+        openChat: "Ouvrir la discussion",
+      },
+      readAloud: {
+        sectionTitle: "Lecture à voix haute",
+        buttonLabel: "Bouton de lecture à voix haute",
+        buttonDescription: "Afficher sur les réponses de l'assistant",
+        engineLabel: "Moteur TTS",
+        engineSystemDescription: "Voix intégrées à l'appareil",
+        engineStudioDescription:
+          "Utilise le modèle audio chargé (par exemple Orpheus)",
+        engineSystem: "Voix du système",
+        engineStudio: "Charger un modèle TTS",
+        modelLabel: "Modèle TTS",
+        modelDescription:
+          "Chargez un modèle audio depuis le sélecteur de modèles (par exemple Orpheus TTS)",
+        voiceLabel: "Voix",
+        voiceDescription: "Meilleures voix sur cet appareil",
+        speedLabel: "Vitesse",
+        pitchLabel: "Hauteur",
+        volumeLabel: "Volume",
+        previewLabel: "Écouter la voix",
+        previewDescription: "Lire un court extrait",
+        previewAction: "Écouter",
+        stopAction: "Arrêter",
+        ttsLabel: "Synthèse vocale",
+        notSupported: "Non pris en charge dans ce navigateur",
+      },
     },
     general: {
       title: "Général",
@@ -135,6 +288,7 @@ export const fr = {
         updating: "Mise à jour...",
         updated: "Mot de passe mis à jour.",
         updateFailed: "Échec de la mise à jour du mot de passe.",
+        newHasSpaces: "Le nouveau mot de passe ne peut pas contenir d'espaces.",
       },
       chatDefaults: "Valeurs par défaut de discussion",
       autoTitleNewChats: "Titrer automatiquement les nouvelles discussions",
@@ -167,6 +321,13 @@ export const fr = {
         saveError:
           "Échec de l'enregistrement des paramètres de changement automatique de modèle.",
         idleError: "Saisissez 0 pour garder le modèle chargé, ou au moins 60 secondes.",
+        autoDownload: "Télécharger les modèles manquants",
+        autoDownloadDescription:
+          "Récupérer un GGUF indiqué dans une requête API qui n'est pas encore téléchargé. Toute personne disposant d'une clé API peut alors consommer de l'espace disque et de la bande passante.",
+        keepKv:
+          "Conserver le contexte de la discussion après un déchargement en cas d'inactivité",
+        keepKvDescription:
+          "Enregistrer le cache KV avant un déchargement en cas d'inactivité, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
       },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",
@@ -240,6 +401,12 @@ export const fr = {
           "Efface les préférences locales uniquement et recharge Unsloth. Les discussions, l'accès API et les paramètres stockés en base de données sont conservés.",
         confirmAction: "Réinitialiser et recharger",
       },
+      permissions: {
+        sectionTitle: "Autorisations",
+        bypassLabel: "Autorisations des outils",
+        bypassDescription:
+          "Comment Unsloth approuve les appels d'outils de la discussion (terminal, python, web, MCP) avant leur exécution. Le mode « Full access » désactive les demandes d'approbation et le bac à sable d'exécution du code.",
+      },
     },
     profile: {
       title: "Profil",
@@ -263,6 +430,70 @@ export const fr = {
         "Photo mise à jour pour cette session, mais elle pourrait ne pas persister après rechargement.",
       photoUpdateErrorTitle: "Impossible de mettre à jour la photo de profil",
       imageUseError: "Impossible d'utiliser cette image.",
+      uploadPhoto: "Importer une photo",
+      removePhoto: "Retirer",
+      pictureOptions: "Options de la photo de profil",
+      greetingSloth: "Paresseux dans le message d'accueil",
+      greetingSlothDescription:
+        "Afficher le paresseux dans le message d'accueil de la discussion.",
+      noPicture: "Aucune photo de profil",
+      noneLabel: "Aucun",
+      stats: {
+        title: "Vos statistiques",
+        subtitle:
+          "Tout ce qui suit est calculé à partir de votre propre historique. Rien n'est collecté ni envoyé à Unsloth.",
+        retry: "Réessayer",
+        privacyNote:
+          "Les statistiques sont calculées à partir de l'historique des discussions et des entraînements conservé par votre installation Unsloth. Rien n'est collecté, et rien n'est envoyé à Unsloth ni à un tiers.",
+        emptyChats:
+          "Aucune discussion pour le moment. Lancez une conversation et vos statistiques apparaîtront ici.",
+        lifetimeTokens: "Tokens cumulés",
+        peakTokens: "Jour record",
+        longestChat: "Discussion la plus longue",
+        currentStreak: "Série en cours",
+        longestStreak: "Plus longue série",
+        activityTitle: "Activité en tokens",
+        activityDescription: "Période : {weeks} · {total}",
+        mode: {
+          daily: "Quotidienne",
+          weekly: "Hebdomadaire",
+          cumulative: "Cumulée",
+        },
+        cellTooltip: "{date} · {tokens}, {messages}",
+        weekTooltip: "Semaine du {date} · {tokens}",
+        less: "Moins",
+        more: "Plus",
+        insightsTitle: "Analyse de l'activité",
+        totalChats: "Discussions au total",
+        totalMessages: "Messages au total",
+        tokensIn: "Tokens envoyés",
+        tokensOut: "Tokens générés",
+        cachedTokens: "Tokens mis en cache",
+        cachedValue: "{tokens} ({percent} % des tokens d'entrée)",
+        avgTokensPerChat: "Moyenne de tokens par discussion",
+        timeInChat: "Temps passé en discussion",
+        activeDays: "Jours actifs",
+        toolCalls: "Appels d'outils",
+        attachments: "Fichiers joints",
+        avgSpeed: "Vitesse moyenne",
+        bestSpeed: "Réponse la plus rapide",
+        firstToken: "Temps moyen jusqu'au premier token",
+        tokensPerSecond: "{value} tok/s",
+        topModelsTitle: "Modèles les plus utilisés",
+        topModelsDescription: "Classés par tokens échangés",
+        modelSummary: "{tokens} · {messages}",
+        noModels: "Aucune utilisation de modèle enregistrée pour l'instant.",
+        trainingTitle: "Entraînement",
+        trainingDescription: "Exécutions de fine-tuning de cet espace de travail",
+        trainingRuns: "Exécutions",
+        trainingCompleted: "Terminées",
+        trainingSteps: "Étapes",
+        trainingTokens: "Tokens d'entraînement",
+        trainingTime: "Temps d'entraînement",
+        bestLoss: "Perte minimale",
+        runSteps: "{steps}",
+        runLoss: "perte {loss}",
+      },
     },
     appearance: {
       title: "Apparence",
@@ -275,6 +506,93 @@ export const fr = {
         light: "Clair",
         dark: "Sombre",
       },
+      palette: {
+        label: "Palette",
+        description: "Couleurs utilisées dans Unsloth, en mode clair et sombre.",
+        standard: "Standard",
+        classic: "Classique",
+        minimal: "Minimale",
+      },
+      custom: {
+        reset: "Réinitialiser",
+        resetAll: "Réinitialiser la personnalisation",
+        preferencesTitle: "Préférences",
+        colors: {
+          lightGroup: "Thème clair",
+          darkGroup: "Thème sombre",
+          accent: "Accent",
+          background: "Arrière-plan",
+          foreground: "Premier plan",
+        },
+        fontDefault: "Par défaut",
+        fontBundledGroup: "Intégrées",
+        fontImportedGroup: "Importées",
+        fontDeviceGroup: "Sur cet appareil",
+        fontFolderGroup: "Depuis un dossier",
+        fontDeviceLoading: "Recherche des polices de l'appareil…",
+        fontSearch: "Rechercher des polices…",
+        fontNoResults: "Aucune police trouvée.",
+        colorPicker: {
+          hue: "Teinte",
+          hex: "Couleur hexadécimale",
+          eyedropper: "Sélectionner une couleur à l'écran",
+        },
+        uiFont: {
+          label: "Police de l'interface",
+        },
+        headingFont: {
+          label: "Police des titres",
+        },
+        chatFont: {
+          label: "Police de la discussion",
+        },
+        codeFont: {
+          label: "Police du code",
+        },
+        importFont: {
+          upload: "Importer",
+          scanFolder: "Sélectionner un dossier",
+          alreadyAvailable:
+            "Cette police est déjà disponible ; la copie existante est utilisée.",
+          folderNoFonts: "Aucun fichier de police trouvé dans ce dossier.",
+          remove: "Retirer",
+          errorInvalidType:
+            "Type de fichier non pris en charge. Utilisez .woff2, .woff, .ttf ou .otf.",
+          errorTooLarge: "Le fichier de police est trop volumineux (1,5 Mo max.).",
+          errorLimit: "Vous pouvez importer jusqu'à 3 polices.",
+          errorStorageFull:
+            "Stockage local insuffisant pour cette police. Retirez d'abord une police importée.",
+          errorFailed: "Impossible de charger ce fichier de police.",
+        },
+        uiFontSize: {
+          label: "Taille de police de l'interface",
+          description: "Ajustez la taille de base utilisée pour l'interface Unsloth.",
+        },
+        codeFontSize: {
+          label: "Taille de police du code",
+          description: "Ajustez la taille de base utilisée pour le code.",
+        },
+        fontSmoothing: {
+          label: "Lissage des polices",
+          description: "Utiliser le lissage des polices.",
+        },
+        contrast: {
+          label: "Contraste",
+          description: "Intensité des bordures et du texte secondaire.",
+        },
+        reduceMotion: {
+          label: "Réduire les animations",
+          description: "Réduire les animations ou suivre votre système.",
+          system: "Système",
+          on: "Activé",
+          off: "Désactivé",
+        },
+        pointerCursors: {
+          label: "Utiliser un curseur en forme de main",
+          description:
+            "Afficher un curseur en forme de main au survol des éléments interactifs.",
+        },
+      },
       language: {
         title: "Langue",
         label: "Langue d'affichage",
@@ -286,6 +604,13 @@ export const fr = {
         compactSidebar: "Épingler la barre latérale par défaut",
         compactSidebarDescription:
           "Garder la barre latérale déployée au lieu de la réduire en icônes.",
+      },
+      sidebarMenu: {
+        title: "Menu de la barre latérale",
+        description:
+          "Affichez, masquez et réorganisez les éléments du menu de profil de la barre latérale. Paramètres, Aide, Se déconnecter et Arrêter restent fixes.",
+        darkModeToggle: "Bascule du mode sombre",
+        dragToReorder: "Faites glisser pour réorganiser",
       },
     },
     resources: {
@@ -323,12 +648,25 @@ export const fr = {
         diskUsage: "{used} utilisé / {total}",
         diskFree: "{free} libre",
         modelsFolder: "Dossier des modèles",
+        modelsFolderKeywords:
+          "modeles modèles dossier repertoire répertoire chemin emplacement telechargements téléchargements cache stockage disque lecteur deplacer déplacer changer models folder path hugging face",
         modelsFolderDescription: "Emplacement de stockage des modèles téléchargés.",
         openAction: "Ouvrir",
         copyAction: "Copier le chemin",
         copied: "Chemin copié",
         openError: "Impossible d'ouvrir le dossier",
         copyError: "Impossible de copier le chemin",
+        futureDownloads: "Nouveaux téléchargements uniquement",
+        environmentManaged: "Géré par la variable d'environnement {variable}.",
+        locationFree: "{free} libres",
+        changeAction: "Modifier",
+        resetAction: "Utiliser la valeur par défaut",
+        chooseTitle: "Choisir l'emplacement de téléchargement des modèles",
+        chooseAction: "Utiliser pour les prochains téléchargements",
+        cacheSaved: "Emplacement de téléchargement des modèles mis à jour",
+        cacheSaveError:
+          "Impossible de mettre à jour l'emplacement de téléchargement des modèles",
+        cachePickerError: "Impossible d'ouvrir le sélecteur de dossier",
       },
       environment: {
         title: "Environnement",
@@ -340,6 +678,107 @@ export const fr = {
         processMemory: "Mémoire du processus",
         notInstalled: "Non installé",
         unknown: "Inconnu",
+      },
+    },
+    agents: {
+      title: "Agents",
+      description:
+        "Connectez des agents de codage comme Claude Code et Codex à un modèle local avec unsloth start.",
+      intro:
+        "connecte Claude Code, Codex, Hermes, OpenClaw, OpenCode et d'autres agents à un modèle servi localement par Unsloth, entièrement hors ligne. Il lance un serveur compatible OpenAI et ne touche jamais aux fichiers de configuration de votre agent.",
+      readDocs: "Lire la documentation",
+      copy: "Copier",
+      copied: "Copié",
+      commandBuilder: "Générateur de commande",
+      agent: "Agent de codage",
+      model: "Modèle",
+      searchModels: "Rechercher des modèles GGUF...",
+      noModels: "Aucun modèle GGUF correspondant.",
+      showingModels:
+        "Affichage de {shown} résultats sur {total}. Continuez à taper pour affiner la liste.",
+      quantization: "Quantification",
+      loadingQuantizations: "Chargement des quantifications...",
+      noQuantizations: "Aucune quantification distincte",
+      recommended: "Recommandé",
+      downloaded: "Téléchargé",
+      quantizationLoadError:
+        "Impossible de charger toutes les quantifications. La commande utilisera la valeur de modèle disponible.",
+      generatedCommand: "Commande générée",
+      docs: "Documentation",
+      agentDocs: "Ouvrir la documentation de configuration de {agent}",
+      copyGeneratedCommand: "Copier la commande générée",
+      modelNote:
+        "Codex nécessite un modèle GGUF servi par llama-server. Les autres agents peuvent aussi utiliser des modèles basés sur transformers ; retirez --model pour utiliser le modèle déjà chargé dans Unsloth Studio.",
+      subagent: {
+        title: "Utiliser un modèle local comme sous-agent",
+        description:
+          "Gardez {agent} sur son modèle actuel et déléguez certaines tâches à ce modèle Unsloth local.",
+        setupCommand: "Commande de configuration",
+        copySetupCommand: "Copier la commande de configuration du sous-agent",
+        usagePrompt: "Ensuite, dans {agent}, tapez :",
+        copyUsagePrompt: "Copier le prompt d'utilisation du sous-agent",
+        defaultPrompt: "Lance un agent local pour implémenter cette fonction.",
+        opencodePrompt: "@unsloth trouve la cause de cet échec de test",
+      },
+      quickstart: {
+        title: "Construire une commande",
+        description:
+          "Lancez un agent sur le modèle actuellement chargé dans Studio. Chargez d'abord un modèle, puis remplacez claude par n'importe quel agent pris en charge ci-dessous.",
+        noneDetected:
+          "Aucune CLI d'agent prise en charge n'a été trouvée dans votre PATH.",
+        installed: "Installé",
+      },
+      supportedAgents: {
+        title: "Agents pris en charge",
+        description: "Chaque agent se lance avec sa propre commande :",
+        requiresGguf: "Nécessite un modèle GGUF",
+      },
+      models: {
+        title: "Choisir un modèle",
+        description:
+          "Utilisez --model pour choisir un modèle et une quantification, et --context-length pour définir la fenêtre de contexte. Utilisez un suffixe de quantification ou l'option explicite --gguf-variant.",
+        suffixLabel: "Avec un suffixe de quantification",
+        variantLabel: "Avec une option de variante explicite",
+      },
+      options: {
+        title: "Options courantes",
+        description:
+          "Les options Unsloth sont analysées en premier ; tout ce qu'Unsloth ne reconnaît pas est transmis tel quel à l'agent.",
+        model:
+          "Sélectionne un modèle. Sans --model, unsloth start utilise le modèle actuellement chargé dans Studio et échoue si aucun modèle n'est chargé.",
+        contextLength:
+          "Définit la longueur de contexte demandée (alias : --max-seq-length).",
+        ggufVariant: "Choisit la variante de quantification GGUF.",
+        loadIn4bit:
+          "Active ou désactive le chargement en 4 bits pour les modèles Hugging Face.",
+        tensorParallel:
+          "Active ou désactive le parallélisme de tenseurs sur plusieurs GPU.",
+        serve: "Active ou désactive le serveur local automatique.",
+        launch:
+          "Lance l'agent, ou affiche simplement la commande et l'environnement.",
+        persist:
+          "Conserve d'une exécution à l'autre les données d'agent gérées par Unsloth.",
+        asSubagent:
+          "Garde l'agent parent sur son modèle actuel et enregistre Unsloth comme sous-agent local (Claude Code, Codex et OpenCode).",
+        apiKey:
+          "Fournit votre clé API Unsloth, ou lit la variable UNSLOTH_API_KEY.",
+        yolo:
+          "Ignore les demandes de confirmation. À n'utiliser que dans des environnements de confiance.",
+      },
+      remote: {
+        title: "Se connecter à un Studio distant",
+        description:
+          "Faites pointer unsloth start vers un Studio exécuté ailleurs en définissant ces variables avant le lancement (ou passez --api-key directement) :",
+      },
+      passthrough: {
+        title: "Transmettre des arguments à l'agent",
+        description:
+          "Les arguments placés après les options Unsloth sont transmis à l'agent lui-même, donc les commandes natives comme resume fonctionnent toujours :",
+      },
+      dryRun: {
+        title: "Prévisualiser sans lancer",
+        description:
+          "Ajoutez --no-launch pour afficher l'environnement et la commande au lieu de lancer l'agent. Si --model est défini, le modèle peut tout de même être résolu et chargé.",
       },
     },
     chat: {
@@ -418,6 +857,57 @@ export const fr = {
         "Un effacement du stockage a échoué ; {count} discussions peuvent rester. Veuillez réessayer.",
       failedToClearChats: "Échec de l'effacement des discussions",
     },
+    data: {
+      title: "Données",
+      description:
+        "Gérez l'historique des discussions et les fichiers importés conservés sur cet appareil.",
+      archivedChats: "Discussions archivées",
+      archivedChatsDescription:
+        "Consultez et gérez les discussions que vous avez archivées.",
+      manageAction: "Gérer",
+      exportArchivedChats: "Exporter",
+      exportingArchivedChats: "Exportation...",
+      exportedOneArchivedChat: "1 discussion archivée a été exportée",
+      exportedArchivedChatCount: "{count} discussions archivées ont été exportées",
+      noArchivedChatsToExport: "Aucune discussion archivée à exporter.",
+      failedToExportArchivedChats:
+        "Échec de l'exportation des discussions archivées",
+      archiveAllChats: "Archiver toutes les discussions",
+      archiveAllChatsDescription:
+        "Déplace vers l'archive toutes les discussions de Récents et Projets.",
+      noChatsToArchive: "Aucune discussion à archiver.",
+      archiveAllAction: "Tout archiver",
+      archivingAction: "Archivage...",
+      archiveAllChatsTitle: "Archiver toutes les discussions ?",
+      archiveAllChatsConfirmDescription:
+        "Déplace vers l'archive toutes les discussions de cet appareil. Les discussions archivées restent disponibles et peuvent être désarchivées à tout moment.",
+      archivedAllChats: "Toutes les discussions ont été archivées",
+      archivedOneChat: "1 discussion archivée",
+      archivedChatCount: "{count} discussions archivées",
+      failedToArchiveChats: "Échec de l'archivage des discussions",
+      confirmBeforeDeleting: "Confirmer avant de supprimer",
+      confirmBeforeDeletingDescription:
+        "Demande une confirmation avant de supprimer une discussion. Désactivez cette option pour supprimer immédiatement.",
+      filesSection: "Fichiers",
+      uploadedFiles: "Fichiers importés",
+      uploadedFilesDescription:
+        "Consultez et gérez les fichiers importés dans les discussions, les projets et les bases de connaissances.",
+      fineTuneExport: "Utiliser les discussions comme données d'entraînement",
+      fineTuneExportDescription:
+        "Créez un jeu de données JSONL de fine-tuning à partir de vos discussions. Chargez-le dans Entraîner, affinez-le dans Recettes ou exportez-le.",
+      fineTuneExportAction: "Exporter en JSONL",
+      fineTuneRunAction: "Exécuter",
+      fineTuneExportingAction: "Exportation...",
+      fineTuneOpenRecipesAction: "Ouvrir dans Recettes",
+      fineTuneOpeningRecipesAction: "Ouverture...",
+      fineTuneTrainAction: "Charger dans l'onglet Entraîner",
+      fineTuneTrainingAction: "Chargement...",
+      fineTuneExportFailed: "Échec de l'exportation des données d'entraînement",
+      fineTuneRecipeFailed:
+        "Échec de l'ouverture des discussions dans Recettes",
+      fineTuneTrainFailed:
+        "Échec du chargement du jeu de données dans l'onglet Entraîner",
+    },
     connections: {
       title: "Connexions",
       description: "Gérez les fournisseurs et les connexions externes.",
@@ -462,7 +952,7 @@ export const fr = {
       codingAgentsHint:
         "Lancez un agent de codage sur ce serveur. Il utilise le modèle chargé ; un serveur local génère automatiquement une clé API, un serveur distant l'inclut dans la commande.",
       codingAgentsSwap:
-        "Remplacez claude par codex, openclaw, opencode, hermes ou pi.",
+        "Remplacez claude par codex, openclaw, opencode ou hermes.",
       codingAgentDetected: "Installé sur cette machine",
       codingAgentsDetectedHint: "Détecté sur cette machine : {agents}.",
       relativeNever: "jamais",
@@ -485,6 +975,8 @@ export const fr = {
         "Les applications utilisant ce token perdent immédiatement l'accès. Cette action est irréversible.",
       revokeAction: 'Révoquer "{name}"',
       revoking: "Révocation...",
+      usageNoModel:
+        "Chargez ou téléchargez un modèle pour voir des exemples exécutables. Aucun modèle n'est encore disponible sur ce serveur pour figurer dans les exemples.",
     },
     about: {
       title: "À propos",
@@ -829,6 +1321,8 @@ export const fr = {
       enablePacking: "Activer le packing",
       assistantCompletionsOnly: "Complétions de l'assistant uniquement",
       readMore: "En savoir plus",
+      optimizerTooltipMlx:
+        "Algorithme d'optimisation. AdamW est la valeur par défaut. Lion consomme moins de mémoire mais nécessite généralement un taux d'apprentissage plus faible.",
     },
     training: {
       title: "Entraînement",

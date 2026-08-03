@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import { decodeDataUri, isDataUri } from "@/lib/data-uri";
 
 const NATIVE_FILE_NAME_HEADER = "x-unsloth-default-name";
 export class DownloadCancelledError extends Error {
@@ -40,6 +41,24 @@ function browserDownload(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+function browserUrlDownload(url: string, filename: string): void {
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+async function fetchDownload(url: string): Promise<Response> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Download failed with status ${response.status}.`);
+  }
+  return response;
+}
+
 /** Save through a native chooser in Tauri and retain normal downloads on web. */
 export async function downloadFile(
   content: string | Blob | Uint8Array,
@@ -74,6 +93,37 @@ export async function downloadFile(
 
   browserDownload(blob, filename);
   return;
+}
+
+export async function urlToBlob(url: string): Promise<Blob> {
+  if (isDataUri(url)) {
+    const { bytes, mimeType } = decodeDataUri(url);
+    return new Blob([Uint8Array.from(bytes).buffer], { type: mimeType });
+  }
+  return (await fetchDownload(url)).blob();
+}
+
+/** Resolve media before crossing the native save boundary. */
+export async function downloadUrl(
+  url: string,
+  filename: string,
+): Promise<void> {
+  if (isDataUri(url)) {
+    const { bytes, mimeType } = decodeDataUri(url);
+    await downloadFile(bytes, filename, mimeType);
+    return;
+  }
+  if (!isTauri) {
+    browserUrlDownload(url, filename);
+    return;
+  }
+  const response = await fetchDownload(url);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  await downloadFile(
+    bytes,
+    filename,
+    response.headers.get("content-type") || "application/octet-stream",
+  );
 }
 
 /** Open the bounded native chat-import picker. Cancellation returns null. */

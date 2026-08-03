@@ -115,7 +115,8 @@ jobs:
 
       - name: Reset auth + boot Unsloth
         run: |
-          unsloth studio reset-password
+          # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
+          rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
             > logs/studio.log 2>&1 &
@@ -193,7 +194,7 @@ jobs:
       # warm install we already did) so this adds little wall time.
       - name: Reset auth + boot Unsloth for extra UI tests (port 18894)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18894 \
             > logs/studio_extra.log 2>&1 &
@@ -253,7 +254,7 @@ jobs:
       # (RAG embedder + llama.cpp probe) stay hidden from the picker.
       - name: Reset auth + boot Unsloth for model-config tests (port 18898)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18898 \
             > logs/studio_modelcfg.log 2>&1 &
@@ -299,7 +300,7 @@ jobs:
       # earlier UI tests. No GGUF -- the bug surface is the composer.
       - name: Reset auth + boot Unsloth for IME / i18n tests (port 18896)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18896 \
             > logs/studio_ime.log 2>&1 &

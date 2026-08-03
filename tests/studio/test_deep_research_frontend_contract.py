@@ -60,7 +60,9 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert 'update.event?.event === "reasoning.updated"' in adapter
     assert "The activity store coalesces these high-frequency events" in adapter
     assert '{ type: "text" as const, text: report }' in adapter
-    assert "if (abortSignal.aborted) return" in adapter
+    # runSignal, not abortSignal: each run gets its own controller, forwarded from the thread
+    # signal, so one chat's Stop cannot abort a sibling streaming in the background.
+    assert "if (runSignal.aborted) return" in adapter
     assert "await autoLoadSmallestModel()" in adapter
     assert "signal: researchFollowController.signal" in adapter
     assert "beginExternalResearchFollow(" in adapter

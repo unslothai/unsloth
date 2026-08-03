@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import contextlib
+import json
+import subprocess
 import sys
 import types
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -374,6 +378,128 @@ def test_worker_share_object_receives_distributed_payload(monkeypatch):
 
     response = responses[0]
     assert response["object"] == shared_obj
+
+
+def test_worker_activates_mlx_sidecar_before_hardware_detection(tmp_path):
+    backend_dir = Path(__file__).resolve().parent.parent
+    fake_modules = tmp_path / "base"
+    sidecar = tmp_path / ".venv_t5_530"
+    packages = {
+        fake_modules / "transformers" / "__init__.py": '__version__ = "4.57.6"\n',
+        fake_modules / "mlx" / "__init__.py": "",
+        fake_modules / "mlx" / "core.py": "",
+        fake_modules / "mlx_lm" / "__init__.py": "import transformers\n",
+        fake_modules / "mlx_lm" / "sample_utils.py": "",
+        fake_modules / "mlx_vlm" / "__init__.py": "",
+        sidecar / "transformers" / "__init__.py": '__version__ = "5.3.0"\n',
+    }
+    for path, contents in packages.items():
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(contents)
+
+    script = r"""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.environ["FAKE_MODULES"])
+from core.inference import worker
+from utils.hardware import hardware
+import utils.mlx_repair as mlx_repair
+import utils.transformers_version as transformers_version
+
+bootstrap_roots = sorted(
+    {
+        name.split(".", 1)[0]
+        for name in sys.modules
+        if name.split(".", 1)[0]
+        in {
+            "huggingface_hub",
+            "mlx",
+            "mlx_lm",
+            "mlx_vlm",
+            "torch",
+            "transformers",
+            "unsloth",
+            "unsloth_zoo",
+        }
+    }
+)
+assert not bootstrap_roots, f"worker bootstrap imported ML modules: {bootstrap_roots}"
+
+worker.is_apple_silicon = lambda: True
+hardware.is_apple_silicon = lambda: True
+hardware._has_torch = lambda: False
+mlx_repair._mlx_versions_satisfy_minimums = lambda: True
+transformers_version._VENV_T5_530_DIR = os.environ["SIDECAR"]
+transformers_version._ensure_venv_t5_530_exists = lambda: True
+
+observed = {"bootstrap_roots": bootstrap_roots}
+
+def capture_active_version(_backend, _config, _responses):
+    module = sys.modules["transformers"]
+    observed["active"] = module.__version__
+    observed["file"] = module.__file__
+    observed["device"] = hardware.DEVICE.value
+
+class CommandQueue:
+    def get(self, timeout):
+        return {"type": "shutdown"}
+
+class ResponseQueue:
+    def put(self, _response):
+        pass
+
+worker._handle_load = capture_active_version
+worker.run_inference_process(
+    cmd_queue = CommandQueue(),
+    resp_queue = ResponseQueue(),
+    cancel_event = None,
+    config = {
+        "model_name": "Ministral-3-regression",
+        "hf_token": "",
+        "resolved_gpu_ids": None,
+        "device_backend": "mlx",
+    },
+)
+observed["tier"] = transformers_version.get_transformers_tier(
+    "Ministral-3-regression"
+)
+print("RESULT " + json.dumps(observed, sort_keys = True))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd = backend_dir,
+        env = {
+            **__import__("os").environ,
+            "FAKE_MODULES": str(fake_modules),
+            "SIDECAR": str(sidecar),
+            "UNSLOTH_STUDIO_HOME": str(tmp_path),
+            "HF_HOME": str(tmp_path / "hf"),
+            "HF_HUB_CACHE": str(tmp_path / "hf" / "hub"),
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+        },
+        capture_output = True,
+        text = True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    result_line = next(
+        (
+            line.removeprefix("RESULT ")
+            for line in result.stdout.splitlines()
+            if line.startswith("RESULT ")
+        ),
+        None,
+    )
+    assert result_line is not None, result.stdout + result.stderr
+    observed = json.loads(result_line)
+    assert observed["bootstrap_roots"] == []
+    assert observed["tier"] == "530"
+    assert observed["device"] == "mlx"
+    assert observed["active"] == "5.3.0"
+    assert observed["file"] == str(sidecar / "transformers" / "__init__.py")
 
 
 def test_worker_share_object_oversize_notifies_peers(monkeypatch):
@@ -1332,3 +1458,357 @@ def test_mlx_prompt_cache_only_stores_verifiable_prefix_coverage(monkeypatch):
 
     history.insert("key", list(range(30)), [plain])
     assert tuple(range(30)) in history._lru.entries["key"]
+
+
+# ── Tests: audio-input capability + generation ───────────────────────
+
+
+def _audio_model(module_paths = ("audio_tower",), model_type = "gemma3n"):
+    """Model stub shaped like a loaded mlx-vlm tree (families nest differently)."""
+    return SimpleNamespace(
+        config = {"model_type": model_type},
+        named_modules = lambda: [(p, object()) for p in module_paths],
+    )
+
+
+def _audio_processor(sr = 16000, extractor = True):
+    fe = {"feature_extractor": SimpleNamespace(sampling_rate = sr)} if extractor else {}
+    return SimpleNamespace(tokenizer = _DummyTokenizer(), **fe)
+
+
+@pytest.mark.parametrize(
+    ("processor", "renders", "capable", "expected"),
+    [
+        (_audio_processor(), True, True, "audio_vlm"),
+        (_audio_processor(), False, True, None),  # our renderer places no marker
+        (_audio_processor(), True, False, None),  # zoo refuses the checkpoint
+        (_audio_processor(extractor = False), True, True, None),  # no rate to read
+        (_audio_processor(sr = 24000), True, True, None),  # route decodes 16 kHz
+        (None, True, True, None),  # text-only load
+    ],
+)
+def test_mlx_audio_classification(monkeypatch, processor, renders, capable, expected):
+    """Studio keeps the rate and rendering gates; the checkpoint answer is zoo's."""
+    from core.inference import mlx_inference
+
+    seen = {}
+
+    def _render(
+        _proc,
+        _model,
+        _messages,
+        _num_images,
+        num_audios = 0,
+    ):
+        return "P<audio>" if (num_audios and renders) else "P"
+
+    def _capability(
+        model,
+        proc,
+        texts = None,
+    ):
+        seen["texts"] = texts
+        return SimpleNamespace(capable = capable, reason = "stub")
+
+    fake_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    fake_utils.audio_input_capability = _capability
+    fake_utils.audio_extractor_sampling_rate = lambda proc: getattr(
+        getattr(proc, "feature_extractor", None), "sampling_rate", None
+    )
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", fake_utils)
+    monkeypatch.setattr(mlx_inference, "_render_registered_vlm_prompt", _render)
+
+    audio_type = mlx_inference._classify_mlx_audio_type(
+        _audio_model(), processor, processor is not None
+    )
+    assert audio_type == expected
+    # audio_vlm keeps is_audio (the TTS flag) False → TTS redirect can't fire.
+    assert (audio_type is not None and audio_type != "audio_vlm") is False
+    # The capability call is probed with OUR rendered prompt.
+    if expected == "audio_vlm":
+        assert seen["texts"] == "P<audio>"
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("zoo blew up")),
+        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()),
+        lambda *a, **k: SimpleNamespace(),  # older/newer API: no .capable
+        lambda *a, **k: None,
+    ],
+)
+def test_mlx_audio_classification_survives_a_broken_dependency(monkeypatch, capability):
+    """A probe must never fail a model load, whatever the dependency does.
+
+    unsloth_zoo is pinned by a floor, so a version whose capability call raises
+    or returns another shape has to degrade to "no audio", not abort the load.
+    """
+    from core.inference import mlx_inference
+
+    fake_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    fake_utils.audio_input_capability = capability
+    fake_utils.audio_extractor_sampling_rate = lambda proc: 16000
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", fake_utils)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *a, num_audios = 0: "P<audio>" if num_audios else "P",
+    )
+
+    assert mlx_inference._classify_mlx_audio_type(_audio_model(), _audio_processor(), True) is None
+
+
+def test_mlx_audio_classification_survives_an_absent_dependency(monkeypatch):
+    """The import itself is inside the guard: no zoo, no audio, still a load."""
+    from core.inference import mlx_inference
+
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", None)
+    assert mlx_inference._classify_mlx_audio_type(_audio_model(), _audio_processor(), True) is None
+
+
+@pytest.mark.parametrize("codec", ["snac", "dac", "bicodec", "csm", "whisper"])
+def test_mlx_audio_classification_keeps_a_classification_it_cannot_judge(monkeypatch, codec):
+    """A TTS codec or Whisper is never a vision model, so the probe never runs.
+
+    The worker mirrors this entry over the pre-load config, so returning a bare
+    None here would strip is_audio from a codec checkpoint mlx-lm loads happily
+    (Orpheus/Llasa/Spark-TTS are plain llama/qwen2), and the chat route's TTS
+    redirect would stop firing.
+    """
+    from core.inference import mlx_inference
+
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", None)
+    assert (
+        mlx_inference._classify_mlx_audio_type(
+            _audio_model(),
+            None,
+            False,
+            config_audio_type = codec,
+        )
+        == codec
+    )
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [
+        None,  # dependency absent entirely
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("zoo blew up")),
+        lambda *a, **k: SimpleNamespace(),  # older/newer API: no .capable
+    ],
+)
+def test_mlx_audio_capability_survives_a_probe_that_could_not_run(monkeypatch, capability):
+    """An unjudgeable probe defers; it does not retract audio_vlm.
+
+    Every currently released unsloth_zoo lands here, so treating "could not look"
+    as a verified negative would hide the upload control the pre-load detection
+    had already earned.
+    """
+    from core.inference import mlx_inference
+
+    if capability is None:
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", None)
+    else:
+        fake_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+        fake_utils.audio_input_capability = capability
+        fake_utils.audio_extractor_sampling_rate = lambda proc: 16000
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", fake_utils)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *a, num_audios = 0: "P<audio>" if num_audios else "P",
+    )
+
+    assert (
+        mlx_inference._classify_mlx_audio_type(
+            _audio_model(),
+            _audio_processor(),
+            True,
+            config_audio_type = "audio_vlm",
+        )
+        == "audio_vlm"
+    )
+
+
+def test_mlx_audio_probe_that_answered_no_still_retracts_audio_vlm(monkeypatch):
+    """The corrective direction survives: a real negative downgrades."""
+    from core.inference import mlx_inference
+
+    fake_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    fake_utils.audio_input_capability = lambda *a, **k: SimpleNamespace(
+        capable = False, reason = "processor drops audio"
+    )
+    fake_utils.audio_extractor_sampling_rate = lambda proc: 16000
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", fake_utils)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *a, num_audios = 0: "P<audio>" if num_audios else "P",
+    )
+
+    assert (
+        mlx_inference._classify_mlx_audio_type(
+            _audio_model(),
+            _audio_processor(),
+            True,
+            config_audio_type = "audio_vlm",
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("model_type", "places_marker"),
+    [
+        ("gemma3n", True),
+        ("gemma4", True),
+        ("phi4mm", True),
+        ("minicpmo", True),
+        ("qwen3_omni_moe", False),
+    ],
+)
+def test_mlx_vlm_renderer_audio_marker_contract(model_type, places_marker):
+    """Pins which mlx-vlm message builders honour num_audios.
+
+    This is the message-construction layer, not the final template render:
+    qwen3_omni_moe is registered but its formatter drops audio here, so
+    classifying on registry membership alone would advertise a model whose
+    prompt can never carry an audio marker.
+    """
+    pu = pytest.importorskip("mlx_vlm.prompt_utils")
+    render = lambda n: pu.apply_chat_template(
+        None,
+        {"model_type": model_type},
+        "hi",
+        num_images = 0,
+        num_audios = n,
+        return_messages = True,
+    )
+    assert (render(1) != render(0)) is places_marker
+
+
+def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    calls = {}
+
+    stats = dict(prompt_tokens = 3, prompt_tps = 1.0, generation_tokens = 3, generation_tps = 1.0)
+
+    def _fake_stream(model, processor, prompt, **kwargs):
+        calls["kwargs"] = kwargs
+        for text in ("H", "e", "l"):
+            yield SimpleNamespace(text = text, **stats)
+
+    def _fake_render(
+        processor,
+        model,
+        messages,
+        num_images = 0,
+        num_audios = 0,
+    ):
+        calls["audios"], calls["messages"] = num_audios, messages
+        return "P<audio>"
+
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.stream_generate = _fake_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setattr(mlx_inference, "_render_registered_vlm_prompt", _fake_render)
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._generation_lock = __import__("threading").Lock()
+    backend._model, backend._processor = _audio_model(), _audio_processor()
+    backend.active_model_name = "m"
+    backend.last_generation_stats = None
+    backend.models, audio = {"m": {"audio_type": "audio_vlm"}}, [0.0, 0.1, -0.1]
+    turn = [{"role": "user", "content": "what is said?"}]
+    args = dict(messages = turn, system_prompt = "", audio_array = audio, max_new_tokens = 64)
+
+    # Deltas (never cumulative "HHeHel"); waveform passthrough; greedy parity.
+    assert list(backend.generate_audio_input_response(**args)) == ["H", "e", "l"]
+    assert calls["kwargs"]["audio"] == [audio] and calls["kwargs"]["temperature"] == 0.0
+    assert calls["audios"] == 1 and backend.last_generation_stats is not None
+
+    # Audio-only current turn → transcribe default, never older-turn text.
+    args["messages"] = [
+        {"role": "user", "content": "old unrelated question"},
+        {"role": "user", "content": [{"type": "audio"}]},
+    ]
+    list(backend.generate_audio_input_response(**args))
+    assert "Please transcribe this audio." in str(calls["messages"])
+    assert "old unrelated question" not in str(calls["messages"])
+
+    backend.models["m"]["audio_type"] = None
+    with pytest.raises(RuntimeError, match = "not supported .* MLX"):
+        next(backend.generate_audio_input_response(**args))
+
+
+def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
+    """Base-vs-LoRA compare sends audio_base64 and use_adapter in one body.
+
+    The audio stream has to enter _temporary_mlx_adapter_state like the text and
+    vision paths, or the base side silently runs the loaded adapter.
+    """
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    seen = {}
+
+    @contextlib.contextmanager
+    def _fake_adapter_state(model, use_adapter):
+        seen["use_adapter"] = use_adapter
+        seen["entered"] = True
+        yield
+        seen["exited"] = True
+
+    def _fake_stream(model, processor, prompt, **kwargs):
+        seen["inside"] = seen.get("entered") and not seen.get("exited")
+        yield SimpleNamespace(
+            text = "x",
+            prompt_tokens = 1,
+            prompt_tps = 1.0,
+            generation_tokens = 1,
+            generation_tps = 1.0,
+        )
+
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.stream_generate = _fake_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *a, num_images = 0, num_audios = 0: "P<audio>",
+    )
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _fake_adapter_state)
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._generation_lock = __import__("threading").Lock()
+    backend._model, backend._processor = _audio_model(), _audio_processor()
+    backend.active_model_name = "m"
+    backend.last_generation_stats = None
+    backend.models = {"m": {"audio_type": "audio_vlm"}}
+
+    list(
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "hi"}],
+            system_prompt = "",
+            audio_array = [0.0],
+            max_new_tokens = 8,
+            use_adapter = False,
+        )
+    )
+    assert seen["use_adapter"] is False
+    # Held for the whole stream, and restored afterwards.
+    assert seen["inside"] is True and seen["exited"] is True
+
+
+def test_worker_forwards_use_adapter_on_the_audio_command():
+    """The wire carries the selection only when the caller set it."""
+    import inspect
+
+    from core.inference import worker
+
+    src = inspect.getsource(worker._handle_generate_audio_input)
+    assert 'cmd.get("use_adapter")' in src
+    assert '"use_adapter"' in src

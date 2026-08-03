@@ -238,7 +238,8 @@ export function usePersonalizationSync(enabled: boolean): void {
           // default so the push detects the diff) rather than treating the
           // default as an explicit remote choice. A record that actually stored
           // the field reports <field>Saved=true and still wins.
-          const localGreeting = useUserProfileStore.getState().showGreetingSloth;
+          const localGreeting =
+            useUserProfileStore.getState().showGreetingSloth;
           const remoteGreeting = remote.profile.showGreetingSloth !== false;
           const keepLocalGreeting =
             remote.greetingSlothSaved === false && localGreeting === false;
@@ -248,7 +249,9 @@ export function usePersonalizationSync(enabled: boolean): void {
             avatarDataUrl: remote.profile.avatarDataUrl ?? null,
             avatarShape:
               remote.profile.avatarShape === "rounded" ? "rounded" : "circle",
-            showGreetingSloth: keepLocalGreeting ? localGreeting : remoteGreeting,
+            showGreetingSloth: keepLocalGreeting
+              ? localGreeting
+              : remoteGreeting,
           };
           const nextTheme = remote.appearance.theme;
           const localPalette = latestPaletteRef.current;

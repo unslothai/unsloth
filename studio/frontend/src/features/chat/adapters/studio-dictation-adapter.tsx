@@ -14,9 +14,9 @@ import {
   StudioWebSpeechDictationAdapter,
 } from "./studio-web-speech-dictation-adapter";
 
-// The one live dictation session, so the recording bar's discard (X) can cancel
-// it without going through assistant-ui (which only exposes stop, i.e.
-// transcribe). Cancelling emits no transcript, so composer text is untouched.
+// The one live dictation session, so Escape can discard it without going
+// through assistant-ui (which only exposes stop, i.e. transcribe). Cancelling
+// emits no transcript, so composer text is untouched.
 let activeSession: StudioDictationSession | null = null;
 
 /** Discard the current dictation without transcribing. Safe to call when idle. */
@@ -114,26 +114,13 @@ export function notifyStudioDictationUnavailable(
     toast.error("Voice recording isn't available in this browser.");
     return;
   }
-  // Browser Web Speech is missing (e.g. Firefox). Stack text and button so the
-  // action sits below, not squeezed into a side column.
-  const toastId = toast.error("Voice typing isn't available in this browser.", {
-    description: (
-      <div className="mt-0.5 flex flex-col items-start gap-2 pb-1.5">
-        <span>
-          Choose the local speech-to-text model in Voice settings to dictate
-          here.
-        </span>
-        <button
-          type="button"
-          onClick={() => {
-            useSettingsDialogStore.getState().openDialog("voice");
-            toast.dismiss(toastId);
-          }}
-          className="rounded-full bg-foreground px-2.5 pt-1 pb-1.5 text-xs font-medium text-background transition-colors hover:bg-foreground/90"
-        >
-          Open Voice settings
-        </button>
-      </div>
-    ),
+  // Browser Web Speech is missing (e.g. Firefox).
+  toast.error("Voice typing isn't available in this browser.", {
+    description:
+      "Choose the local speech-to-text model in Voice settings to dictate here.",
+    action: {
+      label: "Open Voice settings",
+      onClick: () => useSettingsDialogStore.getState().openDialog("voice"),
+    },
   });
 }

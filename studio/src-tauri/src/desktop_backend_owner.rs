@@ -14,6 +14,9 @@ static TEST_METADATA: std::sync::Mutex<Option<DesktopBackendMetadata>> =
 
 pub(crate) const OWNER_TOKEN_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_TOKEN";
 pub(crate) const OWNER_KIND_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_KIND";
+// The app's own pid, so the backend can watch the exact owner process instead
+// of sampling getppid (racy under a subreaper when the app dies mid-startup).
+pub(crate) const OWNER_PID_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_PID";
 pub(crate) const OWNER_KIND_TAURI: &str = "tauri";
 
 const METADATA_SCHEMA_VERSION: u8 = 1;
@@ -528,7 +531,7 @@ fn lifecycle_control_block_reason(liveness: &DesktopLiveness) -> Option<String> 
         return Some("desktop_auth_unsupported".to_string());
     }
     if liveness.desktop_manageability_version.unwrap_or(0)
-        < crate::preflight::DESKTOP_MANAGEABILITY_VERSION
+        < crate::preflight::DESKTOP_BACKEND_MANAGEABILITY_VERSION
     {
         return Some("desktop_manageability_unsupported".to_string());
     }
@@ -556,9 +559,7 @@ async fn health_ready_status(port: u16) -> OwnedBackendReadiness {
 }
 
 async fn fetch_liveness(port: u16) -> Result<Option<DesktopLiveness>, reqwest::Error> {
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()?;
+    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT)?;
     for path in ["/api/liveness", "/api/health"] {
         let response = client
             .get(format!("http://127.0.0.1:{port}{path}"))
@@ -591,10 +592,7 @@ fn fetch_liveness_blocking(port: u16) -> Result<Option<DesktopLiveness>, String>
     Ok(None)
 }
 async fn fetch_health(port: u16) -> Result<Option<HealthResponse>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
     let response = client
         .get(format!("http://127.0.0.1:{port}/api/health"))
         .send()
@@ -611,10 +609,7 @@ async fn fetch_health(port: u16) -> Result<Option<HealthResponse>, String> {
 }
 
 async fn desktop_login_route_compatible(port: u16) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-    {
+    let client = match crate::loopback_http::client(LOCAL_HTTP_TIMEOUT) {
         Ok(client) => client,
         Err(_) => return false,
     };
@@ -633,10 +628,7 @@ async fn desktop_login_route_compatible(port: u16) -> bool {
 
 async fn desktop_secret_login_compatible(port: u16) -> Result<(), String> {
     let secret = read_desktop_secret()?.ok_or_else(|| "desktop_auth_secret_missing".to_string())?;
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
     let response = client
         .post(format!("http://127.0.0.1:{port}/api/auth/desktop-login"))
         .json(&DesktopLoginPayload { secret: &secret })
@@ -1014,14 +1006,12 @@ mod tests {
         assert!(!metadata_is_well_formed(&metadata));
     }
 
-    #[test]
-    fn liveness_verification_requires_root_kind_and_token_sha() {
-        let metadata = metadata(1, Some(8888));
-        let liveness = DesktopLiveness {
+    fn owned_liveness(manageability: u16) -> DesktopLiveness {
+        DesktopLiveness {
             status: Some("alive".to_string()),
             service: Some("Unsloth UI Backend".to_string()),
             desktop_protocol_version: Some(1),
-            desktop_manageability_version: Some(1),
+            desktop_manageability_version: Some(manageability),
             supports_desktop_auth: Some(true),
             supports_desktop_backend_ownership: Some(true),
             studio_root_id: Some(ROOT_ID.to_string()),
@@ -1029,7 +1019,57 @@ mod tests {
                 kind: Some(OWNER_KIND_TAURI.to_string()),
                 token_sha256: Some(token_sha256(TOKEN)),
             }),
-        };
+        }
+    }
+
+    #[test]
+    fn legacy_manageability_backend_stays_lifecycle_controllable() {
+        // A backend from the previous app version reports manageability 1.
+        // studio_install_ok is CLI-side, not part of this backend's HTTP
+        // contract: blocking makes preflight answer ExternalConflict and never
+        // adopt a process the root id and token already prove is ours.
+        assert_eq!(lifecycle_control_block_reason(&owned_liveness(1)), None);
+        assert_eq!(
+            lifecycle_control_block_reason(&owned_liveness(
+                crate::preflight::DESKTOP_MANAGEABILITY_VERSION
+            )),
+            None
+        );
+
+        // The bits a live backend really must carry are still enforced.
+        let mut no_ownership = owned_liveness(1);
+        no_ownership.supports_desktop_backend_ownership = Some(false);
+        assert_eq!(
+            lifecycle_control_block_reason(&no_ownership).as_deref(),
+            Some("desktop_backend_ownership_unsupported")
+        );
+
+        let mut no_auth = owned_liveness(1);
+        no_auth.supports_desktop_auth = Some(false);
+        assert_eq!(
+            lifecycle_control_block_reason(&no_auth).as_deref(),
+            Some("desktop_auth_unsupported")
+        );
+
+        let mut old_protocol = owned_liveness(1);
+        old_protocol.desktop_protocol_version = Some(0);
+        assert_eq!(
+            lifecycle_control_block_reason(&old_protocol).as_deref(),
+            Some("desktop_protocol_incompatible")
+        );
+
+        let mut no_manageability = owned_liveness(1);
+        no_manageability.desktop_manageability_version = None;
+        assert_eq!(
+            lifecycle_control_block_reason(&no_manageability).as_deref(),
+            Some("desktop_manageability_unsupported")
+        );
+    }
+
+    #[test]
+    fn liveness_verification_requires_root_kind_and_token_sha() {
+        let metadata = metadata(1, Some(8888));
+        let liveness = owned_liveness(1);
         assert!(liveness_verifies_metadata(&liveness, &metadata));
 
         let mut wrong_root = liveness;

@@ -195,3 +195,128 @@ class TestBackendCiPathFilters:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def _github_path_matcher(pattern: str) -> re.Pattern:
+    """GitHub path filters: ** crosses directories, * and ? do not."""
+    out, i = [], 0
+    while i < len(pattern):
+        c = pattern[i]
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif c == "*":
+            out.append("[^/]*")
+            i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def _workflows_running_powershell_tests():
+    """Every workflow that invokes a tests/**.ps1 file, with its PR path filter."""
+    found = {}
+    for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+        text = workflow.read_text(encoding = "utf-8")
+        invoked = sorted(set(re.findall(r"pwsh -NoProfile -File (tests/[^\s`\"']+\.ps1)", text)))
+        if not invoked:
+            continue
+        parsed = yaml.safe_load(text)
+        # PyYAML parses the `on:` key as the boolean True.
+        triggers = parsed.get(True, parsed.get("on", {})) or {}
+        paths = (triggers.get("pull_request") or {}).get("paths")
+        found[workflow.name] = (invoked, paths)
+    return found
+
+
+class TestGithubPathMatcher:
+    """The guard below is only as good as this matcher; a wrong one would pass
+    everything silently."""
+
+    @pytest.mark.parametrize(
+        "pattern,path,expected",
+        [
+            ("tests/studio/*.ps1", "tests/studio/test_x.ps1", True),
+            ("tests/studio/*.ps1", "tests/studio/nested/test_x.ps1", False),
+            ("tests/studio/*.ps1", "tests/studio/test_x.py", False),
+            ("tests/studio/**", "tests/studio/nested/test_x.ps1", True),
+            ("studio/**", "studio/setup.ps1", True),
+            ("studio/**", "tests/studio/setup.ps1", False),
+            (
+                "tests/studio/test_uninstall_*.ps1",
+                "tests/studio/test_uninstall_arg_guard.ps1",
+                True,
+            ),
+            ("tests/studio/test_uninstall_*.ps1", "tests/studio/test_node_decision.ps1", False),
+            ("install.ps1", "install.ps1", True),
+            ("install.ps1", "studio/install.ps1", False),
+        ],
+    )
+    def test_matcher_semantics(self, pattern, path, expected):
+        assert bool(_github_path_matcher(pattern).match(path)) is expected
+
+
+class TestPowerShellTestsRunOnAPr:
+    """tests/sh had this exact hole (see the module docstring) and so did the
+    Windows side: studio-windows-inference-smoke.yml ran six PowerShell tests
+    while its path filter matched none of them, so a PR fixing one of those
+    tests never ran it."""
+
+    def test_some_workflow_runs_powershell_tests(self):
+        assert (
+            _workflows_running_powershell_tests()
+        ), "no workflow invokes a tests/*.ps1 file; did the invocation form change?"
+
+    def test_every_invoked_powershell_test_triggers_its_workflow(self):
+        unguarded = []
+        for name, (invoked, paths) in _workflows_running_powershell_tests().items():
+            if paths is None:
+                continue  # no filter at all means it always runs
+            matchers = [_github_path_matcher(p) for p in paths]
+            for test in invoked:
+                if not any(m.match(test) for m in matchers):
+                    unguarded.append(f"{name} runs {test} but its paths filter never matches it")
+        assert not unguarded, (
+            "these PowerShell tests can break without any PR running them; add the "
+            f"path (or a scoped glob) to the workflow's paths filter: {unguarded}"
+        )
+
+    def test_multi_test_steps_propagate_each_exit_code(self):
+        """A `shell: pwsh` step inherits only the LAST command's exit code, so a
+        step running several tests must check $LASTEXITCODE after each one.
+        Without it, test_resolve_cuda_toolkit.ps1 failed two checks on every
+        Windows run for as long as anyone can tell, and CI stayed green."""
+        offenders = []
+        for workflow in sorted(_WORKFLOWS.glob("*.yml")):
+            for block in re.findall(
+                r"run: \|\n(.*?)(?=\n      [-a-zA-Z]|\Z)",
+                workflow.read_text(encoding = "utf-8"),
+                re.S,
+            ):
+                invocations = re.findall(
+                    r"pwsh -NoProfile -File (tests/[^\s`\"']+\.ps1)[^\n]*\n(.*?)(?=pwsh -NoProfile -File|\Z)",
+                    block,
+                    re.S,
+                )
+                if len(invocations) < 2:
+                    continue  # a single invocation's exit code is the step's
+                for test, following in invocations:
+                    if "$LASTEXITCODE" not in following:
+                        offenders.append(f"{workflow.name}: {test} runs without an exit-code check")
+        assert not offenders, (
+            "these tests can fail without failing their step; add "
+            f"`if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}` after each: {offenders}"
+        )
+
+    def test_every_invoked_powershell_test_exists(self):
+        missing = [
+            f"{name} -> {test}"
+            for name, (invoked, _) in _workflows_running_powershell_tests().items()
+            for test in invoked
+            if not (REPO_ROOT / test).is_file()
+        ]
+        assert not missing, f"workflows invoke PowerShell tests that do not exist: {missing}"

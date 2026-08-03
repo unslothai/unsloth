@@ -109,7 +109,7 @@ def _load_colab_login_credentials() -> "tuple[str, str] | None":
         lines = path.read_text(encoding = "utf-8").splitlines()
         if len(lines) >= 2 and lines[0] and lines[1]:
             return lines[0], lines[1]
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         logger.info(f"Could not load Colab login credentials ({e}).")
     return None
 

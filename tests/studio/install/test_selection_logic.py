@@ -2935,6 +2935,100 @@ class TestPublishedRocmGfxSelection:
         assert choice.name == "app-b9457-windows-x64-rocm-gfx120X.zip"
 
 
+class TestPublishedRocmBundleCoverage:
+    """Every arch the installer routes torch for should also have a llama.cpp
+    bundle, or be recorded here as a known gap. Routing an arch for torch while
+    no bundle covers it is silent: the GPU works for training and drops to a HIP
+    source build for inference, which is correct but much slower to install."""
+
+    # mapped_targets of each published ROCm bundle, mirroring
+    # unslothai/llama.cpp's llama-prebuilt-manifest.json.
+    PUBLISHED = {
+        "gfx103X": ["gfx1030", "gfx1031", "gfx1032", "gfx1034"],
+        "gfx110X": ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+        "gfx120X": ["gfx1200", "gfx1201"],
+        "gfx1150": ["gfx1150"],
+        "gfx1151": ["gfx1151"],
+        "gfx908": ["gfx908"],
+        "gfx90a": ["gfx90a"],
+    }
+
+    # Arches _GFX_TO_AMD_INDEX_ARCH routes torch for that no bundle covers.
+    #   gfx1033/1035/1036: RDNA 2 variants, never built.
+    #   gfx1152: Krackan Point (Radeon 860M/840M). Torch goes to its own
+    #     repo.amd.com/rocm/whl/gfx1152 leaf, but no llama.cpp bundle exists, so
+    #     these hosts source-build. Publish a -gfx1152 bundle, or add gfx1152 to
+    #     the gfx1150 bundle's mapped_targets if that build genuinely covers it,
+    #     then drop it from this set.
+    KNOWN_GAPS = {"gfx1033", "gfx1035", "gfx1036", "gfx1152"}
+
+    def _release(self):
+        return make_release(
+            [
+                make_artifact(
+                    f"app-b9457-linux-x64-rocm-{fam}.tar.gz",
+                    install_kind = "linux-rocm",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                    rank = 1000,
+                    gfx_target = fam,
+                    mapped_targets = targets,
+                )
+                for fam, targets in self.PUBLISHED.items()
+            ],
+            upstream_tag = "b9457",
+        )
+
+    def _host(self, gfx):
+        return make_host(
+            machine = "x86_64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = True,
+            rocm_gfx_target = gfx,
+        )
+
+    def test_known_gaps_fall_back_to_source_build(self):
+        """A gap arch must return None rather than be served a sibling bundle:
+        a wrong-ISA binary fails at the first BLAS call instead of installing
+        slowly, which is the worse of the two outcomes."""
+        release = self._release()
+        for gfx in sorted(self.KNOWN_GAPS):
+            assert (
+                INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+                    release, self._host(gfx), "linux-rocm"
+                )
+                is None
+            ), f"{gfx} is in KNOWN_GAPS but a bundle now matches it; drop it from the set"
+
+    def test_every_torch_routed_arch_is_covered_or_a_known_gap(self):
+        """The guard that would have caught gfx1152: adding an arch to
+        _GFX_TO_AMD_INDEX_ARCH without a bundle must be a deliberate entry in
+        KNOWN_GAPS, not an unnoticed drop to source builds."""
+        import re
+
+        # Read the table from source rather than importing the installer module,
+        # which pulls in a heavy dependency chain this suite does not need.
+        stack = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+        body = re.search(r"_GFX_TO_AMD_INDEX_ARCH.*?=\s*\{(.*?)\n\}", stack, re.S)
+        assert body, "_GFX_TO_AMD_INDEX_ARCH not found in install_python_stack.py"
+        routed = set(re.findall(r'"(gfx[0-9a-z]+)":', body.group(1)))
+        assert routed, "parsed no arches out of _GFX_TO_AMD_INDEX_ARCH"
+        covered = {t.lower() for targets in self.PUBLISHED.values() for t in targets}
+        uncovered = {a for a in routed if a.lower() not in covered}
+        assert uncovered == self.KNOWN_GAPS, (
+            f"llama.cpp bundle coverage drifted: {sorted(uncovered - self.KNOWN_GAPS)} "
+            f"newly uncovered, {sorted(self.KNOWN_GAPS - uncovered)} no longer a gap"
+        )
+
+
 class TestPublishedMacosForkSelection:
     """macOS routes to the fork's llama-<tag>-bin-macos-<arch>.tar.gz, selected by install_kind."""
 

@@ -68,7 +68,6 @@ import pandas as pd
 from datasets import Dataset
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
-from core.inference.llama_cpp import _hf_offline_if_dns_dead
 from utils.models import is_vision_model, detect_audio_type
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
@@ -251,6 +250,13 @@ class UnslothTrainer:
         trainer_ref = self
 
         class _ProgressCallback(TrainerCallback):
+            def on_train_begin(self, args, state, control, **kwargs):
+                # on_log reports an empty status, so without this the UI stays on the
+                # pre-train "Starting training..." for the whole run.
+                if trainer_ref.should_stop:
+                    return
+                trainer_ref._update_progress(status_message = "Training in progress...")
+
             def on_log(
                 self,
                 args,

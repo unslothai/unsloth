@@ -199,7 +199,7 @@ def _indexed_shard_paths(
                 inconclusive = True  # transient: an index that might exist could not be read
                 continue
             try:
-                weight_map = (json.loads(open(index_path, encoding = "utf-8").read()) or {}).get(
+                weight_map = (json.loads(open(index_path, encoding = "utf-8-sig").read()) or {}).get(
                     "weight_map"
                 ) or {}
                 for shard in weight_map.values():
@@ -328,7 +328,7 @@ def _st_load_roots(snapshot: Path) -> list:
     roots = [snapshot]
     try:
         import json
-        modules = json.loads((snapshot / "modules.json").read_text(encoding = "utf-8"))
+        modules = json.loads((snapshot / "modules.json").read_text(encoding = "utf-8-sig"))
     except (OSError, ValueError):
         return roots  # no / invalid modules.json -> snapshot root is the only load root
     for module in modules or ():
@@ -355,7 +355,7 @@ def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list
     try:
         # JSON is UTF-8 by spec; pin it so a non-ASCII index is not misdecoded (and needlessly
         # blocked) under Windows' cp1252 default.
-        parsed = json.loads(index_path.read_text(encoding = "utf-8"))
+        parsed = json.loads(index_path.read_text(encoding = "utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise OSError(f"unreadable weight index: {index_path}") from exc
     weight_map = parsed.get("weight_map") if isinstance(parsed, dict) else None

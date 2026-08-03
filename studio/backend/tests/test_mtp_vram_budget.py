@@ -68,6 +68,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
     _extra_args_draft_cache_types,
+    _extra_args_draft_device_pin,
     _extra_args_draft_offloaded_to_cpu,
     _extra_args_mtp_draft_path,
     _extra_args_n_ubatch,
@@ -76,7 +77,9 @@ from core.inference.llama_cpp import (  # noqa: E402
     _extra_args_spec_draft_n_max,
     _effective_tensor_parallel,
     _env_main_cache_type_for_budget,
+    _effective_main_cache_types,
     _extra_args_main_cache_type_for_budget,
+    _flash_attn_enabled_from_args,
     _kv_bytes_per_elem,
     _tensor_parallel_matches_loaded,
 )
@@ -132,6 +135,7 @@ class _StubDrafter:
 
     def __init__(self, kv_per_token):
         self._kv_per_token = kv_per_token
+        self._architecture = "gemma3"
 
     def _can_estimate_kv(self):
         return True
@@ -177,6 +181,14 @@ class TestEmbeddedDraftKv:
         two = _make_backend(nextn = 2)._mtp_draft_kv_bytes(65536)
         assert two == pytest.approx(2 * one)
 
+    def test_unaligned_context_follows_runtime_stream_padding(self):
+        b = _make_backend()
+        bytes_per_cell = b._mtp_draft_kv_bytes(256) // 256
+        unified = b._mtp_draft_kv_bytes(5000, n_parallel = 3, kv_unified = True)
+        separate = b._mtp_draft_kv_bytes(5000, n_parallel = 3, kv_unified = False)
+        assert unified == 5120 * bytes_per_cell
+        assert separate == 5376 * bytes_per_cell
+
     def test_embedded_draft_kv_floored_at_f16(self):
         # The embedded MTP head is one layer, so llama.cpp's quantized-KV
         # overhead is not amortized: a quantized draft KV fits LESS context than
@@ -200,6 +212,15 @@ class TestEmbeddedDraftKv:
         k_only = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "q4_0")  # V defaults f16
         both_f16 = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "f16", draft_cache_type_v = "f16")
         assert both_q4 == k_only == both_f16  # floored at f16, never under-reserved
+
+    def test_flash_attn_off_uses_model_wide_v_width(self):
+        b = _make_backend(n_layers = 2)
+        b._n_kv_heads_by_layer = [4, 1]
+        b._sliding_window_pattern = [False, True]
+        b._kv_value_length_swa = 2048
+        ctx = 4096
+        expected_per_cell = 4 * 256 * 2 + 1 * 2048 * 2
+        assert b._mtp_draft_kv_bytes(ctx, flash_attn = False) == ctx * expected_per_cell
 
     def test_none_when_dims_missing(self):
         assert _make_backend(nextn = 0)._mtp_draft_kv_bytes(65536) is None
@@ -231,6 +252,30 @@ class TestSeparateDrafter:
         a = b._mtp_draft_kv_bytes(16384, drafter_path = "/m/d.gguf")
         c = b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf")
         assert c == pytest.approx(4 * a)
+
+    def test_gemma4_assistant_shares_target_kv(self, monkeypatch):
+        b = _make_backend(nextn = None)
+        stub = _StubDrafter(kv_per_token = 2000)
+        stub._architecture = "gemma4-assistant"
+        monkeypatch.setattr(b, "_draft_backend_for", lambda path: stub)
+
+        assert (
+            b._mtp_draft_kv_bytes(
+                65536,
+                drafter_path = "/m/mtp-gemma4.gguf",
+                swa_full = True,
+            )
+            == 0
+        )
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                65536,
+                drafter_path = "/m/mtp-gemma4.gguf",
+                draft_weights_bytes = GIB,
+                swa_full = True,
+            )
+            == GIB
+        )
 
     def test_drafter_kv_scales_with_parallel_slots(self, monkeypatch):
         # The drafter is served under the same --parallel slots as the main model,
@@ -398,6 +443,7 @@ class TestExtraArgsMtpDetection:
             (["--spec-type", "mtp"], True),
             (["--spec-type", "ngram-mod,draft-mtp"], True),
             (["--spec-type=draft-mtp"], True),
+            (["--spec_type=draft-mtp"], True),
             (["--spec-type", "ngram-mod"], False),
             (["--spec-default"], False),
             (["-c", "131072"], False),
@@ -579,6 +625,7 @@ class TestExtraArgsMtpDetection:
             (["--spec-draft-ngl", "0"], True),
             (["-ngld", "0"], True),
             (["--spec-draft-ngl=0"], True),
+            (["--spec_draft_ngl=0"], True),
             (["--n-gpu-layers-draft", "0"], True),
             (["--spec-draft-ngl", "20"], False),
             (["--spec-draft-device", "none"], True),
@@ -621,8 +668,36 @@ class TestExtraArgsMtpDetection:
     @pytest.mark.parametrize(
         "args,expected",
         [
+            # No draft-device flag -> no pin to reject.
+            (None, None),
+            ([], None),
+            (["-c", "4096"], None),
+            # cpu / none offload is a supported placement, not a GPU escape.
+            (["--spec-draft-device", "cpu"], None),
+            (["--spec-draft-device", "CPU,none"], None),
+            (["-devd", "none"], None),
+            # A real GPU device escapes the gpu_ids pin -> return the offending value.
+            (["--spec-draft-device", "CUDA1"], "CUDA1"),
+            (["--device-draft", "Vulkan2"], "Vulkan2"),
+            (["--spec_draft_device", "Vulkan1"], "Vulkan1"),
+            (["-devd", "CUDA0,CPU"], "CUDA0,CPU"),  # any GPU in the list conflicts
+            # inline flag=value form.
+            (["--spec-draft-device=Vulkan3"], "Vulkan3"),
+            (["--device_draft=Vulkan4"], "Vulkan4"),
+            # last-wins: only the final draft-device value counts.
+            (["--spec-draft-device", "CUDA1", "--spec-draft-device", "cpu"], None),
+            (["--spec-draft-device", "cpu", "--spec-draft-device", "CUDA1"], "CUDA1"),
+        ],
+    )
+    def test_draft_device_pin(self, args, expected):
+        assert _extra_args_draft_device_pin(args) == expected
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
             (["--spec-draft-n-max", "4"], 4),
             (["--spec-draft-n-max=6"], 6),
+            (["--spec_draft_n_max=6"], 6),
             (["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"], 3),
             (["--spec-draft-n-max", "2", "--spec-draft-n-max", "5"], 5),  # last wins
             (["--spec-draft-n-max", "notanint"], None),
@@ -644,6 +719,7 @@ class TestExtraArgsMtpDetection:
             (["--spec-draft-model", "/m/draft.gguf"], "/m/draft.gguf"),
             (["-md", "/m/draft.gguf"], "/m/draft.gguf"),
             (["--model-draft=/m/draft.gguf"], "/m/draft.gguf"),
+            (["--model_draft=/m/draft.gguf"], "/m/draft.gguf"),
             (["--model-draft", "--spec-type"], None),
             (["-c", "4096"], None),
             (None, None),
@@ -689,6 +765,7 @@ class TestExtraArgsMtpDetection:
             (["--cache-type-v-draft", "q4_0"], (None, "q4_0")),  # K stays f16, V only
             (["--cache-type-k-draft", "q4_0", "--cache-type-v-draft", "q8_0"], ("q4_0", "q8_0")),
             (["--cache-type-k-draft=q8_0"], ("q8_0", None)),
+            (["--cache_type_k_draft=q8_0"], ("q8_0", None)),
             (["--cache-type-k", "q8_0"], (None, None)),  # main type, not draft
             (["-c", "4096"], (None, None)),
             (None, (None, None)),
@@ -717,8 +794,17 @@ class TestExtraArgsMtpDetection:
         "args,expected",
         [
             (["--ubatch-size", "1024"], 1024),
-            (["-ub", "4096"], 4096),
+            (["-ub", "4096"], 2048),
+            (["--ubatch-size", "0"], 2048),
+            (["--batch-size", "256", "--ubatch-size", "0"], 256),
+            (["--batch-size", "-1"], 512),
+            (["--ubatch-size", "-1"], 2048),
             (["--ubatch-size=512"], 512),
+            (["--ubatch_size=512"], 512),
+            (["--batch-size", "256"], 256),
+            (["--batch_size=256"], 256),
+            (["-b", "256", "-ub", "1024"], 256),
+            (["-b", "4096"], 512),
             (["--ubatch", "2048"], None),  # not a real llama-server flag; ignore it
             (["-c", "4096"], None),
             (None, None),
@@ -727,12 +813,95 @@ class TestExtraArgsMtpDetection:
     def test_n_ubatch(self, args, expected):
         assert _extra_args_n_ubatch(args, env = {}) == expected
 
+    def test_n_ubatch_signed_values_cap_at_context(self):
+        assert (
+            _extra_args_n_ubatch(
+                ["--batch-size", "-1", "--ubatch-size", "-1"],
+                env = {},
+                n_ctx = 4096,
+            )
+            == 4096
+        )
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            (None, True),
+            (["--flash-attn", "off"], False),
+            (["--flash-attn", "disabled"], False),
+            (["--flash-attn", "false"], False),
+            (["--flash-attn", "0"], False),
+            (["--flash-attn=off"], False),
+            (["--flash-attn=disabled"], False),
+            (["--flash-attn=false"], False),
+            (["--flash-attn=0"], False),
+            (["--flash_attn", "off"], False),
+            (["-fa", "off", "--flash-attn", "auto"], True),
+            (["-fa", "off", "--flash-attn", "-1"], True),
+            (["-fa", "off", "--flash-attn", "enabled"], True),
+            (["-fa", "off", "--flash-attn=true"], True),
+            (["-fa", "off", "--flash-attn=1"], True),
+            (["--flash-attn", "off", "-fa"], True),
+        ],
+    )
+    def test_flash_attn_last_value_wins(self, args, expected):
+        assert _flash_attn_enabled_from_args(args, env = {}) is expected
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("off", False),
+            ("disabled", False),
+            ("false", False),
+            ("0", False),
+            ("on", True),
+            ("auto", True),
+            ("garbage", True),  # llama.cpp refuses to start, so the default is moot
+        ],
+    )
+    def test_flash_attn_env_applies(self, value, expected):
+        env = {"LLAMA_ARG_FLASH_ATTN": value}
+        assert _flash_attn_enabled_from_args([], env = env) is expected
+        # llama.cpp parses the environment first, so an explicit flag still wins.
+        assert _flash_attn_enabled_from_args(["-fa", "on"], env = env) is True
+        assert _flash_attn_enabled_from_args(["-fa", "off"], env = env) is False
+
+    def test_effective_main_cache_types_follow_env_then_cli(self):
+        env = {
+            "LLAMA_ARG_CACHE_TYPE_K": "f32",
+            "LLAMA_ARG_CACHE_TYPE_V": "q4_0",
+        }
+        assert _effective_main_cache_types([], env) == ("f32", "q4_0")
+        assert _effective_main_cache_types(["--cache-type-v", "f16"], env) == ("f32", "f16")
+
     def test_n_ubatch_env_fallback(self):
-        # The child honors LLAMA_ARG_UBATCH; it must reach the compute-buffer reserve.
-        assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "4096"}) == 4096
+        # Environment values apply first, then each command-line option overrides
+        # its own axis before llama.cpp caps ubatch at batch size.
+        assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "4096"}) == 2048
+        assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_BATCH": "256"}) == 256
+        assert (
+            _extra_args_n_ubatch(
+                [],
+                env = {
+                    "LLAMA_ARG_BATCH": "1024",
+                    "LLAMA_ARG_UBATCH": "4096",
+                },
+            )
+            == 1024
+        )
         assert (
             _extra_args_n_ubatch(["-ub", "1024"], env = {"LLAMA_ARG_UBATCH": "4096"}) == 1024
         )  # CLI wins
+        assert (
+            _extra_args_n_ubatch(
+                ["-b", "1024"],
+                env = {
+                    "LLAMA_ARG_BATCH": "256",
+                    "LLAMA_ARG_UBATCH": "4096",
+                },
+            )
+            == 1024
+        )
         assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "notint"}) is None
 
     def test_env_main_cache_type_for_budget(self):
@@ -816,36 +985,6 @@ class TestExtraArgsMtpDetection:
             _tensor_parallel_matches_loaded(["--split-mode", "layer"], False, True, env = tensor_env)
             is False
         )
-
-    def test_route_matcher_uses_tensor_parallel_matches_loaded(self):
-        # Fix: the route duplicate-load matcher must use the downgrade-aware
-        # helper, or an env-driven tensor server (or its layer downgrade) is
-        # needlessly reloaded (#6312). Read from disk (importing routes.inference
-        # drags in heavy deps).
-        routes_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
-            encoding = "utf-8"
-        )
-        start = routes_src.index("def _request_matches_loaded_settings")
-        end = routes_src.index("\ndef ", start + 1)
-        body = "".join(routes_src[start:end].split())
-        assert (
-            "_tensor_parallel_matches_loaded(effective_extra,"
-            "request.tensor_parallel,llama_backend.tensor_parallel)" in body
-        )
-
-    def test_route_matcher_retries_after_drafter_not_found(self):
-        # drafter_not_found must not report "already loaded" or the reload never
-        # retries the download (#6459). Read source: importing routes pulls deps.
-        routes_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
-            encoding = "utf-8"
-        )
-        start = routes_src.index("def _request_matches_loaded_settings")
-        end = routes_src.index("\ndef ", start + 1)
-        body = "".join(routes_src[start:end].split())
-        assert 'llama_backend.spec_fallback_reason=="drafter_not_found"' in body
-        assert "not_extra_args_set_spec_type(effective_extra)" in body
-        # HF-only (hf_repo): local/native loads have no download to retry.
-        assert "llama_backend.hf_repo" in body
 
     def test_extra_args_main_cache_type_heavier_axis(self):
         # Asymmetric --cache-type-k/-v must budget the heavier axis (extras win

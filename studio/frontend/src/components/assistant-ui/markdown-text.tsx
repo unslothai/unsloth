@@ -13,9 +13,11 @@ import {
 } from "@/features/chat/artifacts/html-fences";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { toast } from "@/lib/toast";
 import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -66,6 +68,8 @@ function getMermaidSource(blockContent: string): string | null {
 function getCodeFilename(language: string | null) {
   const extByLanguage: Record<string, string> = {
     bash: "sh",
+    "c++": "cpp",
+    csharp: "cs",
     javascript: "js",
     js: "js",
     json: "json",
@@ -74,6 +78,8 @@ function getCodeFilename(language: string | null) {
     md: "md",
     python: "py",
     py: "py",
+    ruby: "rb",
+    rust: "rs",
     shell: "sh",
     sh: "sh",
     sql: "sql",
@@ -116,15 +122,13 @@ function SvgPreview({ source }: { source: string }) {
 }
 
 function downloadTextFile(filename: string, text: string): void {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  void downloadFile(text, filename, "text/plain;charset=utf-8").catch(
+    (error) => {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not save file.");
+      }
+    },
+  );
 }
 
 function useCopiedState() {
@@ -371,6 +375,9 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
 
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
+  // Parts are keyed by index, so switching conversations hands this instance a different
+  // message, and Streamdown only extends its parsed blocks: key it per message instead.
+  const messageId = useAuiState(({ message }) => message.id);
   const displayText = useRafCoalescedText(text, status.type === "running");
   const processedText = useMemo(
     () => preprocessLaTeX(displayText),
@@ -385,6 +392,7 @@ const MarkdownTextImpl = () => {
   return (
     <div data-status={status.type} className="min-w-0 max-w-full">
       <Streamdown
+        key={messageId}
         mode="streaming"
         isAnimating={status.type === "running"}
         plugins={{ code, math, mermaid }}
