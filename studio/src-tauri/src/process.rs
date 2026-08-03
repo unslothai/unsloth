@@ -205,16 +205,49 @@ fn normalized_existing_windows_path(path: &std::path::Path) -> Result<String, St
     Ok(resolved
         .to_string_lossy()
         .trim_end_matches(['\\', '/'])
-        .replace('/', "\\")
-        .to_lowercase())
+        .replace('/', "\\"))
 }
 
 #[cfg(windows)]
-fn windows_path_is_within(candidate: &str, root: &str) -> bool {
-    candidate == root
-        || candidate
-            .strip_prefix(root)
-            .is_some_and(|remainder| remainder.starts_with('\\'))
+fn windows_ordinal_ignore_case_equal(left: &[u16], right: &[u16]) -> Result<bool, String> {
+    use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
+
+    let left_length = i32::try_from(left.len())
+        .map_err(|_| "Normalized Studio path exceeds Win32 comparison limits".to_string())?;
+    let right_length = i32::try_from(right.len())
+        .map_err(|_| "Normalized Studio path exceeds Win32 comparison limits".to_string())?;
+    let comparison = unsafe {
+        CompareStringOrdinal(left.as_ptr(), left_length, right.as_ptr(), right_length, 1)
+    };
+    if comparison == 0 {
+        return Err(format!(
+            "Could not compare normalized Studio paths: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(comparison == CSTR_EQUAL)
+}
+
+#[cfg(windows)]
+fn windows_paths_are_equal(left: &str, right: &str) -> Result<bool, String> {
+    let left_wide: Vec<u16> = left.encode_utf16().collect();
+    let right_wide: Vec<u16> = right.encode_utf16().collect();
+    windows_ordinal_ignore_case_equal(&left_wide, &right_wide)
+}
+
+#[cfg(windows)]
+fn windows_path_is_within(candidate: &str, root: &str) -> Result<bool, String> {
+    let candidate_wide: Vec<u16> = candidate.encode_utf16().collect();
+    let root_wide: Vec<u16> = root.encode_utf16().collect();
+    if candidate_wide.len() < root_wide.len() {
+        return Ok(false);
+    }
+
+    let same_root =
+        windows_ordinal_ignore_case_equal(&candidate_wide[..root_wide.len()], &root_wide)?;
+    Ok(same_root
+        && (candidate_wide.len() == root_wide.len()
+            || candidate_wide[root_wide.len()] == u16::from(b'\\')))
 }
 
 #[cfg(windows)]
@@ -325,9 +358,12 @@ pub(crate) fn ensure_managed_environment_is_idle(
             loop {
                 if let Some(image) = process_image_path(entry.th32ProcessID) {
                     if let Ok(image_key) = normalized_existing_windows_path(&image) {
-                        if windows_path_is_within(&image_key, &canonical_root)
-                            || canonical_shim.as_ref() == Some(&image_key)
-                        {
+                        let image_is_shim = canonical_shim
+                            .as_ref()
+                            .map(|shim| windows_paths_are_equal(&image_key, shim))
+                            .transpose()?
+                            .unwrap_or(false);
+                        if windows_path_is_within(&image_key, &canonical_root)? || image_is_shim {
                             let name_length = entry
                                 .szExeFile
                                 .iter()
@@ -460,11 +496,33 @@ mod studio_runtime_launch_guard_tests {
         assert!(windows_path_is_within(
             r"c:\\users\\pc\\.unsloth\\studio\\unsloth_studio\\scripts\\python.exe",
             r"c:\\users\\pc\\.unsloth\\studio\\unsloth_studio"
-        ));
+        )
+        .unwrap());
         assert!(!windows_path_is_within(
             r"c:\\users\\pc\\.unsloth\\studio\\unsloth_studio_old\\scripts\\python.exe",
             r"c:\\users\\pc\\.unsloth\\studio\\unsloth_studio"
-        ));
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn windows_path_comparison_uses_ordinal_case_insensitive_semantics() {
+        assert!(windows_paths_are_equal(
+            r"C:\\Users\\PC\\.Unsloth\\Studio",
+            r"c:\\users\\pc\\.unsloth\\studio"
+        )
+        .unwrap());
+
+        let dotted_capital_root = r"C:\\Users\\İ\\.unsloth\\studio";
+        let expanded_lowercase_root = "C:\\\\Users\\\\i\u{307}\\\\.unsloth\\\\studio";
+        assert_eq!(
+            dotted_capital_root.to_lowercase(),
+            expanded_lowercase_root.to_lowercase()
+        );
+        assert!(!windows_paths_are_equal(dotted_capital_root, expanded_lowercase_root).unwrap());
+
+        let unrelated_image = format!("{expanded_lowercase_root}\\\\Scripts\\\\python.exe");
+        assert!(!windows_path_is_within(&unrelated_image, dotted_capital_root).unwrap());
     }
 
     #[test]
