@@ -3928,49 +3928,62 @@ print(install_manifest.manifest_path())
                 # install_python_stack.py writes its completion manifest immediately before
                 # returning, so from here to the reinstall below is a window where a kill
                 # leaves a venv with no triton that the next update still reads as complete
-                # and fast-paths straight past. Hold the manifest aside for the swap and put
-                # the same bytes back after: gone means "not finished", which is the truth
-                # while the venv has no triton.
-                $_manifestSaved = $null
+                # and fast-paths straight past. MOVE the manifest into the wheel's temp dir
+                # for the swap, never read and rewrite it: PS 5.1's Set-Content defaults to
+                # ANSI and its -Encoding utf8 emits a BOM that read_manifest's json.load
+                # rejects, so either would corrupt a manifest carrying a non-ASCII path.
+                # The dir is removed in the finally below, so an unrestored manifest stays
+                # gone, which is the truth while the venv has no triton.
+                $_manifestHeld = $null
+                $_manifestBlocked = $false
                 if ($_manifestPath -and (Test-Path -LiteralPath $_manifestPath -PathType Leaf)) {
+                    $_held = Join-Path $_tritonTmp "held_manifest.json"
                     try {
-                        $_manifestSaved = Get-Content -Raw -LiteralPath $_manifestPath -ErrorAction Stop
-                        Remove-Item -LiteralPath $_manifestPath -Force -ErrorAction Stop
-                    } catch { $_manifestSaved = $null }
+                        Move-Item -LiteralPath $_manifestPath -Destination $_held -Force -ErrorAction Stop
+                        $_manifestHeld = $_held
+                    } catch { $_manifestBlocked = $true }
                 }
-                Fast-Uninstall "triton-windows" | Out-Null
-                if ($script:UnslothVerbose) {
-                    Fast-Install --force-reinstall --no-deps $_tritonWheel | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
-                    $tritonXpuExit = $LASTEXITCODE
-                    $tritonOutput = ""
+                if ($_manifestBlocked) {
+                    # A manifest that will not move (locked, read-only) would stay valid right
+                    # through the destructive window, so do not open one. Leaving triton-windows
+                    # in place costs torch.compile on the XPU, which the next run can still fix.
+                    substep "[WARN] could not set the install manifest aside; triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
                 } else {
-                    $tritonOutput = Fast-Install --force-reinstall --no-deps $_tritonWheel | Out-String
-                    $tritonXpuExit = $LASTEXITCODE
-                }
-                $_tritonPresent = ($tritonXpuExit -eq 0)
-                if ($tritonXpuExit -ne 0) {
-                    # Off the network by now, so this is disk/permissions. triton-windows is
-                    # already gone and took the shared paths with it, so put SOME working triton
-                    # back rather than leave the venv unable to import one at all.
-                    Fast-Install --force-reinstall --no-deps "triton-windows<3.7" | Out-Null
-                    $tritonBackExit = $LASTEXITCODE
-                    $_tritonPresent = ($tritonBackExit -eq 0)
-                    Write-Host (Redact-InstallOutput $tritonOutput) -ForegroundColor Yellow
-                    if ($tritonBackExit -eq 0) {
-                        substep "[WARN] could not install $_tritonXpuSpec (exit $tritonXpuExit); restored triton-windows, so triton still imports -- but torch.compile will not use the XPU." "Yellow"
+                    Fast-Uninstall "triton-windows" | Out-Null
+                    if ($script:UnslothVerbose) {
+                        Fast-Install --force-reinstall --no-deps $_tritonWheel | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                        $tritonXpuExit = $LASTEXITCODE
+                        $tritonOutput = ""
                     } else {
-                        # Redacted: a mirror pin can carry a token, and this is the only place
-                        # setup.ps1 shows an index URL. A tokenless URL survives verbatim.
-                        $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
-                        Write-Host "[ERROR] triton-windows was removed and neither triton would reinstall -- torch.compile is broken." -ForegroundColor Red
-                        Write-Host "        Repair with: python -m pip install --force-reinstall --no-deps $_tritonXpuSpec --index-url $_tritonRepairUrl" -ForegroundColor Red
+                        $tritonOutput = Fast-Install --force-reinstall --no-deps $_tritonWheel | Out-String
+                        $tritonXpuExit = $LASTEXITCODE
                     }
-                }
-                # Only once a triton is importable again. If neither would reinstall the venv
-                # really is incomplete, and leaving the manifest gone is what makes the next
-                # update repair it instead of fast-pathing past a broken torch.compile.
-                if ($_manifestSaved -and $_tritonPresent) {
-                    try { Set-Content -LiteralPath $_manifestPath -Value $_manifestSaved -NoNewline -ErrorAction Stop } catch {}
+                    $_tritonPresent = ($tritonXpuExit -eq 0)
+                    if ($tritonXpuExit -ne 0) {
+                        # Off the network by now, so this is disk/permissions. triton-windows is
+                        # already gone and took the shared paths with it, so put SOME working
+                        # triton back rather than leave the venv unable to import one at all.
+                        Fast-Install --force-reinstall --no-deps "triton-windows<3.7" | Out-Null
+                        $tritonBackExit = $LASTEXITCODE
+                        $_tritonPresent = ($tritonBackExit -eq 0)
+                        Write-Host (Redact-InstallOutput $tritonOutput) -ForegroundColor Yellow
+                        if ($tritonBackExit -eq 0) {
+                            substep "[WARN] could not install $_tritonXpuSpec (exit $tritonXpuExit); restored triton-windows, so triton still imports -- but torch.compile will not use the XPU." "Yellow"
+                        } else {
+                            # Redacted: a mirror pin can carry a token, and this is the only place
+                            # setup.ps1 shows an index URL. A tokenless URL survives verbatim.
+                            $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
+                            Write-Host "[ERROR] triton-windows was removed and neither triton would reinstall -- torch.compile is broken." -ForegroundColor Red
+                            Write-Host "        Repair with: python -m pip install --force-reinstall --no-deps $_tritonXpuSpec --index-url $_tritonRepairUrl" -ForegroundColor Red
+                        }
+                    }
+                    # Moved back, never rewritten, and only once a triton is importable again.
+                    # If neither would reinstall the venv really is incomplete, and leaving the
+                    # manifest in the temp dir the finally deletes is what makes the next update
+                    # repair it instead of fast-pathing past a broken torch.compile.
+                    if ($_manifestHeld -and $_tritonPresent) {
+                        try { Move-Item -LiteralPath $_manifestHeld -Destination $_manifestPath -Force -ErrorAction Stop } catch {}
+                    }
                 }
             }
         } finally {
