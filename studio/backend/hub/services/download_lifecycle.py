@@ -946,22 +946,26 @@ def launch_worker(
     transport: str,
     watch_name: str,
 ) -> str:
-    # Before spawn(), deliberately: a small download can finalize its blobs while we are still
-    # registering the process, and a baseline taken after that shows no growth for a transfer that
-    # really happened -- so the streak is never cleared and two stalls either side of it read as
-    # consecutive.
-    _get_metadata = getattr(registry, "get_job_metadata", None)
-    _metadata = _get_metadata(key) if callable(_get_metadata) else None
-    _baseline = _job_bytes_on_disk(
-        repo_type,
-        repo_id,
-        getattr(_metadata, "hub_cache", None) if _metadata is not None else None,
-        (
-            getattr(_metadata, "blob_hashes", frozenset())
-            if getattr(_metadata, "variant", None)
-            else None
-        ),
-    )
+    # Only the Xet success-recording consumes this, and sampling it lazy-loads unsloth_zoo (and so
+    # torch and transformers) on the request path. An HTTP start skips it entirely.
+    _baseline: Optional[int] = None
+    if transport == download_registry.TRANSPORT_XET:
+        # Before spawn(), deliberately: a small download can finalize its blobs while we are still
+        # registering the process, and a baseline taken after that shows no growth for a transfer
+        # that really happened -- so the streak is never cleared and two stalls either side of it
+        # read as consecutive.
+        _get_metadata = getattr(registry, "get_job_metadata", None)
+        _metadata = _get_metadata(key) if callable(_get_metadata) else None
+        _baseline = _job_bytes_on_disk(
+            repo_type,
+            repo_id,
+            getattr(_metadata, "hub_cache", None) if _metadata is not None else None,
+            (
+                getattr(_metadata, "blob_hashes", frozenset())
+                if getattr(_metadata, "variant", None)
+                else None
+            ),
+        )
     try:
         proc = spawn()
     except Exception as e:

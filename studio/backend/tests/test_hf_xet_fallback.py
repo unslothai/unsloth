@@ -389,3 +389,63 @@ def test_importing_child_should_disable_xet_stays_light(monkeypatch):
     # And nothing heavy was imported as a side effect.
     assert "transformers" not in sys.modules, "importing the shim must not import transformers"
     assert "unsloth_zoo" not in sys.modules, "importing the shim must not import unsloth_zoo"
+
+
+def test_start_watchdog_drops_kwargs_the_installed_zoo_cannot_take(monkeypatch):
+    """Version-skew adapter, and load-bearing.
+
+    The supported floor's start_watchdog is keyword-only with no **kwargs and no connect_timeout,
+    so passing one raises TypeError -- and every caller wraps this in `except Exception`, so the
+    watchdog silently never starts and a stalled Xet worker is never killed or retried over HTTP.
+    That is the feature entirely off, not degraded.
+    """
+    import threading
+
+    import utils.hf_xet_fallback as shim
+
+    seen = {}
+
+    def _old_signature_watchdog(
+        *, repo_ids, on_stall, repo_type = "model", cache_dir = None, interval = 30.0,
+        stall_timeout = 180.0, xet_disabled = False, on_heartbeat = None,
+        watch_new_partials_only = False, baseline_incomplete_blobs = None, child_pid = None,
+    ):
+        seen.update(locals())
+        return threading.Event()
+
+    class _FakeShared:
+        start_watchdog = staticmethod(_old_signature_watchdog)
+
+    monkeypatch.setattr(shim, "_shared", _FakeShared, raising = False)
+    monkeypatch.setattr(shim, "_shared_available", True, raising = False)
+
+    stop = shim.start_watchdog(
+        repo_ids = ["a/b"], on_stall = lambda _m: None,
+        watch_new_partials_only = True, child_pid = 1234,
+        connect_timeout = 600.0,          # only on the unreleased zoo
+    )
+    assert stop is not None, "the watchdog did not start"
+    assert seen["watch_new_partials_only"] is True, "a SUPPORTED kwarg was dropped"
+    assert seen["child_pid"] == 1234
+
+
+def test_start_watchdog_passes_everything_to_a_zoo_that_accepts_it(monkeypatch):
+    """A newer zoo must still receive the newer knobs."""
+    import threading
+
+    import utils.hf_xet_fallback as shim
+
+    seen = {}
+
+    def _new_signature_watchdog(**kwargs):
+        seen.update(kwargs)
+        return threading.Event()
+
+    class _FakeShared:
+        start_watchdog = staticmethod(_new_signature_watchdog)
+
+    monkeypatch.setattr(shim, "_shared", _FakeShared, raising = False)
+    monkeypatch.setattr(shim, "_shared_available", True, raising = False)
+
+    shim.start_watchdog(repo_ids = ["a/b"], on_stall = lambda _m: None, connect_timeout = 600.0)
+    assert seen["connect_timeout"] == 600.0, "a newer zoo lost the kwarg it supports"

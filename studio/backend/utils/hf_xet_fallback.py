@@ -306,15 +306,45 @@ def _degraded_snapshot_download_with_xet_fallback(
 # only for these heavy names, not for ``child_should_disable_xet`` / ``DEFAULT_*``.
 _DEGRADED_ATTRS = {
     "DownloadStallError": _DegradedDownloadStallError,
-    "start_watchdog": _degraded_start_watchdog,
     "get_hf_download_state": _degraded_get_hf_download_state,
 }
+
+
+def _supported_kwargs(fn: Any, kwargs: "dict[str, Any]") -> "dict[str, Any]":
+    """Drop kwargs *fn* does not accept; pass everything through if it takes ``**kwargs``.
+
+    Uninspectable callables (C functions, some test doubles) also pass through unchanged.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    return {k: v for k, v in kwargs.items() if k in params}
+
+
+def start_watchdog(**kwargs: Any) -> Any:
+    """Shared stall watchdog, minus any kwarg the INSTALLED unsloth_zoo does not accept.
+
+    This is a version-skew adapter, and it is load-bearing: the supported floor (2026.8.1) has no
+    ``connect_timeout`` or ``heartbeat_interval`` and no ``**kwargs`` to absorb them, so passing one
+    raises TypeError -- and every caller wraps this in ``except Exception``, so the watchdog would
+    silently never start and a stalled Xet worker would never be killed or retried over HTTP. That
+    is the feature being entirely off, not degraded. Filtering here keeps newer knobs live on a
+    newer zoo without breaking the floor, and makes the NEXT new kwarg a no-op rather than a repeat
+    of this bug. Dropping the pre-byte budget on 2026.8.1 is safe: that release resets its timer
+    whenever the child owns no ``.incomplete``, which is exactly the connect phase.
+    """
+    impl = _shared.start_watchdog if _load_shared() else _degraded_start_watchdog
+    return impl(**_supported_kwargs(impl, kwargs))
 
 # Annotation-only declarations for the three names above: they bind NO value, so lookup still misses
 # and PEP 562 ``__getattr__`` resolves them lazily -- but ruff/pyflakes see them as defined, so listing
 # them in ``__all__`` does not trip F822 (while F822 still catches a real typo elsewhere in the list).
 DownloadStallError: type
-start_watchdog: Any
 get_hf_download_state: Any
 
 
