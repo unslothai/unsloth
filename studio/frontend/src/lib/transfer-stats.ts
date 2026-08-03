@@ -5,8 +5,8 @@
  * Pure, framework-free math behind {@link useTransferStats}.
  *
  * Split out for unit-testing without React, and so the training-start overlay,
- * chat download toast, and model-load UI share identical rate/ETA semantics.
- * No React/timers -- the caller owns the sample buffer and clock.
+ * chat download toast, model-load UI and hub download manager share identical
+ * rate/ETA semantics. No React/timers -- the caller owns the buffer and clock.
  */
 
 export type TransferSample = { t: number; b: number };

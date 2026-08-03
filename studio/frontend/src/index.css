@@ -291,13 +291,17 @@
 	   the signal never changes with the theme. */
 	--verified: #17b88b;
 
+	/* The authored typography tokens use a 16px CSS base; the product default
+	   is 15px. An explicit user preference overrides this inline. */
+	--ui-font-scale: 0.9375;
+
 	/* Standard interactive-icon size for nav, menus, action bars, and
 	   in-message code-block actions. Sized one step above body text so
 	   icons read as minimally larger than adjacent labels (~14px text).
-	   Follows the UI font size preference; 18px at the default.
+	   Follows the UI font size preference; 15px at the app default.
 	   Theme-independent — declared once in :root. */
 	/* Standard icon size follows the UI font size itself: matches it below
-	   the 16px default, grows at half the change above it (setting 20 ->
+	   the 16px CSS scale base, grows at half the change above it (setting 20 ->
 	   18px), so icons read slightly smaller than enlarged text. */
 	--ui-icon-size: min(calc(1rem * var(--ui-font-scale, 1)), calc(0.5rem + 0.5rem * var(--ui-font-scale, 1)));
 	--icon-size: var(--ui-icon-size);
@@ -717,8 +721,9 @@ html[data-chat-font] .aui-root {
 
 @theme inline {
 	/* UI typography scale (Settings > Appearance). Every token multiplies
-	   its default size by --ui-font-scale, so text follows the preference
-	   while rem-based layout stays put. Identity at the 16px default. */
+	   its CSS base size by --ui-font-scale, so text follows the preference
+	   while rem-based layout stays put. The CSS base is 16px; the app default
+	   of 15px applies a 15/16 scale. */
 	--text-xs: calc(0.75rem * var(--ui-font-scale, 1));
 	--text-sm: calc(0.875rem * var(--ui-font-scale, 1));
 	--text-base: calc(1rem * var(--ui-font-scale, 1));
@@ -750,6 +755,7 @@ html[data-chat-font] .aui-root {
 	--text-ui-25: calc(1.5625rem * var(--ui-font-scale, 1));
 	--text-ui-30: calc(1.875rem * var(--ui-font-scale, 1));
 	--text-ui-34: calc(2.125rem * var(--ui-font-scale, 1));
+	--text-ui-50: calc(3.125rem * var(--ui-font-scale, 1));
 	/* Exact line-heights paired with the sizes above. */
 	--leading-ui-14: calc(0.875rem * var(--ui-font-scale, 1));
 	--leading-ui-15: calc(0.9375rem * var(--ui-font-scale, 1));
@@ -2800,7 +2806,7 @@ html[data-chat-font] .aui-root {
 }
 
 /* Third-party UI text follows the typography scale. Values equal the
-   library defaults at the 16px setting. KaTeX's internal font-size:1px
+   library defaults at the 16px CSS scale base. KaTeX's internal font-size:1px
    sizing trick is layout, not text, and stays untouched. */
 .before\:text-\[13px\]::before {
 	/* streamdown citation chip utility (class scanned from node_modules). */

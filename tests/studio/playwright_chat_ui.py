@@ -1973,14 +1973,14 @@ with sync_playwright() as p:
     stop_btn.click()
 
     # Wait for the post-shutdown placeholder body (the component swaps in
-    # "Unsloth Studio has stopped." once /api/shutdown returns ok).
+    # "Unsloth has stopped." once /api/shutdown returns ok).
     try:
         page.wait_for_function(
-            """() => /Unsloth Studio has stopped/.test(document.body.innerText)""",
+            """() => /Unsloth has stopped/.test(document.body.innerText)""",
             timeout = 15_000,
         )
         shoot("20-shutdown-placeholder")
-        info("OK 'Unsloth Studio has stopped' placeholder rendered")
+        info("OK 'Unsloth has stopped' placeholder rendered")
     except Exception as exc:
         info(f"WARN shutdown placeholder didn't render: {exc!r}")
 

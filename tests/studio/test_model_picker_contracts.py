@@ -75,8 +75,8 @@ def test_autoload_records_backend_loaded_model_identity():
     autoload = autoload.split("\n  try {", 1)[0]
     assert "const loadedModelId = loadResp.model || modelPath" in autoload
     assert "setCheckpoint(loadedModelId," in autoload
-    assert "id: loadedModelId" in autoload
-    assert "m.id === loadedModelId" in autoload
+    # syncModelCapabilities upserts the summary, matching on the id it is handed.
+    assert "syncModelCapabilities(loadedModelId," in autoload
 
 
 def test_chat_autoload_toast_is_persistent_and_dismissible():
@@ -410,10 +410,10 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
     # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants.
-    assert (
-        "listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)"
-        in picker
-    )
+    listing = picker.split("// The row's own directory", 1)[1].split(".then((res)", 1)[0]
+    assert "listGgufVariants(repoId, hfToken, {" in listing
+    assert "...(localSource ? { localPath: localSource } : {})," in listing
+    assert re.search(r"^\s*preferLocalCache:", listing, re.M) is None
     assert "cachePath={c.cache_path}" in picker
 
     # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.
@@ -528,11 +528,11 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     assert auto_load.count("preferLocalCache: true") >= 2
     assert auto_load.count("localPath: repo.cache_path") >= 2
 
-    chat_api = _read("features/chat/api/chat-api.ts")
-    variants_fn = chat_api.split("export async function listGgufVariants", 1)[1]
-    variants_fn = variants_fn.split("export interface KvCacheEstimate", 1)[0]
-    assert 'params.set("prefer_local_cache", "true")' in variants_fn
-    assert 'params.set("local_path", localPath)' in variants_fn
+    request = _read("features/chat/api/gguf-variants-request.ts")
+    query_fn = request.split("export function ggufVariantsQuery", 1)[1]
+    query_fn = query_fn.split("export function ggufVariantsAbort", 1)[0]
+    assert 'params.set("prefer_local_cache", "true")' in query_fn
+    assert 'params.set("local_path", localPath)' in query_fn
 
 
 def test_cache_location_update_invalidates_frontend_inventory():
@@ -1387,8 +1387,9 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     assert "const NATIVE_FILE_LABEL_RE = /^[^/\\\\]+\\.gguf$/i;" in identity
 
     inference = _read_backend("routes/inference.py")
+    # /api/inference/status and the checkpoint helper share _llama_status_model_ids.
     assert (
-        "model_identifier = None if _native_grant_backed else _model_id" in inference
+        "return display_model_id, (None if native_grant_backed else model_id)" in inference
     ), "why the checkpoint is only a display name"
     models = _read_backend("routes/models.py")
     assert "display_name = gguf_file.stem," in models, "why the name is never an index key"
@@ -1983,3 +1984,118 @@ def test_clearing_the_log_keeps_a_request_that_is_still_running():
     zero and the finish or fail that follows has no entry left to land on."""
     monitor = " ".join(_read_backend("core/inference/api_monitor.py").split())
     assert 'if entry.shared or entry.subject != subject or entry.status == "running"' in monitor
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test hooks the Playwright driver depends on.
+#
+# tests/studio/playwright_model_config.py drives the picker through these exact
+# attributes and accessible names. Renaming one is a source-only edit that type
+# checks, lints and passes every unit test, and then fails a 25-minute browser job
+# with "selector not found" -- which is how the collapsed-row regression (#7736)
+# sat on main. Pin them here so that break costs two seconds instead.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_picker_rows_keep_their_automation_attributes():
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    # On the row button itself, not a wrapper: the driver scopes row text to it.
+    assert '"data-model-picker-option": true;' in pickers
+    assert '"data-model-picker-option": true,' in pickers
+    assert "data-model-picker-search-input" in pickers
+    assert "data-model-picker-list" in pickers
+    # And that ModelRow still spreads them onto the button. Without this the two
+    # above only prove the props are declared and returned: ModelRow reads
+    # optionProps?.onKeyDown separately, so the prop stays used and type checks
+    # while data-model-picker-option leaves the DOM and every row lookup in the
+    # driver fails.
+    row_button = re.search(r"const content = \(\s*<button\b(.*?)>", pickers, re.S)
+    assert row_button, "ModelRow no longer renders its content as a <button>"
+    assert "{...optionProps}" in row_button.group(
+        1
+    ), "ModelRow stopped spreading optionProps onto the row button"
+
+
+def test_picker_popover_and_trigger_keep_their_tour_hooks():
+    """Both props by name. The trigger's value is a prefix of the popover's, so any
+    assertion that falls back to the bare substring is satisfied by the popover alone
+    and would pass with the trigger hook deleted -- while the driver's very first
+    click, page.locator(TRIGGER), would be the thing that fails."""
+    chat = _read("features/chat/chat-page.tsx")
+    assert 'triggerDataTour="chat-model-selector"' in chat
+    assert 'contentDataTour="chat-model-selector-popover"' in chat
+
+
+def test_run_settings_gear_label_names_its_model():
+    """The driver cannot reach the gear through the row -- it is a sibling at 2 of its
+    render sites and an uncle at the rest -- so it matches on this label, and the model
+    name in it is what keeps it off another row's gear."""
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    # The expander's own label, not any of them: pickers.tsx interpolates this
+    # string at five sites, so a file-wide match stays green while the one the
+    # driver depends on drops its repo or its quant. That is the only label with
+    # both, and naming the quant is how the driver tells one variant from another.
+    assert (
+        "ariaLabel={`Inference settings for ${repoId} ${v.quant}`}" in pickers
+    ), "the variant gear label no longer names both the repo and the quant"
+    action = _read("features/model-picker/components/model-selector/model-load-settings-action.tsx")
+    assert "aria-label={ariaLabel}" in action
+
+
+def test_a_multi_quant_parent_row_still_has_no_gear():
+    """The driver reads the absence of a gear as "this row expands rather than loads".
+    Give the parent row a gear and that inference silently inverts."""
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    # Inside the parent row, not anywhere in the file. Adding a gear to the parent
+    # while leaving the spacer in place satisfies a file-wide search, and that is
+    # exactly the change that would invert the driver's inference.
+    start = pickers.index("const renderDownloadedGgufRow")
+    parent = pickers[start : pickers.index("const renderDownloadedModelRow", start)]
+    parent_row = parent[: parent.index("{expanderOpen && (")]
+    # The gutter by reference, not by width. Pinning "w-[42px]" pinned two things
+    # the driver does not care about: the exact pixel width, and the fact that it
+    # was spelled inline. main has since moved to w-[38px] behind ROW_ACTIONS_CLASS,
+    # which is the same spacer doing the same job, and this assertion would have
+    # failed the moment the two met -- reporting a lost spacer that is still there.
+    gutter = "ROW_ACTIONS_CLASS" in parent_row or re.search(r"w-\[\d+px\]", parent_row)
+    assert (
+        'aria-hidden="true"' in parent_row and gutter
+    ), "the multi-quant parent row lost the spacer that stands in for a gear"
+    assert "ModelLoadSettingsAction" not in parent_row, (
+        "the multi-quant parent row grew a gear, so the driver's 'no gear means "
+        "this row expands rather than loads' inference is now wrong"
+    )
+
+
+def test_run_settings_page_keeps_its_identifying_controls():
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # How the driver knows run-settings actually opened.
+    assert 'aria-label="Back to model list"' in page
+    assert 'ariaLabel="Context Length"' in page
+    assert 'aria-label="Context Length"' in page
+    # The button, not the word: "Reset" also appears in this file's own comments, so a
+    # raw source search passes with the control deleted and the Playwright reset gate
+    # only finds out 25 minutes later.
+    assert re.search(
+        r"onClick=\{\(\) => setConfig\(\{ \.\.\.DEFAULT_PER_MODEL_CONFIG \}\)\}\s*>\s*Reset\s*</Button>",
+        page,
+    ), "the Reset button's JSX is gone or no longer named Reset"
+
+
+def test_the_primary_action_keeps_its_four_labels():
+    """The driver sweeps these names to find the one button the panel shows."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    for label in ('"Save settings"', '"Forget settings"', '"Reload model"', '"Load model"'):
+        assert label in page, label
+    # And that the label is rendered by a button the driver can press. The four
+    # literals above live in the primaryActionLabel calculation, so they survive
+    # the button being deleted or turned into a non-button, and get_by_role finds
+    # nothing while this stays green.
+    # Whole elements, then the one that is both: other props on the opening tag
+    # contain braces of their own, so a pattern that tries to reach onClick
+    # through a negated class stops at the first `disabled={...}`.
+    primary = any(
+        "onClick={handleRun}" in el.group(0) and "{primaryActionLabel}" in el.group(0)
+        for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
+    )
+    assert primary, "primaryActionLabel is no longer rendered inside the handleRun Button"

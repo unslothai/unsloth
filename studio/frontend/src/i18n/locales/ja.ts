@@ -25,7 +25,7 @@ export const ja = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "{name} のアカウントメニュー",
     updateAvailable: "アップデートが利用可能です",
     resize: {
@@ -463,7 +463,7 @@ export const ja = {
     },
     appearance: {
       title: "外観",
-      description: "このデバイスでの Unsloth Studio の見た目。",
+      description: "このデバイスでの Unsloth の見た目。",
       theme: {
         title: "テーマ",
         label: "カラー構成",
@@ -668,7 +668,7 @@ export const ja = {
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
       modelNote:
-        "Codex には llama-server が提供する GGUF モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth Studio に読み込み済みのモデルを使うには --model を外してください。",
+        "Codex には llama-server が提供する GGUF モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
       subagent: {
         title: "ローカルモデルをサブエージェントとして使う",
         description:
@@ -882,7 +882,7 @@ export const ja = {
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "セキュア HTTPS",
-      secureHttpsHint: "0.0.0.0 ポートは依然としてグローバルにアクセス可能です。完全なセキュリティを確保するには、Unsloth Studio を --secure 付きで起動し、この HTTPS リンクのみを公開してください。",
+      secureHttpsHint: "0.0.0.0 ポートは依然としてグローバルにアクセス可能です。完全なセキュリティを確保するには、Unsloth を --secure 付きで起動し、この HTTPS リンクのみを公開してください。",
       copyTunnelUrl: "トンネル URL をコピー",
       copySnippet: "スニペットをコピー",
       copy: "コピー",
@@ -934,7 +934,7 @@ export const ja = {
       reportIssue: "問題を報告",
       license: {
         sectionTitle: "ライセンス",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "GNU AGPL v3.0 の下でオープンソース化されています。",
         libraryLabel: "Unsloth Core",
@@ -942,11 +942,11 @@ export const ja = {
         libraryDescription: "Apache 2.0 ライセンスの下で提供されています。",
       },
       dangerZone: "危険ゾーン",
-      shutDownStudio: "Unsloth Studio をシャットダウン",
+      shutDownStudio: "Unsloth をシャットダウン",
       shutDownStudioDescription: "Unsloth サーバーを停止し、セッションを終了します。",
       shutDown: "シャットダウン",
       update: {
-        title: "Unsloth Studio のアップデート",
+        title: "Unsloth のアップデート",
         commandText: "{label} テキスト",
         copied: "コピーしました",
         copyCommand: "コマンドをコピー",

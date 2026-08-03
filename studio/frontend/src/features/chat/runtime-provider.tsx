@@ -76,6 +76,10 @@ import {
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
 import {
+  refreshContextUsage,
+  setActiveBranchReader,
+} from "./utils/refresh-context-usage";
+import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatThread,
@@ -1244,14 +1248,26 @@ function useStudioRuntimeAdapters(
           ? savedUsage.modelId === store.params.checkpoint
           : typeof store.ggufContextLength === "number" &&
             store.ggufContextLength > 0;
-        if (savedUsage && withinLocalLimit && modelMatches) {
+        // The value, not a boolean: the writes below need the narrowing.
+        const restoredUsage =
+          savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
+        if (restoredUsage) {
           // Key by the thread this loader read, not whichever is active when the await resolves:
           // a switch inside it would file this thread's usage under the incoming one. Same rule
           // the adapter's end-of-run write follows.
-          store.setThreadContextUsage(remoteId, savedUsage);
+          store.setThreadContextUsage(remoteId, restoredUsage);
           if (store.activeThreadId === remoteId) {
-            store.setContextUsage(savedUsage);
+            store.setContextUsage(restoredUsage);
           }
+        }
+        // Only when nothing was restored: saved usage is the last completion's exact totals, and
+        // refreshContextUsage does NOT stand down for usage already there, so it would overwrite
+        // them with an estimate whose completionTokens is 0. A thread opened after a model switch
+        // fails modelMatches and still gets priced (#7450).
+        // Primary pane only: a compare pane never owns the global bar, so its count would be
+        // rebuilt from storage, sent, then dropped at publish for not being activeThreadId.
+        if (!restoredUsage && modelType === "base" && !pairId) {
+          void refreshContextUsage({ threadId: remoteId });
         }
 
         // If any message has a stored parentId, reconstruct the tree so
@@ -1474,6 +1490,14 @@ function ThreadNewChatSwitch({
 }: { nonce: string }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  // Read only by the recount below: New Chat itself must not care whether a run is still going.
+  const runActive = useChatRuntimeStore((s) =>
+    Object.values(s.runningByThreadId).some(Boolean),
+  );
+  // The outgoing thread is not read here: New Chat leaves it running.
   useEffect(() => {
     if (isLoading) {
       return;
@@ -1487,6 +1511,28 @@ function ThreadNewChatSwitch({
     void aui.threads().switchToNewThread();
     useChatRuntimeStore.getState().setActiveThreadId(null);
   }, [aui, isLoading, nonce]);
+
+  // The effect above blanks the bar, and this view reaches no other recount trigger: no persisted
+  // thread for the history loader, and ActiveThreadSync is off while a nonce is present. Keyed on
+  // the model too: on a RELOAD of /chat?new=<uuid> nothing is known until status answers.
+  useEffect(() => {
+    if (
+      isLoading ||
+      modelLoading ||
+      runActive ||
+      !checkpoint ||
+      ggufContextLength == null
+    ) {
+      return;
+    }
+    const store = useChatRuntimeStore.getState();
+    if (store.activeThreadId != null || store.contextUsage != null) return;
+    void refreshContextUsage();
+    // nonce: a fresh New Chat click re-runs the effect above, which blanks the bar again.
+    // runActive is a DEPENDENCY, not just a guard: refreshContextUsage declines while anything
+    // generates, and nothing else re-fires this when the run ends. ThreadContextUsageRecount
+    // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
+  }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce, runActive]);
 
   return null;
 }
@@ -1505,6 +1551,75 @@ function ActiveThreadSync({
     }
     setActiveThreadId(mainThreadId ?? null);
   }, [enabled, mainThreadId, setActiveThreadId]);
+
+  return null;
+}
+
+// Lets the recount read the on-screen branch, not the stored records: an incognito thread stores
+// none, and a retried thread's newest stored leaf is not what the runtime would send.
+function ActiveBranchRegistrar({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const aui = useAui();
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    setActiveBranchReader(() => {
+      try {
+        return aui.thread().getState().messages;
+      } catch {
+        // No thread mounted yet; the recount falls back to the stored records.
+        return null;
+      }
+    });
+    return () => setActiveBranchReader(null);
+  }, [aui, enabled]);
+
+  return null;
+}
+
+// Price whichever thread the bar points at whenever it has nothing to show. Only two paths reach
+// it: (1) a model change empties contextUsageByThreadId and a mounted thread does not rerun its
+// history loader; (2) on a deep link to /chat/:id the history loader and status can each land
+// before the other, so neither independently timed callback counts.
+function ThreadContextUsageRecount({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  // A DEPENDENCY, not just a guard: nothing else here changes when a run ends, so a count skipped
+  // for being busy would never be retried. Every run, not just local ones, since that is what the
+  // endpoint refuses on.
+  const runActive = useChatRuntimeStore((s) =>
+    Object.values(s.runningByThreadId).some(Boolean),
+  );
+
+  useEffect(() => {
+    if (
+      !enabled ||
+      !activeThreadId ||
+      modelLoading ||
+      runActive ||
+      !checkpoint ||
+      ggufContextLength == null
+    ) {
+      return;
+    }
+    // Only into a blank bar: restored or completion-written usage is exact, this is an estimate.
+    if (useChatRuntimeStore.getState().contextUsage != null) return;
+    void refreshContextUsage({ threadId: activeThreadId });
+  }, [
+    activeThreadId,
+    checkpoint,
+    enabled,
+    ggufContextLength,
+    runActive,
+    modelLoading,
+  ]);
 
   return null;
 }
@@ -1729,6 +1844,8 @@ export function ChatRuntimeProvider({
             !initialThreadId
           }
         />
+        <ActiveBranchRegistrar enabled={modelType === "base" && !pairId} />
+        <ThreadContextUsageRecount enabled={modelType === "base" && !pairId} />
         <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
         <CancelRegistrar />
         {initialThreadId && (

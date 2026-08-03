@@ -60,6 +60,7 @@ import {
   resolveManualAutoCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
+import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   isMultimodalResponse,
@@ -328,6 +329,20 @@ async function syncInferenceStatusToStore(options?: {
         // setModels(listRes...) above used catalog data, which omits audio
         // capability. Re-apply live status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
+
+        // Studio starting against an already-resident GGUF: history can load before this first
+        // status refresh has a checkpoint or window, so its own recount never runs. A null thread
+        // would publish an empty count, hence the mounted-thread guard.
+        const hydrated = useChatRuntimeStore.getState();
+        if (
+          !selectedCheckpoint &&
+          hydrated.contextUsage == null &&
+          hydrated.activeThreadId != null &&
+          hydrated.ggufContextLength != null &&
+          !isExternalModelId(checkpointId)
+        ) {
+          void refreshContextUsage({ threadId: hydrated.activeThreadId });
+        }
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
       // specFallbackReason survives here, so clearing activeModelIsLocal
@@ -610,6 +625,9 @@ export function useChatModelRuntime() {
             readoptingSameModel: true,
           });
           syncModelCapabilities(modelId, residentStatus);
+          // setCheckpoint above blanked the bar, this path returns before the post-load recount,
+          // and a mounted thread does not rerun its history loader, so the bar would stay empty.
+          void refreshContextUsage({ afterModelLoad: true });
           return;
         }
       }
@@ -714,6 +732,7 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
+      const postLoadRefresh = { needed: false };
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -1314,6 +1333,10 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
+            postLoadRefresh.needed = Boolean(
+              (loadResponse.is_gguf || isGguf || ggufVariant) &&
+                !isExternalModelId(modelId),
+            );
             if (
               !isLora &&
               !(loadResponse.is_lora ?? false) &&
@@ -1746,6 +1769,9 @@ export function useChatModelRuntime() {
         } finally {
           if (progressInterval) clearInterval(progressInterval);
           resetLoadingUi();
+          if (postLoadRefresh.needed && !abortCtrl.signal.aborted) {
+            void refreshContextUsage({ afterModelLoad: true });
+          }
         }
       } catch (error) {
         restorePreviousConfig();

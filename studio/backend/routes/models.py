@@ -10,7 +10,10 @@ import os
 import re
 import shutil
 import sys
+import threading
+import time
 import uuid
+import weakref
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
@@ -2717,14 +2720,102 @@ async def check_embedding_model(
         )
 
 
+# Budget for the walk below: a slow volume or a large tree can far outlast the
+# listing it is attached to.
+_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS = 5.0
+# Backstop for the case the walk's own budget cannot cover: a single syscall that
+# never returns, which no in-loop check can interrupt. Longer than the walk budget,
+# so a responding filesystem always ends the walk itself and this never fires.
+_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS = 8.0
+# Reads running at once. A read stranded on a hung mount holds its slot, so retries wait
+# for one instead of starting a thread apiece.
+_NATIVE_CONTEXT_MAX_CONCURRENT_READS = 4
+_NATIVE_CONTEXT_SLOTS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _native_context_slots() -> asyncio.Semaphore:
+    """Per running loop, since an asyncio primitive cannot be shared across loops."""
+    loop = asyncio.get_running_loop()
+    slots = _NATIVE_CONTEXT_SLOTS.get(loop)
+    if slots is None:
+        slots = asyncio.Semaphore(_NATIVE_CONTEXT_MAX_CONCURRENT_READS)
+        _NATIVE_CONTEXT_SLOTS[loop] = slots
+    return slots
+
+
+def _settle_native_context(
+    slots: asyncio.Semaphore, future: "asyncio.Future", value: Optional[int]
+) -> None:
+    slots.release()
+    if not future.done():
+        future.set_result(value)
+
+
+async def _read_native_context_length_bounded(model: str, is_local: bool) -> Optional[int]:
+    """``_read_native_context_length`` off the event loop, with a hard bound.
+
+    Reporting None costs a pre-filled context field; waiting costs the whole variant
+    listing, which is what left the picker on "Loading variants…". Runs on a daemon
+    thread, not a pool: a stranded read must not join at interpreter exit, which would
+    hang shutdown for as long as the mount stays hung. Waiting for a slot is awaited
+    rather than skipped, so ordinary concurrent reads queue instead of losing their
+    length; the wait and the read share one budget.
+    """
+    slots = _native_context_slots()
+    began = time.monotonic()
+    try:
+        await asyncio.wait_for(slots.acquire(), timeout = _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.debug("native context read for '%s' waited out its slot; reporting none", model)
+        return None
+
+    remaining = _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS - (time.monotonic() - began)
+    loop = asyncio.get_running_loop()
+    future: "asyncio.Future" = loop.create_future()
+
+    def worker() -> None:
+        try:
+            value = _read_native_context_length(model, is_local = is_local)
+        except Exception:
+            value = None
+        try:
+            loop.call_soon_threadsafe(_settle_native_context, slots, future, value)
+        except RuntimeError:
+            pass  # loop already closed; nothing is waiting on this
+
+    if remaining <= 0:
+        slots.release()
+        return None
+    try:
+        threading.Thread(target = worker, name = "native-ctx", daemon = True).start()
+    except RuntimeError:
+        slots.release()  # thread never ran, so it will never release
+        return None
+
+    try:
+        return await asyncio.wait_for(future, timeout = remaining)
+    except asyncio.TimeoutError:
+        logger.debug("native context read for '%s' did not return; reporting none", model)
+        return None
+
+
 def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     """Native max context from a downloaded GGUF for this repo, or None.
 
     The value is identical across quants, so reading one non-mmproj shard's
     header is enough. Only resolves once a file is on disk. Never raises.
+
+    Bounded by ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a
+    context field on an already selectable row, so a dragging walk reports None
+    rather than holding the variant listing open. Checked between files, and
+    files already read stay cached, so a later request resumes.
     """
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
+
+        # Before cache discovery, which touches the filesystem too: started after, a slow
+        # enumeration would hand the walk a full fresh budget on top of its own cost.
+        deadline = time.monotonic() + _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS
         if is_local:
             roots = [Path(repo_id)]
         else:
@@ -2734,7 +2825,13 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
             roots = list(iter_repo_cache_dirs("model", repo_id))
 
         for root in roots:
-            for f in _iter_gguf_paths(root):
+            if time.monotonic() >= deadline:
+                logger.debug("native context read for '%s' out of budget", repo_id)
+                return None
+            for f in _iter_gguf_paths(root, deadline):
+                if time.monotonic() >= deadline:
+                    logger.debug("native context read for '%s' out of budget", repo_id)
+                    return None
                 if _is_mmproj_filename(f.name):
                     continue
                 n = read_gguf_context_length(str(f))
@@ -2872,6 +2969,7 @@ async def get_gguf_variants(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
     prefer_local_cache: bool = False,
+    offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
     hf_token_header: Optional[str] = Depends(get_hf_token),
@@ -2882,17 +2980,20 @@ async def get_gguf_variants(
         hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants
 
-        response = await hub_gguf_variants.get_gguf_variants_response(
+        answer = await hub_gguf_variants.get_gguf_variants_answer(
             repo_id,
             prefer_local_cache = prefer_local_cache,
+            offline = offline,
             local_path = local_path,
             hf_token = hf_token,
         )
-        # A pin names the copy that will load; a repo-wide walk can read another revision's length.
-        context_model = hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path) or (
-            local_path
-            if prefer_local_cache and local_path and is_local_path(local_path)
-            else repo_id
+        response = answer.response
+        # The copy the listing answered from, else the pin naming the copy that will load.
+        # Both beat a repo-wide walk, which can read another revision's length.
+        context_model = (
+            answer.context_source
+            or hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path)
+            or repo_id
         )
         local = is_local_path(context_model)
 
@@ -2914,11 +3015,7 @@ async def get_gguf_variants(
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
-            # The header walk reads tokenizer arrays on dense models (tens of
-            # ms per uncached file); keep it off the event loop.
-            context_length = await asyncio.to_thread(
-                _read_native_context_length, context_model, is_local = local
-            ),
+            context_length = await _read_native_context_length_bounded(context_model, local),
         )
     except HTTPException:
         raise
@@ -3130,8 +3227,13 @@ def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
     return True
 
 
-def _iter_gguf_paths(root: Path):
+def _iter_gguf_paths(root: Path, deadline: Optional[float] = None):
+    """GGUF files under ``root``. With a ``deadline`` (time.monotonic), gives up mid-walk:
+    only .gguf files are yielded, so a large tree can walk for a long time yielding nothing,
+    and a caller checking its budget per yield would never get to check it."""
     for path in root.rglob("*"):
+        if deadline is not None and time.monotonic() >= deadline:
+            return
         if path.is_file() and _is_gguf_filename(path.name):
             yield path
 

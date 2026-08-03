@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from ..device_type import DEVICE_TYPE_TORCH
+import hashlib
 import importlib
 import os
 import torch
@@ -314,11 +315,16 @@ def _offline_quantize_to_fp8(
     fp8_mode: str,
     *,
     text_only: bool = False,
+    revision: str = None,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path.
 
     For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via
     hf_overrides={"quantization_config_file": "torchao_config.json"}).
+
+    The caller's revision has to reach the source loads, and the cache name has to name it
+    too: the returned path replaces model_name, so the revision gate downstream drops the
+    pin, and two refs of one repo would otherwise share (and reuse) a single artifact.
     """
     from transformers import (
         AutoModelForCausalLM,
@@ -329,7 +335,7 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name)
+    config = AutoConfig.from_pretrained(model_name, revision = revision)
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -356,6 +362,12 @@ def _offline_quantize_to_fp8(
     temp_dir = tempfile.gettempdir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other. #5816
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
+    if revision is not None:
+        # Sanitizing is lossy (`release/v1` and `release.v1` collapse), so a digest of the
+        # raw ref rides along and two refs never share an artifact.
+        digest = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
+        readable = re.sub(r"[^0-9A-Za-z_-]", "_", revision)[:40]
+        cache_name += "-rev-" + readable + "-" + digest
     if text_config is not None:
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)
@@ -375,9 +387,10 @@ def _offline_quantize_to_fp8(
         model = auto_model.from_pretrained(
             model_name,
             config = config,
+            revision = revision,
             **load_kwargs,
         )
-        tokenizer = auto_processor.from_pretrained(model_name)
+        tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):
@@ -884,6 +897,35 @@ _LOCAL_FILES_ONLY_ATTR = "_unsloth_local_files_only"
 # The load's cache_dir travels with it too: saving derives one from HF_HUB_CACHE /
 # HF_HOME, which does not see a caller-supplied cache.
 _LOADED_CACHE_DIR_ATTR = "_unsloth_loaded_cache_dir"
+# So does the ref it was read at: saving restores sentencepiece assets from
+# tokenizer.name_or_path, which names the repo but not the branch.
+_LOADED_REVISION_ATTR = "_unsloth_loaded_revision"
+
+
+def _mark_loaded_revision(result, revision):
+    """Stamp the ref a tokenizer/processor was loaded at onto the returned objects."""
+    if revision is None:
+        return result
+    for obj in result if isinstance(result, (tuple, list)) else (result,):
+        try:
+            targets = (obj, getattr(obj, "tokenizer", None))
+        except Exception:
+            targets = (obj,)
+        for target in targets:
+            if target is None:
+                continue
+            # Skip objects that reject new attributes (__slots__).
+            try:
+                setattr(target, _LOADED_REVISION_ATTR, str(revision))
+            except Exception:
+                pass
+    return result
+
+
+def _tokenizer_revision(tokenizer):
+    """The ref this tokenizer was loaded at, or None for the default branch."""
+    tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    return getattr(tokenizer, _LOADED_REVISION_ATTR, None)
 
 
 def _mark_loaded_local_files_only(result, cache_dir = None):
@@ -1214,6 +1256,7 @@ def _resolve_hub_repo_local_dir(
     *,
     token = None,
     cache_dir = None,
+    revision = None,
     # Default closed: a "resolve local dir" helper must not download. False here
     # means five filenames each retried with backoff before it gives up.
     local_files_only = True,
@@ -1249,6 +1292,7 @@ def _resolve_hub_repo_local_dir(
                 token = token,
                 cache_dir = cache_dir,
                 local_files_only = local_files_only,
+                revision = revision,
             )
             if path and os.path.isfile(path):
                 return os.path.dirname(path)
@@ -1264,6 +1308,7 @@ def _resolve_hub_repo_cached_file(
     token = None,
     cache_dir = None,
     local_files_only = True,
+    revision = None,
 ):
     """Return a cached file path under a Hub snapshot, or None if absent."""
     local_dir = _resolve_hub_repo_local_dir(
@@ -1271,6 +1316,7 @@ def _resolve_hub_repo_cached_file(
         token = token,
         cache_dir = cache_dir,
         local_files_only = local_files_only,
+        revision = revision,
         filenames = (filename,),
     )
     if local_dir is None:
@@ -1286,6 +1332,7 @@ def _hub_repo_or_local_path(
     cache_dir = None,
     local_files_only = False,
     filenames = None,
+    revision = None,
 ):
     """Prefer a cached snapshot path over a Hub repo id when offline or ``local_files_only``."""
     if isinstance(repo_id, str) and os.path.isdir(repo_id):
@@ -1298,6 +1345,7 @@ def _hub_repo_or_local_path(
         token = token,
         cache_dir = cache_dir,
         local_files_only = True,
+        revision = revision,
         filenames = filenames
         or (
             "tokenizer_config.json",
@@ -1318,6 +1366,7 @@ def _load_pretrained_tokenizer_fast(
     trust_remote_code = False,
     cache_dir = None,
     local_files_only = False,
+    revision = None,
 ):
     """Load ``PreTrainedTokenizerFast`` without Hub metadata probes when cached/offline.
 
@@ -1331,6 +1380,7 @@ def _load_pretrained_tokenizer_fast(
         token = token,
         cache_dir = cache_dir,
         local_files_only = lfo,
+        revision = revision,
         filenames = (
             "tokenizer_config.json",
             "tokenizer.json",
@@ -1344,6 +1394,7 @@ def _load_pretrained_tokenizer_fast(
         trust_remote_code = trust_remote_code,
         cache_dir = cache_dir,
         local_files_only = lfo,
+        revision = revision,
     )
 
 
