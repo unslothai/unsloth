@@ -417,13 +417,21 @@ class ModelMarkup:
     """
 
     __slots__ = (
-        "control", "boundary", "markers", "rewrite_control", "rewrite_boundary",
+        "control",
+        "boundary",
+        "markers",
+        "rewrite_control",
+        "rewrite_boundary",
         # Which named template this profile was selected for, so a caller whose catalog
         # emptied during sanitizing can tell its profile is now for the wrong one (#7066).
         "selected_with_tools",
     )
 
-    def __init__(self, markers: set, selected_with_tools: bool = False):
+    def __init__(
+        self,
+        markers: set,
+        selected_with_tools: bool = False,
+    ):
         self.markers = markers
         self.selected_with_tools = selected_with_tools
         self.control = _alternation(markers)
@@ -1530,9 +1538,7 @@ def mapped_chat_template(model_info: dict, active_model_name):
                 probe = None
             if probe is None:
                 return None  # cannot resolve safely; retry next turn
-            remapped = get_chat_template(
-                probe, chat_template = MODEL_TO_TEMPLATE_MAPPER[name]
-            )
+            remapped = get_chat_template(probe, chat_template = MODEL_TO_TEMPLATE_MAPPER[name])
             mapped = getattr(remapped, "chat_template", None)
     except Exception as exc:
         logger.debug("Could not resolve the mapped chat template early: %s", exc)

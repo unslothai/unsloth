@@ -5231,7 +5231,9 @@ def test_resolving_the_mapped_template_does_not_touch_the_shared_tokenizer():
     ).read_text(encoding = "utf-8")
     body = source.split("def mapped_chat_template(", 1)[1].split("\ndef ", 1)[0]
     assert "copy.copy(source)" in body
-    assert "get_chat_template(\n                probe," in body or "get_chat_template(probe," in body
+    assert (
+        "get_chat_template(\n                probe," in body or "get_chat_template(probe," in body
+    )
     # The shared tokenizer must never be handed straight to it.
     assert 'get_chat_template(\n                model_info.get("tokenizer")' not in body
 
