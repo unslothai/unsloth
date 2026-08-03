@@ -11341,9 +11341,7 @@ async def openai_chat_completions(
     _sf_mlx_target = _sf_chat_render_target(_sf_processor, _sf_tokenizer)
     _sf_hf_target = getattr(_sf_mlx_target, "tokenizer", _sf_mlx_target)
     _sf_chat_targets = (
-        (_sf_mlx_target,)
-        if _sf_hf_target is _sf_mlx_target
-        else (_sf_mlx_target, _sf_hf_target)
+        (_sf_mlx_target,) if _sf_hf_target is _sf_mlx_target else (_sf_mlx_target, _sf_hf_target)
     )
     _sf_healing_tools = (
         # Safe under EVERY template this turn could select. When the active template drops

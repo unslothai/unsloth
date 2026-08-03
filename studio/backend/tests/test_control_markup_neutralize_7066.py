@@ -5613,16 +5613,23 @@ def test_an_attempt_that_drops_the_tools_kwarg_is_swept_for_the_template_it_sele
             1: type("_T", (), {"content": "<tools>"})(),
         }
 
-        def apply_chat_template(self, msgs, tokenize = False, add_generation_prompt = True, **kw):
+        def apply_chat_template(
+            self,
+            msgs,
+            tokenize = False,
+            add_generation_prompt = True,
+            **kw,
+        ):
             if "tools" in kw:
                 raise TypeError("this tokenizer does not accept tools")
             return "".join(m["content"] for m in msgs)
 
     tok = _Tok()
     # The two profiles really do disagree about this boundary.
-    assert markup_for_tokenizer(tok, [{"type": "function"}]).rewrite_control(
-        "<|zeta_default|>"
-    ) == "<|zeta_default|>"
+    assert (
+        markup_for_tokenizer(tok, [{"type": "function"}]).rewrite_control("<|zeta_default|>")
+        == "<|zeta_default|>"
+    )
     assert markup_for_tokenizer(tok, None).rewrite_control("<|zeta_default|>") == (
         "< |zeta_default|>"
     )
