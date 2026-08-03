@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+import weakref
 from collections import OrderedDict
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -541,6 +542,37 @@ def _complete_quants_under(snapshot: str):
         return None
 
 
+# One scan per identical request in flight. Aborting the HTTP request cannot stop the scan
+# already running in its thread, so the picker's Retry, and reopening a row, would each start
+# another against a filesystem that is not answering: measured 23 retries filling all 20
+# default-executor workers, starving unrelated offloaded work and holding up exit. Joining the
+# running scan costs at most its own duration in staleness, well inside the client's cache TTL.
+_VARIANTS_INFLIGHT: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+async def _shared_variants_scan(key: tuple, compute):
+    """*compute* in a thread, shared with any identical request already running."""
+    loop = asyncio.get_running_loop()
+    inflight = _VARIANTS_INFLIGHT.get(loop)
+    if inflight is None:
+        inflight = {}
+        _VARIANTS_INFLIGHT[loop] = inflight
+
+    task = inflight.get(key)
+    if task is None:
+        task = asyncio.ensure_future(asyncio.to_thread(compute))
+
+        def _release(finished: asyncio.Future) -> None:
+            inflight.pop(key, None)
+            if not finished.cancelled():
+                finished.exception()  # retrieved, so a caller-less failure stays quiet
+
+        inflight[key] = task
+        task.add_done_callback(_release)
+    # Shielded: one caller giving up must not cancel the scan the others are waiting on.
+    return await asyncio.shield(task)
+
+
 async def get_gguf_variants_response(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -1016,8 +1048,15 @@ async def get_gguf_variants_response(
             _repo_cache_dir_for_request(repo_id, local_path),
         )
 
+    inflight_key = (
+        repo_id,
+        bool(prefer_local_cache),
+        bool(offline),
+        local_path or "",
+        hf_cache_scan.token_fingerprint(hf_token),
+    )
     try:
-        return await asyncio.to_thread(_compute_with_cleanables)
+        return await _shared_variants_scan(inflight_key, _compute_with_cleanables)
     except HTTPException:
         raise
     except Exception as e:

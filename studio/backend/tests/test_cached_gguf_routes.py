@@ -2495,3 +2495,110 @@ def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path
     assert after["last_modified"] == before["last_modified"]
     assert after["partial"] is False
     assert after["has_variant_state"] is True
+
+
+def test_identical_variant_scans_in_flight_run_once(monkeypatch):
+    """Aborting the HTTP request cannot stop the scan already running in its thread, so the
+    picker's Retry would start another against a filesystem that is not answering. Measured
+    before this: 23 retries filled all 20 default-executor workers and starved unrelated
+    offloaded work."""
+    scans = []
+    release = threading.Event()
+
+    def slow_scan(path):
+        scans.append(path)
+        release.wait(5)
+        return ([], False)
+
+    monkeypatch.setattr(GV, "is_local_path", lambda _p: True)
+    monkeypatch.setattr(GV, "list_local_gguf_variants", slow_scan)
+
+    async def drive():
+        pending = [
+            asyncio.ensure_future(GV.get_gguf_variants_response("/models/x"))
+            for _ in range(8)
+        ]
+        await asyncio.sleep(0.1)
+        release.set()
+        return await asyncio.gather(*pending)
+
+    try:
+        results = asyncio.run(drive())
+    finally:
+        release.set()
+
+    assert len(results) == 8
+    assert len(scans) == 1, f"the scan ran {len(scans)} times"
+
+
+def test_variant_scans_for_different_requests_do_not_share(monkeypatch):
+    """Coalescing must key on everything that changes the answer."""
+    scans = []
+
+    def scan(path):
+        scans.append(path)
+        return ([], False)
+
+    monkeypatch.setattr(GV, "is_local_path", lambda _p: True)
+    monkeypatch.setattr(GV, "list_local_gguf_variants", scan)
+
+    async def drive():
+        await GV.get_gguf_variants_response("/models/a")
+        await GV.get_gguf_variants_response("/models/b")
+        await GV.get_gguf_variants_response("/models/a", offline = True)
+        await GV.get_gguf_variants_response("/models/a", local_path = "/other")
+
+    asyncio.run(drive())
+    assert len(scans) == 4
+
+
+def test_a_failed_variant_scan_is_not_pinned(monkeypatch):
+    """A failure must reach every waiter and leave nothing cached, or one bad scan would
+    answer for the rest of the session."""
+    attempts = []
+
+    def failing_scan(path):
+        attempts.append(path)
+        raise OSError("mount went away")
+
+    monkeypatch.setattr(GV, "is_local_path", lambda _p: True)
+    monkeypatch.setattr(GV, "list_local_gguf_variants", failing_scan)
+
+    async def drive():
+        for _ in range(3):
+            with pytest.raises(Exception):
+                await GV.get_gguf_variants_response("/models/x")
+
+    asyncio.run(drive())
+    assert len(attempts) == 3, "a failure was reused instead of retried"
+
+
+def test_one_caller_giving_up_leaves_the_scan_for_the_others(monkeypatch):
+    """The picker abandons its request when the row collapses; the caller still waiting
+    must still get an answer."""
+    release = threading.Event()
+    scans = []
+
+    def slow_scan(path):
+        scans.append(path)
+        release.wait(5)
+        return ([], False)
+
+    monkeypatch.setattr(GV, "is_local_path", lambda _p: True)
+    monkeypatch.setattr(GV, "list_local_gguf_variants", slow_scan)
+
+    async def drive():
+        staying = asyncio.ensure_future(GV.get_gguf_variants_response("/models/x"))
+        leaving = asyncio.ensure_future(GV.get_gguf_variants_response("/models/x"))
+        await asyncio.sleep(0.1)
+        leaving.cancel()
+        release.set()
+        return await staying
+
+    try:
+        answer = asyncio.run(drive())
+    finally:
+        release.set()
+
+    assert answer.repo_id == "/models/x"
+    assert len(scans) == 1
