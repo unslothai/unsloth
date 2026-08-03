@@ -351,3 +351,54 @@ def test_a_pre_byte_trip_does_not_poison_the_machines_health_record(monkeypatch,
         "Download did not resume (xet transport) -- no data for 600s",
     ):
         assert _trip_xet_worker(monkeypatch, tmp_path, message) == [], message
+
+
+def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_path):
+    """A fast child can finalize its blobs while we are still registering the process.
+
+    A baseline taken after that shows no growth for a transfer that really happened, so the streak
+    is never cleared and two stalls either side of it read as consecutive, demoting Auto for 24h.
+    """
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
+
+    order = []
+    sizes = iter([0, 5_000])   # nothing before the spawn, bytes present after it
+
+    monkeypatch.setattr(
+        download_lifecycle,
+        "_job_bytes_on_disk",
+        lambda *a, **k: (order.append("sample"), next(sizes, 5_000))[1],
+    )
+    recorded = []
+    monkeypatch.setattr(
+        download_lifecycle, "_record_xet_success", lambda _l: recorded.append(True)
+    )
+
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model")
+    assert registry.claim(
+        key, download_registry.TRANSPORT_XET, repo_type = "model", repo_id = "Org/Model",
+        variant = None, blob_hashes = frozenset({"blob"}),
+    )[0]
+
+    def _spawn():
+        order.append("spawn")
+        return _Proc(0)
+
+    download_lifecycle.launch_worker(
+        registry, key,
+        spawn = _spawn,
+        hf_token = None,
+        label = "Org/Model",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+    )
+
+    assert order[0] == "sample" and order[1] == "spawn", order
+    assert recorded == [True], "a real transfer did not clear the failure streak"

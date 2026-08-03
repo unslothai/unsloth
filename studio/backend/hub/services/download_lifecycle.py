@@ -651,6 +651,9 @@ def _repo_bytes_on_disk(repo_type, repo_id: str, cache_dir) -> "Optional[int]":
     return None if state is None else int(state[0])
 
 
+_UNSAMPLED = object()
+
+
 def _job_bytes_on_disk(repo_type, repo_id: str, cache_dir, blob_hashes) -> "Optional[int]":
     """Bytes THIS job owns, or None when unmeasurable.
 
@@ -771,6 +774,7 @@ def register_worker(
     transport: str,
     cancel_marker_transport: Optional[str] = None,
     watch_name: str,
+    bytes_before: "Optional[int]" = _UNSAMPLED,
 ) -> bool:
     if not registry.register_process(key, proc):
         kill_and_reap_process(proc, label = label, logger = logger)
@@ -789,8 +793,14 @@ def register_worker(
         else None
     )
     # Sampled before the worker can write anything, so "did this job actually move bytes over Xet"
-    # is answerable when it exits.
-    _bytes_before = _job_bytes_on_disk(repo_type, repo_id, _cache_dir, _own_blob_hashes)
+    # is answerable when it exits. launch_worker samples it BEFORE spawn(); sampling here would
+    # race a fast child that already finalized its blobs, making a real transfer look like a no-op
+    # and leaving the failure streak uncleared.
+    _bytes_before = (
+        _job_bytes_on_disk(repo_type, repo_id, _cache_dir, _own_blob_hashes)
+        if bytes_before is _UNSAMPLED
+        else bytes_before
+    )
 
     def _watch() -> None:
         stalled: list[str] = []
@@ -936,6 +946,22 @@ def launch_worker(
     transport: str,
     watch_name: str,
 ) -> str:
+    # Before spawn(), deliberately: a small download can finalize its blobs while we are still
+    # registering the process, and a baseline taken after that shows no growth for a transfer that
+    # really happened -- so the streak is never cleared and two stalls either side of it read as
+    # consecutive.
+    _get_metadata = getattr(registry, "get_job_metadata", None)
+    _metadata = _get_metadata(key) if callable(_get_metadata) else None
+    _baseline = _job_bytes_on_disk(
+        repo_type,
+        repo_id,
+        getattr(_metadata, "hub_cache", None) if _metadata is not None else None,
+        (
+            getattr(_metadata, "blob_hashes", frozenset())
+            if getattr(_metadata, "variant", None)
+            else None
+        ),
+    )
     try:
         proc = spawn()
     except Exception as e:
@@ -961,6 +987,7 @@ def launch_worker(
         repo_id = repo_id,
         transport = transport,
         watch_name = watch_name,
+        bytes_before = _baseline,
     )
     return registry.get_job(key).state
 
