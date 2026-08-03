@@ -1929,12 +1929,12 @@ def test_gguf_variants_route_forwards_offline(monkeypatch):
 
     async def scoped_variants(repo_id, **kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(
-            repo_id = repo_id, variants = [], has_vision = False, default_variant = None
-        )
+        return SimpleNamespace(repo_id = repo_id, variants = [], has_vision = False, default_variant = None)
 
     monkeypatch.setattr(GV, "get_gguf_variants_response", scoped_variants)
-    monkeypatch.setattr(models_route, "_read_native_context_length", lambda model, *, is_local: None)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
 
     asyncio.run(
         models_route.get_gguf_variants(
@@ -1979,9 +1979,7 @@ def test_native_context_read_still_reports_a_length_within_budget(monkeypatch, t
     gguf.write_bytes(b"x")
 
     monkeypatch.setattr(models_route, "_iter_gguf_paths", lambda root: iter([gguf]))
-    monkeypatch.setattr(
-        "utils.models.gguf_metadata.read_gguf_context_length", lambda _path: 8192
-    )
+    monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", lambda _path: 8192)
 
     assert models_route._read_native_context_length(str(tmp_path), is_local = True) == 8192
 

@@ -2736,6 +2736,7 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     """
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
+
         if is_local:
             roots = [Path(repo_id)]
         else:
