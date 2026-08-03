@@ -518,13 +518,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           })
           .catch((error: unknown) => {
             if (controller.signal.aborted) return;
-            // Otherwise a deleted upload stays selected and re-fails every visit.
+            // Otherwise a deleted dataset stays selected and re-fails every visit.
             if (error instanceof DatasetFormatError && error.status === 404) {
-              if (get().dataset === datasetName) {
-                get().setDataset("");
-                toast.error(error.message);
+              const { dataset, uploadedFile, setDataset, selectLocalDataset } = get();
+              if (dataset === datasetName) {
+                setDataset(null);
+              } else if (uploadedFile === datasetName) {
+                selectLocalDataset(null);
               }
-              return;
+              toast.error(error.message);
             }
             set({ isDatasetImage: null, isCheckingDataset: false });
           });
