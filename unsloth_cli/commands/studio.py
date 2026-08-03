@@ -3200,16 +3200,18 @@ def _refuse_update_that_would_break_the_install(err: OSError, **note_kwargs) -> 
     releases it, and exiting first means abandoning the exit status and the
     streamed output the desktop reads.
 
-    So it refuses instead, and only when there is a usable launcher to refuse
-    towards. With no launcher there is no better path to send anyone down, and
-    stopping would leave them unable to update at all, so it goes on and takes its
-    chances with the note.
+    So it refuses instead, whether or not there is a launcher to refuse towards.
+    That last part was the other way round at first, on the grounds that with no
+    usable launcher there is no better path to send anyone down and stopping would
+    leave them unable to update at all. But going on does not leave them able to
+    update either -- it destroys the install and they have to reinstall anyway,
+    only now without being told so. _note_self_exe_locked already prints the
+    reinstall command in that case, and UNSLOTH_ALLOW_LOCKED_UPDATE is there for
+    anyone who would rather take the chance, so nobody is stranded by stopping.
     """
     if platform.system() != "Windows":
         return
     if os.environ.get(_ALLOW_LOCKED_ENV) == "1":
-        return
-    if not _is_usable_launcher(STUDIO_HOME / "bin" / "unsloth.exe"):
         return
     _note_self_exe_locked(err, **note_kwargs)
     typer.echo("Stopping before the install is changed. Nothing has been removed.", err = True)

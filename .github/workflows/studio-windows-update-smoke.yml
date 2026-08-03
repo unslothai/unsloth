@@ -303,13 +303,27 @@ jobs:
             grep -iE "WinError|rename|permission" logs/update_replace.log | tail -30
             exit 1
           fi
-          # Guard against passing for the wrong reason: exiting at the argument
-          # guard would satisfy every assertion below while testing none of them.
-          if grep -q "needs an Unsloth checkout to install from" logs/update_replace.log; then
-            echo "::error::the update never started; this step proved nothing."
-            exit 1
-          fi
-          grep -q "" logs/update_replace.log || { echo "::error::no output, step is vacuous"; exit 1; }
+          # Positive, not the absence of an error message: before the export
+          # above, run 30751891659 passed this whole step while the update
+          # resolved its "local repo" to
+          # ...\unsloth_studio\Lib\site-packages and overlaid that, so it was
+          # reinstalling the venv over itself rather than the checkout. Nothing
+          # here noticed, because every assertion below is about the state of
+          # unsloth.exe and all of them held. Assert the checkout was the thing
+          # installed. setup prints the path it overlays, wrapping long ones onto
+          # the next line, so match the file rather than a single line, and fold
+          # case and separators so a resolve() that canonicalises either does not
+          # fail the step over a spelling.
+          NEEDLE="$(printf '%s' "$STUDIO_LOCAL_REPO" | tr 'A-Z\\' 'a-z/')"
+          HAYSTACK="$(tr -d '\r' < logs/update_replace.log | tr 'A-Z\\' 'a-z/')"
+          case "$HAYSTACK" in
+            *"$NEEDLE"*) ;;
+            *)
+              echo "::error::the update did not install from the checkout ($STUDIO_LOCAL_REPO)."
+              grep -iE "local repo|site-packages" logs/update_replace.log | tail -10
+              exit 1
+              ;;
+          esac
           # The update renames unsloth.exe aside so pip can replace it. If pip then
           # reinstalls nothing, the renamed copy is the only one there is, so a
           # cleanup that just deletes it leaves no CLI behind.

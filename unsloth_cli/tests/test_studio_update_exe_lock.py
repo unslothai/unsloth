@@ -106,22 +106,33 @@ def test_a_locked_copy_stops_before_pip_runs(monkeypatch, tmp_path, capsys):
     assert "unsloth.exe" in err, "the reason has to travel with the refusal"
 
 
-def test_without_a_launcher_it_goes_on_rather_than_stranding_the_user(monkeypatch, tmp_path):
-    """With no launcher there is no better path to send anyone down, and stopping
-    would leave them unable to update at all."""
+def test_without_a_launcher_it_still_refuses(monkeypatch, tmp_path, capsys):
+    """Going on with no launcher does not leave anyone able to update either: it
+    destroys the install, so they reinstall anyway, only without being told so."""
     scripts = _scripts(tmp_path)
     (scripts / "unsloth.exe").write_bytes(b"MZ")
     monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)  # no bin/unsloth.exe
     _as_windows(monkeypatch, scripts)
 
-    studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
+    with pytest.raises(studio.typer.Exit) as excinfo:
+        studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
+
+    assert excinfo.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "Nothing has been removed" in err
+    assert "reinstall to restore it" in err, "stopping without a way forward is stranding"
 
 
-def test_an_unusable_launcher_is_not_a_reason_to_stop(monkeypatch, tmp_path):
+def test_an_unusable_launcher_is_still_a_reason_to_stop(monkeypatch, tmp_path, capsys):
     _scripts_dir, shim = _shimmed(monkeypatch, tmp_path)
     shim.write_bytes(b"")
 
-    studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
+    with pytest.raises(studio.typer.Exit):
+        studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
+
+    err = capsys.readouterr().err
+    assert str(shim) not in err, "an unusable launcher was recommended anyway"
+    assert "reinstall to restore it" in err
 
 
 def test_the_refusal_can_be_overridden(monkeypatch, tmp_path):
@@ -297,12 +308,11 @@ def test_a_truncated_launcher_is_not_recommended(monkeypatch, tmp_path, capsys):
     _as_windows(monkeypatch, scripts)
 
     assert studio._is_usable_launcher(shim) is False
-    # So the refusal does not fire either: it stops updates, and stopping one
-    # towards a launcher that cannot run leaves nothing to update with.
-    studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
-    capsys.readouterr()
-
-    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
+    # It still refuses -- the predicate decides which message to print, not
+    # whether to stop, or a stricter predicate would widen the destructive path
+    # this exists to close.
+    with pytest.raises(studio.typer.Exit):
+        studio._refuse_update_that_would_break_the_install(OSError(errno.EACCES, "in use"))
 
     err = capsys.readouterr().err
     assert str(shim) not in err, "an unusable launcher was recommended anyway"
