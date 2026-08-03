@@ -182,7 +182,7 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
                     return Err(format!("Error waiting for update: {}", e));
                 }
             },
-            None if intentional => return Err("Update stopped.".to_string()),
+            None if intentional => return Err(UPDATE_STOPPED.to_string()),
             None => return Err("Update process disappeared unexpectedly.".to_string()),
         }
 
@@ -300,11 +300,11 @@ fn run_backend_update_with_terminal_events(
                 &attempt,
                 Some(status.to_string()),
                 true,
-                Some("Update stopped.".to_string()),
+                Some(UPDATE_STOPPED.to_string()),
             );
             clear_current_attempt(&state);
             info!("[update] Update stopped intentionally");
-            Err("Update stopped.".to_string())
+            Err(UPDATE_STOPPED.to_string())
         }
         Ok((status, intentional)) => {
             let code = status.code().unwrap_or(-1);
@@ -356,6 +356,8 @@ pub fn record_update_intentional_stop(state: &UpdateState, diagnostics: &Diagnos
         );
     }
 }
+
+pub const UPDATE_STOPPED: &str = "Update stopped.";
 
 pub fn stop_update(state: &UpdateState) -> Result<(), String> {
     let mut child = {
