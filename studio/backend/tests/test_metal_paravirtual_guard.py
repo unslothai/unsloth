@@ -2135,6 +2135,9 @@ def test_an_apply_that_inherits_the_extras_does_not_reload_the_rewritten_server(
     assert _route_matches(_load_request(gguf), backend) is True
     # Control: an Apply that does name its extras is still judged on the invoked list.
     assert _route_matches(_load_request(gguf, llama_extra_args = ["--top-k", "20"]), backend) is False
+    # And naming exactly the stripped list is a deliberate clear of the failed drafter,
+    # not an inherit: judging it by value would dedupe and strand the user on MTP.
+    assert _route_matches(_load_request(gguf, llama_extra_args = ["--top-k", "40"]), backend) is False
 
 
 def test_an_edited_spec_flag_still_reloads_after_a_dropped_drafter(monkeypatch, tmp_path):

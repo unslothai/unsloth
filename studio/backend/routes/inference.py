@@ -3652,6 +3652,7 @@ def _active_gguf_intent(
         ),
         mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         compare_mtp_draft = True,
+        extra_args_inherited = request.llama_extra_args is None,
     )
 
 
@@ -5169,6 +5170,7 @@ def _resolve_gguf_load_intent(
         n_parallel = n_parallel,
         is_vision = config.is_vision,
         gpu_ids_are_vulkan_ordinals = placement.gpu_ids_are_vulkan_ordinals,
+        extra_args_inherited = getattr(request, "llama_extra_args", None) is None,
     )
 
 

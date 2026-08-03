@@ -157,6 +157,10 @@ class GgufLoadIntent:
     n_threads: Optional[int] = None
     n_parallel: int = 1
     extra_args: Optional[tuple[str, ...]] = None
+    # The route materialises inherited extras from the live server, so the list alone
+    # cannot say whether the caller named it. Duplicate-load checks need the difference:
+    # a launch-time rewrite makes the launched and requested lists diverge.
+    extra_args_inherited: bool = False
     preserve_multi_gpu_on_layer: bool = False
     compare_mtp_draft: bool = False
 
@@ -3485,11 +3489,9 @@ class LlamaCppBackend:
         # A request omitting the extras field inherits the LAUNCHED list; anything else is
         # the caller's own. A launch-time rewrite (drafter drop, MTP crash replay) makes
         # the two differ, and the equality below wants what the load was INVOKED with.
-        _invoked_extras = (
-            self.requested_extra_args
-            if tuple(extra_args or ()) == tuple(self._extra_args or ())
-            else extra_args
-        )
+        # Judged on the flag, not on value equality: a caller that deliberately sends the
+        # stripped list is clearing the failed drafter and must not read as inheriting it.
+        _invoked_extras = self.requested_extra_args if intent.extra_args_inherited else extra_args
         # A virtualised Metal device never launches a tensor split (CPU-pinned, and
         # --split-mode is overridden with the default layer split), so judge the
         # normalized request there: an extras `-sm tensor`, which the pin deliberately
@@ -9825,7 +9827,13 @@ class LlamaCppBackend:
                 _pv_device_pin: List[str] = ["--device", "none"] if _paravirtual_cpu_forced else []
                 if (
                     _paravirtual_cpu_forced
-                    and _extra_args_mtp_draft_path([*spec_flags, *(extra_args or [])]) is not None
+                    # Same env the child will see: when the extras own --spec-type the
+                    # launch keeps LLAMA_ARG_SPEC_DRAFT_*, so a drafter named only there
+                    # still loads and would take the corrupt device unpinned.
+                    and _extra_args_mtp_draft_path(
+                        [*spec_flags, *(extra_args or [])], env = _child_spec_env(extra_args)
+                    )
+                    is not None
                     and _paravirtual_draft_ngl_flag(server_caps)
                 ):
                     # The layer count alone is not enough, for the same reason
