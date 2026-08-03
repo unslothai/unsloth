@@ -181,3 +181,53 @@ class TestOsKillReturncode:
         msg = _classify("", "/models/x.gguf", "local/x", -11)
         assert "GGUF file is valid" in msg
         assert "out of memory" not in msg.lower()
+
+
+class TestMissingSharedLibrary:
+    """The dynamic loader stops llama-server before it prints anything of its
+    own, so a stock container missing libgomp.so.1 used to be reported as an
+    invalid GGUF or too little memory."""
+
+    _LOADER_OUT = (
+        "/home/tester/.unsloth/llama.cpp/llama-server: error while loading "
+        "shared libraries: libgomp.so.1: cannot open shared object file: "
+        "No such file or directory"
+    )
+
+    def test_missing_libgomp_is_named_with_its_packages(self):
+        msg = _classify(self._LOADER_OUT, "/models/x.gguf", "local/x", 127)
+        assert "libgomp.so.1" in msg
+        assert "libgomp1" in msg
+        assert "Fedora/RHEL" in msg
+        assert "GGUF file is valid" not in msg
+        assert "enough memory" not in msg.lower()
+
+    def test_unknown_library_is_still_named(self):
+        out = "llama-server: error while loading shared libraries: libfoo.so.7: cannot open"
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "libfoo.so.7" in msg
+        assert "package manager" in msg
+        assert "libgomp1" not in msg
+
+    def test_exit_127_with_no_output_still_points_at_a_library(self):
+        # The binary or one of its libraries was not found; either way the
+        # generic file/memory message is wrong.
+        msg = _classify("", "/models/x.gguf", "local/x", 127)
+        assert "system library" in msg
+        assert "GGUF file is valid" not in msg
+
+    def test_loader_error_wins_without_a_returncode(self):
+        msg = _classify(self._LOADER_OUT, "/models/x.gguf", "local/x")
+        assert "libgomp.so.1" in msg
+
+    def test_a_normal_failure_is_untouched(self):
+        msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
+        assert "enough memory" in msg.lower()
+        assert "system library" not in msg
+
+    def test_a_named_arch_wins_over_exit_127(self):
+        # The bare code is only a fallback, so it must not mask a diagnosis the
+        # output already gives.
+        msg = _classify(_QWEN_IMAGE_OUT, "/models/qwen-image.gguf", "local/qwen-image", 127)
+        assert "Images page" in msg
+        assert "system library" not in msg

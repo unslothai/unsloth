@@ -7256,6 +7256,21 @@ class LlamaCppBackend:
         )
     )
 
+    # Distro package names for the shared libraries the Linux prebuilt links,
+    # so the loader failure below can say what to install.
+    _SHARED_LIB_PACKAGES = {
+        "libgomp.so.1": " (Debian/Ubuntu: libgomp1, Fedora/RHEL: libgomp)",
+    }
+
+    @staticmethod
+    def _missing_library_message(lib: str) -> str:
+        return (
+            f"llama-server could not start: the system library "
+            f"{lib or 'it needs'} is missing. Install it with your package "
+            f"manager{LlamaCppBackend._SHARED_LIB_PACKAGES.get(lib, '')}, "
+            "then load the model again."
+        )
+
     @staticmethod
     def _classify_llama_start_failure(
         output: str,
@@ -7272,6 +7287,15 @@ class LlamaCppBackend:
         never the problem (#5842). Pick the most specific message we can.
         """
         lowered = (output or "").lower()
+
+        # The dynamic loader kills llama-server before main(), so nothing below
+        # matches and the fallback blames the file or memory instead. The Linux
+        # prebuilt links libgomp.so.1, which a stock container does not ship.
+        missing_lib = re.search(
+            r"error while loading shared libraries:\s*([^\s:]+)", output or ""
+        )
+        if missing_lib:
+            return LlamaCppBackend._missing_library_message(missing_lib.group(1))
 
         # Tensor parallelism (--split-mode tensor) is arch-gated in llama.cpp;
         # unsupported architectures abort the load with this marker. Point the
@@ -7332,6 +7356,11 @@ class LlamaCppBackend:
                     "different model, or use this model directly through "
                     "Ollama instead."
                 )
+
+        # 127 is the loader's own exit status, so a truncated tail that lost the
+        # message above still points at a library rather than at the GGUF.
+        if returncode == 127:
+            return LlamaCppBackend._missing_library_message("")
 
         # SIGKILL with no diagnostic output is the OOM killer (e.g. a model too
         # large for the WSL VM's RAM cap); name it actionably.
