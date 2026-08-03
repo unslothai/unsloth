@@ -3672,8 +3672,14 @@ def test_a_count_admitted_while_idle_stands_down_if_a_run_starts(monkeypatch):
     payload = _count_request([{"role": "user", "content": "hello"}])
     started: list = []
 
-    def _count(messages, system, tools, strict = False, chat_template_kwargs = None,
-               should_abort = None):
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+    ):
         # Stand in for /apply-template returning: the run lands, then the checkpoint is polled.
         handle = _in_flight_generation()
         handle.__enter__()
@@ -3686,6 +3692,7 @@ def test_a_count_admitted_while_idle_stands_down_if_a_run_starts(monkeypatch):
         return 1234
 
     from core.inference.llama_cpp import LlamaCppBackend
+
     backend = inference_route.get_llama_cpp_backend()
     monkeypatch.setattr(backend, "count_chat_tokens", _count)
     assert LlamaCppBackend is not None
@@ -3706,8 +3713,14 @@ def test_a_count_that_stays_idle_is_not_aborted(monkeypatch):
     _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
     seen: list = []
 
-    def _count(messages, system, tools, strict = False, chat_template_kwargs = None,
-               should_abort = None):
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+    ):
         seen.append(should_abort() if should_abort else None)
         counted.update(messages = messages)
         return 1234
@@ -3752,7 +3765,11 @@ def test_count_chat_tokens_stands_down_before_tokenizing(monkeypatch, abort, exp
         def __exit__(self, *_exc):
             return False
 
-        def post(self, url, json = None):
+        def post(
+            self,
+            url,
+            json = None,
+        ):
             posted.append(url)
             if url.endswith("/apply-template"):
                 return _FakeResponse({"prompt": "user hi"})
