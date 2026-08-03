@@ -379,6 +379,11 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
 
     for process in processes:
         process_id = int(process.get("ProcessId") or -1)
+        # WMI can include synthetic rows without a usable OS process ID.
+        # They cannot identify a live managed-environment consumer, and
+        # psutil rejects negative PIDs before its documented Error hierarchy.
+        if process_id <= 0:
+            continue
         if process_id in excluded_pids:
             continue
         executable = process.get("ExecutablePath") or ""

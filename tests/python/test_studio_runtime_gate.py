@@ -113,10 +113,19 @@ def test_terminal_update_idle_scan_excludes_self_and_blocks_another_consumer(tmp
         "CommandLine": r"python.exe worker.py",
     }
 
-    payload = [dict(base_process, ProcessId = os.getpid())]
+    payload = [
+        dict(base_process, ProcessId = -1),
+        dict(base_process, ProcessId = os.getpid()),
+    ]
+
+    def fake_process(process_id):
+        if process_id <= 0:
+            raise ValueError(f"pid must be positive: {process_id}")
+        return SimpleNamespace(cwd = lambda: str(worker.parent))
+
     fake_psutil = SimpleNamespace(
         Error = Exception,
-        Process = lambda _process_id: SimpleNamespace(cwd = lambda: str(worker.parent)),
+        Process = fake_process,
     )
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
     monkeypatch.setattr(

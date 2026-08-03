@@ -13,6 +13,7 @@ canonicaliser and the legacy `-m` / `-hfr` / `-f` shim.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from io import BytesIO
@@ -184,6 +185,13 @@ def _install_reexec_capture(monkeypatch, *, platform):
     )
 
     monkeypatch.setattr(sys, "platform", platform)
+    # These tests emulate Windows re-exec behavior on every host. Keep the
+    # launch-gate boundary in place without invoking Win32 mutex APIs on Linux.
+    monkeypatch.setattr(
+        studio_mod,
+        "_studio_runtime_launch_guard",
+        lambda **_kwargs: contextlib.nullcontext(True),
+    )
 
     def capture(kind, argv):
         captured.append(
