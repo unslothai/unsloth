@@ -112,9 +112,7 @@ def test_diffusion_suppresses_reasoning_without_dropping_gguf_context():
         "a diffusion GGUF is still a GGUF; its resolved context has to capture"
     )
     assert "const capturesReasoning = isGguf && !store.loadedIsDiffusion" in capture
-    assert (
-        "snapshot.customContextLength ?? (isGguf ? store.ggufContextLength : null)" in capture
-    )
+    assert "snapshot.customContextLength ?? (isGguf ? store.ggufContextLength : null)" in capture
 
 
 def test_preset_summary_marks_a_budget_message():

@@ -192,9 +192,7 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
         """Ignoring the environment must not also ignore an explicit passthrough flag."""
         route = _ROUTE
         with self.assertRaises(HTTPException) as raised:
-            self._validate(
-                route, diffusion_kind = True, extra_args = ["--reasoning-budget", "512"]
-            )
+            self._validate(route, diffusion_kind = True, extra_args = ["--reasoning-budget", "512"])
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("DiffusionGemma", raised.exception.detail)
 
