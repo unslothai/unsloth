@@ -313,8 +313,7 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             continue
         image = _canonical_windows_path(Path(str(executable)))
         if _windows_path_is_within(image, protected_root) or any(
-            _windows_paths_equal(image, protected_file)
-            for protected_file in protected_files
+            _windows_paths_equal(image, protected_file) for protected_file in protected_files
         ):
             name = process.get("Name") or "process"
             raise RuntimeError(
