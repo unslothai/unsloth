@@ -1336,6 +1336,57 @@ def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
     ) == ["--top-k", "40"]
 
 
+def test_the_slots_the_retry_hands_back_are_budgeted_first():
+    """The extras clamp cuts n_parallel to 1 before the GPU slot fit, whose gate needs
+    >1, so the fit used to be skipped entirely and the retry handed back a count nothing
+    had admitted: on a tight placement that launches buffers for N slots and spills or
+    OOMs. The fit now sizes against that count and caps it, without moving the MTP
+    launch off its single slot."""
+    fit = _if_block(lambda t: "_fit_slots" in _names(t))
+    src = ast.unparse(fit)
+    assert "_slots_that_fit_on_gpu(_fit_slots" in src.replace("\n", "").replace(" ", "")
+    # The cap lands on the retry's count; n_parallel keeps the MTP clamp.
+    assert "_pv_extras_clamped_slots = max(1, _slots)" in src
+    # ...and the count sized is the clamped-away one, not the launch's single slot.
+    assert (
+        "_fit_slots = n_parallel if n_parallel > 1 else _pv_extras_clamped_slots"
+        in _load_model_source()
+    )
+
+    scope = {
+        "_fit_slots": 8,
+        "use_fit": True,
+        "gpus": [(0, 8 << 30)],
+        "effective_ctx": 8192,
+        "n_parallel": 1,  # already clamped for MTP
+        "_pv_extras_clamped_slots": 8,  # what the caller asked for
+        "gpu_indices": None,
+        "model_size_fit": 1,
+        "_compute_buffer_pipeline": 0,
+        "total_by_idx": {0: 8 << 30},
+        "cache_type_kv": None,
+        "_pin_fraction": 0.9,
+        "_pipeline_overhead_bytes": 0,
+        "_layer_min_gpus": 1,
+        "_effective_ubatch": 512,
+        "swa_full": False,
+        "planned_kv_unified": True,
+        "planned_flash_attn": False,
+        "_mtp_bytes": lambda _c: 0,
+        "_cc_bytes": lambda _c: 0,
+        "_cc_split_extra": lambda _c: 0,
+        "logger": llama_cpp.logger,
+        # Only two of the eight slots fit.
+        "self": types.SimpleNamespace(
+            _can_estimate_kv = lambda: True,
+            _slots_that_fit_on_gpu = lambda *a, **k: ([0], False, 2),
+        ),
+    }
+    exec(ast.unparse(fit), {}, scope)
+    assert scope["_pv_extras_clamped_slots"] == 2, "the retry could restore unbudgeted slots"
+    assert scope["n_parallel"] == 1, "the MTP launch must keep its single slot"
+
+
 def test_the_extras_own_clamp_comes_back_from_the_startup_retry_too():
     """Extras owning --spec-type park the displaced slots in _pv_extras_clamped_slots and
     leave _mtp_clamped_slots at 0. The retry strips that MTP for real now, so a restore
@@ -1535,6 +1586,24 @@ def test_a_forced_cpu_launch_records_no_effective_gpu_pin():
     backend._requested_gpu_ids, backend._gpu_ids = [0], None
     assert backend.matches_gpu_ids([0]) is True
     assert backend.matches_gpu_ids(None) is True
+
+
+def test_a_forced_cpu_diffusion_runner_records_no_effective_gpu_pin():
+    """A zero-layer split on virtualised Metal masks the child's devices, so the runner
+    uses none of them. Recording the pick anyway made /status name an unused device and
+    made clearing it reload the same CPU runner; the pick still has to round-trip."""
+    src = inspect.getsource(llama_cpp.LlamaCppBackend._start_diffusion_server)
+    assert "_pv_diffusion_cpu = manual_ngl == 0 and _metal_device_is_paravirtual()" in src
+    assert "if gpu_ids and not _pv_diffusion_cpu else None" in src
+
+    backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
+    backend._is_diffusion = True
+    backend._gpu_ids, backend._requested_gpu_ids = None, [1]
+    assert backend.matches_gpu_ids([1]) is True  # re-sending the pick must not reload
+    assert backend.matches_gpu_ids(None) is True  # nor must clearing it
+    # A runner that really pinned a device still reloads when the pick changes.
+    backend._gpu_ids = backend._requested_gpu_ids = [1]
+    assert backend.matches_gpu_ids([0]) is False
 
 
 def test_a_real_mac_still_records_the_gpu_it_pinned(monkeypatch):

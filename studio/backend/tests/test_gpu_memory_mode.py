@@ -943,7 +943,9 @@ def test_start_diffusion_server_resets_tensor_parallel():
     # diffusion re-Apply reloads against stale tensor-parallel state.
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
     assert "self._tensor_parallel = False" in src
-    assert "self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None" in src
+    # Still the collapsed single-device pick, but taken from the request rather than the
+    # effective pin, which a forced-CPU launch on virtualised Metal clears.
+    assert "self._requested_gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None" in src
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────

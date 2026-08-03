@@ -3431,7 +3431,9 @@ class LlamaCppBackend:
         """
         if self._is_diffusion:
             requested = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
-            return requested == (self._gpu_ids or None)
+            # Raw pick accepted too: a forced-CPU runner records no effective pin, so
+            # without it re-sending the same selection would reload every time.
+            return requested in ((self._gpu_ids or None), (self._requested_gpu_ids or None))
 
         requested = sorted(int(x) for x in gpu_ids) if gpu_ids else None
         raw = self._requested_gpu_ids or None
@@ -6645,11 +6647,15 @@ class LlamaCppBackend:
         # The single-device runner records only the lowest selected GPU (chosen
         # above), not the whole pick, and clears any explicit pin from a prior
         # chat load; a multi-GPU list would misreport placement and mis-dedup.
-        self._gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None
+        # A zero-layer split on virtualised Metal masks the child's devices outright, so
+        # it pins nothing: record no effective pin, or /status names a device the runner
+        # never used and clearing that pick reloads the same CPU runner.
+        _pv_diffusion_cpu = manual_ngl == 0 and _metal_device_is_paravirtual()
+        self._gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids and not _pv_diffusion_cpu else None
         # The frontend prefers requested_gpu_ids when hydrating the picker.
         # Diffusion uses only one device, so echo the collapsed effective pin,
         # not unused members of the original request.
-        self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None
+        self._requested_gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None
         if hf_variant:
             self._hf_variant = hf_variant
         elif gguf_path:
@@ -9308,9 +9314,13 @@ class LlamaCppBackend:
                     # offloads layers to host and decode collapses ~3x (#6718). Retry the fit
                     # at fewer slots, keeping the largest count that stays fully on GPU and the
                     # chosen context. Skips tensor mode / Metal / KV-inestimable paths.
+                    # An extras-owned MTP already cut n_parallel to 1 above, so this fit
+                    # would be skipped and the slots the startup retry hands back would
+                    # never have been budgeted. Size against that count instead.
+                    _fit_slots = n_parallel if n_parallel > 1 else _pv_extras_clamped_slots
                     if (
                         use_fit
-                        and n_parallel > 1
+                        and _fit_slots > 1
                         and gpus
                         and self._can_estimate_kv()
                         and effective_ctx > 0
@@ -9324,7 +9334,7 @@ class LlamaCppBackend:
                             + _cc_bytes(effective_ctx)
                         )
                         _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
-                            n_parallel,
+                            _fit_slots,
                             effective_ctx,
                             gpus,
                             total_by_idx,
@@ -9343,11 +9353,16 @@ class LlamaCppBackend:
                             logger.info(
                                 "Serving slots reduced %d -> %d to keep the model on GPU "
                                 "(avoid --fit offload) at context %d.",
-                                n_parallel,
+                                _fit_slots,
                                 _slots,
                                 effective_ctx,
                             )
-                            gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
+                            if n_parallel > 1:
+                                gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
+                            else:
+                                # MTP owns this launch at its single slot, so only cap what
+                                # the startup retry may hand back; placement stays as-is.
+                                _pv_extras_clamped_slots = max(1, _slots)
 
                     # MTP reserve at the final context, for the logs below.
                     _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
