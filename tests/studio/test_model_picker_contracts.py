@@ -2005,9 +2005,13 @@ def test_picker_rows_keep_their_automation_attributes():
 
 
 def test_picker_popover_and_trigger_keep_their_tour_hooks():
+    """Both props by name. The trigger's value is a prefix of the popover's, so any
+    assertion that falls back to the bare substring is satisfied by the popover alone
+    and would pass with the trigger hook deleted -- while the driver's very first
+    click, page.locator(TRIGGER), would be the thing that fails."""
     chat = _read("features/chat/chat-page.tsx")
-    assert "chat-model-selector-popover" in chat
-    assert 'dataTour="chat-model-selector"' in chat or "chat-model-selector" in chat
+    assert 'triggerDataTour="chat-model-selector"' in chat
+    assert 'contentDataTour="chat-model-selector-popover"' in chat
 
 
 def test_run_settings_gear_label_names_its_model():
@@ -2031,10 +2035,16 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
 def test_run_settings_page_keeps_its_identifying_controls():
     page = _read("features/model-picker/components/model-config-page.tsx")
     # How the driver knows run-settings actually opened.
-    assert '"Back to model list"' in page or "Back to model list" in page
+    assert 'aria-label="Back to model list"' in page
     assert 'ariaLabel="Context Length"' in page
     assert 'aria-label="Context Length"' in page
-    assert ">\n            Reset" in page or "Reset" in page
+    # The button, not the word: "Reset" also appears in this file's own comments, so a
+    # raw source search passes with the control deleted and the Playwright reset gate
+    # only finds out 25 minutes later.
+    assert re.search(
+        r"onClick=\{\(\) => setConfig\(\{ \.\.\.DEFAULT_PER_MODEL_CONFIG \}\)\}\s*>\s*Reset\s*</Button>",
+        page,
+    ), "the Reset button's JSX is gone or no longer named Reset"
 
 
 def test_the_primary_action_keeps_its_four_labels():

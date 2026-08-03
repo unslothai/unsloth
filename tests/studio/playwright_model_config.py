@@ -249,20 +249,33 @@ with sync_playwright() as p:
         """Only the entries keyed to the model under test.
 
         The keys embed the repo id and quant (`v2:["<repo>","<quant>"]`), so scanning
-        every entry lets a value belonging to a different model satisfy a persistence,
-        reset or migration assertion. Falls back to all entries only when the key shape
-        is unrecognised, so a schema change degrades to the old behaviour rather than
-        silently asserting nothing.
+        every entry lets a value belonging to a different model -- or to another quant
+        of this one -- satisfy a persistence, reset or migration assertion. Both halves
+        have to match. Falls back to all entries only when no key has the versioned
+        shape, so a schema change degrades to the old behaviour rather than silently
+        asserting nothing.
         """
-        needle = GGUF_REPO.lower()
-        recognised = [k for k in cfg if re.match(r"^v\d+:\[", str(k).lower())]
-        if recognised:
-            # Scoping is meaningful, so an empty result is a real answer: returning
-            # every entry here is what let another model's value satisfy these checks.
-            return [
-                cfg[k] for k in recognised if needle in str(k).lower() and isinstance(cfg[k], dict)
-            ]
-        return config_entries(cfg)
+        want = (GGUF_REPO.strip().lower(), GGUF_VARIANT.strip().lower())
+        recognised = [k for k in cfg if re.match(r"^v\d+:\[", str(k))]
+        if not recognised:
+            return config_entries(cfg)
+        matched = []
+        for key in recognised:
+            # Parse the key rather than substring-searching its serialised form: the
+            # repo alone also matches this repo's *other* quants, so a stale entry for
+            # one quant could stand in for the one under test and mask its failed save.
+            try:
+                parts = json.loads(str(key).split(":", 1)[1])
+            except Exception:
+                continue
+            if not isinstance(parts, list) or not parts:
+                continue
+            got = tuple(str(x).strip().lower() for x in (list(parts) + [""])[:2])
+            if got == want and isinstance(cfg[key], dict):
+                matched.append(cfg[key])
+        # Scoping is meaningful, so an empty result is a real answer: returning every
+        # entry here is what let another model's value satisfy these checks.
+        return matched
 
     # ─────────────────────────────────────────────────────
     # Setup: authenticate + model load.
@@ -490,13 +503,19 @@ with sync_playwright() as p:
     def find_gear(
         scope,
         hint,
+        quant = None,
         timeout = 3000,
     ):
         # Waited for rather than read once: a row still resolving its sole-quant
         # probe renders with no gear at all for a moment, and a single miss there
         # would read as "this model has no run-settings". wait_for returns as soon
         # as it mounts rather than sleeping out a fixed poll.
-        gear = scope.locator(GEAR.format(h = hint)).first
+        # A quant narrows the label to one variant; the expander mounts one gear per
+        # variant and they all carry the repo id.
+        sel = GEAR.format(h = hint)
+        if quant:
+            sel += f'[aria-label*="{quant}" i]'
+        gear = scope.locator(sel).first
         try:
             gear.wait_for(state = "attached", timeout = timeout)
         except Exception:
@@ -523,12 +542,18 @@ with sync_playwright() as p:
             # have had a gear above.
             row.click()
             page.wait_for_timeout(800)
-            # Scoped to this row's group first: after expanding, every variant
-            # mounts a gear and all of them carry the repo id, so `.first` over
-            # the whole popover would configure an arbitrary quant, possibly one
-            # that is not even downloaded.
+            # Every expanded variant mounts its own gear and all of them carry the
+            # repo id, so the repo hint alone leaves `.first` to pick an arbitrary
+            # quant -- possibly one that is not downloaded. Each label is
+            # "<repo> <quant>", so name the quant under test. Scoping to the row's
+            # group as well keeps another repo's expander out of it.
             group = row.locator("xpath=ancestor::div[1]")
-            gear = find_gear(group, hint, timeout = 2000) or find_gear(popover, hint)
+            gear = (
+                find_gear(group, hint, quant = GGUF_VARIANT, timeout = 2000)
+                or find_gear(popover, hint, quant = GGUF_VARIANT, timeout = 2000)
+                or find_gear(group, hint, timeout = 2000)
+                or find_gear(popover, hint)
+            )
         if gear is None:
             diagnose("open-config-no-gear", GEAR.format(h = hint))
             return None
