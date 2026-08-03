@@ -260,9 +260,7 @@ with sync_playwright() as p:
             # Scoping is meaningful, so an empty result is a real answer: returning
             # every entry here is what let another model's value satisfy these checks.
             return [
-                cfg[k]
-                for k in recognised
-                if needle in str(k).lower() and isinstance(cfg[k], dict)
+                cfg[k] for k in recognised if needle in str(k).lower() and isinstance(cfg[k], dict)
             ]
         return config_entries(cfg)
 
@@ -417,7 +415,9 @@ with sync_playwright() as p:
         rows = []
         try:
             opts = page.locator("[data-model-picker-option]")
-            rows = [(opts.nth(i).inner_text() or "").strip()[:60] for i in range(min(opts.count(), 12))]
+            rows = [
+                (opts.nth(i).inner_text() or "").strip()[:60] for i in range(min(opts.count(), 12))
+            ]
         except Exception:
             pass
         gears = []

@@ -2006,7 +2006,7 @@ def test_picker_rows_keep_their_automation_attributes():
 
 def test_picker_popover_and_trigger_keep_their_tour_hooks():
     chat = _read("features/chat/chat-page.tsx")
-    assert 'chat-model-selector-popover' in chat
+    assert "chat-model-selector-popover" in chat
     assert 'dataTour="chat-model-selector"' in chat or "chat-model-selector" in chat
 
 
@@ -2016,9 +2016,7 @@ def test_run_settings_gear_label_names_its_model():
     name in it is what keeps it off another row's gear."""
     pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert "Inference settings for ${" in pickers
-    action = _read(
-        "features/model-picker/components/model-selector/model-load-settings-action.tsx"
-    )
+    action = _read("features/model-picker/components/model-selector/model-load-settings-action.tsx")
     assert "aria-label={ariaLabel}" in action
 
 
