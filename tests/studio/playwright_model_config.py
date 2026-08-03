@@ -407,7 +407,11 @@ with sync_playwright() as p:
     # keeps a slow probe from being read as multi-quant.
     SOLE_QUANT_SETTLE_MS = 6_000
 
-    def row_gear(popover, hint, timeout_ms = SOLE_QUANT_SETTLE_MS):
+    def row_gear(
+        popover,
+        hint,
+        timeout_ms = SOLE_QUANT_SETTLE_MS,
+    ):
         # The gear is a sibling of the row, not inside [data-model-picker-option],
         # so scope it by the repo id its aria-label carries.
         gear = popover.locator(
