@@ -482,7 +482,7 @@ function DownloadedBadge() {
     <span
       title="Already downloaded"
       aria-label="Already downloaded"
-      className="flex h-[18px] shrink-0 items-center justify-center rounded-md border border-status-success/40 px-1.5 text-status-success"
+      className="flex h-[18px] shrink-0 items-center justify-center text-status-success"
     >
       <HugeiconsIcon
         icon={Download01Icon}
