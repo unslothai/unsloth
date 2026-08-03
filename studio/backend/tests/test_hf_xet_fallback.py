@@ -461,6 +461,30 @@ def test_a_spawn_cannot_overlap_the_loader_env_override_window():
     t_spawn.join(5.0)
 
 
+def test_the_spawn_barrier_is_reentrant():
+    """child_environment_for_spawn nests -- an inference respawn inside a training start, and the
+    repo's own test_nested_child_environment_for_spawn -- and its _spawn_env_lock is an RLock so
+    that works. The barrier it now takes alongside must be reentrant too, or the inner enter
+    deadlocks. Bounded on purpose: a plain Lock here hangs the suite rather than failing it, which
+    is a much worse way to find out."""
+    import threading
+
+    from utils.hf_cache_settings import child_environment_for_spawn
+
+    done = threading.Event()
+
+    def _nest():
+        with child_environment_for_spawn({"HF_HUB_CACHE": "outer"}):
+            with child_environment_for_spawn({"HF_HUB_CACHE": "inner"}):
+                pass
+        done.set()
+
+    worker = threading.Thread(target = _nest, daemon = True)
+    worker.start()
+    assert done.wait(10.0), "a nested spawn deadlocked on the loader barrier"
+    worker.join(5.0)
+
+
 def test_an_operator_set_gpu_init_override_still_reaches_the_child(monkeypatch):
     """Only the loader's own transient value is dropped. Someone who exported the flag themselves
     on a GPU-less box meant it, and their children must keep it."""

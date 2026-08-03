@@ -44,7 +44,10 @@ _shared_import_error: Optional[BaseException] = None
 # this module. Both loaders below mutate that one process-wide variable, so they must serialize
 # against each other, not merely against themselves: two locks would still allow A-saves-unset /
 # B-saves-"1" / A-restores-unset / B-restores-"1", leaving it set for the life of the process.
-_load_lock = threading.Lock()
+# Reentrant on purpose. It still excludes OTHER threads, which is all the env save/set/restore
+# sequence needs, but child_environment_for_spawn now holds it across a spawn and that context
+# manager legitimately nests -- its own _spawn_env_lock is an RLock for exactly the same reason.
+_load_lock = threading.RLock()
 
 
 def _load_shared() -> bool:
