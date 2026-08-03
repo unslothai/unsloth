@@ -957,8 +957,7 @@ export function AppSidebar() {
             // (pr-8 when the menu is open keeps the unpin button clear of the title).
             "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
           : isGenerating
-            ? // The trailing spinner is a glyph, not truncatable text, so clear
-              // the kebab's full 30px inset (pr-1.5 + its size-6 glyph).
+            ? // A spinner glyph cannot truncate, so clear the kebab's 30px inset (pr-1.5 + size-6).
               "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-10"
             : // Hover room for the kebab only; title keeps one more character.
               // Touch rows clear the full always-visible kebab hit area (pr-10).
