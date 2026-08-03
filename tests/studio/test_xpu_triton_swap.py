@@ -141,9 +141,7 @@ def _load(
         ),
         "sys": sys,
         "glob": _glob,
-        "importlib": types.SimpleNamespace(
-            util = _importlib_util, invalidate_caches = lambda: None
-        ),
+        "importlib": types.SimpleNamespace(util = _importlib_util, invalidate_caches = lambda: None),
         "os": _os,
         "re": _re,
         "shutil": _shutil,
@@ -186,13 +184,16 @@ class TestXpuTritonSwap:
 
     def test_bootstraps_pip_when_the_venv_has_none(self, monkeypatch, tmp_path):
         # uv venv has no --seed, so a fresh venv cannot run pip download at all.
-        log = _run(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", has_pip = False)
+        log = _run(
+            monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", has_pip = False
+        )
         assert log[0] == "ENSUREPIP"
         assert log[-3:] == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
 
     def test_falls_back_to_installing_pip(self, monkeypatch, tmp_path):
         log = _run(
-            monkeypatch, tmp_path,
+            monkeypatch,
+            tmp_path,
             spec = "pytorch-triton-xpu==3.5.0",
             generic = "3.7.1",
             has_pip = False,
@@ -217,14 +218,22 @@ class TestXpuTritonSwap:
     def test_a_dead_mirror_removes_nothing(self, monkeypatch, tmp_path):
         # Warn and leave the venv working; never uninstall with nothing to install from.
         log = _run(
-            monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", download_ok = False
+            monkeypatch,
+            tmp_path,
+            spec = "pytorch-triton-xpu==3.5.0",
+            generic = "3.7.1",
+            download_ok = False,
         )
         assert "UNINSTALL" not in log and "INSTALL" not in log
 
     def test_a_successful_exit_with_no_wheel_removes_nothing(self, monkeypatch, tmp_path):
         # The exit code alone is not enough: no wheel on disk means nothing to install from.
         log = _run(
-            monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", drops_wheel = False
+            monkeypatch,
+            tmp_path,
+            spec = "pytorch-triton-xpu==3.5.0",
+            generic = "3.7.1",
+            drops_wheel = False,
         )
         assert "UNINSTALL" not in log and "INSTALL" not in log
 
@@ -235,7 +244,8 @@ class TestFailedSwapIsNotSurvivable:
         # let a later upgrade of that distribution delete the shared files again, and every
         # dependency pass would repeat the swap.
         log = _run(
-            monkeypatch, tmp_path,
+            monkeypatch,
+            tmp_path,
             spec = "pytorch-triton-xpu==3.5.0",
             generic = "3.7.1",
             uninstall_ok = False,
@@ -249,7 +259,8 @@ class TestFailedSwapIsNotSurvivable:
         # would fast-path past it, since no generic distribution is left to trigger on.
         with pytest.raises(SystemExit):
             _run(
-                monkeypatch, tmp_path,
+                monkeypatch,
+                tmp_path,
                 spec = "pytorch-triton-xpu==3.5.0",
                 generic = "3.7.1",
                 install_ok = False,
@@ -268,7 +279,8 @@ class TestTheInstalledWheelIsThePin:
 
     def test_swaps_with_no_pin_when_torch_is_the_xpu_wheel(self, monkeypatch, tmp_path):
         log = _run(
-            monkeypatch, tmp_path,
+            monkeypatch,
+            tmp_path,
             spec = "pytorch-triton-xpu==3.5.0",
             generic = "3.7.1",
             pinned = False,
@@ -288,7 +300,8 @@ class TestTheInstalledWheelIsThePin:
         # correct there, and removing it would break torch.compile on the supported path.
         assert (
             _run(
-                monkeypatch, tmp_path,
+                monkeypatch,
+                tmp_path,
                 spec = "pytorch-triton-xpu==3.5.0",
                 generic = "3.7.1",
                 pinned = False,
