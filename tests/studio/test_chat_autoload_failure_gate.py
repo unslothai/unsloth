@@ -289,7 +289,19 @@ def _build_harness(run_dir: Path):
     # wrong-model assertion that says nothing about the real cause. That is what
     # #7699 did by adding a syncModelCapabilities call here.
     imported = set()
-    for match in re.finditer(r"^import\s+\{([^}]*)\}\s+from", "\n".join(lines), re.M):
+    source = "\n".join(lines)
+    # Default and namespace forms bind a name too, and it is the same
+    # ReferenceError when the harness lacks it. chat-adapter.ts has none today,
+    # so this is for the first one somebody adds.
+    for match in re.finditer(
+        r"^import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)", source, re.M
+    ):
+        imported.add(match.group(1))
+    # The optional prefix is the mixed form, `import def, { named } from`, whose
+    # braces a `^import\s+\{` anchor would skip entirely.
+    for match in re.finditer(
+        r"^import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s+from", source, re.M
+    ):
         for spec in match.group(1).split(","):
             spec = spec.strip()
             # `import { type Foo }` is erased at runtime, so it can never be a
