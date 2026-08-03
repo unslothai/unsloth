@@ -474,7 +474,11 @@ def model_markup(
     """
     markers: set = set()
     for token in tokens or ():
-        if not isinstance(token, str) or not _DELIMITER_SHAPED.match(token):
+        # A base vocabulary is six figures and almost none of it can be a delimiter, so the
+        # cheap first-character test runs before the regex: this is walked once per model.
+        if not isinstance(token, str) or not token or token[0] not in "<[":
+            continue
+        if not _DELIMITER_SHAPED.match(token):
             continue
         if token in _BLOCK_METADATA:
             continue
@@ -1486,23 +1490,31 @@ def catalog_tool_names(tools) -> set:
     return names
 
 
-def _vocabulary_of(tokenizer) -> Optional[list]:
-    """The delimiter-shaped side of a tokenizer's vocabulary, or None."""
-    inner = getattr(tokenizer, "tokenizer", tokenizer)
+def _tokenizer_strings(inner) -> Optional[list]:
+    """Every string a tokenizer exposes: added tokens AND the base vocabulary.
+
+    Neither source alone is enough. A tokenizer can carry unrelated added tokens while its
+    chat sentinels stay in the base SentencePiece vocabulary, so short-circuiting on a
+    populated added_tokens_decoder left a model's own turn boundaries out of the profile
+    and a pasted copy reached the prompt byte-exact (#7066).
+    """
+    out: list = []
     added = getattr(inner, "added_tokens_decoder", None)
-    # Non-empty only: a plain sentencepiece tokenizer (Llama-2, Mistral) loads with an EMPTY
-    # added_tokens_decoder and keeps its sentinels in the vocabulary proper, so treating {}
-    # as "the vocabulary" left the profile with nothing to confirm a template literal
-    # against and dropped that model's own delimiters (#7066).
-    if isinstance(added, dict) and added:
-        return [getattr(v, "content", v) for v in added.values()]
+    if isinstance(added, dict):
+        out.extend(getattr(v, "content", v) for v in added.values())
     vocab = getattr(inner, "get_vocab", None)
     if callable(vocab):
         try:
-            return list(vocab())
+            out.extend(vocab())
         except Exception:
-            return None
-    return None
+            pass
+    return out or None
+
+
+def _vocabulary_of(tokenizer) -> Optional[list]:
+    """The delimiter-shaped side of a tokenizer's vocabulary, or None."""
+    inner = getattr(tokenizer, "tokenizer", tokenizer)
+    return _tokenizer_strings(inner)
 
 
 def mapped_chat_template(model_info: dict, active_model_name):
@@ -2034,19 +2046,7 @@ def markup_for_tokenizer(
     else:
         cached = None
     tokens = None
-    added = getattr(inner, "added_tokens_decoder", None)
-    # Non-empty only: see _vocabulary_of. An empty mapping is "no added tokens", not "no
-    # vocabulary", and the full vocabulary is where a sentencepiece model keeps its
-    # sentinels (#7066).
-    if isinstance(added, dict) and added:
-        tokens = [getattr(v, "content", v) for v in added.values()]
-    if tokens is None:
-        vocab = getattr(inner, "get_vocab", None)
-        if callable(vocab):
-            try:
-                tokens = list(vocab())
-            except Exception:
-                tokens = None
+    tokens = _tokenizer_strings(inner)
     profile = model_markup(template, tokens, tools)
     try:
         entry = cached if isinstance(cached, dict) else {}

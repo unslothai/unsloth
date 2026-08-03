@@ -5160,20 +5160,41 @@ def test_an_empty_added_tokens_mapping_falls_through_to_the_vocabulary():
     assert markup.rewrite_control("<table>") == "<table>"
 
 
-def test_a_populated_added_tokens_mapping_still_short_circuits():
-    """The common case must not start walking a 150k-entry vocabulary."""
-    walked = {"n": 0}
+def test_both_token_sources_are_unioned_not_short_circuited():
+    """A tokenizer can carry unrelated added tokens while its chat sentinels stay in the
+    base vocabulary. Stopping at a populated added_tokens_decoder left the model's own turn
+    boundaries out of the profile, so a pasted copy reached the prompt byte-exact -- an
+    under-sweep, the dangerous direction (#7066)."""
 
-    class _Tok:
-        chat_template = "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}"
-        added_tokens_decoder = {0: "<|im_start|>"}
+    class _Mixed:
+        chat_template = (
+            "{% for m in messages %}<|zeta_turn|>{{ m }}<|zeta_end|><|im_start|>{% endfor %}"
+        )
+        added_tokens_decoder = {0: type("_T", (), {"content": "<|im_start|>"})()}
 
         def get_vocab(self):
-            walked["n"] += 1
-            return {}
+            return {"piece": 0, "<|im_start|>": 1, "<|zeta_turn|>": 2, "<|zeta_end|>": 3}
 
-    assert markup_for_tokenizer(_Tok()) is not None
-    assert walked["n"] == 0
+    markup = markup_for_tokenizer(_Mixed())
+    for sentinel in ("<|im_start|>", "<|zeta_turn|>", "<|zeta_end|>"):
+        assert markup.rewrite_control(sentinel) != sentinel, sentinel
+
+
+def test_a_non_delimiter_vocabulary_entry_is_skipped_before_the_regex():
+    """The base vocabulary is six figures and is walked once per model, so the cheap
+    first-character test has to come before the pattern match."""
+    source = (
+        _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "chat_template_helpers.py"
+    ).read_text(encoding = "utf-8")
+    body = source.split("def model_markup(", 1)[1].split("\ndef ", 1)[0]
+    assert 'token[0] not in "<["' in body
+    # The type check must come first, or a non-string vocabulary entry raises on indexing.
+    assert 'isinstance(token, str) or not token or token[0]' in body
+
+
+def test_a_vocabulary_holding_non_strings_does_not_raise():
+    markup = model_markup("{{ m }}", ["<|im_end|>", None, 5, b"<x>", "", "<table>"])
+    assert markup.markers == {"<|im_end|>"}
 
 
 def test_a_shard_without_tokenizer_metadata_falls_back_rather_than_half_profiling():
