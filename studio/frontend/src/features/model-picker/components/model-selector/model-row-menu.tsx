@@ -182,7 +182,8 @@ export function ModelRowMenu({
             onClick={(e) => e.stopPropagation()}
             aria-label={ariaLabel}
             className={cn(
-              "shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
+              // Fixed box, matching ModelLoadSettingsAction beside it.
+              "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10",
               buttonClassName,
             )}
           >

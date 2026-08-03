@@ -9,7 +9,6 @@ import contextlib
 import ctypes
 import hashlib
 import os
-import re
 import sys
 from ctypes import wintypes
 from pathlib import Path
@@ -198,223 +197,31 @@ def _windows_path_is_within(candidate: str, root: str) -> bool:
     return candidate_key == root_key or candidate_key.startswith(root_key + "\\")
 
 
-def _command_line_references_windows_path(command_line: str, path: str) -> bool:
-    normalized_line = command_line.replace("/", "\\").casefold()
-    normalized_path = path.rstrip("\\/").replace("/", "\\").casefold()
-    search_from = 0
-    before_boundaries = {" ", "\t", "\r", "\n", '"', "'", "="}
-    after_boundaries = before_boundaries | {"\\"}
-    while search_from < len(normalized_line):
-        match_index = normalized_line.find(normalized_path, search_from)
-        if match_index < 0:
-            return False
-        end_index = match_index + len(normalized_path)
-        before_ok = match_index == 0 or normalized_line[match_index - 1] in before_boundaries
-        after_ok = (
-            end_index == len(normalized_line) or normalized_line[end_index] in after_boundaries
-        )
-        if before_ok and after_ok:
-            return True
-        search_from = end_index
-    return False
-
-
-def _windows_command_line_arguments(command_line: str) -> list[str]:
-    shell32 = ctypes.WinDLL("shell32", use_last_error = True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
-    shell32.CommandLineToArgvW.argtypes = [
-        wintypes.LPCWSTR,
-        ctypes.POINTER(ctypes.c_int),
-    ]
-    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
-    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel32.LocalFree.restype = ctypes.c_void_p
-
-    argc = ctypes.c_int()
-    argv = shell32.CommandLineToArgvW(command_line, ctypes.byref(argc))
-    if not argv:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        return [argv[index] for index in range(argc.value)]
-    finally:
-        kernel32.LocalFree(ctypes.cast(argv, ctypes.c_void_p))
-
-
-def _command_line_references_resolved_windows_path(
-    command_line: str,
-    protected_roots: tuple[str, ...],
-    protected_files: tuple[str, ...],
-    working_directory: Path | None,
-) -> bool:
-    if any(
-        _command_line_references_windows_path(command_line, path)
-        for path in (*protected_roots, *protected_files)
-    ):
-        return True
-
-    for argument in _windows_command_line_arguments(command_line):
-        candidates = [argument]
-        if "=" in argument:
-            candidates.append(argument.split("=", 1)[1])
-        for candidate in candidates:
-            candidate = candidate.strip().strip('"').strip("'")
-            if not candidate:
-                continue
-            candidate_path = Path(candidate)
-            if candidate_path.is_absolute():
-                path_candidates = (candidate_path,)
-            elif working_directory is not None:
-                path_candidates = (working_directory / candidate_path,)
-            else:
-                path_candidates = ()
-            for path_candidate in path_candidates:
-                if not path_candidate.exists():
-                    continue
-                try:
-                    resolved = _resolved_windows_path(path_candidate)
-                except OSError:
-                    continue
-                if any(_windows_path_is_within(resolved, root) for root in protected_roots):
-                    return True
-                if any(
-                    resolved.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
-                    for path in protected_files
-                ):
-                    return True
-    return False
-
-
-def _managed_windows_process_working_directories(managed_python: Path) -> dict[int, str]:
-    """Read process CWDs with psutil from the managed environment."""
-
-    import json
-    import subprocess
-
-    script = """
-import json
-import psutil
-
-working_directories = {}
-for process in psutil.process_iter():
-    try:
-        working_directories[str(process.pid)] = process.cwd()
-    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
-        pass
-print(json.dumps(working_directories))
-"""
-    result = subprocess.run(
-        [str(managed_python), "-I", "-c", script],
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        check = False,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(
-            "Could not inspect process working directories before Studio update "
-            f"with the managed Python: {detail}"
-        )
-    try:
-        payload = json.loads(result.stdout or "{}")
-        if not isinstance(payload, dict):
-            raise ValueError("expected a JSON object")
-        return {int(process_id): str(path) for process_id, path in payload.items()}
-    except (json.JSONDecodeError, TypeError, ValueError) as error:
-        raise RuntimeError(
-            f"Could not decode managed process working directories before Studio update: {error}"
-        ) from error
-
-
 def ensure_managed_environment_is_idle(studio_home: Path) -> None:
-    """Reject a Windows update while another process consumes managed Studio files."""
+    """Reject a Windows update while a confirmed managed executable is running."""
 
     if sys.platform != "win32":
         return
 
     import json
-    import shutil
     import subprocess
 
-    psutil = None
-    try:
-        import psutil
-    except ImportError:
-        pass
-
     venv = studio_home / "unsloth_studio"
-    protected_root_spellings = tuple(
-        dict.fromkeys(
-            spelling
-            for candidate in (venv,)
-            for spelling in (
-                str(candidate.absolute()),
-                _resolved_windows_path(candidate),
-            )
+    protected_root = _canonical_windows_path(venv)
+    protected_files = {
+        _canonical_windows_path(candidate)
+        for candidate in (
+            venv / "Scripts" / "unsloth.exe",
+            studio_home / "bin" / "unsloth.exe",
         )
-    )
-    shim_candidates = (
-        venv / "Scripts" / "unsloth.exe",
-        studio_home / "bin" / "unsloth.exe",
-    )
-    protected_file_spellings = tuple(
-        dict.fromkeys(
-            spelling
-            for candidate in shim_candidates
-            if candidate.exists()
-            for spelling in (
-                str(candidate.absolute()),
-                _resolved_windows_path(candidate),
-            )
-        )
-    )
-    managed_python_candidates = (venv / "Scripts" / "python.exe",)
-    managed_python_spellings = tuple(
-        dict.fromkeys(
-            spelling
-            for candidate in managed_python_candidates
-            if candidate.exists()
-            for spelling in (
-                str(candidate.absolute()),
-                _resolved_windows_path(candidate),
-            )
-        )
-    )
-
-    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-    trusted_shell_candidates = [
-        system_root / "System32" / "cmd.exe",
-        system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
-    ]
-    pwsh = shutil.which("pwsh.exe")
-    if pwsh:
-        trusted_shell_candidates.append(Path(pwsh))
-    trusted_shell_spellings = tuple(
-        dict.fromkeys(
-            spelling
-            for candidate in trusted_shell_candidates
-            if candidate.is_file()
-            for spelling in (str(candidate.absolute()), _resolved_windows_path(candidate))
-        )
-    )
-
-    fallback_working_directories: dict[int, str] = {}
-    if psutil is None:
-        managed_python = venv / "Scripts" / "python.exe"
-        if not managed_python.is_file():
-            raise RuntimeError(
-                "Could not inspect process working directories before Studio update: "
-                f"psutil is unavailable and {managed_python} is missing"
-            )
-        fallback_working_directories = _managed_windows_process_working_directories(managed_python)
+        if candidate.exists()
+    }
 
     script = (
         "$ErrorActionPreference='Stop';"
         "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
         "$items=@(Get-CimInstance Win32_Process -ErrorAction Stop|"
-        "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine);"
+        "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath);"
         "[Console]::Out.Write(($items|ConvertTo-Json -Compress))"
     )
     result = subprocess.run(
@@ -437,249 +244,39 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             f"Could not decode the running-process list before Studio update: {error}"
         ) from error
     processes = payload if isinstance(payload, list) else [payload]
-    current_pid = os.getpid()
     process_by_pid = {
         int(process.get("ProcessId") or -1): process
         for process in processes
         if int(process.get("ProcessId") or -1) > 0
     }
-    excluded_pids = {current_pid}
 
-    def is_protected_shim_image(image: str) -> bool:
-        try:
-            image_key = _resolved_windows_path(Path(image))
-        except OSError:
-            image_key = image
-        return any(
-            image_key.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
-            for path in protected_file_spellings
-        )
-
-    def is_verified_update_redirector(image: str, command_line: str) -> bool:
-        try:
-            image_key = _resolved_windows_path(Path(image))
-        except OSError:
-            image_key = image
-        if not any(
-            image_key.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
-            for path in managed_python_spellings
-        ):
-            return False
-        try:
-            arguments = _windows_command_line_arguments(command_line)
-        except OSError:
-            return False
-        return (
-            len(arguments) >= 4
-            and is_protected_shim_image(arguments[1])
-            and arguments[2].casefold() == "studio"
-            and arguments[3].casefold() == "update"
-        )
-
-    def is_trusted_shell_image(image: str) -> bool:
-        try:
-            image_key = _resolved_windows_path(Path(image))
-        except OSError:
-            image_key = image
-        return any(
-            image_key.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
-            for path in trusted_shell_spellings
-        )
-
-    def command_invokes_only_update_through_shim(
-        command_line: str, working_directory: Path
-    ) -> bool:
-        normalized_line = command_line.replace("/", "\\").casefold()
-        before_boundaries = {" ", "\t", "\r", "\n", '"', "'", "&", "("}
-        after_boundaries = {" ", "\t", "\r", "\n", '"', "'"}
-        for shim in protected_file_spellings:
-            normalized_shim = shim.rstrip("\\/").replace("/", "\\").casefold()
-            search_from = 0
-            while search_from < len(normalized_line):
-                start = normalized_line.find(normalized_shim, search_from)
-                if start < 0:
-                    break
-                end = start + len(normalized_shim)
-                before_ok = start == 0 or normalized_line[start - 1] in before_boundaries
-                after_ok = end == len(normalized_line) or normalized_line[end] in after_boundaries
-                search_from = end
-                if not (before_ok and after_ok):
-                    continue
-                if not re.match(
-                    r"""["']?\s+studio\s+update(?:\s|["']|$)""",
-                    command_line[end:],
-                    flags = re.IGNORECASE,
-                ):
-                    continue
-                remaining = command_line[:start] + command_line[end:]
-                if _command_line_references_resolved_windows_path(
-                    remaining,
-                    protected_root_spellings,
-                    protected_file_spellings,
-                    working_directory,
-                ):
-                    return False
-                if any(
-                    _command_line_references_resolved_windows_path(
-                        quoted,
-                        protected_root_spellings,
-                        protected_file_spellings,
-                        working_directory,
-                    )
-                    for quoted in re.findall(r"'([^']+)'", remaining)
-                ):
-                    return False
-                return True
-        return False
-
-    def is_verified_update_shell(process_id: int, image: str, command_line: str) -> bool:
-        if not is_trusted_shell_image(image):
-            return False
-        if psutil is not None:
-            try:
-                working_directory = Path(psutil.Process(process_id).cwd())
-            except (psutil.Error, OSError):
-                return False
-        else:
-            working_directory_text = fallback_working_directories.get(process_id)
-            if not working_directory_text:
-                return False
-            working_directory = Path(working_directory_text)
-        try:
-            arguments = [
-                argument.casefold() for argument in _windows_command_line_arguments(command_line)
-            ]
-        except OSError:
-            return False
-        shell_name = Path(image).name.casefold()
-        noninteractive = "/c" in arguments if shell_name == "cmd.exe" else "-command" in arguments
-        return noninteractive and command_invokes_only_update_through_shim(
-            command_line,
-            working_directory,
-        )
-
-    def is_verified_update_ancestor(
-        process_id: int,
-        image: str,
-        *,
-        allow_shell: bool = False,
-    ) -> bool:
-        process = process_by_pid.get(process_id)
-        command_line = str(process.get("CommandLine") or "") if process is not None else ""
-        return (
-            is_protected_shim_image(image)
-            or is_verified_update_redirector(image, command_line)
-            or (allow_shell and is_verified_update_shell(process_id, image, command_line))
-        )
-
-    def process_is_protected_shim(process_id: int) -> bool:
-        process = process_by_pid.get(process_id)
-        return bool(
-            process
-            and process.get("ExecutablePath")
-            and is_protected_shim_image(str(process["ExecutablePath"]))
-        )
-
-    # The user-facing launcher can chain StudioHome\bin\unsloth.exe through
-    # the venv's Python redirector before base Python runs the command. Exempt
-    # only verified update redirectors, shims, and their one direct launcher
-    # shell; stop at the first process that does not have one of those roles.
-    descendant_pid = current_pid
-    try:
-        ancestor = psutil.Process(current_pid).parent() if psutil is not None else None
-    except (psutil.Error, OSError):
-        ancestor = None
-    for _ in range(8):
-        if ancestor is None:
-            break
-        ancestor_pid = int(ancestor.pid)
-        try:
-            ancestor_image = ancestor.exe()
-        except (psutil.Error, OSError):
-            break
-        if not is_verified_update_ancestor(
-            ancestor_pid,
-            ancestor_image,
-            allow_shell = process_is_protected_shim(descendant_pid),
-        ):
-            break
-        excluded_pids.add(ancestor_pid)
-        descendant_pid = ancestor_pid
-        try:
-            ancestor = ancestor.parent()
-        except (psutil.Error, OSError):
-            break
-
-    # Continue the same verified walk through WMI when psutil cannot inspect
-    # every ancestor. A partially visible launch chain is common under Git Bash.
-    descendant_pid = current_pid
-    for _ in range(8):
+    # The current updater may have been entered through the managed console shim.
+    # Ignore only its direct ancestry; unrelated managed processes still block.
+    excluded_pids = {os.getpid()}
+    descendant_pid = os.getpid()
+    for _ in range(16):
         descendant = process_by_pid.get(descendant_pid)
         if descendant is None:
             break
         parent_pid = int(descendant.get("ParentProcessId") or -1)
-        parent = process_by_pid.get(parent_pid)
-        if parent is None:
+        if parent_pid <= 0 or parent_pid in excluded_pids:
             break
-        if parent_pid not in excluded_pids:
-            parent_image = parent.get("ExecutablePath")
-            if not parent_image or not is_verified_update_ancestor(
-                parent_pid,
-                str(parent_image),
-                allow_shell = process_is_protected_shim(descendant_pid),
-            ):
-                break
-            excluded_pids.add(parent_pid)
+        excluded_pids.add(parent_pid)
         descendant_pid = parent_pid
 
-    for process in processes:
-        process_id = int(process.get("ProcessId") or -1)
-        # WMI can include synthetic rows without a usable OS process ID.
-        # They cannot identify a live managed-environment consumer, and
-        # psutil rejects negative PIDs before its documented Error hierarchy.
-        if process_id <= 0:
-            continue
+    for process_id, process in process_by_pid.items():
         if process_id in excluded_pids:
             continue
-        executable = process.get("ExecutablePath") or ""
-        image_match = False
-        if executable:
-            image_spellings = [str(executable)]
-            try:
-                image_spellings.append(_resolved_windows_path(Path(executable)))
-            except OSError:
-                pass
-            image_match = any(
-                any(_windows_path_is_within(image, root) for root in protected_root_spellings)
-                or any(
-                    image.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
-                    for path in protected_file_spellings
-                )
-                for image in image_spellings
-            )
-        command_line = process.get("CommandLine") or ""
-        if psutil is not None:
-            try:
-                working_directory = Path(psutil.Process(process_id).cwd())
-            except (psutil.Error, OSError):
-                working_directory = None
-        else:
-            fallback_cwd = fallback_working_directories.get(process_id)
-            working_directory = Path(fallback_cwd) if fallback_cwd else None
-        command_line_match = bool(command_line) and _command_line_references_resolved_windows_path(
-            command_line,
-            protected_root_spellings,
-            protected_file_spellings,
-            working_directory,
-        )
-        if image_match or command_line_match:
+        executable = process.get("ExecutablePath")
+        if not executable:
+            continue
+        image = _canonical_windows_path(Path(str(executable)))
+        if _windows_path_is_within(image, protected_root) or image in protected_files:
             name = process.get("Name") or "process"
             raise RuntimeError(
                 "The managed Studio environment is in use by "
                 f"{name} (PID {process_id}). Stop that process, then retry the update."
             )
-
-
 def consume_runtime_gate_handoff() -> bool:
     return os.environ.pop(_RUNTIME_GATE_HANDOFF_ENV, None) == "1"
 

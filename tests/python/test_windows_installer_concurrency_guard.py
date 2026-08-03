@@ -71,10 +71,6 @@ def _process_helpers(source: str) -> str:
         for name in (
             "Get-StudioFinalPath",
             "Test-StudioProtectedPathMatch",
-            "Test-StudioRawCommandLinePathReference",
-            "Get-StudioProcessWorkingDirectories",
-            "ConvertFrom-StudioWindowsCommandLine",
-            "Test-StudioCommandLinePathReference",
             "Get-RunningStudioVenvProcesses",
         )
     )
@@ -116,150 +112,22 @@ $ErrorActionPreference = "Stop"
         child.terminate()
         child.wait(timeout = 10)
 
-
-@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-@pytest.mark.parametrize("path_style", ["backslash", "forward", "relative"])
-def test_command_line_only_venv_consumer_is_reported(tmp_path: Path, shell: str, path_style: str):
+def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    detector = _process_helpers(source)
-    venv = tmp_path / "unsloth_studio"
-    venv.mkdir()
-    script = f"""
-$ErrorActionPreference = "Stop"
-function Get-Process {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) return @() }}
-function Get-CimInstance {{
-    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
-    [pscustomobject]@{{
-        ProcessId = 4242
-        Name = "python.exe"
-        ExecutablePath = $env:TEST_BASE_PYTHON
-        CommandLine = ('"' + $env:TEST_BASE_PYTHON + '" "' + $env:TEST_SCRIPT + '"')
-    }}
-}}
-{detector}
-function Get-StudioProcessWorkingDirectories {{
-    param([string]$VenvPath)
-    return @{{ "4242" = $env:TEST_PROCESS_CWD }}
-}}
-@(Get-RunningStudioVenvProcesses -VenvPath $env:TEST_VENV) |
-    ForEach-Object {{ Write-Output $_.Id }}
-"""
-    env = os.environ.copy()
-    env["TEST_VENV"] = str(venv)
-    worker = venv / "Lib" / "site-packages" / "worker.py"
-    worker.parent.mkdir(parents = True)
-    worker.write_text("pass", encoding = "utf-8")
-    if path_style == "forward":
-        env["TEST_SCRIPT"] = worker.as_posix()
-    elif path_style == "relative":
-        env["TEST_SCRIPT"] = worker.name
-    else:
-        env["TEST_SCRIPT"] = str(worker)
-    env["TEST_BASE_PYTHON"] = shutil.which("python") or "python.exe"
-    env["TEST_PROCESS_CWD"] = str(worker.parent)
-    assert _run_powershell(shell, script, env) == "4242"
+    for removed_helper in (
+        "ConvertFrom-StudioWindowsCommandLine",
+        "Test-StudioRawCommandLinePathReference",
+        "Get-StudioProcessWorkingDirectories",
+        "Test-StudioCommandLinePathReference",
+    ):
+        assert removed_helper not in source
 
-
-@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-def test_attached_quoted_junction_path_is_reported(tmp_path: Path, shell: str):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    detector = _process_helpers(source)
-    venv = tmp_path / "physical" / "unsloth_studio"
-    worker = venv / "Lib" / "worker.py"
-    worker.parent.mkdir(parents = True)
-    worker.write_text("pass", encoding = "utf-8")
-    alias = tmp_path / "Alias Root"
-    subprocess.run(
-        [os.environ["COMSPEC"], "/d", "/c", "mklink", "/J", str(alias), str(venv)],
-        check = True,
-        capture_output = True,
-        text = True,
-    )
-    alias_worker = alias / "Lib" / "worker.py"
-
-    script = f"""
-$ErrorActionPreference = "Stop"
-function Get-Process {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) return @() }}
-function Get-CimInstance {{
-    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
-    [pscustomobject]@{{
-        ProcessId = 4242
-        Name = "python.exe"
-        ExecutablePath = $env:TEST_BASE_PYTHON
-        CommandLine = ('"' + $env:TEST_BASE_PYTHON + '" --script="' + $env:TEST_ALIAS_SCRIPT + '"')
-    }}
-}}
-{detector}
-function Get-StudioProcessWorkingDirectories {{
-    param([string]$VenvPath)
-    return @{{}}
-}}
-@(Get-RunningStudioVenvProcesses -VenvPath $env:TEST_VENV) |
-    ForEach-Object {{ Write-Output $_.Id }}
-"""
-    env = os.environ.copy()
-    env["TEST_VENV"] = str(venv)
-    env["TEST_ALIAS_SCRIPT"] = str(alias_worker)
-    env["TEST_BASE_PYTHON"] = shutil.which("python") or "python.exe"
-    assert _run_powershell(shell, script, env) == "4242"
-
-
-@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-def test_command_line_parser_does_not_depend_on_preloaded_final_path_type(shell: str):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    parser = _extract(
-        r"    function ConvertFrom-StudioWindowsCommandLine \{.*?\n    \}\n",
-        source,
-    )
-    script = rf"""
-$ErrorActionPreference = "Stop"
-Add-Type -TypeDefinition @'
-public static class UnslothStudioFinalPath
-{{
-    public static string Resolve(string path) {{ return path; }}
-}}
-'@
-{parser}
-$tokens = @(ConvertFrom-StudioWindowsCommandLine -CommandLine '"C:\Program Files\Unsloth\unsloth.exe" studio update')
-Write-Output ($tokens -join "|")
-"""
-    assert _run_powershell(shell, script, os.environ.copy()) == (
-        r"C:\Program Files\Unsloth\unsloth.exe|studio|update"
-    )
-
-
-@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-def test_command_line_sibling_venv_is_not_reported(tmp_path: Path, shell: str):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    detector = _process_helpers(source)
-    venv = tmp_path / "unsloth_studio"
-    sibling = tmp_path / "unsloth_studio_backup" / "Lib" / "worker.py"
-    venv.mkdir()
-    script = f"""
-$ErrorActionPreference = "Stop"
-function Get-Process {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) return @() }}
-function Get-CimInstance {{
-    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
-    [pscustomobject]@{{
-        ProcessId = 9191
-        Name = "python.exe"
-        ExecutablePath = $env:TEST_BASE_PYTHON
-        CommandLine = ('"' + $env:TEST_BASE_PYTHON + '" "' + $env:TEST_SIBLING + '"')
-    }}
-}}
-{detector}
-@(Get-RunningStudioVenvProcesses -VenvPath $env:TEST_VENV) |
-    ForEach-Object {{ Write-Output $_.Id }}
-"""
-    env = os.environ.copy()
-    env["TEST_VENV"] = str(venv)
-    env["TEST_SIBLING"] = str(sibling)
-    env["TEST_BASE_PYTHON"] = shutil.which("python") or "python.exe"
-    assert _run_powershell(shell, script, env) == ""
+    detector = source[
+        source.index("    function Get-RunningStudioVenvProcesses {") :
+        source.index("    function Test-VenvPythonReady {")
+    ]
+    assert "Get-CimInstance" not in detector
+    assert ".CommandLine" not in detector
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
@@ -579,6 +447,7 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     cwd_source = source.index('Join-Path $env:USERPROFILE "unsloth_studio"', legacy_source)
     runtime_guard = source.index("foreach ($candidate in $protectedProcessPaths)", cwd_source)
     desktop_guard = source.index('Get-Process -Name "unsloth-studio"', runtime_guard)
+    dependency_check = source.index('Write-TauriLog "STEP" "Checking system dependencies"')
     rollback = source.index("Start-StudioVenvRollback -ExistingDir $VenvDir", desktop_guard)
     old_venv_move = source.index("Move-Item -LiteralPath $OldVenv", rollback)
     cwd_venv_move = source.index("Move-Item -LiteralPath $CwdVenv", old_venv_move)
@@ -599,7 +468,7 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
         < runtime_lock
     )
     assert runtime_lock < scan_candidates < legacy_scan < legacy_source < cwd_source
-    assert cwd_source < runtime_guard < desktop_guard
+    assert cwd_source < runtime_guard < desktop_guard < dependency_check < rollback
     assert source.count("$studioUsesLegacyLayout `") >= 2
     assert "if ($studioNeedsRuntimeLock)" in source
     assert (
