@@ -112,6 +112,7 @@ $ErrorActionPreference = "Stop"
         child.terminate()
         child.wait(timeout = 10)
 
+
 def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     for removed_helper in (
@@ -123,8 +124,9 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
         assert removed_helper not in source
 
     detector = source[
-        source.index("    function Get-RunningStudioVenvProcesses {") :
-        source.index("    function Test-VenvPythonReady {")
+        source.index("    function Get-RunningStudioVenvProcesses {") : source.index(
+            "    function Test-VenvPythonReady {"
+        )
     ]
     assert "Get-CimInstance" not in detector
     assert ".CommandLine" not in detector

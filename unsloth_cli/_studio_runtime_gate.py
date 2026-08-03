@@ -277,6 +277,8 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
                 "The managed Studio environment is in use by "
                 f"{name} (PID {process_id}). Stop that process, then retry the update."
             )
+
+
 def consume_runtime_gate_handoff() -> bool:
     return os.environ.pop(_RUNTIME_GATE_HANDOFF_ENV, None) == "1"
 
