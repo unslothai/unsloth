@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -102,7 +103,13 @@ $ErrorActionPreference = "Stop"
 """
         env = os.environ.copy()
         env["TEST_VENV"] = str(scripts.parent)
-        observed = _run_powershell(shell, script, env).splitlines()
+        deadline = time.monotonic() + 4
+        observed = []
+        while time.monotonic() < deadline:
+            observed = _run_powershell(shell, script, env).splitlines()
+            if str(child.pid) in observed:
+                break
+            time.sleep(0.1)
         assert str(child.pid) in observed
     finally:
         child.terminate()
