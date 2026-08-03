@@ -110,14 +110,25 @@ fn set_training_active(state: tauri::State<'_, TrainingActivityState>, active: b
     }
 }
 
+fn training_is_active(app: &tauri::AppHandle) -> bool {
+    let Some(state) = app.try_state::<TrainingActivityState>() else {
+        return false;
+    };
+    state.lock().map(|running| *running).unwrap_or(false)
+}
+
+fn install_is_active(app: &tauri::AppHandle) -> bool {
+    let Some(state) = app.try_state::<install::InstallState>() else {
+        return false;
+    };
+    install::is_install_running(&state)
+}
+
 /// Ask before quitting mid-training (true to proceed).
 fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-    let Some(state) = app.try_state::<TrainingActivityState>() else {
-        return true;
-    };
-    if !state.lock().map(|running| *running).unwrap_or(false) {
+    if !training_is_active(app) {
         return true;
     }
     app.dialog()
@@ -140,10 +151,7 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
 fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-    let Some(install_state) = app.try_state::<install::InstallState>() else {
-        return true;
-    };
-    if !install::is_install_running(&install_state) {
+    if !install_is_active(app) {
         return true;
     }
     app.dialog()
@@ -309,6 +317,63 @@ fn setup_quit_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+static TERMINATE_APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "macos")]
+extern "C-unwind" fn application_should_terminate(
+    _this: *mut objc2::runtime::AnyObject,
+    _cmd: objc2::runtime::Sel,
+    _sender: *mut objc2::runtime::AnyObject,
+) -> usize {
+    const NS_TERMINATE_CANCEL: usize = 0;
+    const NS_TERMINATE_NOW: usize = 1;
+
+    let Some(app) = TERMINATE_APP_HANDLE.get() else {
+        return NS_TERMINATE_NOW;
+    };
+    if !install_is_active(app) && !training_is_active(app) {
+        return NS_TERMINATE_NOW;
+    }
+    confirm_then_quit(app);
+    NS_TERMINATE_CANCEL
+}
+
+/// Dock quits, logout and AppleScript quits ask the delegate via
+/// `applicationShouldTerminate:`, which tao leaves unimplemented, so they
+/// terminate without reaching the menu handler above. Add the missing method to
+/// tao's delegate: cancel and confirm when a run is active, otherwise keep the
+/// stock path (`applicationWillTerminate` -> RunEvent::Exit -> cleanup).
+#[cfg(target_os = "macos")]
+fn setup_terminate_interception(app: &tauri::App) {
+    use objc2::ffi::{class_addMethod, object_getClass};
+    use objc2::runtime::{AnyObject, Imp, Sel};
+
+    let _ = TERMINATE_APP_HANDLE.set(app.handle().clone());
+    unsafe {
+        let nsapp: *mut AnyObject =
+            objc2::msg_send![objc2::class!(NSApplication), sharedApplication];
+        let delegate: *mut AnyObject = objc2::msg_send![nsapp, delegate];
+        if delegate.is_null() {
+            warn!("No NSApplication delegate; external quits will not be confirmed");
+            return;
+        }
+        let imp: Imp = std::mem::transmute(
+            application_should_terminate
+                as extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> usize,
+        );
+        let added = class_addMethod(
+            object_getClass(delegate).cast_mut(),
+            objc2::sel!(applicationShouldTerminate:),
+            imp,
+            c"Q@:@".as_ptr(),
+        );
+        if !added.as_bool() {
+            warn!("Could not hook applicationShouldTerminate; external quits will not be confirmed");
+        }
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Unsloth").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -428,7 +493,10 @@ fn main() {
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
             #[cfg(target_os = "macos")]
-            setup_quit_menu(app)?;
+            {
+                setup_quit_menu(app)?;
+                setup_terminate_interception(app);
+            }
             setup_tray(app)?;
             #[cfg(unix)]
             setup_unix_termination_signals(app)?;
