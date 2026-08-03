@@ -285,7 +285,7 @@ def _trip_xet_worker(monkeypatch, tmp_path, message):
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
 
     def _start(registry, key, proc, *, on_stall, **kwargs):
-        on_stall(message)          # the watchdog tripped
+        on_stall(message)  # the watchdog tripped
         return None
 
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", _start)
@@ -293,9 +293,7 @@ def _trip_xet_worker(monkeypatch, tmp_path, message):
     monkeypatch.setattr(download_lifecycle, "register_worker", lambda *a, **k: True)
 
     recorded = []
-    monkeypatch.setattr(
-        download_lifecycle, "_record_xet_failure", lambda m, _l: recorded.append(m)
-    )
+    monkeypatch.setattr(download_lifecycle, "_record_xet_failure", lambda m, _l: recorded.append(m))
 
     registry = download_registry.DownloadRegistry()
     key = download_registry.normalize_job_key("Org/Model")
@@ -328,11 +326,13 @@ def _trip_xet_worker(monkeypatch, tmp_path, message):
 
 def test_a_data_phase_stall_is_recorded_against_the_machine(monkeypatch, tmp_path):
     """A frozen partial with bytes already flowing is genuinely Xet misbehaving."""
-    monkeypatch.setattr(download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker,
-                        raising = False)
+    monkeypatch.setattr(
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+    )
 
     assert _trip_xet_worker(
-        monkeypatch, tmp_path,
+        monkeypatch,
+        tmp_path,
         "Download appears stalled (xet transport) -- no progress for 30s",
     ), "a real data-phase stall must still be recorded"
 
@@ -343,8 +343,9 @@ def test_a_pre_byte_trip_does_not_poison_the_machines_health_record(monkeypatch,
     A connect-phase trip means no byte ever arrived, which is as likely to be slow metadata, a long
     queue of HEADs, or a cache lock as a broken Xet. The HTTP retry still happens either way.
     """
-    monkeypatch.setattr(download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker,
-                        raising = False)
+    monkeypatch.setattr(
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+    )
     for message in (
         "Download did not start (xet transport) -- no data after 600s",
         "Download did not resume (xet transport) -- no data for 600s",

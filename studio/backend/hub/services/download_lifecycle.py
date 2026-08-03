@@ -848,7 +848,8 @@ def register_worker(
                 else:
                     logger.debug(
                         "%s not recording a Xet health failure for a pre-byte trip: %s",
-                        log_prefix, stalled[0],
+                        log_prefix,
+                        stalled[0],
                     )
             elif transport == download_registry.TRANSPORT_XET and state == "complete":
                 # Clear the streak, so "two failures in a row" means in a row. Without this a
