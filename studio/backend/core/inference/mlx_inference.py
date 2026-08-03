@@ -408,7 +408,7 @@ def _render_registered_vlm_prompt(
             text = item.get("text", "") or item.get("content", "")
             if text:
                 text_parts.append(text)
-        return " ".join(text_parts)
+        return "".join(text_parts)
 
     def extract_messages(source_messages):
         return [

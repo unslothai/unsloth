@@ -728,18 +728,18 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     ]
     recovered = backend._generate_vlm(*((multi_turn,) + args[1:]), enable_thinking = True, reasoning_effort = "high", preserve_thinking = False)
     assert list(recovered) == ["ok"]
-    assert [message["content"] for message in calls["model_messages"][-3:]] == ["Read. Now.", "Seen.", "Again."]
+    assert [message["content"] for message in calls["model_messages"][-3:]] == ["Read.Now.", "Seen.", "Again."]
     assert [call["num_images"] for call in calls["model"][-3:]] == [1, 0, 0]
     roles_and_content = [(message["role"], mlx_inference._flatten_registered_vlm_content(backend._processor, message["content"])) for message in calls["template_messages"][-1][0]]
-    assert roles_and_content == [("user", "<image> Read. Now."), ("assistant", "Seen."), ("user", "Again.")]
+    assert roles_and_content == [("user", "<image> Read.Now."), ("assistant", "Seen."), ("user", "Again.")]
     reasoning_kwargs = {"enable_thinking": True, "reasoning_effort": "high", "preserve_thinking": False}
     assert all(calls["model"][-1][name] == value for name, value in reasoning_kwargs.items())
     assert calls["template_messages"][-1][1] == reasoning_kwargs
     state["model"] = "require lists"; assert list(backend._generate_vlm(*((multi_turn,) + args[1:]))) == ["ok"]
     assert all(isinstance(message["content"], list) for message in calls["template_messages"][-1][0])
-    assert all(calls["stream"][-1][0][2].count(text) == 1 for text in ("Read. Now.", "Seen.", "Again."))
+    assert all(calls["stream"][-1][0][2].count(text) == 1 for text in ("Read.Now.", "Seen.", "Again."))
     state["model"] = "reject structured"; assert list(backend._generate_vlm(*((multi_turn,) + args[1:]))) == ["ok"]
-    assert [message["content"] for message in calls["template_messages"][-1][0]] == ["<image> Read. Now.", "Seen.", "Again."]
+    assert [message["content"] for message in calls["template_messages"][-1][0]] == ["<image> Read.Now.", "Seen.", "Again."]
     state["generic"] = "serialized_last"
     later_image = [{"role": "user", "content": "First."}, {"role": "assistant", "content": "Seen."}, {"role": "user", "content": [{"type": "input_image"}, {"type": "text", "text": "  Again.\n"}]}]
     assert list(backend._generate_vlm(*((later_image,) + args[1:]))) == ["ok"]
@@ -757,6 +757,8 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     assert [call.get("num_audios", 0) for call in calls["model"][-2:]] == [0, 1]
     assert mlx_inference._render_registered_vlm_prompt(backend._processor, backend._model, [{"role": "user", "content": "Audio."}], 0, num_audios = 1) == "<audio> Audio. flattened model-aware"
     assert calls["model"][-1]["num_audios"] == 1
+    boundary_messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "foo "}, {"type": "text", "text": "bar\n"}]}]
+    assert mlx_inference._render_registered_vlm_prompt(backend._processor, backend._model, boundary_messages, 1) == "<image> foo bar\n flattened model-aware"
     non_user_image = [{"role": "user", "content": "First."}, {"role": "assistant", "content": [{"type": "input_image"}]}]
     with pytest.raises(RuntimeError, match = "media on a user turn"):
         list(backend._generate_vlm(*((non_user_image,) + args[1:])))
