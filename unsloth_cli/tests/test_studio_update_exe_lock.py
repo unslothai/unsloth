@@ -322,7 +322,7 @@ def test_the_header_check_is_windows_only(monkeypatch, tmp_path):
     """Unix has an execute bit and no PE images, so requiring MZ there would reject
     the symlinked shim every time."""
     _scripts_dir, shim = _shimmed(monkeypatch, tmp_path)
-    shim.write_bytes(b"#!/bin/sh\nexec unsloth \"$@\"\n")
+    shim.write_bytes(b'#!/bin/sh\nexec unsloth "$@"\n')
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
 
     assert studio._is_usable_launcher(shim) is True
