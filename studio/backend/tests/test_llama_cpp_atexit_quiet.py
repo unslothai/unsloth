@@ -208,9 +208,9 @@ def test_an_unkillable_server_is_still_reported(monkeypatch):
     with pytest.raises(subprocess.TimeoutExpired):
         backend._kill_process()
 
-    assert any("SIGKILL" in w for w in recorder.warnings), (
-        "an unkillable server was dropped without a word about it"
-    )
+    assert any(
+        "SIGKILL" in w for w in recorder.warnings
+    ), "an unkillable server was dropped without a word about it"
 
 
 def test_the_handler_leaves_raise_exceptions_as_it_found_it(monkeypatch):
