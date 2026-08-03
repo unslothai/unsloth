@@ -8,6 +8,7 @@ import type { ReactElement } from "react";
 import { getBlockDefinitionForConfig } from "../blocks/definitions";
 import { renderBlockDialog } from "../blocks/registry";
 import type { NodeConfig, SamplerConfig } from "../types";
+import { isValidatorConsentRequired } from "../utils/validators/consent";
 import { DialogShell } from "./shared/dialog-shell";
 import { ValidationBanner } from "./shared/validation-banner";
 
@@ -49,10 +50,7 @@ export function ConfigDialog({
     (config?.kind === "seed" &&
       (config.seed_source_type ?? "hf") === "unstructured");
   const consentRequired =
-    config?.kind === "validator" &&
-    ((config.validator_type === "tool" && config.tool_acknowledged !== true) ||
-      (config.validator_type === "custom" &&
-        config.custom_acknowledged !== true));
+    config?.kind === "validator" && isValidatorConsentRequired(config);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

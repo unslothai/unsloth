@@ -15,6 +15,7 @@ import {
 import { VALIDATOR_OXC_CODE_LANGS } from "../validators/code-lang";
 import { isOxcCodeShape } from "../validators/oxc-code-shape";
 import { isOxcValidationMode } from "../validators/oxc-mode";
+import { isValidatorConsentRequired } from "../validators/consent";
 import { firstInvalidToolScaffoldPath } from "../validators/validation-markers";
 
 export function validateSubcategoryConfigs(
@@ -221,7 +222,7 @@ export function validateValidatorConfigs(
         );
       }
     }
-    if (config.validator_type === "tool" && config.tool_acknowledged !== true) {
+    if (config.validator_type === "tool" && isValidatorConsentRequired(config)) {
       errors.push(
         `Validator ${config.name}: acknowledge that this check runs arbitrary commands locally.`,
       );
@@ -234,7 +235,7 @@ export function validateValidatorConfigs(
     }
     if (
       config.validator_type === "custom" &&
-      config.custom_acknowledged !== true
+      isValidatorConsentRequired(config)
     ) {
       errors.push(
         `Validator ${config.name}: acknowledge that this check runs arbitrary Python locally.`,

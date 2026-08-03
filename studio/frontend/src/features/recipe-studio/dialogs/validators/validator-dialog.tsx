@@ -48,6 +48,11 @@ import {
   normalizeOxcValidationMode,
 } from "../../utils/validators/oxc-mode";
 import { normalizeToolScaffold } from "../../utils/validators/validation-markers";
+import {
+  addToolScaffoldRow as addScaffoldRow,
+  removeToolScaffoldRow as removeScaffoldRow,
+  updateToolScaffoldRow as updateScaffoldRow,
+} from "../../utils/validators/tool-scaffold";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
@@ -229,20 +234,15 @@ export function ValidatorDialog({
     !toolReferencesFile;
 
   function updateToolScaffoldRow(index: number, next: ToolScaffoldFile): void {
-    const rows = toolScaffoldRows.map((file, fileIndex) =>
-      fileIndex === index ? next : file,
-    );
-    onUpdate({ tool_scaffold: rows });
+    onUpdate({ tool_scaffold: updateScaffoldRow(toolScaffoldRows, index, next) });
   }
 
   function removeToolScaffoldRow(index: number): void {
-    onUpdate({
-      tool_scaffold: toolScaffoldRows.filter((_, fileIndex) => fileIndex !== index),
-    });
+    onUpdate({ tool_scaffold: removeScaffoldRow(toolScaffoldRows, index) });
   }
 
   function addToolScaffoldRow(): void {
-    onUpdate({ tool_scaffold: [...toolScaffoldRows, { path: "", content: "" }] });
+    onUpdate({ tool_scaffold: addScaffoldRow(toolScaffoldRows) });
   }
 
   return (

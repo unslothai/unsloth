@@ -6,6 +6,7 @@ import { isValidSex, parseAgeRange, parseIntNumber, parseNumber } from "./parse"
 import { VALIDATOR_OXC_CODE_LANGS, VALIDATOR_SQL_CODE_LANGS } from "./validators/code-lang";
 import { isOxcCodeShape } from "./validators/oxc-code-shape";
 import { isOxcValidationMode } from "./validators/oxc-mode";
+import { isValidatorConsentRequired } from "./validators/consent";
 import { firstInvalidToolScaffoldPath } from "./validators/validation-markers";
 
 const TRACE_MODES = new Set(["none", "last_message", "all_messages"]);
@@ -256,7 +257,7 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       if (!(config.tool_ext ?? "").trim()) {
         errors.push("Add the source-file extension for this check.");
       }
-      if (config.tool_acknowledged !== true) {
+      if (isValidatorConsentRequired(config)) {
         errors.push("Acknowledge that this check runs arbitrary commands locally.");
       }
       const badScaffoldPath = firstInvalidToolScaffoldPath(config.tool_scaffold);
@@ -267,7 +268,7 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       if (!(config.custom_source ?? "").trim()) {
         errors.push("Add the Python function for this check.");
       }
-      if (config.custom_acknowledged !== true) {
+      if (isValidatorConsentRequired(config)) {
         errors.push("Acknowledge that this check runs arbitrary Python locally.");
       }
     } else {
