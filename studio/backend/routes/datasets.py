@@ -529,6 +529,17 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
         dataset_path = resolve_dataset_path(request.dataset_name)
         total_rows = None
 
+        # An absolute path is a local file, never a HuggingFace repo id. Saying so
+        # beats failing later as a repo lookup with a 500.
+        if not dataset_path.exists() and Path(request.dataset_name).is_absolute():
+            raise HTTPException(
+                status_code = 404,
+                detail = (
+                    "This dataset file no longer exists. Upload it again or pick "
+                    "another dataset."
+                ),
+            )
+
         if dataset_path.exists():
             # ── Local file ──────────────────────────────────────────
             train_split = request.train_split or "train"
