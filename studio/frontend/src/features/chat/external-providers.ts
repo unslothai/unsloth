@@ -14,6 +14,8 @@ export interface ExternalProviderConfig {
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
+  /** Allow this saved connection to request Studio-managed local and MCP tools. */
+  studioToolExecution: boolean;
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;
   /**
@@ -312,7 +314,7 @@ function mapLegacyPresetToProviderType(presetId: string): string {
   return presetId;
 }
 
-function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig {
+export function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig {
   const providerType = raw.providerType.trim();
   return {
     ...raw,
@@ -325,6 +327,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     availableModels: (raw.availableModels ?? [])
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
+    studioToolExecution: raw.studioToolExecution === true,
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,
@@ -379,6 +382,7 @@ function fromUnknownProvider(value: unknown): ExternalProviderConfig | null {
     models: Array.isArray(legacy.models)
       ? legacy.models.filter((item): item is string => typeof item === "string")
       : [],
+    studioToolExecution: false,
     createdAt: typeof legacy.createdAt === "number" ? legacy.createdAt : Date.now(),
     updatedAt: typeof legacy.updatedAt === "number" ? legacy.updatedAt : Date.now(),
   };

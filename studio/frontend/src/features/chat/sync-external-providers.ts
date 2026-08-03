@@ -202,6 +202,7 @@ export async function syncExternalProvidersFromBackend(
         baseUrl: config.base_url ?? "",
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
+        studioToolExecution: config.studio_tool_execution === true,
         enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
           ? (existing?.enablePromptCaching ?? true)
           : undefined,

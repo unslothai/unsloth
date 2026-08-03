@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for Studio-managed Ollama function calls."""
+"""Regression tests for Studio-managed external-provider function calls."""
 
 import asyncio
 import copy
@@ -164,12 +164,4 @@ def test_budget_final_pass_cannot_loop_on_nonconforming_provider(monkeypatch):
     assert client.calls[1]["tools"] is None
     assert client.calls[1]["tool_choice"] == "none"
     assert output.count("data: [DONE]") == 0
-
-
-def test_provider_allow_list_is_case_insensitive_and_ollama_only():
-    assert loop_mod.supports_external_studio_tool_loop("ollama")
-    assert loop_mod.supports_external_studio_tool_loop("OLLAMA")
-    assert not loop_mod.supports_external_studio_tool_loop("openai")
-    assert not loop_mod.supports_external_studio_tool_loop("custom")
-    assert not loop_mod.supports_external_studio_tool_loop(None)
 

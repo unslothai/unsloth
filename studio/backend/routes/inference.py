@@ -1940,7 +1940,6 @@ from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.external_tool_loop import (
     stream_external_chat_with_tools,
-    supports_external_studio_tool_loop,
 )
 from core.inference.chat_templates import resolve_effective_chat_template_override
 from storage import providers_db
@@ -8882,6 +8881,7 @@ async def _proxy_to_external_provider(
     # Resolve provider type and base URL
     provider_type = payload.provider_type
     base_url = payload.provider_base_url
+    studio_tool_execution = False
 
     if payload.provider_id:
         config = providers_db.get_provider(payload.provider_id)
@@ -8897,6 +8897,7 @@ async def _proxy_to_external_provider(
             )
         provider_type = provider_type or config["provider_type"]
         base_url = base_url or config["base_url"]
+        studio_tool_execution = bool(config.get("studio_tool_execution", 0))
 
     if not provider_type:
         raise HTTPException(
@@ -8966,9 +8967,9 @@ async def _proxy_to_external_provider(
     # don't silently get different sampling than before this PR. Pydantic's
     # `model_fields_set` tracks explicit-vs-default per request.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
-    # Ollama selects OpenAI-style function calls but leaves execution and the
-    # continuation turn to the caller. Only this explicit provider allow-list
-    # enters Studio's local/MCP loop; cloud providers retain hosted-tool semantics.
+    # Only a saved connection can opt into Studio execution. The server-side
+    # setting is authoritative: request fields and provider names cannot enable
+    # local/MCP execution on their own.
     from state.tool_policy import get_tool_policy as _get_external_tool_policy
 
     _external_tool_policy = _get_external_tool_policy()
@@ -8979,7 +8980,7 @@ async def _proxy_to_external_provider(
         and payload.tool_choice.strip().lower() == "none"
     )
     _external_studio_tool_intent = (
-        supports_external_studio_tool_loop(provider_type)
+        studio_tool_execution
         and not _external_tool_choice_disabled
         and (_external_tools_on or _external_mcp_allowed)
     )
@@ -8994,11 +8995,9 @@ async def _proxy_to_external_provider(
     )
     _use_external_studio_tools = bool(_external_studio_tools)
 
-    # Use the resolved type, not only payload.provider_type: saved-provider
-    # requests may identify Ollama exclusively through provider_id.
     if (
         payload.confirm_tool_calls
-        and not supports_external_studio_tool_loop(provider_type)
+        and not studio_tool_execution
         and not payload.bypass_permissions
         and (
             payload.enable_tools is True

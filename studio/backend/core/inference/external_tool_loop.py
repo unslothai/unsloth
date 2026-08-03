@@ -1,19 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unsloth-managed tools for external OpenAI-compatible providers.
+"""Unsloth-managed tools for normalized external-provider streams.
 
-Ollama exposes function calling through ``/v1/chat/completions``, but it only
-selects tools: the caller still has to execute each function, append the
-assistant/tool messages, and ask the model to continue. This module supplies
-that loop while reusing Studio's existing tool catalog, approval gate,
-sandbox, cancellation, duplicate protection, live output, and SSE event
-shapes.
-
-Keep the provider allow-list deliberately narrow. A provider advertising
-OpenAI-compatible function calling is not enough to prove that Studio should
-execute those calls locally; hosted providers may have their own paid tools or
-different continuation semantics.
+ExternalProviderClient translates OpenAI Responses, Anthropic Messages, Gemini,
+and OpenAI-compatible chat streams into the same ``delta.tool_calls`` shape.
+This module executes those calls through Studio's existing tool catalog,
+approval gate, sandbox, cancellation, duplicate protection, and live-output
+events, then continues the provider conversation with the results.
 """
 
 from __future__ import annotations
@@ -43,15 +37,8 @@ from state.tool_approvals import (
 
 
 logger = get_logger(__name__)
-_STUDIO_TOOL_LOOP_PROVIDER_TYPES = frozenset({"ollama"})
 _KEEPALIVE_LINE = ": keep-alive"
 _MAX_TOOL_CALLS_PER_TURN = 8
-
-
-def supports_external_studio_tool_loop(provider_type: str | None) -> bool:
-    """Whether Studio may execute its local/MCP tools for this provider."""
-
-    return bool(provider_type and provider_type.lower() in _STUDIO_TOOL_LOOP_PROVIDER_TYPES)
 
 
 def _sse_data(line: str) -> object:
@@ -211,7 +198,7 @@ async def stream_external_chat_with_tools(
     permission_mode: str | None = None,
     auto_heal_tool_calls: bool = True,
 ) -> AsyncGenerator[str, None]:
-    """Stream an Ollama chat while executing Studio tools server-side."""
+    """Stream an external chat while executing Studio tools server-side."""
 
     conversation = [copy.deepcopy(dict(message)) for message in messages]
     max_rounds = max(0, int(max_tool_iterations))

@@ -156,7 +156,6 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
-  providerSupportsStudioTools,
 } from "./provider-capabilities";
 import {
   ChatActiveContext,
@@ -2129,9 +2128,7 @@ export function ChatPage({
       selection.modelId,
       provider?.baseUrl,
     );
-    const supportsStudioTools = providerSupportsStudioTools(
-      provider?.providerType,
-    );
+    const supportsStudioTools = provider?.studioToolExecution === true;
     const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
       provider?.providerType,
       selection.modelId,
@@ -2189,10 +2186,10 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // Ollama uses Studio's local/MCP runtime. Other external providers keep
-      // supportsTools false and advertise their server-side capabilities via
-      // supportsBuiltin*: Search (OpenAI/Anthropic/OpenRouter/Kimi), Code
-      // (Claude 4.x, gpt-5.5), and Images (OpenAI cloud Responses API).
+      // The saved connection opt-in exposes Studio's local/MCP runtime.
+      // Provider-hosted capabilities remain separate under supportsBuiltin*:
+      // Search (OpenAI/Anthropic/OpenRouter/Kimi), Code (Claude 4.x, gpt-5.5),
+      // and Images (OpenAI cloud Responses API).
       supportsTools: supportsStudioTools,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
@@ -2662,9 +2659,8 @@ export function ChatPage({
           selectedExternal?.modelId,
           selectedProvider?.baseUrl,
         );
-        const supportsStudioTools = providerSupportsStudioTools(
-          selectedProvider?.providerType,
-        );
+        const supportsStudioTools =
+          selectedProvider?.studioToolExecution === true;
         const supportsBuiltinCodeExecution =
           providerSupportsBuiltinCodeExecution(
             selectedProvider?.providerType,
@@ -2730,9 +2726,8 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // Ollama uses Studio's local/MCP runtime. Other external providers
-          // keep supportsTools false and expose server-side capabilities via
-          // supportsBuiltin*.
+          // Studio tools are enabled only by the saved connection opt-in;
+          // provider-hosted capabilities remain under supportsBuiltin*.
           supportsTools: supportsStudioTools,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,

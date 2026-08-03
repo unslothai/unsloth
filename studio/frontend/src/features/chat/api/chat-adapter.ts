@@ -40,7 +40,6 @@ import {
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
-  providerSupportsStudioTools,
 } from "../provider-capabilities";
 import {
   type PendingImageEditReference,
@@ -2815,9 +2814,8 @@ export function createOpenAIStreamAdapter(
             (provider) => provider.id === externalSelection.providerId,
           )
         : null;
-      const externalUsesStudioTools = providerSupportsStudioTools(
-        externalProvider?.providerType,
-      );
+      const externalUsesStudioTools =
+        externalProvider?.studioToolExecution === true;
       const selectedModelSummary = runtime.models.find(
         (model) => model.id === params.checkpoint,
       );
