@@ -1669,6 +1669,8 @@ export const es = {
         "La ejecución de entrenamiento en curso está usando estos archivos. Detén el entrenamiento antes de eliminarlos.",
       deleteArtifactsFailed:
         "Se eliminó la ejecución, pero no se pudieron borrar sus archivos.",
+      deleteArtifactsRetainedError:
+        "No se pudieron eliminar los archivos del adaptador, por lo que la ejecución se conservó en el historial.",
       emptyTitle: "Aún no hay ejecuciones de entrenamiento",
       emptyDescription:
         "Aún no hay ejecuciones de entrenamiento. Inicia tu primera ejecución en la pestaña Configurar.",

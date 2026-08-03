@@ -315,6 +315,7 @@ def test_delete_refuses_dirs_outside_outputs_root(monkeypatch, tmp_path):
         )
 
     assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "training_artifact_deletion_failed"
     assert deleted_runs == []
     assert foreign_dir.exists()
 
@@ -416,6 +417,7 @@ def test_delete_artifacts_refused_while_dir_in_use_by_active_run(monkeypatch, tm
         )
 
     assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "training_artifacts_in_use"
     assert deleted_runs == []
     assert run_dir.exists()
 
@@ -601,6 +603,7 @@ def test_delete_failure_retains_history_row(monkeypatch, tmp_path):
         )
 
     assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "training_artifact_deletion_failed"
     assert deleted_runs == []
     assert run_dir.exists()
 

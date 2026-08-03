@@ -67,3 +67,19 @@ test("start-pending protection spans start synchronization and active phases", (
     false,
   );
 });
+
+test("requesting a stop invalidates an in-flight start lease", () => {
+  const runtime = useTrainingRuntimeStore.getState();
+  runtime.resetRuntime();
+  assert.equal(runtime.tryBeginStarting(), true);
+  const resetGeneration = useTrainingRuntimeStore.getState().resetGeneration;
+
+  useTrainingRuntimeStore.getState().setStopRequested(true);
+
+  const stopped = useTrainingRuntimeStore.getState();
+  assert.equal(stopped.isStarting, false);
+  assert.equal(stopped.stopRequested, true);
+  assert.equal(stopped.resetGeneration, resetGeneration + 1);
+
+  stopped.setStopRequested(false);
+});

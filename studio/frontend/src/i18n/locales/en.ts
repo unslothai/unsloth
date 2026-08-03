@@ -1625,6 +1625,8 @@ export const en = {
         "These files are in use by the training run in progress. Stop training before deleting them.",
       deleteArtifactsFailed:
         "The run was deleted but its files could not be removed.",
+      deleteArtifactsRetainedError:
+        "The adapter files could not be removed, so the training run was kept in history.",
       emptyTitle: "No training runs yet",
       emptyDescription:
         "No training runs yet. Start your first training run in the Configure tab.",

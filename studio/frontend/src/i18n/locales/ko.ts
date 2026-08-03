@@ -1616,6 +1616,8 @@ export const ko = {
         "진행 중인 학습 실행에서 이 파일을 사용하고 있습니다. 파일을 삭제하기 전에 학습을 중지하세요.",
       deleteArtifactsFailed:
         "실행은 삭제되었지만 관련 파일을 제거하지 못했습니다.",
+      deleteArtifactsRetainedError:
+        "어댑터 파일을 삭제할 수 없어 학습 실행이 기록에 유지되었습니다.",
       emptyTitle: "아직 학습 실행이 없습니다",
       emptyDescription:
         "아직 학습 실행이 없습니다. 구성 탭에서 첫 학습 실행을 시작하세요.",

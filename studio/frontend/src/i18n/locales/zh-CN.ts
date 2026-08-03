@@ -1553,6 +1553,8 @@ export const zhCN = {
       deleteArtifactsActiveError:
         "正在进行的训练运行正在使用这些文件。请先停止训练，再删除文件。",
       deleteArtifactsFailed: "运行已删除，但无法移除其文件。",
+      deleteArtifactsRetainedError:
+        "无法移除适配器文件，因此训练运行已保留在历史记录中。",
       emptyTitle: "还没有训练运行",
       emptyDescription: "还没有训练运行。请在配置标签页开始第一次训练。",
       loadError: "加载训练运行失败",

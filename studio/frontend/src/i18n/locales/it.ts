@@ -1673,6 +1673,8 @@ export const it = {
         "Questi file sono usati dal run di addestramento in corso. Ferma l'addestramento prima di eliminarli.",
       deleteArtifactsFailed:
         "Il run è stato eliminato, ma non è stato possibile rimuoverne i file.",
+      deleteArtifactsRetainedError:
+        "Non è stato possibile rimuovere i file dell’adattatore, quindi il run è stato mantenuto nella cronologia.",
       title: "Cronologia",
       emptyTitle: "Nessun run di addestramento",
       emptyDescription:

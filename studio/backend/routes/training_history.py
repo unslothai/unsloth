@@ -289,10 +289,13 @@ async def delete_training_run(
             if delete_outcome == "active":
                 raise HTTPException(
                     status_code = 409,
-                    detail = (
-                        "Cannot delete artifacts while a training run is writing "
-                        "to this directory"
-                    ),
+                    detail = {
+                        "code": "training_artifacts_in_use",
+                        "message": (
+                            "Cannot delete artifacts while a training run is writing "
+                            "to this directory"
+                        ),
+                    },
                 )
             if delete_outcome == "shared":
                 artifacts_kept_reason = "shared_output_dir"
@@ -302,7 +305,12 @@ async def delete_training_run(
             elif delete_outcome == "failed":
                 raise HTTPException(
                     status_code = 409,
-                    detail = "Could not delete run artifacts; training history was retained",
+                    detail = {
+                        "code": "training_artifact_deletion_failed",
+                        "message": (
+                            "Could not delete run artifacts; training history was retained"
+                        ),
+                    },
                 )
             else:
                 artifacts_deleted = True

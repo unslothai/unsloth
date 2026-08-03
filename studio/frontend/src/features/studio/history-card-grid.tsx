@@ -30,7 +30,7 @@ import {
   shouldShowTrainingArtifactsDeleted,
   useTrainingActions,
 } from "@/features/training";
-import { translate, useT } from "@/i18n";
+import { translate, type TranslationKey, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -381,13 +381,15 @@ export function HistoryCardGrid({
         // Refresh failed; card is already removed, no stale display.
       });
     } catch (err) {
-      toast.error(
-        err instanceof HistoryRequestError &&
-          err.status === 409 &&
-          deleteArtifacts
-          ? translate("studio.history.deleteArtifactsActiveError")
-          : translate("studio.history.deleteError"),
-      );
+      let errorKey: TranslationKey = "studio.history.deleteError";
+      if (err instanceof HistoryRequestError && deleteArtifacts) {
+        if (err.errorCode === "training_artifacts_in_use") {
+          errorKey = "studio.history.deleteArtifactsActiveError";
+        } else if (err.errorCode === "training_artifact_deletion_failed") {
+          errorKey = "studio.history.deleteArtifactsRetainedError";
+        }
+      }
+      toast.error(translate(errorKey));
     }
     setDeleteTarget(null);
     setDeleteArtifacts(false);

@@ -1675,6 +1675,8 @@ export const de = {
         "Diese Dateien werden vom laufenden Trainingslauf verwendet. Stoppen Sie das Training, bevor Sie sie löschen.",
       deleteArtifactsFailed:
         "Der Lauf wurde gelöscht, seine Dateien konnten jedoch nicht entfernt werden.",
+      deleteArtifactsRetainedError:
+        "Die Adapterdateien konnten nicht entfernt werden. Der Trainingslauf wurde daher im Verlauf beibehalten.",
       emptyTitle: "Noch keine Trainingsläufe",
       emptyDescription:
         "Noch keine Trainingsläufe. Starten Sie Ihren ersten Trainingslauf im Tab \"Konfigurieren\".",

@@ -6,10 +6,9 @@
    Lives with the Hub feature module so the styling stays bundled with the
    Hub. Wired into the build via a single @import in studio/frontend/src/index.css.
 
-   Format/status color tokens are defined at :root and :root.dark so Tailwind
-   utilities like `bg-format-gguf` or `text-status-success` resolve everywhere
-   the Hub UI is rendered. Rule bodies are scoped to .hub-page or hub-prefixed
-   classes so they do not bleed into chat, train or settings surfaces. */
+   Format/status color tokens and shared picker controls resolve wherever those
+   components render. Hub-only rule bodies are scoped to .hub-page or
+   hub-prefixed classes. */
 
 :root {
   --format-gguf: #60a5fa;

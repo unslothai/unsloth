@@ -1693,6 +1693,8 @@ export const fr = {
         "Ces fichiers sont utilisés par l'entraînement en cours. Arrêtez l'entraînement avant de les supprimer.",
       deleteArtifactsFailed:
         "L'exécution a été supprimée, mais ses fichiers n'ont pas pu être effacés.",
+      deleteArtifactsRetainedError:
+        "Les fichiers d’adaptateur n’ont pas pu être supprimés. L’entraînement a donc été conservé dans l’historique.",
       runCount: "{count} entraînements",
       oneRun: "1 entraînement",
       resume: "Reprendre",

@@ -469,6 +469,11 @@ def test_accepted_training_stop_survives_runtime_resync_failure():
     assert "expectedJobId ? { expectedJobId } : undefined" in transport
     assert "currentRuntime.jobId !== expectedJobId" in transport
     assert "currentRuntime.resetGeneration !== expectedResetGeneration" in transport
+    superseded = transport.split("currentRuntime.resetGeneration !== expectedResetGeneration", 1)[
+        1
+    ].split("return false", 1)[0]
+    assert "currentRuntime.resetGeneration === expectedResetGeneration" in superseded
+    assert "currentRuntime.setStopRequested(false)" in superseded
     assert "currentRuntime.setStopRequested(false)" in failure
     assert "currentRuntime.setRuntimeError(message)" in failure
     assert "await syncTrainingRuntimeFromBackend().catch(() => undefined)" in stop

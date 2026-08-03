@@ -1645,6 +1645,8 @@ export const ptBR = {
         "Esses arquivos estão sendo usados pelo treinamento atual. Interrompa o treinamento antes de excluí-los.",
       deleteArtifactsFailed:
         "A execução foi excluída, mas não foi possível apagar seus arquivos.",
+      deleteArtifactsRetainedError:
+        "Não foi possível remover os arquivos do adaptador, então a execução foi mantida no histórico.",
       runCount: "{count} execuções",
       oneRun: "1 execução",
       resume: "Retomar",

@@ -38,6 +38,9 @@ export function useTrainingActions() {
           currentRuntime.jobId !== expectedJobId ||
           currentRuntime.resetGeneration !== expectedResetGeneration
         ) {
+          if (currentRuntime.resetGeneration === expectedResetGeneration) {
+            currentRuntime.setStopRequested(false);
+          }
           await syncTrainingRuntimeFromBackend().catch(() => undefined);
           return false;
         }
