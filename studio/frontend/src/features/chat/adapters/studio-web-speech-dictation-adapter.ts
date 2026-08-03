@@ -8,6 +8,7 @@ import {
   resolveDictationLanguage,
   useVoiceSettingsStore,
 } from "@/features/settings/stores/voice-settings-store";
+import { isTauri } from "@/lib/api-base";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -132,6 +133,9 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
   static isSupported(): boolean {
     return (
       typeof window !== "undefined" &&
+      // The webview exposes the API but Apple's speech service refuses it
+      // (service-not-allowed), so the mic would render and then fail.
+      !isTauri &&
       window.isSecureContext &&
       getSpeechRecognitionAPI() !== undefined &&
       navigator.mediaDevices?.getUserMedia !== undefined

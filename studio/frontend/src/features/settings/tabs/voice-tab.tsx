@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isTauri } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -857,9 +858,11 @@ export function VoiceTab() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="browser">
-                {t("settings.voice.dictation.engineBrowser")}
-              </SelectItem>
+              {isTauri ? null : (
+                <SelectItem value="browser">
+                  {t("settings.voice.dictation.engineBrowser")}
+                </SelectItem>
+              )}
               <SelectItem value="model">
                 {t("settings.voice.dictation.engineModel")}
               </SelectItem>

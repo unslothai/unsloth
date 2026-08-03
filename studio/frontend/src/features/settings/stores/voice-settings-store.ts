@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
@@ -199,7 +200,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       micDeviceId: "default",
       setMicDeviceId: (micDeviceId) => set({ micDeviceId }),
 
-      dictationEngine: "browser",
+      dictationEngine: isTauri ? "model" : "browser",
       setDictationEngine: (dictationEngine) => set({ dictationEngine }),
 
       sttModel: DEFAULT_STT_MODEL,
@@ -321,8 +322,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         // "gguf" was a short-lived separate engine choice; both local
         // backends now live under "model".
         const savedEngine = saved?.dictationEngine as string | undefined;
+        // Desktop has no working browser speech service, so it always resolves
+        // to the local model.
         const dictationEngine: DictationEngine =
-          savedEngine === "model" || savedEngine === "gguf"
+          isTauri || savedEngine === "model" || savedEngine === "gguf"
             ? "model"
             : "browser";
         const savedSttModel = normalizeSttModel(saved?.sttModel);
