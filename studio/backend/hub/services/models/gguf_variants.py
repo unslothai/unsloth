@@ -737,6 +737,10 @@ async def get_gguf_variants_answer(
             cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
             if cached is not None:
                 variants, has_vision, complete = cached
+                # This listing is scoped to one cache, so name it: a repo-wide walk starts at
+                # the active cache and could read a different copy's context length.
+                if repo_cache_dir is not None and repo_cache_dir.is_dir():
+                    answered_from[0] = str(repo_cache_dir)
                 # The lister leaves torn quants in: they stay listed for management, but not ready.
                 return _with_state_partials(
                     _local_response(repo_id, variants, has_vision, complete)
@@ -1067,12 +1071,17 @@ async def get_gguf_variants_answer(
             _repo_cache_dir_for_request(repo_id, local_path),
         )
 
+    from utils.hf_cache_settings import configured_cache_key
+
     inflight_key = (
         repo_id,
         bool(prefer_local_cache),
         bool(offline),
         local_path or "",
         hf_cache_scan.token_fingerprint(hf_token),
+        # Switching cache storage must start a fresh scan rather than join one that is
+        # stuck on the old volume.
+        configured_cache_key(),
     )
     try:
         return await _shared_variants_scan(inflight_key, _compute_with_cleanables)

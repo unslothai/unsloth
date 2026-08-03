@@ -2656,3 +2656,99 @@ def test_offline_context_follows_the_hf_cache_when_it_answers(monkeypatch, tmp_p
         )
     )
     assert context_calls == [("org/repo", False)]
+
+
+def test_offline_context_follows_the_cache_the_variants_were_read_from(monkeypatch, tmp_path):
+    """A local_path under a non-active cache scopes the listing to that cache, so the length
+    has to come from there too. Falling back to the repo id walks every cache, active one
+    first, and can attach another copy's context to these variants. Real service, no stub."""
+    legacy_repo = tmp_path / "legacy" / "hub" / "models--org--repo"
+    (legacy_repo / "snapshots" / "rev").mkdir(parents = True)
+    context_calls = []
+
+    monkeypatch.setattr(
+        GV,
+        "list_gguf_variants_from_hf_cache",
+        lambda repo_id, root = None: (
+            [
+                SimpleNamespace(
+                    filename = "m-Q4_K_M.gguf",
+                    quant = "Q4_K_M",
+                    display_label = None,
+                    size_bytes = 10,
+                )
+            ],
+            False,
+            {"q4_k_m"},
+        ),
+    )
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
+    )
+
+    asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            offline = True,
+            local_path = str(legacy_repo),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert context_calls == [(str(legacy_repo), True)]
+
+
+def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_path):
+    """Pointing Studio at another cache has to start a fresh scan. Coalescing on the request
+    alone made the new request wait on the scan wedged against the old volume."""
+    import storage.studio_db as studio_db
+    import utils.hf_cache_settings as hf_cache_settings
+
+    wedged = threading.Event()
+    cache_home = [tmp_path / "wedgedvol"]
+    scanned = []
+
+    # Only the stored setting picks the cache home here.
+    monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {})
+    monkeypatch.setattr(
+        studio_db,
+        "get_app_setting",
+        lambda key, default = None: (
+            str(cache_home[0])
+            if key == hf_cache_settings.CACHE_HOME_SETTING_KEY
+            else default
+        ),
+    )
+
+    def scan(repo_id, root = None):
+        scanned.append(str(root))
+        if "wedgedvol" in str(root):
+            wedged.wait(5)
+        return None
+
+    monkeypatch.setattr(GV, "list_gguf_variants_from_hf_cache", scan)
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+    monkeypatch.setattr(GV, "list_local_gguf_variants", lambda _p: ([], False))
+    monkeypatch.setattr(GV, "_snapshot_scope_for_request", lambda *a, **k: None)
+
+    async def drive():
+        stuck = asyncio.ensure_future(GV.get_gguf_variants_answer("org/repo", offline = True))
+        await asyncio.sleep(0.2)
+        cache_home[0] = tmp_path / "healthyvol"
+        second = asyncio.ensure_future(GV.get_gguf_variants_answer("org/repo", offline = True))
+        done, _ = await asyncio.wait({second}, timeout = 1.5)
+        for task in (stuck, second):
+            task.cancel()
+        return bool(done)
+
+    try:
+        answered = asyncio.run(drive())
+    finally:
+        wedged.set()
+
+    assert any("wedgedvol" in root for root in scanned), scanned
+    assert answered, "the new request waited on the scan stuck against the old cache"
+    assert any("healthyvol" in root for root in scanned), scanned
