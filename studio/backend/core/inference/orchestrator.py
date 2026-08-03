@@ -45,6 +45,7 @@ def __getattr__(name: str):
 
 logger = get_logger(__name__)
 
+
 _CTX = mp.get_context("spawn")
 
 
@@ -1685,7 +1686,29 @@ class InferenceOrchestrator:
         if system_prompt:
             initial = [{"role": "system", "content": system_prompt}] + initial
 
+        # Same profile the renderer uses, so the controller never drops a tool over a
+        # marker this model does not treat as structure. The controller is also given the
+        # catalog safe under every template this turn could select, because the
+        # native-template fallback renders with a different profile (#7066).
+        from core.inference.chat_template_helpers import (
+            mapped_chat_template,
+            markup_for_tokenizer,
+            renderable_tool_catalog,
+        )
+
+        _model_info = self.models.get(self.active_model_name) or {}
+        # Resolved BEFORE the profile: the mapper installs its template during the render.
+        _mapped_tpl = mapped_chat_template(_model_info, self.active_model_name)
+
         yield from run_safetensors_tool_loop(
+            markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
+            renderable_tools = renderable_tool_catalog(
+                tools,
+                _model_info.get("tokenizer"),
+                _model_info,
+                active_model_name = self.active_model_name,
+                template = _mapped_tpl,
+            ),
             single_turn = _single_turn,
             messages = initial,
             tools = tools,
