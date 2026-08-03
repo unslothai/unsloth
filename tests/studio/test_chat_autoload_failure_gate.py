@@ -97,7 +97,15 @@ async function prepareHfTokenForUse(token: any) {
   return { proceed: true, token };
 }
 async function fetchGgufStagedMetadata(_req: any) {
-  return { is_diffusion: false };
+  // camelCase, matching chat-api.ts: the call site reads `.isDiffusion`, so a
+  // snake_case key here would be silently undefined.
+  return {
+    contextLength: null,
+    layerCount: null,
+    moeLayerCount: null,
+    isDiffusion: false,
+    diffusionUnknown: false,
+  };
 }
 
 function syncModelCapabilities(modelId: string, resp: any) {
@@ -275,29 +283,41 @@ def _build_harness(run_dir: Path):
     ), "could not locate the auto-load region in chat-adapter.ts"
     body = "\n".join(lines[start:end])
     assert "async function autoLoadSmallestModel" in body
-    # Anything the adapter imports and the sliced region calls has to exist in the
+    # Anything the adapter imports and the sliced region uses has to exist in the
     # preamble. Otherwise it is a bare ReferenceError at runtime, the retry loop
     # catches it and scores it as a failed load, and the scenario fails as a
     # wrong-model assertion that says nothing about the real cause. That is what
     # #7699 did by adding a syncModelCapabilities call here.
     imported = set()
     for match in re.finditer(r"^import\s+\{([^}]*)\}\s+from", "\n".join(lines), re.M):
-        for name in match.group(1).split(","):
-            name = name.strip().split(" as ")[-1].strip()
+        for spec in match.group(1).split(","):
+            spec = spec.strip()
+            # `import { type Foo }` is erased at runtime, so it can never be a
+            # ReferenceError and must not be demanded of the harness.
+            if not spec or spec.startswith("type "):
+                continue
+            name = spec.split(" as ")[-1].strip()
             if name:
                 imported.add(name)
+    # Any mention, not just a call. useChatRuntimeStore, toast and GPU_LAYERS_AUTO
+    # are all used in this region without a following paren, and each would be the
+    # same ReferenceError; they pass today only because the preamble happens to
+    # define them. Comments are stripped first so a name discussed in prose does
+    # not count as a use.
+    code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
+    code = re.sub(r"//[^\n]*", "", code)
     missing = sorted(
-        name
-        for name in imported
-        if re.search(rf"\b{re.escape(name)}\s*\(", body)
+        name for name in imported
+        if re.search(rf"\b{re.escape(name)}\b", code)
         and not re.search(
-            rf"^(?:async\s+)?(?:function\s+|const\s+|let\s+|var\s+){re.escape(name)}\b",
+            rf"^(?:export\s+)?(?:async\s+)?"
+            rf"(?:function\s+|const\s+|let\s+|var\s+|class\s+){re.escape(name)}\b",
             PREAMBLE,
             re.M,
         )
     )
     assert not missing, (
-        f"the sliced region calls {missing}, imported by chat-adapter.ts but absent "
+        f"the sliced region uses {missing}, imported by chat-adapter.ts but absent "
         "from this harness. Add a stub to PREAMBLE, or these scenarios will fail as "
         "wrong-model assertions rather than saying what is actually missing."
     )
