@@ -638,14 +638,16 @@ def _detect_rocm_version() -> tuple[int, int] | None:
 # gfx1036 Raphael iGPU shadowing a gfx1200 RX 9060 XT). Deliberately excludes
 # the Strix arches (gfx1150/1151/1152): those are first-class unified-memory
 # training targets, so their selection must stay untouched.
-_SHADOWING_INTEGRATED_GFX: "frozenset[str]" = frozenset({
-    "gfx90c",   # Renoir / Cezanne
-    "gfx1013",  # Van Gogh
-    "gfx1035",  # Rembrandt
-    "gfx1036",  # Raphael / Mendocino
-    "gfx1037",  # Raphael-H
-    "gfx1103",  # Phoenix / Hawk Point
-})
+_SHADOWING_INTEGRATED_GFX: "frozenset[str]" = frozenset(
+    {
+        "gfx90c",  # Renoir / Cezanne
+        "gfx1013",  # Van Gogh
+        "gfx1035",  # Rembrandt
+        "gfx1036",  # Raphael / Mendocino
+        "gfx1037",  # Raphael-H
+        "gfx1103",  # Phoenix / Hawk Point
+    }
+)
 
 
 def _visible_devices_pinned() -> bool:
