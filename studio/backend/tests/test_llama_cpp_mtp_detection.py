@@ -71,7 +71,7 @@ from core.inference.llama_cpp import (
 
 
 def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
-    return backend.matches_load_intent(GgufLoadIntent(**kwargs))
+    return backend.adopt_load_intent_if_matched(GgufLoadIntent(**kwargs))
 
 
 # Synthetic GGUF helper (mirrors test_gguf_metadata.py).

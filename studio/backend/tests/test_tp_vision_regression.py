@@ -833,17 +833,17 @@ def test_already_in_target_state_reloads_on_tensor_off_after_fallback():
         is_vision = False,
     )
     # Preserved fallback + EXPLICIT tensor drop -> reload (not already in target state).
-    assert _backend(True).matches_load_intent(GgufLoadIntent(**kwargs)) is False
+    assert _backend(True).adopt_load_intent_if_matched(GgufLoadIntent(**kwargs)) is False
     # Same preserved fallback but an implicit reload that carries the intent forward
     # (HF auto-pick / local-dir flows skip the route guard and reach here) -> dedupe.
     assert (
-        _backend(True).matches_load_intent(
+        _backend(True).adopt_load_intent_if_matched(
             GgufLoadIntent(**kwargs, preserve_multi_gpu_on_layer = True)
         )
         is True
     )
     # A genuine layer load (no preserved intent) -> dedupe, no churn.
-    assert _backend(False).matches_load_intent(GgufLoadIntent(**kwargs)) is True
+    assert _backend(False).adopt_load_intent_if_matched(GgufLoadIntent(**kwargs)) is True
 
 
 # ── route dedup: gpu_ids device strip (#7164/#7188) ───────────────────────────

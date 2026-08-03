@@ -7480,7 +7480,7 @@ class LlamaCppBackend:
                 raise RuntimeError("llama.cpp is updating; try again in a moment.")
             # Duplicate /load that raced past the route check: do nothing if the
             # live server already satisfies this request.
-            if self.matches_load_intent(intent):
+            if self.adopt_load_intent_if_matched(intent):
                 logger.info(
                     f"load_model: backend already in target state for "
                     f"'{model_identifier}', skipping reload"
@@ -10276,8 +10276,8 @@ class LlamaCppBackend:
             self._speculative_type = "default"
         return flags
 
-    def matches_load_intent(self, intent: GgufLoadIntent) -> bool:
-        """Whether the live server already satisfies one caller intent."""
+    def adopt_load_intent_if_matched(self, intent: GgufLoadIntent) -> bool:
+        """Match live state and adopt the caller's compatible GPU placement."""
         if not self.matches_load_source(intent):
             return False
         effective_extra_args = (

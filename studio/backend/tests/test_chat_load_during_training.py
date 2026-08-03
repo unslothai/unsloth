@@ -1442,7 +1442,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             last_load_intent = None,
             layer_preserves_tensor_intent = False,
             is_vulkan_build = lambda: True,
-            matches_load_intent = lambda intent: False,
+            adopt_load_intent_if_matched = lambda intent: False,
         )
         llama.unload_model = MagicMock()
         cfg = SimpleNamespace(

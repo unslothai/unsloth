@@ -690,7 +690,7 @@ class TestLoadHubDownloadExclusion:
         backend = SimpleNamespace(
             is_loaded = True,
             model_identifier = REPO,
-            matches_load_intent = lambda _intent: True,
+            adopt_load_intent_if_matched = lambda _intent: True,
             _audio_probed = True,
         )
         request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
@@ -726,7 +726,7 @@ class TestLoadHubDownloadExclusion:
             model_identifier = REPO,
             gguf_path = None,
             matches_load_source = lambda _intent: True,
-            matches_load_intent = lambda _intent: True,
+            adopt_load_intent_if_matched = lambda _intent: True,
             _audio_probed = True,
         )
         config = SimpleNamespace(
@@ -1085,7 +1085,7 @@ class TestLoadHubDownloadExclusion:
             hf_variant = VARIANT,
             model_identifier = REPO,
             matches_load_source = lambda _intent: False,
-            matches_load_intent = lambda _intent: False,
+            adopt_load_intent_if_matched = lambda _intent: False,
         )
         request = LoadRequest(
             model_path = REPO,

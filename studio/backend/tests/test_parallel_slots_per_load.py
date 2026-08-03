@@ -253,7 +253,7 @@ def _loaded_backend() -> LlamaCppBackend:
 
 
 def _target_state(backend: LlamaCppBackend, n_parallel: int) -> bool:
-    return backend.matches_load_intent(
+    return backend.adopt_load_intent_if_matched(
         GgufLoadIntent(
             gguf_path = None,
             model_identifier = "owner/repo",

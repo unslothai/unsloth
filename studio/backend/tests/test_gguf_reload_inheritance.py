@@ -3,7 +3,7 @@
 
 """Backend contract for the GGUF reload duplicate-load guard.
 
-``LlamaCppBackend.matches_load_intent`` short-circuits a duplicate /load so
+``LlamaCppBackend.adopt_load_intent_if_matched`` short-circuits a duplicate /load so
 it cannot kill the just-spawned llama-server. Pins local-file identity, the
 HF-mode hf_variant fallback, and ``extra_args`` None-vs-[] inherit semantics.
 """
@@ -88,7 +88,7 @@ def _loaded_backend(**overrides):
 
 
 def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
-    return backend.matches_load_intent(GgufLoadIntent(**kwargs))
+    return backend.adopt_load_intent_if_matched(GgufLoadIntent(**kwargs))
 
 
 # ── Local-file identity via gguf_path ────────────────────────────────

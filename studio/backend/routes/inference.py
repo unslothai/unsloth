@@ -5915,7 +5915,7 @@ async def _load_model_impl(
             intent: GgufLoadIntent, *, display_name: Optional[str] = None
         ) -> Optional[LoadResponse]:
             if not (
-                llama_backend.matches_load_intent(intent)
+                llama_backend.adopt_load_intent_if_matched(intent)
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 return None

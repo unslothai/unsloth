@@ -178,7 +178,7 @@ def _loaded_diffusion(llama_cpp, *, recorded_layers, requested_ngl):
 
 
 def _in_target_state(llama_cpp, b, *, mode, layers):
-    return b.matches_load_intent(
+    return b.adopt_load_intent_if_matched(
         llama_cpp.GgufLoadIntent(
             model_identifier = "unsloth/DiffusionGemma-GGUF",
             n_ctx = 4096,

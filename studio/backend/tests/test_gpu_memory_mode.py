@@ -157,7 +157,7 @@ def _loaded_backend(gpu_memory_mode: str) -> LlamaCppBackend:
 
 
 def _target_state(backend: LlamaCppBackend, gpu_memory_mode: str) -> bool:
-    return backend.matches_load_intent(
+    return backend.adopt_load_intent_if_matched(
         GgufLoadIntent(
             gguf_path = None,
             model_identifier = "owner/repo",
@@ -389,7 +389,7 @@ def _target_state_manual(
     n_cpu_moe,
     tensor_split = None,
 ):
-    return backend.matches_load_intent(
+    return backend.adopt_load_intent_if_matched(
         GgufLoadIntent(
             gguf_path = None,
             model_identifier = "owner/repo",
@@ -613,7 +613,7 @@ def test_gpu_ids_property_default_and_reset():
 
 
 def _target_state_gpu_ids(backend, gpu_ids):
-    return backend.matches_load_intent(
+    return backend.adopt_load_intent_if_matched(
         GgufLoadIntent(
             gguf_path = None,
             model_identifier = "owner/repo",
@@ -686,7 +686,7 @@ def test_gpu_ids_control_owned_device_extra_args(gpu_ids, expected_ids, matches)
     )
 
     assert intent.gpu_ids == expected_ids
-    assert backend.matches_load_intent(intent) is matches
+    assert backend.adopt_load_intent_if_matched(intent) is matches
 
 
 def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
