@@ -43,6 +43,7 @@ jobs:
     outputs:
       studio_version: ${{ steps.prepare.outputs.studio_version }}
       app_version: ${{ steps.prepare.outputs.app_version }}
+      asset_version: ${{ steps.prepare.outputs.asset_version }}
       desktop_release_tag: ${{ steps.prepare.outputs.desktop_release_tag }}
       prerelease: ${{ steps.prepare.outputs.prerelease }}
       pypi_version: ${{ steps.prepare.outputs.pypi_version }}
@@ -79,6 +80,7 @@ jobs:
               sys.exit(f'studio_version must be a SemVer tag with leading v, for example v0.1.39-beta: {studio_version}')
 
           app_version = studio_version.removeprefix('v')
+          asset_version = re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')
           desktop_release_tag = f'desktop-v{app_version}'
           prerelease = 'true' if '-' in app_version.split('+', 1)[0] else 'false'
 
@@ -141,6 +143,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               print(f'studio_version={studio_version}', file=output)
               print(f'app_version={app_version}', file=output)
+              print(f'asset_version={asset_version}', file=output)
               print(f'desktop_release_tag={desktop_release_tag}', file=output)
               print(f'prerelease={prerelease}', file=output)
               print(f'pypi_version={pypi_version}', file=output)
@@ -317,7 +320,6 @@ jobs:
             args: '--target aarch64-apple-darwin'
             label: macOS (Apple Silicon)
             artifact: macos-aarch64
-            release_arch: aarch64
           # - platform: macos-latest
           #   args: '--target x86_64-apple-darwin'
           #   label: macOS (Intel)
@@ -325,12 +327,10 @@ jobs:
             args: ''
             label: Linux (x64)
             artifact: linux-x64
-            release_arch: x64
           - platform: windows-latest
             args: ''
             label: Windows (x64)
             artifact: windows-x64
-            release_arch: x64
 
     name: Build ${{ matrix.label }}
     needs: prepare-version
@@ -339,6 +339,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
+      ASSET_VERSION: ${{ needs.prepare-version.outputs.asset_version }}
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
       DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
@@ -692,7 +693,6 @@ jobs:
         shell: bash
         env:
           ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
-          RELEASE_ARCH: ${{ matrix.release_arch }}
         run: |
           set -euo pipefail
           if command -v python3 >/dev/null 2>&1; then
@@ -704,10 +704,8 @@ jobs:
           import json
           import os
           import pathlib
-          import re
           import shutil
           import sys
-          import unicodedata
 
           raw_paths = os.environ.get('ARTIFACT_PATHS', '')
           try:
@@ -719,26 +717,34 @@ jobs:
 
           destination = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
           destination.mkdir(parents=True, exist_ok=True)
+          base_name = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          suffix_names = (
+              ('.app.tar.gz.sig', f'{base_name}-ARM64.app.tar.gz.sig'),
+              ('.app.tar.gz', f'{base_name}-ARM64.app.tar.gz'),
+              ('.AppImage.sig', f'{base_name}-Ubuntu.AppImage.sig'),
+              ('.AppImage', f'{base_name}-Ubuntu.AppImage'),
+              ('-setup.exe.sig', f'{base_name}-Windows.exe.sig'),
+              ('-setup.exe', f'{base_name}-Windows.exe'),
+              ('.dmg', f'{base_name}-MacOS.dmg'),
+              ('.deb', f'{base_name}-Linux.deb'),
+          )
           staged = []
           for raw_path in artifact_paths:
               source = pathlib.Path(raw_path)
               if not source.is_file():
                   continue
-              name = source.name
-              for extension in ('.app.tar.gz.sig', '.app.tar.gz'):
-                  if name.endswith(extension):
-                      name = f'{name[:-len(extension)]}_{os.environ["RELEASE_ARCH"]}{extension}'
-                      break
-              name = unicodedata.normalize('NFD', name)
-              name = ''.join(character for character in name if not unicodedata.combining(character))
-              name = re.sub(r'[ ()\[\]{}]', '.', name)
-              while '..' in name:
-                  name = name.replace('..', '.')
-              target = destination / name
+              target_name = next(
+                  (target_name for suffix, target_name in suffix_names if source.name.endswith(suffix)),
+                  None,
+              )
+              if target_name is None:
+                  print(f'Skipping non-release Tauri artifact: {source.name}')
+                  continue
+              target = destination / target_name
               if target.exists():
-                  sys.exit(f'Duplicate staged release asset name: {name}')
+                  sys.exit(f'Duplicate staged release asset name: {target_name}')
               shutil.copy2(source, target)
-              staged.append(name)
+              staged.append(target_name)
 
           if not staged:
               sys.exit('No release files were staged')
@@ -766,6 +772,7 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
+      ASSET_VERSION: ${{ needs.prepare-version.outputs.asset_version }}
       PYPI_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
@@ -789,29 +796,32 @@ jobs:
         run: |
           set -euo pipefail
           python3 <<'PY'
-          import pathlib
           import os
+          import pathlib
           import sys
 
           asset_dir = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
           files = [path for path in asset_dir.iterdir() if path.is_file()]
-          required_suffixes = (
-              '.dmg',
-              '.app.tar.gz',
-              '.app.tar.gz.sig',
-              '.deb',
-              '.AppImage',
-              '.AppImage.sig',
-              '-setup.exe',
-              '-setup.exe.sig',
-          )
-          for suffix in required_suffixes:
-              matches = [path for path in files if path.name.endswith(suffix)]
-              if len(matches) != 1:
-                  sys.exit(f'Expected exactly one {suffix} release asset, found {len(matches)}')
-          if any(path.name == 'latest.json' for path in files):
-              sys.exit('Build artifacts must not supply latest.json')
-          print('\n'.join(sorted(path.name for path in files)))
+          base_name = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          expected_names = {
+              f'{base_name}-MacOS.dmg',
+              f'{base_name}-ARM64.app.tar.gz',
+              f'{base_name}-ARM64.app.tar.gz.sig',
+              f'{base_name}-Ubuntu.AppImage',
+              f'{base_name}-Ubuntu.AppImage.sig',
+              f'{base_name}-Linux.deb',
+              f'{base_name}-Windows.exe',
+              f'{base_name}-Windows.exe.sig',
+          }
+          actual_names = {path.name for path in files}
+          if actual_names != expected_names:
+              missing = sorted(expected_names - actual_names)
+              unexpected = sorted(actual_names - expected_names)
+              sys.exit(
+                  'Desktop release asset names do not match the branding contract: '
+                  f'missing={missing}, unexpected={unexpected}'
+              )
+          print('\n'.join(sorted(actual_names)))
           PY
 
       - name: Create or validate versioned release

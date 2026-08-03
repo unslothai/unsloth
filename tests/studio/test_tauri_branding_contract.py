@@ -81,6 +81,25 @@ def test_desktop_artwork_uses_plain_unsloth_lockups() -> None:
     assert bmp_metadata(branding / "nsis-sidebar.bmp") == (328, 628, 24)
 
 
+def test_desktop_release_asset_names_are_human_readable() -> None:
+    workflow = read(REPO / ".github/workflows/release-desktop.yml")
+    assert "re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')" in workflow
+
+    assert "base_name = f'Unsloth-Desktop-{os.environ[\"ASSET_VERSION\"]}'" in workflow
+    expected_suffixes = {
+        "MacOS.dmg",
+        "ARM64.app.tar.gz",
+        "ARM64.app.tar.gz.sig",
+        "Ubuntu.AppImage",
+        "Ubuntu.AppImage.sig",
+        "Linux.deb",
+        "Windows.exe",
+        "Windows.exe.sig",
+    }
+    for suffix in expected_suffixes:
+        assert f"f'{{base_name}}-{suffix}'" in workflow
+
+
 def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
     display_sources = [
         TAURI / "Info.plist",
