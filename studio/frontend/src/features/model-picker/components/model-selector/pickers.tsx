@@ -125,7 +125,12 @@ import {
   modelIdsMatchForPicker,
   soleQuantRowState,
 } from "./row-identity";
-import { parseMetaTokens, splitRepoLabel } from "./row-meta";
+import {
+  type FormatTone,
+  isUnslothOwner,
+  parseMetaTokens,
+  splitRepoLabel,
+} from "./row-meta";
 import {
   type SoleQuantEntry,
   type SoleQuantTarget,
@@ -384,7 +389,8 @@ function formatBytes(bytes: number): string {
     value /= 1000;
     i += 1;
   }
-  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
+  // No space: "145MB" reads as one value beside the quant chip.
+  return `${value.toFixed(value < 10 ? 1 : 0)}${units[i]}`;
 }
 
 // Small icon badges for what a model can do (vision / reasoning / audio).
@@ -410,6 +416,111 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
   );
 }
 
+/** "This model reads images", from the GGUF metadata (On Device rows). */
+function VisionBadge() {
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          aria-label="Vision"
+          className="flex h-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 px-1.5 text-indigo-700 dark:text-indigo-300"
+        >
+          <HugeiconsIcon icon={ViewIcon} className="size-3" strokeWidth={1.8} />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        This model can process image inputs
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Parameter count chip ("27B"). */
+function ParamChip({ label }: { label: string }) {
+  return (
+    <span className="whitespace-nowrap rounded-md border border-border/60 px-1.5 py-px text-ui-10 font-medium text-muted-foreground tabular-nums">
+      {label}
+    </span>
+  );
+}
+
+// Format colours: gguf blue, mlx amber, safetensors/checkpoint pink, adapter.
+const FORMAT_TONE_DOT: Record<FormatTone, string> = {
+  gguf: "bg-format-gguf",
+  mlx: "bg-format-mlx",
+  checkpoint: "bg-format-checkpoint",
+  adapter: "bg-format-adapter",
+};
+
+/** Format as a coloured dot ahead of the name, named on hover. A word like
+ *  "Safetensors" is wide enough to shove the rest of the row around. */
+function FormatTag({ tone, label }: { tone: FormatTone; label: string }) {
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        {/* Hit area, so hovering the dot is not a pixel hunt. */}
+        <span
+          aria-label={label}
+          className="flex size-[14px] shrink-0 items-center justify-center"
+        >
+          <span
+            aria-hidden="true"
+            className={cn("size-[5px] rounded-full", FORMAT_TONE_DOT[tone])}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** "Already on disk", shown on Hub rows that are also downloaded. */
+function DownloadedBadge() {
+  return (
+    <span
+      title="Already downloaded"
+      aria-label="Already downloaded"
+      className="flex h-[18px] shrink-0 items-center justify-center rounded-md border border-status-success/40 px-1.5 text-status-success"
+    >
+      <HugeiconsIcon
+        icon={Download01Icon}
+        className="size-3"
+        strokeWidth={1.8}
+      />
+    </span>
+  );
+}
+
+/** VRAM verdict for Hub rows: over budget, or a tight fit. */
+function VramBadge({ status }: { status?: VramFitStatus | null }) {
+  if (status === "exceeds") {
+    return (
+      <span className="whitespace-nowrap text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
+        OOM
+      </span>
+    );
+  }
+  if (status === "tight") {
+    return (
+      <span className="whitespace-nowrap text-ui-9 font-medium !text-amber-400">
+        TIGHT
+      </span>
+    );
+  }
+  return null;
+}
+
+/** The one quant a row loads, as a compact mono chip. */
+function QuantChip({ label }: { label: string }) {
+  return (
+    <span className="inline-flex h-[18px] max-w-full items-center overflow-hidden rounded-md bg-black/[0.06] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-white/[0.1]">
+      {label}
+    </span>
+  );
+}
+
 function isRuntimeLoadedModel(
   loadedModelId: string | undefined,
   activeGgufVariant: string | null | undefined,
@@ -426,6 +537,32 @@ function isRuntimeLoadedModel(
     ? hasActiveGgufVariant
     : !hasActiveGgufVariant;
 }
+
+// Shared row columns, so the meta lines up down the list instead of drifting
+// with each name's length. Widths are em of the slot's own text, so they
+// follow the UI font scale, and collapse below the picker's full width.
+// min-w-min means a width is the column held open, not a clamp: an outsized
+// badge grows its own slot rather than spilling over the next one.
+const META_COLUMN = {
+  // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
+  quant: "min-[560px]:w-[7.2em]",
+  // One capability / vision / downloaded badge.
+  badge: "min-w-min min-[560px]:w-[24px]",
+  // The "OOM" pill, wider than bare "TIGHT" (Hub rows).
+  vram: "min-w-min min-[560px]:w-[4em]",
+  // "235B" on device rows; Hub rows report "2779.5B", hence paramWide.
+  param: "min-w-min min-[560px]:w-[3.6em]",
+  paramWide: "min-w-min min-[560px]:w-[5.2em]",
+  // "536 MB".
+  size: "min-w-min min-[560px]:w-[4.2em]",
+  // The format dot that leads the row; the name lives in its tooltip.
+  format: "min-[560px]:w-[14px]",
+} as const;
+
+// One gutter for every row, gear or no gear, so the columns never shift by a
+// button. The buttons show on hover; the gutter stays open so nothing moves.
+const ROW_ACTIONS_CLASS =
+  "mr-0.5 flex w-[38px] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100";
 
 function ModelRow({
   label,
@@ -445,6 +582,7 @@ function ModelRow({
   downloaded,
   showVision,
   quantChip,
+  alignMeta,
   className,
 }: {
   label: string;
@@ -473,6 +611,9 @@ function ModelRow({
   showVision?: boolean;
   /** Grey chip beside the name, for rows that load one specific quant. */
   quantChip?: string | null;
+  /** Column layout (see META_COLUMN): "device" reserves the quant chip,
+   *  "hub" the download and VRAM badges those lists carry instead. */
+  alignMeta?: "device" | "hub";
   className?: string;
 }) {
   const exceeds = vramStatus === "exceeds";
@@ -488,12 +629,24 @@ function ModelRow({
       : null;
 
   const { owner, name } = splitRepoLabel(label);
+  // Drop our own owner: the list is nearly all unsloth/, so it is noise.
+  // Other owners still show, which is what tells the two apart.
+  const showOwner = !!owner && !hideOwner && !isUnslothOwner(owner);
   const parsed = parseMetaTokens(meta);
   // Param chip from meta, else derived from the name so GGUF rows show it too.
   const paramLabel = parsed.param ?? extractParamLabel(name) ?? null;
   // Use the passed-in capabilities (tag-aware) or infer from the repo name.
   const caps = capabilities ?? detectCapabilities({ id: label });
   const showCaps = hasAnyCapability(caps);
+  const aligned = alignMeta !== undefined;
+  // One dot per row. A second format shares the first's colour anyway, so it
+  // rides along in the tooltip instead of pushing the name out of line.
+  const formatDot = parsed.formats[0]
+    ? {
+        tone: parsed.formats[0].tone,
+        label: parsed.formats.map((f) => f.label).join(" · "),
+      }
+    : null;
 
   const content = (
     <button
@@ -514,93 +667,131 @@ function ModelRow({
       )}
     >
       <span className="flex min-w-0 flex-1 items-baseline">
-        {owner && !hideOwner ? (
+        {/* Fixed slot, so names start on one line with or without a dot. */}
+        {aligned ? (
+          <span
+            className={cn(
+              "mr-1 flex shrink-0 items-center self-center",
+              META_COLUMN.format,
+            )}
+          >
+            {formatDot ? <FormatTag {...formatDot} /> : null}
+          </span>
+        ) : formatDot ? (
+          <span className="mr-1 flex shrink-0 items-center self-center">
+            <FormatTag {...formatDot} />
+          </span>
+        ) : null}
+        {showOwner ? (
           <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-ui-13 text-muted-foreground/90">
             <span className="truncate">{owner}</span>
             <span className="shrink-0 text-muted-foreground/45">/</span>
           </span>
         ) : null}
         <span className="min-w-0 flex-1 truncate">{name}</span>
-        {quantChip ? (
+        {/* Here it eats name width instead of moving the meta columns. */}
+        {aligned && loaded && (
+          <DotTag
+            tone="success"
+            label="Loaded"
+            className="ml-2 h-[18px] shrink-0 gap-1 rounded-md px-1.5"
+            dotClassName="size-[5px]"
+          />
+        )}
+        {alignMeta === "device" ? (
+          <span
+            className={cn(
+              "ml-1.5 flex shrink-0 items-center self-center text-ui-9",
+              META_COLUMN.quant,
+            )}
+          >
+            {quantChip ? <QuantChip label={quantChip} /> : null}
+          </span>
+        ) : quantChip ? (
           <span className="ml-2 shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-white/[0.1]">
             {quantChip}
           </span>
         ) : null}
       </span>
-      <span className="ml-auto flex shrink-0 items-center gap-1.5">
-        {showCaps && <CapabilityIcons caps={caps} />}
-        {showVision && (
-          <Tooltip delayDuration={0}>
-            <TooltipTrigger asChild={true}>
-              <span
-                aria-label="Vision"
-                className="flex h-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 px-1.5 text-indigo-700 dark:text-indigo-300"
-              >
-                <HugeiconsIcon
-                  icon={ViewIcon}
-                  className="size-3"
-                  strokeWidth={1.8}
-                />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="tooltip-compact">
-              This model can process image inputs
-            </TooltipContent>
-          </Tooltip>
+      <span
+        className={cn(
+          "ml-auto flex shrink-0 items-center",
+          aligned ? "gap-1" : "gap-1.5",
         )}
-        {loaded && (
-          <DotTag
-            tone="success"
-            label="Loaded"
-            className="h-[18px] gap-1 rounded-md px-1.5"
-            dotClassName="size-[5px]"
-          />
-        )}
-        {downloaded && !loaded && (
+      >
+        {/* Capabilities, vision and the Hub lists' "on disk" mark share one
+            column; two of them widen the slot rather than overlap. */}
+        {aligned ? (
           <span
-            title="Already downloaded"
-            aria-label="Already downloaded"
-            className="flex h-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 px-1.5 text-muted-foreground"
+            className={cn(
+              "flex shrink-0 items-center justify-center gap-1 text-ui-10",
+              META_COLUMN.badge,
+            )}
           >
-            <HugeiconsIcon
-              icon={Download01Icon}
-              className="size-3"
-              strokeWidth={1.8}
-            />
+            {showCaps && <CapabilityIcons caps={caps} />}
+            {showVision && <VisionBadge />}
+            {downloaded && !loaded ? <DownloadedBadge /> : null}
           </span>
+        ) : (
+          <>
+            {showCaps && <CapabilityIcons caps={caps} />}
+            {showVision && <VisionBadge />}
+            {loaded && (
+              <DotTag
+                tone="success"
+                label="Loaded"
+                className="h-[18px] gap-1 rounded-md px-1.5"
+                dotClassName="size-[5px]"
+              />
+            )}
+            {downloaded && !loaded ? <DownloadedBadge /> : null}
+          </>
         )}
-        {vramStatus === "exceeds" && (
-          <span className="text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
-            OOM
+        {alignMeta === "hub" ? (
+          <span
+            className={cn(
+              "flex shrink-0 items-center justify-end text-ui-9",
+              META_COLUMN.vram,
+            )}
+          >
+            <VramBadge status={vramStatus} />
           </span>
+        ) : (
+          <VramBadge status={vramStatus} />
         )}
-        {vramStatus === "tight" && (
-          <span className="text-ui-9 font-medium !text-amber-400">TIGHT</span>
-        )}
-        {paramLabel ? (
-          <span className="rounded-md border border-border/60 px-1.5 py-px text-ui-10 font-medium text-muted-foreground tabular-nums">
-            {paramLabel}
+        {aligned ? (
+          <span
+            className={cn(
+              "flex shrink-0 justify-end text-ui-10",
+              alignMeta === "hub" ? META_COLUMN.paramWide : META_COLUMN.param,
+            )}
+          >
+            {paramLabel ? <ParamChip label={paramLabel} /> : null}
           </span>
+        ) : paramLabel ? (
+          <ParamChip label={paramLabel} />
         ) : null}
         {parsed.texts.map((text) => (
           <span key={text} className="text-ui-10 text-muted-foreground">
             {text}
           </span>
         ))}
-        {parsed.size !== undefined ? (
-          <span className="text-ui-10 text-muted-foreground tabular-nums">
+        {/* Hub rows skip the size: only the odd safetensors repo reports one
+            unexpanded, so the column would be an empty gap. */}
+        {alignMeta === "device" ? (
+          <span
+            className={cn(
+              "shrink-0 whitespace-nowrap text-right font-mono text-ui-10 text-muted-foreground tabular-nums",
+              META_COLUMN.size,
+            )}
+          >
+            {parsed.size}
+          </span>
+        ) : alignMeta === "hub" ? null : parsed.size !== undefined ? (
+          <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
             {parsed.size}
           </span>
         ) : null}
-        {parsed.formats.map((f) => (
-          <DotTag
-            key={f.label}
-            tone={f.tone}
-            label={f.label}
-            className="h-[18px] gap-[3px] rounded-md px-1.5"
-            dotClassName="size-[5px]"
-          />
-        ))}
       </span>
     </button>
   );
@@ -1189,7 +1380,7 @@ function GgufVariantExpander({
                     TIGHT
                   </span>
                 )}
-                <span className="text-ui-10 text-muted-foreground">
+                <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
                   {formatBytes(v.size_bytes)}
                 </span>
               </span>
@@ -2962,28 +3153,36 @@ export function HubModelPicker({
           )}
           title={`${entry.repoId} (${entry.quant})`}
         >
-          <span className="flex min-w-0 items-baseline">
-            {owner ? (
+          <span className="flex min-w-0 flex-1 items-baseline">
+            {owner && !isUnslothOwner(owner) ? (
               <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-ui-13 text-muted-foreground/90">
                 <span className="truncate">{owner}</span>
                 <span className="shrink-0 text-muted-foreground/45">/</span>
               </span>
             ) : null}
-            <span className="min-w-0 truncate">{name}</span>
+            <span className="min-w-0 flex-1 truncate">{name}</span>
+            {isLoaded && (
+              <DotTag
+                tone="success"
+                label="Loaded"
+                className="ml-2 h-[18px] shrink-0 gap-1 rounded-md px-1.5"
+                dotClassName="size-[5px]"
+              />
+            )}
           </span>
-          <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-white/[0.1]">
-            {entry.quant}
+          {/* Same quant column as the sections below. */}
+          <span
+            className={cn(
+              "flex shrink-0 items-baseline font-mono text-ui-10",
+              META_COLUMN.quant,
+            )}
+          >
+            <span className="max-w-full truncate rounded-md bg-black/[0.06] px-1.5 py-px text-muted-foreground dark:bg-white/[0.1]">
+              {entry.quant}
+            </span>
           </span>
-          {isLoaded && (
-            <DotTag
-              tone="success"
-              label="Loaded"
-              className="ml-auto h-[18px] shrink-0 gap-1 rounded-md px-1.5"
-              dotClassName="size-[5px]"
-            />
-          )}
         </button>
-        <span className="mr-1 flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100">
+        <span className={ROW_ACTIONS_CLASS}>
           {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${entry.repoId} ${entry.quant}`}
@@ -3000,7 +3199,6 @@ export function HubModelPicker({
           )}
           <ModelRowMenu
             ariaLabel={`More options for ${entry.repoId} ${entry.quant}`}
-            iconClassName="size-3"
             cachePath={{ repoId: entry.repoId, variant: entry.quant }}
             pin={{
               pinned: true,
@@ -3078,55 +3276,57 @@ export function HubModelPicker({
             showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
             loaded={rowState.loaded}
+            alignMeta="device"
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
             onClick={() => onSelect(c.repo_id, selectMeta)}
             vramStatus={null}
             className={downloadedRowButtonClassName}
           />
         </div>
-        {onConfigure && (
-          <ModelLoadSettingsAction
-            ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
-            onConfigure={() => onConfigure(c.repo_id, selectMeta)}
+        <span className={ROW_ACTIONS_CLASS}>
+          {onConfigure && (
+            <ModelLoadSettingsAction
+              ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
+              onConfigure={() => onConfigure(c.repo_id, selectMeta)}
+            />
+          )}
+          <ModelRowMenu
+            ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
+            cachePath={{ repoId: c.repo_id, variant: variant.quant }}
+            pin={{
+              pinned: isPinned,
+              pinLabel: "Pin to top",
+              unpinLabel: "Unpin",
+              onToggle: () => togglePinned(c.repo_id, variant.quant),
+            }}
+            del={{
+              title: "Delete cached model?",
+              description: (
+                <>
+                  This will remove{" "}
+                  <span className="font-medium text-foreground">
+                    {c.repo_id} ({variant.quant})
+                  </span>{" "}
+                  from disk. You can re-download it later.
+                </>
+              ),
+              successMessage: `Deleted ${c.repo_id} ${variant.quant}`,
+              disabled: deleteDisabled,
+              onConfirm: async () => {
+                await deleteCachedModel(
+                  c.repo_id,
+                  variant.quant,
+                  hfToken || undefined,
+                  c.cache_path || undefined,
+                );
+                // The file is gone, so drop its pin too.
+                if (isPinned) togglePinned(c.repo_id, variant.quant);
+                prunePinnedQuantValidation(c.repo_id, variant.quant);
+                refreshCachedLists();
+              },
+            }}
           />
-        )}
-        <ModelRowMenu
-          ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
-          buttonClassName="mr-1"
-          cachePath={{ repoId: c.repo_id, variant: variant.quant }}
-          pin={{
-            pinned: isPinned,
-            pinLabel: "Pin to top",
-            unpinLabel: "Unpin",
-            onToggle: () => togglePinned(c.repo_id, variant.quant),
-          }}
-          del={{
-            title: "Delete cached model?",
-            description: (
-              <>
-                This will remove{" "}
-                <span className="font-medium text-foreground">
-                  {c.repo_id} ({variant.quant})
-                </span>{" "}
-                from disk. You can re-download it later.
-              </>
-            ),
-            successMessage: `Deleted ${c.repo_id} ${variant.quant}`,
-            disabled: deleteDisabled,
-            onConfirm: async () => {
-              await deleteCachedModel(
-                c.repo_id,
-                variant.quant,
-                hfToken || undefined,
-                c.cache_path || undefined,
-              );
-              // The file is gone, so drop its pin too.
-              if (isPinned) togglePinned(c.repo_id, variant.quant);
-              prunePinnedQuantValidation(c.repo_id, variant.quant);
-              refreshCachedLists();
-            },
-          }}
-        />
+        </span>
       </div>
     );
   };
@@ -3153,6 +3353,7 @@ export function HubModelPicker({
               tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
               meta="GGUF"
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
+              alignMeta="device"
               selected={isSelected}
               loaded={isRuntimeLoadedModel(
                 loadedModelId,
@@ -3172,7 +3373,7 @@ export function HubModelPicker({
             />
           </div>
           {/* Stands in for the other rows' buttons, so the tags line up. */}
-          <span aria-hidden="true" className="mr-1 h-6 w-[42px] shrink-0" />
+          <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
         </div>
         {expanderOpen && (
           <GgufVariantExpander
@@ -3226,6 +3427,7 @@ export function HubModelPicker({
               c.size_bytes,
             )}`}
             selected={isSelected}
+            alignMeta="device"
             loaded={isRuntimeLoadedModel(
               loadedModelId,
               activeGgufVariant,
@@ -3245,55 +3447,58 @@ export function HubModelPicker({
             className={downloadedRowButtonClassName}
           />
         </div>
-        {onConfigure && (
-          <ModelLoadSettingsAction
-            ariaLabel={`Inference settings for ${c.repo_id}`}
-            onConfigure={() =>
-              onConfigure(c.repo_id, {
-                source: "hub",
-                isLora: false,
-                loadId: c.load_id,
-                isDownloaded: true,
-                isGguf: false,
-              })
-            }
-          />
-        )}
-        <ModelRowMenu
-          ariaLabel={`More options for ${c.repo_id}`}
-          buttonClassName="mr-1"
-          cachePath={{ repoId: c.repo_id }}
-          pin={{
-            pinned: pinnedSet.has(pinKey(c.repo_id)),
-            pinLabel: "Pin to top",
-            unpinLabel: "Unpin",
-            onToggle: () => togglePinned(c.repo_id),
-          }}
-          del={{
-            title: "Delete cached model?",
-            description: (
-              <>
-                This will remove{" "}
-                <span className="font-medium text-foreground">{c.repo_id}</span>{" "}
-                from disk. You can re-download it later.
-              </>
-            ),
-            successMessage: `Deleted ${c.repo_id}`,
-            disabled: deleteDisabled,
-            onConfirm: async () => {
-              await deleteCachedModel(
-                c.repo_id,
-                undefined,
-                hfToken || undefined,
-                c.cache_path || undefined,
-              );
-              if (pinnedSet.has(pinKey(c.repo_id))) {
-                togglePinned(c.repo_id);
+        <span className={ROW_ACTIONS_CLASS}>
+          {onConfigure && (
+            <ModelLoadSettingsAction
+              ariaLabel={`Inference settings for ${c.repo_id}`}
+              onConfigure={() =>
+                onConfigure(c.repo_id, {
+                  source: "hub",
+                  isLora: false,
+                  loadId: c.load_id,
+                  isDownloaded: true,
+                  isGguf: false,
+                })
               }
-            },
-            onDeleted: refreshCachedLists,
-          }}
-        />
+            />
+          )}
+          <ModelRowMenu
+            ariaLabel={`More options for ${c.repo_id}`}
+            cachePath={{ repoId: c.repo_id }}
+            pin={{
+              pinned: pinnedSet.has(pinKey(c.repo_id)),
+              pinLabel: "Pin to top",
+              unpinLabel: "Unpin",
+              onToggle: () => togglePinned(c.repo_id),
+            }}
+            del={{
+              title: "Delete cached model?",
+              description: (
+                <>
+                  This will remove{" "}
+                  <span className="font-medium text-foreground">
+                    {c.repo_id}
+                  </span>{" "}
+                  from disk. You can re-download it later.
+                </>
+              ),
+              successMessage: `Deleted ${c.repo_id}`,
+              disabled: deleteDisabled,
+              onConfirm: async () => {
+                await deleteCachedModel(
+                  c.repo_id,
+                  undefined,
+                  hfToken || undefined,
+                  c.cache_path || undefined,
+                );
+                if (pinnedSet.has(pinKey(c.repo_id))) {
+                  togglePinned(c.repo_id);
+                }
+              },
+              onDeleted: refreshCachedLists,
+            }}
+          />
+        </span>
       </div>
     );
   };
@@ -3572,9 +3777,9 @@ export function HubModelPicker({
                         </>
                       }
                     >
-                      {/* When other providers (LM Studio/Ollama) also show here, name
-                    this group "Unsloth" so the two are easy to tell apart. */}
-                      {sortedLmStudio.length > 0 ? "Unsloth" : "Downloaded"}
+                      {/* Rows drop the unsloth/ prefix; the heading carries
+                    it for the group. */}
+                      Unsloth
                     </ListLabel>
                     {!downloadedCollapsed &&
                       unslothCachedGguf.map(renderDownloadedGgufRow)}
@@ -3893,7 +4098,7 @@ export function HubModelPicker({
                         );
                         return (
                           <div key={m.id}>
-                            <div className="flex items-center gap-0.5">
+                            <div className="group flex items-center">
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
@@ -3937,29 +4142,32 @@ export function HubModelPicker({
                                         }
                                       : undefined
                                   }
+                                  alignMeta="device"
                                   vramStatus={null}
                                 />
                               </div>
-                              {isDirectGguf && onConfigure && (
-                                <ModelLoadSettingsAction
-                                  ariaLabel={`Inference settings for ${
-                                    m.model_id ?? m.display_name
-                                  }`}
-                                  onConfigure={() =>
-                                    onConfigure(m.id, localDirectGgufMeta())
-                                  }
-                                />
-                              )}
-                              {!isGguf && onConfigure && (
-                                <ModelLoadSettingsAction
-                                  ariaLabel={`Inference settings for ${
-                                    m.model_id ?? m.display_name
-                                  }`}
-                                  onConfigure={() =>
-                                    onConfigure(m.id, localModelMeta())
-                                  }
-                                />
-                              )}
+                              <span className={ROW_ACTIONS_CLASS}>
+                                {isDirectGguf && onConfigure && (
+                                  <ModelLoadSettingsAction
+                                    ariaLabel={`Inference settings for ${
+                                      m.model_id ?? m.display_name
+                                    }`}
+                                    onConfigure={() =>
+                                      onConfigure(m.id, localDirectGgufMeta())
+                                    }
+                                  />
+                                )}
+                                {!isGguf && onConfigure && (
+                                  <ModelLoadSettingsAction
+                                    ariaLabel={`Inference settings for ${
+                                      m.model_id ?? m.display_name
+                                    }`}
+                                    onConfigure={() =>
+                                      onConfigure(m.id, localModelMeta())
+                                    }
+                                  />
+                                )}
+                              </span>
                             </div>
                             {isGguf &&
                               !isDirectGguf &&
@@ -4021,7 +4229,7 @@ export function HubModelPicker({
                         const optionKey = makeModelOptionKey("lm-studio", m.id);
                         return (
                           <div key={m.id}>
-                            <div className="flex items-center gap-0.5">
+                            <div className="group flex items-center">
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
@@ -4065,29 +4273,32 @@ export function HubModelPicker({
                                         }
                                       : undefined
                                   }
+                                  alignMeta="device"
                                   vramStatus={null}
                                 />
                               </div>
-                              {isGgufFile && onConfigure && (
-                                <ModelLoadSettingsAction
-                                  ariaLabel={`Inference settings for ${
-                                    m.model_id ?? m.display_name
-                                  }`}
-                                  onConfigure={() =>
-                                    onConfigure(m.id, localDirectGgufMeta())
-                                  }
-                                />
-                              )}
-                              {!isGguf && onConfigure && (
-                                <ModelLoadSettingsAction
-                                  ariaLabel={`Inference settings for ${
-                                    m.model_id ?? m.display_name
-                                  }`}
-                                  onConfigure={() =>
-                                    onConfigure(m.id, localModelMeta())
-                                  }
-                                />
-                              )}
+                              <span className={ROW_ACTIONS_CLASS}>
+                                {isGgufFile && onConfigure && (
+                                  <ModelLoadSettingsAction
+                                    ariaLabel={`Inference settings for ${
+                                      m.model_id ?? m.display_name
+                                    }`}
+                                    onConfigure={() =>
+                                      onConfigure(m.id, localDirectGgufMeta())
+                                    }
+                                  />
+                                )}
+                                {!isGguf && onConfigure && (
+                                  <ModelLoadSettingsAction
+                                    ariaLabel={`Inference settings for ${
+                                      m.model_id ?? m.display_name
+                                    }`}
+                                    onConfigure={() =>
+                                      onConfigure(m.id, localModelMeta())
+                                    }
+                                  />
+                                )}
+                              </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                               <GgufVariantExpander
@@ -4141,7 +4352,7 @@ export function HubModelPicker({
                         const optionKey = makeModelOptionKey("local-dir", m.id);
                         return (
                           <div key={m.id}>
-                            <div className="flex items-center gap-0.5">
+                            <div className="group flex items-center">
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
@@ -4181,29 +4392,32 @@ export function HubModelPicker({
                                       ? () => focusFirstChildOption(optionKey)
                                       : undefined
                                   }
+                                  alignMeta="device"
                                   vramStatus={null}
                                 />
                               </div>
-                              {isGgufFile && onConfigure && (
-                                <ModelLoadSettingsAction
-                                  ariaLabel={`Inference settings for ${
-                                    m.model_id ?? m.display_name
-                                  }`}
-                                  onConfigure={() =>
-                                    onConfigure(m.id, localDirectGgufMeta())
-                                  }
-                                />
-                              )}
-                              {!isGguf && onConfigure && (
-                                <ModelLoadSettingsAction
-                                  ariaLabel={`Inference settings for ${
-                                    m.model_id ?? m.display_name
-                                  }`}
-                                  onConfigure={() =>
-                                    onConfigure(m.id, localModelMeta())
-                                  }
-                                />
-                              )}
+                              <span className={ROW_ACTIONS_CLASS}>
+                                {isGgufFile && onConfigure && (
+                                  <ModelLoadSettingsAction
+                                    ariaLabel={`Inference settings for ${
+                                      m.model_id ?? m.display_name
+                                    }`}
+                                    onConfigure={() =>
+                                      onConfigure(m.id, localDirectGgufMeta())
+                                    }
+                                  />
+                                )}
+                                {!isGguf && onConfigure && (
+                                  <ModelLoadSettingsAction
+                                    ariaLabel={`Inference settings for ${
+                                      m.model_id ?? m.display_name
+                                    }`}
+                                    onConfigure={() =>
+                                      onConfigure(m.id, localModelMeta())
+                                    }
+                                  />
+                                )}
+                              </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                               <GgufVariantExpander
@@ -4260,6 +4474,7 @@ export function HubModelPicker({
                             <ModelRow
                               label={id}
                               hubUrl={hubRepoUrl(id)}
+                              alignMeta="hub"
                               hideOwner={true}
                               downloaded={downloadedSet.has(id.toLowerCase())}
                               capabilities={capsById.get(id)}
@@ -4369,6 +4584,7 @@ export function HubModelPicker({
                           <ModelRow
                             label={id}
                             hubUrl={hubRepoUrl(id)}
+                            alignMeta="hub"
                             capabilities={capsById.get(id)}
                             meta={
                               isKnownGgufRepo(id)
@@ -4481,6 +4697,7 @@ export function HubModelPicker({
                             <ModelRow
                               label={id}
                               hubUrl={hubRepoUrl(id)}
+                              alignMeta="hub"
                               capabilities={capsById.get(id)}
                               meta={
                                 isSearchGguf
@@ -4690,7 +4907,7 @@ function FineTunedRows({
               : tag;
         return (
           <div key={adapter.id}>
-            <div className="flex items-center gap-0.5">
+            <div className="group flex items-center">
               <div className="min-w-0 flex-1">
                 <ModelRow
                   label={adapter.name}
@@ -4731,39 +4948,42 @@ function FineTunedRows({
                         }
                       : undefined
                   }
+                  alignMeta="device"
                 />
               </div>
-              {canConfigure && onConfigure && (
-                <ModelLoadSettingsAction
-                  ariaLabel={`Inference settings for ${adapter.name}`}
-                  onConfigure={() => onConfigure(adapter.id, selectionMeta)}
-                />
-              )}
-              {canDelete && (
-                <ModelDeleteAction
-                  ariaLabel={`Delete ${adapter.name}`}
-                  title="Delete fine-tuned model?"
-                  description={
-                    <>
-                      This will remove{" "}
-                      <span className="font-medium text-foreground">
-                        {adapter.name}
-                      </span>{" "}
-                      from disk. This cannot be undone.
-                    </>
-                  }
-                  successMessage={`Deleted ${adapter.name}`}
-                  disabled={deleteDisabled}
-                  onConfirm={() =>
-                    deleteFineTunedModel({
-                      modelPath: adapter.id,
-                      source: isExported ? "exported" : "training",
-                      exportType: adapter.exportType,
-                    })
-                  }
-                  onDeleted={() => onModelsChange?.({ id: adapter.id })}
-                />
-              )}
+              <span className={ROW_ACTIONS_CLASS}>
+                {canConfigure && onConfigure && (
+                  <ModelLoadSettingsAction
+                    ariaLabel={`Inference settings for ${adapter.name}`}
+                    onConfigure={() => onConfigure(adapter.id, selectionMeta)}
+                  />
+                )}
+                {canDelete && (
+                  <ModelDeleteAction
+                    ariaLabel={`Delete ${adapter.name}`}
+                    title="Delete fine-tuned model?"
+                    description={
+                      <>
+                        This will remove{" "}
+                        <span className="font-medium text-foreground">
+                          {adapter.name}
+                        </span>{" "}
+                        from disk. This cannot be undone.
+                      </>
+                    }
+                    successMessage={`Deleted ${adapter.name}`}
+                    disabled={deleteDisabled}
+                    onConfirm={() =>
+                      deleteFineTunedModel({
+                        modelPath: adapter.id,
+                        source: isExported ? "exported" : "training",
+                        exportType: adapter.exportType,
+                      })
+                    }
+                    onDeleted={() => onModelsChange?.({ id: adapter.id })}
+                  />
+                )}
+              </span>
             </div>
             {expandedGguf === adapter.id && (
               <GgufVariantExpander
