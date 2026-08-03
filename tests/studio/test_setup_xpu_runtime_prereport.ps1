@@ -151,6 +151,28 @@ $_scanLine = ($setupText -split "`n" | Select-String -Pattern '\$_probeVenv = Ge
 $_reportLine = ($setupText -split "`n" | Select-String -Pattern 'none \(chat-only / GGUF\)' | Select-Object -First 1).LineNumber
 Check "promotion precedes the hardware report" ($_scanLine -and $_reportLine -and $_scanLine -lt $_reportLine)
 
+Write-Host "a timed-out probe must not destroy a working XPU venv"
+# Bounding the flavour probe turned a hang into "rebuild", and the host most likely to time out
+# inside `import torch` is precisely an Arc box whose compute driver stalled -- where
+# torch/version.py still names a good +xpu wheel. Without a currently exported pin the stale
+# path then DELETES $VenvDir and exits. The rescue is bounded by the surrounding if-chain here
+# rather than a line offset, so an edit inside it cannot move the window off the code.
+$_rescue = if ($setupText -match '(?s)(\$_verProbe = Invoke-BoundedPythonProbe.*?# Missing python\.exe means)') { $Matches[1] } else { "" }
+Check "the probe chain was found"      ($_rescue -ne "")
+Check "an unreadable flavour is rescued off disk" ($_rescue -match 'elseif \(Test-VenvTorchIsXpu -VenvPath \$VenvDir\)')
+Check "the rescue classifies it as xpu" ($_rescue -match '(?s)elseif \(Test-VenvTorchIsXpu.*?\$installedTorchTag = "xpu"')
+# It must NOT set the rebuild flag, or the whole point is lost.
+Check "the rescue never sets shouldRebuild" ($_rescue -match '(?s)elseif \(Test-VenvTorchIsXpu.*?\} else \{\s*\$shouldRebuild = \$true' -and
+    -not ($_rescue -match '(?s)elseif \(Test-VenvTorchIsXpu[^}]*\$shouldRebuild = \$true'))
+# A silent rescue would leave an Arc owner with a venv that trains on nothing and no clue why.
+# Match the substep ARGUMENT, not the region: the comment above the branch says "compute
+# driver" too, so a loose match stayed green with the message itself deleted.
+Check "the rescue names the driver fix" ($_rescue -match 'substep "[^"]*compute driver')
+# Non-Intel families must still rebuild on an unreadable flavour, exactly as before.
+Check "other families still rebuild"   ($_rescue -match '(?s)\} else \{\s*\$shouldRebuild = \$true')
+# The rescue reads the disk, so it must not launch a second interpreter after the first hung.
+Check "the rescue launches no interpreter" (-not ($_rescue -match '(?s)elseif \(Test-VenvTorchIsXpu.*?Invoke-BoundedPythonProbe'))
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed" -ForegroundColor Green

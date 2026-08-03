@@ -3153,6 +3153,15 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                 # Untagged wheel (plain "2.x.y" from PyPI) -> cpu.
                 $installedTorchTag = "cpu"
             }
+        } elseif (Test-VenvTorchIsXpu -VenvPath $VenvDir) {
+            # Bounding this probe made a timeout mean "rebuild", and the host most likely to
+            # time out inside `import torch` is exactly an Arc box whose compute driver has
+            # stalled -- where torch/version.py still names a perfectly good +xpu wheel.
+            # Without a currently exported pin the stale path then DELETES $VenvDir. Trust the
+            # disk and warn about the driver instead; other families keep rebuilding.
+            $installedTorchTag = "xpu"
+            substep "PyTorch did not respond in time but this venv holds an XPU build -- keeping it." "Yellow"
+            substep "If training fails, update the Intel GPU compute driver." "Yellow"
         } else {
             $shouldRebuild = $true
         }

@@ -1108,48 +1108,56 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # ALL trailing slashes, not one: the shared leaf parsers normalise "…/xpu//" and a
         # single %/ leaves a slash behind, which reads as "no XPU pin" and skips the repair.
         while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
-        case "$_setup_pin" in
-            *xpu)
-                # Disk first, no interpreter: torch/version.py carries the local label, so a
-                # wedged Intel driver cannot hang `studio update` inside `import torch` here,
-                # and a CPU-only host pays nothing. Same read the summary uses below.
-                _setup_pin_ok=false
-                for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
-                    [ -f "$_setup_pin_tv" ] || continue
-                    _setup_pin_ver=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_setup_pin_tv" | head -1)
-                    case "$_setup_pin_ver" in
-                        *+xpu)
-                            _setup_pin_maj=${_setup_pin_ver%%.*}
-                            _setup_pin_rest=${_setup_pin_ver#*.}
-                            _setup_pin_min=${_setup_pin_rest%%.*}
-                            case "$_setup_pin_maj$_setup_pin_min" in
-                                *[!0-9]*) ;;
-                                *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -ge 6 ] && \
-                                   [ "$_setup_pin_min" -lt 11 ] && _setup_pin_ok=true ;;
-                            esac
-                            ;;
+        # Compare the leaf EXACTLY, like the shared index parsers: a custom mirror whose leaf
+        # merely ends in xpu (…/private-xpu) is an UNKNOWN family to them, so a *xpu match
+        # would clear the skip flag on every up-to-date run while _ensure_xpu_torch declines
+        # to act -- a full dependency pass every update that repairs nothing.
+        _setup_pin_leaf="${_setup_pin##*/}"
+        # Disk first, no interpreter: torch/version.py carries the local label, so a wedged
+        # Intel driver cannot hang `studio update` inside `import torch` here, and a non-Intel
+        # host pays one glob. Read unconditionally, NOT only under a pin: the pin is one-shot,
+        # so `UNSLOTH_TORCH_INDEX_FAMILY=xpu ./install.sh` leaves nothing behind and a later
+        # plain update sees none -- the installed wheel is the only durable signal, which is
+        # what _ensure_xpu_triton itself now keys on.
+        _setup_pin_ok=false
+        _setup_pin_is_xpu=false
+        for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+            [ -f "$_setup_pin_tv" ] || continue
+            _setup_pin_ver=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_setup_pin_tv" | head -1)
+            case "$_setup_pin_ver" in
+                *+xpu)
+                    _setup_pin_is_xpu=true
+                    _setup_pin_maj=${_setup_pin_ver%%.*}
+                    _setup_pin_rest=${_setup_pin_ver#*.}
+                    _setup_pin_min=${_setup_pin_rest%%.*}
+                    case "$_setup_pin_maj$_setup_pin_min" in
+                        *[!0-9]*) ;;
+                        *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -ge 6 ] && \
+                           [ "$_setup_pin_min" -lt 11 ] && _setup_pin_ok=true ;;
                     esac
-                    break
-                done
-                # Correct torch is not enough: the only caller of the Triton swap is inside
-                # install_python_stack, which the fast path skips, so a migrated environment
-                # with a supported +xpu torch and a leftover generic triton would keep the
-                # CUDA-oriented build shadowing the XPU one forever. Read the dist-info name
-                # off disk -- "triton-<ver>.dist-info" is the generic one; the XPU builds are
-                # pytorch_triton_xpu-* / triton_xpu-*, which this glob does not match.
-                _setup_generic_triton=false
-                for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
-                    [ -d "$_setup_tri" ] && _setup_generic_triton=true && break
-                done
-                if [ "$_setup_pin_ok" = false ]; then
-                    substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
-                    _SKIP_PYTHON_DEPS=false
-                elif [ "$_setup_generic_triton" = true ]; then
-                    substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
-                    _SKIP_PYTHON_DEPS=false
-                fi
-                ;;
-        esac
+                    ;;
+            esac
+            break
+        done
+        # Correct torch is not enough: the only caller of the Triton swap is inside
+        # install_python_stack, which the fast path skips, so a migrated environment with a
+        # +xpu torch and a leftover generic triton would keep the CUDA-oriented build
+        # shadowing the XPU one forever. Read the dist-info name off disk -- "triton-<ver>"
+        # is the generic one; the XPU builds are pytorch_triton_xpu-* / triton_xpu-*, which
+        # this glob does not match.
+        _setup_generic_triton=false
+        if [ "$_setup_pin_is_xpu" = true ] || [ "$_setup_pin_leaf" = "xpu" ]; then
+            for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
+                [ -d "$_setup_tri" ] && _setup_generic_triton=true && break
+            done
+        fi
+        if [ "$_setup_pin_leaf" = "xpu" ] && [ "$_setup_pin_ok" = false ]; then
+            substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_generic_triton" = true ]; then
+            substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
@@ -1383,6 +1391,13 @@ elif [ "$_setup_xpu_ready" = true ]; then
     # wheels, and only a confirmed XPU runtime reaches here.
     step "gpu" "Intel GPU detected (XPU runtime)"
     substep "PyTorch XPU (SYCL) provides training and GPU inference on this GPU."
+elif [ "$_setup_torch_is_xpu" = true ]; then
+    # The +xpu wheel is installed but torch.xpu.is_available() said no, which means the Intel
+    # compute driver is missing or too old. Falling through to the arm below would tell an Arc
+    # owner their hardware is unsupported and hide the one thing that actually fixes it.
+    step "gpu" "Intel GPU (XPU runtime unavailable)" "$C_WARN"
+    substep "PyTorch has the XPU build but cannot initialise it -- update the Intel GPU compute driver."
+    substep "Training and GPU inference run on CPU until then."
 elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ "$(uname -m 2>/dev/null)" = "arm64" ]; then
     # Apple Silicon: llama.cpp builds with Metal over unified memory, so not a CPU-only host.
     step "gpu" "Apple Silicon (Metal, unified memory)"

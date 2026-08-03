@@ -137,25 +137,35 @@ check "pin match strips the query" \
 check "pin match strips the fragment" \
     "$(grep -q '_setup_pin="\${_setup_pin%%\\#\*}"' "$SETUP_SH" && echo yes || echo no)" "yes"
 # The escape must not launch an interpreter: a wedged Intel driver hangs inside `import torch`,
-# and this runs before the bounded probes. Bounded by the case block rather than a line offset,
-# so adding a check inside it cannot silently move the window off the code under test.
-_blk=$(awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on{print} on && /^        esac$/{exit}' "$SETUP_SH")
+# and this runs before the bounded probes. Bounded by the acting chain rather than a line
+# offset, so adding a check inside it cannot silently move the window off the code under test.
+# What the escape DECIDES is covered by execution in test_setup_xpu_fastpath_escape.sh; this
+# only guards the two properties that file cannot see.
+_blk=$(awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on{print} on && /_SKIP_PYTHON_DEPS=false$/{n++} n==2{exit}' "$SETUP_SH")
 check "escape block was found" "$([ -n "$_blk" ] && echo yes || echo no)" "yes"
 check "escape reads the flavour off disk" \
     "$(printf '%s' "$_blk" | grep -q 'site-packages/torch/version.py' && echo yes || echo no)" "yes"
 check "escape launches no interpreter" \
     "$(printf '%s' "$_blk" | grep -q '\$VENV_DIR/bin/python' && echo no || echo yes)" "yes"
-# Correct torch is not enough: the Triton swap only runs inside the dependency pass, so a
-# leftover generic triton must force it too.
-# Assert the BRANCH, not just the detection loop: grepping for the dist-info glob alone still
-# matched after the acting elif was deleted, so that check proved nothing.
-check "escape also catches stale generic triton" \
-    "$(printf '%s' "$_blk" | grep -A1 'elif \[ "\$_setup_generic_triton" = true \]' | grep -qc 'forcing dependency pass' && echo yes || echo no)" "yes"
-check "stale triton clears the skip flag" \
-    "$(printf '%s' "$_blk" | awk '/elif \[ "\$_setup_generic_triton" = true \]/{on=1} on && /_SKIP_PYTHON_DEPS=false/{print "yes"; exit}' | head -1)" "yes"
 # One %/ leaves a slash on ".../xpu//", which reads as "no XPU pin".
 check "pin match strips every trailing slash" \
     "$(printf '%s' "$_blk" | grep -q 'while \[ "\${_setup_pin%/}" != "\$_setup_pin" \]' && echo yes || echo no)" "yes"
+
+echo "an installed +xpu wheel whose runtime is dead gets its own arm"
+# torch.xpu.is_available() false on a real +xpu install means the Intel compute DRIVER is
+# missing or too old. Falling through to "none (chat-only / GGUF)" tells an Arc owner their
+# hardware is unsupported and hides the one action that fixes it.
+_dead=$(grep -n '^elif \[ "\$_setup_torch_is_xpu" = true \]; then' "$SETUP_SH" | head -1 | cut -d: -f1)
+check "dead-runtime arm exists" "$([ -n "$_dead" ] && echo yes || echo no)" "yes"
+check "ranked after the ready arm" \
+    "$([ -n "$_dead" ] && [ -n "$_arm" ] && [ "$_dead" -gt "$_arm" ] && echo yes || echo no)" "yes"
+check "ranked before the CPU arm" \
+    "$([ -n "$_dead" ] && [ -n "$_none" ] && [ "$_dead" -lt "$_none" ] && echo yes || echo no)" "yes"
+# It has to name the driver, or it is just a differently worded dead end. Match the substep
+# ARGUMENT, not any line in the window: the comment above the arm says "compute driver" too,
+# so a looser match stayed green with the message itself gutted.
+check "arm names the driver fix" \
+    "$(awk -v a="$_dead" 'NR>a && NR<a+8 && /substep "[^"]*compute driver/{f=1} END{print (f?"yes":"no")}' "$SETUP_SH")" "yes"
 
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
