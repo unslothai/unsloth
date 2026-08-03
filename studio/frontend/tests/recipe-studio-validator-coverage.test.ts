@@ -200,6 +200,7 @@ test("makeValidatorConfig builds the tool flavor with defaults", () => {
   assert.deepEqual(config.tool_scaffold, DEFAULT_TOOL_SCAFFOLD);
   assert.equal(config.tool_acknowledged, false);
   assert.deepEqual(config.target_columns, []);
+  assert.equal(config.batch_size, "1");
 });
 
 test("makeValidatorConfig deep-copies the default scaffold", () => {
@@ -217,6 +218,7 @@ test("makeValidatorConfig builds the custom flavor with defaults", () => {
   assert.equal(config.name, "validator_custom_1");
   assert.equal(config.custom_source, DEFAULT_CUSTOM_VALIDATOR_SOURCE);
   assert.equal(config.custom_acknowledged, false);
+  assert.equal(config.batch_size, "10");
   assert.ok(!("tool_scaffold" in config));
 });
 

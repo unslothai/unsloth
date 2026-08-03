@@ -46,6 +46,9 @@ rename the heading at release time.
   temp folder before the command runs, so project-based tools (a `go.mod` for
   Go, a `Cargo.toml` + `src/` layout for Rust, or any other setup) work
   without built-in presets.
+- Custom check runs tool checks **in parallel** within a batch: raising the
+  batch size above the default of 1 checks that many records at a time, capped
+  at the detected CPU count.
 - New **Text to Rust** learning recipe demonstrates the Advanced custom check
   with a Python function that runs `cargo check`.
 

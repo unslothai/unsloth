@@ -619,7 +619,11 @@ export function ValidatorDialog({
             <FieldLabel
               label="Batch size"
               htmlFor={batchSizeId}
-              hint="How many records to check at a time."
+              hint={
+                config.validator_type === "tool"
+                  ? "How many records to check at a time. Tool checks run up to this many in parallel, capped at the detected CPU count; the default of 1 runs each check one at a time."
+                  : "How many records to check at a time."
+              }
             />
             <Input
               id={batchSizeId}

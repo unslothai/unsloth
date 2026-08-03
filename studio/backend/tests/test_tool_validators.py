@@ -272,6 +272,66 @@ def test_tool_callable_timeout_is_graceful(monkeypatch):
     assert "timed out" in out["error_message"].iloc[0]
 
 
+def test_tool_max_workers_at_least_one():
+    assert tool._tool_max_workers() >= 1
+
+
+def test_tool_batch_empty_returns_empty():
+    results = tool._run_tool_batch(
+        file_ext = "txt",
+        command = "true",
+        scaffold = (),
+        code_values = [],
+        max_workers = 3,
+    )
+    assert results == []
+
+
+def test_tool_batch_parallel_preserves_row_order():
+    results = tool._run_tool_batch(
+        file_ext = "txt",
+        command = "cat {file}",
+        scaffold = (),
+        code_values = ["first", "second", "third"],
+        max_workers = 3,
+    )
+    assert [result["is_valid"] for result in results] == [True, True, True]
+    assert [result["tool_output"] for result in results] == [
+        "first",
+        "second",
+        "third",
+    ]
+
+
+def test_tool_batch_parallel_uses_unique_temp_dirs():
+    results = tool._run_tool_batch(
+        file_ext = "go",
+        command = "sh -c 'test -s {file} && test -f {dir}/go.mod'",
+        scaffold = (("go.mod", "module example.com/check\n"), ("main.go", "{source}")),
+        code_values = ["a", "b", "c", "d"],
+        max_workers = 4,
+    )
+    assert [result["is_valid"] for result in results] == [True, True, True, True]
+
+
+def test_tool_batch_parallel_runs_faster_than_serial():
+    import time
+
+    start = time.monotonic()
+    results = tool._run_tool_batch(
+        file_ext = "txt",
+        command = "sleep 0.5",
+        scaffold = (),
+        code_values = ["a", "b", "c"],
+        max_workers = 3,
+    )
+    elapsed = time.monotonic() - start
+    assert len(results) == 3
+    assert all(result["is_valid"] for result in results)
+    # Serial would take ~1.5s; parallel ~0.5s. Keep a wide margin for CI.
+    assert elapsed < 1.4, f"parallel batch took {elapsed:.2f}s"
+
+
 def test_tool_callable_file_placeholder_uses_scaffold_source():
     import pandas as pd
 

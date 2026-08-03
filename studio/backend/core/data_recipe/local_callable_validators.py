@@ -11,6 +11,7 @@ import re
 import structlog
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
@@ -416,19 +417,51 @@ def _build_tool_validation_function(
 
 
 def _run_tool_batch(
-    *, file_ext: str, command: str, scaffold: tuple[tuple[str, str], ...], code_values: list[str]
+    *,
+    file_ext: str,
+    command: str,
+    scaffold: tuple[tuple[str, str], ...],
+    code_values: list[str],
+    max_workers: int | None = None,
 ) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for code_value in code_values:
-        results.append(
+    """Run the tool command for every code cell in a batch.
+
+    Cells are checked in parallel, up to the batch size (rows per
+    invocation) and the detected CPU count; ``max_workers`` overrides the
+    CPU cap for tests. Each cell runs in its own unique temp dir, so
+    concurrent runs never share files. Results keep the input row order.
+    """
+    if not code_values:
+        return []
+    worker_count = _tool_max_workers() if max_workers is None else max(1, max_workers)
+    worker_count = min(worker_count, len(code_values))
+    if worker_count <= 1:
+        return [
             _run_tool_single(
                 file_ext = file_ext,
                 command = command,
                 scaffold = scaffold,
                 code_value = code_value,
             )
+            for code_value in code_values
+        ]
+    with ThreadPoolExecutor(max_workers = worker_count) as executor:
+        return list(
+            executor.map(
+                lambda code_value: _run_tool_single(
+                    file_ext = file_ext,
+                    command = command,
+                    scaffold = scaffold,
+                    code_value = code_value,
+                ),
+                code_values,
+            )
         )
-    return results
+
+
+def _tool_max_workers() -> int:
+    """Detected CPU count (floor of 1), used to cap parallel tool checks."""
+    return max(1, os.cpu_count() or 1)
 
 
 def _run_tool_single(

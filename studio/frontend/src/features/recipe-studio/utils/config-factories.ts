@@ -411,7 +411,10 @@ export function makeValidatorConfig(
           custom_acknowledged: false,
         }
       : {}),
-    batch_size: "10",
+    // Tool checks default to a batch of 1 so they run serially unless the
+    // user raises the batch size (checks then run in parallel up to the CPU
+    // count). Custom validators keep the default batch of 10.
+    batch_size: isTool ? "1" : "10",
   };
 }
 
