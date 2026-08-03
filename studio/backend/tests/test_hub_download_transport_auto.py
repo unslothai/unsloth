@@ -494,6 +494,6 @@ def test_both_loaders_share_one_env_lock():
     for fn in (shim._load_shared, shim._load_optional):
         source = inspect.getsource(fn)
         assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" in source
-        assert "with _load_lock:" in source, (
-            f"{fn.__name__} mutates the GPU-init override outside the shared _load_lock"
-        )
+        assert (
+            "with _load_lock:" in source
+        ), f"{fn.__name__} mutates the GPU-init override outside the shared _load_lock"

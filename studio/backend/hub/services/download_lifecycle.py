@@ -645,7 +645,6 @@ def _repo_bytes_on_disk(repo_type, repo_id: str, cache_dir) -> "Optional[int]":
     """
     try:
         from utils.hf_xet_fallback import get_hf_download_state
-
         state = get_hf_download_state([repo_id], repo_type = repo_type, cache_dir = cache_dir)
     except Exception:  # noqa: BLE001 - a missing measurement must never fail a download
         return None

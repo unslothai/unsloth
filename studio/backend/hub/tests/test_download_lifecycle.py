@@ -211,7 +211,5 @@ def test_a_cached_xet_job_does_not_clear_the_failure_streak(monkeypatch, tmp_pat
 
 def test_a_real_xet_transfer_does_clear_the_failure_streak(monkeypatch, tmp_path):
     """The streak must still reset on a job that actually moved bytes, or "two in a row" is wrong."""
-    recorded = _run_completed_xet_worker(
-        monkeypatch, tmp_path, bytes_before = 0, bytes_after = 5_000
-    )
+    recorded = _run_completed_xet_worker(monkeypatch, tmp_path, bytes_before = 0, bytes_after = 5_000)
     assert recorded == [True]
