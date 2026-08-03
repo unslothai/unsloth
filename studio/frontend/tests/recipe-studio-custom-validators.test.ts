@@ -24,6 +24,13 @@ const { getConfigErrors } = await import(
 
 const TOOL_MARKER = "unsloth_tool_validator";
 const CUSTOM_MARKER = "unsloth_custom_validator";
+const B64_PLUS_RE = /\+/g;
+const B64_SLASH_RE = /\//g;
+const B64_PADDING_RE = /=+$/;
+
+function toBase64Url(input: string): string {
+  return btoa(input).replace(B64_PLUS_RE, "-").replace(B64_SLASH_RE, "_").replace(B64_PADDING_RE, "");
+}
 
 function toolConfig(overrides: Partial<ValidatorConfig> = {}): ValidatorConfig {
   return {
@@ -137,10 +144,7 @@ test("decodeToolSpec rejects unsafe scaffold paths", () => {
     command: "cat {file}",
     scaffold: [{ path: "../evil.txt", content: "x" }],
   };
-  const encoded = btoa(JSON.stringify(spec))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  const encoded = toBase64Url(JSON.stringify(spec));
   assert.equal(markers.decodeToolSpec(encoded), null);
 });
 
