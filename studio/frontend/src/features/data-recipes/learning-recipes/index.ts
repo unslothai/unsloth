@@ -15,6 +15,7 @@ const instructionFromAnswerUrl = new URL(
 ).href;
 const textToPythonUrl = new URL("./text-to-python.json", import.meta.url).href;
 const textToSqlUrl = new URL("./text-to-sql.json", import.meta.url).href;
+const textToGoUrl = new URL("./text-to-go.json", import.meta.url).href;
 const ocrDocumentExtractionUrl = new URL(
   "./ocr-document-extraction.json",
   import.meta.url,
@@ -133,6 +134,13 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
     description:
       "Generate SQL tasks and runnable SQL outputs with prompt-driven generation.",
     loadPayload: () => loadPayloadFromUrl(textToSqlUrl),
+  },
+  {
+    id: "text-to-go",
+    title: "Text to Go",
+    description:
+      "Generate Go code and filter out anything that fails go vet and go build with a custom check.",
+    loadPayload: () => loadPayloadFromUrl(textToGoUrl),
   },
   {
     id: "ocr-document-extraction",

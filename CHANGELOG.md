@@ -34,6 +34,14 @@ rename the heading at release time.
 
 ## Unreleased
 
+### What's Changed
+
+- Data Recipes adds two custom validator blocks: **Custom check** runs any
+  tool command (e.g. `go vet`, `sqlfluff`) over generated code with one-click
+  Go and SQL presets, and **Advanced custom check** runs a user-written Python
+  validation function. Both keep invalid rows out of the final dataset and
+  require an explicit consent toggle before a run, since they execute locally.
+
 ## 2026.8.1
 
 ### What's Changed

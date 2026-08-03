@@ -30,6 +30,7 @@ import { toastError } from "@/shared/toast";
 import {
   Album02Icon,
   CodeIcon,
+  CommandLineIcon,
   CookBookIcon,
   Database02Icon,
   Delete02Icon,
@@ -146,6 +147,22 @@ const TEMPLATE_CARDS: TemplateCard[] = [
       "rgb(96 165 250 / 0.45)",
     ],
     learningRecipeId: "text-to-sql",
+  },
+  {
+    title: "Text to Go",
+    description:
+      "Generate Go code and keep only rows that pass a custom go vet + go build check.",
+    icon: CommandLineIcon,
+    difficulty: "Advanced",
+    learningBadges: ["LLM Code", "Custom Check", "Tool Command"],
+    surfaceClassName:
+      "from-teal-500/15 via-cyan-500/5 to-transparent dark:from-teal-400/20 dark:via-cyan-400/10 dark:to-teal-950/16",
+    shineColor: [
+      "rgb(20 184 166 / 0.45)",
+      "rgb(6 182 212 / 0.4)",
+      "rgb(45 212 191 / 0.45)",
+    ],
+    learningRecipeId: "text-to-go",
   },
   {
     title: "Structured Outputs + Jinja Expressions",

@@ -188,3 +188,23 @@ test("getConfigErrors requires custom acknowledgement", () => {
   const acked = getConfigErrors(customConfig());
   assert.ok(!acked.some((message) => message.includes("arbitrary Python")));
 });
+
+test("text-to-go learning recipe round-trips the tool validator", async () => {
+  const recipeJson = await import(
+    "../src/features/data-recipes/learning-recipes/text-to-go.json",
+    { with: { type: "json" } }
+  );
+  const payload = recipeJson.default;
+  const columns = payload.recipe.columns;
+  const goCheck = columns.find((column) => column.name === "go_check");
+  assert.ok(goCheck, "go_check column exists");
+  assert.equal(goCheck.validator_type, "local_callable");
+  const config = parseValidator(goCheck, "go_check", "n9");
+  assert.equal(config.validator_type, "tool");
+  assert.equal(config.tool_ext, "go");
+  assert.equal(
+    config.tool_command,
+    "go vet ./... && go build ./...",
+  );
+  assert.equal(config.tool_acknowledged, true);
+});
