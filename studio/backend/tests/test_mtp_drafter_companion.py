@@ -419,10 +419,14 @@ def test_already_in_target_state_bounces_on_new_drafter(tmp_path):
 
     # Loaded without a drafter; one now exists on disk -> must reload.
     b = _loaded_backend(weight, None)
-    assert not b.adopt_load_intent_if_matched(GgufLoadIntent(**_target_state_kwargs(weight, str(drafter))))
+    assert not b.adopt_load_intent_if_matched(
+        GgufLoadIntent(**_target_state_kwargs(weight, str(drafter)))
+    )
     # Same drafter as launched -> still deduped.
     b = _loaded_backend(weight, str(drafter))
-    assert b.adopt_load_intent_if_matched(GgufLoadIntent(**_target_state_kwargs(weight, str(drafter))))
+    assert b.adopt_load_intent_if_matched(
+        GgufLoadIntent(**_target_state_kwargs(weight, str(drafter)))
+    )
     intent = dict(
         model_identifier = "local-gemma",
         n_ctx = 4096,

@@ -334,9 +334,13 @@ def test_already_in_target_state_consistent_with_bundled_override():
         is_vision = False,
     )
     # Effective (resolved bundled) override -> already loaded, no reload.
-    assert backend.adopt_load_intent_if_matched(GgufLoadIntent(chat_template_override = BUNDLED, **common))
+    assert backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(chat_template_override = BUNDLED, **common)
+    )
     # Raw None (unresolved) -> false match, would force a needless reload.
-    assert not backend.adopt_load_intent_if_matched(GgufLoadIntent(chat_template_override = None, **common))
+    assert not backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(chat_template_override = None, **common)
+    )
 
 
 def _import_backend():
