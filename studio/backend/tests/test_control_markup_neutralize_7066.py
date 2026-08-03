@@ -5137,3 +5137,40 @@ def test_the_native_catalog_profile_sees_the_requests_tools():
         }
     }
     assert catalog_tool_names(renderable_tool_catalog(tools, _Tok(), info)) == {"ok"}
+
+
+def test_an_empty_added_tokens_mapping_falls_through_to_the_vocabulary():
+    """A plain sentencepiece tokenizer (Llama-2, Mistral) loads with an EMPTY
+    added_tokens_decoder and keeps its sentinels in the vocabulary proper. Treating {} as
+    "the vocabulary" left nothing to confirm a template literal against, so a novel model's
+    own delimiters were dropped -- an under-sweep, the dangerous direction (#7066)."""
+
+    class _Sentencepiece:
+        chat_template = "{% for m in messages %}<|zeta_turn|>{{ m }}<|zeta_end|>{% endfor %}"
+        added_tokens_decoder: dict = {}
+
+        def get_vocab(self):
+            return {"piece": 0, "<|zeta_turn|>": 1, "<|zeta_end|>": 2, "<table>": 3}
+
+    markup = markup_for_tokenizer(_Sentencepiece())
+    assert markup.rewrite_control("<|zeta_turn|>") == "< |zeta_turn|>"
+    assert markup.rewrite_control("<|zeta_end|>") == "< |zeta_end|>"
+    # Still not everything shaped like a delimiter: <table> is in the vocabulary but the
+    # template never emits it and the curated pattern does not know it.
+    assert markup.rewrite_control("<table>") == "<table>"
+
+
+def test_a_populated_added_tokens_mapping_still_short_circuits():
+    """The common case must not start walking a 150k-entry vocabulary."""
+    walked = {"n": 0}
+
+    class _Tok:
+        chat_template = "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}"
+        added_tokens_decoder = {0: "<|im_start|>"}
+
+        def get_vocab(self):
+            walked["n"] += 1
+            return {}
+
+    assert markup_for_tokenizer(_Tok()) is not None
+    assert walked["n"] == 0

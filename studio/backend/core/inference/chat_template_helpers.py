@@ -1465,7 +1465,11 @@ def _vocabulary_of(tokenizer) -> Optional[list]:
     """The delimiter-shaped side of a tokenizer's vocabulary, or None."""
     inner = getattr(tokenizer, "tokenizer", tokenizer)
     added = getattr(inner, "added_tokens_decoder", None)
-    if isinstance(added, dict):
+    # Non-empty only: a plain sentencepiece tokenizer (Llama-2, Mistral) loads with an EMPTY
+    # added_tokens_decoder and keeps its sentinels in the vocabulary proper, so treating {}
+    # as "the vocabulary" left the profile with nothing to confirm a template literal
+    # against and dropped that model's own delimiters (#7066).
+    if isinstance(added, dict) and added:
         return [getattr(v, "content", v) for v in added.values()]
     vocab = getattr(inner, "get_vocab", None)
     if callable(vocab):
@@ -1997,7 +2001,10 @@ def markup_for_tokenizer(
         cached = None
     tokens = None
     added = getattr(inner, "added_tokens_decoder", None)
-    if isinstance(added, dict):
+    # Non-empty only: see _vocabulary_of. An empty mapping is "no added tokens", not "no
+    # vocabulary", and the full vocabulary is where a sentencepiece model keeps its
+    # sentinels (#7066).
+    if isinstance(added, dict) and added:
         tokens = [getattr(v, "content", v) for v in added.values()]
     if tokens is None:
         vocab = getattr(inner, "get_vocab", None)
