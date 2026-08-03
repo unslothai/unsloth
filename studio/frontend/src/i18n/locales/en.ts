@@ -1438,13 +1438,9 @@ export const en = {
       useEpochs: "Use Epochs",
       maxStepsTooltip: "Override total optimizer steps.",
       epochsTooltip: "Number of full passes over the dataset.",
-      epochsDescription: "Each epoch is one full pass over your dataset.",
-      maxStepsDescription:
-        "Limits training to a fixed number of optimizer steps.",
       contextLength: "Context Length",
       contextLengthTooltip: "Maximum number of tokens per training sample.",
       customContextLength: "Enter a custom value",
-      contextLengthDescription: "Max sequence length for training samples",
       learningRate: "Learning Rate",
       learningRateTooltip:
         "Step size for weight updates. Lower values train slower but more stably.",
@@ -1453,8 +1449,6 @@ export const en = {
       embeddingLearningRate: "Embedding Learning Rate",
       embeddingLearningRateTooltip:
         "Only used when CPT is training embed_tokens. Embeddings are easier to destabilize than LoRA weights, so they usually need a smaller LR. Leave blank to use lr/10; typical working range is 2x-10x smaller than the main LR. Increase it only if vocabulary or domain-token adaptation is too slow.",
-      embeddingLearningRateDescription:
-        "Leave blank to use lr/10 (recommended). Typical range is 2x-10x smaller than the main learning rate.",
       rank: "Rank",
       rankTooltip:
         "Dimension of the low-rank matrices. Higher = more capacity.",

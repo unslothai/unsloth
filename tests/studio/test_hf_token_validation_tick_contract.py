@@ -11,6 +11,9 @@ EN_LOCALE = REPO / "studio/frontend/src/i18n/locales/en.ts"
 RUN_PREVIEW = REPO / "studio/frontend/src/features/studio/wizard/run-preview-card.tsx"
 TRAINING_READINESS = REPO / "studio/frontend/src/features/training/hooks/use-training-readiness.ts"
 START_TRAINING_CTA = REPO / "studio/frontend/src/features/studio/wizard/start-training-cta.tsx"
+TRAINING_CONFIG_STORE = (
+    REPO / "studio/frontend/src/features/training/stores/training-config-store.ts"
+)
 STUDIO_NAVIGATION = REPO / "studio/frontend/src/features/studio/use-studio-navigation.ts"
 TRAIN_SUBNAV = REPO / "studio/frontend/src/features/studio/studio-navigation.tsx"
 TRAINING_ACTIONS = REPO / "studio/frontend/src/features/training/hooks/use-training-actions.ts"
@@ -71,6 +74,7 @@ def test_saved_token_is_not_reported_as_connected():
 def test_model_defaults_error_warns_without_blocking_readiness_and_offers_retry():
     readiness = TRAINING_READINESS.read_text(encoding = "utf-8")
     cta = START_TRAINING_CTA.read_text(encoding = "utf-8")
+    config_store = TRAINING_CONFIG_STORE.read_text(encoding = "utf-8")
 
     assert "modelError: string | null;" in readiness
     assert "const modelError = state.modelDefaultsError;" in readiness
@@ -84,6 +88,19 @@ def test_model_defaults_error_warns_without_blocking_readiness_and_offers_retry(
     assert "const showsModelWarning =" in cta
     assert "!!modelError &&" in cta
     assert "!startError &&" in cta
+    ensure_defaults = config_store.split("ensureModelDefaultsLoaded: () =>", 1)[1].split(
+        "setProjectName:", 1
+    )[0]
+    assert "defaultsAlreadyApplied && !state.modelDefaultsError" in ensure_defaults
+    assert "applyTrainingDefaults:" in ensure_defaults
+    assert "!defaultsAlreadyApplied ||" in ensure_defaults
+    assert "canReapplyModelDefaults(state.selectedModel)" in ensure_defaults
+    model_defaults_error = config_store.split(".catch((error) =>", 1)[1].split(
+        "const runDatasetCheck", 1
+    )[0]
+    assert model_defaults_error.count(
+        "controller.signal.aborted || !requestMatchesSelection()"
+    ) == 2
 
 
 def test_training_start_prepares_token_once_before_transport():

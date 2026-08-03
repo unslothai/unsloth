@@ -488,7 +488,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             // Fallback vision check; pass the token so a gated/private VLM classifies right.
             void checkVisionModel(modelName, getHfToken() || undefined)
               .then((isVision) => {
-                if (!requestMatchesSelection()) return;
+                if (controller.signal.aborted || !requestMatchesSelection()) {
+                  return;
+                }
                 const state = get();
                 set({
                   modelType: inferTrainingModelTypeFromFlags({
@@ -501,7 +503,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 });
               })
               .catch(() => {
-                if (!requestMatchesSelection()) return;
+                if (controller.signal.aborted || !requestMatchesSelection()) {
+                  return;
+                }
                 set({ isCheckingVision: false });
               });
           });
@@ -932,8 +936,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const state = get();
           if (!state.selectedModel) return;
           if (state.isLoadingModelDefaults) return;
-          if (state.modelDefaultsAppliedFor === state.selectedModel) return;
-          void loadAndApplyModelDefaults(state.selectedModel);
+          const defaultsAlreadyApplied =
+            state.modelDefaultsAppliedFor === state.selectedModel;
+          if (defaultsAlreadyApplied && !state.modelDefaultsError) return;
+          void loadAndApplyModelDefaults(state.selectedModel, {
+            applyTrainingDefaults:
+              !defaultsAlreadyApplied ||
+              canReapplyModelDefaults(state.selectedModel),
+          });
         },
         setProjectName: (projectName) => setUserEdit({ projectName }),
         setTrainingMethod: (trainingMethod) => {

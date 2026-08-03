@@ -1443,13 +1443,9 @@ export const ptBR = {
       useEpochs: "Usar Épocas",
       maxStepsTooltip: "Sobrescreve o total de passos do otimizador.",
       epochsTooltip: "Número de passagens completas pelo dataset.",
-      epochsDescription: "Cada época é uma passagem completa pelo seu dataset.",
-      maxStepsDescription:
-        "Limita o treinamento a um número fixo de passos do otimizador.",
       contextLength: "Comprimento do Contexto",
       contextLengthTooltip: "Número máximo de tokens por amostra de treinamento.",
       customContextLength: "Insira um valor personalizado",
-      contextLengthDescription: "Comprimento máximo de sequência para amostras de treino",
       learningRate: "Taxa de Aprendizado (Learning Rate)",
       learningRateTooltip:
         "Tamanho do passo para atualizações de peso. Valores menores treinam mais lentamente, mas com mais estabilidade.",
@@ -1458,8 +1454,6 @@ export const ptBR = {
       embeddingLearningRate: "Taxa de Aprendizado do Embedding",
       embeddingLearningRateTooltip:
         "Usado apenas quando o CPT está treinando embed_tokens. Os embeddings são mais fáceis de desestabilizar do que os pesos LoRA, por isso geralmente precisam de um LR menor. Deixe em branco para usar lr/10; a faixa típica de funcionamento é de 2x a 10x menor que o LR principal. Aumente apenas se a adaptação de vocabulário ou de tokens de domínio estiver muito lenta.",
-      embeddingLearningRateDescription:
-        "Deixe em branco para usar lr/10 (recomendado). A faixa típica é de 2x a 10x menor que a taxa de aprendizado principal.",
       rank: "Rank",
       rankTooltip:
         "Dimensão das matrizes de baixo rank. Maior = mais capacidade.",

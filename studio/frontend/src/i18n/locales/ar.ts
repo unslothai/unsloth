@@ -1430,13 +1430,9 @@ export const ar = {
       useEpochs: "استخدام الحقب",
       maxStepsTooltip: "تجاوز إجمالي خطوات المُحسِّن.",
       epochsTooltip: "عدد المرات الكاملة للمرور على مجموعة البيانات.",
-      epochsDescription: "كل حقبة (epoch) هي مرور كامل واحد على مجموعة بياناتك.",
-      maxStepsDescription:
-        "يحدّ التدريب بعدد ثابت من خطوات المُحسِّن.",
       contextLength: "طول السياق",
       contextLengthTooltip: "الحد الأقصى لعدد التوكنات لكل عينة تدريب.",
       customContextLength: "أدخل قيمة مخصّصة",
-      contextLengthDescription: "الحد الأقصى لطول التسلسل لعينات التدريب",
       learningRate: "معدل التعلم",
       learningRateTooltip:
         "حجم خطوة تحديثات الأوزان. القيم الأقل تُدرّب ببطء أكبر لكن باستقرار أكبر.",
@@ -1445,8 +1441,6 @@ export const ar = {
       embeddingLearningRate: "معدل تعلم التضمين (Embedding)",
       embeddingLearningRateTooltip:
         "يُستخدم فقط عندما تُدرّب CPT على embed_tokens. التضمينات أسهل في زعزعة استقرارها من أوزان LoRA، لذا تحتاج عادةً إلى معدل تعلم أصغر. اتركه فارغًا لاستخدام lr/10؛ النطاق المعتاد أصغر بمقدار 2x إلى 10x من معدل التعلم الرئيسي. زِده فقط إذا كان تكييف المفردات أو توكنات المجال بطيئًا جدًا.",
-      embeddingLearningRateDescription:
-        "اتركه فارغًا لاستخدام lr/10 (موصى به). النطاق المعتاد أصغر بمقدار 2x إلى 10x من معدل التعلم الرئيسي.",
       rank: "Rank",
       rankTooltip:
         "بُعد المصفوفات منخفضة الرتبة. الأعلى = سعة أكبر.",

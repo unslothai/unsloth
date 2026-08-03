@@ -1430,13 +1430,9 @@ export const ko = {
       useEpochs: "에포크 사용",
       maxStepsTooltip: "전체 옵티마이저 스텝 수를 재정의합니다.",
       epochsTooltip: "데이터셋을 완전히 순회하는 횟수입니다.",
-      epochsDescription: "각 에포크는 데이터셋을 한 번 완전히 순회하는 것입니다.",
-      maxStepsDescription:
-        "학습을 고정된 옵티마이저 스텝 수로 제한합니다.",
       contextLength: "컨텍스트 길이",
       contextLengthTooltip: "학습 샘플당 최대 토큰 수입니다.",
       customContextLength: "사용자 지정 값 입력",
-      contextLengthDescription: "학습 샘플의 최대 시퀀스 길이",
       learningRate: "학습률",
       learningRateTooltip:
         "가중치 업데이트의 스텝 크기입니다. 값이 낮을수록 학습이 느리지만 더 안정적입니다.",
@@ -1445,8 +1441,6 @@ export const ko = {
       embeddingLearningRate: "임베딩 학습률",
       embeddingLearningRateTooltip:
         "CPT가 embed_tokens를 학습할 때만 사용됩니다. 임베딩은 LoRA 가중치보다 불안정해지기 쉬우므로 보통 더 작은 학습률이 필요합니다. 비워 두면 lr/10을 사용하며, 일반적인 범위는 주 학습률보다 2배~10배 작습니다. 어휘 또는 도메인 토큰 적응이 너무 느릴 때만 높이세요.",
-      embeddingLearningRateDescription:
-        "비워 두면 lr/10을 사용합니다(권장). 일반적인 범위는 주 학습률보다 2배~10배 작습니다.",
       rank: "랭크",
       rankTooltip:
         "저랭크 행렬의 차원입니다. 높을수록 용량이 커집니다.",

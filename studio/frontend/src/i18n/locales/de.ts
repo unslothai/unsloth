@@ -1478,16 +1478,10 @@ export const de = {
       useEpochs: "Epochen verwenden",
       maxStepsTooltip: "Überschreibt die gesamten Optimierer-Schritte.",
       epochsTooltip: "Anzahl vollständiger Durchläufe über den Datensatz.",
-      epochsDescription:
-        "Jede Epoche ist ein vollständiger Durchlauf über Ihren Datensatz.",
-      maxStepsDescription:
-        "Begrenzt das Training auf eine feste Anzahl von Optimierer-Schritten.",
       contextLength: "Kontextlänge",
       contextLengthTooltip:
         "Maximale Anzahl an Token pro Trainingsbeispiel.",
       customContextLength: "Eigenen Wert eingeben",
-      contextLengthDescription:
-        "Maximale Sequenzlänge für Trainingsbeispiele",
       learningRate: "Lernrate",
       learningRateTooltip:
         "Schrittgröße für Gewichtsaktualisierungen. Niedrigere Werte trainieren langsamer, aber stabiler.",
@@ -1496,8 +1490,6 @@ export const de = {
       embeddingLearningRate: "Embedding-Lernrate",
       embeddingLearningRateTooltip:
         "Wird nur verwendet, wenn CPT embed_tokens trainiert. Embeddings destabilisieren leichter als LoRA-Gewichte und benötigen daher meist eine kleinere Lernrate. Leer lassen, um lr/10 zu verwenden; typischer Bereich ist 2- bis 10-mal kleiner als die Haupt-Lernrate. Erhöhen Sie sie nur, wenn die Anpassung von Vokabular oder Domänen-Token zu langsam ist.",
-      embeddingLearningRateDescription:
-        "Leer lassen, um lr/10 zu verwenden (empfohlen). Typischer Bereich ist 2- bis 10-mal kleiner als die Haupt-Lernrate.",
       rank: "Rank",
       rankTooltip:
         "Dimension der Low-Rank-Matrizen. Höher = mehr Kapazität.",

@@ -1379,12 +1379,9 @@ export const zhCN = {
       useEpochs: "使用轮数",
       maxStepsTooltip: "覆盖优化器总步数。",
       epochsTooltip: "完整遍历数据集的次数。",
-      epochsDescription: "每个 epoch 是对数据集的一次完整遍历。",
-      maxStepsDescription: "将训练限制为固定数量的优化器步数。",
       contextLength: "上下文长度",
       contextLengthTooltip: "每个训练样本的最大 token 数。",
       customContextLength: "输入自定义值",
-      contextLengthDescription: "训练样本的最大序列长度",
       learningRate: "学习率",
       learningRateTooltip: "权重更新步长。较低的值训练更慢但更稳定。",
       learningRateDescription:
@@ -1392,8 +1389,6 @@ export const zhCN = {
       embeddingLearningRate: "Embedding 学习率",
       embeddingLearningRateTooltip:
         "仅在 CPT 训练 embed_tokens 时使用。Embedding 比 LoRA 权重更易失稳，通常需要更小的学习率。留空则使用 lr/10；常用区间是比主学习率小 2 至 10 倍。仅在词表或领域 token 适配过慢时才提高。",
-      embeddingLearningRateDescription:
-        "留空使用 lr/10（推荐）。常用区间是比主学习率小 2 至 10 倍。",
       rank: "Rank",
       rankTooltip: "低秩矩阵的维度。越高容量越大。",
       alpha: "Alpha",
