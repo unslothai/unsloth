@@ -814,14 +814,23 @@ def test_reasoning_budget_capability_gate_rejects_legacy_positive_range(tmp_path
             reasoning_budget = 512,
             reasoning_budget_message = "",
         )
-    monkeypatch.setenv("LLAMA_ARG_THINK_BUDGET", "512")
+    # A passthrough flag is still an explicit request, so it gates like the field.
     with pytest.raises(ValueError, match = "does not accept positive reasoning budgets"):
         LlamaCppBackend.validate_reasoning_budget_capabilities(
             str(fake),
-            extra_args = None,
+            extra_args = ["--reasoning-budget", "512"],
             reasoning_budget = -1,
             reasoning_budget_message = "",
         )
+    # The env default is not: no Studio control clears it, and llama-server
+    # validates its own env, so failing here is unrecoverable from the UI.
+    monkeypatch.setenv("LLAMA_ARG_THINK_BUDGET", "512")
+    LlamaCppBackend.validate_reasoning_budget_capabilities(
+        str(fake),
+        extra_args = None,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+    )
     monkeypatch.delenv("LLAMA_ARG_THINK_BUDGET")
     LlamaCppBackend.validate_reasoning_budget_capabilities(
         str(fake),
@@ -864,6 +873,33 @@ def test_reasoning_budget_capability_gate_rejects_explicit_old_binary(
     }
     with pytest.raises(ValueError, match = missing_flag):
         LlamaCppBackend.validate_reasoning_budget_capabilities("/old/llama-server", **request)
+
+
+def test_reasoning_budget_capability_gate_ignores_env_on_unprobeable_binary(monkeypatch):
+    """An env default must not fail closed on a binary whose --help cannot be read.
+
+    Nothing was configured, so the rejection named a setting the UI shows as default.
+    Effective state still reports the inherited value; only the gate ignores it.
+    """
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "supports_reasoning_budget": False,
+                "supports_reasoning_budget_message": False,
+                "reasoning_budget_probe_inconclusive": True,
+            }
+        ),
+    )
+    monkeypatch.setenv("LLAMA_ARG_THINK_BUDGET", "512")
+    monkeypatch.setenv("LLAMA_ARG_THINK_BUDGET_MESSAGE", "Wrap up.")
+    LlamaCppBackend.validate_reasoning_budget_capabilities(
+        "/custom/llama-server",
+        extra_args = None,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
+    )
 
 
 def test_reasoning_budget_capability_gate_rejects_inconclusive_probe(monkeypatch):

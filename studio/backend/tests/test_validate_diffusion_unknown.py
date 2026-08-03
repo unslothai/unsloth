@@ -15,6 +15,7 @@ split from that answer, and /load may then apply it to a diffusion runner: an in
 import asyncio
 import importlib
 import importlib.util
+import os as _os
 import sys
 import unittest
 from pathlib import Path
@@ -57,6 +58,7 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
         reasoning_budget = -1,
         reasoning_budget_message = "",
         capability_error = None,
+        extra_args = None,
     ):
         # Mirrors the real staged-metadata preflight; also skips the training guard.
         request = ValidateModelRequest(
@@ -92,7 +94,7 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
                 return_value = ("someone/repacked-gguf", "someone/repacked-gguf", False),
             ),
             patch.object(route.ModelConfig, "from_identifier", return_value = config),
-            patch.object(route, "_resolve_inherited_extra_args", return_value = None),
+            patch.object(route, "_resolve_inherited_extra_args", return_value = extra_args),
             patch.object(route, "_classify_diffusion_gguf", return_value = diffusion_kind),
             patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
             patch.object(route, "_effective_load_in_4bit", return_value = True),
@@ -160,6 +162,41 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
             )
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("cannot be applied until", raised.exception.detail)
+
+    def test_inherited_env_default_alone_never_rejects_a_load(self):
+        """LLAMA_ARG_THINK_BUDGET* is a machine-wide llama.cpp default, not a request.
+
+        No Studio control writes or clears it, so gating on it refused an undownloaded
+        GGUF and a DiffusionGemma with advice the user cannot follow, and disagreed
+        with LlamaCppBackend's own gate, which reads the explicit values only.
+        """
+        route = _ROUTE
+        env = {
+            "LLAMA_ARG_THINK_BUDGET": "512",
+            "LLAMA_ARG_THINK_BUDGET_MESSAGE": "Wrap up.",
+        }
+        with patch.dict(_os.environ, env, clear = False):
+            self.assertEqual(
+                route.LlamaCppBackend.reasoning_budget_settings_requested(
+                    extra_args = None, reasoning_budget = -1, reasoning_budget_message = ""
+                ),
+                (False, False),
+                "the backend's own gate must stay the reference for 'configured'",
+            )
+            for kind in (None, True, False):
+                with self.subTest(diffusion_kind = kind):
+                    resp = self._validate(route, diffusion_kind = kind)
+                    self.assertTrue(resp.valid)
+
+    def test_extra_args_passthrough_is_still_a_configured_setting(self):
+        """Ignoring the environment must not also ignore an explicit passthrough flag."""
+        route = _ROUTE
+        with self.assertRaises(HTTPException) as raised:
+            self._validate(
+                route, diffusion_kind = True, extra_args = ["--reasoning-budget", "512"]
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("DiffusionGemma", raised.exception.detail)
 
 
 if __name__ == "__main__":

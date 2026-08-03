@@ -5042,11 +5042,16 @@ async def _validate_reasoning_budget_preflight(
     extra_args: Optional[list[str]],
     request: LoadRequest | ValidateModelRequest,
 ) -> None:
-    """Reject unsupported reasoning controls before any resident model is torn down."""
+    """Reject unsupported reasoning controls before any resident model is torn down.
+
+    Explicit config only, exactly as LlamaCppBackend gates the load itself. Counting
+    an inherited LLAMA_ARG_THINK_BUDGET* as a request rejected every undownloaded
+    GGUF and every DiffusionGemma, naming a setting the UI already shows as default.
+    """
     if not config.is_gguf:
         return
-    effective_budget = resolve_reasoning_budget_with_env(extra_args, request.reasoning_budget)
-    effective_message = resolve_reasoning_budget_message_with_env(
+    effective_budget = resolve_reasoning_budget(extra_args, request.reasoning_budget)
+    effective_message = resolve_reasoning_budget_message(
         extra_args, request.reasoning_budget_message
     )
     requested = any(

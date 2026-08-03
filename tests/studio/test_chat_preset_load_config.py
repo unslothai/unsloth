@@ -94,3 +94,22 @@ def test_preset_load_config_carries_reasoning_budget():
     routes = _read("studio/backend/routes/chat_history.py")
     assert "reasoningBudget: Optional[int]" in routes
     assert "reasoningBudgetMessage: Optional[str]" in routes
+
+
+def test_preset_sheet_reacts_to_a_reasoning_budget_change():
+    """capturePresetLoadConfig() reads the runtime store through getState().
+
+    A captured field the sheet neither subscribes to nor lists as a memo dependency
+    cannot move the Update button or the summary: with the sheet open, changing only
+    the reasoning budget left both stale until some unrelated setting changed.
+    """
+    sheet = _read("studio/frontend/src/features/chat/chat-settings-sheet.tsx")
+    for field in ("reasoningBudget", "reasoningBudgetMessage"):
+        assert f"(s) => s.{field}" in sheet, (
+            f"the preset sheet never subscribes to {field}, so a change to it "
+            "does not re-render the component whose memos capture it"
+        )
+        # Both memos: hasUnsavedPresetChanges (dirty state) and currentLoadSummary.
+        assert sheet.count(f"\n    {field},\n") + sheet.count(f"\n      {field},\n") == 2, (
+            f"{field} is missing from a capturePresetLoadConfig() memo dependency list"
+        )

@@ -3537,11 +3537,15 @@ class LlamaCppBackend:
         reasoning_budget: int,
         reasoning_budget_message: str,
     ) -> dict[str, object]:
-        """Reject configured reasoning flags before replacing a live server."""
-        effective_budget = resolve_reasoning_budget_with_env(extra_args, reasoning_budget)
-        effective_message = resolve_reasoning_budget_message_with_env(
-            extra_args, reasoning_budget_message
-        )
+        """Reject configured reasoning flags before replacing a live server.
+
+        Explicit config only: the first-class fields and the passthrough extras.
+        LLAMA_ARG_THINK_BUDGET* is a machine-wide llama.cpp default no Studio control
+        can clear, so gating on it would fail loads with no way out of the UI.
+        llama-server validates its own env; effective state still reports it.
+        """
+        effective_budget = resolve_reasoning_budget(extra_args, reasoning_budget)
+        effective_message = resolve_reasoning_budget_message(extra_args, reasoning_budget_message)
         needs_budget, needs_message = cls.reasoning_budget_settings_requested(
             extra_args = extra_args,
             reasoning_budget = effective_budget,
