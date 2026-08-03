@@ -15,6 +15,7 @@ import {
 import { VALIDATOR_OXC_CODE_LANGS } from "../validators/code-lang";
 import { isOxcCodeShape } from "../validators/oxc-code-shape";
 import { isOxcValidationMode } from "../validators/oxc-mode";
+import { firstInvalidToolScaffoldPath } from "../validators/validation-markers";
 
 export function validateSubcategoryConfigs(
   configs: Record<string, NodeConfig>,
@@ -211,6 +212,14 @@ export function validateValidatorConfigs(
       !(config.tool_ext ?? "").trim()
     ) {
       errors.push(`Validator ${config.name}: tool extension required.`);
+    }
+    if (config.validator_type === "tool") {
+      const badScaffoldPath = firstInvalidToolScaffoldPath(config.tool_scaffold);
+      if (badScaffoldPath !== null) {
+        errors.push(
+          `Validator ${config.name}: scaffold path '${badScaffoldPath}' is invalid.`,
+        );
+      }
     }
     if (config.validator_type === "tool" && config.tool_acknowledged !== true) {
       errors.push(

@@ -42,6 +42,12 @@ rename the heading at release time.
   custom check** runs a user-written Python validation function. Both keep
   invalid rows out of the final dataset and require an explicit consent toggle
   before a run, since they execute locally.
+- Custom check supports **Files to write**: optional files scaffolded into the
+  temp folder before the command runs, so project-based tools (a `go.mod` for
+  Go, a `Cargo.toml` + `src/` layout for Rust, or any other setup) work
+  without built-in presets.
+- New **Text to Rust** learning recipe demonstrates the Advanced custom check
+  with a Python function that runs `cargo check`.
 
 ## 2026.8.1
 

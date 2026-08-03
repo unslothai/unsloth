@@ -6,6 +6,7 @@ import { isValidSex, parseAgeRange, parseIntNumber, parseNumber } from "./parse"
 import { VALIDATOR_OXC_CODE_LANGS, VALIDATOR_SQL_CODE_LANGS } from "./validators/code-lang";
 import { isOxcCodeShape } from "./validators/oxc-code-shape";
 import { isOxcValidationMode } from "./validators/oxc-mode";
+import { firstInvalidToolScaffoldPath } from "./validators/validation-markers";
 
 const TRACE_MODES = new Set(["none", "last_message", "all_messages"]);
 const GITHUB_ITEM_TYPES = new Set(["issues", "pulls", "commits"]);
@@ -257,6 +258,10 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       }
       if (config.tool_acknowledged !== true) {
         errors.push("Acknowledge that this check runs arbitrary commands locally.");
+      }
+      const badScaffoldPath = firstInvalidToolScaffoldPath(config.tool_scaffold);
+      if (badScaffoldPath !== null) {
+        errors.push(`Scaffold path "${badScaffoldPath}" is invalid.`);
       }
     } else if (config.validator_type === "custom") {
       if (!(config.custom_source ?? "").trim()) {

@@ -61,6 +61,31 @@ function normalizeToolScaffoldEntry(entry: unknown): ToolScaffoldFile | null {
   return { path, content };
 }
 
+export function firstInvalidToolScaffoldPath(
+  scaffold: ToolScaffoldFile[] | undefined,
+): string | null {
+  if (!Array.isArray(scaffold)) {
+    return null;
+  }
+  for (const entry of scaffold) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const path = typeof record.path === "string" ? record.path.trim() : "";
+    if (!path) {
+      continue;
+    }
+    if (
+      !TOOL_SCAFFOLD_PATH_RE.test(path) ||
+      path.split("/").some((segment) => segment === "." || segment === "..")
+    ) {
+      return path;
+    }
+  }
+  return null;
+}
+
 export function normalizeToolScaffold(
   scaffold: ToolScaffoldFile[] | undefined,
 ): ToolScaffoldFile[] {

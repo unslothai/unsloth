@@ -144,6 +144,33 @@ test("decodeToolSpec rejects unsafe scaffold paths", () => {
   assert.equal(markers.decodeToolSpec(encoded), null);
 });
 
+test("firstInvalidToolScaffoldPath reports bad rows", () => {
+  assert.equal(markers.firstInvalidToolScaffoldPath(undefined), null);
+  assert.equal(
+    markers.firstInvalidToolScaffoldPath([
+      { path: "go.mod", content: "x" },
+      { path: "../evil.txt", content: "x" },
+    ]),
+    "../evil.txt",
+  );
+  assert.equal(
+    markers.firstInvalidToolScaffoldPath([
+      { path: "src/main.rs", content: "{source}" },
+    ]),
+    null,
+  );
+});
+
+test("getConfigErrors flags invalid scaffold paths", () => {
+  const errors = getConfigErrors(
+    toolConfig({
+      tool_scaffold: [{ path: "../evil.txt", content: "x" }],
+      tool_acknowledged: true,
+    }),
+  );
+  assert.ok(errors.some((message) => message.includes("../evil.txt")));
+});
+
 test("validationFunctionFromConfig includes scaffold in the tool marker", () => {
   const marker = markers.validationFunctionFromConfig(
     toolConfig({ tool_scaffold: GO_SCAFFOLD }),
