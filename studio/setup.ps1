@@ -1781,19 +1781,24 @@ if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
         # `studio update`, a swallowed one silently reports no GPU.
         $_gpuScan = Invoke-BoundedVideoControllerScan
         $_gpuNames = if ($_gpuScan.Ok) { @($_gpuScan.Names) } else { @(Get-IntelRegistryAdapterNames) }
+        # One definition for both the reconciliation gate and the classification below, so they
+        # cannot drift apart.
+        $_xpuNameRe = "(?i)Intel.*(Arc|Data Center GPU)"
         # WMI reports the localized adapter name, which on non-English Windows carries no ASCII
-        # "Intel" for the filter below to find. The registry helper resolves the PCI vendor id,
-        # so use it to RE-LABEL an adapter WMI already reported, never to add one: an entry
-        # matching nothing WMI listed is a driver record outliving its card, and a host WMI
-        # answered for must not be promoted by it.
-        if ($_gpuScan.Ok -and -not ($_gpuNames | Where-Object { $_ -match "(?i)intel" })) {
+        # "Intel" for the classification below to find. The registry helper resolves the PCI
+        # vendor id, so use it to RE-LABEL an adapter WMI already reported, never to add one: an
+        # entry matching nothing WMI listed is a driver record outliving its card, and a host WMI
+        # answered for must not be promoted by it. Gated on the absence of an XPU match rather
+        # than of any Intel name: a hybrid laptop reports its ASCII "Intel UHD" alongside a
+        # localized Arc, and keying on "Intel" would stop there.
+        if ($_gpuScan.Ok -and -not ($_gpuNames | Where-Object { $_ -match $_xpuNameRe })) {
             foreach ($_reg in @(Get-IntelRegistryAdapterNames)) {
                 foreach ($_wmiName in $_gpuNames) {
                     if ($_wmiName -and $_reg.Contains($_wmiName)) { $_gpuNames += $_reg; break }
                 }
             }
         }
-        $xpuGpu = $_gpuNames | Where-Object { $_ -match "(?i)Intel.*(Arc|Data Center GPU)" } | Select-Object -First 1
+        $xpuGpu = $_gpuNames | Where-Object { $_ -match $_xpuNameRe } | Select-Object -First 1
         if ($xpuGpu) { $script:IsIntelXpu = $true; $IntelGpuLabel = $xpuGpu }
     } catch {}
 }
@@ -3389,7 +3394,15 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # torch forever. $SkipPythonDeps is re-tested so an escape already taken above (AMD,
         # anyio, incomplete install) does not probe twice. The probe is bounded, and a timeout
         # reads as "not XPU" -- that costs one dependency pass, never a silent CPU venv.
-        if ($script:IsIntelXpu -and $SkipPythonDeps) {
+        # Both escapes below exist to reach the XPU install and its two remediations, and all
+        # three are gated on $XpuIndexUrl, which is only set when the resolved index leaf is
+        # xpu. Where an explicit pin sends this host elsewhere, or no-torch mode means there is
+        # no torch pass at all, clearing the fast path installs nothing new and the identical
+        # condition re-fires on the next update, forever. An unpinned host resolves to $null
+        # here and is unaffected.
+        $_pinLeafNow = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
+        $_xpuIsReachable = (-not $NoTorchMode) -and ((-not $_pinLeafNow) -or ($_pinLeafNow -eq "xpu"))
+        if ($script:IsIntelXpu -and $SkipPythonDeps -and $_xpuIsReachable) {
             $_torchIsXpu = Test-TorchXpuAvailable -PythonExe "python"
             if (-not $_torchIsXpu) {
                 substep "Intel GPU detected but PyTorch XPU is unavailable -- reinstalling XPU PyTorch" "Cyan"
@@ -3403,7 +3416,7 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # bitsandbytes floor and the Triton replacement live in the dependency pass below, so a
         # venv that reached +xpu without them would take this fast path on every later update
         # and never get them. Same two conditions those passes install for.
-        if ($SkipPythonDeps -and ($script:IsIntelXpu -or $installedTorchTag -eq "xpu")) {
+        if ($SkipPythonDeps -and $_xpuIsReachable -and ($script:IsIntelXpu -or $installedTorchTag -eq "xpu")) {
             $_xpuDepsCode = "import importlib.metadata as m; " +
                 "print('BNB=' + next((d.version for d in m.distributions() " +
                 "if (d.metadata['Name'] or '').lower() == 'bitsandbytes'), '')); " +
@@ -3890,23 +3903,13 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
     # torch is not the +xpu wheel this branch assumes, and doing nothing is the safe answer.
     if ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
         substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"
-        # Asked for rather than assembled, so it cannot drift from install_manifest's own idea
-        # of where the manifest lives. Empty on an older tree, which skips the hold below.
-        $_manifestPath = ""
-        try {
-            $_mp = & python -c "
-import sys
-sys.path.insert(0, sys.argv[1])
-try:
-    import install_manifest
-except Exception:
-    raise SystemExit(0)
-print(install_manifest.manifest_path())
-" "$PSScriptRoot" 2>$null
-            if ($LASTEXITCODE -eq 0) {
-                $_manifestPath = ("$_mp" -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1).Trim()
-            }
-        } catch {}
+        # install_manifest.manifest_path() is venv_root()/MANIFEST_NAME and venv_root() is
+        # sys.prefix, which is $VenvDir here -- the same join Get-PersistedNoTorch already does.
+        # Assembled rather than asked for: a subprocess to learn a constant is one more thing
+        # that can hang, mis-parse, or fail in a way indistinguishable from "there is no
+        # manifest", and that last one silently reopens the window this hold exists to close.
+        # test_intel_registry_fallback.ps1 asserts this literal still matches MANIFEST_NAME.
+        $_manifestPath = Join-Path $VenvDir "unsloth_install_manifest.json"
         # Fetch, THEN uninstall, THEN install the file. The uninstall cannot go last -- it drops
         # the paths in triton-windows' OWN record, which are the shared ones -- so pre-fetching is
         # what keeps a dead mirror from stranding the venv between the two steps. A local wheel
@@ -3939,6 +3942,7 @@ print(install_manifest.manifest_path())
                 # gone, which is the truth while the venv has no triton.
                 $_manifestHeld = $null
                 $_manifestBlocked = $false
+                $_uninstallExit = 0
                 if ($_manifestPath -and (Test-Path -LiteralPath $_manifestPath -PathType Leaf)) {
                     $_held = Join-Path $_tritonTmp "held_manifest.json"
                     try {
@@ -3962,6 +3966,18 @@ print(install_manifest.manifest_path())
                     substep "[WARN] could not set the install manifest aside; triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
                 } else {
                     Fast-Uninstall "triton-windows" | Out-Null
+                    $_uninstallExit = $LASTEXITCODE
+                }
+                # A triton-windows that would not uninstall (Studio still running and holding
+                # _C/libtriton.pyd open is the realistic one) still shadows the XPU triton, so
+                # installing over it achieves nothing and would restore the manifest onto a venv
+                # this pass was supposed to have changed. Put the manifest back and stop.
+                if (-not $_manifestBlocked -and $_uninstallExit -ne 0) {
+                    substep "[WARN] could not remove triton-windows $_tritonWinVer (exit $_uninstallExit); it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
+                    if ($_manifestHeld) {
+                        try { Move-Item -LiteralPath $_manifestHeld -Destination $_manifestPath -Force -ErrorAction Stop } catch {}
+                    }
+                } elseif (-not $_manifestBlocked) {
                     if ($script:UnslothVerbose) {
                         Fast-Install --force-reinstall --no-deps $_tritonWheel | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
                         $tritonXpuExit = $LASTEXITCODE
@@ -3995,6 +4011,12 @@ print(install_manifest.manifest_path())
                     # repair it instead of fast-pathing past a broken torch.compile.
                     if ($_manifestHeld -and $_tritonPresent) {
                         try { Move-Item -LiteralPath $_manifestHeld -Destination $_manifestPath -Force -ErrorAction Stop } catch {}
+                        # The finally below deletes the held copy either way, so an unreported
+                        # failure here loses the manifest silently and the next run does a full
+                        # dependency pass with nothing on screen explaining why.
+                        if (-not (Test-Path -LiteralPath $_manifestPath -PathType Leaf)) {
+                            substep "[WARN] could not restore the install manifest; the next update will re-run the dependency pass." "Yellow"
+                        }
                     }
                 }
             }

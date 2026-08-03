@@ -120,6 +120,25 @@ Check "ACL Properties beside an Arc"   (Test-Xpu (Get-AdapterNames @((New-Adapte
 Check "denied read before the Arc"     (Test-Xpu (Get-AdapterNames @((New-Adapter "0000" $null $null -NullProps), (New-Adapter "0001" $ARC $VEN))))
 Check "every subkey unreadable"        ((Get-AdapterNames @((New-Adapter "0000" $null $null "prop"), (New-Adapter "0001" $null $null "prop"))).Count -eq 0)
 
+# --- drift guards on the two constants the installers assemble rather than ask for ---
+$setupText = Get-Content -Raw (Join-Path $repo "studio/setup.ps1")
+$installText2 = Get-Content -Raw (Join-Path $repo "install.ps1")
+$manifestPy = Get-Content -Raw (Join-Path $repo "studio/install_manifest.py")
+
+Write-Host "constants the installers hard-code stay in step with their source of truth"
+# setup.ps1 joins this onto $VenvDir instead of asking install_manifest for it, so a rename
+# there would silently stop the Triton swap from holding the manifest at all.
+$manifestName = if ($manifestPy -match '(?m)^MANIFEST_NAME\s*=\s*"([^"]+)"') { $Matches[1] } else { "" }
+Check "install_manifest exposes MANIFEST_NAME"   ($manifestName -ne "")
+Check "setup.ps1 uses that exact file name"      ($manifestName -and $setupText.Contains("`"$manifestName`""))
+
+# The reconciliation gate must key off the XPU match, not off "any Intel name": a hybrid laptop
+# reports an ASCII "Intel UHD" next to a localized Arc, and keying on Intel stops at the UHD.
+foreach ($pair in @(@("install.ps1", $installText2), @("studio/setup.ps1", $setupText))) {
+    Check "$($pair[0]) gates reconciliation on the XPU regex" ($pair[1] -match '\$_xpuNameRe\s*=\s*"\(\?i\)Intel\.\*\(Arc\|Data Center GPU\)"')
+    Check "$($pair[0]) reuses it for the gate"                ($pair[1] -match 'Where-Object \{ \$_ -match \$_xpuNameRe \}')
+}
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed" -ForegroundColor Green

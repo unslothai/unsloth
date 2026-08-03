@@ -2304,12 +2304,17 @@ exit 0
             # Bounded, registry as the fallback when WMI does not answer; same match either way.
             $_gpuScan = Invoke-BoundedVideoControllerScan
             $_gpuNames = if ($_gpuScan.Ok) { @($_gpuScan.Names) } else { @(Get-IntelRegistryAdapterNames) }
+            # One definition for both the reconciliation gate and the classification below, so
+            # they cannot drift apart.
+            $_xpuNameRe = "(?i)Intel.*(Arc|Data Center GPU)"
             # WMI reports the localized adapter name, which on non-English Windows carries no
-            # ASCII "Intel" for the filter below to find. The registry helper resolves the PCI
-            # vendor id, so use it to RE-LABEL an adapter WMI already reported, never to add
-            # one: an entry matching nothing WMI listed is a driver record outliving its card,
-            # and a host WMI answered for must not be promoted by it.
-            if ($_gpuScan.Ok -and -not ($_gpuNames | Where-Object { $_ -match "(?i)intel" })) {
+            # ASCII "Intel" for the classification below to find. The registry helper resolves
+            # the PCI vendor id, so use it to RE-LABEL an adapter WMI already reported, never to
+            # add one: an entry matching nothing WMI listed is a driver record outliving its
+            # card, and a host WMI answered for must not be promoted by it. Gated on the absence
+            # of an XPU match rather than of any Intel name: a hybrid laptop reports its ASCII
+            # "Intel UHD" alongside a localized Arc, and keying on "Intel" would stop there.
+            if ($_gpuScan.Ok -and -not ($_gpuNames | Where-Object { $_ -match $_xpuNameRe })) {
                 foreach ($_reg in @(Get-IntelRegistryAdapterNames)) {
                     foreach ($_wmiName in $_gpuNames) {
                         if ($_wmiName -and $_reg.Contains($_wmiName)) { $_gpuNames += $_reg; break }
@@ -2319,7 +2324,7 @@ exit 0
             $intelGpus = @($_gpuNames | Where-Object { $_ -match "(?i)Intel" })
             if ($intelGpus.Count -gt 0) {
                 $HasIntelGpu = $true
-                $xpuGpu = $intelGpus | Where-Object { $_ -match "(?i)Intel.*(Arc|Data Center GPU)" } | Select-Object -First 1
+                $xpuGpu = $intelGpus | Where-Object { $_ -match $_xpuNameRe } | Select-Object -First 1
                 $IntelGpuLabel = if ($xpuGpu) { $xpuGpu } else { $intelGpus[0] }
                 if ($xpuGpu) { $script:IsIntelXpu = $true }
             }
