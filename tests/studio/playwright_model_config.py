@@ -400,13 +400,24 @@ with sync_playwright() as p:
         page.wait_for_timeout(800)
         return row
 
-    def row_gear(popover, hint):
+    # The collapsed single-quant row appears only once the picker's sole-quant
+    # probe lands, and that is a real /api/hub/gguf-variants fetch restarted on
+    # every reload. Until then the row carries no gear, so "no gear" means either
+    # a multi-quant repo or a probe still in flight. Waiting instead of sleeping
+    # keeps a slow probe from being read as multi-quant.
+    SOLE_QUANT_SETTLE_MS = 6_000
+
+    def row_gear(popover, hint, timeout_ms = SOLE_QUANT_SETTLE_MS):
         # The gear is a sibling of the row, not inside [data-model-picker-option],
         # so scope it by the repo id its aria-label carries.
         gear = popover.locator(
             f'button[aria-label^="Inference settings for"][aria-label*="{hint}"]'
         ).first
-        return gear if _count(gear) else None
+        try:
+            gear.wait_for(state = "visible", timeout = timeout_ms)
+        except Exception:
+            return None
+        return gear
 
     def open_config(popover, hint):
         if reveal_on_device_row(popover, hint) is None:
@@ -419,6 +430,13 @@ with sync_playwright() as p:
         if gear is None:
             if select_on_device_row(popover, hint) is None:
                 return None
+            if not popover.is_visible():
+                # The probe landed while the row was being clicked, so the click
+                # hit the collapsed row and selected the model. Reopen and use
+                # the gear that is now there.
+                popover = open_picker()
+                if reveal_on_device_row(popover, hint) is None:
+                    return None
             gear = row_gear(popover, hint)
         if gear is None:
             return None
