@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, Callable, List, Literal, NamedTuple, Optional, Union
+from typing import Any, Callable, List, NamedTuple, Optional, Union
 import json
 import httpx
 from loggers import get_logger
@@ -1007,10 +1007,8 @@ try:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
-        _canonicalize_spec_mode,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _extra_args_set_spec_type,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
@@ -1057,10 +1055,8 @@ except ImportError:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
-        _canonicalize_spec_mode,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _extra_args_set_spec_type,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
