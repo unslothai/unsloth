@@ -48,6 +48,11 @@ export function ConfigDialog({
     config?.kind === "expression" ||
     (config?.kind === "seed" &&
       (config.seed_source_type ?? "hf") === "unstructured");
+  const consentRequired =
+    config?.kind === "validator" &&
+    ((config.validator_type === "tool" && config.tool_acknowledged !== true) ||
+      (config.validator_type === "custom" &&
+        config.custom_acknowledged !== true));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -112,9 +117,15 @@ export function ConfigDialog({
           </div>
         )}
         <DialogFooter>
+          {consentRequired && (
+            <p className="mr-auto text-xs text-muted-foreground sm:self-center">
+              Check the consent box in this step to save it.
+            </p>
+          )}
           <Button
             type="button"
             variant="outline"
+            disabled={consentRequired && !readOnly}
             onClick={() => onOpenChange(false)}
           >
             Done

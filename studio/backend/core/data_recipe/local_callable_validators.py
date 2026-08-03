@@ -384,7 +384,16 @@ def _run_tool_single(*, file_ext: str, command: str, code_value: str) -> dict[st
                     "module example.com/check\n\ngo 1.21\n",
                     encoding = "utf-8",
                 )
-            source_path = run_dir / f"main.{file_ext}"
+                source_path = run_dir / "main.go"
+            elif file_ext == "rs":
+                (run_dir / "Cargo.toml").write_text(
+                    '[package]\nname = "check"\nversion = "0.1.0"\nedition = "2021"\n',
+                    encoding = "utf-8",
+                )
+                source_path = run_dir / "src" / "main.rs"
+                source_path.parent.mkdir()
+            else:
+                source_path = run_dir / f"main.{file_ext}"
             source_path.write_text(code_value, encoding = "utf-8")
 
             substituted = command.replace("{file}", str(source_path)).replace("{dir}", str(run_dir))

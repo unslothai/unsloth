@@ -194,6 +194,16 @@ def test_go_scaffold_and_vet():
     assert list(out["is_valid"]) == [True]
 
 
+@pytest.mark.skipif(shutil.which("cargo") is None, reason = "cargo toolchain not installed")
+def test_cargo_scaffold_and_check():
+    import pandas as pd
+
+    rs_source = 'fn main() {\n    println!("hi");\n}\n'
+    fn = tool._build_tool_validation_function("rs", "cargo check")
+    out = fn(pd.DataFrame({"code": [rs_source]}))
+    assert list(out["is_valid"]) == [True]
+
+
 def test_register_tool_creates_local_callable_column():
     data_designer = pytest.importorskip("data_designer")
     from data_designer.config.column_configs import ValidationColumnConfig

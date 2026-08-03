@@ -52,14 +52,13 @@ type ValidatorDialogProps = {
 
 const NONE_VALUE = "__none__";
 
-const TOOL_PRESETS: { label: string; command: string; ext: string }[] = [
-  { label: "Go vet", command: "go vet ./...", ext: "go" },
-  { label: "Go build", command: "go build ./...", ext: "go" },
+const TOOL_EXAMPLES: { label: string; command: string; ext: string }[] = [
   {
-    label: "Go vet + build",
+    label: "go vet + build (Go)",
     command: "go vet ./... && go build ./...",
     ext: "go",
   },
+  { label: "cargo check (Rust)", command: "cargo check", ext: "rs" },
   {
     label: "SQL lint (Postgres)",
     command: "sqlfluff lint --dialect postgres {file}",
@@ -95,6 +94,40 @@ def validate(df):
             return {"is_valid": False, "error_message": output[:300]}
 
     rows = [run_go(str(value)) for value in df.iloc[:, 0]]
+    return pd.DataFrame(rows)
+`;
+
+const CARGO_CUSTOM_SAMPLE = String.raw`# Runs cargo check on each generated code cell.
+import subprocess
+import tempfile
+from pathlib import Path
+
+import pandas as pd
+
+
+def validate(df):
+    def run_cargo(code):
+        with tempfile.TemporaryDirectory() as raw:
+            work = Path(raw)
+            (work / "Cargo.toml").write_text(
+                '[package]\nname = "check"\nversion = "0.1.0"\nedition = "2021"\n'
+            )
+            src = work / "src"
+            src.mkdir()
+            (src / "main.rs").write_text(code)
+            result = subprocess.run(
+                ["cargo", "check"],
+                cwd=work,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode == 0:
+                return {"is_valid": True, "error_message": ""}
+            output = (result.stdout + result.stderr).strip()
+            return {"is_valid": False, "error_message": output[:300]}
+
+    rows = [run_cargo(str(value)) for value in df.iloc[:, 0]]
     return pd.DataFrame(rows)
 `;
 
@@ -306,25 +339,25 @@ export function ValidatorDialog({
         <div className="grid gap-4">
           <div className="grid gap-1.5">
             <FieldLabel
-              label="Presets"
-              hint="Pre-fill the command and extension for common checks."
+              label="Examples"
+              hint="Try one of these examples, then edit the command and extension to suit."
             />
             <div className="flex flex-wrap gap-1.5">
-              {TOOL_PRESETS.map((preset) => (
+              {TOOL_EXAMPLES.map((example) => (
                 <Button
-                  key={preset.label}
+                  key={example.label}
                   type="button"
                   variant="outline"
                   size="sm"
                   className="nodrag"
                   onClick={() =>
                     onUpdate({
-                      tool_command: preset.command,
-                      tool_ext: preset.ext,
+                      tool_command: example.command,
+                      tool_ext: example.ext,
                     })
                   }
                 >
-                  {preset.label}
+                  {example.label}
                 </Button>
               ))}
             </div>
@@ -399,17 +432,28 @@ export function ValidatorDialog({
                 onUpdate({ custom_source: event.target.value })
               }
             />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="nodrag justify-self-start"
-              onClick={() =>
-                onUpdate({ custom_source: GO_CUSTOM_SAMPLE })
-              }
-            >
-              Insert Go vet + build sample
-            </Button>
+            <div className="flex flex-wrap gap-1.5">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="nodrag"
+                onClick={() => onUpdate({ custom_source: GO_CUSTOM_SAMPLE })}
+              >
+                Insert Go vet + build sample
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="nodrag"
+                onClick={() =>
+                  onUpdate({ custom_source: CARGO_CUSTOM_SAMPLE })
+                }
+              >
+                Insert cargo check sample
+              </Button>
+            </div>
           </div>
           <div className="grid gap-2">
             <label
