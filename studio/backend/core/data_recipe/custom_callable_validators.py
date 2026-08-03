@@ -182,7 +182,6 @@ def _build_custom_validation_function(source: str):
 
     def _validator(df):
         import pandas as pd  # lazy import for local callable runtime
-
         try:
             result = fn(df)
             columns = getattr(result, "columns", None)
@@ -203,7 +202,6 @@ def _build_custom_validation_function(source: str):
 
 def _error_results(row_count: int, message: str) -> Any:
     import pandas as pd  # lazy import
-
     return pd.DataFrame(
         {
             "is_valid": [False for _ in range(row_count)],

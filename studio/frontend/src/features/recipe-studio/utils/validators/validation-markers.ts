@@ -12,6 +12,10 @@ export type ToolValidatorSpec = {
 };
 
 const TOOL_FILE_EXT_RE = /^[A-Za-z0-9.+-]{1,20}$/;
+const LEADING_DOTS_RE = /^\.+/;
+const BASE64_PLUS_RE = /\+/g;
+const BASE64_SLASH_RE = /\//g;
+const BASE64_PADDING_RE = /=+$/;
 
 function toBase64Url(input: string): string {
   const bytes = new TextEncoder().encode(input);
@@ -19,7 +23,10 @@ function toBase64Url(input: string): string {
   for (const byte of bytes) {
     binary += String.fromCharCode(byte);
   }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return btoa(binary)
+    .replace(BASE64_PLUS_RE, "-")
+    .replace(BASE64_SLASH_RE, "_")
+    .replace(BASE64_PADDING_RE, "");
 }
 
 function fromBase64Url(input: string): string {
@@ -53,9 +60,13 @@ export function decodeToolSpec(encoded: string): ToolValidatorSpec | null {
       return null;
     }
     const record = parsed as Record<string, unknown>;
-    const ext = typeof record.ext === "string" ? record.ext.trim().replace(/^\.+/, "") : "";
-    const command = typeof record.command === "string" ? record.command.trim() : "";
-    if (!ext || !TOOL_FILE_EXT_RE.test(ext) || !command) {
+    const ext =
+      typeof record.ext === "string"
+        ? record.ext.trim().replace(LEADING_DOTS_RE, "")
+        : "";
+    const command =
+      typeof record.command === "string" ? record.command.trim() : "";
+    if (!(command && TOOL_FILE_EXT_RE.test(ext))) {
       return null;
     }
     return { ext, command };
@@ -81,8 +92,8 @@ export function validationFunctionFromConfig(
 ): string | null {
   if (config.validator_type === "tool") {
     const command = (config.tool_command ?? "").trim();
-    const ext = (config.tool_ext ?? "").trim().replace(/^\.+/, "");
-    if (!command || !ext || !TOOL_FILE_EXT_RE.test(ext)) {
+    const ext = (config.tool_ext ?? "").trim().replace(LEADING_DOTS_RE, "");
+    if (!(command && TOOL_FILE_EXT_RE.test(ext))) {
       return null;
     }
     return `${TOOL_VALIDATION_FN_MARKER}:${encodeToolSpec({ ext, command })}`;

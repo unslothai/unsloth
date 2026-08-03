@@ -22,9 +22,7 @@ pytest.importorskip("pandas")
 
 def _load_module():
     backend_root = Path(__file__).resolve().parent.parent
-    module_path = (
-        backend_root / "core" / "data_recipe" / "local_callable_validators.py"
-    )
+    module_path = backend_root / "core" / "data_recipe" / "local_callable_validators.py"
     spec = importlib.util.spec_from_file_location(
         "local_callable_validators_under_test",
         module_path,
@@ -40,13 +38,21 @@ tool = _load_module()
 
 
 def _tool_marker(file_ext: str, command: str) -> str:
-    payload = base64.urlsafe_b64encode(
-        json.dumps({"ext": file_ext, "command": command}).encode("utf-8")
-    ).decode("ascii").rstrip("=")
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"ext": file_ext, "command": command}).encode("utf-8"))
+        .decode("ascii")
+        .rstrip("=")
+    )
     return f"{tool.TOOL_VALIDATION_FN_MARKER}:{payload}"
 
 
-def _tool_column(*, name: str = "tool_check", file_ext: str, command: str, batch_size: int = 7) -> dict:
+def _tool_column(
+    *,
+    name: str = "tool_check",
+    file_ext: str,
+    command: str,
+    batch_size: int = 7,
+) -> dict:
     return {
         "column_type": "validation",
         "name": name,
@@ -75,9 +81,7 @@ def test_tool_marker_round_trip():
     ["../x", "a/b", "", "a" * 30, ".", "x y"],
 )
 def test_tool_spec_rejects_bad_extensions(bad_ext):
-    spec = tool._parse_tool_spec(
-        column = _tool_column(file_ext = bad_ext, command = "go vet ./...")
-    )
+    spec = tool._parse_tool_spec(column = _tool_column(file_ext = bad_ext, command = "go vet ./..."))
     assert spec is None
 
 
@@ -125,10 +129,7 @@ def test_split_tool_extracts_and_leaves_others():
     sanitized, specs = tool.split_tool_local_callable_validators(recipe)
     assert len(specs) == 1
     assert specs[0].name == "go_one"
-    assert [column["name"] for column in sanitized["columns"]] == [
-        "oxc_one",
-        "python_one",
-    ]
+    assert [column["name"] for column in sanitized["columns"]] == ["oxc_one", "python_one"]
 
 
 def test_tool_callable_runs_successful_command():
@@ -186,11 +187,7 @@ def test_go_scaffold_and_vet(tmp_path):
     import pandas as pd
 
     go_source = (
-        "package main\n\n"
-        "import \"fmt\"\n\n"
-        "func main() {\n"
-        "\tfmt.Println(\"hi\")\n"
-        "}\n"
+        "package main\n\n" 'import "fmt"\n\n' "func main() {\n" '\tfmt.Println("hi")\n' "}\n"
     )
     fn = tool._build_tool_validation_function("go", "go vet ./...")
     out = fn(pd.DataFrame({"code": [go_source]}))

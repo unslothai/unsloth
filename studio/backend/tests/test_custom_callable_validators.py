@@ -19,9 +19,7 @@ pytest.importorskip("pandas")
 
 def _load_module():
     backend_root = Path(__file__).resolve().parent.parent
-    module_path = (
-        backend_root / "core" / "data_recipe" / "custom_callable_validators.py"
-    )
+    module_path = backend_root / "core" / "data_recipe" / "custom_callable_validators.py"
     spec = importlib.util.spec_from_file_location(
         "custom_callable_validators_under_test",
         module_path,
@@ -106,10 +104,7 @@ def test_split_extracts_custom_and_leaves_other_columns():
     assert specs[0].name == "custom_one"
     assert specs[0].source == VALID_SOURCE
     assert specs[0].batch_size == 10
-    assert [column["name"] for column in sanitized["columns"]] == [
-        "oxc_one",
-        "python_one",
-    ]
+    assert [column["name"] for column in sanitized["columns"]] == ["oxc_one", "python_one"]
 
 
 def test_split_skips_malformed_marker():
@@ -120,9 +115,7 @@ def test_split_skips_malformed_marker():
                 "name": "bad",
                 "target_columns": ["code"],
                 "validator_type": "local_callable",
-                "validator_params": {
-                    "validation_function": "unsloth_custom_validator:!!bad!!"
-                },
+                "validator_params": {"validation_function": "unsloth_custom_validator:!!bad!!"},
                 "batch_size": 10,
             }
         ]

@@ -10,7 +10,7 @@ import os
 import re
 import structlog
 import subprocess
-import uuid
+import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
@@ -361,16 +361,11 @@ def _build_tool_validation_function(file_ext: str, command: str):
     return _validator
 
 
-def _run_tool_batch(
-    *, file_ext: str, command: str, code_values: list[str]
-) -> list[dict[str, Any]]:
-    tmp_root = ensure_dir(oxc_validator_tmp_root())
+def _run_tool_batch(*, file_ext: str, command: str, code_values: list[str]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    for index, code_value in enumerate(code_values):
+    for code_value in code_values:
         results.append(
             _run_tool_single(
-                tmp_root = tmp_root,
-                index = index,
                 file_ext = file_ext,
                 command = command,
                 code_value = code_value,
@@ -380,40 +375,37 @@ def _run_tool_batch(
 
 
 def _run_tool_single(
-    *,
-    tmp_root: Path,
-    index: int,
-    file_ext: str,
-    command: str,
-    code_value: str,
+    *, file_ext: str, command: str, code_value: str
 ) -> dict[str, Any]:
-    run_dir = ensure_dir(tmp_root / f"tool-{os.getpid()}-{index}-{uuid.uuid4().hex[:8]}")
+    tmp_root = ensure_dir(oxc_validator_tmp_root())
     try:
-        if file_ext == "go":
-            (run_dir / "go.mod").write_text(
-                "module example.com/check\n\ngo 1.21\n",
-                encoding = "utf-8",
-            )
-        source_path = run_dir / f"main.{file_ext}"
-        source_path.write_text(code_value, encoding = "utf-8")
+        with tempfile.TemporaryDirectory(dir = str(tmp_root), prefix = "tool-") as raw_dir:
+            run_dir = Path(raw_dir)
+            if file_ext == "go":
+                (run_dir / "go.mod").write_text(
+                    "module example.com/check\n\ngo 1.21\n",
+                    encoding = "utf-8",
+                )
+            source_path = run_dir / f"main.{file_ext}"
+            source_path.write_text(code_value, encoding = "utf-8")
 
-        substituted = (
-            command.replace("{file}", str(source_path)).replace("{dir}", str(run_dir))
-        )
-        env = child_env_without_native_path_secret()
-        proc = subprocess.run(
-            substituted,
-            cwd = str(run_dir),
-            shell = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            capture_output = True,
-            check = False,
-            timeout = _TOOL_RUN_TIMEOUT_SECONDS,
-            env = env,
-            **_windows_hidden_subprocess_kwargs(),
-        )
+            substituted = command.replace("{file}", str(source_path)).replace(
+                "{dir}", str(run_dir)
+            )
+            env = child_env_without_native_path_secret()
+            proc = subprocess.run(
+                substituted,
+                cwd = str(run_dir),
+                shell = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                capture_output = True,
+                check = False,
+                timeout = _TOOL_RUN_TIMEOUT_SECONDS,
+                env = env,
+                **_windows_hidden_subprocess_kwargs(),
+            )
     except subprocess.TimeoutExpired:
         return _tool_result(
             is_valid = False,
@@ -450,11 +442,7 @@ def _run_tool_single(
 
 
 def _tool_result(
-    *,
-    is_valid: bool,
-    error_count: int,
-    error_message: str,
-    tool_output: str,
+    *, is_valid: bool, error_count: int, error_message: str, tool_output: str
 ) -> dict[str, Any]:
     return {
         "is_valid": bool(is_valid),
