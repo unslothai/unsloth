@@ -17,9 +17,13 @@ import { isOxcCodeShape } from "../validators/oxc-code-shape";
 import { isOxcValidationMode } from "../validators/oxc-mode";
 import { isValidatorConsentRequired } from "../validators/consent";
 import {
+  CUSTOM_SOURCE_MAX_CHARS,
   firstInvalidToolScaffoldPath,
   isValidToolExt,
+  TOOL_COMMAND_MAX_CHARS,
+  toolScaffoldFileMaxKibError,
   toolScaffoldLimitError,
+  toolOutputMaxKibError,
 } from "../validators/validation-markers";
 
 export function validateSubcategoryConfigs(
@@ -211,6 +215,11 @@ export function validateValidatorConfigs(
       !(config.tool_command ?? "").trim()
     ) {
       errors.push(`Validator ${config.name}: tool command required.`);
+    } else if (
+      config.validator_type === "tool" &&
+      (config.tool_command ?? "").trim().length > TOOL_COMMAND_MAX_CHARS
+    ) {
+      errors.push(`Validator ${config.name}: tool command too long (max 8 KiB).`);
     }
     if (
       config.validator_type === "tool" &&
@@ -236,6 +245,16 @@ export function validateValidatorConfigs(
       if (scaffoldLimitError !== null) {
         errors.push(`Validator ${config.name}: ${scaffoldLimitError}`);
       }
+      const outputCapError = toolOutputMaxKibError(config.tool_output_max_kib);
+      if (outputCapError !== null) {
+        errors.push(`Validator ${config.name}: ${outputCapError}`);
+      }
+      const scaffoldCapError = toolScaffoldFileMaxKibError(
+        config.tool_scaffold_file_max_kib,
+      );
+      if (scaffoldCapError !== null) {
+        errors.push(`Validator ${config.name}: ${scaffoldCapError}`);
+      }
     }
     if (config.validator_type === "tool" && isValidatorConsentRequired(config)) {
       errors.push(
@@ -247,6 +266,11 @@ export function validateValidatorConfigs(
       !(config.custom_source ?? "").trim()
     ) {
       errors.push(`Validator ${config.name}: custom validator source required.`);
+    } else if (
+      config.validator_type === "custom" &&
+      (config.custom_source ?? "").length > CUSTOM_SOURCE_MAX_CHARS
+    ) {
+      errors.push(`Validator ${config.name}: custom validator source too long (max 64 KiB).`);
     }
     if (
       config.validator_type === "custom" &&

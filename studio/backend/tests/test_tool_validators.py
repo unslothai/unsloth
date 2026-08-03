@@ -120,6 +120,111 @@ def test_tool_spec_rejects_empty_command():
     assert spec is None
 
 
+def test_tool_spec_rejects_oversized_command():
+    spec = tool._parse_tool_spec(
+        column = _tool_column(
+            file_ext = "go",
+            command = "x" * (tool._TOOL_COMMAND_MAX_CHARS + 1),
+        )
+    )
+    assert spec is None
+
+
+def test_tool_spec_rejects_oversized_marker():
+    huge = "A" * (tool._TOOL_MARKER_MAX_CHARS + 1)
+    column = {
+        "column_type": "validation",
+        "name": "tool_check",
+        "drop": False,
+        "target_columns": ["code"],
+        "validator_type": "local_callable",
+        "validator_params": {"validation_function": f"{tool.TOOL_VALIDATION_FN_MARKER}:{huge}"},
+        "batch_size": 10,
+    }
+    assert tool._parse_tool_spec(column = column) is None
+    assert tool._decode_base64url(huge) == ""
+
+
+def test_tool_spec_parses_and_clamps_configurable_caps():
+    import json as _json
+
+    spec_dict = {
+        "ext": "go",
+        "command": "go vet ./...",
+        "output_max_chars": 16 * 1024,
+        "source_file_max_chars": 4 * 1024,
+    }
+    payload = (
+        base64.urlsafe_b64encode(_json.dumps(spec_dict).encode("utf-8")).decode("ascii").rstrip("=")
+    )
+    column = {
+        "column_type": "validation",
+        "name": "tool_check",
+        "drop": False,
+        "target_columns": ["code"],
+        "validator_type": "local_callable",
+        "validator_params": {"validation_function": f"{tool.TOOL_VALIDATION_FN_MARKER}:{payload}"},
+        "batch_size": 10,
+    }
+    spec = tool._parse_tool_spec(column = column)
+    assert spec is not None
+    assert spec.output_max_chars == 16 * 1024
+    assert spec.source_file_max_chars == 4 * 1024
+
+    # Out-of-range values are clamped into the allowed band.
+    spec_dict["output_max_chars"] = 999 * 1024
+    spec_dict["source_file_max_chars"] = 0
+    payload = (
+        base64.urlsafe_b64encode(_json.dumps(spec_dict).encode("utf-8")).decode("ascii").rstrip("=")
+    )
+    column["validator_params"]["validation_function"] = (
+        f"{tool.TOOL_VALIDATION_FN_MARKER}:{payload}"
+    )
+    spec = tool._parse_tool_spec(column = column)
+    assert spec is not None
+    assert spec.output_max_chars == tool._TOOL_OUTPUT_MAX_CHARS_MAX
+    assert spec.source_file_max_chars == tool._TOOL_SOURCE_FILE_MAX_CHARS_MIN
+
+    # Legacy markers without the fields fall back to the defaults.
+    spec = tool._parse_tool_spec(column = _tool_column(file_ext = "go", command = "go vet ./..."))
+    assert spec is not None
+    assert spec.output_max_chars == tool._TOOL_OUTPUT_MAX_CHARS_DEFAULT
+    assert spec.source_file_max_chars == tool._TOOL_SOURCE_FILE_MAX_CHARS_DEFAULT
+
+
+def test_tool_batch_size_is_clamped():
+    assert tool._parse_batch_size(100000) == tool.BATCH_SIZE_MAX
+    assert tool._parse_batch_size(512) == 512
+    assert tool._parse_batch_size(0) == 10
+
+
+def test_tool_callable_rejects_oversized_substituted_source():
+    """A generated cell must not expand a scaffold file past the cap."""
+    import pandas as pd
+
+    fn = tool._build_tool_validation_function(
+        "txt",
+        "true",
+        (("src/check.txt", "{source}"),),
+        source_file_max_chars = 1024,
+    )
+    out = fn(pd.DataFrame({"code": ["x" * 2048]}))
+    assert list(out["is_valid"]) == [False]
+    assert "scaffold file limit" in out["error_message"].iloc[0]
+    # The fallback main.{ext} path is bounded the same way.
+    fn = tool._build_tool_validation_function(
+        "txt",
+        "true",
+        source_file_max_chars = 1024,
+    )
+    out = fn(pd.DataFrame({"code": ["x" * 2048]}))
+    assert list(out["is_valid"]) == [False]
+    assert "file limit" in out["error_message"].iloc[0]
+    # Under the cap stays valid.
+    out = fn(pd.DataFrame({"code": ["ok"]}))
+    assert list(out["is_valid"]) == [True]
+
+
 @pytest.mark.parametrize(
     "bad_path",
     [
@@ -276,14 +381,38 @@ def test_tool_output_capture_is_capped(monkeypatch):
     """Verbose commands must not buffer unbounded output per row."""
     import pandas as pd
 
-    monkeypatch.setattr(tool, "_TOOL_OUTPUT_MAX_CHARS", 1000)
+    monkeypatch.setattr(tool, "_TOOL_OUTPUT_CAPTURE_MAX_CHARS", 1000)
     fn = tool._build_tool_validation_function(
         "txt",
         "sh -c 'i=0; while [ $i -lt 100 ]; do echo 0123456789; i=$((i+1)); done'",
     )
     out = fn(pd.DataFrame({"code": ["x"]}))
     assert list(out["is_valid"]) == [True]
-    assert len(out["tool_output"].iloc[0]) <= tool._TOOL_OUTPUT_MAX_CHARS + 1
+    assert len(out["tool_output"].iloc[0]) <= tool._TOOL_OUTPUT_CAPTURE_MAX_CHARS + 1
+    # The row must say its output was truncated instead of silently dropping it.
+    assert bool(out["tool_output_truncated"].iloc[0]) is True
+    assert "truncated" in out["tool_output_message"].iloc[0]
+
+
+def test_tool_output_stored_cap_is_configurable(monkeypatch):
+    """The per-row stored cap is user-configurable and truncates + flags."""
+    import pandas as pd
+
+    fn = tool._build_tool_validation_function(
+        "txt",
+        "sh -c 'i=0; while [ $i -lt 100 ]; do echo 0123456789; i=$((i+1)); done'",
+        output_max_chars = 1024,
+    )
+    out = fn(pd.DataFrame({"code": ["x"]}))
+    assert list(out["is_valid"]) == [True]
+    assert len(out["tool_output"].iloc[0]) == 1024
+    assert bool(out["tool_output_truncated"].iloc[0]) is True
+    assert "1024" in out["tool_output_message"].iloc[0]
+    # A short command stays clean: no truncation keys on the row.
+    clean = tool._build_tool_validation_function("txt", "echo hi")
+    out = clean(pd.DataFrame({"code": ["x"]}))
+    assert out["tool_output"].iloc[0] == "hi"
+    assert "tool_output_truncated" not in out.columns
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups only")

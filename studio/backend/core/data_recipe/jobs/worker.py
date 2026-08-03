@@ -17,7 +17,11 @@ from typing import Any
 
 from ..jsonable import to_jsonable, to_preview_jsonable
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
-from ..service import build_config_builder, create_data_designer
+from ..service import (
+    assert_local_execution_consent,
+    build_config_builder,
+    create_data_designer,
+)
 from utils.paths import ensure_dir, recipe_datasets_root
 
 _ARTIFACT_ROOT = recipe_datasets_root()
@@ -108,6 +112,11 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         merge_batches = bool(run.get("merge_batches"))
         ensure_dir(_ARTIFACT_ROOT)
         run_config_raw = run.get("run_config") or {}
+
+        # Defense in depth: the jobs route validates the per-run consent
+        # attestation, but a job must never build/execute local tool/custom
+        # checks without it regardless of how it was enqueued.
+        assert_local_execution_consent(recipe, run)
 
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))

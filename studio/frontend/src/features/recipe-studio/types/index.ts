@@ -322,6 +322,11 @@ export type ValidatorConfig = {
   // folder before the command runs. A file whose content contains `{source}`
   // receives the generated code cell, and `{file}` then points at it.
   tool_scaffold?: ToolScaffoldFile[];
+  // ui-only (used for tool validators): per-row stored output cap in KiB
+  // (default 8) and the per-file cap applied after {source} substitution in
+  // KiB (default 32). Serialized as char counts in the tool marker.
+  tool_output_max_kib?: string;
+  tool_scaffold_file_max_kib?: string;
   // ui-only (used for custom validators): user-supplied Python function source
   // that must define `validate(df: pd.DataFrame) -> pd.DataFrame` returning an
   // `is_valid` boolean column.

@@ -34,7 +34,18 @@ _TOOL_SCAFFOLD_PATH_RE = re.compile(r"^[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$")
 _TOOL_SCAFFOLD_MAX_ROWS = 10
 _TOOL_SCAFFOLD_MAX_TOTAL_CHARS = 32 * 1024
 _TOOL_RUN_TIMEOUT_SECONDS = 60
-_TOOL_OUTPUT_MAX_CHARS = 256 * 1024
+# Fixed in-memory capture guard per stream; the value stored per row is the
+# user-configurable _TOOL_OUTPUT_MAX_CHARS_DEFAULT (clamped to this ceiling).
+_TOOL_OUTPUT_CAPTURE_MAX_CHARS = 256 * 1024
+_TOOL_OUTPUT_MAX_CHARS_DEFAULT = 8 * 1024
+_TOOL_OUTPUT_MAX_CHARS_MIN = 1 * 1024
+_TOOL_OUTPUT_MAX_CHARS_MAX = 256 * 1024
+_TOOL_SOURCE_FILE_MAX_CHARS_DEFAULT = 32 * 1024
+_TOOL_SOURCE_FILE_MAX_CHARS_MIN = 1 * 1024
+_TOOL_SOURCE_FILE_MAX_CHARS_MAX = 64 * 1024
+_TOOL_COMMAND_MAX_CHARS = 8 * 1024
+_TOOL_MARKER_MAX_CHARS = 128 * 1024
+BATCH_SIZE_MAX = 512
 
 _OXC_LANG_TO_NODE_LANG = {
     "javascript": "js",
@@ -75,6 +86,8 @@ class ToolLocalCallableValidatorSpec:
     file_ext: str
     command: str
     scaffold: tuple[tuple[str, str], ...] = ()
+    output_max_chars: int = _TOOL_OUTPUT_MAX_CHARS_DEFAULT
+    source_file_max_chars: int = _TOOL_SOURCE_FILE_MAX_CHARS_DEFAULT
 
 
 def split_tool_local_callable_validators(
@@ -124,6 +137,8 @@ def register_tool_local_callable_validators(
             spec.file_ext,
             spec.command,
             spec.scaffold,
+            spec.output_max_chars,
+            spec.source_file_max_chars,
         )
         builder.add_column(
             ValidationColumnConfig(
@@ -249,7 +264,9 @@ def _parse_batch_size(value: Any) -> int:
         parsed = int(value)
     except (TypeError, ValueError):
         return 10
-    return parsed if parsed >= 1 else 10
+    if parsed < 1:
+        return 10
+    return min(parsed, BATCH_SIZE_MAX)
 
 
 def _parse_oxc_validation_marker(fn_name: str) -> tuple[str, str, str]:
@@ -267,6 +284,10 @@ def _parse_oxc_validation_marker(fn_name: str) -> tuple[str, str, str]:
 
 
 def _decode_base64url(value: str) -> str:
+    # Bound the decode input so a crafted marker cannot run padding math or
+    # base64 work on an arbitrarily large string.
+    if len(value) > _TOOL_MARKER_MAX_CHARS:
+        return ""
     padded = value + "=" * (-len(value) % 4)
     try:
         raw = base64.urlsafe_b64decode(padded.encode("ascii"))
@@ -276,6 +297,18 @@ def _decode_base64url(value: str) -> str:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         return ""
+
+
+def _parse_tool_char_cap(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < minimum:
+        return minimum
+    if parsed > maximum:
+        return maximum
+    return parsed
 
 
 def _parse_tool_spec(*, column: dict[str, Any]) -> ToolLocalCallableValidatorSpec | None:
@@ -295,7 +328,7 @@ def _parse_tool_spec(*, column: dict[str, Any]) -> ToolLocalCallableValidatorSpe
         return None
 
     encoded = fn_name[len(marker) :].strip()
-    if not encoded:
+    if not encoded or len(encoded) > _TOOL_MARKER_MAX_CHARS:
         return None
     decoded = _decode_base64url(encoded)
     try:
@@ -310,6 +343,8 @@ def _parse_tool_spec(*, column: dict[str, Any]) -> ToolLocalCallableValidatorSpe
     if not file_ext or not _TOOL_FILE_EXT_RE.fullmatch(file_ext):
         return None
     if not command:
+        return None
+    if len(command) > _TOOL_COMMAND_MAX_CHARS:
         return None
 
     name = str(column.get("name") or "").strip()
@@ -337,6 +372,18 @@ def _parse_tool_spec(*, column: dict[str, Any]) -> ToolLocalCallableValidatorSpe
         file_ext = file_ext,
         command = command,
         scaffold = scaffold,
+        output_max_chars = _parse_tool_char_cap(
+            spec.get("output_max_chars"),
+            default = _TOOL_OUTPUT_MAX_CHARS_DEFAULT,
+            minimum = _TOOL_OUTPUT_MAX_CHARS_MIN,
+            maximum = _TOOL_OUTPUT_MAX_CHARS_MAX,
+        ),
+        source_file_max_chars = _parse_tool_char_cap(
+            spec.get("source_file_max_chars"),
+            default = _TOOL_SOURCE_FILE_MAX_CHARS_DEFAULT,
+            minimum = _TOOL_SOURCE_FILE_MAX_CHARS_MIN,
+            maximum = _TOOL_SOURCE_FILE_MAX_CHARS_MAX,
+        ),
     )
 
 
@@ -383,10 +430,14 @@ def _build_tool_validation_function(
     file_ext: str,
     command: str,
     scaffold: tuple[tuple[str, str], ...] = (),
+    output_max_chars: int = _TOOL_OUTPUT_MAX_CHARS_DEFAULT,
+    source_file_max_chars: int = _TOOL_SOURCE_FILE_MAX_CHARS_DEFAULT,
 ):
     normalized_ext = file_ext
     normalized_command = command
     normalized_scaffold = scaffold
+    normalized_output_max_chars = output_max_chars
+    normalized_source_file_max_chars = source_file_max_chars
 
     def _validator(df):
         import pandas as pd  # lazy import for local callable runtime
@@ -407,6 +458,8 @@ def _build_tool_validation_function(
             command = normalized_command,
             scaffold = normalized_scaffold,
             code_values = code_values,
+            output_max_chars = normalized_output_max_chars,
+            source_file_max_chars = normalized_source_file_max_chars,
         )
         if len(results) != row_count:
             results = _fallback_results(
@@ -426,6 +479,8 @@ def _run_tool_batch(
     scaffold: tuple[tuple[str, str], ...],
     code_values: list[str],
     max_workers: int | None = None,
+    output_max_chars: int = _TOOL_OUTPUT_MAX_CHARS_DEFAULT,
+    source_file_max_chars: int = _TOOL_SOURCE_FILE_MAX_CHARS_DEFAULT,
 ) -> list[dict[str, Any]]:
     """Run the tool command for every code cell in a batch.
 
@@ -445,6 +500,8 @@ def _run_tool_batch(
                 command = command,
                 scaffold = scaffold,
                 code_value = code_value,
+                output_max_chars = output_max_chars,
+                source_file_max_chars = source_file_max_chars,
             )
             for code_value in code_values
         ]
@@ -456,6 +513,8 @@ def _run_tool_batch(
                     command = command,
                     scaffold = scaffold,
                     code_value = code_value,
+                    output_max_chars = output_max_chars,
+                    source_file_max_chars = source_file_max_chars,
                 ),
                 code_values,
             )
@@ -513,6 +572,7 @@ class _CappedOutputReader(Thread):
     Reading stops at the cap; if the child keeps writing after that its pipe
     fills and it blocks until the run timeout kills it, bounding memory
     instead of buffering unbounded output for every row in a batch.
+    ``truncated`` is set when the stream still had output left at the cap.
     """
 
     def __init__(self, stream, limit: int) -> None:
@@ -520,22 +580,33 @@ class _CappedOutputReader(Thread):
         self._stream = stream
         self._limit = limit
         self.output = ""
+        self.truncated = False
 
     def run(self) -> None:
         chunks: list[str] = []
         total = 0
         stream = self._stream
         while total < self._limit:
-            chunk = stream.read(self._limit - total + 1)
+            remaining = self._limit - total
+            chunk = stream.read(remaining + 1)
             if not chunk:
                 break
             chunks.append(chunk)
             total += len(chunk)
+            if len(chunk) > remaining:
+                self.truncated = True
+                break
         self.output = "".join(chunks)
 
 
 def _run_tool_single(
-    *, file_ext: str, command: str, scaffold: tuple[tuple[str, str], ...], code_value: str
+    *,
+    file_ext: str,
+    command: str,
+    scaffold: tuple[tuple[str, str], ...],
+    code_value: str,
+    output_max_chars: int = _TOOL_OUTPUT_MAX_CHARS_DEFAULT,
+    source_file_max_chars: int = _TOOL_SOURCE_FILE_MAX_CHARS_DEFAULT,
 ) -> dict[str, Any]:
     tmp_root = ensure_dir(oxc_validator_tmp_root())
     try:
@@ -557,9 +628,31 @@ def _run_tool_single(
                     content = content.replace("{source}", code_value)
                     if source_path is None:
                         source_path = target
+                # The pre-substitution scaffold is bounded; a large generated
+                # cell must not be able to expand a file past the same bound.
+                if len(content) > source_file_max_chars:
+                    return _tool_result(
+                        is_valid = False,
+                        error_count = 1,
+                        error_message = (
+                            "Generated code exceeds the "
+                            f"{source_file_max_chars // 1024} KiB scaffold file limit."
+                        ),
+                        tool_output = "",
+                    )
                 target.write_text(content, encoding = "utf-8")
             if source_path is None:
                 source_path = run_dir / f"main.{file_ext}"
+                if len(code_value) > source_file_max_chars:
+                    return _tool_result(
+                        is_valid = False,
+                        error_count = 1,
+                        error_message = (
+                            "Generated code exceeds the "
+                            f"{source_file_max_chars // 1024} KiB file limit."
+                        ),
+                        tool_output = "",
+                    )
                 source_path.write_text(code_value, encoding = "utf-8")
 
             substituted = command.replace("{file}", str(source_path)).replace("{dir}", str(run_dir))
@@ -576,8 +669,8 @@ def _run_tool_single(
                 env = env,
                 **_tool_launch_kwargs(),
             )
-            out_reader = _CappedOutputReader(proc.stdout, _TOOL_OUTPUT_MAX_CHARS)
-            err_reader = _CappedOutputReader(proc.stderr, _TOOL_OUTPUT_MAX_CHARS)
+            out_reader = _CappedOutputReader(proc.stdout, _TOOL_OUTPUT_CAPTURE_MAX_CHARS)
+            err_reader = _CappedOutputReader(proc.stderr, _TOOL_OUTPUT_CAPTURE_MAX_CHARS)
             out_reader.start()
             err_reader.start()
             timed_out = False
@@ -613,12 +706,15 @@ def _run_tool_single(
 
     output = (stdout or "") + (("\n" + stderr) if stderr else "")
     output = output.strip()
+    output_truncated = out_reader.truncated or err_reader.truncated
     if returncode == 0:
         return _tool_result(
             is_valid = True,
             error_count = 0,
             error_message = "",
             tool_output = output,
+            output_max_chars = output_max_chars,
+            output_truncated = output_truncated,
         )
     message = output or "Tool check failed."
     if len(message) > 300:
@@ -628,13 +724,26 @@ def _run_tool_single(
         error_count = 1,
         error_message = message,
         tool_output = output,
+        output_max_chars = output_max_chars,
+        output_truncated = output_truncated,
     )
 
 
 def _tool_result(
-    *, is_valid: bool, error_count: int, error_message: str, tool_output: str
+    *,
+    is_valid: bool,
+    error_count: int,
+    error_message: str,
+    tool_output: str,
+    output_max_chars: int = _TOOL_OUTPUT_MAX_CHARS_DEFAULT,
+    output_truncated: bool = False,
 ) -> dict[str, Any]:
-    return {
+    stored_output = str(tool_output)
+    truncated = bool(output_truncated)
+    if len(stored_output) > output_max_chars:
+        stored_output = stored_output[:output_max_chars]
+        truncated = True
+    result = {
         "is_valid": bool(is_valid),
         "error_count": int(error_count),
         "error_message": str(error_message),
@@ -643,8 +752,12 @@ def _tool_result(
         "labels": [],
         "codeframe": None,
         "warning_count": 0,
-        "tool_output": str(tool_output),
+        "tool_output": stored_output,
     }
+    if truncated:
+        result["tool_output_truncated"] = True
+        result["tool_output_message"] = f"Tool output truncated at {output_max_chars} characters."
+    return result
 
 
 @lru_cache(maxsize = 8)

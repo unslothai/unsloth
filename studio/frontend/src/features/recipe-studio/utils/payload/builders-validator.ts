@@ -4,6 +4,7 @@
 import type { NodeConfig, ValidatorConfig } from "../../types";
 import { isValidatorCodeLang } from "../validators/code-lang";
 import {
+  BATCH_SIZE_MAX,
   toolScaffoldLimitError,
   validationFunctionFromConfig,
 } from "../validators/validation-markers";
@@ -15,7 +16,7 @@ function parseBatchSize(value: string): number {
   if (!Number.isFinite(parsed) || parsed < 1) {
     return 10;
   }
-  return parsed;
+  return Math.min(parsed, BATCH_SIZE_MAX);
 }
 
 export function buildValidatorColumn(

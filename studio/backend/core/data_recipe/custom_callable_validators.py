@@ -18,6 +18,10 @@ CUSTOM_VALIDATION_FN_MARKER = "unsloth_custom_validator"
 
 CUSTOM_VALIDATION_FN_NAME = "validate"
 
+CUSTOM_SOURCE_MAX_CHARS = 64 * 1024
+CUSTOM_MARKER_MAX_CHARS = 128 * 1024
+BATCH_SIZE_MAX = 512
+
 
 @dataclass(frozen = True)
 class CustomCallableValidatorSpec:
@@ -35,6 +39,10 @@ def encode_validation_source(source: str) -> str:
 
 
 def decode_validation_source(value: str) -> str:
+    # Bound the decode input so a crafted marker cannot run padding math or
+    # base64 work on an arbitrarily large string.
+    if len(value) > CUSTOM_MARKER_MAX_CHARS:
+        return ""
     padded = value + "=" * (-len(value) % 4)
     try:
         raw = base64.urlsafe_b64decode(padded.encode("ascii"))
@@ -95,6 +103,8 @@ def _parse_custom_spec(*, column: dict[str, Any]) -> CustomCallableValidatorSpec
     source = decode_validation_source(fn_name[len(marker) :].strip())
     if not source:
         return None
+    if len(source) > CUSTOM_SOURCE_MAX_CHARS:
+        return None
 
     name = str(column.get("name") or "").strip()
     if not name:
@@ -123,7 +133,9 @@ def _parse_batch_size(value: Any) -> int:
         parsed = int(value)
     except (TypeError, ValueError):
         return 10
-    return parsed if parsed >= 1 else 10
+    if parsed < 1:
+        return 10
+    return min(parsed, BATCH_SIZE_MAX)
 
 
 def register_custom_callable_validators(
@@ -196,28 +208,36 @@ def _build_custom_validation_function(source: str):
         )
 
     def _validator(df):
-        import pandas as pd  # lazy import for local callable runtime
+        input_row_count = int(len(df.index))
         try:
             result = fn(df)
-            columns = getattr(result, "columns", None)
-            if not hasattr(result, "columns") or "is_valid" not in columns:
-                raise ValueError(
-                    "Custom validator must return a DataFrame with an 'is_valid' column.",
-                )
-            result_row_count = int(len(result.index))
-            input_row_count = int(len(df.index))
-            if result_row_count != input_row_count:
-                raise ValueError(
-                    "Custom validator returned "
-                    f"{result_row_count} rows for {input_row_count} input rows; "
-                    "results must be one per input row.",
-                )
-            return result
-        except Exception as exc:
-            return _error_results(
-                int(len(df.index)),
-                f"Custom validator raised: {exc}",
+        except Exception:
+            # The exception text can leak local paths/env details into rows
+            # that are persisted and shipped back to clients, so surface a
+            # generic message and keep the full detail server-side only.
+            logger.warning(
+                "Custom validator raised during execution",
+                exc_info = True,
             )
+            return _error_results(
+                input_row_count,
+                "Custom validator raised an error.",
+            )
+        columns = getattr(result, "columns", None)
+        if not hasattr(result, "columns") or "is_valid" not in columns:
+            return _error_results(
+                input_row_count,
+                "Custom validator must return a DataFrame with an 'is_valid' column.",
+            )
+        result_row_count = int(len(result.index))
+        if result_row_count != input_row_count:
+            return _error_results(
+                input_row_count,
+                "Custom validator returned "
+                f"{result_row_count} rows for {input_row_count} input rows; "
+                "results must be one per input row.",
+            )
+        return result
 
     _validator.__name__ = f"{CUSTOM_VALIDATION_FN_MARKER}_{CUSTOM_VALIDATION_FN_NAME}"
     return _validator

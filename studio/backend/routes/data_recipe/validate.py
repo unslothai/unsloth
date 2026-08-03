@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from core.data_recipe.service import (
+    assert_local_execution_consent,
     build_config_builder,
     create_data_designer,
     validate_recipe,
@@ -138,6 +139,17 @@ def validate(payload: RecipePayload) -> ValidateResponse:
         return ValidateResponse(
             valid = False,
             errors = [ValidateError(message = "Recipe must include columns.")],
+        )
+
+    # Tool/custom checks execute arbitrary commands/Python locally; validating
+    # them compiles/execs the custom source in this process, so the caller must
+    # attest with a one-shot per-run consent flag.
+    try:
+        assert_local_execution_consent(recipe, payload.run)
+    except ValueError as exc:
+        return ValidateResponse(
+            valid = False,
+            errors = [ValidateError(message = str(exc))],
         )
 
     _patch_local_providers(recipe)

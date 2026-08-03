@@ -49,6 +49,12 @@ import {
 } from "../../utils/validators/oxc-mode";
 import {
   normalizeToolScaffold,
+  TOOL_OUTPUT_MAX_KIB_DEFAULT,
+  TOOL_OUTPUT_MAX_KIB_MIN,
+  TOOL_OUTPUT_MAX_KIB_MAX,
+  TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT,
+  TOOL_SCAFFOLD_FILE_MAX_KIB_MIN,
+  TOOL_SCAFFOLD_FILE_MAX_KIB_MAX,
   TOOL_SCAFFOLD_MAX_ROWS,
 } from "../../utils/validators/validation-markers";
 import {
@@ -168,6 +174,8 @@ export function ValidatorDialog({
   const customSourceId = `${config.id}-custom-source`;
   const customAckId = `${config.id}-custom-ack`;
   const batchSizeId = `${config.id}-batch-size`;
+  const toolOutputMaxId = `${config.id}-tool-output-max`;
+  const toolScaffoldFileMaxId = `${config.id}-tool-scaffold-file-max`;
   const oxcModeAnchorRef = useRef<HTMLDivElement>(null);
   const oxcCodeShapeAnchorRef = useRef<HTMLDivElement>(null);
   const advancedOpen = config.advancedOpen === true;
@@ -646,6 +654,49 @@ export function ValidatorDialog({
               onChange={(event) => onUpdate({ batch_size: event.target.value })}
             />
           </div>
+          {config.validator_type === "tool" && (
+            <>
+              <div className="grid gap-1.5">
+                <FieldLabel
+                  label="Max tool output per row (KiB)"
+                  htmlFor={toolOutputMaxId}
+                  hint="Captured command output stored per row is truncated at this size. Truncated rows carry a tool_output_truncated flag; the check result is unaffected."
+                />
+                <Input
+                  id={toolOutputMaxId}
+                  className="nodrag"
+                  type="number"
+                  min={TOOL_OUTPUT_MAX_KIB_MIN}
+                  max={TOOL_OUTPUT_MAX_KIB_MAX}
+                  value={config.tool_output_max_kib ?? String(TOOL_OUTPUT_MAX_KIB_DEFAULT)}
+                  onChange={(event) =>
+                    onUpdate({ tool_output_max_kib: event.target.value })
+                  }
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <FieldLabel
+                  label="Max scaffold file size (KiB)"
+                  htmlFor={toolScaffoldFileMaxId}
+                  hint="Applied after the generated code is substituted into a scaffold file (and to the main.{ext} fallback). Larger cells are marked invalid with a clear error."
+                />
+                <Input
+                  id={toolScaffoldFileMaxId}
+                  className="nodrag"
+                  type="number"
+                  min={TOOL_SCAFFOLD_FILE_MAX_KIB_MIN}
+                  max={TOOL_SCAFFOLD_FILE_MAX_KIB_MAX}
+                  value={
+                    config.tool_scaffold_file_max_kib ??
+                    String(TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT)
+                  }
+                  onChange={(event) =>
+                    onUpdate({ tool_scaffold_file_max_kib: event.target.value })
+                  }
+                />
+              </div>
+            </>
+          )}
         </CollapsibleContent>
       </Collapsible>
     </div>

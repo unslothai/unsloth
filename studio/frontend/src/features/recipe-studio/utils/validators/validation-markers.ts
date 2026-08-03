@@ -10,12 +10,26 @@ export type ToolValidatorSpec = {
   ext: string;
   command: string;
   scaffold?: ToolScaffoldFile[];
+  output_max_chars?: number;
+  source_file_max_chars?: number;
 };
 
 const TOOL_FILE_EXT_RE = /^[A-Za-z0-9.+-]{1,20}$/;
 const TOOL_SCAFFOLD_PATH_RE = /^[A-Za-z0-9._+-]+(?:\/[A-Za-z0-9._+-]+)*$/;
 export const TOOL_SCAFFOLD_MAX_ROWS = 10;
 const TOOL_SCAFFOLD_MAX_TOTAL_CHARS = 32 * 1024;
+
+export const TOOL_COMMAND_MAX_CHARS = 8 * 1024;
+export const CUSTOM_SOURCE_MAX_CHARS = 64 * 1024;
+export const BATCH_SIZE_MAX = 512;
+export const MARKER_MAX_CHARS = 128 * 1024;
+
+export const TOOL_OUTPUT_MAX_KIB_DEFAULT = 8;
+export const TOOL_OUTPUT_MAX_KIB_MIN = 1;
+export const TOOL_OUTPUT_MAX_KIB_MAX = 256;
+export const TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT = 32;
+export const TOOL_SCAFFOLD_FILE_MAX_KIB_MIN = 1;
+export const TOOL_SCAFFOLD_FILE_MAX_KIB_MAX = 64;
 
 const LEADING_DOTS_RE = /^\.+/;
 const BASE64_PLUS_RE = /\+/g;
@@ -35,6 +49,9 @@ function toBase64Url(input: string): string {
 }
 
 function fromBase64Url(input: string): string {
+  if (input.length > MARKER_MAX_CHARS) {
+    throw new Error("marker payload exceeds size limit");
+  }
   const padded =
     input.replace(/-/g, "+").replace(/_/g, "/") +
     "=".repeat((4 - (input.length % 4)) % 4);
@@ -137,6 +154,8 @@ export function encodeToolSpec(spec: ToolValidatorSpec): string {
     ext: string;
     command: string;
     scaffold?: ToolScaffoldFile[];
+    output_max_chars?: number;
+    source_file_max_chars?: number;
   } = {
     ext: spec.ext,
     command: spec.command,
@@ -144,6 +163,12 @@ export function encodeToolSpec(spec: ToolValidatorSpec): string {
   const scaffold = normalizeToolScaffold(spec.scaffold);
   if (scaffold.length > 0) {
     payload.scaffold = scaffold;
+  }
+  if (spec.output_max_chars !== undefined) {
+    payload.output_max_chars = spec.output_max_chars;
+  }
+  if (spec.source_file_max_chars !== undefined) {
+    payload.source_file_max_chars = spec.source_file_max_chars;
   }
   return toBase64Url(JSON.stringify(payload));
 }
@@ -154,6 +179,73 @@ export function normalizeToolExt(ext: string): string {
 
 export function isValidToolExt(ext: string): boolean {
   return TOOL_FILE_EXT_RE.test(normalizeToolExt(ext));
+}
+
+function parseKib(value: string | undefined): number | null {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) {
+    return null;
+  }
+  const parsed = Number(trimmed);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+export function normalizeToolOutputMaxKib(value: string | undefined): string {
+  const parsed = parseKib(value);
+  if (parsed === null) {
+    return String(TOOL_OUTPUT_MAX_KIB_DEFAULT);
+  }
+  return String(
+    Math.min(Math.max(parsed, TOOL_OUTPUT_MAX_KIB_MIN), TOOL_OUTPUT_MAX_KIB_MAX),
+  );
+}
+
+export function normalizeToolScaffoldFileMaxKib(value: string | undefined): string {
+  const parsed = parseKib(value);
+  if (parsed === null) {
+    return String(TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT);
+  }
+  return String(
+    Math.min(
+      Math.max(parsed, TOOL_SCAFFOLD_FILE_MAX_KIB_MIN),
+      TOOL_SCAFFOLD_FILE_MAX_KIB_MAX,
+    ),
+  );
+}
+
+export function toolOutputMaxKibError(value: string | undefined): string | null {
+  const parsed = parseKib(value);
+  if (parsed === null) {
+    return null;
+  }
+  if (parsed < TOOL_OUTPUT_MAX_KIB_MIN || parsed > TOOL_OUTPUT_MAX_KIB_MAX) {
+    return `Max tool output must be between ${TOOL_OUTPUT_MAX_KIB_MIN} and ${TOOL_OUTPUT_MAX_KIB_MAX} KiB.`;
+  }
+  return null;
+}
+
+export function toolScaffoldFileMaxKibError(
+  value: string | undefined,
+): string | null {
+  const parsed = parseKib(value);
+  if (parsed === null) {
+    return null;
+  }
+  if (
+    parsed < TOOL_SCAFFOLD_FILE_MAX_KIB_MIN ||
+    parsed > TOOL_SCAFFOLD_FILE_MAX_KIB_MAX
+  ) {
+    return `Max scaffold file size must be between ${TOOL_SCAFFOLD_FILE_MAX_KIB_MIN} and ${TOOL_SCAFFOLD_FILE_MAX_KIB_MAX} KiB.`;
+  }
+  return null;
+}
+
+function toolOutputMaxChars(config: ValidatorConfig): number {
+  return Number(normalizeToolOutputMaxKib(config.tool_output_max_kib)) * 1024;
+}
+
+function toolSourceFileMaxChars(config: ValidatorConfig): number {
+  return Number(normalizeToolScaffoldFileMaxKib(config.tool_scaffold_file_max_kib)) * 1024;
 }
 
 export function decodeToolSpec(encoded: string): ToolValidatorSpec | null {
@@ -189,7 +281,25 @@ export function decodeToolSpec(encoded: string): ToolValidatorSpec | null {
     if (rawScaffold.length > 0 && scaffold.length === 0) {
       return null;
     }
-    return scaffold.length > 0 ? { ext, command, scaffold } : { ext, command };
+    const outputMaxChars =
+      typeof record.output_max_chars === "number"
+        ? record.output_max_chars
+        : undefined;
+    const sourceFileMaxChars =
+      typeof record.source_file_max_chars === "number"
+        ? record.source_file_max_chars
+        : undefined;
+    const spec: ToolValidatorSpec = { ext, command };
+    if (scaffold.length > 0) {
+      spec.scaffold = scaffold;
+    }
+    if (outputMaxChars !== undefined) {
+      spec.output_max_chars = outputMaxChars;
+    }
+    if (sourceFileMaxChars !== undefined) {
+      spec.source_file_max_chars = sourceFileMaxChars;
+    }
+    return spec;
   } catch {
     return null;
   }
@@ -219,12 +329,22 @@ export function validationFunctionFromConfig(
     const ext = normalizeToolExt(config.tool_ext ?? "");
     const command = (config.tool_command ?? "").trim();
     const scaffold = normalizeToolScaffold(config.tool_scaffold);
+    const outputMaxChars = toolOutputMaxChars(config);
+    const sourceFileMaxChars = toolSourceFileMaxChars(config);
     // A missing command/ext still serializes so an invalid mid-edit state
     // round-trips as a tool check; the config validators flag the gap.
+    // Caps are only serialized when they differ from the defaults, so legacy
+    // markers stay byte-identical and the backend falls back to defaults.
     return `${TOOL_VALIDATION_FN_MARKER}:${encodeToolSpec({
       ext,
       command,
       ...(scaffold.length > 0 ? { scaffold } : {}),
+      ...(outputMaxChars !== TOOL_OUTPUT_MAX_KIB_DEFAULT * 1024
+        ? { output_max_chars: outputMaxChars }
+        : {}),
+      ...(sourceFileMaxChars !== TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT * 1024
+        ? { source_file_max_chars: sourceFileMaxChars }
+        : {}),
     })}`;
   }
   if (config.validator_type === "custom") {

@@ -8,9 +8,14 @@ import { isOxcCodeShape } from "./validators/oxc-code-shape";
 import { isOxcValidationMode } from "./validators/oxc-mode";
 import { isValidatorConsentRequired } from "./validators/consent";
 import {
+  BATCH_SIZE_MAX,
+  CUSTOM_SOURCE_MAX_CHARS,
   firstInvalidToolScaffoldPath,
   isValidToolExt,
+  TOOL_COMMAND_MAX_CHARS,
+  toolScaffoldFileMaxKibError,
   toolScaffoldLimitError,
+  toolOutputMaxKibError,
 } from "./validators/validation-markers";
 
 const TRACE_MODES = new Set(["none", "last_message", "all_messages"]);
@@ -251,12 +256,15 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       errors.push("Choose the code step to check.");
     }
     const batch = parseIntNumber(config.batch_size);
-    if (batch === null || batch < 1) {
-      errors.push("Batch size must be an integer >= 1.");
+    if (batch === null || batch < 1 || batch > BATCH_SIZE_MAX) {
+      errors.push(`Batch size must be an integer between 1 and ${BATCH_SIZE_MAX}.`);
     }
     if (config.validator_type === "tool") {
-      if (!(config.tool_command ?? "").trim()) {
+      const command = (config.tool_command ?? "").trim();
+      if (!command) {
         errors.push("Add a tool command to run.");
+      } else if (command.length > TOOL_COMMAND_MAX_CHARS) {
+        errors.push("Tool command is too long (max 8 KiB).");
       }
       if (!(config.tool_ext ?? "").trim()) {
         errors.push("Add the source-file extension for this check.");
@@ -276,9 +284,22 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       if (scaffoldLimitError !== null) {
         errors.push(`Scaffold: ${scaffoldLimitError}`);
       }
+      const outputCapError = toolOutputMaxKibError(config.tool_output_max_kib);
+      if (outputCapError !== null) {
+        errors.push(outputCapError);
+      }
+      const scaffoldCapError = toolScaffoldFileMaxKibError(
+        config.tool_scaffold_file_max_kib,
+      );
+      if (scaffoldCapError !== null) {
+        errors.push(scaffoldCapError);
+      }
     } else if (config.validator_type === "custom") {
-      if (!(config.custom_source ?? "").trim()) {
+      const source = (config.custom_source ?? "").trim();
+      if (!source) {
         errors.push("Add the Python function for this check.");
+      } else if (source.length > CUSTOM_SOURCE_MAX_CHARS) {
+        errors.push("Custom validator source is too long (max 64 KiB).");
       }
       if (isValidatorConsentRequired(config)) {
         errors.push("Acknowledge that this check runs arbitrary Python locally.");

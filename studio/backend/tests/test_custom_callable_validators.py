@@ -75,6 +75,33 @@ def test_decode_rejects_invalid_base64():
     assert custom.decode_validation_source("!!not base64!!") == ""
 
 
+def test_decode_rejects_oversized_marker():
+    big = "A" * (custom.CUSTOM_MARKER_MAX_CHARS + 1)
+    assert custom.decode_validation_source(big) == ""
+    assert custom.decode_validation_source("A" * 100) != ""
+
+
+def test_split_skips_oversized_source():
+    recipe = {
+        "columns": [
+            _custom_column(
+                name = "too_big",
+                source = "x" * (custom.CUSTOM_SOURCE_MAX_CHARS + 1),
+            )
+        ]
+    }
+    sanitized, specs = custom.split_custom_callable_validators(recipe)
+    assert specs == []
+    assert len(sanitized["columns"]) == 1
+
+
+def test_parse_batch_size_is_clamped():
+    assert custom._parse_batch_size(100000) == custom.BATCH_SIZE_MAX
+    assert custom._parse_batch_size(512) == 512
+    assert custom._parse_batch_size(0) == 10
+    assert custom._parse_batch_size("nope") == 10
+
+
 def test_split_extracts_custom_and_leaves_other_columns():
     recipe = {
         "columns": [
@@ -152,14 +179,21 @@ def test_callable_pre_injected_names_need_no_imports():
 
 
 def test_callable_swallows_user_exception():
+    """User exception details stay server-side: rows get a generic message."""
+    import structlog
+
     import pandas as pd
 
     fn = custom._build_custom_validation_function(
-        "def validate(df):\n    raise RuntimeError('boom')\n"
+        "def validate(df):\n    raise RuntimeError('/home/user/.ssh/id_rsa boom')\n"
     )
-    out = fn(pd.DataFrame({"code": ["a", "b"]}))
+    with structlog.testing.capture_logs() as events:
+        out = fn(pd.DataFrame({"code": ["a", "b"]}))
     assert list(out["is_valid"]) == [False, False]
-    assert "boom" in out["error_message"].iloc[0]
+    assert out["error_message"].iloc[0] == "Custom validator raised an error."
+    assert "/home/user" not in out["error_message"].iloc[0]
+    # The full exception must still reach the server log for debugging.
+    assert any(event.get("event") == "Custom validator raised during execution" for event in events)
 
 
 def test_callable_rejects_missing_is_valid_column():

@@ -19,6 +19,10 @@ import type {
   ValidatorConfig,
 } from "../types";
 import { nextName } from "./naming";
+import {
+  TOOL_OUTPUT_MAX_KIB_DEFAULT,
+  TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT,
+} from "./validators/validation-markers";
 
 export const DEFAULT_TOOL_EXT = "go";
 export const DEFAULT_TOOL_COMMAND = "go vet ./...";
@@ -403,6 +407,8 @@ export function makeValidatorConfig(
           tool_ext: DEFAULT_TOOL_EXT,
           tool_scaffold: DEFAULT_TOOL_SCAFFOLD.map((file) => ({ ...file })),
           tool_acknowledged: false,
+          tool_output_max_kib: String(TOOL_OUTPUT_MAX_KIB_DEFAULT),
+          tool_scaffold_file_max_kib: String(TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT),
         }
       : {}),
     ...(isCustom

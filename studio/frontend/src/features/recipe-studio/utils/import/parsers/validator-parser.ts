@@ -11,6 +11,8 @@ import {
   decodeCustomSource,
   decodeToolSpec,
   TOOL_VALIDATION_FN_MARKER,
+  TOOL_OUTPUT_MAX_KIB_DEFAULT,
+  TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT,
 } from "../../validators/validation-markers";
 
 const OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator";
@@ -104,6 +106,15 @@ export function parseValidator(
       isTool && toolSpec && (toolSpec.scaffold?.length ?? 0) > 0
         ? toolSpec.scaffold
         : undefined,
+    tool_output_max_kib: isTool
+      ? String((toolSpec?.output_max_chars ?? TOOL_OUTPUT_MAX_KIB_DEFAULT * 1024) / 1024)
+      : undefined,
+    tool_scaffold_file_max_kib: isTool
+      ? String(
+          (toolSpec?.source_file_max_chars ?? TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT * 1024) /
+            1024,
+        )
+      : undefined,
     // Importing a recipe does not count as the current user's consent: an
     // imported marker can hide an arbitrary command or Python body, so the
     // user must acknowledge the local-execution warning before a run starts.

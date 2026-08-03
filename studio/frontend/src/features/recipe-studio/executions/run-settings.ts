@@ -4,6 +4,10 @@
 import type { RecipeExecutionKind } from "../execution-types";
 import type { RecipeRunSettings } from "../stores/recipe-executions";
 import type { RecipePayload } from "../utils/payload/types";
+import {
+  CUSTOM_VALIDATION_FN_MARKER,
+  TOOL_VALIDATION_FN_MARKER,
+} from "../utils/validators/validation-markers";
 
 function toPositiveInt(
   value: number,
@@ -151,6 +155,25 @@ function applyGlobalParallelismOverride(
   };
 }
 
+function payloadRequiresLocalExecutionConsent(payload: RecipePayload): boolean {
+  const columns = payload.recipe?.columns ?? [];
+  return columns.some((column) => {
+    const params =
+      column && typeof column === "object"
+        ? (column as Record<string, unknown>).validator_params
+        : null;
+    const fnRaw =
+      params && typeof params === "object"
+        ? (params as Record<string, unknown>).validation_function
+        : null;
+    const fn = typeof fnRaw === "string" ? fnRaw : "";
+    return (
+      fn.startsWith(`${TOOL_VALIDATION_FN_MARKER}:`) ||
+      fn.startsWith(`${CUSTOM_VALIDATION_FN_MARKER}:`)
+    );
+  });
+}
+
 export function buildExecutionPayload(input: {
   payload: RecipePayload;
   kind: RecipeExecutionKind;
@@ -172,6 +195,16 @@ export function buildExecutionPayload(input: {
       execution_type: input.kind,
       // biome-ignore lint/style/useNamingConvention: backend schema
       run_config: buildRunConfigPayload(normalizedSettings, input.rows, input.kind),
+      // One-shot per-run consent attestation for local tool/custom checks.
+      // Runs are already gated client-side on the consent checkboxes, and
+      // this flag is assembled per action (never persisted), so the backend
+      // can trust it as the caller's explicit opt-in.
+      // biome-ignore lint/style/useNamingConvention: backend schema
+      local_execution_consent: payloadRequiresLocalExecutionConsent(
+        payloadWithParallelism,
+      )
+        ? true
+        : undefined,
       // biome-ignore lint/style/useNamingConvention: backend schema
       merge_batches:
         input.kind === "full" &&

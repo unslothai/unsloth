@@ -197,6 +197,121 @@ test("toolScaffoldLimitError reports oversized scaffolds", () => {
   assert.deepEqual(markers.normalizeToolScaffold(tooMuchContent), []);
 });
 
+test("tool cap KiB normalization clamps into the allowed bands", () => {
+  assert.equal(markers.normalizeToolOutputMaxKib(undefined), "8");
+  assert.equal(markers.normalizeToolOutputMaxKib(""), "8");
+  assert.equal(markers.normalizeToolOutputMaxKib("16"), "16");
+  assert.equal(markers.normalizeToolOutputMaxKib("999"), "256");
+  assert.equal(markers.normalizeToolOutputMaxKib("0"), "1");
+  assert.equal(markers.normalizeToolOutputMaxKib("abc"), "8");
+  assert.equal(markers.normalizeToolScaffoldFileMaxKib(undefined), "32");
+  assert.equal(markers.normalizeToolScaffoldFileMaxKib("999"), "64");
+  assert.equal(markers.normalizeToolScaffoldFileMaxKib("0"), "1");
+});
+
+test("tool cap errors report out-of-range values", () => {
+  assert.equal(markers.toolOutputMaxKibError(undefined), null);
+  assert.equal(markers.toolOutputMaxKibError("8"), null);
+  assert.ok(markers.toolOutputMaxKibError("999")?.includes("256"));
+  assert.ok(markers.toolOutputMaxKibError("0")?.includes("between"));
+  assert.equal(markers.toolScaffoldFileMaxKibError("32"), null);
+  assert.ok(markers.toolScaffoldFileMaxKibError("999")?.includes("64"));
+});
+
+test("tool marker round-trips the configurable caps", () => {
+  const marker = markers.validationFunctionFromConfig(
+    toolConfig({ tool_output_max_kib: "16", tool_scaffold_file_max_kib: "4" }),
+  );
+  assert.ok(marker?.startsWith(`${TOOL_MARKER}:`));
+  const spec = markers.decodeToolSpec(marker!.slice(TOOL_MARKER.length + 1));
+  assert.deepEqual(spec, {
+    ext: "go",
+    command: "go vet ./...",
+    output_max_chars: 16 * 1024,
+    source_file_max_chars: 4 * 1024,
+  });
+});
+
+test("parseValidator reconstructs the configurable caps with defaults", () => {
+  const marker = markers.validationFunctionFromConfig(
+    toolConfig({ tool_output_max_kib: "16", tool_scaffold_file_max_kib: "4" }),
+  );
+  const config = parseValidator(
+    {
+      column_type: "validation",
+      name: "go_check",
+      drop: false,
+      target_columns: ["code"],
+      validator_type: "local_callable",
+      validator_params: { validation_function: marker },
+      batch_size: 10,
+    },
+    "go_check",
+    "n1",
+  );
+  assert.equal(config.tool_output_max_kib, "16");
+  assert.equal(config.tool_scaffold_file_max_kib, "4");
+  // Legacy markers without caps fall back to the defaults.
+  const legacy = parseValidator(
+    {
+      column_type: "validation",
+      name: "go_check",
+      drop: false,
+      target_columns: ["code"],
+      validator_type: "local_callable",
+      validator_params: {
+        validation_function: markers.validationFunctionFromConfig(toolConfig()),
+      },
+      batch_size: 10,
+    },
+    "go_check",
+    "n1",
+  );
+  assert.equal(legacy.tool_output_max_kib, "8");
+  assert.equal(legacy.tool_scaffold_file_max_kib, "32");
+});
+
+test("decodeToolSpec rejects oversized marker payloads", () => {
+  assert.equal(markers.decodeToolSpec("A".repeat(128 * 1024 + 1)), null);
+  assert.equal(markers.decodeCustomSource("A".repeat(128 * 1024 + 1)), "");
+});
+
+test("getConfigErrors flags oversized commands, sources, batches and caps", () => {
+  const tooLongCommand = getConfigErrors(
+    toolConfig({
+      tool_command: "x".repeat(8 * 1024 + 1),
+      tool_acknowledged: true,
+    }),
+  );
+  assert.ok(tooLongCommand.some((message) => message.includes("too long")));
+
+  const tooBigBatch = getConfigErrors(
+    toolConfig({ batch_size: "9999", tool_acknowledged: true }),
+  );
+  assert.ok(tooBigBatch.some((message) => message.includes("between 1 and 512")));
+
+  const badOutputCap = getConfigErrors(
+    toolConfig({ tool_output_max_kib: "999", tool_acknowledged: true }),
+  );
+  assert.ok(badOutputCap.some((message) => message.includes("256")));
+
+  const badScaffoldCap = getConfigErrors(
+    toolConfig({ tool_scaffold_file_max_kib: "999", tool_acknowledged: true }),
+  );
+  assert.ok(badScaffoldCap.some((message) => message.includes("64")));
+
+  const tooLongSource = getConfigErrors(
+    customConfig({ custom_source: "x".repeat(64 * 1024 + 1) }),
+  );
+  assert.ok(tooLongSource.some((message) => message.includes("too long")));
+
+  // Defaults stay valid.
+  const defaults = getConfigErrors(
+    toolConfig({ tool_acknowledged: true }),
+  );
+  assert.ok(!defaults.some((message) => message.includes("KiB")));
+});
+
 test("getConfigErrors flags oversized scaffolds", () => {
   const tooManyRows = Array.from({ length: 11 }, (_, index) => ({
     path: `file${index}.txt`,
