@@ -372,6 +372,62 @@ def test_without_a_launcher_the_note_carries_the_install_config(monkeypatch, tmp
     assert str(tmp_path) in err
 
 
+class _NoTorchManifest:
+    @staticmethod
+    def recorded_no_torch(root = None):
+        return True
+
+
+def test_the_recovery_command_keeps_no_torch_after_the_reader_is_gone(
+    monkeypatch, tmp_path, capsys
+):
+    """recorded_no_torch lives in the package pip uninstalls. On the override path
+    setup drops the manifest and pip removes that file before failing, so asking
+    afterwards answers nothing -- and answering "no" reinstalls the whole PyTorch
+    stack for someone who chose GGUF-only."""
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)  # no bin/unsloth.exe
+    _as_windows(monkeypatch, scripts)
+    monkeypatch.setattr(studio, "_RECORDED_NO_TORCH", None)
+
+    # While the install is intact.
+    monkeypatch.setattr(
+        studio._studio_deps, "load_install_manifest_module", lambda *a, **k: _NoTorchManifest
+    )
+    studio._snapshot_recorded_no_torch()
+
+    # Then pip takes the reader away, exactly as it does before hitting the lock.
+    def _gone(*a, **k):
+        return None
+
+    monkeypatch.setattr(studio._studio_deps, "load_install_manifest_module", _gone)
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
+
+    err = capsys.readouterr().err
+    assert "install.ps1" in err, "the reinstall fallback was hidden"
+    assert "UNSLOTH_NO_TORCH" in err, (
+        "the recovery command lost no-torch mode, so it reinstalls the PyTorch stack"
+    )
+
+
+def test_no_torch_is_not_invented_when_nothing_recorded_it(monkeypatch, tmp_path, capsys):
+    """The snapshot must not turn an unknown mode into a claim. A torch install that
+    recovered with UNSLOTH_NO_TORCH=1 would come back without torch."""
+    scripts = _scripts(tmp_path)
+    (scripts / "unsloth.exe").write_bytes(b"MZ")
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    _as_windows(monkeypatch, scripts)
+    monkeypatch.setattr(studio, "_RECORDED_NO_TORCH", None)
+    monkeypatch.setattr(
+        studio._studio_deps, "load_install_manifest_module", lambda *a, **k: None
+    )
+
+    studio._note_self_exe_locked(OSError(errno.EACCES, "in use"))
+
+    assert "UNSLOTH_NO_TORCH" not in capsys.readouterr().err
+
+
 # ── cleanup after a successful update ────────────────────────────────
 
 

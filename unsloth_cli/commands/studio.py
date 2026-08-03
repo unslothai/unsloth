@@ -3071,6 +3071,10 @@ def update(
             package = package,
             verify = verify,
         )
+    # Before setup, not after: setup drops the manifest and pip uninstalls the
+    # module that reads it, so the recovery command printed on failure would
+    # otherwise lose this install's no-torch mode.
+    _snapshot_recorded_no_torch()
     try:
         _run_setup_script(verbose = verbose, repo_root = repo_root)
     except BaseException:
@@ -3103,6 +3107,32 @@ def update(
     _refresh_desktop_shortcuts(verbose = verbose)
 
 
+_RECORDED_NO_TORCH: "Optional[bool]" = None
+
+
+def _snapshot_recorded_no_torch() -> None:
+    """Read the recorded mode while the code that can read it still exists.
+
+    recorded_no_torch lives in studio/install_manifest.py, which ships inside the
+    package pip is about to replace. On the path where the update goes ahead into a
+    locked unsloth.exe -- reachable through UNSLOTH_ALLOW_LOCKED_UPDATE -- setup
+    drops the manifest and pip uninstalls that file before failing, so by the time
+    the failure is being explained there is nothing left to ask. Answering "no" then
+    is not a harmless default: it drops UNSLOTH_NO_TORCH from the recovery command
+    and a GGUF-only user reinstalls the whole PyTorch stack.
+
+    Best effort and never fatal. Leaves the snapshot unset when it cannot read,
+    so a later call that can read still gets the chance.
+    """
+    global _RECORDED_NO_TORCH
+    try:
+        _manifest = _studio_deps.load_install_manifest_module()
+        if _manifest is not None:
+            _RECORDED_NO_TORCH = _manifest.recorded_no_torch() is True
+    except Exception:
+        pass
+
+
 def _reinstall_command() -> str:
     """The reinstall line, carrying whatever this install needs to be reproduced.
 
@@ -3113,12 +3143,9 @@ def _reinstall_command() -> str:
     stack back in. Only when the record says True: recorded_no_torch returns None
     when nothing recorded a mode, and None must not read as False.
     """
-    no_torch = False
-    try:
-        _manifest = _studio_deps.load_install_manifest_module()
-        no_torch = _manifest is not None and _manifest.recorded_no_torch() is True
-    except Exception:
-        no_torch = False
+    if _RECORDED_NO_TORCH is None:
+        _snapshot_recorded_no_torch()
+    no_torch = _RECORDED_NO_TORCH is True
     if platform.system() == "Windows":
         prefix = ""
         if _STUDIO_HOME_IS_CUSTOM:
