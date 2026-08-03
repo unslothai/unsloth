@@ -378,7 +378,12 @@ def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_overrid
     child_envs = []
 
     class _SpawnsAWorkerMidImport:
-        def find_spec(self, name, path = None, target = None):
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
             if name == "unsloth_zoo":
                 # A concurrent request lands mid-retry and spawns its worker right here.
                 child_envs.append(utf8_child_env())

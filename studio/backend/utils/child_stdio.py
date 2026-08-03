@@ -27,7 +27,6 @@ def utf8_child_env(env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
         # transient value is dropped.
         try:
             from utils.hf_xet_fallback import gpu_init_override_active
-
             if gpu_init_override_active():
                 child.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
         except Exception:  # noqa: BLE001 - never fail a spawn over this
