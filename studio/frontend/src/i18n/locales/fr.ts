@@ -24,7 +24,7 @@ export const fr = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "Menu du compte de {name}",
     updateAvailable: "Mise à jour disponible",
     resize: {
@@ -497,7 +497,7 @@ export const fr = {
     },
     appearance: {
       title: "Apparence",
-      description: "L'apparence d'Unsloth Studio sur cet appareil.",
+      description: "L'apparence d'Unsloth sur cet appareil.",
       theme: {
         title: "Thème",
         label: "Palette de couleurs",
@@ -708,7 +708,7 @@ export const fr = {
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
       modelNote:
-        "Codex nécessite un modèle GGUF servi par llama-server. Les autres agents peuvent aussi utiliser des modèles basés sur transformers ; retirez --model pour utiliser le modèle déjà chargé dans Unsloth Studio.",
+        "Codex nécessite un modèle GGUF servi par llama-server. Les autres agents peuvent aussi utiliser des modèles basés sur transformers ; retirez --model pour utiliser le modèle déjà chargé dans Unsloth.",
       subagent: {
         title: "Utiliser un modèle local comme sous-agent",
         description:
@@ -942,7 +942,7 @@ export const fr = {
       osWindows: "Windows",
       secureHttps: "HTTPS sécurisé",
       secureHttpsHint:
-        "Le port 0.0.0.0 reste accessible globalement. Pour une sécurité complète, lancez Unsloth Studio avec --secure afin de n'exposer que ce lien HTTPS.",
+        "Le port 0.0.0.0 reste accessible globalement. Pour une sécurité complète, lancez Unsloth avec --secure afin de n'exposer que ce lien HTTPS.",
       copyTunnelUrl: "Copier l'URL du tunnel",
       copySnippet: "Copier l'extrait",
       copy: "Copier",
@@ -998,7 +998,7 @@ export const fr = {
       reportIssue: "Signaler un problème",
       license: {
         sectionTitle: "Licence",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "Open source sous licence GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
@@ -1006,12 +1006,12 @@ export const fr = {
         libraryDescription: "Sous licence Apache 2.0.",
       },
       dangerZone: "Zone de danger",
-      shutDownStudio: "Arrêter Unsloth Studio",
+      shutDownStudio: "Arrêter Unsloth",
       shutDownStudioDescription:
         "Arrête le serveur Unsloth et met fin à votre session.",
       shutDown: "Arrêter",
       update: {
-        title: "Mettre à jour Unsloth Studio",
+        title: "Mettre à jour Unsloth",
         commandText: "Texte de {label}",
         copied: "Copié",
         copyCommand: "Copier la commande",

@@ -354,7 +354,7 @@ fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
     open_existing_dir_with(dir, |path| open::that_detached(path))
 }
 
-/// Open the Unsloth Studio directory in the system file manager.
+/// Open the Unsloth directory in the system file manager.
 #[tauri::command]
 pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;

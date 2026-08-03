@@ -14,6 +14,8 @@ from core.inference.message_content import content_to_text
 from core.inference.runtime_context import runtime_context_length
 from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
+    markup_for_tokenizer,
+    neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
 )
 from utils.models.model_config import is_audio_input_type
@@ -114,10 +116,11 @@ def _render_registered_vlm_prompt(
     if model_type not in getattr(prompt_utils, "MODEL_CONFIG", {}):
         return None
 
+    # Recovery path: renders the caller's original list, not the neutralized copy (#7066).
     rendered = prompt_utils.apply_chat_template(
         processor,
         config,
-        messages,
+        neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor)),
         add_generation_prompt = True,
         num_images = num_images,
         num_audios = num_audios,
@@ -1103,17 +1106,14 @@ class MLXInferenceBackend:
 
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
+            chat_render_target,
         )
 
         # Pick the chat-template-aware caller: processors with their own
         # apply_chat_template + chat_template (e.g. Qwen2.5-VL), else the nested tokenizer.
-        chat_target = self._processor
-        if (
-            getattr(self._processor, "apply_chat_template", None) is None
-            or not hasattr(self._processor, "chat_template")
-            or self._processor.chat_template is None
-        ):
-            chat_target = getattr(self._processor, "tokenizer", self._processor)
+        # Shared with the healing catalog the route builds ahead of this render, which has
+        # to authorize against the same template this line selects (#7066).
+        chat_target = chat_render_target(self._processor)
 
         # mlx_vlm's stream_generate handles pixel_values (None for text-only)
         images = [image] if image is not None else None
