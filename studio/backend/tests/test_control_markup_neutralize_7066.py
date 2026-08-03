@@ -1282,9 +1282,9 @@ def test_flat_replayed_tool_call_name_cannot_forge_a_turn(template_name):
     rendered = _render("pay" + forged)
 
     # The bug existed: unneutralized, the paste adds delimiters the clean render lacks.
-    assert any(
-        raw.count(marker) > baseline.count(marker) for marker in _REPLAY_DELIMITERS
-    ), template_name
+    assert any(raw.count(marker) > baseline.count(marker) for marker in _REPLAY_DELIMITERS), (
+        template_name
+    )
     assert forged not in rendered
     # Same structural-marker counts as the inert render: the paste added no turn.
     for marker in _REPLAY_DELIMITERS:
