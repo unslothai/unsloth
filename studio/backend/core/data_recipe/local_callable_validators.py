@@ -374,9 +374,7 @@ def _run_tool_batch(*, file_ext: str, command: str, code_values: list[str]) -> l
     return results
 
 
-def _run_tool_single(
-    *, file_ext: str, command: str, code_value: str
-) -> dict[str, Any]:
+def _run_tool_single(*, file_ext: str, command: str, code_value: str) -> dict[str, Any]:
     tmp_root = ensure_dir(oxc_validator_tmp_root())
     try:
         with tempfile.TemporaryDirectory(dir = str(tmp_root), prefix = "tool-") as raw_dir:
@@ -389,9 +387,7 @@ def _run_tool_single(
             source_path = run_dir / f"main.{file_ext}"
             source_path.write_text(code_value, encoding = "utf-8")
 
-            substituted = command.replace("{file}", str(source_path)).replace(
-                "{dir}", str(run_dir)
-            )
+            substituted = command.replace("{file}", str(source_path)).replace("{dir}", str(run_dir))
             env = child_env_without_native_path_secret()
             proc = subprocess.run(
                 substituted,
