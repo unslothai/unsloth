@@ -307,7 +307,8 @@ def _build_harness(run_dir: Path):
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
     missing = sorted(
-        name for name in imported
+        name
+        for name in imported
         if re.search(rf"\b{re.escape(name)}\b", code)
         and not re.search(
             rf"^(?:export\s+)?(?:async\s+)?"
