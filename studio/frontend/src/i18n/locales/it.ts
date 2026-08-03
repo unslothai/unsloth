@@ -128,7 +128,7 @@ export const it = {
           "Trascrive l'audio con il servizio vocale del browser. Seleziona «Trascrizione locale» per usare un modello STT.",
         engineModel: "Trascrizione locale",
         engineModelDescription:
-          "Esegue un modello speech-to-text (STT) in locale e funziona offline. Scarica, carica e poi scarica dalla memoria dopo un periodo di inattività.",
+          "Esegue un modello speech-to-text (STT) in locale e funziona offline. Puoi scaricare e caricare il modello, che verrà poi rimosso dalla memoria dopo un periodo di inattività.",
         sttModelLabel: "Modello di riconoscimento vocale",
         sttModelDescription:
           "Scegli o cerca un modello STT da eseguire in locale.",
@@ -153,7 +153,7 @@ export const it = {
         sttNotDownloaded: "Non scaricato",
         sttDownloadStatusFailed: "Impossibile verificare lo stato del download",
         sttDownload: "Scarica",
-        sttDownloading: "Download… {progress}%",
+        sttDownloading: "Download in corso… {progress}%",
         sttCancelDownload: "Annulla",
         sttCancellingDownload: "Annullamento…",
         sttDownloadComplete: "Modello di riconoscimento vocale scaricato",
@@ -168,7 +168,7 @@ export const it = {
           "Usato per la dettatura. Se il motore vocale del browser non può usare questo dispositivo, si passa a quello predefinito di sistema",
         microphoneGrantDescription:
           "Consenti l'accesso al microfono per vedere i nomi dei dispositivi",
-        allowMicrophone: "Consenti il microfono",
+        allowMicrophone: "Consenti l'accesso al microfono",
         micAccessBlocked:
           "L'accesso al microfono è stato bloccato. Consenti l'accesso al microfono per questa pagina di Unsloth, poi riprova.",
         micAccessUnsupported:
@@ -206,7 +206,7 @@ export const it = {
         backToVoice: "Torna a Voce",
         backToRecents: "Torna alle dettature recenti",
         view: "Vedi la dettatura completa",
-        empty: "Nessuna dettatura",
+        empty: "Ancora nessuna dettatura",
         dictationColumn: "Dettatura",
         dateColumn: "Data di creazione",
         copy: "Copia la dettatura",
@@ -241,7 +241,7 @@ export const it = {
         modelDescription:
           "Carica un modello audio dal selettore dei modelli (es. Orpheus TTS)",
         voiceLabel: "Voce",
-        voiceDescription: "Voci migliori su questo dispositivo",
+        voiceDescription: "Le migliori voci disponibili su questo dispositivo",
         speedLabel: "Velocità",
         pitchLabel: "Tono",
         volumeLabel: "Volume",
@@ -292,7 +292,7 @@ export const it = {
         "Genera un titolo breve a partire dal primo messaggio.",
       helperLlm: {
         sectionTitle: "LLM di supporto",
-        preloadOnStartup: "Precarica l'LLM di supporto all'avvio",
+        preloadOnStartup: "Scarica in anticipo l'LLM di supporto all'avvio",
         preloadOnStartupDescription:
           "Scarica in background il modello di supporto di AI Assist all'avvio. Disattivato per impostazione predefinita: AI Assist può comunque scaricarlo quando serve.",
         disabledByEnv:
@@ -358,7 +358,7 @@ export const it = {
         sectionTitle: "Notifiche",
         showLlamaUpdates: "Notifiche di aggiornamento di llama.cpp",
         showLlamaUpdatesDescription:
-          "Avvisa quando è disponibile una build più recente di llama.cpp per eseguire nuovi modelli. Disattiva se usi solo l'addestramento.",
+          "Avvisa quando è disponibile una build più recente di llama.cpp per eseguire nuovi modelli. Disattiva le notifiche se usi Unsloth solo per l'addestramento.",
       },
       gettingStarted: "Per iniziare",
       startOnboarding: "Avvia la configurazione guidata",
@@ -378,7 +378,7 @@ export const it = {
         reindexWarning:
           "Vale solo per i documenti indicizzati da ora in poi. Ricarica quelli esistenti dopo aver cambiato modello.",
         emptyError:
-          "Inserisci l'id di un modello Hugging Face o un percorso locale.",
+          "Inserisci l'ID di un modello Hugging Face o un percorso locale.",
         loadError:
           "Caricamento dell'impostazione del modello di embedding non riuscito.",
         saveError: "Salvataggio del modello di embedding non riuscito.",
@@ -573,8 +573,9 @@ export const it = {
           description: "Regola la dimensione di base usata per il codice.",
         },
         fontSmoothing: {
-          label: "Smussatura dei font",
-          description: "Usa l'anti-aliasing smussato per i font.",
+          label: "Antialiasing dei caratteri",
+          description:
+            "Usa l'antialiasing per rendere più uniformi i caratteri.",
         },
         contrast: {
           label: "Contrasto",
@@ -608,7 +609,7 @@ export const it = {
       sidebarMenu: {
         title: "Menu della barra laterale",
         description:
-          "Mostra, nascondi e riordina le voci del menu profilo nella barra laterale. Impostazioni, Aiuto, Esci e Arresta restano fisse.",
+          "Mostra, nascondi e riordina le voci del menu del profilo nella barra laterale. Impostazioni, Aiuto, Esci e Arresta restano fisse.",
         darkModeToggle: "Interruttore del tema scuro",
         dragToReorder: "Trascina per riordinare",
       },
@@ -794,9 +795,9 @@ export const it = {
         collapseHtmlBlocks: "Comprimi i blocchi HTML",
         collapseHtmlBlocksDescription:
           "La modalità Canvas comprime automaticamente l'HTML completo. Attiva questa opzione per comprimere anche i documenti HTML in blocchi di codice quando Canvas è disattivato.",
-        allowNetworkAccess: "Consenti l'accesso alla rete al canvas",
+        allowNetworkAccess: "Consenti a Canvas di accedere alla rete",
         allowNetworkAccessDescription:
-          "Permetti alle anteprime canvas di caricare script, stili, font, contenuti multimediali e risorse di rete dalle CDN. Lascia disattivato per anteprime completamente offline.",
+          "Consenti alle anteprime di Canvas di caricare script, stili, font, contenuti multimediali e risorse di rete dalle CDN. Lascia l'opzione disattivata per anteprime completamente offline.",
       },
       data: "Dati",
       exportHistory: "Esporta la cronologia delle chat",
@@ -931,7 +932,7 @@ export const it = {
       copyNow: "Copialo ora: non verrà mostrato di nuovo.",
       usageExamples: "Esempi d'uso",
       usageNoModel:
-        "Carica o scarica un modello per vedere esempi eseguibili. Questo server non ha ancora un modello da indicare.",
+        "Carica o scarica un modello per vedere esempi eseguibili. Su questo server non è ancora disponibile alcun modello da usare negli esempi.",
       usageTools: "Strumenti",
       exampleCurlTools: "curl + strumenti",
       examplePythonTools: "Python + strumenti",
@@ -951,7 +952,7 @@ export const it = {
       setupDocs: "Documentazione di configurazione:",
       codingAgents: "Agenti di programmazione",
       codingAgentsHint:
-        "Avvia un agente di programmazione su questo server. Usa il modello caricato; un server locale genera automaticamente una chiave API, uno remoto la include nel comando.",
+        "Avvia un agente di programmazione configurato per usare questo server. Usa il modello caricato; un server locale genera automaticamente una chiave API, mentre uno remoto la include nel comando.",
       codingAgentsSwap:
         "Sostituisci claude con codex, openclaw, opencode o hermes.",
       codingAgentDetected: "Installato su questo computer",
@@ -960,7 +961,9 @@ export const it = {
       relativeJustNow: "proprio ora",
       relativeHoursAgo: "{count} h fa",
       relativeDaysAgo: "{count} g fa",
+      relativeOneMonthAgo: "1 mese fa",
       relativeMonthsAgo: "{count} mesi fa",
+      relativeOneYearAgo: "1 anno fa",
       relativeYearsAgo: "{count} anni fa",
       expired: "scaduta",
       today: "oggi",
@@ -1013,18 +1016,19 @@ export const it = {
       shutDown: "Arresta",
       update: {
         title: "Aggiorna Unsloth Studio",
-        commandText: "Testo di {label}",
+        commandText: "Testo del {label}",
         copied: "Copiato",
         copyCommand: "Copia il comando",
         commandCopied: "{label} copiato",
         copyNamedCommand: "Copia {label}",
-        checkingInstall: "Verifica di come è stato installato Unsloth...",
+        checkingInstall:
+          "Verifica della modalità di installazione di Unsloth...",
         installIntro: "Per installare o aggiornare Unsloth:",
         localUpdateHeading: "Aggiornamento locale",
         installCommandUnix: "Comando di installazione per macOS/Linux",
         installCommandWindows: "Comando di installazione per Windows",
         localInstallDetected:
-          "Rilevata un'installazione locale. Aggiorna dal checkout originale per non sostituirlo con la versione PyPI.",
+          "Rilevata un'installazione locale. Aggiornala dal checkout originale per evitare di sostituirla con la versione disponibile su PyPI.",
         pullThenUpdate:
           "Scarica le ultime modifiche, poi esegui l'installer locale:",
         gitPullCommand: "comando git pull",
@@ -1111,7 +1115,7 @@ export const it = {
       vramEstimate: "~{vram} GB di VRAM",
       method: "Metodo",
       methodTooltip:
-        "QLoRA usa la quantizzazione a 4 bit per la VRAM minima. LoRA usa 16 bit. Il fine-tuning completo aggiorna tutti i pesi. CPT (preaddestramento continuo) addestra su testo grezzo per adattare il modello a un nuovo dominio senza formattazione di chat.",
+        "QLoRA usa la quantizzazione a 4 bit per ridurre al minimo l'uso della VRAM. LoRA usa una precisione a 16 bit. Il fine-tuning completo aggiorna tutti i pesi. CPT (preaddestramento continuo) addestra il modello su testo grezzo per adattarlo a un nuovo dominio senza formattazione in stile chat.",
       readMore: "Scopri di più",
       fullFineTune: "Fine-tuning completo",
       checkingToken: "Verifica del token...",
@@ -1147,7 +1151,7 @@ export const it = {
       localDatasetRows: " / {count} righe",
       huggingFaceDataset: "Dataset Hugging Face",
       localDatasetMetadata: "Metadati del dataset locale",
-      dataRecipeOutput: "Output di una ricetta dei dati.",
+      dataRecipeOutput: "Output di una ricetta.",
       rows: "Righe",
       columns: "Colonne",
       batches: "Batch",
@@ -1166,12 +1170,12 @@ export const it = {
       rawText: "Testo grezzo",
       trainSplitStart: "Inizio dello split di addestramento",
       trainSplitStartTooltip:
-        "Addestra solo su una parte del tuo split di addestramento indicando l'indice della riga iniziale (incluso, in base 0). Lascia vuoto per partire dalla prima riga.",
+        "Addestra solo su una parte del tuo split di addestramento indicando l'indice della riga iniziale (incluso, con numerazione a partire da 0). Lascia vuoto per partire dalla prima riga.",
       trainSplitEnd: "Fine dello split di addestramento",
       trainSplitEndTooltip:
-        "Indice dell'ultima riga da includere dallo split di addestramento (incluso, in base 0). Per esempio, imposta Inizio a 0 e Fine a 99 per addestrare sulle prime 100 righe. Lascia vuoto per usare tutte le righe restanti.",
+        "Indice dell'ultima riga dello split di addestramento da includere (incluso, con numerazione a partire da 0). Per esempio, imposta Inizio su 0 e Fine su 99 per addestrare sulle prime 100 righe. Lascia vuoto per usare tutte le righe restanti.",
       endPlaceholder: "Fine",
-      clear: "Azzera",
+      clear: "Deseleziona",
       dropFileOrClick: "Trascina qui 1 file oppure fai clic per caricarlo",
       viewDataset: "Vedi il dataset",
       uploadFailed: "Caricamento non riuscito",
@@ -1182,7 +1186,7 @@ export const it = {
       evalDatasetUploaded: "Dataset di valutazione caricato",
       uploadOneFileAtATime: "Carica un file alla volta",
       uploadSingleFileDescription:
-        "Il caricamento del dataset di addestramento accetta un solo file.",
+        "Puoi caricare un solo file come dataset di addestramento.",
       checkingToken: "Verifica del token...",
       getOrUpdateToken: "Ottieni o aggiorna il token",
       preview: "Anteprima del dataset",
@@ -1200,9 +1204,9 @@ export const it = {
         prefixPlaceholder: "datasets/whisper/",
         prefixTooltip:
           "Percorso facoltativo dei file del dataset all'interno del bucket",
-        accessKeyId: "Access Key ID",
+        accessKeyId: "ID chiave di accesso",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
-        secretAccessKey: "Secret Access Key",
+        secretAccessKey: "Chiave di accesso segreta",
         secretAccessKeyPlaceholder: "La tua chiave di accesso segreta AWS",
         useIamRole: "Usa un ruolo IAM",
         useIamRoleTooltip:
@@ -1242,14 +1246,14 @@ export const it = {
         "Lunghezza massima di sequenza per i campioni di addestramento",
       learningRate: "Tasso di apprendimento",
       learningRateTooltip:
-        "Ampiezza del passo negli aggiornamenti dei pesi. Valori più bassi addestrano più lentamente ma con più stabilità.",
+        "Ampiezza del passo negli aggiornamenti dei pesi. Con valori più bassi, l'addestramento è più lento ma più stabile.",
       learningRateDescription:
         "Consigliato: 2e-4 per LoRA, 5e-5 per CPT, 2e-5 per il fine-tuning completo",
       embeddingLearningRate: "Tasso di apprendimento degli embedding",
       embeddingLearningRateTooltip:
-        "Usato solo quando CPT addestra embed_tokens. Gli embedding si destabilizzano più facilmente dei pesi LoRA, quindi di solito richiedono un tasso di apprendimento più basso. Lascia vuoto per usare lr/10; l'intervallo tipico è da 2 a 10 volte più piccolo del tasso principale. Aumentalo solo se l'adattamento al vocabolario o ai token di dominio è troppo lento.",
+        "Usato solo quando il CPT addestra embed_tokens. Gli embedding si destabilizzano più facilmente dei pesi LoRA, quindi di solito richiedono un tasso di apprendimento più basso. Lascia vuoto per usare lr/10; in genere si usa un valore compreso tra lr/2 e lr/10. Aumentalo solo se l'adattamento del vocabolario o dei token specifici del dominio è troppo lento.",
       embeddingLearningRateDescription:
-        "Lascia vuoto per usare lr/10 (consigliato). L'intervallo tipico è da 2 a 10 volte più piccolo del tasso di apprendimento principale.",
+        "Lascia vuoto per usare lr/10 (consigliato). In genere si usa un valore compreso tra lr/2 e lr/10.",
       rank: "Rank",
       rankTooltip:
         "Dimensione delle matrici a rango ridotto. Più alto = più capacità.",
@@ -1263,7 +1267,7 @@ export const it = {
       languageLayers: "Livelli linguistici",
       attentionModules: "Moduli di attenzione",
       mlpModules: "Moduli MLP",
-      targetModules: "Moduli di destinazione",
+      targetModules: "Moduli target",
       enableLora: "Attiva LoRA",
       trainWithLora: "Addestra con LoRA",
       stableRank: "Rank stabile",
@@ -1274,7 +1278,7 @@ export const it = {
       memory: "Memoria",
       optimizer: "Ottimizzatore",
       optimizerTooltip:
-        "Algoritmo di ottimizzazione. Le varianti a 8 bit riducono il consumo di memoria. Fused è consigliato per i modelli di visione.",
+        "Algoritmo di ottimizzazione. Le varianti a 8 bit riducono il consumo di memoria. La variante fused è consigliata per i modelli di visione.",
       optimizerTooltipMlx:
         "Algoritmo di ottimizzazione. AdamW è il predefinito. Lion usa meno memoria ma di solito richiede un tasso di apprendimento più basso.",
       lrScheduler: "Pianificazione del tasso di apprendimento",
@@ -1294,7 +1298,7 @@ export const it = {
       },
       batchSize: "Dimensione del batch",
       batchSizeTooltip:
-        "Campioni elaborati per step. Più alto consuma più VRAM.",
+        "Numero di campioni elaborati per step. Un batch più grande richiede più VRAM.",
       gradAccum: "Accumulo del gradiente",
       gradAccumTooltip: "Simula batch più grandi senza VRAM aggiuntiva.",
       weightDecay: "Decadimento dei pesi",
@@ -1313,11 +1317,11 @@ export const it = {
       seedTooltip: "Seed casuale per la riproducibilità.",
       gradCheckpoint: "Checkpoint del gradiente",
       gradCheckpointTooltip:
-        "Scambia calcolo per memoria ricalcolando le attivazioni.",
+        "Riduce l'uso della memoria ricalcolando le attivazioni, al costo di più calcoli.",
       none: "Nessuno",
       standard: "Standard",
       enablePacking: "Attiva il packing",
-      assistantCompletionsOnly: "Solo i completamenti dell'assistente",
+      assistantCompletionsOnly: "Addestra solo sulle risposte dell'assistente",
       readMore: "Scopri di più",
     },
     training: {
@@ -1382,7 +1386,7 @@ export const it = {
       oneRun: "1 run",
       resume: "Riprendi",
       resumeTraining: "Riprendi l'addestramento",
-      resuming: "Ripresa...",
+      resuming: "Ripresa in corso...",
       deleteRun: "Elimina il run",
       loss: "Loss",
       steps: "Step",
@@ -1423,11 +1427,11 @@ export const it = {
         "Controlla le sovrapposizioni e il livellamento EMA.",
       smoothing: "Livellamento",
       smoothingDescription:
-        "Sposta a destra per livellare di più. `0` = dati grezzi.",
+        "Sposta il cursore verso destra per aumentare il livellamento. `0` = dati grezzi.",
       showRawLoss: "Mostra la loss grezza",
       showSmoothedLoss: "Mostra la loss livellata",
       showAverageLine: "Mostra la linea della media",
-      scaleAndCleanup: "Scala e pulizia",
+      scaleAndCleanup: "Scala e gestione degli outlier",
       linear: "Lineare",
       log: "Logaritmica",
       noClip: "Nessun clipping",
@@ -1452,7 +1456,7 @@ export const it = {
       evalChartWillAppear:
         "Il grafico comparirà al raggiungimento di eval_steps",
       setEvalDatasetAndSteps:
-        "Imposta dataset di valutazione ed eval_steps per seguire la loss di valutazione",
+        "Imposta un dataset di valutazione ed eval_steps per monitorare la loss di valutazione",
     },
     progress: {
       title: "Avanzamento dell'addestramento",
@@ -1481,7 +1485,7 @@ export const it = {
       project: "Progetto",
       model: "Modello",
       method: "Metodo",
-      elapsed: "Trascorso: {value}",
+      elapsed: "Tempo trascorso: {value}",
       eta: "Tempo rimanente stimato: {value}",
       stepsPerSecond: "{value} step/s",
       noStepsPerSecond: "-- step/s",

@@ -8,8 +8,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useLocale, useT } from "@/i18n";
-import type { Locale } from "@/i18n";
+import { type Locale, useLocale, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import {
   Copy01Icon,
@@ -20,10 +19,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { ApiKey } from "../api/api-keys";
 
 type SettingsT = ReturnType<typeof useT>;
-
-const italianRelativeTimeFormatter = new Intl.RelativeTimeFormat("it", {
-  numeric: "always",
-});
 
 function relative(iso: string | null, t: SettingsT, locale: Locale): string {
   if (!iso) return t("settings.apiKeys.relativeNever");
@@ -38,7 +33,7 @@ function relative(iso: string | null, t: SettingsT, locale: Locale): string {
   if (days < 365) {
     const months = Math.floor(days / 30);
     if (locale === "it" && months === 1) {
-      return italianRelativeTimeFormatter.format(-months, "month");
+      return t("settings.apiKeys.relativeOneMonthAgo");
     }
     return t("settings.apiKeys.relativeMonthsAgo", {
       count: months,
@@ -46,7 +41,7 @@ function relative(iso: string | null, t: SettingsT, locale: Locale): string {
   }
   const years = Math.floor(days / 365);
   if (locale === "it" && years === 1) {
-    return italianRelativeTimeFormatter.format(-years, "year");
+    return t("settings.apiKeys.relativeOneYearAgo");
   }
   return t("settings.apiKeys.relativeYearsAgo", {
     count: years,
