@@ -2013,6 +2013,25 @@ def test_a_dropped_drafter_does_not_reload_over_the_extras_it_rewrote(monkeypatc
     )
 
 
+def test_an_apply_that_inherits_the_extras_does_not_reload_the_rewritten_server(
+    monkeypatch, tmp_path
+):
+    """The browser never sends llama_extra_args, so the route inherits the LAUNCHED list and
+    the comparison would judge it against the INVOKED one. After the drafter drop those
+    differ by the whole spec group, so every Apply from the UI tore the server down."""
+    _paravirtual_everywhere(monkeypatch)
+    backend, gguf = _cpu_server(
+        monkeypatch,
+        tmp_path,
+        launched_extras = ["--top-k", "40"],
+        requested_extras = ["--draft-max", "8", "--top-k", "40"],
+    )
+    # No llama_extra_args: the inherit path the UI actually takes.
+    assert _route_matches(_load_request(gguf), backend) is True
+    # Control: an Apply that does name its extras is still judged on the invoked list.
+    assert _route_matches(_load_request(gguf, llama_extra_args = ["--top-k", "20"]), backend) is False
+
+
 def test_an_edited_spec_flag_still_reloads_after_a_dropped_drafter(monkeypatch, tmp_path):
     """Requested-vs-requested must still notice a real change to the flags the drop
     removed."""

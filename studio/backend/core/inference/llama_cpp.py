@@ -3480,6 +3480,15 @@ class LlamaCppBackend:
             return False
 
         extra_args = list(effective_extra_args) if effective_extra_args is not None else None
+        # A request that omits the extras field inherits them, so the candidate is then the
+        # LAUNCHED list; anything else is the caller's own. A launch-time rewrite the caller
+        # cannot see (the virtualised-Metal drafter drop, the MTP crash replay) makes the two
+        # differ, and the equality below wants what the load was INVOKED with.
+        _invoked_extras = (
+            self.requested_extra_args
+            if tuple(extra_args or ()) == tuple(self._extra_args or ())
+            else extra_args
+        )
         # A virtualised Metal device never launches a tensor split (CPU-pinned, and
         # --split-mode is overridden with the default layer split), so judge the
         # normalized request there: an extras `-sm tensor`, which the pin deliberately
@@ -3564,10 +3573,7 @@ class LlamaCppBackend:
         if (self._chat_template_override or None) != (intent.chat_template_override or None):
             return False
 
-        # Compared against what the last load was INVOKED with, not what it launched:
-        # the caller keeps sending its own list, so judging a launch-time rewrite it
-        # cannot see (the virtualised-Metal drafter drop) would reload on every Apply.
-        if tuple(extra_args or ()) != tuple(self.requested_extra_args or ()):
+        if tuple(_invoked_extras or ()) != tuple(self.requested_extra_args or ()):
             return False
         if (intent.gguf_path is not None or intent.compare_mtp_draft) and speculative_type in (
             "auto",
