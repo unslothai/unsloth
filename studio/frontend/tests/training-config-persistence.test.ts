@@ -22,6 +22,11 @@ test("persists the applied model defaults identity and summary baseline", () => 
     selectedModel: "org/model",
     modelDefaultsAppliedFor: "org/model",
     advancedSettingsBaseline: { loraRank: 32, saveSteps: 25 },
+    trainingMethodProvenance: {
+      learningRateManuallySet: true,
+      modelAdapterLearningRate: 0.00001,
+      datasetFormatBeforeCpt: "sharegpt",
+    },
     isLoadingModelDefaults: true,
     wandbToken: "secret-token",
     setLearningRate: () => undefined,
@@ -31,6 +36,11 @@ test("persists the applied model defaults identity and summary baseline", () => 
   assert.deepEqual(persisted.advancedSettingsBaseline, {
     loraRank: 32,
     saveSteps: 25,
+  });
+  assert.deepEqual(persisted.trainingMethodProvenance, {
+    learningRateManuallySet: true,
+    modelAdapterLearningRate: 0.00001,
+    datasetFormatBeforeCpt: "sharegpt",
   });
   assert.equal("isLoadingModelDefaults" in persisted, false);
   assert.equal("wandbToken" in persisted, false);
@@ -48,12 +58,29 @@ test("migration preserves tuned values while protecting them from model defaults
     16,
   );
 
-  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 18);
+  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 19);
   assert.equal(migrated.learningRate, 0.000031);
   assert.equal(migrated.loraRank, 48);
   assert.equal(migrated.modelDefaultsAppliedFor, "org/model");
   assert.equal(migrated.advancedSettingsBaseline, null);
+  assert.deepEqual(migrated.trainingMethodProvenance, {
+    learningRateManuallySet: true,
+    modelAdapterLearningRate: null,
+    datasetFormatBeforeCpt: null,
+  });
   assert.equal("wandbToken" in migrated, false);
+});
+
+test("migration keeps method-default learning rates automatic", () => {
+  const migrated = migrateTrainingConfig(
+    { trainingMethod: "full", learningRate: 0.00002 },
+    18,
+  );
+
+  assert.equal(
+    migrated.trainingMethodProvenance.learningRateManuallySet,
+    false,
+  );
 });
 
 test("merge never restores a persisted W&B token", () => {

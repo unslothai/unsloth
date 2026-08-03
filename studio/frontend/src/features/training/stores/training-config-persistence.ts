@@ -5,6 +5,7 @@ import {
   CPT_TARGET_MODULES,
   DEFAULT_HYPERPARAMS,
   LR_DEFAULT_CPT,
+  LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
 } from "@/config/training";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's unrelated React exports.
@@ -13,14 +14,19 @@ import {
   useHfTokenStore,
 } from "@/features/hub/stores/hf-token-store";
 import { isTrainingMethod } from "@/types/training";
-import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
+import type { DatasetFormat } from "@/types/training";
+import type {
+  TrainingConfigState,
+  TrainingConfigStore,
+  TrainingMethodProvenance,
+} from "../types/config";
 import {
   createHfBrowseDatasetSelection,
   createUploadBrowseDatasetSelection,
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 18;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 19;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -175,6 +181,79 @@ function migrateThroughVersion18(
   }
 }
 
+function defaultLearningRateForMethod(method: unknown): number {
+  if (method === "full") {
+    return LR_DEFAULT_FULL;
+  }
+  if (method === "cpt") {
+    return LR_DEFAULT_CPT;
+  }
+  return LR_DEFAULT_LORA;
+}
+
+function inferLegacyLearningRateWasManuallySet(
+  state: PersistedTrainingConfig,
+): boolean {
+  return (
+    typeof state.learningRate === "number" &&
+    Number.isFinite(state.learningRate) &&
+    state.learningRate !== defaultLearningRateForMethod(state.trainingMethod)
+  );
+}
+
+function migrateThroughVersion19(
+  state: PersistedTrainingConfig,
+  version: number,
+): void {
+  if (version < 19) {
+    state.trainingMethodProvenance = {
+      learningRateManuallySet: inferLegacyLearningRateWasManuallySet(state),
+      modelAdapterLearningRate: null,
+      datasetFormatBeforeCpt: null,
+    } satisfies TrainingMethodProvenance;
+  }
+}
+
+function isDatasetFormat(value: unknown): value is DatasetFormat {
+  return (
+    value === "auto" ||
+    value === "alpaca" ||
+    value === "chatml" ||
+    value === "sharegpt" ||
+    value === "raw"
+  );
+}
+
+function normalizeTrainingMethodProvenance(
+  value: unknown,
+  persistedState: PersistedTrainingConfig,
+): TrainingMethodProvenance {
+  const provenance =
+    value !== null && typeof value === "object"
+      ? (value as Partial<TrainingMethodProvenance>)
+      : {};
+  const modelAdapterLearningRate = provenance.modelAdapterLearningRate;
+  const datasetFormatBeforeCpt = provenance.datasetFormatBeforeCpt;
+  return {
+    learningRateManuallySet:
+      typeof provenance.learningRateManuallySet === "boolean"
+        ? provenance.learningRateManuallySet
+        : inferLegacyLearningRateWasManuallySet(persistedState),
+    modelAdapterLearningRate:
+      typeof modelAdapterLearningRate === "number" &&
+      Number.isFinite(modelAdapterLearningRate) &&
+      modelAdapterLearningRate > 0
+        ? modelAdapterLearningRate
+        : null,
+    datasetFormatBeforeCpt:
+      persistedState.trainingMethod === "cpt" &&
+      isDatasetFormat(datasetFormatBeforeCpt) &&
+      datasetFormatBeforeCpt !== "raw"
+        ? datasetFormatBeforeCpt
+        : null,
+  };
+}
+
 export function migrateTrainingConfig(
   persisted: unknown,
   version: number,
@@ -185,6 +264,7 @@ export function migrateTrainingConfig(
   migrateThroughVersion16(state, version);
   migrateThroughVersion17(state, version);
   migrateThroughVersion18(state, version);
+  migrateThroughVersion19(state, version);
   return state as unknown as TrainingConfigStore;
 }
 
@@ -193,6 +273,7 @@ export function mergeTrainingConfig(
   current: TrainingConfigStore,
 ): TrainingConfigStore {
   const persistedState = persisted as Partial<TrainingConfigState>;
+  const persistedRecord = persisted as PersistedTrainingConfig;
   const modelDefaultsAppliedFor =
     typeof persistedState.modelDefaultsAppliedFor === "string" &&
     persistedState.modelDefaultsAppliedFor.length > 0 &&
@@ -207,6 +288,10 @@ export function mergeTrainingConfig(
     advancedSettingsBaseline: modelDefaultsAppliedFor
       ? (persistedState.advancedSettingsBaseline ?? null)
       : null,
+    trainingMethodProvenance: normalizeTrainingMethodProvenance(
+      persistedState.trainingMethodProvenance,
+      persistedRecord,
+    ),
     trainingMethod: isTrainingMethod(persistedState.trainingMethod)
       ? persistedState.trainingMethod
       : current.trainingMethod,

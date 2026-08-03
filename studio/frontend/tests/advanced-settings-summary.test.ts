@@ -92,3 +92,13 @@ test("advanced settings summary uses applied model defaults as its baseline", ()
     1,
   );
 });
+
+test("advanced settings summary distinguishes duplicate target modules", () => {
+  assert.equal(
+    countNonDefaultAdvancedSettings({
+      ...defaultState,
+      targetModules: ["q_proj", "q_proj"],
+    }),
+    1,
+  );
+});

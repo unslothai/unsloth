@@ -2,19 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  CPT_TARGET_MODULES,
   DEFAULT_HYPERPARAMS,
-  LR_DEFAULT_CPT,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
-  TARGET_MODULES,
 } from "@/config/training";
 import { getHfToken } from "@/features/hub";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { isAdapterMethod } from "@/types/training";
-import type { DatasetFormat } from "@/types/training";
-import type { ModelType, TrainingMethod } from "@/types/training";
+import type { ModelType } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { checkDatasetFormat } from "../api/datasets-api";
@@ -55,6 +51,10 @@ import {
   streamingCompatiblePatch,
 } from "./training-config-policy";
 import { selectTrainingMethodForHardware } from "./training-method-hardware-policy";
+import {
+  buildTrainingMethodPatch,
+  getCptModelDefaultsPatch,
+} from "./training-method-transition";
 
 export { hasSeparateStreamingEvalSplit } from "./training-config-policy";
 
@@ -68,9 +68,6 @@ let _modelConfigController: AbortController | null = null;
 // (model load or dataset change)?
 let _trainOnCompletionsManuallySet = false;
 
-// Has the user manually edited the LR since the last model load? When false,
-// switching method auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
-let _learningRateManuallySet = false;
 let _trainingMethodEditGeneration = 0;
 let _modelDefaultsEditGeneration = 0;
 let _modelDefaultsEditBaseline: {
@@ -84,15 +81,6 @@ function canReapplyModelDefaults(modelName: string): boolean {
     _modelDefaultsEditBaseline.editGeneration === _modelDefaultsEditGeneration
   );
 }
-
-// Stash the YAML learning rate so setTrainingMethod can restore it when
-// switching back from full to adapter.
-let _yamlLearningRate: number | undefined;
-
-// Track whether entering CPT auto-forced datasetFormat="raw" so that
-// leaving CPT can restore the prior user-visible format.
-let _datasetFormatBeforeCpt: DatasetFormat | null = null;
-let _datasetFormatAutoForcedByCpt = false;
 
 // streamingCompatiblePatch can silently flip streaming-coupled fields. Surface a
 // toast when it does, so the indirect setters (split / eval-split / max-steps /
@@ -115,128 +103,6 @@ function notifyStreamingCompat(patch: Partial<TrainingConfigState>): void {
       }),
     );
   }
-}
-
-type TrainingMethodStatePatch = Partial<
-  Pick<
-    TrainingConfigState,
-    | "trainingMethod"
-    | "learningRate"
-    | "loraRank"
-    | "loraAlpha"
-    | "loraVariant"
-    | "targetModules"
-    | "datasetFormat"
-    | "trainOnCompletions"
-  >
->;
-
-function getCptTrainingPatch(): TrainingMethodStatePatch {
-  return {
-    loraRank: 128,
-    loraAlpha: 32,
-    loraVariant: "rslora",
-    targetModules: CPT_TARGET_MODULES,
-    datasetFormat: "raw",
-    trainOnCompletions: false,
-  };
-}
-
-function getCptModelDefaultsPatch(): TrainingMethodStatePatch {
-  return {
-    ...getCptTrainingPatch(),
-    learningRate: LR_DEFAULT_CPT,
-  };
-}
-
-function getRestoreFromCptPatch(): TrainingMethodStatePatch {
-  return {
-    loraRank: DEFAULT_HYPERPARAMS.loraRank,
-    loraAlpha: DEFAULT_HYPERPARAMS.loraAlpha,
-    loraVariant: DEFAULT_HYPERPARAMS.loraVariant,
-    targetModules: TARGET_MODULES,
-  };
-}
-
-function clearCptDatasetFormatTracking(): void {
-  _datasetFormatBeforeCpt = null;
-  _datasetFormatAutoForcedByCpt = false;
-}
-
-function recordCptDatasetFormatOverride(
-  currentDatasetFormat: DatasetFormat,
-): void {
-  if (isRawTextDatasetFormat(currentDatasetFormat)) {
-    clearCptDatasetFormatTracking();
-    return;
-  }
-  _datasetFormatBeforeCpt = currentDatasetFormat;
-  _datasetFormatAutoForcedByCpt = true;
-}
-
-function getRestoreDatasetFormatFromCptPatch(): TrainingMethodStatePatch {
-  if (!_datasetFormatAutoForcedByCpt || _datasetFormatBeforeCpt == null) {
-    clearCptDatasetFormatTracking();
-    return {};
-  }
-
-  const previousDatasetFormat = _datasetFormatBeforeCpt;
-  clearCptDatasetFormatTracking();
-  return { datasetFormat: previousDatasetFormat };
-}
-
-function resolveTrainingMethodLearningRate(
-  prevMethod: TrainingMethod,
-  nextMethod: TrainingMethod,
-): number | undefined {
-  if (_learningRateManuallySet) {
-    return undefined;
-  }
-
-  const wasCpt = prevMethod === "cpt";
-  const wasAdapter = isAdapterMethod(prevMethod);
-  const nowAdapter = isAdapterMethod(nextMethod);
-
-  if (nextMethod === "cpt") {
-    return LR_DEFAULT_CPT;
-  }
-  if (wasCpt && nowAdapter) {
-    return _yamlLearningRate ?? LR_DEFAULT_LORA;
-  }
-  if (wasAdapter && nowAdapter) {
-    return undefined;
-  }
-  return nowAdapter ? (_yamlLearningRate ?? LR_DEFAULT_LORA) : LR_DEFAULT_FULL;
-}
-
-function buildTrainingMethodPatch(
-  prevMethod: TrainingMethod,
-  nextMethod: TrainingMethod,
-  currentDatasetFormat: DatasetFormat,
-): TrainingMethodStatePatch {
-  const patch: TrainingMethodStatePatch = { trainingMethod: nextMethod };
-
-  if (prevMethod !== "cpt" && nextMethod === "cpt") {
-    recordCptDatasetFormatOverride(currentDatasetFormat);
-    Object.assign(patch, getCptTrainingPatch());
-  }
-  if (prevMethod === "cpt" && nextMethod !== "cpt") {
-    Object.assign(
-      patch,
-      getRestoreFromCptPatch(),
-      getRestoreDatasetFormatFromCptPatch(),
-    );
-  }
-
-  const learningRate = resolveTrainingMethodLearningRate(
-    prevMethod,
-    nextMethod,
-  );
-  if (learningRate !== undefined) {
-    patch.learningRate = learningRate;
-  }
-
-  return patch;
 }
 
 export const useTrainingConfigStore = create<TrainingConfigStore>()(
@@ -319,12 +185,19 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const shouldApplyTrainingDefaults = canApplyTrainingDefaults();
             if (shouldApplyTrainingDefaults) {
               _trainOnCompletionsManuallySet = false;
-              _learningRateManuallySet = false;
-              _yamlLearningRate = undefined;
             }
 
             if (modelDetails.is_lora) {
               set({
+                ...(shouldApplyTrainingDefaults
+                  ? {
+                      trainingMethodProvenance: {
+                        ...get().trainingMethodProvenance,
+                        learningRateManuallySet: false,
+                        modelAdapterLearningRate: null,
+                      },
+                    }
+                  : {}),
                 modelType: null,
                 modelFormat: "adapter",
                 isVisionModel: false,
@@ -352,9 +225,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             // won't overwrite it.
             const modelConfigHasLR =
               modelDefaultsPatch.learningRate !== undefined;
-            if (shouldApplyTrainingDefaults) {
-              _yamlLearningRate = modelDefaultsPatch.learningRate;
-            }
+            const modelAdapterLearningRate =
+              modelDefaultsPatch.learningRate ?? null;
 
             // YAML LRs are tuned for adapters (LoRA/QLoRA); on full fine-tune,
             // use the full-finetune default instead of the YAML adapter LR.
@@ -426,6 +298,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             set({
               ...patch,
               ...cptOverrides,
+              ...(shouldApplyTrainingDefaults
+                ? {
+                    trainingMethodProvenance: {
+                      ...get().trainingMethodProvenance,
+                      learningRateManuallySet: false,
+                      modelAdapterLearningRate,
+                    },
+                  }
+                : {}),
               advancedSettingsBaseline: shouldApplyTrainingDefaults
                 ? modelDefaultsBaseline
                 : advancedSettingsBaseline,
@@ -459,7 +340,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   return;
                 }
                 const lrPatch =
-                  !_learningRateManuallySet && !modelConfigHasLR
+                  !get().trainingMethodProvenance.learningRateManuallySet &&
+                  !modelConfigHasLR
                     ? {
                         learningRate:
                           method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA,
@@ -956,13 +838,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setTrainingMethod: (trainingMethod) => {
           _trainingMethodEditGeneration += 1;
           const state = get();
-          setUserEdit(
-            buildTrainingMethodPatch(
-              state.trainingMethod,
-              trainingMethod,
-              state.datasetFormat,
-            ),
-          );
+          setUserEdit(buildTrainingMethodPatch(state, trainingMethod));
         },
         setDatasetSource: (datasetSource) => {
           const state = get();
@@ -995,7 +871,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit((state) => {
             if (state.trainingMethod === "cpt") {
               if (isRawTextDatasetFormat(datasetFormat)) {
-                clearCptDatasetFormatTracking();
+                return {
+                  datasetFormat: "raw",
+                  trainOnCompletions: false,
+                  trainingMethodProvenance: {
+                    ...state.trainingMethodProvenance,
+                    datasetFormatBeforeCpt: null,
+                  },
+                };
               }
               return {
                 datasetFormat: "raw",
@@ -1208,10 +1091,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setContextLength: (contextLength) => setUserEdit({ contextLength }),
         setVisionImageSize: (visionImageSize) =>
           setUserEdit({ visionImageSize }),
-        setLearningRate: (learningRate) => {
-          _learningRateManuallySet = true;
-          setUserEdit({ learningRate });
-        },
+        setLearningRate: (learningRate) =>
+          setUserEdit((state) => ({
+            learningRate,
+            trainingMethodProvenance: {
+              ...state.trainingMethodProvenance,
+              learningRateManuallySet: true,
+            },
+          })),
         setEmbeddingLearningRate: (embeddingLearningRate) =>
           setUserEdit({ embeddingLearningRate }),
         setOptimizerType: (optimizerType) => setUserEdit({ optimizerType }),
@@ -1284,10 +1171,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         canProceed: () => canProceedForTrainingStep(get()),
         reset: () => {
           _trainOnCompletionsManuallySet = false;
-          _learningRateManuallySet = false;
-          _yamlLearningRate = undefined;
           _modelDefaultsEditBaseline = null;
-          clearCptDatasetFormatTracking();
           setUserEdit(initialTrainingConfigState);
         },
         resetToModelDefaults: () => {
@@ -1302,12 +1186,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         applyConfigPatch: (config: BackendModelConfig) => {
           const patch = mapBackendModelConfigToTrainingPatch(config);
-          // Only clear the manual-edit flag when the config provides a LR,
-          // so unrelated config patches don't silently disarm the guard.
-          if (patch.learningRate !== undefined) {
-            _learningRateManuallySet = false;
-          }
-          setUserEdit(patch);
+          setUserEdit((state) => ({
+            ...patch,
+            ...(patch.learningRate !== undefined
+              ? {
+                  trainingMethodProvenance: {
+                    ...state.trainingMethodProvenance,
+                    learningRateManuallySet: false,
+                  },
+                }
+              : {}),
+          }));
         },
       };
     },

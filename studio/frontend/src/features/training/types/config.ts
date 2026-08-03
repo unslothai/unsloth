@@ -46,6 +46,12 @@ export type BrowseDatasetSelection =
       uploadedFile: string | null;
     };
 
+export interface TrainingMethodProvenance {
+  learningRateManuallySet: boolean;
+  modelAdapterLearningRate: number | null;
+  datasetFormatBeforeCpt: DatasetFormat | null;
+}
+
 /** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
 
@@ -59,6 +65,7 @@ export interface TrainingConfigState {
   modelFormat: ModelInventoryFormat | null;
   projectName: string;
   trainingMethod: TrainingMethod;
+  trainingMethodProvenance: TrainingMethodProvenance;
   datasetSource: DatasetSource;
   browseDatasetSelection: BrowseDatasetSelection;
   datasetFormat: DatasetFormat;

@@ -27,7 +27,11 @@ function toStringValue(value: unknown): string | undefined {
 
 function toStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const result = value.filter((item): item is string => typeof item === "string");
+  const result = [
+    ...new Set(
+      value.filter((item): item is string => typeof item === "string"),
+    ),
+  ];
   return result.length > 0 ? result : undefined;
 }
 

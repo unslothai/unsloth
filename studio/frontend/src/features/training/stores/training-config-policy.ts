@@ -58,6 +58,11 @@ export const initialTrainingConfigState: TrainingConfigState = {
   modelFormat: null,
   projectName: "",
   trainingMethod: "qlora",
+  trainingMethodProvenance: {
+    learningRateManuallySet: false,
+    modelAdapterLearningRate: null,
+    datasetFormatBeforeCpt: null,
+  },
   datasetSource: "huggingface",
   browseDatasetSelection: createHfBrowseDatasetSelection(null),
   datasetFormat: "auto",

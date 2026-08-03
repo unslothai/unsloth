@@ -35,9 +35,12 @@ function sameValues(
   left: readonly string[],
   right: readonly string[],
 ): boolean {
-  return (
-    left.length === right.length && left.every((value) => right.includes(value))
-  );
+  if (left.length !== right.length) {
+    return false;
+  }
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return sortedLeft.every((value, index) => value === sortedRight[index]);
 }
 
 function baselineValue<K extends keyof AdvancedSettingsBaseline>(
