@@ -173,6 +173,40 @@ def test_callable_rejects_missing_is_valid_column():
     assert "is_valid" in out["error_message"].iloc[0]
 
 
+def test_callable_rejects_mismatched_row_count():
+    """A validate that returns fewer/more rows than the input must degrade to
+    per-row failures instead of misattributing results across rows."""
+    import pandas as pd
+
+    fewer = custom._build_custom_validation_function(
+        "def validate(df):\n"
+        "    import pandas as pd\n"
+        "    return pd.DataFrame({'is_valid': [True]})\n"
+    )
+    out = fewer(pd.DataFrame({"code": ["a", "b", "c"]}))
+    assert len(out) == 3
+    assert list(out["is_valid"]) == [False, False, False]
+    assert "1 rows for 3 input rows" in out["error_message"].iloc[0]
+
+    more = custom._build_custom_validation_function(
+        "def validate(df):\n"
+        "    import pandas as pd\n"
+        "    return pd.DataFrame({'is_valid': [True, True, True, True]})\n"
+    )
+    out = more(pd.DataFrame({"code": ["a", "b"]}))
+    assert len(out) == 2
+    assert list(out["is_valid"]) == [False, False]
+    assert "4 rows for 2 input rows" in out["error_message"].iloc[0]
+
+    exact = custom._build_custom_validation_function(
+        "def validate(df):\n"
+        "    import pandas as pd\n"
+        "    return pd.DataFrame({'is_valid': [True, False]})\n"
+    )
+    out = exact(pd.DataFrame({"code": ["a", "b"]}))
+    assert list(out["is_valid"]) == [True, False]
+
+
 def test_callable_empty_df():
     import pandas as pd
 

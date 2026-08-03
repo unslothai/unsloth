@@ -9,6 +9,7 @@ import { isOxcValidationMode } from "./validators/oxc-mode";
 import { isValidatorConsentRequired } from "./validators/consent";
 import {
   firstInvalidToolScaffoldPath,
+  isValidToolExt,
   toolScaffoldLimitError,
 } from "./validators/validation-markers";
 
@@ -259,6 +260,10 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       }
       if (!(config.tool_ext ?? "").trim()) {
         errors.push("Add the source-file extension for this check.");
+      } else if (!isValidToolExt((config.tool_ext ?? "").trim())) {
+        errors.push(
+          "File extension can only contain letters, digits, dots, + or - (up to 20 chars).",
+        );
       }
       if (isValidatorConsentRequired(config)) {
         errors.push("Acknowledge that this check runs arbitrary commands locally.");

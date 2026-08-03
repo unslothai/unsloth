@@ -441,6 +441,16 @@ test("validateValidatorConfigs reports oversized scaffolds", () => {
   );
 });
 
+test("validateValidatorConfigs reports invalid file extensions", () => {
+  const errors: string[] = [];
+  const { configs, nameToConfig } = validatorIdMap(
+    toolConfig({ tool_ext: "a/b", tool_acknowledged: true }),
+    llmCodeNode("code_col", "go"),
+  );
+  validateValidatorConfigs(configs, nameToConfig, errors);
+  assert.ok(errors.some((message) => message.includes("extension")));
+});
+
 test("validateValidatorConfigs blocks unacknowledged imported validators", () => {
   // parseValidator now reconstructs imported tool/custom validators as
   // unacknowledged, so a shared recipe cannot bypass the consent gate.

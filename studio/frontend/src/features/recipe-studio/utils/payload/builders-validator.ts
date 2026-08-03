@@ -66,17 +66,16 @@ export function buildValidatorColumn(
   if (config.validator_type === "tool" || config.validator_type === "custom") {
     const validationFunction = validationFunctionFromConfig(config);
     if (validationFunction === null) {
-      if (config.validator_type === "tool") {
-        const scaffoldError = toolScaffoldLimitError(config.tool_scaffold);
-        errors.push(
-          scaffoldError !== null
-            ? `Validator ${config.name}: ${scaffoldError}`
-            : `Validator ${config.name}: a tool command and extension are required.`,
-        );
-      } else {
-        errors.push(
-          `Validator ${config.name}: a custom validator source is required.`,
-        );
+      // null only occurs when the scaffold exceeds its limits and cannot be
+      // serialized without dropping rows; missing command/ext/source are
+      // flagged by the config validators instead so the state stays
+      // round-trippable.
+      const scaffoldError =
+        config.validator_type === "tool"
+          ? toolScaffoldLimitError(config.tool_scaffold)
+          : null;
+      if (scaffoldError !== null) {
+        errors.push(`Validator ${config.name}: ${scaffoldError}`);
       }
     }
     return {

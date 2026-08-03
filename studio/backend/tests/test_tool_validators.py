@@ -272,6 +272,20 @@ def test_tool_callable_timeout_is_graceful(monkeypatch):
     assert "timed out" in out["error_message"].iloc[0]
 
 
+def test_tool_output_capture_is_capped(monkeypatch):
+    """Verbose commands must not buffer unbounded output per row."""
+    import pandas as pd
+
+    monkeypatch.setattr(tool, "_TOOL_OUTPUT_MAX_CHARS", 1000)
+    fn = tool._build_tool_validation_function(
+        "txt",
+        "sh -c 'i=0; while [ $i -lt 100 ]; do echo 0123456789; i=$((i+1)); done'",
+    )
+    out = fn(pd.DataFrame({"code": ["x"]}))
+    assert list(out["is_valid"]) == [True]
+    assert len(out["tool_output"].iloc[0]) <= tool._TOOL_OUTPUT_MAX_CHARS + 1
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups only")
 def test_tool_timeout_kills_child_processes(monkeypatch, tmp_path):
     """A timeout must kill the command's children, not just the shell."""

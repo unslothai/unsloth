@@ -18,6 +18,7 @@ import { isOxcValidationMode } from "../validators/oxc-mode";
 import { isValidatorConsentRequired } from "../validators/consent";
 import {
   firstInvalidToolScaffoldPath,
+  isValidToolExt,
   toolScaffoldLimitError,
 } from "../validators/validation-markers";
 
@@ -216,6 +217,13 @@ export function validateValidatorConfigs(
       !(config.tool_ext ?? "").trim()
     ) {
       errors.push(`Validator ${config.name}: tool extension required.`);
+    } else if (
+      config.validator_type === "tool" &&
+      !isValidToolExt((config.tool_ext ?? "").trim())
+    ) {
+      errors.push(
+        `Validator ${config.name}: extension can only contain letters, digits, dots, + or - (up to 20 chars).`,
+      );
     }
     if (config.validator_type === "tool") {
       const badScaffoldPath = firstInvalidToolScaffoldPath(config.tool_scaffold);

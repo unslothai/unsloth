@@ -80,10 +80,27 @@ test("tool marker encodes and decodes", () => {
   });
 });
 
-test("decodeToolSpec rejects unsafe extensions", () => {
+test("decodeToolSpec keeps malformed payloads rejected and bad extensions round-trippable", () => {
+  // Bad extensions are no longer rejected at decode: the config validators
+  // flag them, and rejecting them would lose the rest of the tool state on
+  // reload. The scaffold-path checks and base64/JSON shape checks stay.
   const encoded = markers.encodeToolSpec({ ext: "../x", command: "go vet" });
-  assert.equal(markers.decodeToolSpec(encoded), null);
+  assert.deepEqual(markers.decodeToolSpec(encoded), {
+    ext: "/x",
+    command: "go vet",
+  });
   assert.equal(markers.decodeToolSpec("!!not base64!!"), null);
+  assert.equal(markers.decodeToolSpec("eyJmb28iOiJiYXIifQ"), null);
+});
+
+test("isValidToolExt accepts only safe extensions", () => {
+  assert.equal(markers.isValidToolExt("go"), true);
+  assert.equal(markers.isValidToolExt("sql:sqlite"), false);
+  assert.equal(markers.isValidToolExt("../x"), false);
+  assert.equal(markers.isValidToolExt("/x"), false);
+  assert.equal(markers.isValidToolExt(""), false);
+  assert.equal(markers.isValidToolExt("a".repeat(21)), false);
+  assert.equal(markers.isValidToolExt(".go"), true);
 });
 
 test("custom source encodes and decodes unicode", () => {
@@ -262,13 +279,66 @@ test("buildValidatorColumn emits custom local_callable", () => {
   assert.deepEqual(errors, []);
 });
 
-test("buildValidatorColumn flags missing tool command", () => {
+test("buildValidatorColumn keeps incomplete tool configs round-trippable", () => {
   const errors: string[] = [];
-  buildValidatorColumn(
+  const column = buildValidatorColumn(
     toolConfig({ tool_command: "  ", tool_acknowledged: false }),
     errors,
   );
-  assert.ok(errors.some((message) => message.includes("tool command")));
+  // Missing fields are flagged by the config validators, not by dropping the
+  // marker: the tool block (and its state) must survive a save/reload.
+  assert.deepEqual(errors, []);
+  const params = column.validator_params as Record<string, unknown>;
+  assert.equal(
+    String(params.validation_function).split(":")[0],
+    TOOL_MARKER,
+  );
+  const spec = markers.decodeToolSpec(
+    String(params.validation_function).slice(TOOL_MARKER.length + 1),
+  );
+  assert.deepEqual(spec, { ext: "go", command: "" });
+});
+
+test("validationFunctionFromConfig round-trips incomplete tool state", () => {
+  const marker = markers.validationFunctionFromConfig(
+    toolConfig({ tool_command: "  ", tool_ext: "  " }),
+  );
+  assert.ok(marker?.startsWith(`${TOOL_MARKER}:`));
+  const spec = markers.decodeToolSpec(marker!.slice(TOOL_MARKER.length + 1));
+  assert.deepEqual(spec, { ext: "", command: "" });
+});
+
+test("parseValidator preserves custom type for an empty source", () => {
+  const marker = markers.validationFunctionFromConfig(
+    customConfig({ custom_source: "" }),
+  );
+  assert.ok(marker?.startsWith(`${CUSTOM_MARKER}:`));
+  const config = parseValidator(
+    {
+      column_type: "validation",
+      name: "py_check",
+      drop: false,
+      target_columns: ["code"],
+      validator_type: "local_callable",
+      validator_params: { validation_function: marker },
+      batch_size: 10,
+    },
+    "py_check",
+    "n2",
+  );
+  assert.equal(config.validator_type, "custom");
+  assert.equal(config.custom_source, "");
+});
+
+test("getConfigErrors flags invalid file extensions", () => {
+  const errors = getConfigErrors(
+    toolConfig({ tool_ext: "a/b", tool_acknowledged: true }),
+  );
+  assert.ok(errors.some((message) => message.includes("extension")));
+  const ok = getConfigErrors(
+    toolConfig({ tool_ext: ".go", tool_acknowledged: true }),
+  );
+  assert.ok(!ok.some((message) => message.includes("extension")));
 });
 
 test("parseValidator reconstructs a tool config", () => {

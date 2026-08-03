@@ -87,9 +87,10 @@ export function firstInvalidToolScaffoldPath(
   return null;
 }
 
-function normalizedToolScaffoldRows(
-  scaffold: ToolScaffoldFile[] | undefined,
-): { rows: ToolScaffoldFile[]; totalChars: number } {
+function normalizedToolScaffoldRows(scaffold: ToolScaffoldFile[] | undefined): {
+  rows: ToolScaffoldFile[];
+  totalChars: number;
+} {
   const rows: ToolScaffoldFile[] = [];
   let totalChars = 0;
   if (Array.isArray(scaffold)) {
@@ -147,6 +148,14 @@ export function encodeToolSpec(spec: ToolValidatorSpec): string {
   return toBase64Url(JSON.stringify(payload));
 }
 
+export function normalizeToolExt(ext: string): string {
+  return ext.trim().replace(LEADING_DOTS_RE, "");
+}
+
+export function isValidToolExt(ext: string): boolean {
+  return TOOL_FILE_EXT_RE.test(normalizeToolExt(ext));
+}
+
 export function decodeToolSpec(encoded: string): ToolValidatorSpec | null {
   let decoded: string;
   try {
@@ -171,9 +180,10 @@ export function decodeToolSpec(encoded: string): ToolValidatorSpec | null {
         : "";
     const command =
       typeof record.command === "string" ? record.command.trim() : "";
-    if (!(command && TOOL_FILE_EXT_RE.test(ext))) {
-      return null;
-    }
+    // A missing/invalid ext or command is NOT rejected here: the config
+    // validators flag those. Rejecting them would make an invalid mid-edit
+    // state un-importable and lose the rest of the tool's state (scaffold
+    // rows, command) on recipe reload.
     const rawScaffold = Array.isArray(record.scaffold) ? record.scaffold : [];
     const scaffold = normalizeToolScaffold(rawScaffold as ToolScaffoldFile[]);
     if (rawScaffold.length > 0 && scaffold.length === 0) {
@@ -201,17 +211,16 @@ export function validationFunctionFromConfig(
   config: ValidatorConfig,
 ): string | null {
   if (config.validator_type === "tool") {
-    const command = (config.tool_command ?? "").trim();
-    const ext = (config.tool_ext ?? "").trim().replace(LEADING_DOTS_RE, "");
-    if (!(command && TOOL_FILE_EXT_RE.test(ext))) {
-      return null;
-    }
     // Never serialize a marker whose scaffold silently lost rows: an
     // over-limit scaffold must surface as a validation error instead.
     if (toolScaffoldLimitError(config.tool_scaffold) !== null) {
       return null;
     }
+    const ext = normalizeToolExt(config.tool_ext ?? "");
+    const command = (config.tool_command ?? "").trim();
     const scaffold = normalizeToolScaffold(config.tool_scaffold);
+    // A missing command/ext still serializes so an invalid mid-edit state
+    // round-trips as a tool check; the config validators flag the gap.
     return `${TOOL_VALIDATION_FN_MARKER}:${encodeToolSpec({
       ext,
       command,
@@ -220,9 +229,8 @@ export function validationFunctionFromConfig(
   }
   if (config.validator_type === "custom") {
     const source = (config.custom_source ?? "").trim();
-    if (!source) {
-      return null;
-    }
+    // Same round-trip guarantee as the tool branch: an empty source still
+    // serializes as a custom check so the block type survives a reload.
     return `${CUSTOM_VALIDATION_FN_MARKER}:${encodeCustomSource(source)}`;
   }
   return null;

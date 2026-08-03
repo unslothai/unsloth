@@ -17,6 +17,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
 from loggers import get_logger
@@ -33,6 +34,7 @@ _TOOL_SCAFFOLD_PATH_RE = re.compile(r"^[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$")
 _TOOL_SCAFFOLD_MAX_ROWS = 10
 _TOOL_SCAFFOLD_MAX_TOTAL_CHARS = 32 * 1024
 _TOOL_RUN_TIMEOUT_SECONDS = 60
+_TOOL_OUTPUT_MAX_CHARS = 256 * 1024
 
 _OXC_LANG_TO_NODE_LANG = {
     "javascript": "js",
@@ -505,6 +507,33 @@ def _terminate_tool_process_tree(proc: subprocess.Popen[str]) -> None:
         pass
 
 
+class _CappedOutputReader(Thread):
+    """Read a text stream in chunks, keeping at most ``limit`` characters.
+
+    Reading stops at the cap; if the child keeps writing after that its pipe
+    fills and it blocks until the run timeout kills it, bounding memory
+    instead of buffering unbounded output for every row in a batch.
+    """
+
+    def __init__(self, stream, limit: int) -> None:
+        super().__init__(daemon = True)
+        self._stream = stream
+        self._limit = limit
+        self.output = ""
+
+    def run(self) -> None:
+        chunks: list[str] = []
+        total = 0
+        stream = self._stream
+        while total < self._limit:
+            chunk = stream.read(self._limit - total + 1)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        self.output = "".join(chunks)
+
+
 def _run_tool_single(
     *, file_ext: str, command: str, scaffold: tuple[tuple[str, str], ...], code_value: str
 ) -> dict[str, Any]:
@@ -547,23 +576,33 @@ def _run_tool_single(
                 env = env,
                 **_tool_launch_kwargs(),
             )
+            out_reader = _CappedOutputReader(proc.stdout, _TOOL_OUTPUT_MAX_CHARS)
+            err_reader = _CappedOutputReader(proc.stderr, _TOOL_OUTPUT_MAX_CHARS)
+            out_reader.start()
+            err_reader.start()
+            timed_out = False
             try:
-                stdout, stderr = proc.communicate(timeout = _TOOL_RUN_TIMEOUT_SECONDS)
+                returncode = proc.wait(timeout = _TOOL_RUN_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
+                timed_out = True
                 _terminate_tool_process_tree(proc)
                 # Reap the (now killed) command so it does not linger as a zombie.
                 try:
-                    stdout, stderr = proc.communicate(timeout = 10)
+                    proc.wait(timeout = 10)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                    stdout, stderr = proc.communicate()
+                    proc.wait()
+            out_reader.join(timeout = 10)
+            err_reader.join(timeout = 10)
+            stdout = out_reader.output
+            stderr = err_reader.output
+            if timed_out:
                 return _tool_result(
                     is_valid = False,
                     error_count = 1,
                     error_message = f"Tool check timed out after {_TOOL_RUN_TIMEOUT_SECONDS}s.",
                     tool_output = "",
                 )
-            returncode = proc.returncode
     except (OSError, ValueError) as exc:
         return _tool_result(
             is_valid = False,

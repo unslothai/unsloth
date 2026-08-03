@@ -204,6 +204,14 @@ def _build_custom_validation_function(source: str):
                 raise ValueError(
                     "Custom validator must return a DataFrame with an 'is_valid' column.",
                 )
+            result_row_count = int(len(result.index))
+            input_row_count = int(len(df.index))
+            if result_row_count != input_row_count:
+                raise ValueError(
+                    "Custom validator returned "
+                    f"{result_row_count} rows for {input_row_count} input rows; "
+                    "results must be one per input row.",
+                )
             return result
         except Exception as exc:
             return _error_results(
