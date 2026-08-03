@@ -350,7 +350,9 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     assert source.count("$studioUsesLegacyLayout `") >= 2
     assert "-not $TauriMode -and $studioUsesLegacyLayout" in source
     assert runtime_guard < rollback < old_venv_move < cwd_venv_move
-    assert rollback < restore < prompt < autostart < release_runtime < release_install < wait_for_exit
+    assert (
+        rollback < restore < prompt < autostart < release_runtime < release_install < wait_for_exit
+    )
     assert "if ($StudioRedirectMode -eq 'legacy')" not in source
     assert "& $UnslothExe studio -p 8888" not in source
     assert "--clear" not in source[source.index("uv venv $VenvDir") :][:200]
