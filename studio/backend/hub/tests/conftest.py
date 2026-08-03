@@ -104,3 +104,25 @@ sys.modules.setdefault(
         get_logger = lambda *args, **kwargs: _DummyLogger(),
     ),
 )
+
+
+import pytest
+
+
+@pytest.fixture(autouse = True)
+def _reset_optional_module_memo():
+    """Forget the shim's memoised optional-module results between tests.
+
+    ``_load_optional`` caches the outcome per module name, including the failure, because on an
+    older zoo the import can never start succeeding and re-running it would re-open the process-wide
+    GPU-init env window on every download. Tests deliberately swap that import in and out, so the
+    memo has to be per test or one test's fake module answers the next test's question.
+    """
+    try:
+        import utils.hf_xet_fallback as _shim
+    except Exception:  # noqa: BLE001 - hub tests run against stubbed modules
+        yield
+        return
+    _shim._reset_optional_module_cache()
+    yield
+    _shim._reset_optional_module_cache()

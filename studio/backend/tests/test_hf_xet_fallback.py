@@ -417,6 +417,50 @@ def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_overrid
             sys.modules["utils.hf_xet_fallback"] = saved_shim
 
 
+def test_a_spawn_cannot_overlap_the_loader_env_override_window():
+    """multiprocessing spawn copies the parent's LIVE os.environ; it takes no env argument, so the
+    training and inference workers cannot be handed a filtered dict. The only way to keep the
+    shim's transient UNSLOTH_ZOO_DISABLE_GPU_INIT out of them is for the spawn to be unable to
+    start while a loader holds it. A child that inherited it gets stub triton and bitsandbytes from
+    unsloth_zoo and trains against no-ops, silently.
+
+    Structural on purpose: it asserts the two really share one lock, which is the property that
+    makes the exclusion true, rather than trying to hit a microsecond window by timing."""
+    import threading
+
+    from utils.hf_cache_settings import child_environment_for_spawn
+
+    loader_holds = threading.Event()
+    release_loader = threading.Event()
+    spawn_started = threading.Event()
+    spawn_entered = threading.Event()
+
+    def _loader():
+        with xf.env_override_barrier():
+            loader_holds.set()
+            release_loader.wait(5.0)
+
+    def _spawner():
+        spawn_started.set()
+        with child_environment_for_spawn({}):
+            spawn_entered.set()
+
+    t_loader = threading.Thread(target = _loader, daemon = True)
+    t_loader.start()
+    assert loader_holds.wait(5.0), "loader never took the barrier"
+
+    t_spawn = threading.Thread(target = _spawner, daemon = True)
+    t_spawn.start()
+    assert spawn_started.wait(5.0)
+    try:
+        assert not spawn_entered.wait(0.5), "a spawn started inside the loader override window"
+    finally:
+        release_loader.set()
+    assert spawn_entered.wait(5.0), "the spawn never proceeded after the loader let go"
+    t_loader.join(5.0)
+    t_spawn.join(5.0)
+
+
 def test_an_operator_set_gpu_init_override_still_reaches_the_child(monkeypatch):
     """Only the loader's own transient value is dropped. Someone who exported the flag themselves
     on a GPU-less box meant it, and their children must keep it."""
