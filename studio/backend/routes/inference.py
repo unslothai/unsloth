@@ -11315,11 +11315,10 @@ async def openai_chat_completions(
         and _sf_features.get("supports_tools", False)
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
-    # apply_chat_template sanitizes the catalog it renders
-    # (chat_template_helpers.py:1503-1504), so a tool dropped for unsafe markup never
-    # reached the prompt. Gating the healer on the caller's list instead would let a
-    # dropped tool with a clean NAME be promoted out of text-form output, handing the
-    # client a structured call for a tool the model was never shown (#7066).
+    # apply_chat_template sanitizes the catalog it renders, so a tool dropped for unsafe
+    # markup never reached the prompt. Gating the healer on the caller's list instead would
+    # promote a dropped tool with a clean NAME out of text-form output, handing the client a
+    # call for a tool the model was never shown (#7066).
     from core.inference.chat_template_helpers import (
         chat_render_target as _sf_chat_render_target,
         markup_for_tokenizer as _sf_markup_for,
@@ -11330,12 +11329,11 @@ async def openai_chat_completions(
     _sf_markup = _sf_markup_for(_sf_model_info.get("tokenizer"))
 
     # A text-only tool request on a vision model renders through a different object on each
-    # backend: MLX keeps the PROCESSOR when it has a usable chat template
-    # (_generate_vlm), while the transformers path unwraps to the nested tokenizer
-    # unconditionally (_generate_chat_response_inner). Authorizing against one of them lets
-    # the other's render drop a tool the healer still holds, so both candidates are
-    # profiled and the catalog is the intersection (#7066). The MLX rule is shared with
-    # _generate_vlm rather than restated, so the two cannot drift.
+    # backend: MLX keeps the PROCESSOR when it has a usable template (_generate_vlm), the
+    # transformers path unwraps to the nested tokenizer (_generate_chat_response_inner).
+    # Authorizing against one lets the other's render drop a tool the healer still holds, so
+    # both are profiled and the catalog is the intersection. The MLX rule is shared with
+    # _generate_vlm rather than restated, so the two cannot drift (#7066).
     _sf_processor = _sf_model_info.get("processor")
     _sf_tokenizer = _sf_model_info.get("tokenizer")
     _sf_mlx_target = _sf_chat_render_target(_sf_processor, _sf_tokenizer)
@@ -11344,14 +11342,11 @@ async def openai_chat_completions(
         (_sf_mlx_target,) if _sf_hf_target is _sf_mlx_target else (_sf_mlx_target, _sf_hf_target)
     )
     _sf_healing_tools = (
-        # Safe under EVERY template this turn could select. When the active template drops
-        # the schema the render falls back to the model's native one, whose profile can
-        # drop a tool the active profile kept; gating on the active catalog alone would let
-        # the healer promote a call for a tool the prompt never advertised (#7066).
-        #
-        # In a thread: on the first request this resolves the native template, which can
-        # reach AutoTokenizer.from_pretrained and hit the filesystem or the Hub. That would
-        # block the event loop for every concurrent request until it completes.
+        # Safe under EVERY template this turn could select: when the active one drops the
+        # schema the render falls back to the native template, whose profile can drop a tool
+        # the active profile kept (#7066). In a thread because the first request resolves
+        # that native template through AutoTokenizer.from_pretrained, which would otherwise
+        # block the event loop for every concurrent request.
         await asyncio.to_thread(
             _sf_renderable_tools,
             payload.tools,
@@ -16012,10 +16007,10 @@ async def _anthropic_passthrough_stream(
         _healing_tools = neutralize_tool_descriptions(
             openai_tools, None, getattr(llama_backend, "markup_profile", None)
         )
-        # The reconciled choice the body actually carries, not the caller's: when a forced
-        # tool was dropped, _build_passthrough_payload sent "auto", and gating on the stale
-        # forced name would intersect the safe names with a removed one and disable healing
-        # outright. "none" survives reconciliation, so it still forbids promotion (#7066).
+        # The reconciled choice the body carries, not the caller's: a dropped forced tool
+        # was already sent as "auto", and gating on the stale name would intersect the safe
+        # names with a removed one and disable healing outright. "none" survives
+        # reconciliation, so it still forbids promotion (#7066).
         _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
         if _allowed_tools:
             emitter.enable_healing(
@@ -16272,10 +16267,10 @@ async def _anthropic_passthrough_non_streaming(
         _healing_tools = neutralize_tool_descriptions(
             openai_tools, None, getattr(llama_backend, "markup_profile", None)
         )
-        # The reconciled choice the body actually carries, not the caller's: when a forced
-        # tool was dropped, _build_passthrough_payload sent "auto", and gating on the stale
-        # forced name would intersect the safe names with a removed one and disable healing
-        # outright. "none" survives reconciliation, so it still forbids promotion (#7066).
+        # The reconciled choice the body carries, not the caller's: a dropped forced tool
+        # was already sent as "auto", and gating on the stale name would intersect the safe
+        # names with a removed one and disable healing outright. "none" survives
+        # reconciliation, so it still forbids promotion (#7066).
         _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
 
         # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
