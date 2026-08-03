@@ -608,18 +608,16 @@ _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
-# A directory we cannot search. Every probe inside one reports "absent", so an
-# install that is ours reads as somebody else's. Search (+x) is the permission
-# the marker probes need; read (+r) is not enough and not required.
+# Search (+x), not read (+r), is what the marker probes need: inside a directory
+# we cannot search every probe reports absent, so our own install reads as someone else's.
 _studio_dir_unsearchable() {
     [ -d "$1" ] || return 1
     ( cd "$1" ) 2>/dev/null && return 1
     return 0
 }
 
-# Mirrors Exit-PathAccessDenied in setup.ps1. Pass owner-unverified when the
-# caller could not read the marker, so it cannot claim the tree is ours either
-# and must not tell the user to delete it.
+# Mirrors Exit-PathAccessDenied in setup.ps1. owner-unverified means the marker
+# was unreadable, so do not claim the tree is ours or advise deleting it.
 _path_access_denied() {
     _pad_dir="$1"
     _pad_label="$2"
@@ -650,8 +648,8 @@ _assert_studio_owned_or_absent() {
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
         fi
-        # An unsearchable tree hides its own marker, so it is indistinguishable
-        # here from somebody else's folder. Report the permissions, not ownership.
+        # An unsearchable tree hides its own marker and so looks like someone else's:
+        # report permissions, not ownership.
         if _studio_dir_unsearchable "$_aso_dir"; then
             _path_access_denied "$_aso_dir" "$_aso_label" owner-unverified
         fi
@@ -2185,9 +2183,8 @@ else
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
-            # Without the || true the raw rm error aborts under errexit and the
-            # desktop app shows a bare exit code, with the fresh build stranded.
-            # stderr is kept: rm names the exact subpath, which we cannot.
+            # || true: without it a raw rm error aborts under errexit to a bare exit
+            # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
             rm -rf "$LLAMA_CPP_DIR" || true
             if [ -e "$LLAMA_CPP_DIR" ]; then
                 if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then

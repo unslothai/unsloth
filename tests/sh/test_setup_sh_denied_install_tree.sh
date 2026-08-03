@@ -1,17 +1,13 @@
 #!/bin/bash
-# studio/setup.sh must tell an unreadable install tree apart from somebody
-# else's install, and must not abort with a raw rm error when it cannot replace
-# one. setup.ps1 learned both in #7735/#7757; this is the POSIX side.
+# studio/setup.sh must tell an unreadable install tree apart from somebody else's,
+# and must not abort with a raw rm error when it cannot replace one. setup.ps1
+# learned both in #7735/#7757; this is the POSIX side.
 #
-# The failure this pins: a tree that IS ours, carrying our own marker, becomes
-# unsearchable (left owned by another user, say). Every probe inside it reports
-# "absent", so the ownership guard reported "not marked as an Unsloth-owned
-# install. Move it aside or choose an empty UNSLOTH_STUDIO_HOME" -- the wrong
-# cause and the wrong remedy, since the fix is a permission change.
-#
-# Search (+x) is the permission the marker probes need. A directory can be
-# readable and still unsearchable (mode 444), and searchable but unreadable
-# (mode 111), so the probe must test search, not read.
+# Pins: a tree that IS ours goes unsearchable, every probe inside reports "absent",
+# and the ownership guard blamed ownership ("Move it aside or choose an empty
+# UNSLOTH_STUDIO_HOME") when the fix is a permission change. The marker probes need
+# search (+x), and a directory can be readable but unsearchable (444) or the reverse
+# (111), so probe search, not read.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -30,8 +26,8 @@ echo "=== setup.sh: the guards exist and probe the right permission ==="
 
 assert_contains "defines the unsearchable-directory probe" \
     "$SETUP_SH" "_studio_dir_unsearchable() {"
-# cd needs +x, which is exactly what a probe of a named child needs. ls needs
-# +r, which is neither sufficient nor necessary, so pin the cd form.
+# cd needs +x, exactly what the marker probes need; ls needs +r, which is neither
+# sufficient nor necessary. Pin the cd form.
 assert_contains "the probe tests search (cd), not read (ls)" \
     "$SETUP_SH" '( cd "$1" ) 2>/dev/null && return 1'
 assert_contains "defines the denial reporter" \
@@ -44,15 +40,14 @@ assert_contains "an unverifiable tree is never described as not ours" \
 echo ""
 echo "=== setup.sh: neither destructive replace runs blind ==="
 
-# rm -rf failing under errexit aborts with a raw "Permission denied" and no
-# [TAURI:ERROR], so the desktop app shows a bare exit code.
+# A failing rm -rf under errexit aborts with no [TAURI:ERROR], so the desktop app
+# shows a bare exit code.
 if [ "$(grep -c 'rm -rf "$LLAMA_CPP_DIR" || true' "$SETUP_SH")" -ge 2 ]; then
     ok "both replace sites tolerate a failing rm instead of aborting raw"
 else
     bad "both replace sites tolerate a failing rm instead of aborting raw"
 fi
-# rm names the exact subpath that refused to go; the messages below can only
-# name the install root, so discarding its stderr loses the useful half.
+# rm names the exact failing subpath; our messages can only name the install root.
 if grep -q 'rm -rf "$LLAMA_CPP_DIR" 2>/dev/null' "$SETUP_SH"; then
     bad "the failing rm keeps its stderr"
 else
@@ -79,8 +74,7 @@ echo "=== behaviour against a genuinely unsearchable tree ==="
 WORK="$(mktemp -d)"
 trap 'chmod -R u+rwX "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 
-# Pull the real functions out of setup.sh; it executes install steps at load,
-# so it cannot be sourced whole.
+# setup.sh runs install steps at load, so extract the real functions instead.
 python3 - "$SETUP_SH" "$WORK/helpers.sh" <<'PY'
 import sys, pathlib
 src = pathlib.Path(sys.argv[1]).read_text()
@@ -121,8 +115,7 @@ case "$out" in
 esac
 
 chmod 000 "$OURS"
-# Environment gate and negative control in one: if the host cannot deny (root),
-# the checks below would pass vacuously.
+# Gate and negative control in one: as root the checks below pass vacuously.
 if [ -f "$OURS/.unsloth-studio-owned" ]; then
     echo "  SKIP: this host cannot make a directory unsearchable (running as root?)"
 else
