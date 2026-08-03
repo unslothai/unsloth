@@ -1452,7 +1452,7 @@ exit 0
         return "Global\UnslothStudioManagedEnvironmentPath-$(Get-StudioRuntimePathHash -Path $Path)"
     }
 
-    function Get-StudioRuntimeMutexName {
+    function Get-StudioCurrentUserSid {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
         if ($null -eq $identity) {
             throw "Could not determine the Windows user for the Studio runtime lock"
@@ -1465,7 +1465,11 @@ exit 0
         if ([string]::IsNullOrWhiteSpace($sid)) {
             throw "Could not determine the Windows user SID for the Studio runtime lock"
         }
-        return (Get-StudioRuntimeMutexNameForSid -Sid $sid)
+        return $sid
+    }
+
+    function Get-StudioRuntimeMutexName {
+        return (Get-StudioRuntimeMutexNameForSid -Sid (Get-StudioCurrentUserSid))
     }
 
     function Get-StudioRuntimeMutexNames {
@@ -1514,6 +1518,36 @@ exit 0
         $prefix = $protectedKey + [System.IO.Path]::DirectorySeparatorChar
         return $candidateKey.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
     }
+
+    function Get-StudioDesktopProcessesForCurrentUser {
+        $currentSid = Get-StudioCurrentUserSid
+        try {
+            $candidates = @(
+                Get-CimInstance -ClassName Win32_Process `
+                    -Filter "Name = 'unsloth-studio.exe'" -ErrorAction Stop
+            )
+        } catch {
+            return
+        }
+        foreach ($candidate in $candidates) {
+            try {
+                $owner = Invoke-CimMethod -InputObject $candidate `
+                    -MethodName GetOwnerSid -ErrorAction Stop
+            } catch {
+                continue
+            }
+            if ($null -eq $owner -or $owner.ReturnValue -ne 0) { continue }
+            if ([string]::Equals(
+                $owner.Sid, $currentSid, [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+                [pscustomobject]@{
+                    ProcessName = [System.IO.Path]::GetFileNameWithoutExtension($candidate.Name)
+                    Id = [int]$candidate.ProcessId
+                }
+            }
+        }
+    }
+
 
     function Get-RunningStudioVenvProcesses {
         param(
@@ -1622,7 +1656,7 @@ exit 0
         }
 
         if (-not $TauriMode -and $studioUsesLegacyLayout) {
-            $runningDesktopApps = @(Get-Process -Name "unsloth-studio" -ErrorAction SilentlyContinue)
+            $runningDesktopApps = @(Get-StudioDesktopProcessesForCurrentUser)
             if ($runningDesktopApps.Count -gt 0) {
                 $desktopSummary = ($runningDesktopApps | ForEach-Object { "PID $($_.Id)" }) -join ", "
                 Write-Host "[ERROR] The Unsloth Studio desktop app is still running ($desktopSummary)." -ForegroundColor Red

@@ -58,6 +58,7 @@ def _mutex_helpers(source: str) -> str:
             "Get-StudioRuntimeMutexNameForSid",
             "Get-StudioRuntimePathHash",
             "Get-StudioRuntimeMutexNameForPath",
+            "Get-StudioCurrentUserSid",
             "Get-StudioRuntimeMutexName",
             "Get-StudioRuntimeMutexNames",
             "Enter-StudioInstallMutex",
@@ -238,6 +239,44 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     assert ".CommandLine" not in detector
     assert "$process.Path" not in detector
     assert "[UnslothStudioFinalPath]::GetProcessImagePath($process.Id)" in detector
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_desktop_process_filter_keeps_only_the_current_user_sid(shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    helper = _extract(
+        r"    function Get-StudioDesktopProcessesForCurrentUser \{.*?\n    \}\n", source
+    )
+    script = f"""
+$ErrorActionPreference = "Stop"
+{helper}
+function Get-StudioCurrentUserSid {{ return "S-1-5-21-current" }}
+function Get-CimInstance {{
+    [CmdletBinding()]
+    param([string]$ClassName, [string]$Filter)
+    @(
+        [pscustomobject]@{{ Name = "unsloth-studio.exe"; ProcessId = 101 }}
+        [pscustomobject]@{{ Name = "unsloth-studio.exe"; ProcessId = 202 }}
+        [pscustomobject]@{{ Name = "unsloth-studio.exe"; ProcessId = 303 }}
+    )
+}}
+function Invoke-CimMethod {{
+    [CmdletBinding()]
+    param($InputObject, [string]$MethodName)
+    if ($InputObject.ProcessId -eq 101) {{
+        return [pscustomobject]@{{ ReturnValue = 0; Sid = "S-1-5-21-current" }}
+    }}
+    if ($InputObject.ProcessId -eq 202) {{
+        return [pscustomobject]@{{ ReturnValue = 0; Sid = "S-1-5-21-other" }}
+    }}
+    throw "owner unavailable"
+}}
+@(Get-StudioDesktopProcessesForCurrentUser) | ForEach-Object {{ Write-Output $_.Id }}
+"""
+    assert _run_powershell(shell, script, os.environ.copy()).splitlines() == ["101"]
+    assert "GetOwnerSid" in helper
+    assert "SessionId" not in helper
+
     assert "QueryFullProcessImageNameW" in source
 
 
@@ -645,7 +684,7 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     legacy_source = source.index('Join-Path $StudioHome ".venv"', scan_candidates)
     cwd_source = source.index('Join-Path $env:USERPROFILE "unsloth_studio"', legacy_source)
     runtime_guard = source.index("foreach ($candidate in $protectedProcessPaths)", cwd_source)
-    desktop_guard = source.index('Get-Process -Name "unsloth-studio"', runtime_guard)
+    desktop_guard = source.index("Get-StudioDesktopProcessesForCurrentUser", runtime_guard)
     dependency_check = source.index('Write-TauriLog "STEP" "Checking system dependencies"')
     rollback = source.index("Start-StudioVenvRollback -ExistingDir $VenvDir", desktop_guard)
     old_venv_move = source.index("Move-Item -LiteralPath $OldVenv", rollback)
