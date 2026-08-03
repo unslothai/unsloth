@@ -37,9 +37,7 @@ def _tool_marker() -> str:
 
 
 def _custom_marker() -> str:
-    source = (
-        "def validate(df):\n    df['is_valid'] = df.iloc[:, 0].str.len() > 0\n    return df\n"
-    )
+    source = "def validate(df):\n    df['is_valid'] = df.iloc[:, 0].str.len() > 0\n    return df\n"
     return "unsloth_custom_validator:" + _b64url(source)
 
 
