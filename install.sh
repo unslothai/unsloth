@@ -3031,6 +3031,23 @@ _expected_torch_flavor_tag() {
     esac
 }
 
+# Installed torch's version label, for expected-flavor tag $1. The xpu path reads it OFF
+# DISK: `import torch` loads the SYCL runtime and can block indefinitely on a wedged Intel
+# driver, and this guard runs before setup.sh's bounded probes, so it must launch no
+# interpreter. Same read setup.sh's fast-path escape uses. Other families keep the
+# interpreter read they have always used.
+_installed_torch_version_for_tag() {
+    if [ "$1" = "xpu" ]; then
+        for _itv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+            [ -f "$_itv" ] || continue
+            sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_itv" | head -n 1
+            return
+        done
+        return
+    fi
+    "$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true
+}
+
 # Whether index ($1) supports a plain --default-index reinstall. pytorch.org cuXXX /
 # xpu / rocmX.Y AND the repo.amd.com gfx* indexes are all PEP 503 simple indexes that uv
 # resolves (torch + every transitive dep) via --default-index -- the same URLs the
@@ -4228,7 +4245,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
     _expected_torch_tag=$(_expected_torch_flavor_tag "$TORCH_INDEX_URL")
     # Only act when a GPU build is expected (cuXXX / rocm); cpu and unknown skip.
     if [ -n "$_expected_torch_tag" ] && [ "$_expected_torch_tag" != "cpu" ]; then
-        _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
+        _installed_torch_ver=$(_installed_torch_version_for_tag "$_expected_torch_tag")
         _installed_torch_tag=""
         [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
         # Repair when flavor is wrong AND the index is plain --default-index reinstallable
@@ -4238,7 +4255,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "PyTorch flavor mismatch (installed $_installed_torch_tag, need $_expected_torch_tag) -- reinstalling correct build..."
             _install_torch_default_index \
                 --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio
-            _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
+            _installed_torch_ver=$(_installed_torch_version_for_tag "$_expected_torch_tag")
             _installed_torch_tag=""
             [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
         fi

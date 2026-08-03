@@ -12,6 +12,7 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import glob
+import importlib.util
 import os
 import platform
 import re
@@ -1763,6 +1764,33 @@ def _ensure_xpu_torch() -> None:
     )
 
 
+def _installed_torch_version_label() -> str:
+    """torch's full version string, read OFF DISK without importing torch.
+
+    Neither obvious route works here: importlib.metadata drops the local label (it reports
+    2.9.1 for a 2.9.1+xpu wheel, so the flavour is gone), and `import torch` loads the SYCL
+    runtime, which can block indefinitely on a wedged Intel driver. find_spec locates the
+    package without executing it. Empty when torch is absent or unreadable.
+    """
+    try:
+        # torch may have been installed by an earlier step of THIS run, after the path
+        # finders cached site-packages' directory listing.
+        importlib.invalidate_caches()
+        spec = importlib.util.find_spec("torch")
+    except (ImportError, ValueError):
+        return ""
+    if spec is None or not spec.origin:
+        return ""
+    try:
+        text = Path(spec.origin).with_name("version.py").read_text(
+            encoding = "utf-8", errors = "replace"
+        )
+    except OSError:
+        return ""
+    match = re.search(r"""^__version__\s*=\s*['"]([^'"]*)['"]""", text, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
 def _ensure_venv_pip() -> bool:
     """Make `python -m pip` work in the target venv, bootstrapping it if needed.
 
@@ -1817,7 +1845,13 @@ def _ensure_xpu_triton() -> None:
         return
     pin = _explicit_xpu_torch_index_url()
     if pin is None:
-        return
+        # A one-shot pin (UNSLOTH_TORCH_INDEX_FAMILY=xpu ./install.sh) is gone by the next
+        # plain `unsloth studio update`, but the +xpu wheel it installed is still here and
+        # a dependency pass can pull generic triton back in, so the INSTALLED wheel is the
+        # pin. setup.sh raises the bitsandbytes floor off exactly this signal.
+        if "+xpu" not in _installed_torch_version_label().lower():
+            return
+        pin = f"{_PYTORCH_WHL_BASE}/xpu"
 
     try:
         probe = subprocess.run(

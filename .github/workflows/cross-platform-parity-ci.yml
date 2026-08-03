@@ -26,6 +26,8 @@ on:
       - 'tests/studio/test_intel_registry_fallback.ps1'
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
+      - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
       - '.github/workflows/cross-platform-parity-ci.yml'
   push:
     branches: [main]
@@ -39,6 +41,8 @@ on:
       - 'tests/studio/test_intel_registry_fallback.ps1'
       - 'studio/setup.ps1'
       - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
+      - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
       - '.github/workflows/cross-platform-parity-ci.yml'
   workflow_dispatch:
 
@@ -87,6 +91,14 @@ jobs:
       - name: Setup XPU pre-report tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_setup_xpu_runtime_prereport.ps1
+      # Parses install.ps1 with the AST and executes the extracted builder, so no venv.
+      - name: XPU arm64 torchaudio tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_xpu_arm64_torchaudio.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh
+      # bash, not sh: the helper under test is extracted from install.sh, which is bash.
+      - name: install.sh XPU flavor probe tests
+        if: runner.os != 'Windows'
+        run: bash tests/sh/test_install_sh_xpu_flavor_probe.sh

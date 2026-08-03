@@ -2503,6 +2503,26 @@ exit 0
         return $null
     }
 
+    # sysconfig platform of $PythonExe's venv, lowercased ("" when it cannot be asked).
+    # Windows on ARM has no torchaudio wheel on any index, so every XPU spec list is built
+    # from this; shared so the fresh install and the flavor repair cannot drift apart.
+    function Get-VenvPlatformTag {
+        param([string]$PythonExe)
+        if (-not $PythonExe) { return "" }
+        try {
+            return (& $PythonExe -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+        } catch { return "" }
+    }
+
+    # The XPU trio for $Platform: floor 2.6 (unsloth/models/_utils.py raises at import for an
+    # XPU device below it) and no torchaudio on win-arm64.
+    function Get-XpuTorchSpecs {
+        param([string]$Platform)
+        $specs = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0")
+        if ($Platform -eq "win-arm64") { return $specs }
+        return $specs + @("torchaudio>=2.6,<2.11.0")
+    }
+
     # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Bounded, so a
     # wedged "import torch" cannot stall the flavor repair.
     function Get-InstalledTorchTag {
@@ -2788,15 +2808,11 @@ exit 0
             # Windows on ARM has no torchaudio wheel on any index, so drop that pin here too
             # rather than abort. The pin-only route now reaches this branch on an arm64
             # interpreter, and the generic path below has always asked the interpreter this way.
-            $VenvPlatform = ""
-            try {
-                $VenvPlatform = (& $VenvPython -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
-            } catch { $VenvPlatform = "" }
-            $_xpuSpecs = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0", "torchaudio>=2.6,<2.11.0")
+            $VenvPlatform = Get-VenvPlatformTag -PythonExe $VenvPython
+            $_xpuSpecs = Get-XpuTorchSpecs -Platform $VenvPlatform
             $_xpuCpuSpecs = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0")
             if ($VenvPlatform -eq "win-arm64") {
                 substep "windows on arm: skipping torchaudio (upstream publishes no win_arm64 wheel)."
-                $_xpuSpecs = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0")
                 $_xpuCpuSpecs = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0")
             }
             $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { uv pip install --python $VenvPython --force-reinstall @_xpuSpecs --default-index $TorchIndexUrl }
@@ -2978,8 +2994,10 @@ exit 0
                 } elseif ($expectedTorchTag -ne 'rocm') {
                     # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
-                    # Same 2.6 floor as the XPU install above, for the same reason.
-                    $_fixSpecs = if ($expectedTorchTag -eq 'xpu') { @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0", "torchaudio>=2.6,<2.11.0") }
+                    # Same trio builder as the XPU install above: a migrated win-arm64 venv
+                    # reaches THIS path instead, and asking for the torchaudio that index has
+                    # no wheel for fails the repair before setup.ps1's ARM-aware fallback.
+                    $_fixSpecs = if ($expectedTorchTag -eq 'xpu') { Get-XpuTorchSpecs -Platform (Get-VenvPlatformTag -PythonExe $VenvPython) }
                                  else { @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0") }
                     $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { uv pip install --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     if ($torchFixExit -ne 0) {
