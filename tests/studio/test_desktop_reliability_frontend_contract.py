@@ -250,11 +250,11 @@ def test_chat_sidebar_rows_are_compact_without_vertical_padding():
     block = sidebar_source.split("function renderChatSidebarItem", 1)[1]
 
     assert (
-        '"sidebar-nav-btn h-[29px] cursor-pointer rounded-full py-0 pr-4 '
+        '"sidebar-nav-btn h-[30px] cursor-pointer rounded-full py-0 pr-4 '
         'text-ui-14p5 leading-ui-19 tracking-nav font-medium"'
     ) in block
     assert (
-        '"text-foreground h-[29px] w-full border-0 bg-transparent py-0 pr-4 '
+        '"text-foreground h-[30px] w-full border-0 bg-transparent py-0 pr-4 '
         'text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none"'
     ) in block
     assert 'isPinned && variant !== "project" && "gap-[8.5px]"' in block
