@@ -130,5 +130,18 @@ check "escape precedes the skip gate" \
 check "escape forces the dependency pass" \
     "$(awk -v a="$_esc" 'NR>=a && NR<=a+2 && /_SKIP_PYTHON_DEPS=false/{f=1} END{print (f?"yes":"no")}' "$SETUP_SH")" "yes"
 
+# An authenticated or fragmented mirror is a supported pin shape; a raw suffix test reads it
+# as "no XPU pin" and skips the repair entirely.
+check "pin match strips the query" \
+    "$(grep -q '_setup_pin="\${_setup_pin%%\\?\*}"' "$SETUP_SH" && echo yes || echo no)" "yes"
+check "pin match strips the fragment" \
+    "$(grep -q '_setup_pin="\${_setup_pin%%\\#\*}"' "$SETUP_SH" && echo yes || echo no)" "yes"
+# The escape must not launch an interpreter: a wedged Intel driver hangs inside `import torch`,
+# and this runs before the bounded probes.
+check "escape reads the flavour off disk" \
+    "$(awk -v a="$_esc" 'NR>=a-24 && NR<=a && /site-packages\/torch\/version.py/{f=1} END{print (f?"yes":"no")}' "$SETUP_SH")" "yes"
+check "escape launches no interpreter" \
+    "$(awk -v a="$_esc" 'NR>=a-24 && NR<=a && /\$VENV_DIR\/bin\/python/{f=1} END{print (f?"no":"yes")}' "$SETUP_SH")" "yes"
+
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

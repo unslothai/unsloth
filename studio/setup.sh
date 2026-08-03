@@ -1100,19 +1100,35 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # the package version is current, so the fast path calls it up to date. Mirrors the
         # XPU escapes on setup.ps1's $SkipPythonDeps.
         _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
+        # Strip query and fragment before matching the leaf: an authenticated or fragmented
+        # mirror (https://mirror/whl/xpu?token=...) is a supported pin shape, and a raw suffix
+        # test silently misses it -- which reads as "no XPU pin" and skips the repair.
+        _setup_pin="${_setup_pin%%\#*}"
+        _setup_pin="${_setup_pin%%\?*}"
         case "${_setup_pin%/}" in
             *xpu)
-                if ! "$VENV_DIR/bin/python" -c "
-import sys
-try:
-    import torch
-except Exception:
-    sys.exit(1)
-ver = getattr(torch, '__version__', '').lower()
-rel = ver.split('+')[0].split('.')
-n = tuple(int(x) for x in rel[:2] if x.isdigit())
-sys.exit(0 if ('+xpu' in ver and len(n) == 2 and (2, 6) <= n < (2, 11)) else 1)
-" 2>/dev/null; then
+                # Disk first, no interpreter: torch/version.py carries the local label, so a
+                # wedged Intel driver cannot hang `studio update` inside `import torch` here,
+                # and a CPU-only host pays nothing. Same read the summary uses below.
+                _setup_pin_ok=false
+                for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+                    [ -f "$_setup_pin_tv" ] || continue
+                    _setup_pin_ver=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_setup_pin_tv" | head -1)
+                    case "$_setup_pin_ver" in
+                        *+xpu)
+                            _setup_pin_maj=${_setup_pin_ver%%.*}
+                            _setup_pin_rest=${_setup_pin_ver#*.}
+                            _setup_pin_min=${_setup_pin_rest%%.*}
+                            case "$_setup_pin_maj$_setup_pin_min" in
+                                *[!0-9]*) ;;
+                                *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -ge 6 ] && \
+                                   [ "$_setup_pin_min" -lt 11 ] && _setup_pin_ok=true ;;
+                            esac
+                            ;;
+                    esac
+                    break
+                done
+                if [ "$_setup_pin_ok" = false ]; then
                     substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
                     _SKIP_PYTHON_DEPS=false
                 fi

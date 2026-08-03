@@ -650,6 +650,19 @@ function Test-TorchXpuAvailable {
     return ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
 }
 
+# True only when the installed torch is a +xpu wheel inside the supported range. Separate from
+# Test-TorchXpuAvailable: that answers "the runtime works", which a 2.5+xpu build can also do
+# while unsloth/models/_utils.py still raises at import. Bounded like every probe here.
+function Test-TorchXpuVersionSupported {
+    param([string]$PythonExe)
+    if (-not $PythonExe) { return $false }
+    $code = "import torch; v = getattr(torch, '__version__', '').lower(); r = v.split('+')[0].split('.'); " +
+        "n = tuple(int(x) for x in r[:2] if x.isdigit()); " +
+        "print('+xpu' in v and len(n) == 2 and (2, 6) <= n < (2, 11))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code $code
+    return ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
+}
+
 # Post-install XPU runtime check. A WMI name match says the part is XPU-capable, not that the
 # compute runtime works: on an old Intel driver the wheel installs fine, never initializes, and
 # unsloth/device_type.py raises NotImplementedError at import -- a hard crash, not a chat-only
@@ -3463,7 +3476,10 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         $_pinLeafNow = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
         $_xpuIsReachable = (-not $NoTorchMode) -and ((-not $_pinLeafNow) -or ($_pinLeafNow -eq "xpu"))
         if ($script:IsIntelXpu -and $SkipPythonDeps -and $_xpuIsReachable) {
-            $_torchIsXpu = Test-TorchXpuAvailable -PythonExe "python"
+            # Availability is not enough: unsloth/models/_utils.py raises at import for an XPU
+            # device on torch < 2.6, so a 2.5+xpu venv answers True here and is still broken.
+            # Range as well as flavour, matching the trio installed below.
+            $_torchIsXpu = (Test-TorchXpuAvailable -PythonExe "python") -and (Test-TorchXpuVersionSupported -PythonExe "python")
             if (-not $_torchIsXpu) {
                 substep "Intel GPU detected but PyTorch XPU is unavailable -- reinstalling XPU PyTorch" "Cyan"
                 $SkipPythonDeps = $false

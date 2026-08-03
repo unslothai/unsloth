@@ -1751,6 +1751,130 @@ def _ensure_xpu_torch() -> None:
     )
 
 
+def _ensure_venv_pip() -> bool:
+    """Make `python -m pip` work in the target venv, bootstrapping it if needed.
+
+    `uv venv` is created without --seed, so a fresh venv has no pip at all. Mirrors the
+    bootstrap install.sh already does before its pre-release bitsandbytes wheel.
+    """
+    def _has_pip() -> bool:
+        try:
+            return subprocess.run(
+                [sys.executable, "-m", "pip", "--version"],
+                stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL, timeout = 90,
+            ).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    if _has_pip():
+        return True
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "ensurepip", "--upgrade"],
+            stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL, timeout = 300,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if _has_pip():
+        return True
+    pip_install_try("pip (bootstrap)", "pip", constrain = False)
+    return _has_pip()
+
+
+def _ensure_xpu_triton() -> None:
+    """Replace generic Triton with the XPU build torch asks for.
+
+    Generic `triton` and torch's `pytorch-triton-xpu` / `triton-xpu` both own the top-level
+    `triton` package, and resolving unsloth against a pinned +xpu torch pulls BOTH (uv reports
+    pytorch-triton-xpu 3.5.0 alongside triton 3.7.1), so the CUDA-oriented build can land last
+    and torch.compile then loads the wrong library on an Intel GPU.
+
+    Lives here, not in install.sh, because install.sh runs setup.sh which runs this file: one
+    copy covers the fresh install AND `unsloth studio update`, which never touches install.sh.
+    Windows is excluded -- studio/setup.ps1 owns the same swap there.
+    """
+    if NO_TORCH or IS_MACOS or IS_WINDOWS:
+        return
+    pin = _explicit_xpu_torch_index_url()
+    if pin is None:
+        return
+
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import importlib.metadata as m\n"
+                    "try:\n"
+                    "    reqs = m.requires('torch') or []\n"
+                    "except Exception:\n"
+                    "    reqs = []\n"
+                    "print('SPEC=' + next((r.split(';')[0].strip() "
+                    "for r in reqs if 'triton' in r.lower()), ''))\n"
+                    "print('GENERIC=' + next((d.version for d in m.distributions() "
+                    "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton'), ''))\n"
+                ),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 90,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if probe.returncode != 0:
+        return
+    out = probe.stdout.decode(errors = "replace")
+    spec = next((ln[5:].strip() for ln in out.splitlines() if ln.startswith("SPEC=")), "")
+    generic = next((ln[8:].strip() for ln in out.splitlines() if ln.startswith("GENERIC=")), "")
+    # Act only when generic triton is present AND torch asks for an XPU triton. Anything else
+    # means torch is not the +xpu wheel this assumes, and doing nothing is the safe answer.
+    if not generic or "xpu" not in spec.lower():
+        return
+
+    print(f"   replacing triton {generic} with {spec} (Intel XPU)")
+    if not _ensure_venv_pip():
+        print(_red(f"   no pip in the venv to fetch {spec}; generic triton {generic} left in "
+                   "place -- it shadows torch XPU triton, so torch.compile will not use the XPU"))
+        return
+
+    # Fetch, THEN uninstall, THEN install from the file. The uninstall cannot go last: the
+    # shared paths live in generic triton's OWN record, so removing it afterwards deletes what
+    # the XPU build just wrote. Pre-fetching is what stops a dead mirror stranding the venv
+    # between the two steps. uv has no `pip download`, hence pip here.
+    tmp = tempfile.mkdtemp(prefix = "unsloth_triton_xpu_")
+    try:
+        try:
+            dl = subprocess.run(
+                [
+                    sys.executable, "-m", "pip", "download",
+                    "--no-deps", "--only-binary=:all:", "-d", tmp, spec,
+                    "--index-url", pin,
+                ],
+                stdout = subprocess.PIPE, stderr = subprocess.STDOUT, timeout = 900,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            dl = None
+        wheels = glob.glob(os.path.join(tmp, "*.whl"))
+        # The exit code alone is not enough: no wheel on disk means nothing to install from.
+        if dl is None or dl.returncode != 0 or not wheels:
+            print(_red(f"   could not fetch {spec}; generic triton {generic} left in place -- "
+                       "it shadows torch XPU triton, so torch.compile will not use the XPU"))
+            return
+        subprocess.run(
+            [sys.executable, "-m", "pip", "uninstall", "-y", "triton"],
+            stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL,
+        )
+        if not pip_install_try(
+            "triton (Intel XPU)",
+            "--force-reinstall", "--no-deps", wheels[0],
+            constrain = False,
+        ):
+            print(_red(f"   could not reinstall {spec}; torch.compile may not use the XPU"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors = True)
+
+
 def _ensure_cpu_torch() -> None:
     """Reinstall CPU torch when an explicit CPU pin is set but the venv has a GPU build.
 
@@ -3241,6 +3365,7 @@ def install_python_stack() -> int:
         _ensure_cuda_torch()
         _ensure_rocm_torch()
         _ensure_xpu_torch()
+        _ensure_xpu_triton()
         _ensure_cpu_torch()
 
     # Windows + AMD GPU: warn if ROCm torch was not installed (wrong Python
@@ -3438,6 +3563,7 @@ def install_python_stack() -> int:
         _ensure_cuda_torch()
         _ensure_rocm_torch()
         _ensure_xpu_torch()
+        _ensure_xpu_triton()
         _ensure_cpu_torch()
 
     # 14. Final check (silent; third-party conflicts are expected)
