@@ -938,7 +938,7 @@ export function AppSidebar() {
         ? "sidebar-row-action sidebar-touch-reveal group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
         : "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
-      "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
+      "sidebar-nav-btn h-[25px] cursor-pointer rounded-full py-0 pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
       // title with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
@@ -974,7 +974,7 @@ export function AppSidebar() {
             aria-label={translate("shell.dialog.renameChat.placeholder")}
             className={cn(
               // No pill or box; edit in place as plain highlighted text.
-              "text-foreground h-[33px] w-full border-0 bg-transparent pr-4 text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none",
+              "text-foreground h-[25px] w-full border-0 bg-transparent py-0 pr-4 text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none",
               variant === "project" ? "pl-[39px]" : "pl-3",
             )}
           />

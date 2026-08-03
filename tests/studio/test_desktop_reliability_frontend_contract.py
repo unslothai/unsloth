@@ -245,6 +245,22 @@ def test_collapsed_mac_sidebar_hides_divider():
     assert "top-[var(--studio-mac-titlebar-height,34px)]" not in source
 
 
+def test_chat_sidebar_rows_are_compact_without_vertical_padding():
+    sidebar_source = APP_SIDEBAR.read_text(encoding = "utf-8")
+    block = sidebar_source.split("function renderChatSidebarItem", 1)[1]
+
+    assert (
+        '"sidebar-nav-btn h-[25px] cursor-pointer rounded-full py-0 pr-4 '
+        'text-ui-14p5 leading-ui-19 tracking-nav font-medium"'
+    ) in block
+    assert (
+        '"text-foreground h-[25px] w-full border-0 bg-transparent py-0 pr-4 '
+        'text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none"'
+    ) in block
+    assert 'isPinned && variant !== "project" && "gap-[8.5px]"' in block
+    assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
+
+
 def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     """unslothai/unsloth#7276: Recents chat kebab must be tappable on iPad."""
     sidebar_source = APP_SIDEBAR.read_text(encoding = "utf-8")
