@@ -2747,7 +2747,10 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
 
         deadline = time.monotonic() + _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS
         for root in roots:
-            for f in _iter_gguf_paths(root):
+            if time.monotonic() >= deadline:
+                logger.debug("native context read for '%s' out of budget", repo_id)
+                return None
+            for f in _iter_gguf_paths(root, deadline):
                 if time.monotonic() >= deadline:
                     logger.debug("native context read for '%s' out of budget", repo_id)
                     return None
@@ -3148,8 +3151,13 @@ def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
     return True
 
 
-def _iter_gguf_paths(root: Path):
+def _iter_gguf_paths(root: Path, deadline: Optional[float] = None):
+    """GGUF files under ``root``. With a ``deadline`` (time.monotonic), gives up mid-walk:
+    only .gguf files are yielded, so a large tree can walk for a long time yielding nothing,
+    and a caller checking its budget per yield would never get to check it."""
     for path in root.rglob("*"):
+        if deadline is not None and time.monotonic() >= deadline:
+            return
         if path.is_file() and _is_gguf_filename(path.name):
             yield path
 

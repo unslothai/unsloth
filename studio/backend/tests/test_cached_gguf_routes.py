@@ -1973,12 +1973,58 @@ def test_native_context_read_gives_up_when_the_cache_walk_drags(monkeypatch, tmp
     assert len(visited) < 200
 
 
+def test_native_context_read_budget_binds_on_a_walk_that_yields_nothing(monkeypatch, tmp_path):
+    """_iter_gguf_paths yields only .gguf files, so a large cache can walk a long time
+    yielding nothing. Checking the budget per yield alone would never check it at all."""
+    handed = []
+
+    def walk(root, deadline = None):
+        handed.append(deadline)
+        for _ in range(200):
+            time.sleep(0.005)
+            if deadline is not None and time.monotonic() >= deadline:
+                return
+        return
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(models_route, "_iter_gguf_paths", walk)
+    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.05)
+
+    started = time.monotonic()
+    assert models_route._read_native_context_length(str(tmp_path), is_local = True) is None
+    assert handed and handed[0] is not None, "the walker was given no deadline"
+    assert time.monotonic() - started < 1
+
+
+def test_native_context_read_budget_is_checked_between_caches(monkeypatch, tmp_path):
+    """A repo present in several caches must not restart the budget per cache."""
+    walked = []
+
+    def walk(root, deadline = None):
+        walked.append(str(root))
+        time.sleep(0.2)
+        return iter(())
+
+    monkeypatch.setattr(models_route, "_iter_gguf_paths", walk)
+    monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(models_route, "_is_valid_repo_id", lambda _r: True)
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.iter_repo_cache_dirs",
+        lambda _kind, _repo: [tmp_path / "a", tmp_path / "b", tmp_path / "c"],
+    )
+
+    models_route._read_native_context_length("org/repo", is_local = False)
+    assert len(walked) < 3, f"every cache was walked despite the budget: {walked}"
+
+
 def test_native_context_read_still_reports_a_length_within_budget(monkeypatch, tmp_path):
     """Control: the bound only trims a walk that drags; a header reached in time still answers."""
     gguf = tmp_path / "model-Q4_K_M.gguf"
     gguf.write_bytes(b"x")
 
-    monkeypatch.setattr(models_route, "_iter_gguf_paths", lambda root: iter([gguf]))
+    monkeypatch.setattr(
+        models_route, "_iter_gguf_paths", lambda root, deadline = None: iter([gguf])
+    )
     monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", lambda _path: 8192)
 
     assert models_route._read_native_context_length(str(tmp_path), is_local = True) == 8192

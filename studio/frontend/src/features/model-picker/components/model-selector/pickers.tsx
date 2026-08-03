@@ -142,6 +142,7 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
+import { describeVariantListingError } from "./variant-listing-error";
 import {
   shouldMountVariantExpander,
   toggleAutoExpandedRow,
@@ -707,16 +708,6 @@ function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
     downloadBytes > 0
     ? downloadBytes
     : variant.size_bytes;
-}
-
-/** Why the quant listing did not arrive. A raw timeout reads as "The operation
- *  timed out.", which names neither the Hub nor the retry that usually clears it. */
-function describeVariantListingError(err: unknown): string {
-  if (err instanceof DOMException && err.name === "TimeoutError") {
-    return "Timed out listing quantizations. Check your connection to Hugging Face, then retry.";
-  }
-  if (err instanceof Error && err.message) return err.message;
-  return "Failed to load variants";
 }
 
 /** The one quant a repo holds, plus the vision flag read with it. The
