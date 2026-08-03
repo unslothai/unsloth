@@ -19,6 +19,7 @@ import pytest
 from core.inference.chat_template_helpers import (
     _deepseek_opener_pattern,
     _neutralize_content_parts,
+    _accepts_tools_kwarg,
     _reads_tools_variable,
     _round_trips_tool_calls,
     renderable_tool_catalog_for_targets,
@@ -5865,3 +5866,71 @@ def test_a_tilde_concatenated_opener_is_recognized():
 )
 def test_an_escaped_string_literal_is_still_data(body, reads):
     assert _reads_tools_variable(body) is reads
+
+
+def test_a_tilde_built_role_sentinel_is_profiled():
+    """A template can build its role sentinel with Jinja's own "~". Accepting only "+" left
+    the dynamic roles out, and any static delimiter elsewhere then made the profile
+    non-empty, which is exactly what disables the curated fallback (#7066)."""
+    tilde = "{% for m in messages %}{{ '<|' ~ m.role ~ '|>' }}{{ m.content }}<|end|>{% endfor %}"
+    profile = model_markup(tilde, ["<|end|>"], None)
+    assert profile.rewrite_control("<|assistant|>") == "< |assistant|>"
+    # The "+" spelling is unchanged.
+    assert model_markup(tilde.replace("~", "+"), ["<|end|>"], None).rewrite_control(
+        "<|assistant|>"
+    ) == "< |assistant|>"
+
+
+def test_a_renderer_that_rejects_the_tools_kwarg_advertises_nothing():
+    """apply_chat_template_for_generation catches that TypeError and succeeds with a
+    no-tools attempt, so the prompt carries no schema however often the template body names
+    the variable (#7066)."""
+
+    class _Rejects:
+        chat_template = "{% for t in tools %}{{ t }}{% endfor %}{{ messages }}"
+        added_tokens_decoder: dict = {}
+
+        def apply_chat_template(self, messages, tokenize = False, add_generation_prompt = True):
+            return ""
+
+    class _Accepts(_Rejects):
+        def apply_chat_template(
+            self, messages, tokenize = False, add_generation_prompt = True, tools = None
+        ):
+            return ""
+
+    assert _accepts_tools_kwarg(_Rejects()) is False
+    assert _accepts_tools_kwarg(_Accepts()) is True
+    tools = [{"type": "function", "function": {"name": "read_file", "description": "d"}}]
+    absent = {"native_chat_template": False}
+    assert renderable_tool_catalog(tools, _Rejects(), absent) == []
+    assert catalog_tool_names(renderable_tool_catalog(tools, _Accepts(), absent)) == {"read_file"}
+
+
+def test_a_real_tokenizer_is_never_read_as_rejecting_tools():
+    """The signature test must not fire on the classes every shipped model actually uses."""
+    from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+    assert _accepts_tools_kwarg(PreTrainedTokenizerBase) is True
+    # Anything not introspectable is treated as accepting: not proven to reject.
+    assert _accepts_tools_kwarg(object()) is True
+
+
+def test_the_native_authorization_profile_sees_the_special_tokens():
+    """The native render profiles through markup_for_tokenizer and so resolves
+    "{{ bos_token }}", while this catalog built its native profile directly. A tool whose
+    schema carries that value was dropped by the render and kept by the catalog (#7066)."""
+
+    class _Tok:
+        chat_template = "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}"
+        added_tokens_decoder = {0: type("_T", (), {"content": "<|im_start|>"})()}
+        bos_token = "<|zeta_bos|>"
+
+    tools = [
+        {"type": "function", "function": {"name": "pay<|zeta_bos|>", "description": "d"}},
+        {"type": "function", "function": {"name": "ok", "description": "f"}},
+    ]
+    native = {
+        "native_chat_template": "{{ bos_token }}{% for t in tools %}<|im_start|>{{ t }}{% endfor %}"
+    }
+    assert catalog_tool_names(renderable_tool_catalog(tools, _Tok(), native)) == {"ok"}

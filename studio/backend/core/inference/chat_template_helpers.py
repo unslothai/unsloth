@@ -9,6 +9,7 @@ native-chat-template fallback used by the transformers and MLX backends.
 
 import copy
 import functools
+import inspect
 import json
 import logging
 import re
@@ -289,7 +290,11 @@ _BLOCK_METADATA = frozenset({"[ARGS]", "[CALL_ID]", "[TOOL_CONTENT]"})
 # literals alone leaves it out of a profile that is otherwise non-empty -- and a non-empty
 # profile is what disables the curated fallback. Client text could then carry a trusted role
 # marker into a user turn (#7066).
-_DYNAMIC_PIPE_ROLE = re.compile(r"""['"]<\|['"]\s*\+|\+\s*['"]\|>['"]""")
+# Both concatenation operators, matching the opener detector below: accepting only "+"
+# left "{{ '<|' ~ message.role ~ '|>' }}" contributing no role markers, and any static
+# delimiter elsewhere in the template then made the profile non-empty, which is what
+# disables the curated fallback (#7066).
+_DYNAMIC_PIPE_ROLE = re.compile(r"""['"]<\|['"]\s*[+~]|[+~]\s*['"]\|>['"]""")
 # The roles a chat template can interpolate. Closed on purpose: this adds exactly what the
 # construction can emit, rather than re-enabling a match on any "<|word|>".
 # A template can build the equals-form opener from fragments too, "{{ '<function=' +
@@ -1719,8 +1724,29 @@ def _template_reads_tools(
     return any(_reads_tools_variable(body) or _round_trips_tool_calls(body) for body in bodies)
 
 
+def _accepts_tools_kwarg(target) -> bool:
+    """False only when ``apply_chat_template`` provably rejects ``tools=``.
+
+    apply_chat_template_for_generation catches that TypeError and succeeds with a no-tools
+    attempt, so the prompt carries no schema however often the template body names the
+    variable. Signature rather than a probe render: a render needs messages this function
+    does not have, and would raise for unrelated reasons on a strict template."""
+    apply = getattr(target, "apply_chat_template", None)
+    if apply is None:
+        return True
+    try:
+        parameters = inspect.signature(apply).parameters
+    except (TypeError, ValueError):
+        return True  # not introspectable, so not proven to reject
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return True
+    return "tools" in parameters
+
+
 def _renders_tool_schema(target, template, tools) -> bool:
     """True unless the template *target* will select provably cannot advertise tools."""
+    if tools and not _accepts_tools_kwarg(target):
+        return False
     value = template or getattr(target, "chat_template", None)
     if not value:
         value = getattr(getattr(target, "tokenizer", None), "chat_template", None)
@@ -1825,7 +1851,15 @@ def renderable_tool_catalog(
         return safe if active_renders_tools else _unadvertised()
     if not active_renders_tools and not _template_reads_tools(native_tpl, tools):
         return _unadvertised()
-    native = model_markup(native_tpl, _vocabulary_of(tokenizer), tools)
+    # With the special tokens too: the native render profiles through markup_for_tokenizer
+    # and so resolves "{{ bos_token }}", and a catalog built without them kept a tool whose
+    # schema carries that value while the render dropped it (#7066).
+    native = model_markup(
+        native_tpl,
+        _vocabulary_of(tokenizer),
+        tools,
+        specials = _special_token_strings(getattr(tokenizer, "tokenizer", tokenizer)),
+    )
     if native is None:
         return safe
     kept = catalog_tool_names(neutralize_tool_descriptions(tools, cache, native))
