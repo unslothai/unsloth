@@ -116,6 +116,12 @@ export function discardQueuedChatRunSettingsForThread(
   }
 }
 
+export function hasQueuedChatRunSettings(threadId?: string | null): boolean {
+  return Boolean(
+    threadId && pendingSettings.some((entry) => entry.threadIds.has(threadId)),
+  );
+}
+
 export function consumeQueuedChatRunSettings(
   threadId?: string | null,
 ): QueuedChatRunSettings | null {

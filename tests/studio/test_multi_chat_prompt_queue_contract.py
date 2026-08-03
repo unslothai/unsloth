@@ -338,6 +338,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert lifecycle.index("await getInferenceStatus()") < lifecycle.index(
         "await autoLoadSmallestModel("
     )
+    assert "getInferenceStatus().catch(() => null)" not in lifecycle
+    assert "const status = await getInferenceStatus();" in lifecycle
     assert "options?.abortSignal?.throwIfAborted()" in CHAT_ADAPTER
     assert CHAT_ADAPTER.count("await persistResolvedQueuedModel(params.checkpoint)") >= 2
     assert "notifyQueuedRunFailed();\n          throw error;" in CHAT_ADAPTER
@@ -348,6 +350,21 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "complete: discardOldestPendingSettings" in target
     assert "getActivePromptQueueItem(run)?.target.complete()" in THREAD
     assert "notifyPromptQueueRunFailed(resolvedThreadId ?? null)" in CHAT_ADAPTER
+    assert "const adapterRunStartedSignals = new WeakSet<AbortSignal>();" in CHAT_ADAPTER
+    assert CHAT_ADAPTER.count("adapterRunStartedSignals.add(abortSignal);") == 3
+    assert "!adapterRunStartedSignals.has(args.abortSignal)" in CHAT_ADAPTER
+    assert "adapterRunStartedSignals.delete(args.abortSignal);" in CHAT_ADAPTER
+    assert CHAT_ADAPTER.index(
+        "const queuedRunWasPending = preStreamThreadIds.some("
+    ) < CHAT_ADAPTER.index("yield* adapter.run(args);")
+    assert "preStreamThreadIds.some(\n        hasQueuedChatRunSettings," in CHAT_ADAPTER
+    assert "pendingSettings.some((entry) => entry.threadIds.has(threadId))" in QUEUED_SETTINGS
+    assert CHAT_ADAPTER.index(
+        "!adapterRunStartedSignals.has(args.abortSignal)"
+    ) < CHAT_ADAPTER.index(
+        "throw error;",
+        CHAT_ADAPTER.index("!adapterRunStartedSignals.has(args.abortSignal)"),
+    )
     assert CHAT_ADAPTER.index("const notifyQueuedRunFailed = () =>") < CHAT_ADAPTER.index(
         "if (\n        runtime.deepResearchEnabled"
     )
@@ -431,6 +448,22 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "await confirmStopRunningChatsIfNeeded(" in SHARED_COMPOSER
     assert SHARED_COMPOSER.index("await confirmStopRunningChatsIfNeeded(") < SHARED_COMPOSER.index(
         'setText("");'
+    )
+    send_flow = _between(
+        SHARED_COMPOSER,
+        "async function send()",
+        "// Generalized compare: load each model before dispatching to its side",
+    )
+    assert "const submittedText = text;" in send_flow
+    assert "const submittedImages = pendingImages;" in send_flow
+    assert "const submittedAudio = pendingAudio;" in send_flow
+    assert "textRef.current !== submittedText" in send_flow
+    assert "pendingImagesRef.current !== submittedImages" in send_flow
+    assert "pendingAudioRef.current !== submittedAudio" in send_flow
+    assert (
+        send_flow.index("await confirmStopRunningChatsIfNeeded(")
+        < send_flow.index("textRef.current !== submittedText")
+        < send_flow.index('setText("");')
     )
     assert "requestLocalPromptQueueStop(" in SHARED_COMPOSER
     assert SHARED_COMPOSER.index("requestLocalPromptQueueStop(") < SHARED_COMPOSER.index(

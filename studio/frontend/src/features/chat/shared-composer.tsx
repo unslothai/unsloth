@@ -497,6 +497,14 @@ export function SharedComposer({
     base64: string;
     contentType: string;
   } | null>(null);
+  const textRef = useRef(text);
+  const pendingImagesRef = useRef(pendingImages);
+  const pendingAudioRef = useRef(pendingAudio);
+  useEffect(() => {
+    textRef.current = text;
+    pendingImagesRef.current = pendingImages;
+    pendingAudioRef.current = pendingAudio;
+  }, [text, pendingImages, pendingAudio]);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -945,8 +953,11 @@ export function SharedComposer({
 
   async function send() {
     if (composingRef.current) return;
-    const msg = text.trim();
-    if (!msg && pendingImages.length === 0 && !pendingAudio) return;
+    const submittedText = text;
+    const submittedImages = pendingImages;
+    const submittedAudio = pendingAudio;
+    const msg = submittedText.trim();
+    if (!msg && submittedImages.length === 0 && !submittedAudio) return;
 
     const hasCompareHandles = Boolean(
       handlesRef.current["model1"] || handlesRef.current["model2"],
@@ -968,7 +979,7 @@ export function SharedComposer({
     }
 
     if (
-      pendingImages.length > 0 &&
+      submittedImages.length > 0 &&
       !isGeneralizedCompare &&
       imageUnavailableReason
     ) {
@@ -981,7 +992,7 @@ export function SharedComposer({
     }
 
     const content: CompareMessagePart[] = [];
-    for (const { file } of pendingImages) {
+    for (const { file } of submittedImages) {
       try {
         const image = await fileToBase64DataURL(file);
         content.push({ type: "image", image });
@@ -989,11 +1000,11 @@ export function SharedComposer({
         // skip failed image
       }
     }
-    if (pendingAudio) {
+    if (submittedAudio) {
       content.push({
         type: "audio",
-        name: pendingAudio.name,
-        audio: `data:${pendingAudio.contentType};base64,${pendingAudio.base64}`,
+        name: submittedAudio.name,
+        audio: `data:${submittedAudio.contentType};base64,${submittedAudio.base64}`,
       });
     }
     if (msg) {
@@ -1008,6 +1019,16 @@ export function SharedComposer({
         )
       : null;
     if (compareStopDecision && !compareStopDecision.proceed) {
+      return;
+    }
+    if (
+      textRef.current !== submittedText ||
+      pendingImagesRef.current !== submittedImages ||
+      pendingAudioRef.current !== submittedAudio
+    ) {
+      toast.info("Message changed while preparing", {
+        description: "Your updated draft was kept. Send it again when ready.",
+      });
       return;
     }
     let compareLifecycleLease: ModelLifecycleLease | null = null;

@@ -18,6 +18,7 @@ import {
 } from "../utils/pre-stream-run-reservation";
 import {
   consumeQueuedChatRunSettings,
+  hasQueuedChatRunSettings,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
@@ -271,6 +272,7 @@ type ThreadAutosaveHandle = {
 };
 
 const pendingFirstThreadSaves = new Map<string, Promise<void>>();
+const adapterRunStartedSignals = new WeakSet<AbortSignal>();
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -2565,10 +2567,13 @@ async function resolveQueuedEmptyLocalModel(
       // Hold the lifecycle lease across the probe. Its response cannot become
       // stale behind a foreground or sibling queued load, and only this owner
       // may clear modelLoading afterward.
-      const status = await getInferenceStatus().catch(() => null);
+      // A failed probe is not evidence that the local server is empty. Fail
+      // closed so a transient status error cannot replace a valid resident
+      // model with the recorded/default auto-load candidate.
+      const status = await getInferenceStatus();
       abortSignal.throwIfAborted();
-      const checkpoint = status ? resolveInferenceCheckpointId(status) : null;
-      if (status && checkpoint) {
+      const checkpoint = resolveInferenceCheckpointId(status);
+      if (checkpoint) {
         return {
           loaded: true,
           blockedByTrustRemoteCode: false,
@@ -2906,6 +2911,7 @@ export function createOpenAIStreamAdapter(
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
         releaseCurrentPreStreamRun();
         runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
+        adapterRunStartedSignals.add(abortSignal);
         let report = "";
         let releaseResearchFollow: (() => void) | null = null;
         const researchFollowController = new AbortController();
@@ -3561,6 +3567,7 @@ export function createOpenAIStreamAdapter(
         runtime.registerThreadServerCancel(threadKey, audioCancel);
         releaseCurrentPreStreamRun();
         runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
+        adapterRunStartedSignals.add(abortSignal);
         try {
           yield {
             content: [{ type: "text" as const, text: "Generating audio..." }],
@@ -3652,6 +3659,7 @@ export function createOpenAIStreamAdapter(
         local: !isExternalRequest,
         owner: serverCancel,
       });
+      adapterRunStartedSignals.add(abortSignal);
       let cumulativeText = "";
       const reasoningDurationTracker = createReasoningDurationTracker();
       // True while wrapping a `delta.reasoning_content` stream in
@@ -5323,9 +5331,23 @@ export function createOpenAIStreamAdapter(
       if (reservationToken) {
         adoptPreStreamRunReservation(reservationToken, preStreamThreadIds);
       }
+      const queuedRunWasPending = preStreamThreadIds.some(
+        hasQueuedChatRunSettings,
+      );
       try {
         yield* adapter.run(args);
+      } catch (error) {
+        if (
+          queuedRunWasPending &&
+          !adapterRunStartedSignals.has(args.abortSignal)
+        ) {
+          notifyPromptQueueRunFailed(
+            args.unstable_threadId ?? preStreamThreadIds[0] ?? null,
+          );
+        }
+        throw error;
       } finally {
+        adapterRunStartedSignals.delete(args.abortSignal);
         if (
           reservationToken &&
           releasePreStreamRunReservation(reservationToken)
