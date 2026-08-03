@@ -2265,13 +2265,13 @@ const Composer: FC<{
     let shouldCorrectPersistedModel: boolean | null = null;
     let initializedFreshThreadId: string | null = null;
     let freshThreadAppendAccepted = false;
-    const removeFreshThreadPersistedAfterAbort = (force = false) => {
+    const removeFreshThreadPersistedAfterAbort = () => {
       const historyWasCleared =
         chatHistoryClearBoundary.capture() !== historyClearGeneration;
       if (
         !initializedFreshThreadId ||
         freshThreadAppendAccepted ||
-        (!force && !cancelled && !historyWasCleared)
+        (!cancelled && !historyWasCleared)
       ) {
         return false;
       }
@@ -2343,7 +2343,9 @@ const Composer: FC<{
           const { remoteId } = await runtime.threads
             .getItemById(state.id)
             .initialize();
-          initializedFreshThreadId = initializingFreshThread ? remoteId : null;
+          if (initializingFreshThread) {
+            initializedFreshThreadId = remoteId;
+          }
           if (
             removeFreshThreadPersistedAfterAbort() ||
             cancelled ||
@@ -2389,7 +2391,9 @@ const Composer: FC<{
             void (appendResult as Promise<void>).catch(() => undefined);
           }
         } catch (error) {
-          removeFreshThreadPersistedAfterAbort(true);
+          // A setup failure is retryable. Keep the initialized record unless a
+          // concurrent stop or Clear all explicitly invalidated this queue.
+          removeFreshThreadPersistedAfterAbort();
           pendingSettingsIds.delete(settingsId);
           discardQueuedChatRunSettings(settingsId);
           throw error;

@@ -3,6 +3,7 @@
 
 """Static contracts for independent per-chat prompt queues."""
 
+import re
 from pathlib import Path
 
 
@@ -207,6 +208,20 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "await waitForRunStartHistoryAppend(options.messages)" in persisted_wrapper
     assert "releasePreStreamRunReservation(reservationToken)" in persisted_wrapper
     assert "notifyPromptQueueRunFailed(" in persisted_wrapper
+    persisted_failure = _between(
+        persisted_wrapper,
+        "} catch (error) {",
+        "throw error;",
+    )
+    assert persisted_failure.index("releasePreStreamRunReservation(reservationToken)") < (
+        persisted_failure.index("notifyPromptQueueRunFailed(")
+    )
+    assert re.search(
+        r"releasePreStreamRunReservation\(reservationToken\);\s*}\s*"
+        r"//.*?notifyPromptQueueRunFailed\(",
+        persisted_failure,
+        re.S,
+    ), "queue failure notification must not depend on a direct-send reservation"
 
 
 def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
@@ -393,6 +408,11 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         < side_two.index("handle2.startRun()")
     )
     assert "requestLocalPromptQueueStop" in eject
+    assert (
+        eject.index("beginModelLoading()")
+        < eject.index("await confirmStopRunningChatsIfNeeded(")
+        < eject.index("requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds)")
+    )
     assert "function promptQueueRunUsesLocalModel(run: PromptQueueRun)" in THREAD
     assert ".slice(Math.max(run.index, 0))" in THREAD
     assert ".some((item) => item.target.usesLocalModel)" in THREAD
@@ -442,9 +462,11 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     )
     assert "const historyClearGeneration = chatHistoryClearBoundary.capture()" in target
     assert "chatHistoryClearBoundary.capture() !== historyClearGeneration" in target
-    assert "initializedFreshThreadId = initializingFreshThread ? remoteId : null" in target
+    assert "if (initializingFreshThread)" in target
+    assert "initializedFreshThreadId = remoteId" in target
     assert "freshThreadAppendAccepted = true" in target
     assert "removeFreshThreadPersistedAfterAbort()" in target
+    assert "removeFreshThreadPersistedAfterAbort(true)" not in target
     assert "markChatThreadDeleted(initializedFreshThreadId)" in target
     assert "deleteStoredChatThreads([initializedFreshThreadId])" in target
     assert "aui.threads().switchToNewThread()" in target

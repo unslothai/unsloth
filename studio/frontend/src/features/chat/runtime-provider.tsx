@@ -961,14 +961,15 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
       try {
         adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
       } catch (error) {
-        if (
-          reservationToken &&
-          releasePreStreamRunReservation(reservationToken)
-        ) {
-          notifyPromptQueueRunFailed(
-            options.unstable_threadId ?? reservationThreadIds[0] ?? null,
-          );
+        if (reservationToken) {
+          releasePreStreamRunReservation(reservationToken);
         }
+        // Queued runs do not carry a direct-send reservation. Their persisted
+        // preflight can still fail before the model adapter consumes the queued
+        // settings, so always notify the owning queue and let it clean up.
+        notifyPromptQueueRunFailed(
+          options.unstable_threadId ?? reservationThreadIds[0] ?? null,
+        );
         throw error;
       }
       if (reservationToken && adoptedThreadId) {

@@ -1822,6 +1822,13 @@ export function useChatModelRuntime() {
     }
     let lifecycleLease: ModelLifecycleLease | null = null;
     try {
+      // Block queue materialization before taking the confirmation snapshot.
+      // Otherwise a queue can appear while the dialog is open and be stopped
+      // by the unload even though the user never confirmed stopping it.
+      lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+      if (lifecycleLease === null) {
+        return false;
+      }
       // Ejecting tears down llama-server, so every chat stops. Same prompt, but it
       // leaves no model loaded, so it must not be worded as a reload.
       const stopDecision = await confirmStopRunningChatsIfNeeded(
@@ -1829,12 +1836,6 @@ export function useChatModelRuntime() {
         "unload",
       );
       if (!stopDecision.proceed) return false;
-      // Same window as selectModel: a load may have started during the confirm.
-      if (bailIfLoading()) return false;
-      lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
-      if (lifecycleLease === null) {
-        return false;
-      }
 
       async function performUnload(): Promise<void> {
         requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
