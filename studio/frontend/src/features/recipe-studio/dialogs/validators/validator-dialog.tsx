@@ -514,6 +514,13 @@ export function ValidatorDialog({
                   ? ` (max ${TOOL_SCAFFOLD_MAX_ROWS})`
                   : ""}
               </Button>
+              {toolScaffoldRows.length >= TOOL_SCAFFOLD_MAX_ROWS && (
+                <p className="text-xs text-muted-foreground">
+                  At the {TOOL_SCAFFOLD_MAX_ROWS}-file cap. Need more control
+                  over the project layout? Use the Advanced custom check and
+                  write a Python function instead.
+                </p>
+              )}
             </div>
           </div>
           <div className="grid gap-2">
