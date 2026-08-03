@@ -27,6 +27,7 @@ import {
   reasoningCapsFromLoad,
   tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
+import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
@@ -1977,19 +1978,13 @@ async function autoLoadSmallestModel(): Promise<{
           ? loadResp.context_length ?? 131072
           : effectiveMaxSeqLength,
     });
-    const autoModel: ChatModelSummary = {
-      id: loadedModelId,
-      name: loadResp.display_name ?? candidate.id,
-      isVision: loadResp.is_vision ?? false,
-      isLora: loadResp.is_lora ?? false,
-      isGguf: loadResp.is_gguf ?? candidate.kind === "gguf",
-      isAudio: loadResp.is_audio ?? false,
-      audioType: loadResp.audio_type ?? null,
-      hasAudioInput: loadResp.has_audio_input ?? false,
-    };
-    if (!store.models.some((m) => m.id === loadedModelId)) {
-      store.setModels([...store.models, autoModel]);
-    }
+    // Upsert: a pre-load catalog entry has no backend-derived audio
+    // capability, and the load response is the authority on it.
+    syncModelCapabilities(loadedModelId, {
+      ...loadResp,
+      display_name: loadResp.display_name ?? candidate.id,
+      is_gguf: loadResp.is_gguf ?? candidate.kind === "gguf",
+    });
     if (candidate.kind === "gguf") {
       // Keep an explicit Manual+Auto context pin the load just applied (so a
       // later Apply doesn't silently revert it to auto-fit sizing), mirroring

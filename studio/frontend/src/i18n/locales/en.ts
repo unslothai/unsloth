@@ -922,7 +922,9 @@ export const en = {
       relativeJustNow: "just now",
       relativeHoursAgo: "{count}h ago",
       relativeDaysAgo: "{count}d ago",
+      relativeOneMonthAgo: "1mo ago",
       relativeMonthsAgo: "{count}mo ago",
+      relativeOneYearAgo: "1y ago",
       relativeYearsAgo: "{count}y ago",
       expired: "expired",
       today: "today",
@@ -996,7 +998,30 @@ export const en = {
           "If you still have the repo checkout, run the local installer from it:",
         restartAfterUpdate: "Restart Unsloth after updating.",
         desktopManaged:
-          "The desktop app keeps its bundled backend updated and will prompt when a new version is available.",
+          "The desktop app checks for new app versions automatically. You can also check or update here at any time.",
+        desktopReady: "Desktop app updates",
+        desktopReadyDescription:
+          "Check whether a newer desktop app version is available.",
+        desktopChecking: "Checking for updates",
+        desktopCheckingDescription: "This usually takes a few seconds.",
+        desktopAvailable: "Desktop app {version} is available",
+        desktopAvailableDescription:
+          "Update now and the desktop app will restart when it finishes.",
+        desktopExternalServer:
+          "Run `unsloth studio update` from the terminal that started your server.",
+        desktopManualInstall:
+          "Open the release page to install the latest Linux package.",
+        desktopCheckFailed: "Could not check for updates",
+        desktopCheckFailedDescription: "Check your connection and try again.",
+        desktopCurrent: "Desktop app is up to date",
+        desktopCurrentDescription:
+          "Unsloth will continue checking automatically.",
+        checkForUpdates: "Check for updates",
+        checkAgain: "Check again",
+        retryCheck: "Try again",
+        checking: "Checking...",
+        updateNow: "Update now",
+        openReleasePage: "Open release page",
         unknownInstall:
           "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",
         localCheckout:

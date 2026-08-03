@@ -14,6 +14,7 @@ import os
 import pytest
 
 import routes.inference as inference_route
+from models.inference import _InferenceRuntimeFields
 
 
 class _StatusBackend:
@@ -21,6 +22,10 @@ class _StatusBackend:
 
     Unknown attributes answer None so a later Optional field needs no edit here; typed ones
     are set explicitly so the response model validates for real, not against a mock.
+
+    Runtime fields are seeded from the response model's defaults: ``_llama_runtime_fields``
+    resolves them by ``hasattr``, which the None catch-all always satisfies, so without real
+    values every bool arrives as None and fails validation. New upstream fields land typed.
     """
 
     def __init__(
@@ -30,6 +35,8 @@ class _StatusBackend:
         native_grant_backed = None,
         display_label = None,
     ):
+        for name, value in _InferenceRuntimeFields().model_dump().items():
+            setattr(self, name, value)
         self.model_identifier = model_identifier
         self.is_loaded = True
         if native_grant_backed is not None:

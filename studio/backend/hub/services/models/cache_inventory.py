@@ -449,6 +449,8 @@ def _scan_cached_gguf() -> list[dict]:
                     "size_bytes": max(total_size, variant_state_size),
                     "cache_path": str(repo_info.repo_path),
                     "partial": partial,
+                    # A marker-only sibling moves neither size nor mtime.
+                    "has_variant_state": has_variant_state,
                     # GGUF row-level transport is ambiguous (variants may differ);
                     # per-variant detail lives on GgufVariantDetail.
                     "partial_transport": None,

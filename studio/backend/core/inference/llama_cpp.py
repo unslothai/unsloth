@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 import uuid
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import (
     Callable,
@@ -126,6 +127,45 @@ class LlamaServerNotFoundError(RuntimeError):
 
 class _LlamaStreamCancelled(Exception):
     """Internal signal for an expected client/request cancellation."""
+
+
+@dataclass(frozen = True)
+class GgufLoadIntent:
+    """Immutable caller intent replayed by retries and recovery."""
+
+    model_identifier: str
+    gguf_path: Optional[str] = None
+    mmproj_path: Optional[str] = None
+    mtp_draft_path: Optional[str] = None
+    hf_repo: Optional[str] = None
+    hf_variant: Optional[str] = None
+    hf_token: Optional[str] = None
+    is_vision: bool = False
+    n_ctx: int = 4096
+    chat_template_override: Optional[str] = None
+    cache_type_kv: Optional[str] = None
+    speculative_type: Optional[str] = None
+    spec_draft_n_max: Optional[int] = None
+    tensor_parallel: bool = False
+    gpu_memory_mode: Literal["auto", "manual"] = "auto"
+    gpu_layers: int = -1
+    n_cpu_moe: int = 0
+    tensor_split: Optional[tuple[float, ...]] = None
+    gpu_ids: Optional[tuple[int, ...]] = None
+    gpu_ids_are_vulkan_ordinals: Optional[bool] = None
+    n_threads: Optional[int] = None
+    n_parallel: int = 1
+    extra_args: Optional[tuple[str, ...]] = None
+    preserve_multi_gpu_on_layer: bool = False
+    compare_mtp_draft: bool = False
+
+    def __post_init__(self):
+        for key in ("tensor_split", "gpu_ids", "extra_args"):
+            value = getattr(self, key)
+            if value is not None:
+                object.__setattr__(self, key, tuple(value))
+        if self.gpu_ids == ():
+            object.__setattr__(self, "gpu_ids", None)
 
 
 # Shared so the from_identifier preflight and the load-time raise stay in sync.
@@ -1502,22 +1542,21 @@ def _with_gguf_load_marker(load: Callable):
     """Keep an HF repo marked for the full synchronous load call."""
 
     @functools.wraps(load)
-    def wrapped(self, *args, **kwargs):
-        hf_repo = kwargs.get("hf_repo")
+    def wrapped(self, intent: GgufLoadIntent):
+        hf_repo = intent.hf_repo
         with gguf_load_in_flight(hf_repo):
             if hf_repo and _hub_download_blocks_gguf_load(
                 hf_repo,
-                kwargs.get("hf_variant"),
+                intent.hf_variant,
                 require_mmproj = bool(
-                    kwargs.get("is_vision")
-                    and not extra_args_disable_mmproj(kwargs.get("extra_args"))
+                    intent.is_vision and not extra_args_disable_mmproj(intent.extra_args)
                 ),
-                hf_token = kwargs.get("hf_token"),
+                hf_token = intent.hf_token,
             ):
                 raise RuntimeError(
                     f"'{hf_repo}' is currently being downloaded by the download manager"
                 )
-            return load(self, *args, **kwargs)
+            return load(self, intent)
 
     return wrapped
 
@@ -2577,9 +2616,8 @@ class LlamaCppBackend:
         self._extra_args: Optional[List[str]] = None
         self._extra_args_source: Optional[tuple[str, Optional[str]]] = None
         self._requested_n_ctx: int = 0
-        # Raw kwargs of the last healthy load, for the MTP-crash reload. Memory-only
-        # (carries hf_token, never logged); single-flight via the lock below.
-        self._last_load_kwargs: Optional[dict] = None
+        # Last healthy caller intent for crash recovery. Memory-only and never logged.
+        self._last_load_intent: Optional[GgufLoadIntent] = None
         self._mtp_runtime_fallback_lock = threading.Lock()
         self._mtp_runtime_fallback_in_progress = False
         # Background watchdog so an MTP+tensor crash recovers even when no request
@@ -3056,10 +3094,133 @@ class LlamaCppBackend:
             self._requested_gpu_ids = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
         else:
             self._requested_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
-        if self._last_load_kwargs is not None:
-            self._last_load_kwargs["gpu_ids"] = (
-                list(self._requested_gpu_ids) if self._requested_gpu_ids else None
+        if self._last_load_intent is not None:
+            self._last_load_intent = replace(
+                self._last_load_intent,
+                gpu_ids = tuple(self._requested_gpu_ids) if self._requested_gpu_ids else None,
             )
+
+    @property
+    def last_load_intent(self) -> Optional[GgufLoadIntent]:
+        return self._last_load_intent
+
+    def _runtime_matches_intent(
+        self, intent: GgufLoadIntent, effective_extra_args: Optional[list[str]]
+    ) -> bool:
+        """Whether active runtime settings satisfy one resolved caller intent."""
+        if self._requested_n_ctx != int(intent.n_ctx):
+            return False
+        if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
+            return False
+
+        def _norm(value):
+            if value is None:
+                return None
+            if isinstance(value, str):
+                value = value.strip().lower()
+                return value or None
+            return value
+
+        if _norm(self._cache_type_kv) != _norm(intent.cache_type_kv):
+            return False
+
+        extra_args = list(effective_extra_args) if effective_extra_args is not None else None
+        if not _tensor_parallel_matches_loaded(
+            extra_args, intent.tensor_parallel, self._tensor_parallel
+        ):
+            return False
+        if (
+            self._layer_preserves_tensor_intent
+            and not _effective_tensor_parallel(extra_args, intent.tensor_parallel)
+            and not intent.preserve_multi_gpu_on_layer
+        ):
+            return False
+
+        if self._is_diffusion:
+            requested_ngl = _diffusion_manual_ngl(intent.gpu_memory_mode, intent.gpu_layers)
+            if requested_ngl != self.diffusion_requested_ngl:
+                return False
+            # A split dropped by an older shim still matches until the shim gains
+            # --ngl support, at which point the same request should apply it.
+            if (
+                requested_ngl is not None
+                and self._gpu_layers != requested_ngl
+                and self.diffusion_split_supported()
+            ):
+                return False
+        else:
+            if self._swa_full != _swa_full_from_args_or_env(extra_args):
+                return False
+            if self._gpu_memory_mode != intent.gpu_memory_mode:
+                return False
+            if intent.gpu_memory_mode == "manual" and (
+                self._gpu_layers != intent.gpu_layers
+                or (
+                    intent.gpu_layers >= 0
+                    and (
+                        self._n_cpu_moe != intent.n_cpu_moe
+                        or (tuple(self._tensor_split) if self._tensor_split else None)
+                        != (intent.tensor_split or None)
+                    )
+                )
+            ):
+                return False
+
+        if not self.matches_gpu_ids(list(intent.gpu_ids) if intent.gpu_ids else None):
+            return False
+
+        spec_owned_by_extra_args = _extra_args_set_spec_type(extra_args)
+        speculative_type = (
+            None
+            if spec_owned_by_extra_args
+            else _canonicalize_spec_mode(intent.speculative_type) or "auto"
+        )
+        backend_spec = self._requested_spec_mode
+        if spec_owned_by_extra_args:
+            if backend_spec is not None:
+                return False
+        elif speculative_type != (backend_spec or "auto"):
+            return False
+        if (
+            intent.gguf_path is None
+            and self._spec_fallback_reason == "drafter_not_found"
+            and speculative_type in ("auto", "mtp", "mtp+ngram")
+            and not spec_owned_by_extra_args
+        ):
+            return False
+        compared_draft_n_max = self._spec_draft_n_max
+        if self._spec_fallback_reason == "runtime_error" and self._last_load_intent is not None:
+            # The MTP-free recovery clears the runtime value but retains the
+            # user's prior value in its intent. Only a changed value should retry MTP.
+            compared_draft_n_max = self._last_load_intent.spec_draft_n_max
+        if (
+            (self._speculative_type == "draft-mtp" or self._spec_fallback_reason == "runtime_error")
+            and intent.spec_draft_n_max is not None
+            and intent.spec_draft_n_max != (compared_draft_n_max or 0)
+        ):
+            return False
+        if (self._chat_template_override or None) != (intent.chat_template_override or None):
+            return False
+
+        if tuple(extra_args or ()) != tuple(self._extra_args or ()):
+            return False
+        if (intent.gguf_path is not None or intent.compare_mtp_draft) and speculative_type in (
+            "auto",
+            "mtp",
+            "mtp+ngram",
+        ):
+            try:
+                requested_draft = (
+                    Path(intent.mtp_draft_path).resolve() if intent.mtp_draft_path else None
+                )
+                loaded_draft = (
+                    Path(self._mtp_draft_path).resolve() if self._mtp_draft_path else None
+                )
+            except OSError:
+                return False
+            if requested_draft != loaded_draft:
+                return False
+        return True
 
     @property
     def n_layers(self) -> Optional[int]:
@@ -7284,84 +7445,32 @@ class LlamaCppBackend:
         self._stdout_thread.start()
 
     @_with_gguf_load_marker
-    def load_model(
-        self,
-        *,
-        # Local mode: pass a path to a .gguf file
-        gguf_path: Optional[str] = None,
-        # Vision projection (mmproj) for local vision models
-        mmproj_path: Optional[str] = None,
-        # Separate MTP drafter for local Gemma loads (HF loads auto-resolve it)
-        mtp_draft_path: Optional[str] = None,
-        # HF mode: let llama-server download via -hf "repo:quant"
-        hf_repo: Optional[str] = None,
-        hf_variant: Optional[str] = None,
-        hf_token: Optional[str] = None,
-        # Common
-        model_identifier: str,
-        is_vision: bool = False,
-        n_ctx: int = 4096,
-        chat_template_override: Optional[str] = None,
-        cache_type_kv: Optional[str] = None,
-        speculative_type: Optional[str] = None,
-        spec_draft_n_max: Optional[int] = None,
-        tensor_parallel: bool = False,
-        gpu_memory_mode: Literal["auto", "manual"] = "auto",
-        gpu_layers: int = -1,
-        n_cpu_moe: int = 0,
-        tensor_split: Optional[List[float]] = None,
-        # Explicit GPU placement pool (issue #7164). None/[] = auto-select;
-        # the fitter may pin the smallest subset of this pool that fits.
-        gpu_ids: Optional[List[int]] = None,
-        gpu_ids_are_vulkan_ordinals: Optional[bool] = None,
-        n_threads: Optional[int] = None,
-        n_gpu_layers: Optional[int] = None,  # caller compat, unused
-        n_parallel: int = 1,
-        extra_args: Optional[List[str]] = None,
-        # Route-level tensor->layer fallback retry: keep the layer split multi-GPU.
-        preserve_multi_gpu_on_layer: bool = False,
-    ) -> bool:
-        """Start llama-server with a GGUF model.
-
-        Two modes:
-        - Local: ``gguf_path="/path/to/model.gguf"`` → uses ``-m``
-        - HF:    ``hf_repo="...-GGUF", hf_variant="Q4_K_M"`` → uses ``-hf``
-
-        Returns True if the server started and the health check passed.
-        """
-        # Raw load inputs so the runtime MTP-crash reload can replay this model
-        # without MTP. Committed to _last_load_kwargs only on a healthy load.
-        _pending_load_kwargs = {
-            "gguf_path": gguf_path,
-            "mmproj_path": mmproj_path,
-            "mtp_draft_path": mtp_draft_path,
-            "hf_repo": hf_repo,
-            "hf_variant": hf_variant,
-            "hf_token": hf_token,
-            "model_identifier": model_identifier,
-            "is_vision": is_vision,
-            "n_ctx": n_ctx,
-            "chat_template_override": chat_template_override,
-            "cache_type_kv": cache_type_kv,
-            "speculative_type": speculative_type,
-            "spec_draft_n_max": spec_draft_n_max,
-            "tensor_parallel": tensor_parallel,
-            # GPU-memory placement: replayed on respawn so a server SIGKILL'd by
-            # GPU/RAM pressure reloads onto the same devices with the same
-            # offload, not the auto defaults.
-            "gpu_memory_mode": gpu_memory_mode,
-            "gpu_layers": gpu_layers,
-            "n_cpu_moe": n_cpu_moe,
-            "tensor_split": list(tensor_split) if tensor_split is not None else None,
-            "gpu_ids": list(gpu_ids) if gpu_ids is not None else None,
-            "gpu_ids_are_vulkan_ordinals": gpu_ids_are_vulkan_ordinals,
-            "n_threads": n_threads,
-            "n_gpu_layers": n_gpu_layers,
-            "n_parallel": n_parallel,
-            "extra_args": list(extra_args) if extra_args is not None else None,
-            # Replayed by _respawn_if_dead so a downgraded model stays multi-GPU.
-            "preserve_multi_gpu_on_layer": preserve_multi_gpu_on_layer,
-        }
+    def load_model(self, intent: GgufLoadIntent) -> bool:
+        """Start llama-server from one immutable load intent."""
+        gguf_path = intent.gguf_path
+        mmproj_path = intent.mmproj_path
+        mtp_draft_path = intent.mtp_draft_path
+        hf_repo = intent.hf_repo
+        hf_variant = intent.hf_variant
+        hf_token = intent.hf_token
+        model_identifier = intent.model_identifier
+        is_vision = intent.is_vision
+        n_ctx = intent.n_ctx
+        chat_template_override = intent.chat_template_override
+        cache_type_kv = intent.cache_type_kv
+        speculative_type = intent.speculative_type
+        spec_draft_n_max = intent.spec_draft_n_max
+        tensor_parallel = intent.tensor_parallel
+        gpu_memory_mode = intent.gpu_memory_mode
+        gpu_layers = intent.gpu_layers
+        n_cpu_moe = intent.n_cpu_moe
+        tensor_split = list(intent.tensor_split) if intent.tensor_split is not None else None
+        gpu_ids = list(intent.gpu_ids) if intent.gpu_ids is not None else None
+        gpu_ids_are_vulkan_ordinals = intent.gpu_ids_are_vulkan_ordinals
+        n_threads = intent.n_threads
+        n_parallel = intent.n_parallel
+        extra_args = list(intent.extra_args) if intent.extra_args is not None else None
+        preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_lock:
@@ -7371,27 +7480,7 @@ class LlamaCppBackend:
                 raise RuntimeError("llama.cpp is updating; try again in a moment.")
             # Duplicate /load that raced past the route check: do nothing if the
             # live server already satisfies this request.
-            if self._already_in_target_state(
-                gguf_path = gguf_path,
-                mtp_draft_path = mtp_draft_path,
-                model_identifier = model_identifier,
-                hf_variant = hf_variant,
-                n_ctx = n_ctx,
-                cache_type_kv = cache_type_kv,
-                speculative_type = speculative_type,
-                spec_draft_n_max = spec_draft_n_max,
-                tensor_parallel = tensor_parallel,
-                gpu_memory_mode = gpu_memory_mode,
-                gpu_layers = gpu_layers,
-                n_cpu_moe = n_cpu_moe,
-                tensor_split = tensor_split,
-                gpu_ids = gpu_ids,
-                chat_template_override = chat_template_override,
-                extra_args = extra_args,
-                is_vision = is_vision,
-                n_parallel = n_parallel,
-                preserve_multi_gpu_on_layer = preserve_multi_gpu_on_layer,
-            ):
+            if self.adopt_load_intent_if_matched(intent):
                 logger.info(
                     f"load_model: backend already in target state for "
                     f"'{model_identifier}', skipping reload"
@@ -9810,10 +9899,10 @@ class LlamaCppBackend:
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
-                self._requested_n_parallel = max(1, int(_pending_load_kwargs["n_parallel"]))
+                self._requested_n_parallel = max(1, int(intent.n_parallel))
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash.
-                self._last_load_kwargs = _pending_load_kwargs
+                self._last_load_intent = intent
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
@@ -9995,6 +10084,13 @@ class LlamaCppBackend:
 
         effective_mode = canonical_mode or "auto"
         self._requested_spec_mode = effective_mode
+        if effective_mode == "off":
+            return flags
+        if effective_mode == "ngram-simple":
+            flags.extend(["--spec-type", "ngram-simple"])
+            self._speculative_type = "ngram-simple"
+            return flags
+        caps = self.probe_server_capabilities(binary)
 
         def _resolved_draft_n_max() -> int:
             # User override wins; else platform default (the B200 / x86
@@ -10008,7 +10104,6 @@ class LlamaCppBackend:
 
         def _emit_mtp(*, chain_ngram: bool) -> bool:
             """Append --spec-type mtp[/draft-mtp][,ngram-mod] + n-max."""
-            caps = self.probe_server_capabilities(binary)
             mtp_token = caps.get("mtp_token") if caps else None
             if not mtp_token:
                 inconclusive = bool(caps.get("mtp_probe_inconclusive")) if caps else True
@@ -10065,8 +10160,7 @@ class LlamaCppBackend:
 
         def _emit_ngram_mod() -> bool:
             """Append --spec-type ngram-mod + flag-set knobs."""
-            ngram_caps = self.probe_server_capabilities(binary)
-            ngram_knobs = _build_ngram_mod_flags(ngram_caps)
+            ngram_knobs = _build_ngram_mod_flags(caps)
             flags.extend(["--spec-type", "ngram-mod"])
             if not ngram_knobs:
                 logger.warning(
@@ -10085,66 +10179,43 @@ class LlamaCppBackend:
                 "falling back. Check network or run `unsloth studio update`.",
                 model_identifier,
             )
-            if self.probe_server_capabilities(binary).get("supports_ngram_mod"):
+            if caps.get("supports_ngram_mod"):
                 _emit_ngram_mod()
             else:
                 flags.append("--spec-default")
                 self._speculative_type = "default"
             self._spec_fallback_reason = "drafter_not_found"
 
-        if effective_mode == "off":
-            return flags  # nothing to emit
-        if effective_mode == "ngram-simple":
-            flags.extend(["--spec-type", "ngram-simple"])
-            self._speculative_type = "ngram-simple"
-            return flags
         if effective_mode == "ngram":
             _emit_ngram_mod()
             return flags
-        if effective_mode == "mtp":
+        if effective_mode in ("mtp", "mtp+ngram"):
+            chain_ngram = effective_mode == "mtp+ngram"
             if not is_mtp_model:
-                # No head and no drafter: llama-server aborts on draft-mtp
-                # instead of no-op'ing, so default back.
-                logger.warning(
-                    "MTP requested but this GGUF has no MTP head or drafter; "
-                    "loading without speculative decoding."
-                )
-                flags.append("--spec-default")
-                self._speculative_type = "default"
+                if chain_ngram:
+                    logger.warning(
+                        "MTP+Ngram requested but this GGUF has no MTP head or "
+                        "drafter; loading ngram-mod only."
+                    )
+                    _emit_ngram_mod()
+                else:
+                    logger.warning(
+                        "MTP requested but this GGUF has no MTP head or drafter; "
+                        "loading without speculative decoding."
+                    )
+                    flags.append("--spec-default")
+                    self._speculative_type = "default"
                 return flags
             if _mtp_drafter_missing:
-                # Drafterless: draft-mtp would abort llama-server, so fall back.
                 _fallback_drafter_not_found()
                 return flags
             if _mtp_too_small:
                 logger.warning(
-                    f"Forcing MTP on a {_mtp_size_b:.1f}B model; "
-                    "the bench shows draft-mtp regresses below 3B. "
+                    f"Forcing {effective_mode.upper()} on a {_mtp_size_b:.1f}B model; "
+                    "the bench shows MTP regresses below 3B. "
                     "Engaging anyway (user override)."
                 )
-            _emit_mtp(chain_ngram = False)
-            return flags
-        if effective_mode == "mtp+ngram":
-            if not is_mtp_model:
-                # No head/drafter: keep the ngram half (needs no head),
-                # drop the draft-mtp chain that would abort the server.
-                logger.warning(
-                    "MTP+Ngram requested but this GGUF has no MTP head or "
-                    "drafter; loading ngram-mod only."
-                )
-                _emit_ngram_mod()
-                return flags
-            if _mtp_drafter_missing:
-                # No head/drafter: keep ngram-mod, drop the draft-mtp chain.
-                _fallback_drafter_not_found()
-                return flags
-            if _mtp_too_small:
-                logger.warning(
-                    f"Forcing MTP+Ngram on a {_mtp_size_b:.1f}B model; "
-                    "the bench shows the chain regresses below 3B. "
-                    "Engaging anyway (user override)."
-                )
-            _emit_mtp(chain_ngram = True)
+            _emit_mtp(chain_ngram = chain_ngram)
             return flags
 
         # effective_mode == "auto": the promotion path. llama.cpp #22673:
@@ -10156,8 +10227,7 @@ class LlamaCppBackend:
             # mtp+ngram (handled above) still engage; UNSLOTH_MLA_MTP_ENABLED=1
             # re-enables this promotion once upstream optimizes the path.
             self._spec_fallback_reason = "mla_mtp_disabled"
-            _mla_caps = self.probe_server_capabilities(binary)
-            if _mla_caps.get("supports_ngram_mod"):
+            if caps.get("supports_ngram_mod"):
                 logger.info(
                     "Auto: MLA embedded-MTP model detected; llama.cpp's MLA/DSA "
                     "MTP path is slower than no speculation, so using ngram-mod "
@@ -10184,7 +10254,7 @@ class LlamaCppBackend:
             # the binary supports it.
             if _mtp_drafter_missing:
                 _fallback_drafter_not_found()
-            elif self.probe_server_capabilities(binary).get("supports_ngram_mod"):
+            elif caps.get("supports_ngram_mod"):
                 logger.info(
                     f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
                     "is below the 3B speedup threshold; using ngram-mod "
@@ -10206,190 +10276,35 @@ class LlamaCppBackend:
             self._speculative_type = "default"
         return flags
 
-    def _already_in_target_state(
-        self,
-        *,
-        model_identifier: str,
-        hf_variant: Optional[str],
-        n_ctx: int,
-        cache_type_kv: Optional[str],
-        speculative_type: Optional[str],
-        chat_template_override: Optional[str],
-        extra_args: Optional[List[str]],
-        is_vision: bool,
-        gguf_path: Optional[str] = None,
-        spec_draft_n_max: Optional[int] = None,
-        tensor_parallel: bool = False,
-        gpu_memory_mode: Literal["auto", "manual"] = "auto",
-        gpu_layers: int = -1,
-        n_cpu_moe: int = 0,
-        tensor_split: Optional[List[float]] = None,
-        gpu_ids: Optional[List[int]] = None,
-        mtp_draft_path: Optional[str] = None,
-        n_parallel: int = 1,
-        preserve_multi_gpu_on_layer: bool = False,
-    ) -> bool:
-        """True iff the live server already satisfies these load kwargs.
+    def adopt_load_intent_if_matched(self, intent: GgufLoadIntent) -> bool:
+        """Match live state and adopt the caller's compatible GPU placement."""
+        if not self.matches_load_source(intent):
+            return False
+        effective_extra_args = (
+            list(intent.extra_args) if intent.extra_args is not None else self._extra_args
+        )
+        candidate_extra_args = list(effective_extra_args) if effective_extra_args else []
+        if intent.extra_args is not None and intent.gpu_ids is not None:
+            candidate_extra_args = self._strip_device_extra_args(candidate_extra_args)
+        if not self._runtime_matches_intent(intent, candidate_extra_args):
+            return False
+        self._record_matching_gpu_request(
+            list(intent.gpu_ids) if intent.gpu_ids is not None else None
+        )
+        return True
 
-        Mirrors ``routes/inference.py:_request_matches_loaded_settings`` but
-        compares raw kwargs so ``load_model`` can short-circuit a duplicate
-        /load that raced past the route-level check (#5401).
-        """
-        if not self.is_loaded:
+    def matches_load_source(self, intent: GgufLoadIntent) -> bool:
+        """Whether the resident model has the intent's identity and weights."""
+        if not self.is_loaded or (self._model_identifier or "").lower() != (
+            intent.model_identifier.lower()
+        ):
             return False
-        if (self._model_identifier or "").lower() != (model_identifier or "").lower():
-            return False
-        # Direct-file loads pass hf_variant=None while the backend stores an
-        # extracted filename label; compare paths to keep the guard symmetric.
-        if gguf_path is not None and self._gguf_path:
+        if intent.gguf_path is not None and self._gguf_path:
             try:
-                if Path(self._gguf_path).resolve() != Path(gguf_path).resolve():
-                    return False
+                return Path(self._gguf_path).resolve() == Path(intent.gguf_path).resolve()
             except OSError:
                 return False
-        elif (self._hf_variant or "").lower() != (hf_variant or "").lower():
-            return False
-        if self._requested_n_ctx != int(n_ctx):
-            return False
-
-        def _norm(value):
-            if value is None:
-                return None
-            if isinstance(value, str):
-                stripped = value.strip().lower()
-                return stripped or None
-            return value
-
-        if _norm(self._cache_type_kv) != _norm(cache_type_kv):
-            return False
-        # Reconcile a user --split-mode in extras AND an inherited tensor
-        # LLAMA_ARG_SPLIT_MODE env, but only against a server that actually
-        # launched tensor: if load_model downgraded to layer split it scrubbed
-        # the child env, so the env must not force an endless reload of a healthy
-        # server. An identical request would downgrade the same way.
-        if not _tensor_parallel_matches_loaded(extra_args, tensor_parallel, self._tensor_parallel):
-            return False
-        # Preserved tensor->layer fallback + an EXPLICIT tensor drop: reload so
-        # placement re-selects instead of keeping the all-GPU mask (mirrors the route,
-        # #6659). preserve_multi_gpu_on_layer carries the route's carry-forward decision
-        # (True for an implicit same-settings reload), so those still dedupe -- the HF
-        # auto-pick / local-dir flows skip the route guard and only reach here.
-        if (
-            self._layer_preserves_tensor_intent
-            and not _effective_tensor_parallel(extra_args, tensor_parallel)
-            and not preserve_multi_gpu_on_layer
-        ):
-            return False
-
-        # The diffusion runner takes the layer split but ignores the MoE/split knobs, so
-        # only the GPU pick and the effective --ngl matter here.
-        if self._is_diffusion:
-            # Compare the EFFECTIVE split, not the raw mode: a standing manual preference
-            # would reload forever, while raw gpu_layers would miss that Auto(-1) and
-            # Unsloth mode both mean "runner default".
-            requested_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
-            if requested_ngl != self.diffusion_requested_ngl:
-                return False
-            # An identical ask whose split was DROPPED at launch (old shim) still dedupes,
-            # unless the shim has gained --ngl since (zoo upgraded mid-session), in which
-            # case the reload finally applies it.
-            if (
-                requested_ngl is not None
-                and self._gpu_layers != requested_ngl
-                and self.diffusion_split_supported()
-            ):
-                return False
-        else:
-            requested_extra_args = extra_args if extra_args is not None else self._extra_args
-            if self._swa_full != _swa_full_from_args_or_env(requested_extra_args):
-                return False
-            # A GPU-memory-mode flip (Unsloth / manual) must always reload.
-            if self._gpu_memory_mode != gpu_memory_mode:
-                return False
-            # Requested-vs-requested (like n_ctx): comparing the effective count
-            # would reload forever whenever the fitter launched fewer slots.
-            if self._requested_n_parallel != max(1, int(n_parallel)):
-                return False
-            # Manual: a layer-count change always reloads (covers Auto(-1) <-> a
-            # pinned count); MoE/split only matter with an explicit offload.
-            if gpu_memory_mode == "manual" and (
-                self._gpu_layers != gpu_layers
-                or (
-                    gpu_layers >= 0
-                    and (
-                        self._n_cpu_moe != n_cpu_moe
-                        or (self._tensor_split or None) != (tensor_split or None)
-                    )
-                )
-            ):
-                return False
-        # A changed GPU pick must reload. Regular GGUF accepts either the raw
-        # requested placement pool or the effective status-echoed subset;
-        # diffusion compares its normalized single-device pick.
-        if not self.matches_gpu_ids(gpu_ids):
-            return False
-
-        # Compare on the canonical requested mode. With --spec-type in
-        # extra_args the backend stores None; mirror that here.
-        if _extra_args_set_spec_type(extra_args):
-            req_mode = None
-        else:
-            req_mode = _canonicalize_spec_mode(speculative_type) or "auto"
-        backend_mode = self._requested_spec_mode
-        if req_mode != backend_mode:
-            return False
-
-        # Prior HF load fell back with drafter_not_found; a same-settings reload
-        # must retry the download in load_model, not dedupe to the stale fallback
-        # (HF loads resolve the drafter there, so gguf_path is None here).
-        if (
-            self._spec_fallback_reason == "drafter_not_found"
-            and gguf_path is None
-            and req_mode in ("auto", "mtp", "mtp+ngram")
-        ):
-            return False
-
-        # spec_draft_n_max only matters when an MTP variant is engaged. Compare
-        # on the resolved spec so an Auto request promoted to draft-mtp still
-        # bounces a reload when n_max changes.
-        if (
-            self._speculative_type == "draft-mtp"
-            and spec_draft_n_max is not None
-            and int(spec_draft_n_max) != (self._spec_draft_n_max or 0)
-        ):
-            return False
-
-        if (self._chat_template_override or None) != (chat_template_override or None):
-            return False
-
-        # A drafter appearing/disappearing next to a local GGUF changes the
-        # launch command (--model-draft) when the mode can use it; without
-        # this, adding mtp-*.gguf after a load is deduped away and MTP can't
-        # engage short of an unload. HF loads resolve the drafter inside
-        # load_model (gguf_path is None here), so only local paths compare;
-        # the route-level probe covers HF cache repos. No sub-3B gate: both
-        # sides come from the same config detection, so a sub-3B mismatch
-        # only happens when a drafter genuinely appeared (one benign reload,
-        # then the stored path converges).
-        if (
-            gguf_path is not None
-            and req_mode in ("auto", "mtp", "mtp+ngram")
-            and (mtp_draft_path or None) != (self._mtp_draft_path or None)
-        ):
-            return False
-
-        # extra_args=None means "no opinion" (inherit handled at the route
-        # layer); only an explicit list forces equality.
-        if extra_args is not None:
-            current = list(self._extra_args) if self._extra_args is not None else []
-            candidate = list(extra_args)
-            # Compare the same device-stripped extras that load_model persisted.
-            if gpu_ids is not None:
-                candidate = self._strip_device_extra_args(candidate)
-            if candidate != current:
-                return False
-        self._record_matching_gpu_request(gpu_ids)
-        return True
+        return (self._hf_variant or "").lower() == (intent.hf_variant or "").lower()
 
     def _classify_gpu_offload(
         self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]
@@ -10493,7 +10408,7 @@ class LlamaCppBackend:
             self._hf_repo = None
             self._mtp_draft_path = None
             self._spec_fallback_reason = None
-            self._last_load_kwargs = None
+            self._last_load_intent = None
             self._mtp_runtime_fallback_active = False
             self._hf_variant = None
             self._is_vision = False
@@ -11323,16 +11238,15 @@ class LlamaCppBackend:
             return False
         # Read before claiming: a raise after the claim strands the flag, and nothing
         # else clears it, blocking every later respawn.
-        kwargs = self._last_load_kwargs
+        snapshot = self._last_load_intent
         proc = self._process
-        if not kwargs or proc is None:
+        if snapshot is None or proc is None:
             return False
         # Single-flight: the first failure claims the reload.
         with self._mtp_runtime_fallback_lock:
             if self._mtp_runtime_fallback_in_progress:
                 return False
             self._mtp_runtime_fallback_in_progress = True
-        snapshot = dict(kwargs)
 
         def _recover():
             try:
@@ -11351,7 +11265,7 @@ class LlamaCppBackend:
                 )
                 # Re-check under the load lock (RLock allows the nested
                 # load_model) so a newer load isn't clobbered by this stale replay.
-                requested_mode = snapshot.get("speculative_type")
+                requested_mode = snapshot.speculative_type
                 with self._serial_load_lock:
                     if self._cancel_event.is_set():
                         logger.info("MTP-crash reload skipped: load was cancelled/unloaded.")
@@ -11359,16 +11273,21 @@ class LlamaCppBackend:
                     if self._process is not proc:
                         logger.info("MTP-crash reload skipped: a newer load is already active.")
                         return
-                    if self._last_load_kwargs != snapshot:
+                    if self._last_load_intent != snapshot:
                         logger.info("MTP-crash reload skipped: load settings changed.")
                         return
-                    snapshot["speculative_type"] = "off"
                     # Drop user/env MTP too: append a last-wins --spec-default.
-                    _ea = list(snapshot.get("extra_args") or [])
-                    if _extra_args_requests_mtp(_ea, env = os.environ):
-                        _ea.append("--spec-default")
-                        snapshot["extra_args"] = _ea
-                    self.load_model(**snapshot)
+                    fallback_extra_args = snapshot.extra_args
+                    if _extra_args_requests_mtp(fallback_extra_args, env = os.environ):
+                        extra_args = list(fallback_extra_args or ())
+                        extra_args.append("--spec-default")
+                        fallback_extra_args = tuple(extra_args)
+                    fallback = replace(
+                        snapshot,
+                        speculative_type = "off",
+                        extra_args = fallback_extra_args,
+                    )
+                    self.load_model(fallback)
                     # Restore the requested mode + reason load_model("off") cleared,
                     # so /status shows the user's mode + note (like the startup fallback).
                     self._requested_spec_mode = _canonicalize_spec_mode(requested_mode)
@@ -11932,8 +11851,8 @@ class LlamaCppBackend:
                     if self._cancel_event.is_set():
                         logger.info("Respawn skipped: the model was unloaded.")
                         return False
-                    kwargs = dict(self._last_load_kwargs or {})
-                    if not kwargs:
+                    intent = self._last_load_intent
+                    if intent is None:
                         return False
                     epoch = self._unload_epoch
                     self._healthy = False
@@ -11942,7 +11861,7 @@ class LlamaCppBackend:
                     f"(code {proc.returncode}); respawning to recover the session"
                 )
                 try:
-                    started = bool(self.load_model(**kwargs))
+                    started = bool(self.load_model(intent))
                 except Exception as exc:
                     logger.error(f"Failed to respawn llama-server: {exc}")
                     return False

@@ -901,6 +901,25 @@ export function ChatSettingsPanel({
 
         <CollapsibleSection
           label="Preset"
+          headerAction={
+            <InfoHint>
+              Saving a preset also stores current load settings (context length,
+              KV cache dtype, speculative decoding, GPU layers).
+              {currentLoadSummary ? (
+                <>
+                  {" "}
+                  Active now: {currentLoadSummary}.
+                </>
+              ) : null}
+              {activePresetLoadSummary &&
+              activePresetLoadSummary !== currentLoadSummary ? (
+                <>
+                  {" "}
+                  Saved in preset: {activePresetLoadSummary}.
+                </>
+              ) : null}
+            </InfoHint>
+          }
           defaultOpen={true}
           first={!hasModelContent && !modelConfig}
         >
@@ -1022,23 +1041,6 @@ export function ChatSettingsPanel({
                 Delete
               </Button>
             </div>
-            <p className="text-ui-11 leading-relaxed text-muted-foreground">
-              Saving a preset also stores current load settings (context length,
-              KV cache dtype, speculative decoding, GPU layers).
-              {currentLoadSummary ? (
-                <>
-                  {" "}
-                  Active now: {currentLoadSummary}.
-                </>
-              ) : null}
-              {activePresetLoadSummary &&
-              activePresetLoadSummary !== currentLoadSummary ? (
-                <>
-                  {" "}
-                  Saved in preset: {activePresetLoadSummary}.
-                </>
-              ) : null}
-            </p>
           </div>
         </CollapsibleSection>
 
