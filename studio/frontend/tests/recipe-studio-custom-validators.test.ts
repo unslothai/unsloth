@@ -94,6 +94,86 @@ test("validationFunctionFromConfig builds a tool marker", () => {
   assert.deepEqual(spec, { ext: "go", command: "go vet ./..." });
 });
 
+const GO_SCAFFOLD = [
+  { path: "go.mod", content: "module example.com/check\n\ngo 1.21\n" },
+  { path: "main.go", content: "{source}" },
+];
+
+test("encodeToolSpec round-trips scaffold rows", () => {
+  const encoded = markers.encodeToolSpec({
+    ext: "rs",
+    command: "cargo check",
+    scaffold: [
+      { path: "Cargo.toml", content: '[package]\nname = "check"\n' },
+      { path: "src/main.rs", content: "{source}" },
+    ],
+  });
+  assert.ok(!encoded.includes(":"));
+  assert.deepEqual(markers.decodeToolSpec(encoded), {
+    ext: "rs",
+    command: "cargo check",
+    scaffold: [
+      { path: "Cargo.toml", content: '[package]\nname = "check"\n' },
+      { path: "src/main.rs", content: "{source}" },
+    ],
+  });
+});
+
+test("encodeToolSpec omits empty scaffold", () => {
+  const encoded = markers.encodeToolSpec({
+    ext: "sql",
+    command: "sqlfluff lint {file}",
+    scaffold: [],
+  });
+  assert.deepEqual(markers.decodeToolSpec(encoded), {
+    ext: "sql",
+    command: "sqlfluff lint {file}",
+  });
+});
+
+test("decodeToolSpec rejects unsafe scaffold paths", () => {
+  const spec = {
+    ext: "txt",
+    command: "cat {file}",
+    scaffold: [{ path: "../evil.txt", content: "x" }],
+  };
+  const encoded = btoa(JSON.stringify(spec))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  assert.equal(markers.decodeToolSpec(encoded), null);
+});
+
+test("validationFunctionFromConfig includes scaffold in the tool marker", () => {
+  const marker = markers.validationFunctionFromConfig(
+    toolConfig({ tool_scaffold: GO_SCAFFOLD }),
+  );
+  assert.ok(marker?.startsWith(`${TOOL_MARKER}:`));
+  const spec = markers.decodeToolSpec(marker!.slice(TOOL_MARKER.length + 1));
+  assert.deepEqual(spec, { ext: "go", command: "go vet ./...", scaffold: GO_SCAFFOLD });
+});
+
+test("parseValidator reconstructs tool_scaffold", () => {
+  const marker = markers.validationFunctionFromConfig(
+    toolConfig({ tool_scaffold: GO_SCAFFOLD }),
+  );
+  const config = parseValidator(
+    {
+      column_type: "validation",
+      name: "go_check",
+      drop: false,
+      target_columns: ["code"],
+      validator_type: "local_callable",
+      validator_params: { validation_function: marker },
+      batch_size: 10,
+    },
+    "go_check",
+    "n1",
+  );
+  assert.deepEqual(config.tool_scaffold, GO_SCAFFOLD);
+  assert.equal(config.tool_acknowledged, true);
+});
+
 test("validationFunctionFromConfig builds a custom marker", () => {
   const marker = markers.validationFunctionFromConfig(customConfig());
   assert.ok(marker?.startsWith(`${CUSTOM_MARKER}:`));

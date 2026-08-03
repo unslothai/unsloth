@@ -22,6 +22,10 @@ import { nextName } from "./naming";
 
 export const DEFAULT_TOOL_EXT = "go";
 export const DEFAULT_TOOL_COMMAND = "go vet ./...";
+export const DEFAULT_TOOL_SCAFFOLD = [
+  { path: "go.mod", content: "module example.com/check\n\ngo 1.21\n" },
+  { path: "main.go", content: "{source}" },
+];
 
 export const DEFAULT_CUSTOM_VALIDATOR_SOURCE = `# df has one column per "Code to check" target column.
 # Return a DataFrame with a boolean "is_valid" column; extra columns
@@ -397,6 +401,7 @@ export function makeValidatorConfig(
       ? {
           tool_command: DEFAULT_TOOL_COMMAND,
           tool_ext: DEFAULT_TOOL_EXT,
+          tool_scaffold: DEFAULT_TOOL_SCAFFOLD.map((file) => ({ ...file })),
           tool_acknowledged: false,
         }
       : {}),

@@ -98,6 +98,10 @@ export function parseValidator(
       : "auto",
     tool_command: isTool ? toolSpec?.command ?? "" : undefined,
     tool_ext: isTool ? toolSpec?.ext ?? "" : undefined,
+    tool_scaffold:
+      isTool && toolSpec && (toolSpec.scaffold?.length ?? 0) > 0
+        ? toolSpec.scaffold
+        : undefined,
     // Re-importing a saved recipe means the author already opted in.
     tool_acknowledged: isTool ? true : undefined,
     custom_source: isCustom ? customSource : undefined,

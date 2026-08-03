@@ -31,6 +31,10 @@ export type ValidatorCodeLang =
 export type ValidatorType = "code" | "oxc" | "tool" | "custom";
 export type OxcValidationMode = "syntax" | "lint" | "syntax+lint";
 export type OxcCodeShape = "auto" | "module" | "snippet";
+export type ToolScaffoldFile = {
+  path: string;
+  content: string;
+};
 
 export type ExpressionDtype = "str" | "int" | "float" | "bool";
 
@@ -314,6 +318,10 @@ export type ValidatorConfig = {
   tool_command?: string;
   tool_ext?: string;
   tool_acknowledged?: boolean;
+  // ui-only (used for tool validators): optional files written into the temp
+  // folder before the command runs. A file whose content contains `{source}`
+  // receives the generated code cell, and `{file}` then points at it.
+  tool_scaffold?: ToolScaffoldFile[];
   // ui-only (used for custom validators): user-supplied Python function source
   // that must define `validate(df: pd.DataFrame) -> pd.DataFrame` returning an
   // `is_valid` boolean column.

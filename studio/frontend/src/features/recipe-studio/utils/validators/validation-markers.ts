@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ValidatorConfig } from "../../types";
+import type { ToolScaffoldFile, ValidatorConfig } from "../../types";
 
 export const TOOL_VALIDATION_FN_MARKER = "unsloth_tool_validator";
 export const CUSTOM_VALIDATION_FN_MARKER = "unsloth_custom_validator";
@@ -9,9 +9,13 @@ export const CUSTOM_VALIDATION_FN_MARKER = "unsloth_custom_validator";
 export type ToolValidatorSpec = {
   ext: string;
   command: string;
+  scaffold?: ToolScaffoldFile[];
 };
 
 const TOOL_FILE_EXT_RE = /^[A-Za-z0-9.+-]{1,20}$/;
+const TOOL_SCAFFOLD_PATH_RE = /^[A-Za-z0-9._+-]+(?:\/[A-Za-z0-9._+-]+)*$/;
+const TOOL_SCAFFOLD_MAX_ROWS = 10;
+const TOOL_SCAFFOLD_MAX_TOTAL_CHARS = 32 * 1024;
 const LEADING_DOTS_RE = /^\.+/;
 const BASE64_PLUS_RE = /\+/g;
 const BASE64_SLASH_RE = /\//g;
@@ -38,8 +42,64 @@ function fromBase64Url(input: string): string {
   return new TextDecoder().decode(bytes);
 }
 
+function normalizeToolScaffoldEntry(entry: unknown): ToolScaffoldFile | null {
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+  const record = entry as Record<string, unknown>;
+  const path = typeof record.path === "string" ? record.path.trim() : "";
+  const content = typeof record.content === "string" ? record.content : "";
+  if (!path) {
+    return null;
+  }
+  if (
+    !TOOL_SCAFFOLD_PATH_RE.test(path) ||
+    path.split("/").some((segment) => segment === "." || segment === "..")
+  ) {
+    return null;
+  }
+  return { path, content };
+}
+
+export function normalizeToolScaffold(
+  scaffold: ToolScaffoldFile[] | undefined,
+): ToolScaffoldFile[] {
+  if (!Array.isArray(scaffold)) {
+    return [];
+  }
+  const rows: ToolScaffoldFile[] = [];
+  let totalChars = 0;
+  for (const entry of scaffold) {
+    const normalized = normalizeToolScaffoldEntry(entry);
+    if (normalized === null) {
+      continue;
+    }
+    rows.push(normalized);
+    totalChars += normalized.path.length + normalized.content.length;
+  }
+  if (
+    rows.length > TOOL_SCAFFOLD_MAX_ROWS ||
+    totalChars > TOOL_SCAFFOLD_MAX_TOTAL_CHARS
+  ) {
+    return [];
+  }
+  return rows;
+}
+
 export function encodeToolSpec(spec: ToolValidatorSpec): string {
-  return toBase64Url(JSON.stringify({ ext: spec.ext, command: spec.command }));
+  const payload: {
+    ext: string;
+    command: string;
+    scaffold?: ToolScaffoldFile[];
+  } = {
+    ext: spec.ext,
+    command: spec.command,
+  };
+  const scaffold = normalizeToolScaffold(spec.scaffold);
+  if (scaffold.length > 0) {
+    payload.scaffold = scaffold;
+  }
+  return toBase64Url(JSON.stringify(payload));
 }
 
 export function decodeToolSpec(encoded: string): ToolValidatorSpec | null {
@@ -69,7 +129,12 @@ export function decodeToolSpec(encoded: string): ToolValidatorSpec | null {
     if (!(command && TOOL_FILE_EXT_RE.test(ext))) {
       return null;
     }
-    return { ext, command };
+    const rawScaffold = Array.isArray(record.scaffold) ? record.scaffold : [];
+    const scaffold = normalizeToolScaffold(rawScaffold as ToolScaffoldFile[]);
+    if (rawScaffold.length > 0 && scaffold.length === 0) {
+      return null;
+    }
+    return scaffold.length > 0 ? { ext, command, scaffold } : { ext, command };
   } catch {
     return null;
   }
@@ -96,7 +161,12 @@ export function validationFunctionFromConfig(
     if (!(command && TOOL_FILE_EXT_RE.test(ext))) {
       return null;
     }
-    return `${TOOL_VALIDATION_FN_MARKER}:${encodeToolSpec({ ext, command })}`;
+    const scaffold = normalizeToolScaffold(config.tool_scaffold);
+    return `${TOOL_VALIDATION_FN_MARKER}:${encodeToolSpec({
+      ext,
+      command,
+      ...(scaffold.length > 0 ? { scaffold } : {}),
+    })}`;
   }
   if (config.validator_type === "custom") {
     const source = (config.custom_source ?? "").trim();

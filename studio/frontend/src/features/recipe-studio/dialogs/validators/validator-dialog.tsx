@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  Delete02Icon,
+  PlusSignIcon,
+} from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -27,7 +32,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useMemo, useRef } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
-import type { ValidatorConfig } from "../../types";
+import type { ToolScaffoldFile, ValidatorConfig } from "../../types";
 import { DEFAULT_CUSTOM_VALIDATOR_SOURCE } from "../../utils/config-factories";
 import {
   isValidatorCodeLang,
@@ -42,6 +47,7 @@ import {
   OXC_VALIDATION_MODES,
   normalizeOxcValidationMode,
 } from "../../utils/validators/oxc-mode";
+import { normalizeToolScaffold } from "../../utils/validators/validation-markers";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
@@ -52,18 +58,40 @@ type ValidatorDialogProps = {
 };
 
 const NONE_VALUE = "__none__";
+const LEADING_DOTS_RE = /^\.+/;
 
-const TOOL_EXAMPLES: { label: string; command: string; ext: string }[] = [
+const TOOL_EXAMPLES: {
+  label: string;
+  command: string;
+  ext: string;
+  scaffold: ToolScaffoldFile[];
+}[] = [
   {
     label: "go vet + build (Go)",
     command: "go vet ./... && go build ./...",
     ext: "go",
+    scaffold: [
+      { path: "go.mod", content: "module example.com/check\n\ngo 1.21\n" },
+      { path: "main.go", content: "{source}" },
+    ],
   },
-  { label: "cargo check (Rust)", command: "cargo check", ext: "rs" },
+  {
+    label: "cargo check (Rust)",
+    command: "cargo check",
+    ext: "rs",
+    scaffold: [
+      {
+        path: "Cargo.toml",
+        content: '[package]\nname = "check"\nversion = "0.1.0"\nedition = "2021"\n',
+      },
+      { path: "src/main.rs", content: "{source}" },
+    ],
+  },
   {
     label: "SQL lint (Postgres)",
     command: "sqlfluff lint --dialect postgres {file}",
     ext: "sql",
+    scaffold: [],
   },
 ];
 
@@ -182,6 +210,40 @@ export function ValidatorDialog({
     [configs, config, acceptsAnyCodeLang],
   );
   const currentTarget = config.target_columns[0] ?? "";
+  const toolScaffoldRows = Array.isArray(config.tool_scaffold)
+    ? config.tool_scaffold
+    : [];
+  const normalizedToolScaffold = useMemo(
+    () => normalizeToolScaffold(config.tool_scaffold),
+    [config.tool_scaffold],
+  );
+  const toolCommandTrimmed = (config.tool_command ?? "").trim();
+  const toolExtTrimmed = (config.tool_ext ?? "").trim().replace(LEADING_DOTS_RE, "");
+  const toolReferencesFile =
+    toolCommandTrimmed.includes("{file}") ||
+    (toolExtTrimmed.length > 0 &&
+      toolCommandTrimmed.includes(`main.${toolExtTrimmed}`));
+  const showToolScaffoldHint =
+    normalizedToolScaffold.length === 0 &&
+    toolCommandTrimmed.length > 0 &&
+    !toolReferencesFile;
+
+  function updateToolScaffoldRow(index: number, next: ToolScaffoldFile): void {
+    const rows = toolScaffoldRows.map((file, fileIndex) =>
+      fileIndex === index ? next : file,
+    );
+    onUpdate({ tool_scaffold: rows });
+  }
+
+  function removeToolScaffoldRow(index: number): void {
+    onUpdate({
+      tool_scaffold: toolScaffoldRows.filter((_, fileIndex) => fileIndex !== index),
+    });
+  }
+
+  function addToolScaffoldRow(): void {
+    onUpdate({ tool_scaffold: [...toolScaffoldRows, { path: "", content: "" }] });
+  }
 
   return (
     <div className="space-y-4">
@@ -327,7 +389,7 @@ export function ValidatorDialog({
           <div className="grid gap-1.5">
             <FieldLabel
               label="Examples"
-              hint="Try one of these examples, then edit the command and extension to suit."
+              hint="Try one of these examples, then edit the command, extension and files to suit."
             />
             <div className="flex flex-wrap gap-1.5">
               {TOOL_EXAMPLES.map((example) => (
@@ -341,6 +403,7 @@ export function ValidatorDialog({
                     onUpdate({
                       tool_command: example.command,
                       tool_ext: example.ext,
+                      tool_scaffold: example.scaffold.map((file) => ({ ...file })),
                     })
                   }
                 >
@@ -365,12 +428,19 @@ export function ValidatorDialog({
               }
               placeholder="go vet ./..."
             />
+            {showToolScaffoldHint && (
+              <p className="text-xs text-muted-foreground">
+                Your command doesn&apos;t reference the generated file (
+                {"{file}"}). Checks that require a project scaffolding may fail
+                every row at runtime.
+              </p>
+            )}
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
               label="File extension"
               htmlFor={toolExtId}
-              hint="Generated code is written to a temp file with this extension before the command runs. go scaffolds a go.mod, and rs scaffolds a Cargo.toml with a src/ layout."
+              hint="Generated code is written to a temp file with this extension unless a Files to write entry contains {source}."
             />
             <Input
               id={toolExtId}
@@ -379,6 +449,65 @@ export function ValidatorDialog({
               onChange={(event) => onUpdate({ tool_ext: event.target.value })}
               placeholder="go"
             />
+          </div>
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Files to write"
+              hint="Optional files written into the temp folder before the command runs. A file whose content contains {source} receives the generated code and {file} then points at it. Parent folders like src/ are created automatically."
+            />
+            <div className="grid gap-2">
+              {toolScaffoldRows.map((file, index) => (
+                <div
+                  key={index}
+                  className="grid gap-1.5 rounded-xl border border-border/50 p-2"
+                >
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="nodrag font-mono"
+                      value={file.path}
+                      onChange={(event) =>
+                        updateToolScaffoldRow(index, {
+                          ...file,
+                          path: event.target.value,
+                        })
+                      }
+                      placeholder="src/main.rs"
+                    />
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="ghost"
+                      className="nodrag shrink-0"
+                      onClick={() => removeToolScaffoldRow(index)}
+                    >
+                      <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                    </Button>
+                  </div>
+                  <Textarea
+                    className="nodrag font-mono"
+                    fieldSizing="content"
+                    value={file.content}
+                    onChange={(event) =>
+                      updateToolScaffoldRow(index, {
+                        ...file,
+                        content: event.target.value,
+                      })
+                    }
+                    placeholder="{source}"
+                  />
+                </div>
+              ))}
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                className="nodrag justify-self-start"
+                onClick={addToolScaffoldRow}
+              >
+                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
+                Add file
+              </Button>
+            </div>
           </div>
           <div className="grid gap-2">
             <label
