@@ -375,7 +375,7 @@ with sync_playwright() as p:
         except Exception:
             pass
 
-    def select_on_device_row(popover, hint):
+    def find_on_device_row(popover, hint):
         od = page.get_by_role("tab", name = "On Device").first
         if _count(od):
             od.click()
@@ -391,14 +391,21 @@ with sync_playwright() as p:
                 row = popover.locator("[data-model-picker-option]", has_text = hint).first
         if _count(row) == 0:
             return None
-        row.click()
-        page.wait_for_timeout(800)
         return row
 
     def open_config(popover, hint):
-        if select_on_device_row(popover, hint) is None:
+        row = find_on_device_row(popover, hint)
+        if row is None:
             return None
-        gear = popover.locator('button[aria-label^="Inference settings for"]').first
+        settings_name = re.compile(rf"^Inference settings for .*{re.escape(hint)}", re.I)
+        gear = popover.get_by_role("button", name = settings_name).first
+        if _count(gear) == 0:
+            # Multi-quant repositories expose settings only after expanding the
+            # repository row. Single-quant rows expose the button immediately;
+            # clicking those rows loads the model and closes the picker.
+            row.click()
+            page.wait_for_timeout(800)
+            gear = popover.get_by_role("button", name = settings_name).first
         if _count(gear) == 0:
             return None
         gear.click()
