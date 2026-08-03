@@ -1902,21 +1902,28 @@ def _ensure_xpu_triton() -> None:
     # between the two steps. uv has no `pip download`, hence pip here.
     tmp = tempfile.mkdtemp(prefix = "unsloth_triton_xpu_")
     try:
+        _dl_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            "--no-deps",
+            "--only-binary=:all:",
+            "-d",
+            tmp,
+            spec,
+            "--index-url",
+            pin,
+        ]
         try:
             dl = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "download",
-                    "--no-deps",
-                    "--only-binary=:all:",
-                    "-d",
-                    tmp,
-                    spec,
-                    "--index-url",
-                    pin,
-                ],
+                _dl_cmd,
+                # Same scrub every other pinned install gets. PIP_NO_INDEX makes pip ignore
+                # --index-url outright, and PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS are consulted
+                # IN ADDITION to it, so an inherited environment either fails the fetch (and
+                # leaves generic triton shadowing the XPU build) or serves the wheel from
+                # somewhere the explicit pin never named.
+                env = _install_env_for_cmd(_dl_cmd),
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
                 timeout = 900,

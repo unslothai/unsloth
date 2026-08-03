@@ -173,6 +173,32 @@ Check "other families still rebuild"   ($_rescue -match '(?s)\} else \{\s*\$shou
 # The rescue reads the disk, so it must not launch a second interpreter after the first hung.
 Check "the rescue launches no interpreter" (-not ($_rescue -match '(?s)elseif \(Test-VenvTorchIsXpu.*?Invoke-BoundedPythonProbe'))
 
+Write-Host "a direct update never deletes an XPU venv"
+# Intel is a pin, never autodetection, and the pin is one-shot. On a hybrid NVIDIA+Arc box the
+# promotion above is gated on -not $HasNvidiaSmi, so a later pinless update expects a cu* tag,
+# calls the working Arc venv stale and wipes it -- then exits, because only install.ps1 makes
+# venvs. Anchored between the pin-repair escape and the rebuild block.
+$_keep = if ($setupText -match '(?s)(\$script:PinChangedForceReinstall = \$true.*?if \(\$shouldRebuild\) \{)') { $Matches[1] } else { "" }
+Check "the rebuild decision was found"  ($_keep -ne "")
+Check "an xpu venv is spared the wipe"  ($_keep -match '\$installedTorchTag -eq "xpu"')
+Check "the escape clears shouldRebuild" ($_keep -match '(?s)\$installedTorchTag -eq "xpu"\) \{.*?\$shouldRebuild = \$false')
+# install.ps1 keeps a rollback copy, so that path must still be free to rebuild.
+Check "installer-managed runs still rebuild" ($_keep -match '-not \$InstallerManagedSetup')
+# Silently keeping a venv the host does not want is its own trap; say how to change it.
+Check "the escape says how to replace it" ($_keep -match 'substep "[^"]*install\.ps1')
+
+Write-Host "a Triton swap that strands the venv must fail the setup"
+# Both installs failing leaves NO importable triton at all. Printing alone left $stackExit at
+# 0, so setup reported success and install.ps1 committed this venv over its rollback copy.
+$_bothFailed = if ($setupText -match '(?s)(neither triton would reinstall.*?\n\s*\}\s*\n)') { $Matches[1] } else { "" }
+Check "the both-failed branch was found" ($_bothFailed -ne "")
+Check "it sets a nonzero stack exit"     ($_bothFailed -match '\$stackExit = \$tritonBackExit')
+# $tritonBackExit is what just failed, so it is nonzero by construction -- but only if the
+# assignment reads it rather than a literal that could drift to 0.
+Check "the exit code is the real failure" (-not ($_bothFailed -match '\$stackExit = 0'))
+# And the existing handler must actually act on it.
+Check "a nonzero stack exit fails setup" ($setupText -match '(?s)if \(\$stackExit -ne 0\) \{.*?Exit-SetupFailure')
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed" -ForegroundColor Green

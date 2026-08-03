@@ -1271,12 +1271,15 @@ for _setup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
     # hangs every `studio update` forever. 60s, not the 10s the smi probes use -- a cold
     # `import torch` is seconds on its own, and a short bound would read a healthy host as
     # having no GPU. A timeout means "no XPU", which is the same answer as a failed probe.
-    _setup_xpu_probe='import torch,sys; sys.exit(0 if torch.xpu.is_available() else 1)'
+    # The deadline lives INSIDE the probe as well, because `timeout` is not everywhere (base
+    # macOS ships no coreutils, and minimal Linux images drop it) and the arm below would
+    # otherwise run unbounded on exactly the stalled-driver host this exists to bound. Python
+    # installs no SIGALRM handler, so the default action terminates the process even while the
+    # driver blocks inside C. Either deadline expiring means "no XPU", the same as a failure.
+    _setup_xpu_probe='import signal; signal.alarm(60); import torch,sys; sys.exit(0 if torch.xpu.is_available() else 1)'
     if command -v timeout >/dev/null 2>&1; then
         timeout 60 "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1 && _setup_xpu_ready=true
     elif "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1; then
-        # base macOS has no coreutils timeout; it also has no XPU, so this arm is Linux-without-
-        # coreutils only and keeps the old behaviour rather than skipping detection entirely.
         _setup_xpu_ready=true
     fi
     break

@@ -3248,6 +3248,16 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PinChangedForceReinstall = $true
         $shouldRebuild = $false
     }
+    # A +xpu venv is never wiped by a DIRECT update. Intel is a pin, never autodetection, and
+    # the pin is one-shot: on a hybrid NVIDIA+Arc box the promotion above is gated on
+    # -not $HasNvidiaSmi, so a later pinless update expects a cu* tag, calls the working Arc
+    # venv stale and deletes it -- then exits, because only install.ps1 creates venvs. Under
+    # install.ps1 ($InstallerManagedSetup) the rollback copy exists, so that path is left alone.
+    if ($shouldRebuild -and -not $InstallerManagedSetup -and $installedTorchTag -eq "xpu") {
+        substep "Keeping the installed Intel XPU environment (this host expects $expectedTorchTag)." "Yellow"
+        substep "Re-run install.ps1 to replace it -- that path rebuilds with a rollback copy." "Yellow"
+        $shouldRebuild = $false
+    }
 
     if ($shouldRebuild) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
@@ -4095,6 +4105,10 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                             $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
                             Write-Host "[ERROR] triton-windows was removed and neither triton would reinstall -- torch.compile is broken." -ForegroundColor Red
                             Write-Host "        Repair with: python -m pip install --force-reinstall --no-deps $_tritonXpuSpec --index-url $_tritonRepairUrl" -ForegroundColor Red
+                            # Printing alone left $stackExit at 0, so setup reported success and
+                            # install.ps1 COMMITTED this venv over its rollback copy. The venv
+                            # has no importable triton at all; the caller must not accept it.
+                            $stackExit = $tritonBackExit
                         }
                     }
                     # Moved back, never rewritten, and only once a triton is importable again.

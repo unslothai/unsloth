@@ -21,6 +21,7 @@ Three things here are easy to get wrong and are asserted by execution rather tha
   ``+xpu`` wheel instead. See TestTheInstalledWheelIsThePin.
 """
 
+import os
 import subprocess
 import sys
 import types
@@ -31,6 +32,30 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 STACK = REPO / "studio/install_python_stack.py"
+
+
+def _load_real_index_env_scrub():
+    """The module's OWN _install_env_for_cmd, so the scrub is executed, not re-implemented.
+
+    It is defined below the slice the swap comes from, so it is pulled in separately rather
+    than stubbed -- a hand-written copy here would agree with a broken original forever.
+    """
+    import os as _os
+
+    src = STACK.read_text(encoding = "utf-8")
+    ns: dict = {"os": _os}
+    for anchor, end, keep in (
+        ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
+        ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
+        ("def _install_env_for_cmd(", "\n\ndef ", 0),
+    ):
+        start = src.index(anchor)
+        exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
+    assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
+    return ns["_install_env_for_cmd"]
+
+
+_real_install_env_for_cmd = _load_real_index_env_scrub()
 
 
 def _load(
@@ -89,9 +114,12 @@ def _load(
 
     pip_state = {"present": has_pip}
     index_urls: list[str] = []
+    download_envs: list = []
 
     def fake_run(cmd, **kw):
         joined = " ".join(str(c) for c in cmd)
+        if "download" in cmd:
+            download_envs.append(kw.get("env"))
         if "-m pip --version" in joined or ("pip" in cmd and "--version" in cmd):
             return subprocess.CompletedProcess(cmd, 0 if pip_state["present"] else 1)
         if "ensurepip" in joined:
@@ -151,6 +179,7 @@ def _load(
         "IS_MACOS": False,
         "IS_WINDOWS": False,
         "_PYTORCH_WHL_BASE": "https://download.pytorch.org/whl",
+        "_install_env_for_cmd": _real_install_env_for_cmd,
         "_explicit_xpu_torch_index_url": (
             (lambda: "https://download.pytorch.org/whl/xpu") if pinned else (lambda: None)
         ),
@@ -162,6 +191,7 @@ def _load(
     exec(compile(body, str(STACK), "exec"), ns)
     mod.__dict__.update(ns)
     mod.__dict__["_test_index_urls"] = index_urls
+    mod.__dict__["_test_download_envs"] = download_envs
     return mod, log
 
 
@@ -324,6 +354,52 @@ class TestTheInstalledWheelIsThePin:
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         assert mod.__dict__["_test_index_urls"] == ["https://download.pytorch.org/whl/xpu"]
+
+
+class TestTheFetchIgnoresTheUsersIndexEnvironment:
+    """`pip download` honours PIP_* exactly like `pip install`, and that breaks the pin.
+
+    PIP_NO_INDEX makes pip ignore --index-url outright, and PIP_EXTRA_INDEX_URL /
+    PIP_FIND_LINKS are consulted IN ADDITION to it. Either the fetch fails, leaving generic
+    triton shadowing the XPU build, or the wheel arrives from an index the pin never named.
+    Every other pinned install in this file already routes through _install_env_for_cmd; this
+    one is a raw subprocess.run, so it has to ask for the same scrub explicitly.
+    """
+
+    @pytest.mark.parametrize(
+        "var, value",
+        [
+            ("PIP_NO_INDEX", "1"),
+            ("PIP_INDEX_URL", "https://mirror.internal/simple"),
+            ("PIP_EXTRA_INDEX_URL", "https://mirror.internal/simple"),
+            ("PIP_FIND_LINKS", "/opt/wheels"),
+            ("UV_INDEX_URL", "https://mirror.internal/simple"),
+        ],
+    )
+    def test_the_fetch_drops_index_environment(self, monkeypatch, tmp_path, var, value):
+        monkeypatch.setenv(var, value)
+        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod.__dict__["_ensure_xpu_triton"]()
+        env = mod.__dict__["_test_download_envs"][0]
+        assert env is not None, "the fetch inherited the ambient environment"
+        assert var not in env
+
+    def test_the_fetch_neutralises_the_pip_config_file(self, monkeypatch, tmp_path):
+        # A pip.conf index-url outranks nothing on the CLI, but no-index in it does.
+        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod.__dict__["_ensure_xpu_triton"]()
+        env = mod.__dict__["_test_download_envs"][0]
+        assert env["PIP_CONFIG_FILE"] == os.devnull
+        assert env["UV_NO_CONFIG"] == "1"
+
+    def test_unrelated_environment_survives(self, monkeypatch, tmp_path):
+        # Scrub the index vars, not the environment: HTTPS_PROXY and friends are how a
+        # corporate host reaches the index at all.
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:8080")
+        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod.__dict__["_ensure_xpu_triton"]()
+        env = mod.__dict__["_test_download_envs"][0]
+        assert env["HTTPS_PROXY"] == "http://proxy.internal:8080"
 
 
 class TestPlatformGuards:

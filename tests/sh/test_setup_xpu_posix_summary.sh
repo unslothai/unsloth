@@ -117,6 +117,32 @@ check "floor uses the nonfatal wrapper" \
 # host this probe exists to classify.
 check "runtime probe is bounded" \
     "$(grep -q 'timeout 60 "\$VENV_DIR/bin/python" -c "\$_setup_xpu_probe"' "$SETUP_SH" && echo yes || echo no)" "yes"
+# ...and `timeout` is not everywhere. base macOS ships no coreutils and minimal Linux images
+# drop it, so the fallback arm ran the very probe this bounds with no deadline at all.
+_probe=$(sed -n "s/^ *_setup_xpu_probe='\(.*\)'$/\1/p" "$SETUP_SH" | head -1)
+check "probe was extracted" "$([ -n "$_probe" ] && echo yes || echo no)" "yes"
+check "probe carries its own deadline" \
+    "$(printf '%s' "$_probe" | grep -q 'signal.alarm(' && echo yes || echo no)" "yes"
+# Both arms must run the SAME string, or only one of them is bounded. Comment lines are
+# excluded: the summary arm below explains itself by naming the same call.
+check "no second probe literal" \
+    "$(grep -v '^ *#' "$SETUP_SH" | grep -c "torch.xpu.is_available()")" "1"
+check "fallback arm reuses the probe" \
+    "$(grep -q 'elif "\$VENV_DIR/bin/python" -c "\$_setup_xpu_probe"' "$SETUP_SH" && echo yes || echo no)" "yes"
+# Execute it. Python installs no SIGALRM handler, so the default action terminates the process
+# even while a stalled driver blocks inside C -- assert that against a torch that never
+# returns, with the constant shortened so the test costs seconds rather than a minute.
+if command -v python3 >/dev/null 2>&1; then
+    mkdir -p "$WORK/fakemod"
+    printf 'import ctypes\nctypes.CDLL(None).sleep(60)\n' > "$WORK/fakemod/torch.py"
+    _fast_probe=$(printf '%s' "$_probe" | sed 's/signal\.alarm([0-9]*)/signal.alarm(2)/')
+    _t0=$(date +%s)
+    ( cd "$WORK/fakemod" && PYTHONPATH="$WORK/fakemod" timeout 30 python3 -c "$_fast_probe" ) >/dev/null 2>&1
+    _rc=$?
+    _elapsed=$(( $(date +%s) - _t0 ))
+    check "a wedged driver is killed, not waited on" "$([ "$_rc" -ne 0 ] && echo yes || echo no)" "yes"
+    check "killed at the deadline, not after"        "$([ "$_elapsed" -lt 10 ] && echo yes || echo no)" "yes"
+fi
 
 # The manifest fast path skips install_python_stack entirely when the package version is
 # current, and that pass is the ONLY thing that acts on an XPU pin, so without an escape a CPU
