@@ -23,6 +23,7 @@ import {
   useAppearanceCustomStore,
   useTheme,
 } from "@/features/settings";
+import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
@@ -210,9 +211,11 @@ function getTauriWindowMode(
 function TauriUpdateLayer({
   isExternalServer,
   children,
+  appContent,
 }: {
   isExternalServer: boolean;
   children?: ReactNode;
+  appContent: ReactNode;
 }) {
   const update = useTauriUpdate(isExternalServer);
   const isUpdating =
@@ -221,21 +224,17 @@ function TauriUpdateLayer({
     update.status === "installing" ||
     (update.status === "error" && !update.dismissed);
 
-  if (isUpdating) {
-    return (
-      <UpdateScreen
-        status={update.status}
-        logs={update.logs}
-        progress={update.progress}
-        error={update.error}
-        onRetry={update.retryUpdate}
-        onSkipRestart={update.skipAndRestart}
-        onCopyDiagnostics={update.copyDiagnostics}
-      />
-    );
-  }
-
-  return (
+  const content = isUpdating ? (
+    <UpdateScreen
+      status={update.status}
+      logs={update.logs}
+      progress={update.progress}
+      error={update.error}
+      onRetry={update.retryUpdate}
+      onSkipRestart={update.skipAndRestart}
+      onCopyDiagnostics={update.copyDiagnostics}
+    />
+  ) : (
     // Capped like the browser stack: the download panel shares it, so both must fit.
     <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
       <UpdateBanner
@@ -254,6 +253,13 @@ function TauriUpdateLayer({
       />
       {children}
     </div>
+  );
+
+  return (
+    <TauriUpdateContext.Provider value={update}>
+      {content}
+      {appContent}
+    </TauriUpdateContext.Provider>
   );
 }
 
@@ -430,17 +436,21 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   const content = showApp ? (
-    <>
-      <TauriUpdateLayer isExternalServer={isExternalServer}>
-        <LlamaUpdateBanner
-          positioned={false}
-          enabled={!hidesTitlebarSidebar}
-        />
-        <DownloadManagerPanel positioned={false} />
-      </TauriUpdateLayer>
-      <NativeIntentDrain />
-      {children}
-    </>
+    <TauriUpdateLayer
+      isExternalServer={isExternalServer}
+      appContent={
+        <>
+          <NativeIntentDrain />
+          {children}
+        </>
+      }
+    >
+      <LlamaUpdateBanner
+        positioned={false}
+        enabled={!hidesTitlebarSidebar}
+      />
+      <DownloadManagerPanel positioned={false} />
+    </TauriUpdateLayer>
   ) : (
     <StartupScreen
       status={startupStatus}

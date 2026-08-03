@@ -7,6 +7,8 @@
  * Kept free of React so the numbers can be unit-tested directly.
  */
 
+import type { Locale } from "@/i18n";
+
 const TRAILING_ZERO_DECIMAL = /\.0$/;
 
 /** Compact form used on every stat tile: 12.3K, 4.5M, 19.8B. */
@@ -45,9 +47,38 @@ export function formatFullNumber(value: number): string {
   return Math.round(value).toLocaleString();
 }
 
+const DAY_FORMATTERS = new Map<Locale, Intl.NumberFormat>();
+const WEEK_FORMATTERS = new Map<Locale, Intl.NumberFormat>();
+const COUNT_FORMATTERS = new Map<Locale, Intl.NumberFormat>();
+const PLURAL_RULES = new Map<Locale, Intl.PluralRules>();
+
+function cachedFormatter(
+  cache: Map<Locale, Intl.NumberFormat>,
+  locale: Locale,
+  options?: Intl.NumberFormatOptions,
+): Intl.NumberFormat {
+  const cached = cache.get(locale);
+  if (cached) {
+    return cached;
+  }
+  const formatter = new Intl.NumberFormat(locale, options);
+  cache.set(locale, formatter);
+  return formatter;
+}
+
+function cachedPluralRules(locale: Locale): Intl.PluralRules {
+  const cached = PLURAL_RULES.get(locale);
+  if (cached) {
+    return cached;
+  }
+  const rules = new Intl.PluralRules(locale);
+  PLURAL_RULES.set(locale, rules);
+  return rules;
+}
+
 /** Locale-aware day unit, including languages with multiple plural forms. */
-export function formatDayCount(value: number, locale: string): string {
-  return new Intl.NumberFormat(locale, {
+export function formatDayCount(value: number, locale: Locale): string {
+  return cachedFormatter(DAY_FORMATTERS, locale, {
     style: "unit",
     unit: "day",
     unitDisplay: "long",
@@ -106,6 +137,11 @@ const PROFILE_COUNT_TEMPLATES = {
     message: { one: "{value} Nachricht", other: "{value} Nachrichten" },
     step: { one: "{value} Schritt", other: "{value} Schritte" },
   },
+  it: {
+    token: { one: "{value} token", other: "{value} token" },
+    message: { one: "{value} messaggio", other: "{value} messaggi" },
+    step: { one: "{value} step", other: "{value} step" },
+  },
   ru: {
     token: {
       one: "{value} токен",
@@ -157,9 +193,9 @@ const PROFILE_COUNT_TEMPLATES = {
       other: "{value} خطوة",
     },
   },
-} satisfies Record<string, Record<LexicalProfileCountUnit, CountTemplate>>;
+} satisfies Record<Locale, Record<LexicalProfileCountUnit, CountTemplate>>;
 
-type ProfileCountLocale = keyof typeof PROFILE_COUNT_TEMPLATES;
+type ProfileCountLocale = Locale;
 
 /** A localized count phrase for the dynamic nouns used by profile stats. */
 export function formatProfileCount(
@@ -170,21 +206,22 @@ export function formatProfileCount(
 ): string {
   const finiteValue = Number.isFinite(value) ? value : 0;
   if (unit === "week") {
-    return new Intl.NumberFormat(locale, {
+    return cachedFormatter(WEEK_FORMATTERS, locale, {
       style: "unit",
       unit: "week",
       unitDisplay: "long",
     }).format(finiteValue);
   }
 
-  const category = new Intl.PluralRules(locale).select(
+  const category = cachedPluralRules(locale).select(
     finiteValue,
   ) as PluralCategory;
   const templates: CountTemplate = PROFILE_COUNT_TEMPLATES[locale][unit];
   const template = templates[category] ?? templates.other;
   const formattedValue =
-    displayValue ?? new Intl.NumberFormat(locale).format(finiteValue);
-  return template.replace("{value}", formattedValue);
+    displayValue ??
+    cachedFormatter(COUNT_FORMATTERS, locale).format(finiteValue);
+  return template.replace("{value}", () => formattedValue);
 }
 
 /** Compact duration for chat and training time: 4h 8m, 12m 30s, 45s. */
