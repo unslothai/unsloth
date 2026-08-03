@@ -1094,6 +1094,30 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # An XPU pin that the venv does not satisfy. The pass below is the only thing that
+        # acts on it (install_python_stack's _ensure_xpu_torch), so without this escape a CPU
+        # install switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever --
+        # the package version is current, so the fast path calls it up to date. Mirrors the
+        # XPU escapes on setup.ps1's $SkipPythonDeps.
+        _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
+        case "${_setup_pin%/}" in
+            *xpu)
+                if ! "$VENV_DIR/bin/python" -c "
+import sys
+try:
+    import torch
+except Exception:
+    sys.exit(1)
+ver = getattr(torch, '__version__', '').lower()
+rel = ver.split('+')[0].split('.')
+n = tuple(int(x) for x in rel[:2] if x.isdigit())
+sys.exit(0 if ('+xpu' in ver and len(n) == 2 and (2, 6) <= n < (2, 11)) else 1)
+" 2>/dev/null; then
+                    substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
+                    _SKIP_PYTHON_DEPS=false
+                fi
+                ;;
+        esac
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then

@@ -118,5 +118,17 @@ check "floor uses the nonfatal wrapper" \
 check "runtime probe is bounded" \
     "$(grep -q 'timeout 60 "\$VENV_DIR/bin/python" -c "\$_setup_xpu_probe"' "$SETUP_SH" && echo yes || echo no)" "yes"
 
+# The manifest fast path skips install_python_stack entirely when the package version is
+# current, and that pass is the ONLY thing that acts on an XPU pin, so without an escape a CPU
+# install switched to the xpu family keeps its CPU wheel forever.
+_esc=$(grep -n 'XPU index pinned but torch does not match' "$SETUP_SH" | head -1 | cut -d: -f1)
+_gate=$(grep -n '^if \[ "\$_SKIP_PYTHON_DEPS" = false \]; then' "$SETUP_SH" | head -1 | cut -d: -f1)
+check "fast path has an XPU escape" "$([ -n "$_esc" ] && echo yes || echo no)" "yes"
+check "escape precedes the skip gate" \
+    "$([ -n "$_esc" ] && [ -n "$_gate" ] && [ "$_esc" -lt "$_gate" ] && echo yes || echo no)" "yes"
+# It must clear the flag, not merely warn.
+check "escape forces the dependency pass" \
+    "$(awk -v a="$_esc" 'NR>=a && NR<=a+2 && /_SKIP_PYTHON_DEPS=false/{f=1} END{print (f?"yes":"no")}' "$SETUP_SH")" "yes"
+
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

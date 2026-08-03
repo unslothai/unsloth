@@ -4268,6 +4268,60 @@ if [ "$SKIP_TORCH" = false ] && [ "$(_torch_index_url_leaf "${TORCH_INDEX_URL:-}
         substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable." "$C_WARN"
 fi
 
+# ── Intel XPU: replace generic Triton with torch's XPU build ──
+# Generic `triton` and torch's `pytorch-triton-xpu` / `triton-xpu` BOTH own the top-level
+# `triton` package, and resolving unsloth against a pinned +xpu torch pulls both (verified:
+# pytorch-triton-xpu 3.5.0 alongside triton 3.7.1), so whichever lands last wins. Unsloth is
+# installed after torch here, which means the CUDA-oriented build shadows the XPU one and
+# torch.compile loads the wrong library on an Intel GPU. Same conflict the Windows pass in
+# studio/setup.ps1 handles; this is its POSIX half, and it runs AFTER the dependency pass for
+# the same reason -- an earlier removal would just be pulled back in.
+# The spec is read from the installed torch, whose name for it changed from
+# pytorch-triton-xpu to triton-xpu in torch 2.10, so it is never hardcoded.
+if [ "$SKIP_TORCH" = false ] && [ "$(_torch_index_url_leaf "${TORCH_INDEX_URL:-}")" = "xpu" ]; then
+    _xpu_triton_spec=$("$_VENV_PY" -c "
+import importlib.metadata as m
+try:
+    reqs = m.requires('torch') or []
+except Exception:
+    reqs = []
+print(next((r.split(';')[0].strip() for r in reqs if 'triton' in r.lower()), ''))
+" 2>/dev/null || true)
+    _generic_triton=$("$_VENV_PY" -c "
+import importlib.metadata as m
+print(next((d.version for d in m.distributions()
+            if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton'), ''))
+" 2>/dev/null || true)
+    # Act only when generic triton is present AND torch asks for an XPU triton. Anything else
+    # means torch is not the +xpu wheel this branch assumes, and doing nothing is the safe answer.
+    case "$_xpu_triton_spec" in
+        *xpu*|*XPU*)
+            if [ -n "$_generic_triton" ]; then
+                substep "replacing triton $_generic_triton with $_xpu_triton_spec (Intel XPU)..."
+                # Fetch, THEN uninstall, THEN install from the file. The uninstall cannot go
+                # last: it drops the paths in generic triton's OWN record, which are the shared
+                # ones the XPU build just overwrote. Pre-fetching is what stops a dead mirror
+                # from stranding the venv between the two steps. uv has no `pip download`.
+                _xpu_triton_dir=$(mktemp -d "${TMPDIR:-/tmp}/unsloth_triton_xpu.XXXXXX")
+                if "$_VENV_PY" -m pip download --no-deps --only-binary=:all: \
+                       -d "$_xpu_triton_dir" "$_xpu_triton_spec" \
+                       --index-url "$TORCH_INDEX_URL" >/dev/null 2>&1 && \
+                   [ -n "$(find "$_xpu_triton_dir" -name '*.whl' -print -quit 2>/dev/null)" ]; then
+                    _xpu_triton_whl=$(find "$_xpu_triton_dir" -name '*.whl' -print -quit)
+                    uv pip uninstall --python "$_VENV_PY" triton >/dev/null 2>&1 || \
+                        "$_VENV_PY" -m pip uninstall -y triton >/dev/null 2>&1 || true
+                    run_install_cmd "install triton (xpu)" uv pip install --python "$_VENV_PY" \
+                        --force-reinstall --no-deps "$_xpu_triton_whl" || \
+                        substep "[WARN] could not reinstall $_xpu_triton_spec; torch.compile may not use the XPU." "$C_WARN"
+                else
+                    substep "[WARN] could not fetch $_xpu_triton_spec; generic triton $_generic_triton left in place -- it shadows torch XPU triton, so torch.compile will not use the XPU." "$C_WARN"
+                fi
+                rm -rf "$_xpu_triton_dir"
+            fi
+            ;;
+    esac
+fi
+
 # ── CI only: overlay a source checkout over the package just installed ──
 # Not a consumer knob: no flag, absent from --help, ignored unless
 # UNSLOTH_CI_SOURCE_OVERLAY names a directory holding a pyproject.toml.

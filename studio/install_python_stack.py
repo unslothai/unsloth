@@ -1703,9 +1703,16 @@ def _ensure_xpu_torch() -> None:
                 sys.executable,
                 "-c",
                 (
+                    # Flavour AND range: unsloth/models/_utils.py raises at import for an XPU
+                    # device on torch < 2.6, so a migrated 2.5+xpu venv is broken, not correct,
+                    # and returning early on the tag alone would leave it that way. The ceiling
+                    # matches _XPU_TORCH_PKG_SPEC. Compared here, in the venv that owns torch.
                     "import torch; "
                     "ver = getattr(torch, '__version__', '').lower(); "
-                    "print('xpu' if '+xpu' in ver else 'other')"
+                    "rel = ver.split('+')[0].split('.'); "
+                    "n = tuple(int(x) for x in rel[:2] if x.isdigit()); "
+                    "ok = '+xpu' in ver and len(n) == 2 and (2, 6) <= n < (2, 11); "
+                    "print('ok' if ok else 'repair')"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -1720,9 +1727,9 @@ def _ensure_xpu_torch() -> None:
     if probe.returncode == 0:
         if not _lines:
             return  # unreadable -- the base install step handles a missing torch
-        if _lines[-1] == "xpu":
-            return  # already the pinned family
-        _why = "torch is not an XPU build"
+        if _lines[-1] == "ok":
+            return  # already the pinned family, in the supported range
+        _why = "torch is not a supported XPU build"
     else:
         _why = "torch cannot import"
 

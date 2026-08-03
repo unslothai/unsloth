@@ -176,7 +176,20 @@ class TestInstallShUvDefaultIndex:
         assert '--default-index "$TORCH_INDEX_URL"' in self._sh
 
     def test_torch_installs_do_not_use_deprecated_index_url(self):
-        assert '--index-url "$TORCH_INDEX_URL"' not in self._sh
+        # uv deprecated --index-url in favour of --default-index; pip never had
+        # --default-index, so the XPU triton pre-fetch (`pip download`) legitimately uses
+        # --index-url. Assert per occurrence rather than globally: a uv invocation still
+        # cannot slip one through, which is what this guard is for.
+        # Backslash continuations are joined first: the flag and the command it belongs to
+        # are routinely on different physical lines, and a per-line scan would read them as
+        # unrelated and wave the flag through.
+        joined = self._sh.replace("\\\n", " ")
+        offenders = [
+            " ".join(line.split())
+            for line in joined.splitlines()
+            if '--index-url "$TORCH_INDEX_URL"' in line and "pip download" not in line
+        ]
+        assert not offenders, offenders
 
     def test_torch_installs_neutralize_all_uv_index_env_vars(self):
         # --default-index installs run with all uv index env vars unset via `env -u`.
