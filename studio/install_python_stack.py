@@ -1476,6 +1476,28 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
     return _pin_is_211 != _inst_is_211
 
 
+# Intel XPU wheels. Ceiling from install.sh's xpu arm rather than the CUDA spec above: the
+# xpu index serves past our tested range, and the floor is 2.6 because unsloth/models/_utils.py
+# raises at import for an XPU device below it. Kept in step with install.sh by
+# tests/sh/test_xpu_torch_spec_parity.sh.
+_XPU_TORCH_PKG_SPEC: tuple[str, str, str] = (
+    "torch>=2.6,<2.11.0",
+    "torchvision>=0.21,<0.26.0",
+    "torchaudio>=2.6,<2.11.0",
+)
+
+
+def _explicit_xpu_torch_index_url() -> "str | None":
+    """The pinned wheel index URL when it names the XPU family (leaf == xpu), else None.
+
+    Intel support is a pin, never autodetection, so the pin is the only signal there is.
+    """
+    url = _explicit_torch_index_url()
+    if url is None:
+        return None
+    return url if _torch_index_leaf(url) == "xpu" else None
+
+
 def _explicit_cpu_torch_index_url() -> "str | None":
     """The pinned wheel index URL when it names the CPU family (leaf == cpu), else None.
 
@@ -1657,6 +1679,71 @@ def _ensure_cuda_torch() -> None:
     )
 
 
+def _ensure_xpu_torch() -> None:
+    """Install XPU torch when an explicit XPU pin is set but the venv has another build.
+
+    Counterpart to _ensure_cpu_torch for Intel. `unsloth studio update` runs setup.sh, never
+    install.sh, so its XPU install path is unreachable there; and an xpu leaf names no family
+    the cuda/rocm helpers know, so they skip it and the CPU wheel survives the pin forever.
+
+    Windows is excluded on purpose: setup.ps1 owns torch there and already installs the XPU
+    trio itself, so acting here would fight it. macOS has no XPU at all.
+    """
+    if NO_TORCH or IS_MACOS or IS_WINDOWS:
+        return
+    pin = _explicit_xpu_torch_index_url()
+    if pin is None:
+        return
+
+    # A non-zero exit means torch is missing or un-importable; the explicit pin installs it
+    # below either way. Bounded like every other probe here.
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import torch; "
+                    "ver = getattr(torch, '__version__', '').lower(); "
+                    "print('xpu' if '+xpu' in ver else 'other')"
+                ),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 90,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    _lines = [
+        line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
+    ]
+    if probe.returncode == 0:
+        if not _lines:
+            return  # unreadable -- the base install step handles a missing torch
+        if _lines[-1] == "xpu":
+            return  # already the pinned family
+        _why = "torch is not an XPU build"
+    else:
+        _why = "torch cannot import"
+
+    print(
+        f"   {_why} but an explicit XPU index is pinned -- reinstalling XPU torch from "
+        f"{_strip_index_url_credentials(pin)}"
+    )
+    _torch_pkg, _vision_pkg, _audio_pkg = _XPU_TORCH_PKG_SPEC
+    pip_install(
+        "XPU torch repair",
+        "--force-reinstall",
+        "--no-cache-dir",
+        _torch_pkg,
+        _vision_pkg,
+        _audio_pkg,
+        "--index-url",
+        pin,
+        constrain = False,
+    )
+
+
 def _ensure_cpu_torch() -> None:
     """Reinstall CPU torch when an explicit CPU pin is set but the venv has a GPU build.
 
@@ -1753,7 +1840,7 @@ def _ensure_rocm_torch() -> None:
     global _rocm_windows_torch_installed
     # install.sh's resolved backend is authoritative: skip ROCm when it already chose a
     # non-ROCm family (avoids re-detecting in a subprocess that may see a different env).
-    if _TORCH_BACKEND in ("cuda", "cpu"):
+    if _TORCH_BACKEND in ("cuda", "cpu", "xpu"):
         return
     # An explicit unknown-family pin was applied VERBATIM at install time; leave it alone.
     if _explicit_unknown_family_torch_index_url() is not None:
@@ -2296,6 +2383,10 @@ if not _TORCH_BACKEND:
         _TORCH_BACKEND = "rocm"
     elif _idx_leaf == "cpu":
         _TORCH_BACKEND = "cpu"
+    elif _idx_leaf == "xpu":
+        # Without this the leaf falls through as unknown and the standalone update never
+        # acts on an authoritative XPU pin -- see _ensure_xpu_torch.
+        _TORCH_BACKEND = "xpu"
     elif _is_cuda_family_leaf(_idx_leaf):
         # Require a digit after "cu" so /current or /custom is NOT branded CUDA (a wrong backend
         # makes _ensure_rocm_torch return early on AMD hosts). An unknown leaf keeps "" so the
@@ -3142,6 +3233,7 @@ def install_python_stack() -> int:
         _progress(_torch_step_label("check"))
         _ensure_cuda_torch()
         _ensure_rocm_torch()
+        _ensure_xpu_torch()
         _ensure_cpu_torch()
 
     # Windows + AMD GPU: warn if ROCm torch was not installed (wrong Python
@@ -3338,6 +3430,7 @@ def install_python_stack() -> int:
         _progress(_torch_step_label("final"))
         _ensure_cuda_torch()
         _ensure_rocm_torch()
+        _ensure_xpu_torch()
         _ensure_cpu_torch()
 
     # 14. Final check (silent; third-party conflicts are expected)

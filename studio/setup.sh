@@ -1202,7 +1202,17 @@ for _setup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
     _setup_torch_is_xpu=true
     # A +xpu wheel installs fine on a host whose driver never initialises, so the wheel alone
     # must not claim a GPU; only the runtime answer reaches the summary below.
-    if "$VENV_DIR/bin/python" -c "import torch,sys; sys.exit(0 if torch.xpu.is_available() else 1)" >/dev/null 2>&1; then
+    # Bounded like every other probe here (setup.ps1 uses Invoke-BoundedPythonProbe for this
+    # exact call): a stalled Intel driver wedges inside `import torch`, and unbounded that
+    # hangs every `studio update` forever. 60s, not the 10s the smi probes use -- a cold
+    # `import torch` is seconds on its own, and a short bound would read a healthy host as
+    # having no GPU. A timeout means "no XPU", which is the same answer as a failed probe.
+    _setup_xpu_probe='import torch,sys; sys.exit(0 if torch.xpu.is_available() else 1)'
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 60 "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1 && _setup_xpu_ready=true
+    elif "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1; then
+        # base macOS has no coreutils timeout; it also has no XPU, so this arm is Linux-without-
+        # coreutils only and keeps the old behaviour rather than skipping detection entirely.
         _setup_xpu_ready=true
     fi
     break
@@ -1215,7 +1225,10 @@ done
 # wheel, not the runtime: a stalled driver is a driver problem, not a reason to skip the upgrade.
 # --no-deps: torch and numpy are already in. Best effort, like the install.sh and Windows passes.
 if [ "$_setup_torch_is_xpu" = true ]; then
-    run_quiet "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
+    # run_quiet_no_exit, NOT run_quiet: the latter routes failure to setup_fail and exits, which
+    # would abort an otherwise fine `studio update` over a best-effort step and leave the warning
+    # below unreachable.
+    run_quiet_no_exit "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
         substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable."
 fi
 # NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on

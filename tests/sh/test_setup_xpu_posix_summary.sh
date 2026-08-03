@@ -68,6 +68,10 @@ run_case() {
         # shellcheck disable=SC2317
         run_quiet() { shift; "$@"; }
         # shellcheck disable=SC2317
+        run_quiet_no_exit() { shift; "$@"; }
+        # shellcheck disable=SC2317
+        timeout() { shift; "$@"; }
+        # shellcheck disable=SC2317
         substep() { :; }
         : > "$WORK/fired"
         # shellcheck disable=SC1091
@@ -105,6 +109,14 @@ check "ranked before the CPU arm" "$([ -n "$_arm" ] && [ -n "$_none" ] && [ "$_a
 # The floor must run before the summary; the other order would report on a stale venv.
 _bnb=$(grep -n 'install bitsandbytes (xpu)' "$SETUP_SH" | head -1 | cut -d: -f1)
 check "floor precedes the summary" "$([ -n "$_bnb" ] && [ -n "$_none" ] && [ "$_bnb" -lt "$_none" ] && echo yes || echo no)" "yes"
+# run_quiet routes failure to setup_fail and EXITS, so using it here would abort an otherwise
+# fine `studio update` over a best-effort step and make the warning below unreachable.
+check "floor uses the nonfatal wrapper" \
+    "$(grep -q 'run_quiet_no_exit "install bitsandbytes (xpu)"' "$SETUP_SH" && echo yes || echo no)" "yes"
+# An unbounded `import torch` hangs forever on a stalled Intel driver, which is precisely the
+# host this probe exists to classify.
+check "runtime probe is bounded" \
+    "$(grep -q 'timeout 60 "\$VENV_DIR/bin/python" -c "\$_setup_xpu_probe"' "$SETUP_SH" && echo yes || echo no)" "yes"
 
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
