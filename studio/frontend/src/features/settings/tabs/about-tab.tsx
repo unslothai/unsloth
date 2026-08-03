@@ -73,21 +73,25 @@ async function fetchInstallSource(): Promise<UpdateInstallSource> {
   }
 }
 
-// Whichever accelerator runtime is present, at most one. Module scope on purpose: inlining the
-// three-way choice pushes AboutTab past the cognitive-complexity ceiling.
-function acceleratorRuntime(
-  hw: HardwareInfo,
-): { labelKey: TranslationKey; version: string } | null {
+// Every accelerator runtime the backend reported, not just the first. A dual CUDA+XPU build
+// running in XPU mode reports both -- hardware.py deliberately supports that and hides CUDA
+// only at device selection -- so returning CUDA alone hid the XPU row on exactly the host it
+// was added for. Module scope on purpose: inlining this pushes AboutTab past the
+// cognitive-complexity ceiling.
+type RuntimeRow = { labelKey: TranslationKey; version: string };
+
+function acceleratorRuntimes(hw: HardwareInfo): RuntimeRow[] {
+  const rows: RuntimeRow[] = [];
   if (hw.cuda) {
-    return { labelKey: "settings.about.cuda", version: hw.cuda };
+    rows.push({ labelKey: "settings.about.cuda", version: hw.cuda });
   }
   if (hw.rocm) {
-    return { labelKey: "settings.about.rocm", version: hw.rocm };
+    rows.push({ labelKey: "settings.about.rocm", version: hw.rocm });
   }
   if (hw.xpu) {
-    return { labelKey: "settings.about.xpu", version: hw.xpu };
+    rows.push({ labelKey: "settings.about.xpu", version: hw.xpu });
   }
-  return null;
+  return rows;
 }
 
 export function AboutTab() {
@@ -95,7 +99,7 @@ export function AboutTab() {
   const deviceType = usePlatformStore((s) => s.deviceType);
   const defaultShell = deviceType === "windows" ? "windows" : "unix";
   const hw = useHardwareInfo();
-  const runtime = acceleratorRuntime(hw);
+  const runtimes = acceleratorRuntimes(hw);
   const updateSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -173,7 +177,7 @@ export function AboutTab() {
         </SettingsSection>
       </div>
 
-      {hw.gpus.length > 0 || runtime ? (
+      {hw.gpus.length > 0 || runtimes.length > 0 ? (
         <SettingsSection title={t("settings.about.hardware")}>
           {hw.gpus.map((gpu, i) => (
             <SettingsRow
@@ -194,13 +198,13 @@ export function AboutTab() {
               </code>
             </SettingsRow>
           ))}
-          {runtime ? (
-            <SettingsRow label={t(runtime.labelKey)}>
+          {runtimes.map((rt) => (
+            <SettingsRow key={rt.labelKey} label={t(rt.labelKey)}>
               <code className="font-mono text-xs text-muted-foreground">
-                {runtime.version}
+                {rt.version}
               </code>
             </SettingsRow>
-          ) : null}
+          ))}
         </SettingsSection>
       ) : null}
 

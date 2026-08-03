@@ -24,6 +24,8 @@ on:
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
+      - 'studio/setup.ps1'
+      - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - '.github/workflows/cross-platform-parity-ci.yml'
   push:
     branches: [main]
@@ -35,6 +37,8 @@ on:
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - 'tests/studio/test_intel_registry_fallback.ps1'
+      - 'studio/setup.ps1'
+      - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
       - '.github/workflows/cross-platform-parity-ci.yml'
   workflow_dispatch:
 
@@ -79,6 +83,10 @@ jobs:
       - name: Intel registry fallback tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_intel_registry_fallback.ps1
+      # Same reason: the filesystem is mocked, so it does not need a real venv or Windows.
+      - name: Setup XPU pre-report tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_setup_xpu_runtime_prereport.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh

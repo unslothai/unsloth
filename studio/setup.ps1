@@ -731,6 +731,43 @@ function Get-IntelRegistryAdapterNames {
     return $names
 }
 
+# The studio venv directory, guessed from the environment alone. The canonical $VenvDir is
+# resolved ~1100 lines below (it validates the override and can exit), far past the hardware
+# report, so the Intel scan needs its own read-only guess. Returns $null when there is nothing
+# to look at -- never creates, validates or reports.
+function Get-ProbableStudioVenvDir {
+    $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
+            elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
+            else { $null }
+    # Expand a leading ~ like the canonical resolver; without it the path stays cwd-relative.
+    if ($root -and ($root -eq "~" -or $root -like "~/*" -or $root -like "~\*")) {
+        if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
+        $rest = $root.Substring(1).TrimStart('/', '\')
+        $root = if ($rest) { Join-Path $env:USERPROFILE $rest } else { $env:USERPROFILE }
+    }
+    if (-not $root) {
+        if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
+        $root = Join-Path $env:USERPROFILE ".unsloth\studio"
+    }
+    $venv = Join-Path $root "unsloth_studio"
+    if (Test-Path -LiteralPath $venv -PathType Container) { return $venv }
+    return $null
+}
+
+# Is this venv's torch an XPU wheel? Read off disk, not through the interpreter: torch/version.py
+# carries the full local label ("2.9.1+xpu") and costs nothing, so a CPU-only host never pays for
+# an `import torch` just to be told it has no Intel GPU. The dist-info name is NOT usable here --
+# pip normalises the local label out of it (torch-2.9.1.dist-info for a +cu128 wheel).
+function Test-VenvTorchIsXpu {
+    param([string]$VenvPath)
+    if (-not $VenvPath) { return $false }
+    try {
+        $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
+        if (-not (Test-Path -LiteralPath $verPy)) { return $false }
+        return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "__version__\s*=\s*'[^']*\+xpu")
+    } catch { return $false }
+}
+
 # VS generator -> MSBuild BuildCustomizations dir; toolset tracks the VS major
 # (18->v180, 17->v170), defaulting to v170 when unparseable.
 function Get-VcBuildCustomizationsDir {
@@ -1804,6 +1841,26 @@ if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
         $xpuGpu = $_gpuNames | Where-Object { $_ -match $_xpuNameRe } | Select-Object -First 1
         if ($xpuGpu) { $script:IsIntelXpu = $true; $IntelGpuLabel = $xpuGpu }
     } catch {}
+    # Neither WMI nor the registry recognised an adapter, so ask the environment itself: an
+    # installed +xpu wheel whose runtime initialises proves the host far better than a
+    # marketing name. The same check runs ~1300 lines below to protect the venv from being
+    # wiped, but that is AFTER the report just below, so without this an Arc user on a wedged
+    # WMI is told no training GPU exists and then watches setup keep the XPU environment.
+    # Same predicate as that one, so the report and the decision cannot disagree.
+    # Own try: this must still run when the scan above threw (that is the case it exists for),
+    # and a junk UNSLOTH_STUDIO_HOME makes Join-Path throw, which would abort setup outright.
+    if (-not $script:IsIntelXpu) {
+        try {
+            $_probeVenv = Get-ProbableStudioVenvDir
+            if (Test-VenvTorchIsXpu $_probeVenv) {
+                $_probePy = Join-Path $_probeVenv "Scripts\python.exe"
+                if (Test-TorchXpuAvailable -PythonExe $_probePy) {
+                    $script:IsIntelXpu = $true
+                    $IntelGpuLabel = "Intel XPU runtime (reported by PyTorch)"
+                }
+            }
+        } catch {}
+    }
 }
 
 if ($HasNvidiaSmi) {

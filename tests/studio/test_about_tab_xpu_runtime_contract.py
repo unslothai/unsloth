@@ -39,7 +39,20 @@ def test_about_tab_renders_the_xpu_runtime_row():
     assert 'labelKey: "settings.about.xpu"' in src, "About tab must offer an xpu runtime label"
     assert "hw.xpu" in src
     # The section itself must open for an xpu-only host, not just for cuda/rocm.
-    assert "hw.gpus.length > 0 || runtime" in src
+    assert "hw.gpus.length > 0 || runtimes.length > 0" in src
+
+
+def test_about_tab_shows_every_runtime_not_just_the_first():
+    # hardware.py reads versions["cuda"] off torch.version.cuda and sets versions["xpu"] from
+    # torch.xpu.is_available() independently, so a dual build in forced-XPU mode reports both.
+    # Returning the first match hid the xpu row on exactly that host.
+    src = ABOUT.read_text(encoding = "utf-8")
+    assert "acceleratorRuntimes" in src, "the runtime picker must return all matches"
+    assert src.count("rows.push(") == 3, "cuda, rocm and xpu must each be pushed"
+    assert "runtimes.map(" in src, "every reported runtime must be rendered"
+    # An early return is what caused the bug; the picker must collect instead.
+    picker = src.split("function acceleratorRuntimes")[1].split("\n}")[0]
+    assert picker.count("return") == 1, "the picker must not return early on the first hit"
 
 
 def test_the_xpu_label_resolves_in_every_locale():
