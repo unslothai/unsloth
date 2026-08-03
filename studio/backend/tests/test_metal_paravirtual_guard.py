@@ -1490,19 +1490,51 @@ def _target_state(backend, gguf, **overrides):
     return backend.adopt_load_intent_if_matched(llama_cpp.GgufLoadIntent(**kwargs))
 
 
+def _gpu_pin_recorders():
+    """Every `if` in load_model that writes self._gpu_ids, in source order. load_model
+    records the pin more than once, so judging one site would miss a later overwrite."""
+    tree = _load_model_tree()
+    found = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(n, ast.Attribute) and n.attr == "_gpu_ids" and isinstance(n.ctx, ast.Store)
+            for stmt in [*node.body, *node.orelse]
+            for n in ast.walk(stmt)
+        )
+    ]
+    assert found, "no _gpu_ids recording block found in load_model"
+    # ast.walk descends into elif chains, so drop the ones that are another's else-branch:
+    # running those on their own would skip the guard that precedes them.
+    nested = {id(alt) for node in found for alt in node.orelse if isinstance(alt, ast.If)}
+    return sorted((n for n in found if id(n) not in nested), key = lambda n: n.lineno)
+
+
 def test_a_forced_cpu_launch_records_no_effective_gpu_pin():
     """--device none means the runtime uses no GPU, so echoing the requested pick as
     effective both misreports /status and makes clearing that pick reload a CPU server
-    already in the target state. The raw pick stays, so repeating it still matches."""
-    src = _load_model_source()
-    at = src.index("effective_pin = gpu_indices if gpu_indices is not None else gpu_ids")
-    assert "not _paravirtual_cpu_forced" in src[src.rindex("if ", 0, at) : at]
-
+    already in the target state. Runs every recorder in order: the last one wins, and an
+    earlier clear is worth nothing if a later block re-assigns the request."""
+    scope = {
+        "self": types.SimpleNamespace(_gpu_ids = None, _requested_gpu_ids = None),
+        "_paravirtual_cpu_forced": True,
+        "is_vulkan_backend": False,
+        "gpu_ids": [0],
+        "gpu_indices": [0],
+        "_vulkan_pin_ids": None,
+        # The unmatched-ordinal guard clears the pin and raises; inert here.
+        "_vulkan_explicit_unmatched": False,
+    }
+    for node in _gpu_pin_recorders():
+        exec(ast.unparse(node), {}, scope)
+        assert scope["self"]._gpu_ids is None, f"recorder at line {node.lineno} re-pinned a GPU"
+    # The raw pick survives, so repeating it still dedupes; only clearing it changes.
     backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
     backend._is_diffusion = False
     backend._requested_gpu_ids, backend._gpu_ids = [0], None
-    assert backend.matches_gpu_ids([0]) is True  # the same pick still dedupes
-    assert backend.matches_gpu_ids(None) is True  # and clearing it does not reload
+    assert backend.matches_gpu_ids([0]) is True
+    assert backend.matches_gpu_ids(None) is True
 
 
 def test_a_real_mac_still_records_the_gpu_it_pinned(monkeypatch):

@@ -9998,7 +9998,12 @@ class LlamaCppBackend:
                 # request) for the keep-warm loop, dedupe, and /status, so an explicit
                 # [0, 1] narrowed to [0] records [0] and /status never echoes an ordinal
                 # the child never saw. Auto selection (no gpu_ids) stays None (#7239).
-                if is_vulkan_backend:
+                if _paravirtual_cpu_forced:
+                    # --device none pins nothing, so record no effective pin here either.
+                    # Ahead of the backend branches: this is the authoritative record and
+                    # would otherwise re-echo the device the child never saw.
+                    self._gpu_ids = None
+                elif is_vulkan_backend:
                     # Only record an EXPLICIT Vulkan pin: an auto pick still narrows +
                     # pins below, but recording it would misreport an explicit pin and
                     # make dedupe miss the loaded server; mirrors the CUDA/ROCm branch.
