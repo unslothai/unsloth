@@ -835,7 +835,9 @@ def test_the_env_the_child_inherits_is_dropped_too():
         "LLAMA_ARG_MODEL_DRAFT",
         "LLAMA_ARG_HFD_REPO",
     ):
-        assert var in llama_cpp._SPEC_ENV_VARS, f"{var} survives the drafter drop into the child env"
+        assert (
+            var in llama_cpp._SPEC_ENV_VARS
+        ), f"{var} survives the drafter drop into the child env"
     gate_at = src.index("for _pv_spec_var in _SPEC_ENV_VARS")
     assert "env.pop(_pv_spec_var, None)" in src[gate_at : gate_at + 200]
 
@@ -1294,7 +1296,9 @@ def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
     retry would relaunch the mode that just failed and lose a main model that loads fine
     without it. It strips the spec group, and takes the child env with it."""
     src = _load_model_source()
-    retry = src[src.index("_fb_tail = cmd[_spec_start") : src.index("fallback_cmd = cmd[:_spec_start]")]
+    retry = src[
+        src.index("_fb_tail = cmd[_spec_start") : src.index("fallback_cmd = cmd[:_spec_start]")
+    ]
     assert "_extra_args_requests_mtp(extra_args, env = _launch_spec_env)" in retry
     assert "strip_spec = True" in retry
     assert "env.pop(_fb_spec_var, None)" in retry
