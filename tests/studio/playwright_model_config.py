@@ -612,6 +612,17 @@ with sync_playwright() as p:
     if _count(od_tab):
         od_tab.click()
         page.wait_for_timeout(400)
+    # Waited for, not counted once: until cachedReady flips the picker renders the
+    # loading state with no rows at all, so a fixed pause turns a slow cache scan
+    # into a hard failure. A populated picker attaches a row as soon as it has one,
+    # so this returns immediately in the normal case and only spends the timeout
+    # when there is genuinely nothing -- which is the case worth failing on.
+    try:
+        popover.locator("[data-model-picker-option]").first.wait_for(
+            state = "attached", timeout = 20_000
+        )
+    except Exception:
+        pass
     populated = _count(popover.locator("[data-model-picker-option]"))
     if populated == 0:
         fail("picker shows no rows at all, so the hidden-model check below proves nothing")
