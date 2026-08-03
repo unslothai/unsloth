@@ -1564,6 +1564,57 @@ def mapped_chat_template(model_info: dict, active_model_name):
     return mapped
 
 
+def _is_processor(obj) -> bool:
+    """True for a container processor: it holds a tokenizer AND renders chats itself.
+
+    ``ProcessorMixin.apply_chat_template`` does not switch to "tool_use" implicitly, so a
+    processor renders "default" unless a template is named. Three call sites need that
+    distinction and each had grown its own copy of the test."""
+    return getattr(obj, "tokenizer", None) is not None and callable(
+        getattr(obj, "apply_chat_template", None)
+    )
+
+
+def chat_render_target(processor, tokenizer = None):
+    """The object whose chat template a render will actually use.
+
+    ``_generate_vlm`` falls back to the nested tokenizer when the processor cannot render
+    a chat itself (mlx_inference.py), so anything profiling the prompt ahead of the render
+    has to make the same choice. Reproducing the rule at the call site let the two drift:
+    a processor without a usable ``chat_template`` was profiled as a processor, selecting
+    "default", while the render used the nested tokenizer's tool_use template (#7066)."""
+    if processor is None:
+        return tokenizer
+    if (
+        getattr(processor, "apply_chat_template", None) is None
+        or getattr(processor, "chat_template", None) is None
+    ):
+        nested = getattr(processor, "tokenizer", None)
+        return processor if nested is None else nested
+    return processor
+
+
+# The Jinja variable HF passes the schema in. A template that never reads it cannot put a
+# tool in the prompt, whatever the caller asked for.
+_TOOLS_VARIABLE = re.compile(r"\btools\b")
+
+
+def _renders_tool_schema(target, template, tools) -> bool:
+    """True unless the template *target* will select provably cannot advertise tools."""
+    value = template or getattr(target, "chat_template", None)
+    if not value:
+        value = getattr(getattr(target, "tokenizer", None), "chat_template", None)
+    bodies = _selected_template_strings_from_value(
+        value, tools, prefer_tool_use = not _is_processor(target)
+    )
+    if not bodies:
+        # Unreadable, not proven silent. Emptying the catalog here would disable healing
+        # for every model whose template shape this module cannot parse, which is a
+        # feature regression rather than the narrow authorization fix (#7066).
+        return True
+    return any(_TOOLS_VARIABLE.search(_JINJA_COMMENT.sub("", body)) for body in bodies)
+
+
 def renderable_tool_catalog(
     tools,
     tokenizer,
@@ -1591,6 +1642,17 @@ def renderable_tool_catalog(
     )
     if not safe:
         return safe
+    # A processor stays on "default" and the VLM path renders straight through
+    # apply_chat_template_for_generation, with no native-template fallback behind it
+    # (mlx_inference.py). When that default body never reads ``tools`` the schema cannot
+    # reach the prompt at all, so every tool in the catalog is unadvertised and healing a
+    # text-form call would promote one the model was never shown (#7066).
+    if _is_processor(tokenizer) and not _renders_tool_schema(tokenizer, template, tools):
+        logger.info(
+            "The processor's default chat template does not render tool schemas; "
+            "text-form tool calls will be relayed as prose rather than healed."
+        )
+        return []
     # Resolved rather than read: render_native_template fetches it during the render, so on
     # the FIRST request needing the fallback the cache is still empty and this would hand
     # back the active-profile catalog unchanged (#7066).
@@ -1685,13 +1747,10 @@ def _selected_chat_template_strings(tokenizer, tools = None) -> tuple[str, ...]:
                 return (selected,)
     # ProcessorMixin.apply_chat_template does not switch to "tool_use" implicitly;
     # it uses "default" unless chat_template= names another template.
-    is_processor = getattr(tokenizer, "tokenizer", None) is not None and callable(
-        getattr(tokenizer, "apply_chat_template", None)
-    )
     return _selected_template_strings_from_value(
         getattr(tokenizer, "chat_template", None),
         tools,
-        prefer_tool_use = not is_processor,
+        prefer_tool_use = not _is_processor(tokenizer),
     )
 
 
@@ -2034,12 +2093,10 @@ def markup_for_tokenizer(
     # tool-calling turn and "default" otherwise, and the two emit different literals. Both
     # live in the same entry, so a conversation alternating tool and no-tool turns keeps
     # hitting instead of rebuilding on every message.
-    _is_processor = getattr(tokenizer, "tokenizer", None) is not None and callable(
-        getattr(tokenizer, "apply_chat_template", None)
-    )
+    is_processor = _is_processor(tokenizer)
     # A processor always renders "default", so its profile does not vary with tools and the
     # cache must not key two identical entries under different selectors.
-    selector = bool(tools) and not _is_processor
+    selector = bool(tools) and not is_processor
     # A named-template dict is unhashable, so the key is a stable serialization of it;
     # without this the cache write raised TypeError and every call rebuilt the profile.
     if not isinstance(template, str):
@@ -2061,7 +2118,7 @@ def markup_for_tokenizer(
     # renders "default" unless chat_template= names another. _selected_chat_template_strings
     # already documents this, so profiling with the tokenizer rule left a processor's own
     # default-template boundary unswept while the render emitted it (#7066).
-    profile = model_markup(template, tokens, tools, prefer_tool_use = not _is_processor)
+    profile = model_markup(template, tokens, tools, prefer_tool_use = not is_processor)
     try:
         entry = cached if isinstance(cached, dict) else {}
         # Two selectors and one template per tokenizer; a template swap adds a key rather

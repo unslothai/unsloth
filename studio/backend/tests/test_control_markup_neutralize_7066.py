@@ -19,6 +19,7 @@ import pytest
 from core.inference.chat_template_helpers import (
     _deepseek_opener_pattern,
     _neutralize_content_parts,
+    chat_render_target,
     resolve_native_chat_template,
     markup_for_tokenizer,
     catalog_tool_names,
@@ -5356,8 +5357,9 @@ def test_the_mlx_vlm_healer_catalog_uses_the_processor():
     source = (_REPO_ROOT / "studio" / "backend" / "routes" / "inference.py").read_text(
         encoding = "utf-8"
     )
-    assert '_sf_model_info.get("processor") or _sf_model_info.get("tokenizer")' in source
     assert "_sf_chat_target" in source
+    assert "_sf_chat_render_target(" in source
+    assert '_sf_model_info.get("processor")' in source
 
 
 def test_the_native_template_resolution_is_off_the_event_loop():
@@ -5368,3 +5370,113 @@ def test_the_native_template_resolution_is_off_the_event_loop():
     )
     block = source.split("_sf_healing_tools = (", 1)[1][:700]
     assert "asyncio.to_thread(" in block
+
+
+def test_the_render_target_is_chosen_by_one_shared_rule():
+    """_generate_vlm falls back to the nested tokenizer when the processor cannot render a
+    chat itself. The healing catalog is built before that render, so restating the rule at
+    the call site let the two disagree: the catalog profiled the processor and selected
+    "default" while the render used the tokenizer's tool_use template (#7066)."""
+
+    class _Inner:
+        chat_template = {"default": "d", "tool_use": "t"}
+
+    class _NoTemplate:
+        chat_template = None
+        tokenizer = _Inner()
+
+        def apply_chat_template(self, *args, **kwargs):
+            return ""
+
+    class _Renders:
+        chat_template = "{% for m in messages %}{{ m }}{% endfor %}"
+        tokenizer = _Inner()
+
+        def apply_chat_template(self, *args, **kwargs):
+            return ""
+
+    class _Bare:
+        chat_template = None
+
+    no_template = _NoTemplate()
+    assert chat_render_target(no_template) is no_template.tokenizer
+    renders = _Renders()
+    assert chat_render_target(renders) is renders
+    # No processor at all: the plain tokenizer the route already had.
+    plain = _Bare()
+    assert chat_render_target(None, plain) is plain
+    # A processor with neither a template nor a nested tokenizer stays itself rather than
+    # collapsing to None, which would silently disable profiling.
+    bare = _Bare()
+    assert chat_render_target(bare) is bare
+
+
+def test_both_render_paths_call_the_shared_target_rule():
+    """A copy of the rule in either file is what drifted; pin that neither has one."""
+    mlx = (_REPO_ROOT / "studio" / "backend" / "core" / "inference" / "mlx_inference.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "chat_render_target(self._processor)" in mlx
+    assert "getattr(self._processor, \"apply_chat_template\", None) is None" not in mlx
+
+
+def test_a_processor_that_cannot_render_tools_advertises_none():
+    """ProcessorMixin stays on "default", and the VLM path renders straight through
+    apply_chat_template_for_generation with no native-template fallback behind it. When
+    that default body never reads ``tools`` the schema never reaches the prompt, so healing
+    a text-form call would promote a tool the model was never shown (#7066)."""
+
+    class _Inner:
+        added_tokens_decoder: dict = {}
+
+    class _Processor:
+        chat_template = {
+            "default": "{% for m in messages %}<|turn|>{{ m }}{% endfor %}",
+            "tool_use": "{% for t in tools %}{{ t }}{% endfor %}",
+        }
+        tokenizer = _Inner()
+
+        def apply_chat_template(self, *args, **kwargs):
+            return ""
+
+    tools = [{"type": "function", "function": {"name": "read_file", "description": "d"}}]
+    assert renderable_tool_catalog(tools, _Processor(), {}) == []
+
+    class _RendersTools(_Processor):
+        chat_template = {
+            "default": "{% for t in tools %}{{ t }}{% endfor %}{{ messages }}",
+        }
+
+    # The same processor whose one template does read tools keeps its catalog.
+    assert catalog_tool_names(renderable_tool_catalog(tools, _RendersTools(), {})) == {"read_file"}
+
+
+def test_a_plain_tokenizer_keeps_its_catalog_without_a_tools_reference():
+    """The tokenizer path has the native-template fallback behind it, so an active template
+    that drops the schema is re-rendered with one that does not. Emptying the catalog there
+    would break tool passthrough for every override template (#6801)."""
+
+    class _Tokenizer:
+        chat_template = "{% for m in messages %}{{ m }}{% endfor %}"
+        added_tokens_decoder: dict = {}
+
+    tools = [{"type": "function", "function": {"name": "read_file", "description": "d"}}]
+    assert catalog_tool_names(renderable_tool_catalog(tools, _Tokenizer(), {})) == {"read_file"}
+
+
+def test_an_unreadable_processor_template_keeps_its_catalog():
+    """Unreadable is not proven silent: emptying here would disable healing for every
+    template shape this module cannot parse, a feature regression rather than a fix."""
+
+    class _Inner:
+        added_tokens_decoder: dict = {}
+
+    class _Processor:
+        chat_template = {"a": "{{ messages }}", "b": "{{ messages }}"}
+        tokenizer = _Inner()
+
+        def apply_chat_template(self, *args, **kwargs):
+            return ""
+
+    tools = [{"type": "function", "function": {"name": "read_file", "description": "d"}}]
+    assert catalog_tool_names(renderable_tool_catalog(tools, _Processor(), {})) == {"read_file"}

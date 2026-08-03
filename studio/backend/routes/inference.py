@@ -11321,6 +11321,7 @@ async def openai_chat_completions(
     # dropped tool with a clean NAME be promoted out of text-form output, handing the
     # client a structured call for a tool the model was never shown (#7066).
     from core.inference.chat_template_helpers import (
+        chat_render_target as _sf_chat_render_target,
         markup_for_tokenizer as _sf_markup_for,
         neutralize_tool_descriptions as _sf_neutralize_tools,
         renderable_tool_catalog as _sf_renderable_tools,
@@ -11331,8 +11332,13 @@ async def openai_chat_completions(
     # An MLX VLM serves even a text-only tool request through _generate_vlm, which renders
     # with the PROCESSOR's own chat template. Profiling the nested tokenizer instead would
     # keep a tool the processor render drops, so the healer could promote a call for a tool
-    # the prompt never advertised (#7066).
-    _sf_chat_target = _sf_model_info.get("processor") or _sf_model_info.get("tokenizer")
+    # the prompt never advertised (#7066). The choice is shared with _generate_vlm rather
+    # than restated: a processor that cannot render a chat itself falls back to its nested
+    # tokenizer there, and picking the processor unconditionally here selected "default"
+    # for a render that used the tokenizer's tool_use template.
+    _sf_chat_target = _sf_chat_render_target(
+        _sf_model_info.get("processor"), _sf_model_info.get("tokenizer")
+    )
     _sf_healing_tools = (
         # Safe under EVERY template this turn could select. When the active template drops
         # the schema the render falls back to the model's native one, whose profile can
