@@ -330,22 +330,21 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
     exits the whole run, which would take llama.cpp inference down with it."""
     guard = SETUP_PS1.split("function Assert-StudioOwnedOrAbsent", 1)[1].split("\nfunction ", 1)[0]
     assert "[switch]$NonFatal" in guard
-    # Ordering, not just presence: below its exit the return is dead code, and
-    # above the custom-home gate it would report a fresh install as unreadable.
+    # Ordering, not just presence: below its exit the return is dead code.
     paired = re.findall(
         r'if \(\$NonFatal\) \{ return "Denied" \}\n\s*Exit-PathAccessDenied -Path \$Path', guard
     )
     assert len(paired) == guard.count("Exit-PathAccessDenied -Path $Path"), guard
-    # No unpaired return either: one above the custom-home gate would report a
-    # fresh install as unreadable.
+    # No unpaired return: one above the custom-home gate would call a fresh
+    # install unreadable.
     assert len(paired) == guard.count('if ($NonFatal) { return "Denied" }'), guard
     assert len(paired) >= 3, guard
     # Only the denial is handed back; an unowned tree must still stop.
     assert 'Exit-SetupFailure "$Label path is not an Unsloth-owned install' in guard
     whisper = _whisper_phase()
     assert '-Label "whisper.cpp install" -NonFatal) -eq "Denied"' in whisper, whisper
-    # Scoped to the new branch: both phrases already occur elsewhere in the phase,
-    # so a phase-wide match is satisfied no matter what this branch does.
+    # Scoped to the new branch: both phrases occur elsewhere in the phase, so a
+    # phase-wide match proves nothing about this branch.
     marker = '-NonFatal) -eq "Denied") {'
     assert marker in whisper, whisper
     denial = whisper.split(marker, 1)[1].split("\n} elseif", 1)[0]
@@ -355,8 +354,8 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
     # The whole point is that this stays non-fatal.
     assert "Exit-SetupFailure" not in denial, denial
     assert not re.search(r"\bexit \d", denial), denial
-    # The skip has to come before the branch whose guard would exit. Anchor on
-    # that branch's body, which survives a hardening of its own probe.
+    # The skip must precede the branch whose guard would exit. Anchored on that
+    # branch's body, which survives a hardening of its own probe.
     body = "$whisperArgs = @("
     assert body in whisper, whisper
     assert whisper.index("-NonFatal") < whisper.index(body)
@@ -371,8 +370,7 @@ def test_the_whisper_skip_stays_behind_the_installer_gate():
     head = whisper.split(marker, 1)[0]
     assert "} elseif" in head, head
     branch = head.rsplit("} elseif", 1)[1]
-    # A conjunct, not merely present: -or or a negation reopens the case this
-    # test is named for. Anchored on the variable so the probe can be hardened.
+    # A conjunct, not merely present: -or or a negation reopens this case.
     assert re.search(r"-and\s*\([^\n]*\$WhisperInstaller[^\n]*\)\s*-and", branch), branch
     assert "-not (Test-Path" not in branch, branch
     assert " -or " not in branch, branch

@@ -2941,9 +2941,8 @@ function Get-StudioAdoptableState {
     }
     if ($denied) { return "Denied" }
     # Windows reports a MISSING child of an unreadable directory as absent, so the
-    # probes above cannot tell "no markers here" from "cannot look". Listing the
-    # directory itself can. Without this a denied tree reads as unowned and the
-    # caller reports the wrong cause, fatally, on the platform this all targets.
+    # probes above cannot tell "no markers here" from "cannot look"; listing the
+    # directory itself can. Without this a denied tree reads as unowned.
     try { $null = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1) }
     catch {
         if (Test-AccessDeniedError $_) { return "Denied" }
@@ -2960,9 +2959,8 @@ function Assert-StudioOwnedOrAbsent {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Label,
-        # whisper.cpp is non-fatal by contract and needs the denial handed back
-        # rather than exiting. Only this mode returns a value, so the other
-        # callers keep emitting nothing.
+        # whisper.cpp is non-fatal by contract, so it needs the denial handed back
+        # rather than exited on. Only this mode returns a value.
         [switch]$NonFatal
     )
     # Denied is not Absent: a root we cannot read cannot be proven ours, and
@@ -4352,8 +4350,8 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
 } elseif ($StudioHomeIsCustom -and (Test-Path -LiteralPath $WhisperInstaller) -and
         (Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install" -NonFatal) -eq "Denied") {
     # Never fatal, per the phase header: the guard below would exit the whole run
-    # on an unreadable tree, taking llama.cpp inference down with it. Only the
-    # denial is caught here; an unowned tree still stops, as it did before.
+    # on an unreadable tree, taking llama.cpp down with it. Only the denial is
+    # caught here; an unowned tree still stops.
     step "whisper.cpp" "install directory cannot be read: access is denied; curated whisper.cpp dictation is unavailable; restore access to $WhisperCppDir or move it aside, then re-run setup; browser and Transformers dictation remain available" "Yellow"
 } elseif (Test-Path -LiteralPath $WhisperInstaller) {
     # The installer's atomic activation replaces the whole directory, so the
@@ -4488,15 +4486,13 @@ $HasGitForBuild = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 # Check if existing llama-server matches current GPU mode. A CUDA-built binary
 # on a now-CPU-only machine (or vice versa) needs to be rebuilt.
 $NeedRebuild = $false
-# Phase 3.4's denial guard runs only on the prebuilt path, and a forced compile,
-# a pinned PR or a custom source skips that path entirely. So this can be the
-# first probe to read inside the tree, and it reads under "Stop". A linked local
-# dir is skipped: it reads through the junction into the user's own checkout, and
-# nothing here is consumed on that path anyway.
+# A forced compile, a pinned PR or a custom source skips the prebuilt path and its
+# phase 3.4 denial guard, so this can be the first probe to read inside the tree.
+# A linked local dir is skipped: it reads through the junction into the user's own
+# checkout, and nothing here is consumed on that path anyway.
 $llamaBinState = if ($LocalLlamaCppLinked) { "Absent" } else { Get-PathState -Path $LlamaServerBin -PathType Leaf }
 if ($llamaBinState -eq "Denied") {
-    # Nothing has proven this tree is ours on the forced-compile route, so under a
-    # custom home do not advise deleting it.
+    # Nothing proved this tree is ours here, so do not advise deleting it.
     Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$StudioHomeIsCustom
 }
 if ($llamaBinState -eq "Present") {

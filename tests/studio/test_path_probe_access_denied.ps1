@@ -237,9 +237,8 @@ Check "an unrelated exception does not classify as access denied" (
     -not (Test-AccessDeniedError ([System.IO.FileNotFoundException]::new("missing"))))
 
 # -- Assert-StudioOwnedOrAbsent -NonFatal, run for real --
-# whisper.cpp promises "failure is never fatal", so a denied tree there must be
-# handed back to the caller instead of exiting the run and taking llama.cpp
-# inference with it. Everything else about the guard has to stay fatal.
+# whisper.cpp promises "failure is never fatal", so a denied tree there is handed
+# back instead of exiting the run. Everything else about the guard stays fatal.
 $assertSrc = Get-FunctionSource -Path $setupPath -Name Assert-StudioOwnedOrAbsent
 $markSrc = Get-FunctionSource -Path $setupPath -Name Mark-StudioOwned
 Check "setup.ps1 defines Assert-StudioOwnedOrAbsent" ($null -ne $assertSrc)
@@ -259,9 +258,9 @@ if ($assertSrc -and $markSrc) {
     $nfUnowned = Join-Path $nfRoot "unowned"
     $nfInner = Join-Path $nfDenied "inner"
     $nfMarker = Join-Path $nfDenied $StudioOwnedMarker
-    # Populate before locking. Windows returns $false for a MISSING child of a
-    # denied directory instead of throwing, so a probe target that does not
-    # exist makes the negative control read as "this host cannot deny".
+    # Populate before locking: Windows returns $false for a MISSING child of a
+    # denied directory instead of throwing, so a probe target that does not exist
+    # makes the negative control read as "this host cannot deny".
     New-Item -ItemType Directory -Force -Path $nfInner | Out-Null
     Set-Content -LiteralPath $nfMarker -Value ""
     New-Item -ItemType Directory -Force -Path $nfUnowned | Out-Null
@@ -296,8 +295,7 @@ if ($assertSrc -and $markSrc) {
             Check "without -NonFatal a denied tree still stops setup" $threw
 
             # A locked directory still probes Present from its readable parent, so
-            # the case above only covers the marker read. Lock the parent to reach
-            # the root probe itself.
+            # the case above only covers the marker read; lock the parent instead.
             $out = $null
             $threw = $false
             try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfInner -Label "whisper.cpp install" -NonFatal) }
@@ -305,15 +303,13 @@ if ($assertSrc -and $markSrc) {
             Check "-NonFatal hands back a tree whose parent is unreadable" (
                 -not $threw -and $out.Count -eq 1 -and $out[0] -eq "Denied")
 
-            # The realistic fresh-custom-home case: no marker was ever written.
-            # Windows reports a MISSING child of a denied directory as Absent, so
-            # this cannot go through the marker probe there and has to be caught
-            # by the adoptable-state read instead. Either route is fine; anything
-            # other than Denied is not.
-            # Two shapes. chmod 000 blocks the child probes outright; chmod 111
-            # allows stat of a named child but forbids listing, which is exactly
-            # what Windows does and the only shape that reaches the directory
-            # listing in Get-StudioAdoptableState.
+            # The fresh-custom-home case: no marker was ever written. Windows
+            # reports a MISSING child of a denied directory as Absent, so there the
+            # adoptable-state read catches this, not the marker probe. Either route
+            # is fine; anything other than Denied is not.
+            # chmod 000 blocks the child probes outright; chmod 111 allows stat of a
+            # named child but forbids listing, matching Windows, and is the only
+            # shape reaching the directory listing in Get-StudioAdoptableState.
             $bareWho = "$env:USERDOMAIN\$env:USERNAME"
             $bareModes = if ($onWindows) { @("acl") } else { @("000", "111") }
             foreach ($mode in $bareModes) {

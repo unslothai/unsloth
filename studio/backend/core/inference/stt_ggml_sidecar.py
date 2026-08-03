@@ -175,9 +175,8 @@ def _is_runnable(p: Path) -> bool:
     try:
         return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
     except OSError:
-        # is_file() propagates EACCES. An unreadable install dir must read as
-        # engine-unavailable, the same as a missing one, never a 500 out of
-        # /api/inference/audio/stt/status.
+        # is_file() propagates EACCES: an unreadable install dir must read as
+        # engine-unavailable, like a missing one, never a 500 out of stt/status.
         return False
 
 
