@@ -5417,7 +5417,7 @@ def test_both_render_paths_call_the_shared_target_rule():
         encoding = "utf-8"
     )
     assert "chat_render_target(self._processor)" in mlx
-    assert "getattr(self._processor, \"apply_chat_template\", None) is None" not in mlx
+    assert 'getattr(self._processor, "apply_chat_template", None) is None' not in mlx
 
 
 def test_a_processor_that_cannot_render_tools_advertises_none():
