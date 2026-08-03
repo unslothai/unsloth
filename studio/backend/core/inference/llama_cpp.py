@@ -7291,9 +7291,7 @@ class LlamaCppBackend:
         # The dynamic loader kills llama-server before main(), so nothing below
         # matches and the fallback blames the file or memory instead. The Linux
         # prebuilt links libgomp.so.1, which a stock container does not ship.
-        missing_lib = re.search(
-            r"error while loading shared libraries:\s*([^\s:]+)", output or ""
-        )
+        missing_lib = re.search(r"error while loading shared libraries:\s*([^\s:]+)", output or "")
         if missing_lib:
             return LlamaCppBackend._missing_library_message(missing_lib.group(1))
 
