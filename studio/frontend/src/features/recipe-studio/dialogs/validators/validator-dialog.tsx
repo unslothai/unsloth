@@ -453,7 +453,7 @@ export function ValidatorDialog({
           <div className="grid gap-1.5">
             <FieldLabel
               label="Files to write"
-              hint="Optional files written into the temp folder before the command runs. A file whose content contains {source} receives the generated code and {file} then points at it. Parent folders like src/ are created automatically."
+              hint="Optional files written into the check's temp folder before the command runs. Paths are relative to that folder — write the full path yourself, so src/main.rs lands in a src/ subfolder (created automatically). A file whose content contains {source} receives the generated code, and {file} then points at it."
             />
             <div className="grid gap-2">
               {toolScaffoldRows.map((file, index) => (

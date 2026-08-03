@@ -503,6 +503,24 @@ def test_tool_callable_writes_nested_scaffold_parents():
     assert list(out["is_valid"]) == [True]
 
 
+def test_tool_callable_scaffold_path_is_relative_not_prefixed():
+    """A path like src/go.mod lands at <run_dir>/src/go.mod — never src/src/.
+
+    Scaffold paths are relative to the check's temp folder and used verbatim;
+    only the missing parent folders are created.
+    """
+    import pandas as pd
+
+    fn = tool._build_tool_validation_function(
+        "go",
+        "sh -c 'test -f src/go.mod && test ! -e src/src && echo OK'",
+        (("src/go.mod", "module example.com/check\n"), ("main.go", "{source}")),
+    )
+    out = fn(pd.DataFrame({"code": ["package main"]}))
+    assert list(out["is_valid"]) == [True]
+    assert out["tool_output"].iloc[0] == "OK"
+
+
 def test_tool_callable_scaffold_path_escape_is_graceful():
     import pandas as pd
 
