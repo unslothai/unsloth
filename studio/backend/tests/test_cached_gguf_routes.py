@@ -1955,7 +1955,7 @@ def test_native_context_read_gives_up_when_the_cache_walk_drags(monkeypatch, tmp
     "Loading variants…" with no quant to click. It reports None and stops walking instead."""
     visited = []
 
-    def dragging_walk(root):
+    def dragging_walk(root, deadline = None):
         for index in range(200):
             time.sleep(0.01)
             visited.append(index)
@@ -1969,6 +1969,9 @@ def test_native_context_read_gives_up_when_the_cache_walk_drags(monkeypatch, tmp
     elapsed = time.monotonic() - started
 
     assert result is None
+    # A signature drift here raises inside the broad except and returns instantly, which
+    # would pass every other assertion without walking anything.
+    assert visited, "the walk never ran, so this proves nothing"
     assert elapsed < 2
     assert len(visited) < 200
 

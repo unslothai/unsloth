@@ -35,8 +35,8 @@ import type {
 } from "../types/api";
 import {
   type GgufVariantsRequestOptions,
-  ggufVariantsAbort,
   ggufVariantsQuery,
+  runBoundedVariantsRequest,
 } from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
 
@@ -1053,16 +1053,13 @@ export async function listGgufVariants(
   options?: GgufVariantsRequestOptions,
 ): Promise<GgufVariantsResponse> {
   const params = ggufVariantsQuery(repoId, options, isHuggingFaceOffline());
-  const abort = ggufVariantsAbort(options?.signal);
-  try {
+  return runBoundedVariantsRequest(options?.signal, async (signal) => {
     const response = await authFetch(`/api/models/gguf-variants?${params}`, {
       headers: hubTokenHeader(hfToken),
-      signal: abort.signal,
+      signal,
     });
-    return await parseJsonOrThrow<GgufVariantsResponse>(response);
-  } finally {
-    abort.dispose();
-  }
+    return parseJsonOrThrow<GgufVariantsResponse>(response);
+  });
 }
 
 export interface KvCacheEstimate {

@@ -9,6 +9,7 @@ import {
   type PollSignal,
   disposableTimeoutSignal,
   pollSignal,
+  withAbort,
 } from "@/features/hub/lib/abort-signals";
 
 /** Matches the Hub client's bound on the same listing (features/hub/inventory/api.ts). */
@@ -51,4 +52,24 @@ export function ggufVariantsAbort(signal?: AbortSignal): PollSignal {
   return signal
     ? pollSignal(signal, GGUF_VARIANTS_TIMEOUT_MS)
     : disposableTimeoutSignal(GGUF_VARIANTS_TIMEOUT_MS);
+}
+
+/**
+ * Runs a listing under the bound and settles on it whatever the request is doing. Handing
+ * the signal to fetch alone is not enough: on a 401 authFetch awaits a shared session
+ * refresh that carries no signal, so the listing could still hang there.
+ */
+export function runBoundedVariantsRequest<T>(
+  signal: AbortSignal | undefined,
+  request: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const abort = ggufVariantsAbort(signal);
+  let started: Promise<T>;
+  try {
+    started = request(abort.signal);
+  } catch (err) {
+    abort.dispose();
+    return Promise.reject(err);
+  }
+  return withAbort(started, abort.signal).finally(() => abort.dispose());
 }

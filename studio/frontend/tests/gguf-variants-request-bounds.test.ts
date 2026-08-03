@@ -12,8 +12,12 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 // The module reaches the abort-signal ponyfills through "@/".
 registerBundlerResolver();
-const { GGUF_VARIANTS_TIMEOUT_MS, ggufVariantsAbort, ggufVariantsQuery } =
-  await import("../src/features/chat/api/gguf-variants-request.ts");
+const {
+  GGUF_VARIANTS_TIMEOUT_MS,
+  ggufVariantsAbort,
+  ggufVariantsQuery,
+  runBoundedVariantsRequest,
+} = await import("../src/features/chat/api/gguf-variants-request.ts");
 
 const REPO = "unsloth/Qwen3-8B-GGUF";
 
@@ -76,4 +80,33 @@ test("the row's own directory is scoped to, and blank paths are dropped", () => 
 
   const blank = ggufVariantsQuery(REPO, { localPath: "   " }, false);
   assert.equal(blank.get("local_path"), null);
+});
+
+test("the bound settles the listing even when the request never does", async () => {
+  // authFetch awaits a shared session refresh on a 401, and that refresh carries no signal
+  // of its own. Handing the signal to fetch alone would leave the listing pending there.
+  const caller = new AbortController();
+  let requestSignal: AbortSignal | undefined;
+  const pending = runBoundedVariantsRequest(caller.signal, (signal) => {
+    requestSignal = signal;
+    return new Promise<never>(() => {}); // never settles, like a stalled refresh
+  });
+  caller.abort();
+  await assert.rejects(pending);
+  assert.ok(requestSignal, "the request was never handed a signal");
+});
+
+test("a request that throws synchronously still rejects and disposes", async () => {
+  const caller = new AbortController();
+  await assert.rejects(
+    runBoundedVariantsRequest(caller.signal, () => {
+      throw new Error("boom");
+    }),
+    /boom/,
+  );
+});
+
+test("a successful request passes its value straight through", async () => {
+  const value = await runBoundedVariantsRequest(undefined, async () => "listed");
+  assert.equal(value, "listed");
 });
