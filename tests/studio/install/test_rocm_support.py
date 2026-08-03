@@ -2962,6 +2962,71 @@ class TestDetectWindowsGfxArch:
                 result = stack_mod._detect_windows_gfx_arch()
         assert result == "gfx1200"
 
+    def test_mixed_igpu_dgpu_prefers_discrete(self, monkeypatch):
+        # Issue #7776: HIP enumerates the Raphael iGPU (gfx1036) before the
+        # discrete RX 9060 XT (gfx1200), so an index-0 pick installed
+        # gfx103X-all wheels and the dGPU was never loaded into.
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1200\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1200"
+
+    def test_mixed_igpu_dgpu_reports_the_override_env_var(self, monkeypatch, capsys):
+        # The maintainer ask on #7776: say a second GPU is there and how to pick it.
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1200\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                stack_mod._detect_windows_gfx_arch()
+        out = capsys.readouterr().out
+        assert "HIP_VISIBLE_DEVICES" in out
+        assert "gfx1036" in out and "gfx1200" in out
+
+    def test_explicit_visible_devices_still_wins_over_igpu_preference(self, monkeypatch):
+        # A user who pinned the iGPU on purpose must keep getting the iGPU.
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1200\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1036"
+
+    def test_strix_igpu_selection_is_unchanged(self, monkeypatch):
+        # gfx1151 is a supported unified-memory training target, not a shadowing
+        # APU: a Strix host must keep resolving to its own arch-specific wheels.
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1151\ngcnArchName : gfx1200\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1151"
+
+    def test_single_igpu_host_is_unchanged(self, monkeypatch):
+        # Nothing to prefer: an APU-only box still installs for the APU.
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1036\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1036"
+
     def test_returns_none_on_nonzero_returncode_without_gcnarchname(self):
         # Non-zero exit without gcnArchName must return None (fall through to amd-smi/WMI).
         mock_result = MagicMock()

@@ -632,6 +632,38 @@ def _detect_rocm_version() -> tuple[int, int] | None:
     return None
 
 
+# Integrated (APU) gfx arches whose host board also commonly carries a discrete
+# Radeon. HIP enumerates the APU first on most such boards, so an index-0 pick
+# installs wheels for the iGPU and the dGPU is never used (issue #7776: a
+# gfx1036 Raphael iGPU shadowing a gfx1200 RX 9060 XT). Deliberately excludes
+# the Strix arches (gfx1150/1151/1152): those are first-class unified-memory
+# training targets, so their selection must stay untouched.
+_SHADOWING_INTEGRATED_GFX: "frozenset[str]" = frozenset({
+    "gfx90c",   # Renoir / Cezanne
+    "gfx1013",  # Van Gogh
+    "gfx1035",  # Rembrandt
+    "gfx1036",  # Raphael / Mendocino
+    "gfx1037",  # Raphael-H
+    "gfx1103",  # Phoenix / Hawk Point
+})
+
+
+def _visible_devices_pinned() -> bool:
+    """True when the user pinned a GPU via HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES.
+
+    Any explicit selection (other than the "no mask" spellings "" and "-1") must
+    be honoured verbatim, so the iGPU-shadowing preference below never overrides
+    a device the user named on purpose."""
+    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        _val = os.environ.get(_env)
+        if _val is None:
+            continue
+        _val = _val.strip()
+        if _val and _val != "-1":
+            return True
+    return False
+
+
 def _pick_visible_index(num_tokens: int) -> int:
     """Resolve HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES to an index into a
     list of length num_tokens. Returns 0 (first GPU) for unset, empty, '-1',
@@ -676,7 +708,33 @@ def _detect_windows_gfx_arch() -> str | None:
             return None
         # Index into the full ordered list so HIP_VISIBLE_DEVICES addresses
         # GPU N on mixed-arch hosts, then return that arch.
-        return tokens[_pick_visible_index(len(tokens))]
+        _pick = tokens[_pick_visible_index(len(tokens))]
+        _distinct = list(dict.fromkeys(tokens))
+        if len(_distinct) < 2 or _visible_devices_pinned():
+            return _pick
+        # Unpinned mixed-arch host. Skip a leading shadowing iGPU so the
+        # discrete card decides the wheel family (issue #7776), and say so --
+        # enumeration order is the only thing that put the APU first, and the
+        # user may still want a different device.
+        if _pick in _SHADOWING_INTEGRATED_GFX:
+            for _other in tokens:
+                if _other not in _SHADOWING_INTEGRATED_GFX:
+                    print(
+                        f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
+                        f"installing for the discrete {_other} instead of the "
+                        f"integrated {_pick}."
+                    )
+                    print(
+                        f"   Set HIP_VISIBLE_DEVICES to the GPU index you want "
+                        f"(then rerun) to install for a different device."
+                    )
+                    return _other
+        print(
+            f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
+            f"installing for {_pick}. Set HIP_VISIBLE_DEVICES to the GPU index "
+            f"you want (then rerun) to install for a different device."
+        )
+        return _pick
 
     # 2. hipinfo via PATH, then HIP_PATH\bin / ROCM_PATH\bin.
     hipinfo = shutil.which("hipinfo")
