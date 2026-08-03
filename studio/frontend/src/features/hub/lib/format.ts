@@ -30,10 +30,12 @@ export function formatRate(bytesPerSec: number): string {
   return `${formatBytes(bytesPerSec)}/s`;
 }
 
+// A day or more collapses to "> 24h left": a precise multi-day figure reads as
+// broken, but hiding it leaves a genuinely slow download with no estimate.
 export function formatEta(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "";
   const s = Math.round(seconds);
-  if (s >= MAX_DISPLAYABLE_ETA_SECONDS) return "";
+  if (s >= MAX_DISPLAYABLE_ETA_SECONDS) return `> ${HOURS_PER_DAY}h left`;
   if (s < SECONDS_PER_MINUTE) return `${s}s left`;
   if (s < SECONDS_PER_HOUR) {
     const m = Math.floor(s / SECONDS_PER_MINUTE);

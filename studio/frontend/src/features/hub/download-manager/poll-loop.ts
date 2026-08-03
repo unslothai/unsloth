@@ -5,6 +5,7 @@ import { invalidateGgufVariantsCache } from "../inventory/api";
 import { getHfToken } from "../stores/hf-token-store";
 import { bumpInventoryVersion } from "../stores/inventory-events";
 import { toast } from "@/lib/toast";
+import { appendSample, computeTransferStats } from "@/lib/transfer-stats";
 import {
   getActiveModelDownloads,
   getDatasetDownloadStatus,
@@ -28,7 +29,6 @@ import {
   POLL_JITTER_MS,
   PROGRESS_POLL_BACKOFF_INTERVAL_MS,
   PROGRESS_POLL_INTERVAL_MS,
-  SPEED_EMA_WEIGHT,
   ACTIVE_STATES,
   TERMINAL_DISPLAY_STATES,
 } from "./download-manager-config";
@@ -234,7 +234,7 @@ function markPollFailure(key: string, rt: JobRuntime): void {
   const now = Date.now();
   rt.pollFailureStartedAt ??= now;
   if (now - rt.pollFailureStartedAt < POLL_DEGRADED_AFTER_MS) return;
-  rt.speedSample = null;
+  rt.speedSamples.length = 0;
   patchJob(key, {
     error: POLL_DEGRADED_MESSAGE,
     bytesPerSec: 0,
@@ -364,27 +364,19 @@ async function finalizeTerminalStatus(
   }
 }
 
+// Rolling-window rate, withheld until the window is trustworthy. The old EMA
+// published its first sample verbatim and decayed toward -- never reaching --
+// zero while stalled, so ramp-up and idle ticks produced "753d 5h left" (#7667).
+// 0 hides both labels, as the training-start overlay already does.
 function applySpeedSample(
   rt: JobRuntime,
-  current: ManagedDownload,
   downloadedBytes: number,
+  expectedBytes: number,
   nowMs: number,
 ): number {
-  const last = rt.speedSample;
-  let bytesPerSec = last ? current.bytesPerSec : 0;
-  if (last) {
-    const dt = (nowMs - last.tMs) / 1000;
-    const db = Math.max(0, downloadedBytes - last.bytes);
-    if (dt > 0) {
-      const sample = db / dt;
-      bytesPerSec =
-        bytesPerSec > 0
-          ? bytesPerSec * SPEED_EMA_WEIGHT + sample * (1 - SPEED_EMA_WEIGHT)
-          : sample;
-    }
-  }
-  rt.speedSample = { bytes: downloadedBytes, tMs: nowMs };
-  return bytesPerSec;
+  appendSample(rt.speedSamples, nowMs / 1000, downloadedBytes);
+  const stats = computeTransferStats(rt.speedSamples, expectedBytes);
+  return stats.stable ? stats.rateBytesPerSecond : 0;
 }
 
 function reconcileProgressAndSpeed(
@@ -398,7 +390,7 @@ function reconcileProgressAndSpeed(
     resolveProgressUpdate(current, progressResp, {
       resetMonotonic: generationChanged,
     });
-  const bytesPerSec = applySpeedSample(rt, current, downloadedBytes, Date.now());
+  const bytesPerSec = applySpeedSample(rt, downloadedBytes, expected, Date.now());
   patchJob(key, {
     expectedBytes: expected,
     downloadedBytes,
@@ -457,7 +449,7 @@ async function tick(key: string): Promise<void> {
     return;
   }
   if (typeof document !== "undefined" && document.hidden) {
-    rt.speedSample = null;
+    rt.speedSamples.length = 0;
     return;
   }
   if (rt.inFlight) return;
@@ -622,7 +614,7 @@ export async function startJob(
     inFlight: false,
     cancelRequested: adoptingCancel,
     watchdog: null,
-    speedSample: null,
+    speedSamples: [],
     idleSinceMs: null,
     lastProgressPollAt: null,
     pollFailureStartedAt: null,
