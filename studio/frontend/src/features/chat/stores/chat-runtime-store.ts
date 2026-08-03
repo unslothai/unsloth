@@ -2,9 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
-import { cachedPinnableGpuIndices } from "@/hooks/use-gpu-info";
+import {
+  cachedPinnableGpuIndexKind,
+  reconcileCachedGpuSelection,
+  type ReconciledGpuSelection,
+  type GpuIndexKind,
+} from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
+import {
+  GPU_LAYERS_AUTO,
+  recoverDroppedDiffusionSplit,
+} from "../lib/gpu-placement";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
@@ -563,9 +572,8 @@ export function persistGpuMemoryModeOnLoad(
   if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);
 }
 
-// Manual-mode gpu_layers sentinel: -1 = Auto (hand layer + context sizing to
-// llama.cpp's --fit). The Manual default; "all on GPU" is the slider's max.
-export const GPU_LAYERS_AUTO = -1;
+// Re-exported from its dependency-free home so existing imports keep working.
+export { GPU_LAYERS_AUTO } from "../lib/gpu-placement";
 
 // Round real-valued shares to integers summing exactly to `total`, giving the
 // leftover units to the largest fractional parts (largest-remainder method).
@@ -628,14 +636,35 @@ export function rebalanceSplit(
 // set), so a saved [1] on a now-1-GPU host doesn't get sent and rejected with no
 // way to clear it. A null pick (= automatic) passes through unchanged, and an
 // unpopulated device cache leaves the pick alone (the backend still guards).
+// An explicit null namespace means discovery had not completed when the live
+// state was captured, while an absent namespace is a legacy physical-ID pick.
 export function reconcilePersistedGpuIds(
   ids: number[] | null,
+  savedIndexKind?: GpuIndexKind | null,
+  forDiffusion = false,
 ): number[] | null {
-  if (ids == null) return ids;
-  const pinnable = cachedPinnableGpuIndices();
-  if (pinnable === null) return ids; // cache not ready: can't validate, keep it
-  const kept = ids.filter((i) => pinnable.includes(i));
-  return kept.length > 0 ? kept : null;
+  return reconcilePersistedGpuSelection(
+    ids,
+    savedIndexKind,
+    forDiffusion,
+  ).ids;
+}
+
+export function reconcilePersistedGpuSelection(
+  ids: number[] | null,
+  savedIndexKind?: GpuIndexKind | null,
+  forDiffusion = false,
+): ReconciledGpuSelection {
+  return reconcileCachedGpuSelection(ids, savedIndexKind, forDiffusion);
+}
+
+export function requestedGpuIdsFromResponse(resp: {
+  gpu_ids?: number[] | null;
+  requested_gpu_ids?: number[] | null;
+}): number[] | null {
+  return Object.prototype.hasOwnProperty.call(resp, "requested_gpu_ids")
+    ? (resp.requested_gpu_ids ?? null)
+    : (resp.gpu_ids ?? null);
 }
 
 // Store fields derived from a load/status response's GPU-memory settings.
@@ -651,6 +680,7 @@ export function loadedGpuMemoryFields(resp: {
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
   requested_gpu_ids?: number[] | null;
+  diffusion_requested_ngl?: number | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -664,7 +694,9 @@ export function loadedGpuMemoryFields(resp: {
     // baseline clears to null so Reset preserves the preference, not a stale mode.
     return {
       selectedGpuIds: null,
+      selectedGpuIndexKind: null,
       loadedGpuIds: null,
+      loadedGpuIndexKind: null,
       loadedGpuMemoryMode: null,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
@@ -679,7 +711,27 @@ export function loadedGpuMemoryFields(resp: {
   const mode = resp.gpu_memory_mode ?? "auto";
   // Keep the user's placement pool editable across status/load hydration.
   // gpu_ids remains the effective fitted subset for diagnostics.
-  const gpuIds = resp.requested_gpu_ids ?? resp.gpu_ids ?? null;
+  const reportedGpuIds = requestedGpuIdsFromResponse(resp);
+  const gpuIndexKind =
+    reportedGpuIds == null
+      ? null
+      : cachedPinnableGpuIndexKind(resp.is_diffusion === true);
+  // A numeric ID is unsafe to adopt or persist once discovery says it is NOT a
+  // physical CUDA/ROCm ID or a Vulkan ordinal (gpuIndexKind === null, cache
+  // warm). But while discovery is still cold (gpuIndexKind === undefined) the
+  // namespace is merely deferred, not rejected -- keep the just-applied pin so
+  // a reload/rollback in that window doesn't omit gpu_ids and let llama.cpp
+  // fall back to every device. A later status refresh resolves the namespace
+  // once the shared system cache warms.
+  const gpuIds =
+    reportedGpuIds != null && gpuIndexKind !== null ? reportedGpuIds : null;
+  // A shim without --ngl reports Auto while the backend still holds the ask, so recover
+  // it: in-memory state survives a reload but not a refresh.
+  const droppedSplit = recoverDroppedDiffusionSplit(
+    resp.is_diffusion,
+    mode,
+    resp.diffusion_requested_ngl,
+  );
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
   // knobs with values it never applied. In manual, the server reports gpu_layers
@@ -702,24 +754,40 @@ export function loadedGpuMemoryFields(resp: {
           // loaded baseline) -- else a later switch back to Manual would snapshot
           // and send a previous model's stale gpuLayers/nCpuMoe/split that this
           // load never applied. Mirrors the non-GGUF branch above.
-          gpuLayers: GPU_LAYERS_AUTO,
+          // Diffusion excepted: an "auto" diffusion response may be an older shim
+          // DROPPING a manual split. Restore the ask when the response carries it (a
+          // refresh has none left in memory), else keep what is standing. Resetting the
+          // slider would turn the ask into manual/-1, unapplyable even after the
+          // unsloth_zoo upgrade that adds --ngl.
+          ...(resp.is_diffusion
+            ? droppedSplit != null
+              ? { gpuLayers: droppedSplit }
+              : {}
+            : { gpuLayers: GPU_LAYERS_AUTO }),
           nCpuMoe: 0,
           splitRatio: null,
         };
   return {
-    // A diffusion GGUF runs mode-agnostic (pins all layers on one GPU, reports
-    // "auto"), so adopt everything a chat GGUF does EXCEPT the live standing
-    // preference -- the next chat load must still honor the user's manual choice.
-    // The loaded baseline is still "auto", but the UI hides mode controls for a
-    // loaded diffusion model so it can't read as dirty against the preference.
-    ...(resp.is_diffusion ? {} : { gpuMemoryMode: mode }),
+    // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert standing
+    // manual preference must survive it. But "manual" means a split was actually applied
+    // (#7574): adopt it, or a refresh hydrates back to "auto" while the runner serves one.
+    ...(resp.is_diffusion && mode !== "manual"
+      ? droppedSplit != null
+        ? { gpuMemoryMode: "manual" as const }
+        : {}
+      : { gpuMemoryMode: mode }),
     loadedGpuMemoryMode: mode,
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
     // The picker reflects the requested placement pool, not a fitted subset.
     selectedGpuIds: gpuIds,
+    // gpuIndexKind is `undefined` only in the deferred (cache-cold) case here,
+    // since a `null` kind already forced gpuIds to null above. Normalize to the
+    // explicit-null-namespace convention (discovery not complete yet).
+    selectedGpuIndexKind: gpuIds == null ? null : (gpuIndexKind ?? null),
     loadedGpuIds: gpuIds,
+    loadedGpuIndexKind: gpuIds == null ? null : (gpuIndexKind ?? null),
     ...manualKnobs,
   };
 }
@@ -821,6 +889,8 @@ type ChatRuntimeStore = {
   // lets the attach gates flag a failed load vs "no model picked".
   lastModelLoadError: string | null;
   activeGgufVariant: string | null;
+  /** Whether the backend loaded the active model from a filesystem path. */
+  activeModelIsLocal: boolean;
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
   ggufNativeContextLength: number | null;
@@ -1001,9 +1071,13 @@ type ChatRuntimeStore = {
   ggufLayerCount: number | null;
   /** MoE expert-layer count: the nCpuMoe slider max; 0/null hides the slider. */
   moeLayerCount: number | null;
-  /** Picked physical GPU indices (null = use all / automatic). */
+  /** Picked IDs in the backend-declared GPU namespace (null = automatic). */
   selectedGpuIds: number[] | null;
+  /** Namespace used by selectedGpuIds; kept with deferred persisted picks. */
+  selectedGpuIndexKind: GpuIndexKind | null;
   loadedGpuIds: number[] | null;
+  /** Backend-reported namespace paired with loadedGpuIds. */
+  loadedGpuIndexKind: GpuIndexKind | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;
@@ -1053,6 +1127,9 @@ type ChatRuntimeStore = {
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
   loadingModelPick: LoadingModelPick | null;
+  // What the resident model loaded from, when that is not its id. A reload rebuilds its target
+  // from the checkpoint, so without this it goes back down the ref the pin avoided.
+  activeLoadId: string | null;
   activeNativePathToken: string | null;
   // Wall-clock expiry (ms) of the active native path token. The desktop host
   // prunes file leases after a TTL, so a reload checks this to prompt
@@ -1183,7 +1260,10 @@ type ChatRuntimeStore = {
   setGpuLayers: (value: number) => void;
   setNCpuMoe: (value: number) => void;
   setSplitRatio: (value: number[] | null) => void;
-  setSelectedGpuIds: (ids: number[] | null) => void;
+  setSelectedGpuIds: (
+    ids: number[] | null,
+    indexKind?: GpuIndexKind | null,
+  ) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
@@ -1423,6 +1503,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
+  activeModelIsLocal: false,
   ggufContextLength: null,
   ggufMaxContextLength: null,
   ggufNativeContextLength: null,
@@ -1512,9 +1593,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ggufLayerCount: null,
   moeLayerCount: null,
   selectedGpuIds: null,
+  selectedGpuIndexKind: null,
   loadedGpuIds: null,
+  loadedGpuIndexKind: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
-  showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
+  // Off by default: On Device lists what is on disk, not the whole repo.
+  showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -1535,6 +1619,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsageByThreadId: {},
   modelLoading: false,
   loadingModelPick: null,
+  activeLoadId: null,
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
   hydratePersistedSettings: async () => {
@@ -1801,8 +1886,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           maxTokens: nextMaxTokens,
         },
         activeGgufVariant: ggufVariant ?? null,
+        // Provenance and the spec-fallback reason both describe the model
+        // being replaced, so they go together on a real change. Dropping only
+        // one leaves the settings sheet pairing a stale reason with the wrong
+        // recovery text. The load or status response reseeds both.
         ...(checkpointChanged
-          ? { contextUsage: null, contextUsageByThreadId: {} }
+          ? {
+              contextUsage: null,
+              contextUsageByThreadId: {},
+              activeModelIsLocal: false,
+              specFallbackReason: null,
+            }
           : {}),
         // Switching to an external provider disables Deep Research, which only
         // applies to the local base model.
@@ -1842,6 +1936,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpoint: "",
       },
       activeGgufVariant: null,
+      activeModelIsLocal: false,
+      activeLoadId: null,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
       ggufContextLength: null,
@@ -1898,7 +1994,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ggufLayerCount: null,
       moeLayerCount: null,
       selectedGpuIds: null,
+      selectedGpuIndexKind: null,
       loadedGpuIds: null,
+      loadedGpuIndexKind: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,
@@ -2292,7 +2390,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setGpuLayers: (gpuLayers) => set({ gpuLayers }),
   setNCpuMoe: (nCpuMoe) => set({ nCpuMoe }),
   setSplitRatio: (splitRatio) => set({ splitRatio }),
-  setSelectedGpuIds: (selectedGpuIds) => set({ selectedGpuIds }),
+  setSelectedGpuIds: (selectedGpuIds, selectedGpuIndexKind = null) =>
+    set({
+      selectedGpuIds,
+      selectedGpuIndexKind:
+        selectedGpuIds == null ? null : selectedGpuIndexKind,
+    }),
   setExpandQuantizations: (expandQuantizations) => {
     saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
     set({ expandQuantizations });

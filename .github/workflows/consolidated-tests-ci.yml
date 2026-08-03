@@ -275,7 +275,9 @@ jobs:
             tests/saving/test_imatrix_export.py \
             tests/saving/test_gguf_single_pass_export.py \
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
+            tests/saving/test_is_vlm_detection.py \
             tests/utils/test_attention_masks.py \
+            tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py
           python -m pytest --collect-only -q "$RUNNER_TEMP/unsloth-zoo/tests/"
@@ -367,13 +369,16 @@ jobs:
             tests/saving/test_imatrix_export.py \
             tests/saving/test_gguf_single_pass_export.py \
             tests/saving/test_offline_gguf_vlm_tokenizer_7481.py \
+            tests/saving/test_is_vlm_detection.py \
             tests/utils/test_attention_masks.py \
+            tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py \
             tests/test_bad_mappings_redirect.py \
             tests/test_prefetch_snapshot_scope.py \
             tests/test_gemma_2b_mapper_key.py \
-            tests/test_raw_text_json_loading.py
+            tests/test_raw_text_json_loading.py \
+            tests/test_map_eos_token.py
           # test_run_attention_flash_varlen_receives_window_and_softcap was deselected
           # until attention_dispatch.py predefined flash_attn_varlen_func as None; it
           # monkeypatches that name, so it no longer needs flash_attn on this runner.

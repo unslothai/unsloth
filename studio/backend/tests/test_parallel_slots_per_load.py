@@ -41,7 +41,7 @@ import httpx  # noqa: F401
 
 from core.inference import llama_cpp as llama_cpp_module
 from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 from models.inference import (
     InferenceStatusResponse,
     LoadRequest,
@@ -100,7 +100,7 @@ def test_validate_request_n_parallel_contract():
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
-def test_response_models_emit_parallel_slot_fields(model_cls):
+def test_response_models_emit_runtime_fields(model_cls):
     kwargs = (
         dict(status = "loaded", model = "owner/repo", display_name = "repo", inference = {})
         if model_cls is LoadResponse
@@ -109,9 +109,19 @@ def test_response_models_emit_parallel_slot_fields(model_cls):
     empty = model_cls(**kwargs).model_dump()
     assert empty["requested_parallel_slots"] is None
     assert empty["parallel_slots"] is None
-    dumped = model_cls(**kwargs, requested_parallel_slots = 8, parallel_slots = 4).model_dump()
+    assert empty["gpu_ids"] is None
+    assert empty["requested_gpu_ids"] is None
+    dumped = model_cls(
+        **kwargs,
+        requested_parallel_slots = 8,
+        parallel_slots = 4,
+        gpu_ids = [1],
+        requested_gpu_ids = [1, 2],
+    ).model_dump()
     assert dumped["requested_parallel_slots"] == 8
     assert dumped["parallel_slots"] == 4
+    assert dumped["gpu_ids"] == [1]
+    assert dumped["requested_gpu_ids"] == [1, 2]
 
 
 # ── Shared bounds and their deliberate mirrors ───────────────────────
@@ -150,6 +160,12 @@ def test_frontend_mirror_matches_shared_bounds():
     high = re.search(r"^export const N_PARALLEL_MAX = (\d+);$", src, re.MULTILINE)
     assert low and high, "per-model-config.ts must export N_PARALLEL_MIN/MAX"
     assert (int(low.group(1)), int(high.group(1))) == (PARALLEL_MIN, PARALLEL_MAX)
+
+
+def test_override_mirror_matches_shared_bounds():
+    # Mirrored, not imported: llama_server_args owns the allow-list that module stays out of.
+    from utils.openai_auto_switch_settings import PARALLEL_SLOTS_MAX, PARALLEL_SLOTS_MIN
+    assert (PARALLEL_SLOTS_MIN, PARALLEL_SLOTS_MAX) == (PARALLEL_MIN, PARALLEL_MAX)
 
 
 def test_preset_model_reuses_shared_bounds():
@@ -206,15 +222,13 @@ def test_unload_resets_requested_parallel_slots(backend):
     assert backend.requested_parallel_slots == 1
 
 
-def test_load_model_commits_requested_from_pending_kwargs():
+def test_load_model_commits_requested_from_intent():
     # n_parallel may be reduced before the commit, so the requested value must
-    # come from the pre-reduction pending snapshot.
+    # come from the immutable pre-reduction intent.
     src = inspect.getsource(LlamaCppBackend.load_model)
-    commit = src.find(
-        'self._requested_n_parallel = max(1, int(_pending_load_kwargs["n_parallel"]))'
-    )
+    commit = src.find("self._requested_n_parallel = max(1, int(intent.n_parallel))")
     healthy = src.find("self._healthy = True\n", 0, commit if commit != -1 else None)
-    snapshot = src.find("self._last_load_kwargs = _pending_load_kwargs")
+    snapshot = src.find("self._last_load_intent = intent")
     assert commit != -1, "load_model must commit the requested slot count"
     assert healthy != -1 and healthy < commit < snapshot
 
@@ -239,17 +253,19 @@ def _loaded_backend() -> LlamaCppBackend:
 
 
 def _target_state(backend: LlamaCppBackend, n_parallel: int) -> bool:
-    return backend._already_in_target_state(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        n_parallel = n_parallel,
+    return backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            n_parallel = n_parallel,
+        )
     )
 
 
@@ -298,58 +314,43 @@ def _load_impl_source() -> str:
 
 def test_route_resolves_slots_once_before_dedupe_guard_and_load():
     load_impl = _load_impl_source()
-    resolve = load_impl.index("request.n_parallel")
-    fallback = load_impl.index('getattr(_app_state, "llama_parallel_slots", 1)')
-    dedupe = load_impl.index("requested_parallel_slots = _n_parallel")
+    resolve = load_impl.index("_resolve_parallel_slots(request, fastapi_request)")
+    active_intent = load_impl.index("_active_gguf_intent(")
+    fast_dedupe = load_impl.rindex("_reuse_loaded_gguf(", 0, active_intent)
+    resolved_intent = load_impl.index("_resolve_gguf_load_intent(")
+    resolved_dedupe = load_impl.index("_reuse_loaded_gguf(", resolved_intent)
     guard = load_impl.index("_guard_chat_load_against_training")
-    # The GGUF launch kwargs, not the guard's own kwarg (which shares the spelling).
-    load_kwargs = load_impl.index("_common_load_kwargs = dict(")
-    assert resolve < dedupe, "resolution must precede the reload dedupe"
-    assert fallback < dedupe
-    assert resolve < guard < load_kwargs
-    # Guard and load kwargs share the resolved value; app.state is read once.
-    assert load_impl.count("n_parallel = _n_parallel") == 2
-    assert "n_parallel = _n_parallel" in load_impl[load_kwargs : load_kwargs + 800]
-    assert load_impl.count('getattr(_app_state, "llama_parallel_slots", 1)') == 1
-    # getattr, so a direct caller without an app cannot raise, and no re-read.
+    load_call = load_impl.index("llama_backend.load_model")
+    assert resolve < fast_dedupe < active_intent
+    assert active_intent < resolved_intent < resolved_dedupe
+    assert resolved_dedupe < guard < load_call
+    # Both immutable intents and the guard share the value; resolution runs once.
+    assert load_impl.count("n_parallel = _n_parallel") == 3
+    assert load_impl.count("_resolve_parallel_slots(request, fastapi_request)") == 1
     assert "fastapi_request.app.state" not in load_impl
-
-
-def test_route_dedupe_compares_requested_slots_and_skips_diffusion():
-    match_impl = _route_source()[_route_source().index("def _request_matches_loaded_settings") :]
-    match_impl = match_impl[: match_impl.index("\ndef ")]
-    assert "requested_parallel_slots is not None" in match_impl
-    assert "not llama_backend.is_diffusion" in match_impl
-    assert "llama_backend.requested_parallel_slots" in match_impl
-
-
-def test_route_echoes_requested_and_effective_slots():
-    route_src = _route_source()
-    # Both /load returns plus the /status GGUF branch, via the shared helper.
-    assert route_src.count("**_parallel_slot_echo(llama_backend)") == 3
 
 
 def test_parallel_slot_echo_reports_none_for_diffusion():
     # Diffusion never commits a count, so echoing the reset placeholder 1 would lie.
-    from routes.inference import _parallel_slot_echo
+    from routes.inference import _llama_runtime_fields
 
     backend = _loaded_backend()
     backend._requested_n_parallel = 8
     backend._commit_effective_parallel_slots(4)
-    assert _parallel_slot_echo(backend) == {"requested_parallel_slots": 8, "parallel_slots": 4}
+    fields = _llama_runtime_fields(backend)
+    assert (fields["requested_parallel_slots"], fields["parallel_slots"]) == (8, 4)
     backend._is_diffusion = True
-    assert _parallel_slot_echo(backend) == {
-        "requested_parallel_slots": None,
-        "parallel_slots": None,
-    }
+    fields = _llama_runtime_fields(backend)
+    assert (fields["requested_parallel_slots"], fields["parallel_slots"]) == (None, None)
 
 
 def test_validate_route_prefers_request_n_parallel():
-    validate_impl = _route_source()[_route_source().index("async def validate_model") :]
-    resolve = validate_impl.index("request.n_parallel")
-    fallback = validate_impl.index('"llama_parallel_slots",')
-    guard = validate_impl.index("_guard_chat_load_against_training")
-    assert guard < resolve and guard < fallback, "the guard call resolves the slots inline"
+    route_source = _route_source()
+    helper = route_source[route_source.index("def _resolve_parallel_slots") :]
+    helper = helper[: helper.index("\n\n")]
+    assert helper.index("request.n_parallel") < helper.index('"llama_parallel_slots"')
+    validate_impl = route_source[route_source.index("async def validate_model") :]
+    assert "n_parallel = _resolve_parallel_slots(request, fastapi_request)" in validate_impl
 
 
 def _load_model_source() -> str:
@@ -373,7 +374,7 @@ def test_clamp_sits_between_the_echo_and_the_fit():
     # The echo reports the ask and the fit uses what launches, so the clamp
     # belongs between the two.
     src = _load_model_source()
-    pending = src.index("_pending_load_kwargs")
+    pending = src.index("n_parallel = intent.n_parallel")
     clamp = src.index("supports_kv_unified")
     estimate = src.index("_estimate")
     commit = src.index("_commit_effective_parallel_slots")
@@ -457,15 +458,22 @@ def _guard_required_gb(
         classmethod(lambda cls, binary = None: dict(caps or {})),
     )
 
-    inf._guard_chat_load_against_training(
-        _types.SimpleNamespace(is_gguf = True, gguf_file = gguf_path, identifier = "local/model"),
-        model_identifier = "local/model",
+    config = _types.SimpleNamespace(is_gguf = True, gguf_file = gguf_path, identifier = "local/model")
+    request = _types.SimpleNamespace(
+        model_path = "local/model",
         hf_token = None,
-        load_in_4bit = False,
         max_seq_length = 8192,
-        requested_gpu_ids = None,
-        n_parallel = n_parallel,
+        cache_type_kv = None,
+        tensor_parallel = False,
         gpu_memory_mode = "auto",
+        gpu_layers = -1,
+    )
+    inf._guard_chat_load_against_training(
+        config,
+        request,
+        load_in_4bit = False,
+        placement = inf._LoadPlacement(None, None, False, inf._classify_diffusion_gguf(config)),
+        n_parallel = n_parallel,
     )
     return seen["required_override_gb"]
 

@@ -87,7 +87,12 @@ import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
-import { loadModel, validateModel } from "./api/chat-api";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
+import {
+  fetchGgufStagedMetadata,
+  loadModel,
+  validateModel,
+} from "./api/chat-api";
 import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
@@ -101,6 +106,10 @@ import {
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
+import {
+  resolveComparePlacement,
+  shouldPinDiffusionPlacement,
+} from "./lib/gpu-placement";
 import {
   loadedGpuMemoryFields,
   type ReasoningEffort,
@@ -137,7 +146,7 @@ import {
 export type CompareMessagePart =
   | { type: "text"; text: string }
   | { type: "image"; image: string }
-  | { type: "audio"; audio: string };
+  | { type: "audio"; audio: string; name: string };
 
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
@@ -423,6 +432,7 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  isDiffusion?: boolean;
   config?: PerModelConfig;
 };
 
@@ -482,6 +492,7 @@ export function SharedComposer({
   const [pendingAudio, setPendingAudio] = useState<{
     name: string;
     base64: string;
+    contentType: string;
   } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -846,7 +857,7 @@ export function SharedComposer({
         // Handle audio files
         if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
           fileToBase64(file).then((base64) => {
-            setPendingAudio({ name: file.name, base64 });
+            setPendingAudio({ name: file.name, base64, contentType: file.type });
             setPendingAudioStore(base64, file.name);
           });
           continue;
@@ -976,7 +987,11 @@ export function SharedComposer({
       }
     }
     if (pendingAudio) {
-      content.push({ type: "audio", audio: pendingAudio.base64 });
+      content.push({
+        type: "audio",
+        name: pendingAudio.name,
+        audio: `data:${pendingAudio.contentType};base64,${pendingAudio.base64}`,
+      });
     }
     if (msg) {
       content.push({ type: "text", text: msg });
@@ -1020,11 +1035,8 @@ export function SharedComposer({
         gpuLayers: store.gpuLayers,
         nCpuMoe: store.nCpuMoe,
         splitRatio: store.splitRatio,
-        // Reconcile the pick against the GPUs present now, like the model-switch
-        // path: an early remember-restore can hold a stale cross-host pick that
-        // /load would reject (the device cache is populated by send time).
-        selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
-        customContextLength: store.customContextLength,
+        selectedGpuIds: store.selectedGpuIds,
+        selectedGpuIndexKind: store.selectedGpuIndexKind,
       };
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
@@ -1044,19 +1056,45 @@ export function SharedComposer({
           : resolveInitialConfig(sel.id, sel.ggufVariant ?? null);
         const ownConfig = resolved.config;
         const ownRemembered = resolved.remembered;
+        const isAlreadyActive =
+          currentStore.params.checkpoint === sel.id &&
+          (currentStore.activeGgufVariant ?? null) ===
+            (sel.ggufVariant ?? null);
+        if (isAlreadyActive && !config && !loadedFromConfig) {
+          return "ready";
+        }
+        const targetIsGguf =
+          (sel.ggufVariant ?? null) != null ||
+          sel.id.toLowerCase().endsWith(".gguf");
+        let resolvedIsDiffusion = sel.isDiffusion;
+        // Set when the preflight could not classify the GGUF, so a false
+        // resolvedIsDiffusion below must not be read as "ordinary".
+        let diffusionUnknown = false;
+        if (targetIsGguf && resolvedIsDiffusion === undefined) {
+          const preparedToken = await prepareHfTokenForUse(
+            currentStore.hfToken,
+          );
+          if (!preparedToken.proceed) {
+            throw new Error("Model load cancelled.");
+          }
+          const staged = await fetchGgufStagedMetadata({
+            model_path: sel.id,
+            gguf_variant: sel.ggufVariant ?? null,
+            hf_token: preparedToken.token,
+          });
+          resolvedIsDiffusion = staged.isDiffusion;
+          diffusionUnknown = staged.diffusionUnknown;
+        }
         // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no explicit
         // context loads at native (0 -> n_ctx_train), not the session maxSeqLength,
         // which would silently shrink the shown context.
-        const isGgufLoad =
-          (sel.ggufVariant ?? null) != null ||
-          sel.id.toLowerCase().endsWith(".gguf");
         // A non-GGUF pane with no saved maxSeqLength falls back to the app default,
         // not the active model's shared runtime snapshot: else comparing a saved
         // 128K model against an unconfigured one loads the latter at 128K and OOMs.
         const effectiveMaxSeqLength =
           ownConfig.customContextLength ??
           normalizeMaxSeqLength(ownConfig.maxSeqLength) ??
-          (isGgufLoad ? 0 : DEFAULT_MAX_SEQ_LENGTH);
+          (targetIsGguf ? 0 : DEFAULT_MAX_SEQ_LENGTH);
         const effectiveChatTemplateOverride = cleanCompareChatTemplate(
           ownConfig.chatTemplateOverride,
         );
@@ -1068,22 +1106,47 @@ export function SharedComposer({
               ownConfig.specDraftNMax,
             )
           : specSettings.specDraftNMax;
-        const effectiveTensorParallel = ownRemembered
-          ? ownConfig.tensorParallel
-          : fallbackTensorParallel;
+        const effectiveTensorParallel = resolvedIsDiffusion
+          ? false
+          : ownRemembered
+            ? ownConfig.tensorParallel
+            : fallbackTensorParallel;
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
-        const effectiveGpuMemoryMode =
-          ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode;
-        const effectiveGpuLayers =
-          ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers;
+        // A pane's OWN saved split is sent instead of being forced to Auto
+        // (#7574); the shared Send-time snapshot is not, since its layer count
+        // is bounded by another GGUF. Knobs the runner has no equivalent for
+        // (MoE offload, tensor parallel) stay hard-forced. An UNCLASSIFIED GGUF
+        // is pinned too: see lib/gpu-placement.ts.
+        const {
+          gpuMemoryMode: effectiveGpuMemoryMode,
+          gpuLayers: effectiveGpuLayers,
+        } = resolveComparePlacement(
+          ownConfig,
+          compareLoadKnobs,
+          shouldPinDiffusionPlacement(
+            targetIsGguf,
+            resolvedIsDiffusion,
+            diffusionUnknown,
+          ),
+        );
         const effectiveNCpuMoe =
-          ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe;
+          resolvedIsDiffusion
+            ? 0
+            : (ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe);
         const effectiveSelectedGpuIds =
           ownConfig.selectedGpuIds !== undefined
-            ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
-            : compareLoadKnobs.selectedGpuIds;
+            ? reconcilePersistedGpuIds(
+                ownConfig.selectedGpuIds,
+                ownConfig.selectedGpuIndexKind,
+                resolvedIsDiffusion === true,
+              )
+            : reconcilePersistedGpuIds(
+                compareLoadKnobs.selectedGpuIds,
+                compareLoadKnobs.selectedGpuIndexKind,
+                resolvedIsDiffusion === true,
+              );
         // A pane's context comes from its own config only: a saved pin, or null
         // (Auto/native). It must not inherit the active model's shared snapshot --
         // resolveFitMaxSeqLength would treat that as a pin and load this pane at
@@ -1091,15 +1154,6 @@ export function SharedComposer({
         const effectiveCustomContextLength = ownConfig.customContextLength;
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
-        const isAlreadyActive =
-          currentStore.params.checkpoint === sel.id &&
-          (currentStore.activeGgufVariant ?? null) ===
-            (sel.ggufVariant ?? null);
-        if (isAlreadyActive && !config && !loadedFromConfig) {
-          return "ready";
-        }
-        const targetIsGguf =
-          sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null;
         // Size validation exactly as the load below, so the training-guard
         // preflight checks the footprint that actually loads (under Manual + Auto
         // layers the load sends 0 / the pinned context, not raw maxSeqLength).
@@ -1130,6 +1184,9 @@ export function SharedComposer({
             ? {
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
+                // Sized like the load below: a manual DiffusionGemma split
+                // must not be validated as a full-GGUF occupant.
+                gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
               }
@@ -1265,10 +1322,11 @@ export function SharedComposer({
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          activeModelIsLocal: resp.is_local_model ?? false,
           // Record the context this pane loaded with (like the single-model path)
           // so when it becomes the active model, the UI and later reload/save use
           // its context, not the previous/default one.
-          customContextLength: isGgufLoad
+          customContextLength: targetIsGguf
             ? (ownConfig.customContextLength ?? keepCustomCtx)
             : null,
           ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
@@ -1285,7 +1343,7 @@ export function SharedComposer({
           activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(resp),
         });
-        if (!isGgufLoad) {
+        if (!targetIsGguf) {
           // Non-GGUF panes carry their context in params.maxSeqLength.
           store.setParams({
             ...useChatRuntimeStore.getState().params,
@@ -2240,7 +2298,7 @@ export function SharedComposer({
                   onClick={startDictation}
                   aria-label="Dictate"
                 >
-                  <MicIcon className="size-4" />
+                  <MicIcon className="unsloth-dictate-icon size-4" />
                 </TooltipIconButton>
               ) : (
                 <TooltipIconButton
@@ -2289,7 +2347,7 @@ export function SharedComposer({
               type="button"
               variant="default"
               size="icon"
-              className="ml-1.5 size-8 rounded-full"
+              className="ml-1.5 size-9 rounded-full"
               onClick={stop}
             >
               <SquareIcon className="size-3 fill-current" />
@@ -2300,12 +2358,12 @@ export function SharedComposer({
               side="bottom"
               variant="default"
               size="icon"
-              className="ml-1.5 size-8 rounded-full"
+              className="ml-1.5 size-9 rounded-full"
               onClick={send}
               disabled={!canSend}
               aria-label="Send message"
             >
-              <ArrowUpIcon className="size-[22px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon size-[22px] stroke-2" />
             </TooltipIconButton>
           )}
         </div>

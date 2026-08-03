@@ -93,6 +93,9 @@ validate_extra_args = _lsa.validate_extra_args
         ["-fit", "off"],
         ["--fit", "on"],
         ["--fit-ctx", "8192"],
+        # Memory placement flags (soft-managed; shadowed on inherit)
+        ["--mlock"],
+        ["--no-mmap", "--mlock"],
     ],
 )
 def test_pass_through_allowed(args):
@@ -319,6 +322,9 @@ def test_is_managed_flag_false_for_pass_through():
     assert is_managed_flag("--flash-attn") is False
     assert is_managed_flag("-ngl") is False
     assert is_managed_flag("--threads") is False
+    # Memory placement flags are pass-through (shadowed on inherit only).
+    assert is_managed_flag("--mlock") is False
+    assert is_managed_flag("--no-mmap") is False
 
 
 # ── strip_shadowing_flags ─────────────────────────────────────────────
@@ -381,6 +387,34 @@ def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
         strip_spec = False,
     )
     assert out == ["--spec-type", "ngram-mod", "--draft-min", "48", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_device_by_default():
+    # --device is pass-through by default (users may pin when Unsloth auto-selects).
+    out = strip_shadowing_flags(
+        ["--device", "Vulkan1", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+    )
+    assert out == ["--device", "Vulkan1", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_drops_device_when_requested():
+    # strip_device drops device placement flags when gpu_ids owns placement.
+    for flag in ("--device", "-dev", "--main-gpu", "-mg"):
+        out = strip_shadowing_flags(
+            [flag, "Vulkan1", "--top-k", "20"],
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_device = True,
+        )
+        assert out == ["--top-k", "20"], flag
 
 
 def test_strip_shadowing_flags_drops_mtp_flags_when_requested():

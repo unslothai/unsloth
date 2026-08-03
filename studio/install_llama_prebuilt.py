@@ -20,6 +20,7 @@ import re
 import shutil
 import site
 import socket
+import ssl
 import stat
 import struct
 import subprocess
@@ -3087,13 +3088,26 @@ def resolve_linux_cuda_choice(
 
 
 def published_asset_choice_for_kind(
-    release: PublishedReleaseBundle, install_kind: str
+    release: PublishedReleaseBundle,
+    install_kind: str,
+    *,
+    host: HostInfo | None = None,
 ) -> AssetChoice | None:
     candidates = sorted(
         (artifact for artifact in release.artifacts if artifact.install_kind == install_kind),
         key = lambda artifact: (artifact.rank, artifact.asset_name),
     )
     for artifact in candidates:
+        if host is not None and install_kind in VULKAN_INSTALL_KINDS:
+            identity = f"{artifact.bundle_profile or ''} {artifact.asset_name}".lower()
+            if host.is_arm64:
+                if not any(token in identity for token in ("arm64", "aarch64")):
+                    continue
+            elif host.is_x86_64:
+                if not any(token in identity for token in ("x64", "x86_64", "amd64")):
+                    continue
+            else:
+                continue
         asset_url = release.assets.get(artifact.asset_name)
         if not asset_url:
             continue
@@ -3104,6 +3118,7 @@ def published_asset_choice_for_kind(
             url = asset_url,
             source_label = "published",
             install_kind = install_kind,
+            bundle_profile = artifact.bundle_profile,
             runtime_line = artifact.runtime_line,
             selection_log = list(release.selection_log)
             + [f"published_selection: selected {artifact.asset_name} install_kind={install_kind}"],
@@ -3466,6 +3481,17 @@ def resolve_release_asset_choice(
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
+        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
+            choices = [
+                choice
+                for choice in (
+                    published_asset_choice_for_kind(release, "windows-vulkan", host = host),
+                    published_asset_choice_for_kind(release, "windows-cpu"),
+                )
+                if choice is not None
+            ]
+            if choices:
+                return apply_approved_hashes(choices, checksums)
         # AMD Windows hosts prefer the fork's per-gfx windows-rocm bundle when one
         # covers the GPU; otherwise fall through to resolve_asset_choice(). Note
         # that on the fork repo the upstream win-hip archive has no approved hash,
@@ -4383,16 +4409,21 @@ def is_retryable_server_bind_error(
     return False
 
 
-def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
+def dedupe_existing_dirs(paths: Iterable[str | Path], *, skip_unusable: bool = False) -> list[str]:
     unique: list[str] = []
     seen: set[str] = set()
     for raw in paths:
         if not raw:
             continue
-        path = Path(raw).expanduser()
-        if not path.is_dir():
+        try:
+            path = Path(raw).expanduser()
+            if not path.is_dir():
+                continue
+            resolved = str(path.resolve())
+        except (OSError, ValueError):
+            if not skip_unusable:
+                raise
             continue
-        resolved = str(path.resolve())
         if resolved in seen:
             continue
         seen.add(resolved)
@@ -4432,7 +4463,13 @@ def python_runtime_dirs() -> list[str]:
         pass
 
     for root in search_roots:
-        if not root.is_dir():
+        # sys.path / PYTHONPATH can name a directory this user cannot stat, and
+        # is_dir() re-raises PermissionError, escaping windows_runtime_dirs() and
+        # defeating its skip_unusable discovery.
+        try:
+            if not root.is_dir():
+                continue
+        except (OSError, ValueError):
             continue
         # ``nvidia/<pkg>/lib`` -- Linux convention; harmless on Windows
         # where the directory simply does not exist on real wheels.
@@ -4456,7 +4493,11 @@ def python_runtime_dirs() -> list[str]:
         candidates.extend(root.glob("nvidia/*/Library/bin/x86_64"))
         candidates.extend(root.glob("nvidia/*/Library/bin/x64"))
         candidates.extend(root.glob("torch/lib"))
-    return dedupe_existing_dirs(candidates)
+    # These are optional globbed CUDA wheel dirs, so a denied child under a
+    # readable root must not abort discovery; it could not have served DLLs to
+    # the loader anyway. Matches the always-lenient serve-time copy in
+    # backend/utils/prebuilt/runtime_libs.py.
+    return dedupe_existing_dirs(candidates, skip_unusable = True)
 
 
 def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
@@ -4705,12 +4746,18 @@ def windows_runtime_dirs() -> list[str]:
 
     program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
     toolkit_base = Path(program_files) / "NVIDIA GPU Computing Toolkit" / "CUDA"
-    if toolkit_base.is_dir():
+    # %ProgramFiles% is user-controllable, so this stat is as deniable as the
+    # PATH entries below. glob() already swallows OSError.
+    try:
+        toolkit_is_dir = toolkit_base.is_dir()
+    except (OSError, ValueError):
+        toolkit_is_dir = False
+    if toolkit_is_dir:
         candidates.extend(toolkit_base.glob("v*/bin"))
         candidates.extend(toolkit_base.glob("v*/lib/x64"))
 
     candidates.extend(Path(path) for path in python_runtime_dirs())
-    return dedupe_existing_dirs(candidates)
+    return dedupe_existing_dirs(candidates, skip_unusable = True)
 
 
 def windows_runtime_dirs_for_patterns(
@@ -4967,7 +5014,9 @@ def binary_env(
             *windows_runtime_dirs_for_runtime_line(runtime_line),
         ]
         existing = [part for part in env.get("PATH", "").split(os.pathsep) if part]
-        env["PATH"] = os.pathsep.join(dedupe_existing_dirs([*path_dirs, *existing]))
+        required = dedupe_existing_dirs(path_dirs)
+        inherited = dedupe_existing_dirs(existing, skip_unusable = True)
+        env["PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
     elif host.is_linux:
         ld_dirs = [
             str(binary_path.parent),
@@ -4985,11 +5034,17 @@ def binary_env(
         if _native_rocm:
             ld_dirs = [*_native_rocm, *ld_dirs]
         existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
-        env["LD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*ld_dirs, *existing]))
+        # An inherited entry under a mode-000 parent or a stale NFS mount is not
+        # ours to require. The bundle's own dirs stay strict.
+        required = dedupe_existing_dirs(ld_dirs)
+        inherited = dedupe_existing_dirs(existing, skip_unusable = True)
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
     elif host.is_macos:
         dyld_dirs = [str(binary_path.parent), str(install_dir)]
         existing = [part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part]
-        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*dyld_dirs, *existing]))
+        required = dedupe_existing_dirs(dyld_dirs)
+        inherited = dedupe_existing_dirs(existing, skip_unusable = True)
+        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
     return env
 
 
@@ -5422,9 +5477,9 @@ def resolve_install_attempts(
 
 def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) -> list[AssetChoice]:
     """Build the install attempts for a fork Linux host from a manifest-described
-    bundle: CUDA, per-gfx ROCm, or (non-GPU) CPU. Same selection the upstream
-    filename path used, just sourced from the manifest instead of reconstructed
-    from asset names."""
+    bundle: CUDA, per-gfx ROCm, Vulkan, or CPU. Same selection the upstream filename
+    path used, just sourced from the manifest instead of reconstructed from asset
+    names."""
     attempts: list[AssetChoice] = []
     if host.has_usable_nvidia:
         # Prefer the cudart major Unsloth loads at runtime (torch's bundled
@@ -5449,6 +5504,10 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         if published_rocm is not None:
             attempts.append(published_rocm)
     else:
+        if host.has_intel_gpu and not host.has_physical_nvidia:
+            vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
+            if vulkan_choice is not None:
+                attempts.append(vulkan_choice)
         # CPU-only host. A usable-NVIDIA host never reaches here -- if its CUDA
         # selection produced nothing we want an empty attempt list so the caller
         # source-builds with CUDA, not a CPU-only binary silently installed on a
@@ -5631,6 +5690,66 @@ def write_prebuilt_metadata(
     )
 
 
+def _write_marker(marker_path: Path, marker: dict) -> bool:
+    """Best-effort marker rewrite for the reuse path. Returns False if it stuck.
+
+    Atomic only, deliberately. os.replace swaps in a sibling temp file, so it
+    succeeds on a read-only marker in a writable dir (a shared or admin-owned
+    install) where a plain write_text would not, and it can never leave a
+    half-written marker behind: an in-place retry would truncate a valid file
+    first, and an ENOSPC or I/O error mid-write would strand a partial
+    UNSLOTH_PREBUILT_INFO.json that later updates no longer recognise. The whole
+    install is worth more than this one refreshed field.
+
+    Never raises -- the reuse path runs after the install is already valid, and
+    an unexpected exit no longer falls back to a source build, so failing here
+    would abort setup over a metadata refresh.
+    """
+    data = (json.dumps(marker, indent = 2) + "\n").encode("utf-8")
+    try:
+        original = marker_path.stat()
+    except OSError:
+        original = None
+    # Tracked outside the try so a raising write/flush/fsync (the ENOSPC this is
+    # built to tolerate) cannot strand a partial .tmp-* beside the valid marker.
+    tmp_path: Path | None = None
+    try:
+        # Own temp file rather than atomic_write_bytes so the mode is restored
+        # BEFORE the swap: os.replace keeps the source file's mode, and
+        # NamedTemporaryFile is 0600, which would leave a shared install's marker
+        # readable only by whoever ran setup. chmod after the swap would leave a
+        # window.
+        with tempfile.NamedTemporaryFile(
+            prefix = marker_path.name + ".tmp-",
+            dir = marker_path.parent,
+            delete = False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if original is not None:
+            os.chmod(tmp_path, stat.S_IMODE(original.st_mode))
+            # Best effort: os.replace installs the temp file's ownership, so a
+            # shared marker would otherwise pick up the invoking user's group.
+            # A no-op for a non-root user; the mode above is what keeps the
+            # marker readable, and declining the refresh instead would leave a
+            # deliberate --force-cpu unrecorded, which is the #7213 crash.
+            try:
+                os.chown(tmp_path, original.st_uid, original.st_gid)
+            except (OSError, AttributeError):
+                pass
+        atomic_replace_from_tempfile(tmp_path, marker_path)
+        return True
+    except OSError:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        return False
+
+
 def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
     """Sync only the force_cpu flag of an existing marker when the resolved bundle is
     unchanged, so the install is skipped without a full metadata rewrite. A deliberate
@@ -5645,7 +5764,15 @@ def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
     if not isinstance(marker, dict) or bool(marker.get("force_cpu")) == persist_force_cpu:
         return
     marker["force_cpu"] = persist_force_cpu
-    marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
+    if not _write_marker(marker_path, marker):
+        # Losing this lets the updater re-route a deliberate CPU user onto a
+        # GPU/Vulkan bundle (#7213), so warn loudly; do not fail setup over it,
+        # now that an unexpected exit no longer source builds.
+        log(
+            f"WARNING: could not record force_cpu={persist_force_cpu} in {marker_path}; "
+            "a later update may not re-assert this choice"
+        )
+        return
     log(f"existing install reused; recorded force_cpu={persist_force_cpu} from this run")
 
 
@@ -5662,7 +5789,12 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
         marker.pop("llama_backend", None)
     else:
         marker["llama_backend"] = llama_backend
-    marker_path.write_text(json.dumps(marker, indent = 2) + "\n", encoding = "utf-8")
+    if not _write_marker(marker_path, marker):
+        log(
+            f"WARNING: could not record llama_backend={llama_backend!r} in {marker_path}; "
+            "a later update may not re-assert this choice"
+        )
+        return
     log(f"existing install reused; recorded llama_backend={llama_backend!r} from this run")
 
 
@@ -5799,7 +5931,7 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libggml-hip.so*"],
         ]
     if choice.install_kind == "linux-vulkan":
-        return [
+        groups = [
             ["libllama-common.so*"],
             ["libllama.so*"],
             ["libggml.so*"],
@@ -5812,6 +5944,9 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
             ["libmtmd.so*"],
             ["libggml-vulkan.so*"],
         ]
+        if choice.source_label == "published":
+            groups.append(["llama-diffusion-gemma-visual-server"])
+        return groups
     if choice.install_kind in {"windows-cpu", "windows-arm64"}:
         return [["llama.dll"]]
     if choice.install_kind == "windows-cuda":
@@ -5832,7 +5967,10 @@ def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind in {"windows-hip", "windows-rocm"}:
         return [["llama.dll"], ["*hip*.dll"]]
     if choice.install_kind == "windows-vulkan":
-        return [["llama.dll"], ["ggml-vulkan.dll"]]
+        groups = [["llama.dll"], ["ggml-vulkan.dll"]]
+        if choice.source_label == "published":
+            groups.append(["llama-diffusion-gemma-visual-server.exe"])
+        return groups
     return []
 
 
@@ -5988,6 +6126,10 @@ def validate_prebuilt_choice(
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
     server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
+    if choice.install_kind in VULKAN_INSTALL_KINDS and not runtime_payload_is_healthy(
+        install_dir, host, choice
+    ):
+        raise PrebuiltFallback(f"Vulkan bundle {choice.name} omitted a required runtime component")
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
     preflight_macos_installed_binaries((server_path, quantize_path), install_dir, host)
     ensure_repo_shape(install_dir)
@@ -6188,11 +6330,11 @@ def _normalized_llama_backend(value: str | None) -> str | None:
 def llama_backend_from_env() -> str | None:
     """Read an explicit llama.cpp backend preference from the environment.
 
-    Only ``UNSLOTH_LLAMA_BACKEND`` is honored. ``UNSLOTH_LLAMA_CPP_BACKEND`` is a separate
-    setup variable meaning ``auto``/``cpu`` (not a backend name) that setup warns about and
-    otherwise ignores, so reading it here would force Vulkan behind that warning.
+    ``UNSLOTH_LLAMA_CPP_BACKEND`` is shared with setup.sh/setup.ps1. ``auto`` and
+    unknown values leave selection automatic. ``cpu`` and ``vulkan`` select those
+    bundles explicitly, while ``hip``/``rocm`` opt out of automatic Vulkan routing.
     """
-    return _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_BACKEND"))
+    return _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"))
 
 
 def resolved_llama_backend(llama_backend: str | None = None) -> str | None:
@@ -6202,11 +6344,12 @@ def resolved_llama_backend(llama_backend: str | None = None) -> str | None:
 
 
 def force_vulkan_requested(llama_backend: str | None = None) -> bool:
-    """Whether this run should install the upstream Vulkan llama.cpp prebuilt.
+    """Whether this run should install the Vulkan llama.cpp prebuilt.
 
-    Triggered by ``UNSLOTH_LLAMA_BACKEND=vulkan``, legacy ``UNSLOTH_FORCE_VULKAN``, or
-    ``--llama-backend vulkan``. Scoped to the llama.cpp backend; the torch/training stack
-    installs separately and still sees the real GPU.
+    Triggered by ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan``, legacy ``UNSLOTH_FORCE_VULKAN``,
+    or ``--llama-backend vulkan``. Scoped to the
+    llama.cpp backend; the torch/training stack installs separately and still sees
+    the real GPU.
     """
     backend = resolved_llama_backend(llama_backend)
     if backend is not None:
@@ -6217,6 +6360,7 @@ def force_vulkan_requested(llama_backend: str | None = None) -> bool:
         "1",
         "true",
         "yes",
+        "on",
     )
 
 
@@ -6350,6 +6494,27 @@ def _vulkan_only_host(host: HostInfo) -> HostInfo:
     )
 
 
+def _vulkan_only_attempts(attempts: Iterable[AssetChoice]) -> list[AssetChoice]:
+    """Remove generic CPU fallbacks from an explicit Vulkan install."""
+    return [
+        attempt
+        for attempt in attempts
+        if attempt.install_kind in ("linux-vulkan", "windows-vulkan")
+    ]
+
+
+def _vulkan_only_release_plans(plans: Iterable[InstallReleasePlan]) -> list[InstallReleasePlan]:
+    """Keep release plans that contain an explicit Vulkan bundle."""
+    filtered = []
+    for plan in plans:
+        attempts = _vulkan_only_attempts(plan.attempts)
+        if attempts:
+            filtered.append(dataclasses_replace(plan, attempts = attempts))
+    if not filtered:
+        raise PrebuiltFallback("no Vulkan prebuilt bundle attempts were available")
+    return filtered
+
+
 def _route_to_vulkan_prebuilt(
     host: HostInfo,
     published_repo: str,
@@ -6358,16 +6523,16 @@ def _route_to_vulkan_prebuilt(
     force_cpu: bool,
     llama_backend: str | None = None,
 ) -> tuple[HostInfo, str, str, str | None]:
-    """Point a Vulkan-capable host at the upstream ggml-org Vulkan prebuilt.
+    """Point a Vulkan-capable host at the selected repository's Vulkan prebuilt.
 
-    The unsloth published repo ships only CUDA/ROCm/CPU assets, so Vulkan comes from
-    UPSTREAM_REPO. Three triggers route here, all suppressed when a CPU flag (--cpu-fallback
-    or --force-cpu, folded into force_cpu) wins:
-      * ``UNSLOTH_LLAMA_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` / ``--llama-backend
-        vulkan`` forces Vulkan over the detected CUDA/ROCm backend;
+    The default Unsloth release manifest includes Vulkan app bundles, including the
+    DiffusionGemma visual server. Three triggers route here, all suppressed when a CPU
+    flag (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
+      * ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` /
+        ``--llama-backend vulkan`` forces Vulkan over the detected CUDA/ROCm backend;
       * Windows AMD with no HIP-prebuilt gfx arch auto-falls back to Vulkan (#7357);
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
-        has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
+        has_intel_gpu probe.
     Applied by BOTH the install path and the --resolve-prebuilt probe so the "is a prebuilt
     available" answer matches what actually gets installed.
 
@@ -6382,50 +6547,61 @@ def _route_to_vulkan_prebuilt(
     )
     # No PHYSICAL NVIDIA, not merely no usable one: Vulkan ignores CUDA_VISIBLE_DEVICES, so
     # auto-routing a host that hides its NVIDIA card would let it grab the reserved GPU.
-    auto_intel = host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
+    auto_intel = (
+        explicit_backend is None
+        and host.has_intel_gpu
+        and not host.has_physical_nvidia
+        and not host.has_rocm
+    )
     if force_cpu or not (forced or auto_intel or auto_no_hip):
         return host, published_repo, published_release_tag, None
     if host.is_macos:
         if forced:
             log(
-                "UNSLOTH_LLAMA_BACKEND=vulkan is set but ignored on macOS "
+                "UNSLOTH_LLAMA_CPP_BACKEND=vulkan is set but ignored on macOS "
                 "(Metal is used; there is no Vulkan prebuilt)"
             )
         return host, published_repo, published_release_tag, None
     if _has_no_vulkan_prebuilt(host):
         if forced:
             log(
-                "Vulkan llama.cpp backend requested but ignored on Windows arm64 "
-                "(upstream ships no Vulkan arm64 prebuilt); keeping the published bundle"
+                "Vulkan llama.cpp backend requested on Windows arm64, but no "
+                "compatible Vulkan bundle is published"
             )
         return host, published_repo, published_release_tag, None
     if auto_no_hip:
         active = _active_rocm_gfx_target(host) or "unknown"
         log(
             "Active AMD GPU arch is not supported by the Windows HIP prebuilt "
-            f"({active}); installing the upstream Vulkan llama.cpp prebuilt instead"
+            f"({active}); installing the Vulkan llama.cpp prebuilt instead"
         )
         host = _vulkan_only_host(host)
         persist_backend = "vulkan"
     elif forced:
         log(
-            "Vulkan llama.cpp backend requested; installing the upstream Vulkan "
+            "Vulkan llama.cpp backend requested; installing the Vulkan "
             "prebuilt instead of the detected GPU backend"
         )
         host = _vulkan_only_host(host)
         persist_backend = "vulkan"
     else:
-        log("Intel GPU detected; installing the upstream Vulkan llama.cpp prebuilt")
+        log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
         persist_backend = None
-    # Swapping the fork for upstream invalidates a fork release pin: the two use
-    # different tag namespaces (fork b9596-mix-<sha> vs upstream b9596), so a
-    # pinned fork tag would make the upstream resolver query a nonexistent
-    # release and fall back to source. Drop it and let the upstream resolver
-    # pick by the requested llama tag. A pin already on an explicit upstream repo
-    # (repo unchanged here) is preserved.
-    if published_repo != UPSTREAM_REPO:
-        published_release_tag = ""
-    return host, UPSTREAM_REPO, published_release_tag, persist_backend
+    # The fork manifest's Vulkan app bundles are x64 only, and the architecture
+    # filter in published_asset_choice_for_kind rejects them for an ARM64 host, so
+    # the fork planner returns no Vulkan attempt at all there. Strict Vulkan
+    # filtering then drops the ARM64 CPU attempt too and the install resolves to
+    # nothing. Upstream does publish llama-<tag>-bin-ubuntu-vulkan-arm64.tar.gz, so
+    # keep routing Linux ARM64 there (Windows arm64 exits above via
+    # _has_no_vulkan_prebuilt, macOS via the Metal branch).
+    if (published_repo or DEFAULT_PUBLISHED_REPO) == DEFAULT_PUBLISHED_REPO and (
+        host.is_linux and host.is_arm64
+    ):
+        # Fork and upstream use different tag namespaces (fork b9596-mix-<sha> vs
+        # upstream b9596), so carrying a fork pin over would make the upstream
+        # resolver query a release that does not exist.
+        return host, UPSTREAM_REPO, "", persist_backend
+    return host, published_repo, published_release_tag, persist_backend
 
 
 def diffusion_visual_server_backfill_needed(
@@ -6594,6 +6770,9 @@ def install_prebuilt(
 ) -> None:
     # force_cpu drops GPU detection (mechanism, both --cpu-fallback and --force-cpu);
     # persist_force_cpu records the deliberate choice so the updater re-asserts it.
+    if resolved_llama_backend(llama_backend) == "cpu":
+        force_cpu = True
+        persist_force_cpu = True
     host = detect_host()
     host = _apply_host_overrides(
         host,
@@ -6601,6 +6780,9 @@ def install_prebuilt(
         override_rocm_gfx = override_rocm_gfx,
         force_cpu = force_cpu,
     )
+    # An explicit Vulkan choice only. The Windows-AMD auto-fallback is a rescue
+    # from a missing HIP arch, so it must keep the CPU plans it can still use.
+    strict_vulkan = force_vulkan_requested(llama_backend) and not force_cpu and not host.is_macos
     host, published_repo, published_release_tag, persist_llama_backend = _route_to_vulkan_prebuilt(
         host,
         published_repo,
@@ -6628,14 +6810,57 @@ def install_prebuilt(
                 )
             # Single resolver: every fork host selects from the release manifest;
             # an explicit ggml-org override selects by asset filename instead. A
-            # forced-Vulkan host already has published_repo pointed at
-            # UPSTREAM_REPO above, so the resolver takes the Vulkan asset branch.
-            requested_tag, release_plans = resolve_simple_install_release_plans(
-                llama_tag,
-                host,
-                published_repo,
-                published_release_tag,
-            )
+            # Vulkan host is rewritten above so either resolver takes its Vulkan
+            # asset branch.
+            #
+            # Listing releases is a network call, and only the ggml-org branch
+            # wraps its own failures, so a rate limited api.github.com or a
+            # dropped connection escapes as EXIT_ERROR, which the setup scripts
+            # refuse to source build on -- yet a source build clones over git
+            # rather than the API and is exactly the recovery these want. Wrapped
+            # here rather than inside the resolver because --resolve-prebuilt
+            # turns PrebuiltFallback into an exit-0 {"prebuilt_available": false}
+            # payload that update_flow caches for RESOLVE_TTL_SECONDS, pinning a
+            # transient 403 as "no prebuilt" for 24h; nonzero exits are never
+            # cached, so the resolver must keep failing hard.
+            #
+            # Not dead code despite the download-host fast path: macOS skips it
+            # entirely (see allow_download_host_fast_path below), as does a
+            # pinned UNSLOTH_LLAMA_RELEASE_TAG, a non-latest tag, a non-default
+            # --published-repo, and any CDN outage.
+            #
+            # Transport shapes only: URLError covers HTTPError and the socket/DNS
+            # errors urllib wraps, JSONDecodeError is a ValueError, and
+            # fetch_json's 403 is a bare RuntimeError. Plain OSError is excluded
+            # on purpose -- EMFILE, ENOMEM or a local EACCES is a host resource
+            # problem a source build only makes worse, so those stay EXIT_ERROR
+            # alongside resolver bugs. ENOSPC still reaches EXIT_NO_SPACE via
+            # _environment_fatal_reason in __main__.
+            try:
+                requested_tag, release_plans = resolve_simple_install_release_plans(
+                    llama_tag,
+                    host,
+                    published_repo,
+                    published_release_tag,
+                )
+            except (BusyInstallConflict, PrebuiltFallback):
+                raise
+            except (
+                urllib.error.URLError,
+                ssl.SSLError,
+                ConnectionError,
+                TimeoutError,
+                RuntimeError,
+                ValueError,
+            ) as exc:
+                raise PrebuiltFallback(
+                    f"failed to inspect published releases in "
+                    f"{published_repo or DEFAULT_PUBLISHED_REPO}: {exc}"
+                ) from exc
+            if strict_vulkan:
+                # Upstream plans append CPU as a generic fallback. An explicit
+                # Vulkan selection must fail instead of silently installing it.
+                release_plans = _vulkan_only_release_plans(release_plans)
             if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
                 current = release_plans[0]
                 if diffusion_visual_server_backfill_needed(install_dir, host, current.attempts[0]):
@@ -6748,8 +6973,12 @@ def install_prebuilt(
             raise SystemExit(EXIT_NO_SPACE) from exc
         log("prebuilt install path failed; falling back to source build")
         log(f"prebuilt fallback reason: {exc}")
-        report = collect_system_report(host, choice, install_dir)
-        print(report)
+        # Diagnostics must never change the verdict: a probe that raises here
+        # would replace the fallback with EXIT_ERROR, which never source builds.
+        try:
+            print(collect_system_report(host, choice, install_dir))
+        except Exception as report_exc:
+            log(f"system report unavailable: {report_exc}")
         raise SystemExit(EXIT_FALLBACK) from exc
 
 
@@ -6827,10 +7056,12 @@ def parse_args() -> argparse.Namespace:
         "--llama-backend",
         choices = ("vulkan",),
         help = (
-            "Force the llama.cpp prebuilt backend. vulkan installs the upstream Vulkan "
-            "bundle and records the choice so Studio updates keep it; ignored on hosts "
-            "with no Vulkan prebuilt (macOS, Windows arm64). "
-            "Same effect as UNSLOTH_LLAMA_BACKEND=vulkan / UNSLOTH_FORCE_VULKAN=1."
+            "Force the llama.cpp prebuilt backend. vulkan installs the Vulkan "
+            "bundle and records the choice so Studio updates keep it. It is ignored "
+            "on macOS, which uses Metal, and fails closed on Windows arm64 when no "
+            "compatible Vulkan bundle is published. "
+            "Same effect as UNSLOTH_LLAMA_CPP_BACKEND=vulkan / "
+            "UNSLOTH_FORCE_VULKAN=1."
         ),
     )
     resolve_group = parser.add_mutually_exclusive_group()
@@ -6919,6 +7150,7 @@ def emit_resolver_output(payload: dict[str, Any], *, output_format: str) -> None
 
 def main() -> int:
     args = parse_args()
+    cpu_backend_requested = resolved_llama_backend(args.llama_backend) == "cpu"
     if args.validate_install is not None:
         try:
             validate_existing_install(
@@ -6986,9 +7218,9 @@ def main() -> int:
         # Host-aware "is a prebuilt available" probe, no download. Every host now
         # plans against the fork (args.published_repo defaults to it); an explicit
         # --published-repo overrides. PrebuiltFallback == source build.
-        # Both flags drop GPU detection; --force-cpu additionally persists (install
-        # path only). The probe only needs the mechanism, so OR them.
-        _cpu_mechanism = args.cpu_fallback or args.force_cpu
+        # CPU fallback and explicit CPU choices drop GPU detection. The probe only
+        # needs the mechanism; persistence belongs to the install path.
+        _cpu_mechanism = args.cpu_fallback or args.force_cpu or cpu_backend_requested
         host = _apply_host_overrides(
             detect_host(),
             override_has_rocm = args.has_rocm,
@@ -6996,7 +7228,7 @@ def main() -> int:
             force_cpu = _cpu_mechanism,
         )
         # Same Vulkan routing the install path applies, so the probe's answer
-        # matches what would install (an Intel/forced-Vulkan host -> upstream).
+        # matches what would install.
         host, repo, release_tag, _persist_llama_backend = _route_to_vulkan_prebuilt(
             host,
             args.published_repo,
@@ -7008,6 +7240,12 @@ def main() -> int:
             _requested, plans = resolve_simple_install_release_plans(
                 args.resolve_prebuilt, host, repo, release_tag
             )
+            if (
+                force_vulkan_requested(args.llama_backend)
+                and not _cpu_mechanism
+                and not host.is_macos
+            ):
+                plans = _vulkan_only_release_plans(plans)
             choice = plans[0].attempts[0] if plans and plans[0].attempts else None
             if choice is None:
                 payload = {"prebuilt_available": False, "repo": repo}
@@ -7040,10 +7278,10 @@ def main() -> int:
         published_release_tag = args.published_release_tag or "",
         override_has_rocm = args.has_rocm,
         override_rocm_gfx = args.rocm_gfx,
-        # Both drop GPU detection; only --force-cpu (deliberate) is recorded so the
-        # updater re-asserts it. --cpu-fallback stays transient and heals to GPU.
-        force_cpu = args.cpu_fallback or args.force_cpu,
-        persist_force_cpu = args.force_cpu,
+        # Explicit CPU choices persist so the updater re-asserts them.
+        # --cpu-fallback stays transient and heals to GPU.
+        force_cpu = args.cpu_fallback or args.force_cpu or cpu_backend_requested,
+        persist_force_cpu = args.force_cpu or cpu_backend_requested,
         llama_backend = args.llama_backend,
         instruction_cleanup_root = install_arg.absolute(),
     )

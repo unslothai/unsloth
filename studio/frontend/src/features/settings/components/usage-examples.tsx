@@ -106,16 +106,15 @@ const DOC_LINKS = [
   { label: "Hermes Agent", href: "https://unsloth.ai/docs/integrations/hermes-agent" },
 ];
 
-// Falls back to this list until the backend's installed-CLI check resolves;
-// kept in sync with the `unsloth start <agent>` subcommands and with
-// CODING_AGENTS in studio/backend/utils/coding_agents.py.
+// Fallback until the backend's installed-CLI check resolves. Mirrors
+// CODING_AGENTS in studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS
+// (see ../api/coding-agents.ts).
 const DEFAULT_AGENTS = [
   "claude",
   "codex",
   "openclaw",
   "opencode",
   "hermes",
-  "pi",
 ];
 // The agent selection resets to this whenever an auto-pick is no longer
 // trustworthy (leaving loopback, or the only compatible detected agent
@@ -127,7 +126,6 @@ const AGENT_LABELS: Record<string, string> = {
   openclaw: "OpenClaw",
   opencode: "OpenCode",
   hermes: "Hermes",
-  pi: "Pi",
 };
 
 const j = (s: string): string => JSON.stringify(s);

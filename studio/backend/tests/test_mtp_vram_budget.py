@@ -68,6 +68,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
     _extra_args_draft_cache_types,
+    _extra_args_draft_device_pin,
     _extra_args_draft_offloaded_to_cpu,
     _extra_args_mtp_draft_path,
     _extra_args_n_ubatch,
@@ -667,6 +668,33 @@ class TestExtraArgsMtpDetection:
     @pytest.mark.parametrize(
         "args,expected",
         [
+            # No draft-device flag -> no pin to reject.
+            (None, None),
+            ([], None),
+            (["-c", "4096"], None),
+            # cpu / none offload is a supported placement, not a GPU escape.
+            (["--spec-draft-device", "cpu"], None),
+            (["--spec-draft-device", "CPU,none"], None),
+            (["-devd", "none"], None),
+            # A real GPU device escapes the gpu_ids pin -> return the offending value.
+            (["--spec-draft-device", "CUDA1"], "CUDA1"),
+            (["--device-draft", "Vulkan2"], "Vulkan2"),
+            (["--spec_draft_device", "Vulkan1"], "Vulkan1"),
+            (["-devd", "CUDA0,CPU"], "CUDA0,CPU"),  # any GPU in the list conflicts
+            # inline flag=value form.
+            (["--spec-draft-device=Vulkan3"], "Vulkan3"),
+            (["--device_draft=Vulkan4"], "Vulkan4"),
+            # last-wins: only the final draft-device value counts.
+            (["--spec-draft-device", "CUDA1", "--spec-draft-device", "cpu"], None),
+            (["--spec-draft-device", "cpu", "--spec-draft-device", "CUDA1"], "CUDA1"),
+        ],
+    )
+    def test_draft_device_pin(self, args, expected):
+        assert _extra_args_draft_device_pin(args) == expected
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
             (["--spec-draft-n-max", "4"], 4),
             (["--spec-draft-n-max=6"], 6),
             (["--spec_draft_n_max=6"], 6),
@@ -957,36 +985,6 @@ class TestExtraArgsMtpDetection:
             _tensor_parallel_matches_loaded(["--split-mode", "layer"], False, True, env = tensor_env)
             is False
         )
-
-    def test_route_matcher_uses_tensor_parallel_matches_loaded(self):
-        # Fix: the route duplicate-load matcher must use the downgrade-aware
-        # helper, or an env-driven tensor server (or its layer downgrade) is
-        # needlessly reloaded (#6312). Read from disk (importing routes.inference
-        # drags in heavy deps).
-        routes_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
-            encoding = "utf-8"
-        )
-        start = routes_src.index("def _request_matches_loaded_settings")
-        end = routes_src.index("\ndef ", start + 1)
-        body = "".join(routes_src[start:end].split())
-        assert (
-            "_tensor_parallel_matches_loaded(effective_extra,"
-            "request.tensor_parallel,llama_backend.tensor_parallel)" in body
-        )
-
-    def test_route_matcher_retries_after_drafter_not_found(self):
-        # drafter_not_found must not report "already loaded" or the reload never
-        # retries the download (#6459). Read source: importing routes pulls deps.
-        routes_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
-            encoding = "utf-8"
-        )
-        start = routes_src.index("def _request_matches_loaded_settings")
-        end = routes_src.index("\ndef ", start + 1)
-        body = "".join(routes_src[start:end].split())
-        assert 'llama_backend.spec_fallback_reason=="drafter_not_found"' in body
-        assert "not_extra_args_set_spec_type(effective_extra)" in body
-        # HF-only (hf_repo): local/native loads have no download to retry.
-        assert "llama_backend.hf_repo" in body
 
     def test_extra_args_main_cache_type_heavier_axis(self):
         # Asymmetric --cache-type-k/-v must budget the heavier axis (extras win

@@ -1,7 +1,28 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from auth.authentication import get_current_subject
 from core.inference.api_monitor import ApiMonitor, _trim
+import routes.inference as inference_route
+
+
+def _get_monitor(monkeypatch, *, enabled: bool):
+    """Call GET /monitor against a monitor in a known state.
+
+    Swaps the whole singleton rather than poking ``_enabled`` on it: the route
+    reads ``snapshot()``, which does not consult the flag, so a shared monitor
+    carrying rows from an earlier test would leak into the assertions.
+    """
+    monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled = enabled))
+    app = FastAPI()
+    app.include_router(inference_route.studio_router)
+    # Dict literal, not `overrides[key] = ...`: verify_import_hoist.py does not
+    # see Load names inside an assignment target and reports the import unused.
+    app.dependency_overrides = {get_current_subject: lambda: "test-user"}
+    return TestClient(app).get("/monitor")
 
 
 def test_api_monitor_tracks_reply_usage_and_context():
@@ -260,6 +281,91 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
     assert len(reply) == m._MAX_REPLY_CHARS and reply.endswith("...")
 
 
+def test_clear_keeps_the_callers_own_request_that_is_still_running():
+    """Clear log drops history, and a request in flight is not history yet. Dropping it
+    loses the request outright: the active count falls to zero and the finish that follows
+    has no entry left to land on, so a completed call never appears at all."""
+    monitor = ApiMonitor(max_entries = 4)
+    done = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "finished",
+        subject = "alice",
+    )
+    monitor.finish(done)
+    live = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "in flight",
+        subject = "alice",
+    )
+
+    monitor.clear(subject = "alice")
+
+    assert [entry["id"] for entry in monitor.snapshot(subject = "alice")] == [live]
+    assert monitor.active_count(subject = "alice") == 1
+    # And the row is still there to be completed.
+    monitor.finish(live)
+    assert monitor.get(live, subject = "alice")["status"] == "completed"
+
+
+def test_api_monitor_clear_is_scoped_to_one_subject():
+    # Every other read is subject-scoped; an unscoped clear would erase another's history.
+    monitor = ApiMonitor(max_entries = 4)
+    alice = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "alice prompt",
+        subject = "alice",
+    )
+    bob = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "bob prompt",
+        subject = "bob",
+    )
+    # Finished first: a running row is a request in flight, not history, and clear keeps
+    # it. This test is about the subject scoping, so it clears history and nothing else.
+    monitor.finish(alice)
+
+    monitor.clear(subject = "alice")
+    assert monitor.snapshot(subject = "alice") == []
+    assert [entry["id"] for entry in monitor.snapshot(subject = "bob")] == [bob]
+    assert monitor.active_count(subject = "bob") == 1
+    assert monitor.get(alice, subject = "alice") is None
+
+    # Passing no subject is the explicit "everything" path.
+    monitor.clear()
+    assert monitor.snapshot(subject = "bob") == []
+
+
+def test_api_monitor_records_whether_the_caller_used_an_api_key():
+    # Studio's chat hits these endpoints on a JWT, and the panel auto-opens off this flag.
+    monitor = ApiMonitor(max_entries = 4)
+    ui = monitor.start(
+        endpoint = "/api/inference/chat",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+        subject = "u",
+    )
+    api = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+        subject = "u",
+        via_api_key = True,
+    )
+    by_id = {entry["id"]: entry for entry in monitor.snapshot(subject = "u")}
+    assert by_id[ui]["via_api_key"] is False
+    assert by_id[api]["via_api_key"] is True
+
+
 def test_api_monitor_disabled_is_noop():
     monitor = ApiMonitor(max_entries = 3, enabled = False)
 
@@ -412,3 +518,189 @@ def test_request_rows_report_kind_request():
     monitor = ApiMonitor(max_entries = 2)
     monitor.start(endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "hi")
     assert monitor.snapshot()[0]["kind"] == "request"
+
+
+def test_clear_hides_shared_lifecycle_rows_for_that_caller_only():
+    """A lifecycle row is shared, so it is visible to every caller but owned by
+    none. A subject-scoped clear dropped only that subject's own rows, so the
+    shared ones survived and the reload straight after "Clear log" brought them
+    back: the button visibly did nothing to them. Dropping them outright is not
+    an option either, since that erases another caller's history.
+    """
+    monitor = ApiMonitor(max_entries = 10)
+    mine = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "org/A",
+        prompt = "user: hi",
+        subject = "alice",
+    )
+    monitor.finish(mine)
+    shared = monitor.record_lifecycle(event = "unload", model = "org/A")
+
+    assert {e["id"] for e in monitor.snapshot(subject = "alice")} == {mine, shared}
+    assert {e["id"] for e in monitor.snapshot(subject = "bob")} == {shared}
+
+    monitor.clear(subject = "alice")
+
+    assert monitor.snapshot(subject = "alice") == []
+    # Hidden for alice, not deleted, so bob's view is untouched.
+    assert {e["id"] for e in monitor.snapshot(subject = "bob")} == {shared}
+    assert monitor.get(shared, subject = "alice") is None
+    assert monitor.get(shared, subject = "bob") is not None
+
+
+def test_clear_leaves_a_running_shared_row_visible():
+    """A load still in progress is live state, not history, so clearing the log
+    must not hide the row that shows it."""
+    monitor = ApiMonitor(max_entries = 10)
+    running = monitor.record_lifecycle(event = "load", model = "org/A", running = True)
+    monitor.clear(subject = "alice")
+    assert {e["id"] for e in monitor.snapshot(subject = "alice")} == {running}
+
+
+def test_hidden_shared_ids_do_not_outlive_their_entries():
+    """The hidden set names rows that exist, so it stays bounded by the ring
+    buffer instead of growing for the life of the process."""
+    monitor = ApiMonitor(max_entries = 2)
+    monitor.record_lifecycle(event = "unload", model = "org/A")
+    monitor.clear(subject = "alice")
+    assert monitor._hidden_shared.get("alice")
+    for i in range(5):
+        monitor.record_lifecycle(event = "unload", model = f"org/M{i}")
+    assert not monitor._hidden_shared.get("alice")
+
+
+def test_an_api_triggered_lifecycle_row_carries_the_attribution():
+    """The overlay opens on API-key traffic only. An auto-switch or auto-download
+    that is refused never reaches api_monitor.start, so the lifecycle row is the
+    whole trace of that request; without the attribution the monitor stayed shut
+    on exactly the failures it exists to surface."""
+    monitor = ApiMonitor(max_entries = 5)
+
+    api_load = monitor.record_lifecycle(
+        event = "load", model = "org/Repo-GGUF", running = True, via_api_key = True
+    )
+    monitor.record_lifecycle(event = "unload", model = "org/Repo-GGUF", reason = "idle")
+
+    rows = {e["id"]: e for e in monitor.snapshot()}
+    assert rows[api_load]["via_api_key"] is True
+    # A background unload is not API traffic and must not pop the overlay.
+    idle = [e for e in rows.values() if e["event"] == "unload"]
+    assert idle and all(e["via_api_key"] is False for e in idle)
+
+    # The failure path keeps it: failing the row must not drop the attribution.
+    monitor.fail(api_load, error = "auto-switch refused")
+    after = {e["id"]: e for e in monitor.snapshot()}
+    assert after[api_load]["via_api_key"] is True
+    assert after[api_load]["status"] == "error"
+
+
+def test_an_api_lifecycle_row_pops_the_overlay_only_for_its_own_caller():
+    """A lifecycle row is shared so it appears in every monitor list, and it also
+    carries via_api_key, which is what the floating panel auto-opens on. Reported
+    to everyone, the panel springs open in a browser that had nothing to do with
+    the traffic. The row stays visible to all; only the attribution is scoped."""
+    monitor = ApiMonitor(max_entries = 5)
+
+    row = monitor.record_lifecycle(
+        event = "load",
+        model = "org/Repo-GGUF",
+        running = True,
+        via_api_key = True,
+        subject = "alice",
+    )
+
+    mine = {e["id"]: e for e in monitor.snapshot(subject = "alice")}
+    theirs = {e["id"]: e for e in monitor.snapshot(subject = "bob")}
+    # Shared visibility is deliberate and must survive: bob still sees the load.
+    assert row in mine and row in theirs
+    assert mine[row]["via_api_key"] is True
+    assert theirs[row]["via_api_key"] is False
+
+    # The details read is scoped the same way, so the panel cannot re-derive it.
+    assert monitor.get(row, subject = "alice")["via_api_key"] is True
+    assert monitor.get(row, subject = "bob")["via_api_key"] is False
+    # An unscoped read (internal callers) still sees the row's own flag.
+    assert monitor.get(row)["via_api_key"] is True
+
+
+def test_clearing_hides_a_shared_row_this_caller_owns_rather_than_deleting_it():
+    """An API-key load now owns its shared row. A subject-scoped clear drops that
+    subject's rows, so without this the owner's Clear would delete a row every
+    other caller can still see and wipe it out of their history too."""
+    monitor = ApiMonitor(max_entries = 10)
+    row = monitor.record_lifecycle(
+        event = "unload", model = "org/Repo-GGUF", via_api_key = True, subject = "alice"
+    )
+
+    monitor.clear(subject = "alice")
+
+    assert monitor.snapshot(subject = "alice") == []
+    assert {e["id"] for e in monitor.snapshot(subject = "bob")} == {row}
+    assert monitor.get(row, subject = "bob") is not None
+
+
+# ── stream framing must not depend on the monitor ───────────────────
+
+
+def test_sse_done_detection_accepts_both_spacings():
+    done = inference_route._is_openai_sse_done
+    assert done("data: [DONE]") is True
+    assert done("data:[DONE]") is True
+    assert done('data: {"choices": []}') is False
+    assert done("event: ping") is False
+    assert done("") is False
+
+
+def test_sse_done_detection_is_independent_of_the_monitor():
+    """The external-provider proxy sets ``sent_done`` from the line itself.
+
+    It used to read the monitor helper's return, which is None for every line
+    once recording is off -- so the proxy appended a second [DONE] after the
+    provider's own, changing client-visible framing based on a logging flag.
+    """
+    line = "data: [DONE]"
+    assert inference_route._monitor_openai_sse_line(None, line) is None
+    assert inference_route._is_openai_sse_done(line) is True
+
+
+# ── /monitor route: the disabled state has to reach the UI ──────────
+
+
+def test_monitor_route_reports_enabled(monkeypatch):
+    response = _get_monitor(monkeypatch, enabled = True)
+
+    assert response.status_code == 200
+    assert response.json()["logging_enabled"] is True
+
+
+def test_monitor_route_reports_disabled(monkeypatch):
+    response = _get_monitor(monkeypatch, enabled = False)
+
+    # An empty list on its own is indistinguishable from "no traffic yet", so the
+    # console needs the flag to explain itself instead of claiming idleness.
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["logging_enabled"] is False
+    assert payload["entries"] == []
+
+
+def test_monitor_route_disabled_still_hides_recorded_rows(monkeypatch):
+    """A disabled monitor records nothing, so the route reports an empty list
+    even after traffic that would otherwise have shown up."""
+    monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(enabled = False))
+    inference_route.api_monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+        subject = "test-user",
+    )
+    app = FastAPI()
+    app.include_router(inference_route.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "test-user"}
+    payload = TestClient(app).get("/monitor").json()
+
+    assert payload["logging_enabled"] is False
+    assert payload["entries"] == []

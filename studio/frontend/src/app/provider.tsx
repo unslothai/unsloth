@@ -23,6 +23,7 @@ import {
   useAppearanceCustomStore,
   useTheme,
 } from "@/features/settings";
+import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
@@ -42,11 +43,19 @@ interface AppProviderProps {
 
 type TauriWindowMode = "setup" | "app";
 type WindowLayoutGuard = () => boolean;
+type LogicalWindowSize = {
+  width: number;
+  height: number;
+};
 
 const MIN_WINDOW_WIDTH = 900;
 const MIN_WINDOW_HEIGHT = 600;
 const SETUP_WINDOW_WIDTH = 760;
 const SETUP_WINDOW_HEIGHT = 560;
+const MINIMUM_APP_WINDOW_SIZE: LogicalWindowSize = {
+  width: MIN_WINDOW_WIDTH,
+  height: MIN_WINDOW_HEIGHT,
+};
 
 async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, LogicalSize } = await import(
@@ -73,6 +82,7 @@ async function enforceMinimumWindowSize(
   >,
   LogicalSize: typeof import("@tauri-apps/api/window")["LogicalSize"],
   isCurrent: WindowLayoutGuard,
+  requestedSize: LogicalWindowSize = MINIMUM_APP_WINDOW_SIZE,
 ): Promise<void> {
   const [innerSize, scaleFactor] = await Promise.all([
     win.innerSize(),
@@ -82,8 +92,19 @@ async function enforceMinimumWindowSize(
 
   const logicalWidth = Math.round(innerSize.width / scaleFactor);
   const logicalHeight = Math.round(innerSize.height / scaleFactor);
-  const nextWidth = Math.max(logicalWidth, MIN_WINDOW_WIDTH);
-  const nextHeight = Math.max(logicalHeight, MIN_WINDOW_HEIGHT);
+  // Linux reports innerSize from a cache updated by configure events. The
+  // AppImage's bundled GTK can deliver that event after this check, leaving the
+  // old setup size in the cache even though the first app resize has completed.
+  const nextWidth = Math.max(
+    logicalWidth,
+    MIN_WINDOW_WIDTH,
+    requestedSize.width,
+  );
+  const nextHeight = Math.max(
+    logicalHeight,
+    MIN_WINDOW_HEIGHT,
+    requestedSize.height,
+  );
   if (nextWidth !== logicalWidth || nextHeight !== logicalHeight) {
     await win.setSize(new LogicalSize(nextWidth, nextHeight));
   }
@@ -115,6 +136,7 @@ async function applyAppWindowLayout(
   await win.setResizable(true);
   if (!isCurrent()) return;
 
+  let requestedSize: LogicalWindowSize | undefined;
   if (hasInitializedAppLayout && hasSavedState) {
     // Subsequent launch: plugin restores size/position/maximized, with built-in
     // off-screen protection for positions saved on a now-disconnected display.
@@ -135,6 +157,7 @@ async function applyAppWindowLayout(
       const targetH = Math.max(MIN_WINDOW_HEIGHT, Math.round(finalW / 1.618));
       finalH = Math.min(targetH, Math.round(screenH * 0.85));
     }
+    requestedSize = { width: finalW, height: finalH };
     await win.setSize(new LogicalSize(finalW, finalH));
     if (!isCurrent()) return;
     await win.center();
@@ -149,7 +172,7 @@ async function applyAppWindowLayout(
     minHeight: MIN_WINDOW_HEIGHT,
   });
   if (!isCurrent()) return;
-  await enforceMinimumWindowSize(win, LogicalSize, isCurrent);
+  await enforceMinimumWindowSize(win, LogicalSize, isCurrent, requestedSize);
 
   if (!isCurrent()) return;
   await invoke("mark_app_window_layout_initialized");
@@ -188,9 +211,11 @@ function getTauriWindowMode(
 function TauriUpdateLayer({
   isExternalServer,
   children,
+  appContent,
 }: {
   isExternalServer: boolean;
   children?: ReactNode;
+  appContent: ReactNode;
 }) {
   const update = useTauriUpdate(isExternalServer);
   const isUpdating =
@@ -199,21 +224,17 @@ function TauriUpdateLayer({
     update.status === "installing" ||
     (update.status === "error" && !update.dismissed);
 
-  if (isUpdating) {
-    return (
-      <UpdateScreen
-        status={update.status}
-        logs={update.logs}
-        progress={update.progress}
-        error={update.error}
-        onRetry={update.retryUpdate}
-        onSkipRestart={update.skipAndRestart}
-        onCopyDiagnostics={update.copyDiagnostics}
-      />
-    );
-  }
-
-  return (
+  const content = isUpdating ? (
+    <UpdateScreen
+      status={update.status}
+      logs={update.logs}
+      progress={update.progress}
+      error={update.error}
+      onRetry={update.retryUpdate}
+      onSkipRestart={update.skipAndRestart}
+      onCopyDiagnostics={update.copyDiagnostics}
+    />
+  ) : (
     // Capped like the browser stack: the download panel shares it, so both must fit.
     <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
       <UpdateBanner
@@ -232,6 +253,13 @@ function TauriUpdateLayer({
       />
       {children}
     </div>
+  );
+
+  return (
+    <TauriUpdateContext.Provider value={update}>
+      {content}
+      {appContent}
+    </TauriUpdateContext.Provider>
   );
 }
 
@@ -408,17 +436,21 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   const content = showApp ? (
-    <>
-      <TauriUpdateLayer isExternalServer={isExternalServer}>
-        <LlamaUpdateBanner
-          positioned={false}
-          enabled={!hidesTitlebarSidebar}
-        />
-        <DownloadManagerPanel positioned={false} />
-      </TauriUpdateLayer>
-      <NativeIntentDrain />
-      {children}
-    </>
+    <TauriUpdateLayer
+      isExternalServer={isExternalServer}
+      appContent={
+        <>
+          <NativeIntentDrain />
+          {children}
+        </>
+      }
+    >
+      <LlamaUpdateBanner
+        positioned={false}
+        enabled={!hidesTitlebarSidebar}
+      />
+      <DownloadManagerPanel positioned={false} />
+    </TauriUpdateLayer>
   ) : (
     <StartupScreen
       status={startupStatus}

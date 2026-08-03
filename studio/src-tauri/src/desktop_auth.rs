@@ -335,9 +335,7 @@ async fn desktop_auth_inner(
     if backend.source == PortSource::Discovered {
         diagnostics::record_attached_external_backend(diagnostics, backend.port);
     }
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
+    let client = crate::loopback_http::client(std::time::Duration::from_secs(5))
         .map_err(|e| format!("Desktop auth failed: {}", e))?;
 
     for attempt in 0..2 {
