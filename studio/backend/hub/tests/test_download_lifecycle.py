@@ -277,3 +277,76 @@ def test_a_sibling_variants_bytes_do_not_count_as_this_jobs_progress(monkeypatch
 
     assert recorded == [], "a cached variant was credited with a sibling's bytes"
     assert seen and all(h == frozenset({"mine"}) for h in seen), seen
+
+
+def _trip_xet_worker(monkeypatch, tmp_path, message):
+    """Run a Xet worker whose watchdog trips with *message*; return the health failures recorded."""
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
+
+    def _start(registry, key, proc, *, on_stall, **kwargs):
+        on_stall(message)          # the watchdog tripped
+        return None
+
+    monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", _start)
+    monkeypatch.setattr(download_lifecycle, "spawn_worker", lambda *a, **k: _Proc(0))
+    monkeypatch.setattr(download_lifecycle, "register_worker", lambda *a, **k: True)
+
+    recorded = []
+    monkeypatch.setattr(
+        download_lifecycle, "_record_xet_failure", lambda m, _l: recorded.append(m)
+    )
+
+    registry = download_registry.DownloadRegistry()
+    key = download_registry.normalize_job_key("Org/Model")
+    assert registry.claim(
+        key,
+        download_registry.TRANSPORT_XET,
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = None,
+        blob_hashes = frozenset({"blob"}),
+    )[0]
+
+    _register = download_lifecycle.__dict__["register_worker"]
+    _real = getattr(download_lifecycle, "_REAL_REGISTER", None)
+    (_real or _register)(
+        registry,
+        key,
+        _Proc(1, b"killed"),
+        hf_token = None,
+        label = "Org/Model",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "model",
+        repo_id = "Org/Model",
+        transport = download_registry.TRANSPORT_XET,
+        watch_name = "model-watch",
+    )
+    return recorded
+
+
+def test_a_data_phase_stall_is_recorded_against_the_machine(monkeypatch, tmp_path):
+    """A frozen partial with bytes already flowing is genuinely Xet misbehaving."""
+    monkeypatch.setattr(download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker,
+                        raising = False)
+
+    assert _trip_xet_worker(
+        monkeypatch, tmp_path,
+        "Download appears stalled (xet transport) -- no progress for 30s",
+    ), "a real data-phase stall must still be recorded"
+
+
+def test_a_pre_byte_trip_does_not_poison_the_machines_health_record(monkeypatch, tmp_path):
+    """Two recorded failures pin this machine to HTTP for 24h, so only a real stall may count.
+
+    A connect-phase trip means no byte ever arrived, which is as likely to be slow metadata, a long
+    queue of HEADs, or a cache lock as a broken Xet. The HTTP retry still happens either way.
+    """
+    monkeypatch.setattr(download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker,
+                        raising = False)
+    for message in (
+        "Download did not start (xet transport) -- no data after 600s",
+        "Download did not resume (xet transport) -- no data for 600s",
+    ):
+        assert _trip_xet_worker(monkeypatch, tmp_path, message) == [], message

@@ -97,9 +97,14 @@ def _isolate_xet_health_state():
     happen without the Xet attempt it was asserting. Clean CI runners hide it, developer machines
     do not.
     """
-    try:
-        from unsloth_zoo import hf_xet_health
-    except Exception:  # noqa: BLE001 - degraded unsloth_zoo: nothing to isolate
+    # Load it the way the shim does. A bare `from unsloth_zoo import ...` raises
+    # NotImplementedError on a CPU-only host, because unsloth_zoo's __init__ runs accelerator
+    # detection -- so the plain import silently skipped this isolation on exactly the hosts the
+    # shim's GPU-init retry exists to support, while the module itself was perfectly available.
+    from utils.hf_xet_fallback import _load_optional
+
+    hf_xet_health = _load_optional("unsloth_zoo.hf_xet_health")
+    if hf_xet_health is None:
         yield
         return
     hf_xet_health.clear_xet_health()

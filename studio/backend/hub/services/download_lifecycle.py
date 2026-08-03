@@ -68,9 +68,9 @@ def resolve_auto_use_xet() -> tuple[bool, str]:
     Server-side on purpose: only the backend can see this machine's RAM, its hf_xet build, and
     whether Xet has been failing here, and the browser must not have to guess any of it.
 
-    Probing IS allowed here (unlike on the per-download path) because Auto resolution happens once
-    per download request and the answer is cached for the whole machine -- a few hundred ms buys a
-    verdict that saves every subsequent download a stalled attempt.
+    Probing IS allowed here, unlike in the capabilities endpoint that the UI polls on render:
+    resolution happens once per download request and the verdict is memoized for the machine, so a
+    few hundred ms buys an answer that saves every subsequent download a stalled attempt.
     """
     if not resolve_effective_use_xet(True):
         return (False, "hf_xet is not installed")
@@ -739,8 +739,17 @@ def _start_stall_watchdog(
             # Scope the measurement to partials this worker actually holds open. Without it the
             # shared helper stays repo-wide and child_pid does nothing, so two same-transport GGUF
             # variants of one repo (which the registry deliberately allows to run concurrently)
-            # reset each other's stall timer and a hung variant never falls back.
+            # reset each other's stall timer. This scopes the DATA clock; before its first byte a
+            # variant is still covered by the shared peer-progress check, which is repo-wide by
+            # design so a lock wait behind a live sibling is not read as a hang.
             watch_new_partials_only = True,
+            # The shared 90s zero-byte default is sized for a single-file download, whose pre-byte
+            # phase is one HEAD. This worker calls snapshot_download(max_workers=1), so its pre-byte
+            # phase is a model_info lookup with retries plus one sequential HEAD per file -- and for
+            # an already-cached repo that is the ENTIRE job, with no byte ever written. A few
+            # hundred files on a slow link exceeds 90s legitimately, so a healthy worker would be
+            # killed before it started.
+            connect_timeout = 600.0,
             xet_disabled = False,
         )
     except Exception as exc:  # noqa: BLE001
@@ -830,8 +839,17 @@ def register_worker(
                 # verification) makes no byte-level progress and must not read as a stall.
                 watchdog_stop.set()
             if stalled:
-                # A machine whose Xet transfers hang is one that should stop starting on Xet.
-                _record_xet_failure(stalled[0], logger)
+                # Only a DATA-phase stall says anything about Xet's health. A connect-phase trip
+                # means no byte ever arrived, which is just as likely to be slow metadata, a long
+                # queue of HEADs, or a cache lock -- and two recorded failures pin this machine to
+                # HTTP for 24h, the expensive direction of error. Still retry over HTTP either way.
+                if "no progress" in stalled[0]:
+                    _record_xet_failure(stalled[0], logger)
+                else:
+                    logger.debug(
+                        "%s not recording a Xet health failure for a pre-byte trip: %s",
+                        log_prefix, stalled[0],
+                    )
             elif transport == download_registry.TRANSPORT_XET and state == "complete":
                 # Clear the streak, so "two failures in a row" means in a row. Without this a
                 # stall today and another next week are counted as consecutive despite every
