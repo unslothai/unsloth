@@ -1631,23 +1631,23 @@ def _round_trips_tool_calls(body: str) -> bool:
     return any(_TOOL_TURN.search(code) for code in _jinja_code(body))
 
 
-def _template_reads_tools(value, tools, prefer_tool_use: bool = True) -> bool:
+def _template_reads_tools(
+    value,
+    tools,
+    prefer_tool_use: bool = True,
+) -> bool:
     """True unless the template selected out of *value* takes no part in tool calling.
 
     Reading the ``tools`` variable is the direct case. Replaying tool calls counts too:
     such a template round-trips a tool turn it never advertised, so the schema came from
     the caller's own system prompt and the catalog is authorized after all."""
-    bodies = _selected_template_strings_from_value(
-        value, tools, prefer_tool_use = prefer_tool_use
-    )
+    bodies = _selected_template_strings_from_value(value, tools, prefer_tool_use = prefer_tool_use)
     if not bodies:
         # Unreadable, not proven silent. Emptying the catalog here would disable healing
         # for every model whose template shape this module cannot parse, which is a
         # feature regression rather than the narrow authorization fix (#7066).
         return True
-    return any(
-        _reads_tools_variable(body) or _round_trips_tool_calls(body) for body in bodies
-    )
+    return any(_reads_tools_variable(body) or _round_trips_tool_calls(body) for body in bodies)
 
 
 def _renders_tool_schema(target, template, tools) -> bool:
@@ -1685,6 +1685,7 @@ def renderable_tool_catalog(
     )
     if not safe:
         return safe
+
     def _unadvertised():
         logger.info(
             "No chat template this request could select renders tool schemas; text-form "
