@@ -2701,6 +2701,52 @@ def test_offline_context_follows_the_cache_the_variants_were_read_from(monkeypat
     assert context_calls == [(str(legacy_repo), True)]
 
 
+def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkeypatch, tmp_path):
+    """When the Hub request fails, the fallback cache that supplied the variants must also
+    supply their context metadata. Otherwise the route searches by repo id and can read a
+    different cache copy first."""
+    legacy_repo = tmp_path / "legacy" / "hub" / "models--org--repo"
+    (legacy_repo / "snapshots" / "rev").mkdir(parents = True)
+    context_calls = []
+
+    def _unreachable(*args, **kwargs):
+        raise RuntimeError("hub unreachable")
+
+    monkeypatch.setattr(GV, "list_gguf_variants", _unreachable)
+    monkeypatch.setattr(
+        GV,
+        "list_gguf_variants_from_hf_cache",
+        lambda repo_id, root = None: (
+            [
+                SimpleNamespace(
+                    filename = "m-Q4_K_M.gguf",
+                    quant = "Q4_K_M",
+                    display_label = None,
+                    size_bytes = 10,
+                )
+            ],
+            False,
+            {"q4_k_m"},
+        ),
+    )
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
+    )
+
+    asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            local_path = str(legacy_repo),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert context_calls == [(str(legacy_repo), True)]
+
+
 def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_path):
     """Pointing Studio at another cache has to start a fresh scan. Coalescing on the request
     alone made the new request wait on the scan wedged against the old volume."""
