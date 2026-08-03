@@ -137,6 +137,10 @@ Check "setup.ps1 uses that exact file name"      ($manifestName -and $setupText.
 foreach ($pair in @(@("install.ps1", $installText2), @("studio/setup.ps1", $setupText))) {
     Check "$($pair[0]) gates reconciliation on the XPU regex" ($pair[1] -match '\$_xpuNameRe\s*=\s*"\(\?i\)Intel\.\*\(Arc\|Data Center GPU\)"')
     Check "$($pair[0]) reuses it for the gate"                ($pair[1] -match 'Where-Object \{ \$_ -match \$_xpuNameRe \}')
+    # @() must wrap the WHOLE if. Wrapping each branch instead lets a one-element array unroll
+    # on its way out of the block, making $_gpuNames a String on every single-adapter host, and
+    # the += that re-labels it then concatenates strings instead of appending a name.
+    Check "$($pair[0]) forces an array for the WMI names" ($pair[1] -match '\$_gpuNames = @\(if \(\$_gpuScan\.Ok\)')
 }
 
 Write-Host ""

@@ -2303,7 +2303,10 @@ exit 0
         try {
             # Bounded, registry as the fallback when WMI does not answer; same match either way.
             $_gpuScan = Invoke-BoundedVideoControllerScan
-            $_gpuNames = if ($_gpuScan.Ok) { @($_gpuScan.Names) } else { @(Get-IntelRegistryAdapterNames) }
+            # @() wraps the WHOLE if, not each branch: a one-element array unrolls on its way out
+            # of the block, which would make $_gpuNames a String on any single-adapter host and turn
+            # the += below into string concatenation.
+            $_gpuNames = @(if ($_gpuScan.Ok) { $_gpuScan.Names } else { Get-IntelRegistryAdapterNames })
             # One definition for both the reconciliation gate and the classification below, so
             # they cannot drift apart.
             $_xpuNameRe = "(?i)Intel.*(Arc|Data Center GPU)"
