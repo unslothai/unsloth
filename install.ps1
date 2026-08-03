@@ -2337,8 +2337,18 @@ exit 0
         # not displace the installed +xpu wheel anyway (PEP 440 ignores the local label, so
         # it satisfies torch>=2.4,<2.11.0). The driver warning after the install below is the
         # honest treatment. Bounded, and a timeout reads as "no XPU" -- the WMI verdict stands.
-        if (Test-Path -LiteralPath $VenvPython) {
-            $xpuCheck = Invoke-BoundedPythonProbe -PythonExe $VenvPython -Code 'import torch; print(torch.xpu.is_available())'
+        # A rerun over an existing install has already moved the old venv to
+        # $script:StudioVenvRollbackDir and created an empty one in its place, so probing
+        # $VenvPython here would ask an interpreter with no torch at all and always answer no.
+        # Ask the preserved environment when there is one -- it is the migrated runtime this
+        # fallback exists for, and reading it wrong commits CPU and then deletes it.
+        $_xpuProbePy = $VenvPython
+        if ($script:StudioVenvRollbackDir) {
+            $_rollbackPy = Join-Path $script:StudioVenvRollbackDir "Scripts\python.exe"
+            if (Test-Path -LiteralPath $_rollbackPy) { $_xpuProbePy = $_rollbackPy }
+        }
+        if (Test-Path -LiteralPath $_xpuProbePy) {
+            $xpuCheck = Invoke-BoundedPythonProbe -PythonExe $_xpuProbePy -Code 'import torch; print(torch.xpu.is_available())'
             if ($xpuCheck.Ok -and $xpuCheck.Output -match '(?m)^\s*True\s*$') {
                 $HasIntelGpu = $true
                 $script:IsIntelXpu = $true
@@ -2775,12 +2785,26 @@ exit 0
             # ceiling (up to 2.13.0), and torchaudio dropped its exact torch pin. The floor is
             # 2.6 rather than the usual 2.4: unsloth/models/_utils.py raises at import for an
             # XPU device below that, so an older wheel is an install that cannot run.
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.6,<2.11.0" "torchvision>=0.21,<0.26.0" "torchaudio>=2.6,<2.11.0" --default-index $TorchIndexUrl }
+            # Windows on ARM has no torchaudio wheel on any index, so drop that pin here too
+            # rather than abort. The pin-only route now reaches this branch on an arm64
+            # interpreter, and the generic path below has always asked the interpreter this way.
+            $VenvPlatform = ""
+            try {
+                $VenvPlatform = (& $VenvPython -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+            } catch { $VenvPlatform = "" }
+            $_xpuSpecs = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0", "torchaudio>=2.6,<2.11.0")
+            $_xpuCpuSpecs = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0")
+            if ($VenvPlatform -eq "win-arm64") {
+                substep "windows on arm: skipping torchaudio (upstream publishes no win_arm64 wheel)."
+                $_xpuSpecs = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0")
+                $_xpuCpuSpecs = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0")
+            }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { uv pip install --python $VenvPython --force-reinstall @_xpuSpecs --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 # Transient XPU-index failure: fall back to CPU base.
                 $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
                 substep "XPU PyTorch install failed (exit $torchInstallExit); using a CPU base." "Yellow"
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $CpuFallbackIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall @_xpuCpuSpecs --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-Host "[ERROR] Failed to install PyTorch (XPU and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)

@@ -337,6 +337,10 @@ _gfx906_bnb_prune() {
 # and, on PyPI, first in 0.50.0. Keep this floor in step with the amd extra in
 # pyproject.toml and studio/install_python_stack.py.
 _BNB_ROCM_PYPI_FALLBACK="bitsandbytes>=0.50.0"
+# Intel XPU: separate constant because the two floors are set by different fixes and only
+# happen to coincide today. 0.50.0 manylinux carries libbitsandbytes_xpu2025.so and
+# _xpu2026.so; the Windows XPU pass in studio/setup.ps1 installs the same floor.
+_BNB_XPU_SPEC="bitsandbytes>=0.50.0"
 # bitsandbytes ships no ROCm binary in its aarch64 wheel at any version: the PyPI
 # 0.50.0 and continuous-release_main aarch64 wheels both carry only
 # libbitsandbytes_cpu.so plus CUDA variants. So neither install path below gives
@@ -4188,6 +4192,17 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             _install_torch_default_index --force-reinstall
         fi
         _gfx906_bnb_prune
+    fi
+    # Same reason the Windows XPU path installs it: the bitsandbytes on a migrated environment
+    # predates the XPU kernels, and nothing else here touches it (both dedicated paths above
+    # are gated on the ROCm family), so 4-bit QLoRA would be unavailable on a torch that
+    # otherwise works. manylinux 0.50.0 carries libbitsandbytes_xpu2025.so and _xpu2026.so.
+    # --no-deps: torch and numpy are already in. Best effort, like the Windows pass.
+    if [ "$SKIP_TORCH" = false ] && [ "$(_torch_index_url_leaf "$TORCH_INDEX_URL")" = "xpu" ]; then
+        substep "installing bitsandbytes with Intel XPU kernels..."
+        run_install_cmd "install bitsandbytes (xpu)" uv pip install --python "$_VENV_PY" \
+            --no-deps "$_BNB_XPU_SPEC" || \
+            substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable." "$C_WARN"
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
