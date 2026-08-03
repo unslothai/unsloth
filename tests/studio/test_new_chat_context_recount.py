@@ -118,6 +118,15 @@ def _resident_fast_path() -> str:
     )
 
 
+def _history_usage_restore() -> str:
+    """The history loader's saved-usage restore and its recount call, verbatim."""
+    return slice_between(
+        read(PROVIDER),
+        "        // Window check applies only when a local GGUF window is known; external",
+        "        // If any message has a stored parentId, reconstruct the tree so",
+    )
+
+
 HARNESS_PRELUDE = """
 // @ts-nocheck
 // Fixtures the sliced source reads through. Everything below the PRELUDE marker
@@ -366,13 +375,28 @@ def _rendered_effects(effects: list[tuple[list[str], str]]) -> str:
     return "\n".join(blocks)
 
 
+HARNESS_HISTORY = """
+
+// Opening a stored thread runs this inside the history adapter, before assistant-ui is handed
+// the repository, so the live branch is empty and only the stored path can answer.
+export async function hydrateThreadUsage(props: any): Promise<void> {
+  const remoteId: string = props.remoteId;
+  const savedUsage = props.savedUsage;
+  // Read once, as the loader does, just above the sliced block.
+  const store = useChatRuntimeStore.getState();
+__RESTORE__
+}
+"""
+
+
 def _harness_source() -> str:
     prelude = HARNESS_PRELUDE.replace("__STORE_REDUCERS__", _store_reducers())
     render = HARNESS_RENDER.replace("__EFFECTS__", _rendered_effects(_new_chat_effects())).replace(
         "__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects())
     )
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
-    return prelude + _refresh_module_body() + render + resident
+    history = HARNESS_HISTORY.replace("__RESTORE__", _history_usage_restore())
+    return prelude + _refresh_module_body() + render + resident + history
 
 
 def _run(script: str) -> dict:
@@ -960,6 +984,59 @@ def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_tota
     assert (out["contextUsage"] or {}).get(
         "totalTokens"
     ) == expected_total, "a total for a branch that has since been emptied must not reach the bar"
+
+
+@pytest.mark.parametrize(
+    ("saved", "expect_counts", "expect_total", "expect_completion"),
+    [
+        # Exact totals for this very model: recounting would trade them for an estimate.
+        ('{ totalTokens: 900, promptTokens: 700, completionTokens: 200, '
+         'modelId: "unsloth/gguf-model" }',
+         0, 900, 200),
+        # Another model's tokenizer priced these, so they say nothing about this one (#7450).
+        ('{ totalTokens: 900, promptTokens: 700, completionTokens: 200, modelId: "other" }',
+         1, 12, 0),
+        # Nothing stored, which is the case the recount was added for.
+        ("null", 1, 12, 0),
+    ],
+    ids = ["saved_matches_the_model", "saved_is_another_model", "nothing_saved"],
+)
+def test_history_hydration_keeps_saved_usage_it_restored(
+    saved, expect_counts, expect_total, expect_completion
+):
+    """The loader restores the last completion's own usage, exact and split into prompt and
+    completion. refreshContextUsage does not stand down for a value that was already there,
+    so recounting on top would publish an estimate with completionTokens 0 over it."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ hydrateThreadUsage, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{
+              activeThreadId: "thread-a",
+              contextUsage: null,
+              contextUsageByThreadId: {{}},
+            }});
+            await hydrateThreadUsage({{ remoteId: "thread-a", savedUsage: {saved} }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              counts: world.countedMessages.length,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["counts"] == expect_counts, (
+        "usable saved usage must not be recounted over"
+        if expect_counts == 0
+        else "without usable saved usage the branch still has to be priced"
+    )
+    usage = out["contextUsage"] or {}
+    assert usage.get("totalTokens") == expect_total
+    assert usage.get("completionTokens") == expect_completion, (
+        "the completion half of an exact total must survive hydration"
+    )
 
 
 def test_a_new_chat_recount_is_retried_after_a_background_run_ends():

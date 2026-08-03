@@ -2481,6 +2481,10 @@ def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     return kwargs
 
 
+class CountAborted(Exception):
+    """A token count stood down mid-flight because its answer stopped mattering."""
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -13685,6 +13689,7 @@ class LlamaCppBackend:
         tools = None,
         strict: bool = False,
         chat_template_kwargs = None,
+        should_abort = None,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
 
@@ -13694,6 +13699,10 @@ class LlamaCppBackend:
 
         ``chat_template_kwargs`` reaches /apply-template unchanged, so a caller can
         price a request rendered in a non-default reasoning mode.
+
+        ``should_abort`` is polled between the two llama-server calls. Admission is the
+        caller's job; this only stops a count that was admitted while idle from spending its
+        second round trip once the answer stopped mattering. Raises when it fires.
         """
         if not self.is_loaded:
             if strict:
@@ -13768,8 +13777,14 @@ class LlamaCppBackend:
                     if resp.status_code == 200:
                         prompt = resp.json().get("prompt", "")
                         if isinstance(prompt, str):
+                            if should_abort is not None and should_abort():
+                                raise CountAborted()
                             return _tokenize(prompt)
                     apply_template_failed = True
+                except CountAborted:
+                    # Not a template failure: falling through would tokenize anyway, which is
+                    # the work this is declining to do.
+                    raise
                 except Exception:
                     apply_template_failed = True
 

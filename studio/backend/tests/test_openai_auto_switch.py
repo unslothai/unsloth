@@ -3221,6 +3221,7 @@ def _count_tokens_backend(
         tools,
         strict = False,
         chat_template_kwargs = None,
+        should_abort = None,
     ):
         counted.update(
             messages = messages,
@@ -3661,6 +3662,122 @@ def test_chat_count_tokens_ignores_an_mcp_server_the_request_did_not_enable(tmp_
     body = _counted_body(_count_request([{"role": "user", "content": "hello"}]))
     assert body["input_tokens"] == 1234
     assert counted != {}, "the tokenizer must still be reached"
+
+
+def test_a_count_admitted_while_idle_stands_down_if_a_run_starts(monkeypatch):
+    """Admission and the work are separate steps. A run that registers in between cannot be
+    prevented without a lock in front of generation startup, so the count abandons at the
+    checkpoint between /apply-template and /tokenize instead of spending the second trip."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    started: list = []
+
+    def _count(messages, system, tools, strict = False, chat_template_kwargs = None,
+               should_abort = None):
+        # Stand in for /apply-template returning: the run lands, then the checkpoint is polled.
+        handle = _in_flight_generation()
+        handle.__enter__()
+        started.append(handle)
+        assert should_abort is not None, "the route must give the tokenizer a way to stand down"
+        if should_abort():
+            from core.inference.llama_cpp import CountAborted
+            raise CountAborted()
+        counted.update(messages = messages)
+        return 1234
+
+    from core.inference.llama_cpp import LlamaCppBackend
+    backend = inference_route.get_llama_cpp_backend()
+    monkeypatch.setattr(backend, "count_chat_tokens", _count)
+    assert LlamaCppBackend is not None
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    finally:
+        for handle in started:
+            handle.__exit__(None, None, None)
+    assert started, "the hook must have fired, or the test proves nothing"
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the second round trip must not happen"
+
+
+def test_a_count_that_stays_idle_is_not_aborted(monkeypatch):
+    # Control: the checkpoint fires on a live run, not on every count.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    seen: list = []
+
+    def _count(messages, system, tools, strict = False, chat_template_kwargs = None,
+               should_abort = None):
+        seen.append(should_abort() if should_abort else None)
+        counted.update(messages = messages)
+        return 1234
+
+    backend = inference_route.get_llama_cpp_backend()
+    monkeypatch.setattr(backend, "count_chat_tokens", _count)
+    body = _counted_body(_count_request([{"role": "user", "content": "hello"}]))
+    assert body["input_tokens"] == 1234
+    assert seen == [False], "an idle server must report nothing to stand down for"
+
+
+@pytest.mark.parametrize(
+    ("abort", "expect_tokenize"),
+    [(True, False), (False, True)],
+    ids = ["run_started", "still_idle"],
+)
+def test_count_chat_tokens_stands_down_before_tokenizing(monkeypatch, abort, expect_tokenize):
+    """The abort has to escape the template except-block. Swallowed, it would set
+    apply_template_failed and the text fallback would tokenize anyway, which is the work
+    being declined. The control shows the poll alone does not stop an idle count."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import CountAborted, LlamaCppBackend
+
+    posted: list = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(self, url, json = None):
+            posted.append(url)
+            if url.endswith("/apply-template"):
+                return _FakeResponse({"prompt": "user hi"})
+            return _FakeResponse({"tokens": [1, 2]})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    call = lambda: _CountBackend().count_chat_tokens(
+        [{"role": "user", "content": "hi"}],
+        strict = True,
+        should_abort = lambda: abort,
+    )
+    if abort:
+        with pytest.raises(CountAborted):
+            call()
+    else:
+        assert call() == 2
+    assert any(u.endswith("/tokenize") for u in posted) is expect_tokenize
 
 
 def test_chat_count_tokens_refuses_image_messages(monkeypatch):

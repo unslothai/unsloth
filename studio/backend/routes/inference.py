@@ -14945,9 +14945,12 @@ async def chat_count_tokens(
     Unlike the /v1 count endpoints this never auto-switches: ``model`` is informational. The
     caller is a background recount with no abort signal, so switching could drag the backend back
     to the model loaded when the count started, a reload the client's guards cannot undo."""
-    # No count may overlap a generation: the client-side gate only covers our own frontend, so
-    # refusing server-side also covers a second tab or a script against /api. The bar just stays
-    # as it was until the run ends.
+    # A count is admitted only while nothing generates, and stands down at the next checkpoint
+    # if that changes. Admission is not atomic with the work, so a run starting just after this
+    # is caught there rather than prevented: true mutual exclusion would mean generation startup
+    # waiting on a lock a count holds, which is the cost this exists to avoid. The client-side
+    # gate only covers our own frontend, so refusing here also covers a second tab or a script
+    # against /api. The bar just stays as it was until the run ends.
     #
     # Deliberately coarse: _TrackedCancel registers external-provider runs here too, which never
     # touch llama-server, so those decline a count they could have served. Narrowing it means
@@ -15094,6 +15097,8 @@ async def chat_count_tokens(
             detail = "Cannot count tokens while a generation is in progress.",
         )
 
+    from core.inference.llama_cpp import CountAborted
+
     try:
         count = await asyncio.to_thread(
             llama_backend.count_chat_tokens,
@@ -15102,6 +15107,15 @@ async def chat_count_tokens(
             openai_tools,
             strict = True,
             chat_template_kwargs = _template_kwargs,
+            # Polled between /apply-template and /tokenize. The guards above admit only while
+            # idle, but admission and the work are separate steps, so a run that starts in
+            # between finds this and the second round trip never happens.
+            should_abort = lambda: active_generations.count() > 0,
+        )
+    except CountAborted:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens while a generation is in progress.",
         )
     except Exception:
         raise HTTPException(

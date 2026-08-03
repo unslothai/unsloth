@@ -1173,18 +1173,26 @@ function useStudioRuntimeAdapters(
           ? savedUsage.modelId === store.params.checkpoint
           : typeof store.ggufContextLength === "number" &&
             store.ggufContextLength > 0;
-        if (savedUsage && withinLocalLimit && modelMatches) {
+        // The value, not a flag: a boolean would drop the narrowing the writes below rely on.
+        const restoredUsage =
+          savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
+        if (restoredUsage) {
           // Key by the thread this loader read, not whichever is active when the await resolves:
           // a switch inside it would file this thread's usage under the incoming one. Same rule
           // the adapter's end-of-run write follows.
-          store.setThreadContextUsage(remoteId, savedUsage);
+          store.setThreadContextUsage(remoteId, restoredUsage);
           if (store.activeThreadId === remoteId) {
-            store.setContextUsage(savedUsage);
+            store.setContextUsage(restoredUsage);
           }
         }
-        // Saved usage above is the last completion's, and a thread opened after a model switch
-        // has none. Price the branch as loaded so the bar is right before the next message (#7450).
-        void refreshContextUsage({ threadId: remoteId });
+        // Only when nothing was restored above. Saved usage is the last completion's own totals,
+        // exact and split into prompt/completion; the recount is an estimate that publishes
+        // completionTokens 0, and it does not stand down for a value that was already there, so
+        // running it here would trade the real numbers for an approximation of the same total.
+        // A thread opened after a model switch fails modelMatches and still gets priced (#7450).
+        if (!restoredUsage) {
+          void refreshContextUsage({ threadId: remoteId });
+        }
 
         // If any message has a stored parentId, reconstruct the tree so
         // retries/regenerations load as branches rather than a flat list. For
