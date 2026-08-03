@@ -744,7 +744,7 @@ export const InventoryRow = memo(function InventoryRow({
     deletableRepoId || settingsAction ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
-        buttonClassName="pointer-events-auto hub-modal-pe-guard p-2 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         iconClassName="size-4"
         settings={settingsAction}
         pin={

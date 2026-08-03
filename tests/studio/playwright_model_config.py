@@ -456,6 +456,10 @@ with sync_playwright() as p:
     # ─────────────────────────────────────────────────────
     POPOVER = '[data-tour="chat-model-selector-popover"]'
     TRIGGER = '[data-tour="chat-model-selector"]'
+    # Unfiltered, for diagnostics: which gears exist at all when the one being
+    # looked for did not. Kept as CSS rather than reusing row_gear's role lookup,
+    # because the point here is to report what is there, not to match anything.
+    GEAR_ANY = 'button[aria-label^="Inference settings for" i]'
 
     def diagnose(name, selector):
         """Screenshot + JSON sidecar (URL, body, storage) for a selector that missed.
@@ -503,8 +507,8 @@ with sync_playwright() as p:
         except Exception:
             pass
 
-    def find_on_device_row(popover, hint):
-        """Locate the row without clicking it.
+    def reveal_on_device_row(popover, hint):
+        """Bring the row into view without clicking it.
 
         Since single-quant rows collapse (#7736) the row loads its quant in one
         click and the picker closes, so selecting first would dismiss the gear
@@ -525,90 +529,82 @@ with sync_playwright() as p:
                 row = popover.locator("[data-model-picker-option]", has_text = hint).first
         return row if _count(row) else None
 
-    # The gear is not reachable through the row: data-model-picker-option sits on the
-    # row button, and the gear is that button's sibling at only 2 of its 11 render
-    # sites -- at the other 9 it is an uncle (shell > div.min-w-0.flex-1 > option,
-    # gear a direct child of the shell). Matching on its own label sidesteps the DOM
-    # shape entirely, and naming the model keeps this off another row's gear.
-    #
-    # `i`: find_on_device_row matches with has_text, which is case-insensitive, so
-    # without it the two disagree on a hint whose case differs from the repo id --
-    # and STUDIO_MODEL_HINT is an env var. The row would be found, the gear missed,
-    # and the fallback below would then click a row that loads.
-    GEAR = 'button[aria-label^="Inference settings for" i][aria-label*="{h}" i]'
-    # Unfiltered, for diagnostics: what gears exist at all when one was not found.
-    GEAR_ANY = 'button[aria-label^="Inference settings for" i]'
-
-    def find_gear(
-        scope,
-        hint,
-        quant = None,
-        timeout = 3000,
-    ):
-        # Waited for rather than read once: a row still resolving its sole-quant
-        # probe renders with no gear at all for a moment, and a single miss there
-        # would read as "this model has no run-settings". wait_for returns as soon
-        # as it mounts rather than sleeping out a fixed poll.
-        # A quant narrows the label to one variant; the expander mounts one gear per
-        # variant and they all carry the repo id.
-        sel = GEAR.format(h = hint)
-        if quant:
-            # Ends-with, not contains: every label is "<repo> <quant>", so the quant
-            # is the final token, and an unbounded substring lets F16 match BF16 --
-            # whereupon `.first` among independently ordered variants can open the
-            # other one, and the exact-key storage checks then fail on a quant that
-            # was working.
-            sel += f'[aria-label$=" {quant}" i]'
-        gear = scope.locator(sel).first
-        try:
-            gear.wait_for(state = "attached", timeout = timeout)
-        except Exception:
+    def select_on_device_row(popover, hint):
+        row = reveal_on_device_row(popover, hint)
+        if row is None:
             return None
-        return gear
+        row.click()
+        page.wait_for_timeout(800)
+        return row
 
     def config_is_open(popover):
         """Back is unique to the config page and always rendered inside the picker."""
         return _count(popover.get_by_role("button", name = "Back to model list")) > 0
 
-    def open_config(popover, hint):
-        row = find_on_device_row(popover, hint)
-        if row is None:
-            diagnose("open-config-no-row", f"[data-model-picker-option] has_text={hint!r}")
+    # The collapsed sole-quant row appears only after an async probe lands, so an absent
+    # gear means either a multi-quant repo or a probe in flight, with no DOM state to
+    # tell them apart. Only a multi-quant repo pays the full wait, once per open_config.
+    SOLE_QUANT_SETTLE_MS = 30_000
+
+    # Long enough for the probe, short enough that naming a quant that is not there
+    # does not spend the whole settle window before falling back to the repo.
+    QUANT_GEAR_MS = 2_000
+
+    def row_gear(
+        popover,
+        hint,
+        quant = None,
+        timeout_ms = SOLE_QUANT_SETTLE_MS,
+    ):
+        # The gear is a sibling of the row, not inside [data-model-picker-option], so
+        # scope it by repo id; case-insensitive to match the has_text row lookup.
+        #
+        # The quant, when given, is anchored to the end rather than searched for
+        # anywhere in the label. Every label is "<repo> <quant>", so an unanchored
+        # match lets F16 find BF16, and `.first` among variants the expander orders
+        # by fit rather than by name then opens the other one -- after which the
+        # exact-key storage checks fail on a quant that was working.
+        pattern = f"^Inference settings for .*{re.escape(hint)}"
+        if quant:
+            pattern += f".* {re.escape(quant)}$"
+        gear = popover.get_by_role(
+            "button",
+            name = re.compile(pattern, re.IGNORECASE),
+        ).first
+        try:
+            gear.wait_for(state = "visible", timeout = timeout_ms)
+        except Exception:
             return None
-        # The quant first, here too, not only in the expansion branch below. With
-        # "Expand quantizations" on, the expander is already mounted, so a repo-only
-        # lookup finds a gear straight away and never reaches that branch -- and
-        # GgufVariantExpander orders variants by fit and recommendation, not by
-        # GGUF_VARIANT, so `.first` among them opens an arbitrary quant. Repo-only
-        # stays as the fallback for the single-quant row, whose label still carries
-        # its own quant but need not be the one this job names.
-        gear = find_gear(popover, hint, quant = GGUF_VARIANT, timeout = 2000) or find_gear(
-            popover, hint
-        )
+        return gear
+
+    def open_config(popover, hint):
+        if reveal_on_device_row(popover, hint) is None:
+            return None
+        # A sole-quant repo is a collapsed row whose click selects the model and closes
+        # the picker, so click its gear without touching the row; a multi-quant repo
+        # shows gears only once the row is expanded.
+        #
+        # The quant first at each step: with "Expand quantizations" on, the expander
+        # is already mounted, so a repo-only lookup finds some gear straight away and
+        # never reaches the expansion branch -- and which one it finds is then
+        # arbitrary. Repo-only stays as the fallback, for the collapsed single-quant
+        # row whose label carries its own quant and need not carry this one.
+        gear = row_gear(popover, hint, quant = GGUF_VARIANT, timeout_ms = QUANT_GEAR_MS)
         if gear is None:
-            # No gear beside the row means a multi-quant parent, which renders an
-            # aria-hidden 42px spacer in its place and mounts one gear per variant
-            # only once expanded. So the absence is the row-kind signal, not a miss,
-            # and clicking is safe here and only here: the parent's onClick is
-            # toggleGgufExpanded, while the collapsed single-quant row -- the one
-            # that loads and closes the picker -- is exactly the row that would
-            # have had a gear above.
-            row.click()
-            page.wait_for_timeout(800)
-            # Every expanded variant mounts its own gear and all of them carry the
-            # repo id, so the repo hint alone leaves `.first` to pick an arbitrary
-            # quant -- possibly one that is not downloaded. Each label is
-            # "<repo> <quant>", so name the quant under test. Scoping to the row's
-            # group as well keeps another repo's expander out of it.
-            group = row.locator("xpath=ancestor::div[1]")
-            gear = (
-                find_gear(group, hint, quant = GGUF_VARIANT, timeout = 2000)
-                or find_gear(popover, hint, quant = GGUF_VARIANT, timeout = 2000)
-                or find_gear(group, hint, timeout = 2000)
-                or find_gear(popover, hint)
+            gear = row_gear(popover, hint)
+        if gear is None:
+            if select_on_device_row(popover, hint) is None:
+                return None
+            if not popover.is_visible():
+                # The probe landed mid-click, so the row selected the model; reopen for
+                # the gear that is now there.
+                popover = open_picker()
+                if reveal_on_device_row(popover, hint) is None:
+                    return None
+            gear = row_gear(popover, hint, quant = GGUF_VARIANT, timeout_ms = QUANT_GEAR_MS) or (
+                row_gear(popover, hint)
             )
         if gear is None:
-            diagnose("open-config-no-gear", GEAR.format(h = hint))
             return None
         gear.click()
         # Gate on the page itself rather than a sleep, so a slow mount is waited out
