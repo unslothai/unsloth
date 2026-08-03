@@ -608,6 +608,39 @@ _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
+# A directory we cannot search. Every probe inside one reports "absent", so an
+# install that is ours reads as somebody else's. Search (+x) is the permission
+# the marker probes need; read (+r) is not enough and not required.
+_studio_dir_unsearchable() {
+    [ -d "$1" ] || return 1
+    ( cd "$1" ) 2>/dev/null && return 1
+    return 0
+}
+
+# Mirrors Exit-PathAccessDenied in setup.ps1. Pass owner-unverified when the
+# caller could not read the marker, so it cannot claim the tree is ours either
+# and must not tell the user to delete it.
+_path_access_denied() {
+    _pad_dir="$1"
+    _pad_label="$2"
+    _pad_mode="${3:-}"
+    step "permissions" "$_pad_label at $_pad_dir cannot be read: permission denied" "$C_ERR"
+    if [ "$_pad_mode" = "owner-unverified" ]; then
+        substep "Unsloth cannot confirm this folder is its own install while it is unreadable, so it will not tell you to remove it" "$C_WARN"
+        substep "Restore access, or move the folder aside, then re-run setup:" "$C_WARN"
+    else
+        substep "This folder lives outside the app, so reinstalling Unsloth Studio reuses it and fails the same way" "$C_WARN"
+        substep "Simplest fix: delete or rename $_pad_dir, then re-run setup (it is a managed cache and gets reinstalled)" "$C_WARN"
+        substep "If deleting is denied too, it belongs to another user; restore access with:" "$C_WARN"
+    fi
+    substep "ls -ld \"$_pad_dir\"" "$C_WARN"
+    substep "chmod -R u+rwX \"$_pad_dir\"" "$C_WARN"
+    if [ "$_pad_mode" = "owner-unverified" ]; then
+        setup_fail 1 "Permission denied reading $_pad_label at $_pad_dir. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access, or move it aside, then re-run setup."
+    fi
+    setup_fail 1 "Permission denied reading the existing $_pad_label at $_pad_dir. Delete or rename that folder (Unsloth reinstalls it) or restore access, then re-run setup. Reinstalling the app does not reset it."
+}
+
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
@@ -616,6 +649,11 @@ _assert_studio_owned_or_absent() {
         if _studio_owned_adoptable "$_aso_dir"; then
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
+        fi
+        # An unsearchable tree hides its own marker, so it is indistinguishable
+        # here from somebody else's folder. Report the permissions, not ownership.
+        if _studio_dir_unsearchable "$_aso_dir"; then
+            _path_access_denied "$_aso_dir" "$_aso_label" owner-unverified
         fi
         echo "ERROR: $_aso_dir already exists and is not marked as an Unsloth-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
@@ -1444,7 +1482,14 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
         fi
-        rm -rf "$LLAMA_CPP_DIR"
+        rm -rf "$LLAMA_CPP_DIR" 2>/dev/null || true
+        if [ -e "$LLAMA_CPP_DIR" ]; then
+            if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
+            fi
+            step "llama.cpp" "the existing install could not be replaced with a link" "$C_ERR"
+            setup_fail 3 "$LLAMA_CPP_DIR could not be replaced with a link to $_RESOLVED_LOCAL."
+        fi
         ln -sfn "$_RESOLVED_LOCAL" "$LLAMA_CPP_DIR"
         _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
         step "llama.cpp" "linked local directory: $_RESOLVED_LOCAL"
@@ -2140,7 +2185,16 @@ else
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
-            rm -rf "$LLAMA_CPP_DIR"
+            # Without this the raw rm error aborts under errexit and the desktop
+            # app shows a bare exit code, with the fresh build silently stranded.
+            rm -rf "$LLAMA_CPP_DIR" 2>/dev/null || true
+            if [ -e "$LLAMA_CPP_DIR" ]; then
+                if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                    _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
+                fi
+                step "llama.cpp" "built, but the existing install could not be replaced" "$C_ERR"
+                setup_fail 3 "The llama.cpp build succeeded but $LLAMA_CPP_DIR could not be replaced. The new build is at $_BUILD_TMP."
+            fi
             mv "$_BUILD_TMP" "$LLAMA_CPP_DIR"
             : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             # Symlink to llama.cpp root -- check_llama_cpp() looks for the binary there
