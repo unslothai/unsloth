@@ -233,7 +233,7 @@ export function RecentDictationsView({
               >
                 <HugeiconsIcon
                   icon={Message01Icon}
-                  className="mr-1.5 size-3.5"
+                  className="me-1.5 size-3.5"
                 />
                 {t("settings.voice.recents.openChat")}
               </Button>
@@ -245,7 +245,7 @@ export function RecentDictationsView({
                 await handleCopy(selected.text);
               }}
             >
-              <HugeiconsIcon icon={Copy01Icon} className="mr-1.5 size-3.5" />
+              <HugeiconsIcon icon={Copy01Icon} className="me-1.5 size-3.5" />
               {t("settings.voice.recents.copy")}
             </Button>
             <Button
@@ -256,7 +256,7 @@ export function RecentDictationsView({
               }
               className="text-destructive hover:border-destructive/60 hover:text-destructive"
             >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
+              <HugeiconsIcon icon={Delete02Icon} className="me-1.5 size-3.5" />
               {t("settings.voice.recents.delete")}
             </Button>
           </div>
@@ -313,7 +313,7 @@ export function RecentDictationsView({
               onClick={() => setPendingDelete({ kind: "all" })}
               className="shrink-0 text-destructive hover:border-destructive/60 hover:text-destructive"
             >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
+              <HugeiconsIcon icon={Delete02Icon} className="me-1.5 size-3.5" />
               {t("settings.voice.recents.clear")}
             </Button>
           </div>
@@ -353,7 +353,7 @@ export function RecentDictationsView({
                         ? t("settings.voice.recents.openChat")
                         : t("settings.voice.recents.view")
                     }
-                    className="flex min-w-0 flex-1 items-start gap-4 rounded-md px-1 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex min-w-0 flex-1 items-start gap-4 rounded-md px-1 py-3 text-start transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span className="min-w-0 flex-1">
                       <span className="line-clamp-3 whitespace-pre-wrap break-words text-sm text-foreground">
@@ -369,7 +369,7 @@ export function RecentDictationsView({
                         {formatDictationDate(dictation.at)}
                       </span>
                     </span>
-                    <span className="hidden w-40 shrink-0 items-center gap-1.5 text-left text-xs text-muted-foreground tabular-nums sm:flex">
+                    <span className="hidden w-40 shrink-0 items-center gap-1.5 text-start text-xs text-muted-foreground tabular-nums sm:flex">
                       {/* Fixed icon slot keeps every date starting at the
                           same column whether or not a chat is linked. */}
                       <span className="flex size-3.5 shrink-0 items-center justify-center">

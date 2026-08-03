@@ -95,7 +95,7 @@ function MovableRow({ item }: { item: SidebarMenuItemPref }) {
       />
       <span className="text-ui-13 text-foreground">{t(meta.labelKey)}</span>
       <Switch
-        className="ml-auto"
+        className="ms-auto"
         checked={item.visible}
         onCheckedChange={(visible) =>
           patch({

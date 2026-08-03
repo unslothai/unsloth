@@ -483,6 +483,7 @@ function CopyableCode({
   return (
     <div className="relative min-w-0">
       <code
+        dir="ltr"
         className={cn(
           "block min-w-0 whitespace-pre-wrap rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-white/[0.05]",
           breakAll ? "break-all" : "break-words",
@@ -515,7 +516,10 @@ function CommandBlock({ command }: { command: string }) {
 
   return (
     <div className="group relative overflow-hidden rounded-xl border border-border bg-muted/40 dark:border-transparent dark:bg-white/[0.04]">
-      <pre className="hover-scrollbar overflow-x-auto py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground">
+      <pre
+        dir="ltr"
+        className="hover-scrollbar overflow-x-auto py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground"
+      >
         <code className="font-mono whitespace-pre">{command}</code>
       </pre>
       <button
@@ -1098,6 +1102,7 @@ export function AgentsTab() {
             No aria-label: it would replace the visible "unsloth start" as the
             accessible name, leaving voice control unable to target it. */}
         <a
+          dir="ltr"
           href={DOCS_URL}
           target="_blank"
           rel="noopener noreferrer"
@@ -1223,9 +1228,12 @@ export function AgentsTab() {
                     aria-label={t("settings.agents.model")}
                     aria-expanded={modelPickerOpen}
                     title={selectedModel}
-                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
+                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-start transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
                   >
-                    <span className="min-w-0 truncate font-mono text-xs">
+                    <span
+                      dir="ltr"
+                      className="min-w-0 truncate font-mono text-xs"
+                    >
                       {labelFor(selectedModel)}
                     </span>
                     <HugeiconsIcon
@@ -1245,6 +1253,7 @@ export function AgentsTab() {
                     className="rounded-none bg-transparent p-0"
                   >
                     <CommandInput
+                      dir="ltr"
                       value={modelSearch}
                       onValueChange={setModelSearch}
                       aria-label={t("settings.agents.searchModels")}
@@ -1273,7 +1282,11 @@ export function AgentsTab() {
                           }}
                           className="cursor-pointer font-mono text-xs"
                         >
-                          <span className="min-w-0 truncate" title={model}>
+                          <span
+                            dir="ltr"
+                            className="min-w-0 truncate"
+                            title={model}
+                          >
                             {labelFor(model)}
                           </span>
                         </CommandItem>
@@ -1311,6 +1324,7 @@ export function AgentsTab() {
                 disabled={variantsLoading || variants.length === 0}
               >
                 <SelectTrigger
+                  dir="ltr"
                   aria-label={t("settings.agents.quantization")}
                   className="w-full rounded-lg font-mono text-xs"
                 >
@@ -1339,7 +1353,10 @@ export function AgentsTab() {
                         // giving the list a clean two-column read.
                         className="[&>span:last-child]:w-full [&>span:last-child]:justify-between"
                       >
-                        <span className="font-mono text-xs whitespace-nowrap">
+                        <span
+                          dir="ltr"
+                          className="font-mono text-xs whitespace-nowrap"
+                        >
                           {variant.quant}
                         </span>
                         {size ? (
@@ -1396,7 +1413,10 @@ export function AgentsTab() {
               key={row.flag}
               className="grid grid-cols-[minmax(0,11rem)_1fr] items-start gap-x-5 gap-y-1 py-2.5 max-sm:grid-cols-1"
             >
-              <code className="min-w-0 break-words font-mono text-xs font-medium text-foreground">
+              <code
+                dir="ltr"
+                className="min-w-0 break-words font-mono text-xs font-medium text-foreground"
+              >
                 {row.flag}
               </code>
               <span className="text-xs leading-relaxed text-muted-foreground">

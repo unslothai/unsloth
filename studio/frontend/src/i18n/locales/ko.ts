@@ -67,17 +67,17 @@ export const ko = {
     },
     notFound: {
       title: "페이지를 찾을 수 없습니다",
-      description: "{path} 은(는) 존재하지 않습니다.",
+      description: "{path} 경로가 존재하지 않습니다.",
       backToChat: "채팅으로 돌아가기",
     },
     dialog: {
       deleteChat: {
         title: "채팅 삭제",
-        description: '이 채팅 "{name}" 을(를) 삭제하시겠습니까?',
+        description: '이름이 "{name}"인 채팅을 삭제하시겠습니까?',
       },
       deleteRun: {
         title: "학습 실행 삭제",
-        description: '이 실행 "{name}" 을(를) 삭제하시겠습니까?',
+        description: '이름이 "{name}"인 실행을 삭제하시겠습니까?',
       },
       renameChat: {
         title: "채팅 이름 변경",
@@ -108,7 +108,7 @@ export const ko = {
     tabs: {
       general: "일반",
       profile: "프로필",
-      appearance: "외관",
+      appearance: "모양",
       resources: "시스템",
       chat: "채팅",
       connections: "연결",
@@ -160,6 +160,7 @@ export const ko = {
         sttUnload: "해제",
         sttUnloading: "해제하는 중…",
         microphoneLabel: "마이크",
+        microphoneFallbackName: "마이크 {index}",
         microphoneDescription: "받아쓰기에 사용됩니다",
         microphoneFallbackHint:
           "받아쓰기에 사용됩니다. 브라우저 음성 엔진이 이 장치를 사용할 수 없으면 시스템 기본값으로 대체됩니다",
@@ -183,6 +184,10 @@ export const ko = {
         manage: "관리",
         backToVoice: "음성으로 돌아가기",
         addEntry: "항목 추가",
+        newEntryAria: "새 받아쓰기 사전 항목",
+        entryPlaceholder: "김민지",
+        entryAria: "받아쓰기 사전 항목 {index}",
+        removeEntryAria: "받아쓰기 사전 항목 {index} 삭제",
       },
       recents: {
         sectionTitle: "받아쓰기 기록",
@@ -244,6 +249,7 @@ export const ko = {
         previewLabel: "음성 미리 듣기",
         previewDescription: "짧은 샘플을 재생합니다",
         previewAction: "미리 듣기",
+        previewFailed: "TTS 미리 듣기에 실패했습니다",
         stopAction: "정지",
         ttsLabel: "텍스트 음성 변환",
         notSupported: "이 브라우저에서는 지원되지 않습니다",
@@ -258,6 +264,8 @@ export const ko = {
         "게이트된 모델을 불러오고 아티팩트를 푸시하는 데 사용됩니다.",
       hideToken: "토큰 숨기기",
       showToken: "토큰 표시",
+      clearToken: "지우기",
+      checkingToken: "토큰 확인 중...",
       tokenValidated: "토큰이 확인되었습니다",
       password: "비밀번호",
       passwordDescription: "이 Unsloth 계정의 비밀번호를 변경합니다.",
@@ -298,12 +306,12 @@ export const ko = {
         sectionTitle: "모델 자동 전환 (OpenAI API)",
         enable: "요청에 따라 모델 전환",
         enableDescription:
-          "OpenAI 호환 요청이 다운로드된 다른 GGUF를 지정하면, 응답하기 전에 해당 모델을 불러옵니다. 기본값은 꺼짐이며, 알 수 없는 이름은 불러온 모델을 계속 제공합니다.",
+          "API 요청에 지정된 GGUF가 다운로드되어 있으면 응답 전에 해당 모델을 불러옵니다. 기본값은 꺼짐입니다.",
         idleUnload: "유휴 시 자동 해제",
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
-        idleNeedsEnable:
-          "해제된 모델이 다음 사용 시 다시 로드되도록 하려면 요청에 따라 모델 전환을 켜세요.",
+        idleSecondsAriaLabel: "유휴 시 자동 해제까지의 시간(초)",
+        idleNeedsEnable: "먼저 ‘요청에 따라 모델 전환’을 켜세요.",
         idleActiveViaEnv:
           "유휴 시 자동 해제가 UNSLOTH_MODEL_IDLE_TTL 환경 변수를 통해 활성화되어 있습니다.",
         loadError: "모델 자동 전환 설정을 불러오지 못했습니다.",
@@ -605,6 +613,12 @@ export const ko = {
       disableOverlay: "오버레이 비활성화",
       liveMonitor: {
         title: "실시간 모니터",
+        apiTitle: "API 모니터",
+        summary: "진행 중인 요청, 오류 및 토큰 사용량",
+        status: "진행 중 {active}개 · 최근 {recent}개 · {model}",
+        noModelLoaded: "로드된 모델 없음",
+        autoOpen: "플로팅 모니터 자동 표시",
+        autoOpenDescription: "API 트래픽이 들어오면 작은 패널을 엽니다.",
         cpu: "CPU",
         ram: "RAM",
         disk: "디스크",
@@ -612,17 +626,19 @@ export const ko = {
         cpuCores: "논리 {logical}개 / 물리 {physical}개 코어",
         currentLoad: "현재 부하",
         free: "{value} 여유",
-        noGpu: "표시된 GPU 없음",
+        noGpu: "인식되는 GPU 없음",
       },
       gpu: {
         title: "GPU 장치",
-        noGpu: "표시된 GPU가 감지되지 않았습니다. 위에 CPU 전용 리소스가 표시됩니다.",
+        ggufInference: "GGUF 추론",
+        unavailable: "사용할 수 없음",
+        noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
         used: "{value} 사용 중",
         free: "{value} 여유",
-        total: "{value} 전체",
+        total: "총 {value}",
       },
       storage: {
         title: "저장소",
@@ -632,7 +648,8 @@ export const ko = {
         modelsFolder: "모델 폴더",
         modelsFolderKeywords:
           "모델 폴더 디렉터리 디렉토리 경로 위치 저장 다운로드 캐시 저장소 디스크 드라이브 이동 변경 models folder path hugging face",
-        modelsFolderDescription: "다운로드한 모델이 저장되는 위치입니다.",
+        modelsFolderDescription:
+          "다운로드한 모델이 저장되는 위치입니다. 시스템 드라이브에 모델을 저장하지 않으려면 위치를 변경하세요.",
         openAction: "열기",
         copyAction: "경로 복사",
         copied: "경로가 복사되었습니다",
@@ -683,7 +700,7 @@ export const ko = {
       recommended: "권장",
       downloaded: "다운로드됨",
       quantizationLoadError:
-        "일부 양자화를 불러오지 못했습니다. 명령은 사용 가능한 모델 값을 사용합니다.",
+        "양자화 목록을 불러오지 못했습니다. 명령은 사용 가능한 모델 값을 사용합니다.",
       generatedCommand: "생성된 명령",
       docs: "문서",
       agentDocs: "{agent} 설정 문서 열기",
@@ -737,7 +754,8 @@ export const ko = {
           "Unsloth가 관리하는 에이전트 저장소를 실행 사이에 유지합니다.",
         asSubagent:
           "상위 에이전트는 현재 모델을 유지하고 Unsloth를 로컬 서브에이전트로 등록합니다(Claude Code, Codex, OpenCode).",
-        apiKey: "Unsloth API 키를 지정합니다(또는 UNSLOTH_API_KEY 설정).",
+        apiKey:
+          "Unsloth API 키를 지정합니다(또는 UNSLOTH_API_KEY 환경 변수를 설정합니다).",
         yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
       },
       remote: {
@@ -758,10 +776,32 @@ export const ko = {
     },
     chat: {
       title: "채팅",
-      description: "이 기기에 저장된 채팅 기록을 관리합니다.",
+      description: "이 기기에서 채팅이 작동하는 방식을 사용자 지정합니다.",
+      modelSelection: {
+        title: "모델 선택 설정",
+        expandQuantizations: "양자화 펼치기",
+        expandQuantizationsDescription:
+          "켬: 기기 내 GGUF 모델의 양자화 옵션을 즉시 표시합니다. 끔: 모델을 클릭하면 양자화 옵션이 표시됩니다.",
+        showAllQuantizations: "모든 양자화 표시",
+        showAllQuantizationsDescription:
+          "켬: 아직 다운로드하지 않은 항목을 포함해 기기 내 모든 양자화를 표시합니다. 끔: 다운로드한 양자화만 표시합니다.",
+      },
+      menu: {
+        title: "채팅 메뉴",
+        description:
+          "채팅의 + 사이드 메뉴에 항목을 고정합니다. 나머지 항목은 ‘더 보기’로 이동합니다.",
+        chatWithFiles: "파일과 채팅(RAG)",
+        mcp: "MCP",
+        savedPrompts: "저장된 프롬프트",
+        compareChat: "채팅 비교",
+        exportChat: "채팅 내보내기",
+      },
+      showResponseModel: "응답 모델 표시",
+      showResponseModelDescription:
+        "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
-        '채팅 상자 아래에 "LLM은 실수를 할 수 있습니다"를 표시합니다.',
+        '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML 블록 접기",
@@ -831,6 +871,8 @@ export const ko = {
     },
     data: {
       title: "데이터",
+      backToData: "데이터로 돌아가기",
+      exportFailed: "채팅을 내보내지 못했습니다",
       description:
         "이 기기에 저장된 채팅 기록과 업로드한 파일을 관리합니다.",
       archivedChats: "보관된 채팅",
@@ -884,11 +926,11 @@ export const ko = {
       title: "API",
       description: "OpenAI 호환 API를 통해 Unsloth에 접근합니다.",
       readDocs: "API 문서 읽기",
-      noAccess: "아직 API 접근 권한이 없습니다.",
+      noAccess: "아직 액세스 토큰이 없습니다.",
       accessTokens: "액세스 토큰",
       loadError: "API 접근 권한을 불러오지 못했습니다.",
       createError: "액세스 토큰을 생성하지 못했습니다.",
-      revokeError: "액세스 토큰을 취소하지 못했습니다.",
+      revokeError: "액세스 토큰을 폐기하지 못했습니다.",
       never: "만료 없음",
       tokenNamePlaceholder: "토큰 이름(예: production)",
       newAccessTokenName: "새 액세스 토큰 이름",
@@ -897,7 +939,7 @@ export const ko = {
       newTokenCreated: "새 액세스 토큰이 생성되었습니다",
       accessTokenCopied: "액세스 토큰이 복사되었습니다",
       copyAccessToken: "액세스 토큰 복사",
-      copyNow: "지금 복사하세요 - 다시 표시되지 않습니다.",
+      copyNow: "지금 복사하세요. 이 토큰은 다시 표시되지 않습니다.",
       usageExamples: "사용 예시",
       usageTools: "도구",
       exampleCurlTools: "curl + 도구",
@@ -918,30 +960,25 @@ export const ko = {
       setupDocs: "설정 문서:",
       codingAgents: "코딩 에이전트",
       codingAgentsHint:
-        "이 서버를 대상으로 코딩 에이전트를 실행합니다. 로드된 모델을 사용하며, 로컬 서버는 API 키를 자동으로 발급하고 원격 서버는 명령에 포함합니다.",
+        "이 서버에 연결된 코딩 에이전트를 실행합니다. 로드된 모델을 사용하며, 로컬 서버에서는 API 키를 자동으로 발급하고 원격 서버에서는 명령에 API 키를 포함합니다.",
       codingAgentsSwap: "claude를 codex, openclaw, opencode 또는 hermes로 바꾸세요.",
       codingAgentDetected: "이 컴퓨터에 설치됨",
       codingAgentsDetectedHint: "이 컴퓨터에서 감지됨: {agents}.",
       relativeNever: "없음",
       relativeJustNow: "방금",
-      relativeHoursAgo: "{count}시간 전",
-      relativeDaysAgo: "{count}일 전",
-      relativeMonthsAgo: "{count}개월 전",
-      relativeYearsAgo: "{count}년 전",
       expired: "만료됨",
       today: "오늘",
-      inDays: "{count}일 후",
-      created: "{value}에 생성됨",
-      used: "{value}에 사용됨",
-      expires: "{value}에 만료됨",
+      created: "생성: {value}",
+      used: "마지막 사용: {value}",
+      expires: "만료: {value}",
       actionsFor: "{name} 작업",
       copyPrefix: "접두사 복사",
-      revokeToken: "토큰 취소",
-      revokeTitle: '액세스 토큰 "{name}" 을(를) 취소하시겠습니까?',
+      revokeToken: "토큰 폐기",
+      revokeTitle: '액세스 토큰 "{name}"을 폐기하시겠습니까?',
       revokeDescription:
         "이 토큰을 사용하는 앱은 즉시 접근 권한을 잃습니다. 이 작업은 되돌릴 수 없습니다.",
-      revokeAction: '"{name}" 취소',
-      revoking: "취소 중...",
+      revokeAction: '"{name}" 폐기',
+      revoking: "폐기 중...",
       usageNoModel:
         "모델을 로드하거나 다운로드하면 실행 가능한 예제가 표시됩니다. 이 서버에는 아직 지정할 모델이 없습니다.",
     },
@@ -950,6 +987,8 @@ export const ko = {
       description: "문서, 릴리스 노트, 피드백 및 빌드 정보입니다.",
       studioVersion: "Unsloth 버전",
       packageVersion: "패키지 버전",
+      desktopAppVersion: "데스크톱 앱 버전",
+      desktopAppVersionUnavailable: "확인할 수 없음",
       llamaCppVersion: "llama.cpp 버전",
       hardware: "하드웨어",
       gpu: "GPU",
@@ -966,10 +1005,10 @@ export const ko = {
         sectionTitle: "라이선스",
         studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
-        studioDescription: "GNU AGPL v3.0 하에 오픈 소스입니다.",
+        studioDescription: "GNU AGPL v3.0에 따라 공개된 오픈 소스입니다.",
         libraryLabel: "Unsloth Core",
         libraryLicense: "Apache-2.0",
-        libraryDescription: "Apache 2.0 하에 라이선스가 부여됩니다.",
+        libraryDescription: "Apache 2.0 라이선스에 따라 배포됩니다.",
       },
       dangerZone: "위험 구역",
       shutDownStudio: "Unsloth 종료",
@@ -989,7 +1028,7 @@ export const ko = {
         installCommandUnix: "macOS/Linux 설치 명령",
         installCommandWindows: "Windows 설치 명령",
         localInstallDetected:
-          "로컬 설치가 감지되었습니다. PyPI로 대체되지 않도록 원래 체크아웃에서 업데이트하세요.",
+          "로컬 설치가 감지되었습니다. PyPI 설치로 대체되지 않도록 원래 체크아웃에서 업데이트하세요.",
         pullThenUpdate:
           "최신 변경 사항을 가져온 다음 로컬 설치 프로그램을 실행하세요:",
         gitPullCommand: "git pull 명령",
@@ -1000,7 +1039,30 @@ export const ko = {
           "저장소 체크아웃이 아직 있다면 거기에서 로컬 설치 프로그램을 실행하세요:",
         restartAfterUpdate: "업데이트 후 Unsloth를 다시 시작하세요.",
         desktopManaged:
-          "데스크톱 앱은 번들된 백엔드를 최신 상태로 유지하며 새 버전이 있으면 알립니다.",
+          "데스크톱 앱은 새 앱 버전을 자동으로 확인합니다. 여기서 언제든지 업데이트를 확인하거나 설치할 수도 있습니다.",
+        desktopReady: "데스크톱 앱 업데이트",
+        desktopReadyDescription:
+          "새로운 데스크톱 앱 버전이 있는지 확인합니다.",
+        desktopChecking: "업데이트 확인 중",
+        desktopCheckingDescription: "보통 몇 초 정도 걸립니다.",
+        desktopAvailable: "데스크톱 앱 {version} 버전을 사용할 수 있습니다",
+        desktopAvailableDescription:
+          "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
+        desktopExternalServer:
+          "서버를 시작한 터미널에서 `unsloth studio update`를 실행하세요.",
+        desktopManualInstall:
+          "릴리스 페이지를 열어 최신 Linux 패키지를 설치하세요.",
+        desktopCheckFailed: "업데이트를 확인하지 못했습니다",
+        desktopCheckFailedDescription:
+          "연결 상태를 확인한 후 다시 시도하세요.",
+        desktopCurrent: "데스크톱 앱이 최신 버전입니다",
+        desktopCurrentDescription: "Unsloth가 계속 자동으로 확인합니다.",
+        checkForUpdates: "업데이트 확인",
+        checkAgain: "다시 확인",
+        retryCheck: "다시 시도",
+        checking: "확인 중...",
+        updateNow: "지금 업데이트",
+        openReleasePage: "릴리스 페이지 열기",
         unknownInstall:
           "Unsloth 설치 방식을 감지할 수 없습니다. 설치 프로그램 또는 PyPI 설치의 경우 위 명령을 사용하세요.",
         localCheckout:
@@ -1205,9 +1267,9 @@ export const ko = {
         "권장값: LoRA는 2e-4, CPT는 5e-5, 전체 파인튜닝은 2e-5",
       embeddingLearningRate: "임베딩 학습률",
       embeddingLearningRateTooltip:
-        "CPT가 embed_tokens를 학습할 때만 사용됩니다. 임베딩은 LoRA 가중치보다 불안정해지기 쉬우므로 보통 더 작은 학습률이 필요합니다. 비워 두면 lr/10을 사용하며, 일반적인 범위는 주 학습률보다 2배~10배 작습니다. 어휘 또는 도메인 토큰 적응이 너무 느릴 때만 높이세요.",
+        "CPT가 embed_tokens를 학습할 때만 사용됩니다. 임베딩은 LoRA 가중치보다 불안정해지기 쉬우므로 보통 더 작은 학습률이 필요합니다. 비워 두면 lr/10을 사용하며, 일반적인 범위는 주 학습률의 1/10~1/2입니다. 어휘 또는 도메인 토큰 적응이 너무 느릴 때만 높이세요.",
       embeddingLearningRateDescription:
-        "비워 두면 lr/10을 사용합니다(권장). 일반적인 범위는 주 학습률보다 2배~10배 작습니다.",
+        "비워 두면 lr/10을 사용합니다(권장). 일반적인 범위는 주 학습률의 1/10~1/2입니다.",
       rank: "랭크",
       rankTooltip:
         "저랭크 행렬의 차원입니다. 높을수록 용량이 커집니다.",
@@ -1266,9 +1328,9 @@ export const ko = {
         "평가 사이의 간격을 전체 학습 스텝 수의 비율로 나타냅니다(0-1). 0으로 설정하면 평가가 비활성화됩니다. 예: 0.01 = 스텝의 1%마다 평가.",
       seed: "시드",
       seedTooltip: "재현성을 위한 랜덤 시드입니다.",
-      gradCheckpoint: "그래디언트 체크포인트",
+      gradCheckpoint: "그래디언트 체크포인팅",
       gradCheckpointTooltip:
-        "활성화를 재계산하여 연산으로 메모리를 절약합니다.",
+        "활성화를 재계산해 연산량을 늘리는 대신 메모리 사용량을 줄입니다.",
       none: "없음",
       standard: "표준",
       enablePacking: "패킹 활성화",
@@ -1307,7 +1369,8 @@ export const ko = {
       continueAction: "학습 계속",
       cancelAction: "학습 취소",
       stopTitle: "학습 중지",
-      stopDescription: "현재 학습 실행을 중지하는 방법을 선택하세요.",
+      stopDescription:
+        "현재 학습 실행을 중지하는 방법을 선택하세요. '중지 후 저장'은 나중에 재개할 수 있는 체크포인트를 저장하지만, '학습 취소'는 재개할 수 없습니다.",
       stopAction: "중지",
       stopping: "중지 중...",
       stopAndSave: "중지 후 저장",
@@ -1343,15 +1406,12 @@ export const ko = {
       steps: "스텝",
       lossTrendSparkline: "Loss 추세 스파크라인",
       relativeJustNow: "방금",
-      relativeMinutesAgo: "{count}분 전",
-      relativeHoursAgo: "{count}시간 전",
-      relativeDaysAgo: "{count}일 전",
       status: {
         completed: "완료됨",
         stopped: "중지됨",
         error: "오류",
         running: "실행 중",
-        continued: "계속됨",
+        continued: "나중에 재개됨",
       },
       message: {
         completed: "학습이 완료되었습니다",
@@ -1368,9 +1428,9 @@ export const ko = {
       settingsDescription:
         "학습이 계속 실행되는 동안 차트 표시를 조정합니다.",
       openSettings: "차트 설정 열기",
-      viewWindow: "보기 창",
-      viewWindowDescription: "최신 스텝만 또는 전체 기록을 표시합니다.",
-      window: "창",
+      viewWindow: "표시 구간",
+      viewWindowDescription: "최신 스텝만 표시하거나 전체 기록을 표시합니다.",
+      window: "구간",
       all: "전체",
       trainingLoss: "학습 손실",
       trainingLossDescription: "오버레이와 EMA 평활화를 제어합니다.",
@@ -1379,12 +1439,12 @@ export const ko = {
       showRawLoss: "원시 loss 표시",
       showSmoothedLoss: "평활화된 loss 표시",
       showAverageLine: "평균선 표시",
-      scaleAndCleanup: "스케일 및 정리",
+      scaleAndCleanup: "스케일 및 이상치 처리",
       linear: "선형",
       log: "로그",
-      noClip: "클립 없음",
-      clipP99: "p99 클립",
-      clipP95: "p95 클립",
+      noClip: "클리핑 없음",
+      clipP99: "p99 클리핑",
+      clipP95: "p95 클리핑",
       lossAxis: "손실 축",
       gradientNormAxis: "그래디언트 노름 축",
       learningRateAxis: "학습률 축",

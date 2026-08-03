@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { type BrowseFoldersResponse, browseFolders } from "@/features/chat";
+import { useT } from "@/i18n";
 import { ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
@@ -85,6 +86,7 @@ export function FolderBrowser({
   confirmLabel = "Use this folder",
   showModelHints = true,
 }: FolderBrowserProps) {
+  const t = useT();
   const [data, setData] = useState<BrowseFoldersResponse | null>(null);
   const [path, setPath] = useState<string | undefined>(initialPath);
   const [showHidden, setShowHidden] = useState(false);
@@ -160,7 +162,10 @@ export function FolderBrowser({
         </DialogHeader>
 
         {/* Breadcrumb */}
-        <div className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-6 py-2 font-mono text-ui-11 text-muted-foreground">
+        <div
+          dir="ltr"
+          className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-6 py-2 font-mono text-ui-11 text-muted-foreground"
+        >
           {crumbs.length === 0 ? (
             <span className="text-muted-foreground/60">(loading…)</span>
           ) : (
@@ -187,6 +192,7 @@ export function FolderBrowser({
           <div className="flex flex-wrap gap-1 border-t border-border/50 px-6 py-2">
             {data.suggestions.map((s) => (
               <button
+                dir="ltr"
                 key={s}
                 type="button"
                 onClick={() => navigate(s, showHidden)}
@@ -211,7 +217,9 @@ export function FolderBrowser({
           {!error && !data && loading && (
             <div className="flex items-center gap-2 px-6 py-3">
               <Spinner className="size-3 text-muted-foreground" />
-              <span className="text-xs text-muted-foreground">Loading…</span>
+              <span className="text-xs text-muted-foreground">
+                {t("common.loading")}
+              </span>
             </div>
           )}
           {!error && data && (
@@ -226,7 +234,7 @@ export function FolderBrowser({
                 <button
                   type="button"
                   onClick={() => navigate(data.parent ?? undefined, showHidden)}
-                  className="flex w-full items-center gap-2 px-6 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="flex w-full items-center gap-2 px-6 py-1.5 text-start text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   <HugeiconsIcon
                     icon={ChevronUpStandardIcon}
@@ -242,7 +250,8 @@ export function FolderBrowser({
                     (empty directory)
                   </div>
                 )}
-              {showModelHints && data.model_files_here !== undefined &&
+              {showModelHints &&
+                data.model_files_here !== undefined &&
                 data.model_files_here > 0 && (
                   <div className="border-t border-border/30 px-6 py-1.5 text-ui-10 text-foreground/70">
                     {data.model_files_here} model file
@@ -265,7 +274,7 @@ export function FolderBrowser({
                     navigate(`${data.current}${sep}${e.name}`, showHidden);
                   }}
                   className={cn(
-                    "flex w-full items-center gap-2 px-6 py-1.5 text-left text-xs transition-colors hover:bg-muted hover:text-foreground",
+                    "flex w-full items-center gap-2 px-6 py-1.5 text-start text-xs transition-colors hover:bg-muted hover:text-foreground",
                     e.hidden && "text-muted-foreground/60",
                   )}
                 >
@@ -278,9 +287,11 @@ export function FolderBrowser({
                         : "text-muted-foreground/50",
                     )}
                   />
-                  <span className="truncate font-mono">{e.name}</span>
+                  <span dir="auto" className="truncate font-mono">
+                    {e.name}
+                  </span>
                   {showModelHints && e.has_models && (
-                    <span className="ml-auto shrink-0 rounded-full border border-border/50 px-1.5 py-0 text-ui-9 uppercase tracking-wider text-muted-foreground">
+                    <span className="ms-auto shrink-0 rounded-full border border-border/50 px-1.5 py-0 text-ui-9 uppercase tracking-wider text-muted-foreground">
                       models
                     </span>
                   )}

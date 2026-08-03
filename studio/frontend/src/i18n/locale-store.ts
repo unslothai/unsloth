@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useSyncExternalStore } from "react";
-import { isSupportedLocale, LOCALES, type Locale } from "./messages";
+import { LOCALES, type Locale, isSupportedLocale } from "./messages";
 
 export const DEFAULT_LOCALE: Locale = "en";
 export const AUTO_LOCALE = "auto";
@@ -71,7 +71,9 @@ function normalizePreference(value: unknown): LocalePreference {
   // Return a value re-derived from our own locale table rather than the raw
   // input, so only known language codes are ever persisted.
   const locales = Object.keys(LOCALES) as Locale[];
-  return locales.find((locale) => locale === value) ?? DEFAULT_LOCALE_PREFERENCE;
+  return (
+    locales.find((locale) => locale === value) ?? DEFAULT_LOCALE_PREFERENCE
+  );
 }
 
 function resolvePreference(preference: LocalePreference): Locale {

@@ -92,18 +92,18 @@ export function StudioVersionSection({
   return (
     <SettingsSection title="Unsloth">
       <SettingsRow label={t("settings.about.studioVersion")}>
-        <code className="font-mono text-xs text-muted-foreground">
+        <code dir="ltr" className="font-mono text-xs text-muted-foreground">
           {studioVersion}
         </code>
       </SettingsRow>
       <SettingsRow label={t("settings.about.packageVersion")}>
-        <code className="font-mono text-xs text-muted-foreground">
+        <code dir="ltr" className="font-mono text-xs text-muted-foreground">
           {packageVersion}
         </code>
       </SettingsRow>
       {desktopAppVersion !== undefined ? (
         <SettingsRow label={t("settings.about.desktopAppVersion")}>
-          <code className="font-mono text-xs text-muted-foreground">
+          <code dir="ltr" className="font-mono text-xs text-muted-foreground">
             {desktopAppVersion ??
               t("settings.about.desktopAppVersionUnavailable")}
           </code>
@@ -111,7 +111,7 @@ export function StudioVersionSection({
       ) : null}
       {llamaCppVersion ? (
         <SettingsRow label={t("settings.about.llamaCppVersion")}>
-          <code className="font-mono text-xs text-muted-foreground">
+          <code dir="ltr" className="font-mono text-xs text-muted-foreground">
             {llamaCppVersion}
           </code>
         </SettingsRow>

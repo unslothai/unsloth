@@ -16,11 +16,11 @@ import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
 import { emitTrainingRunsChanged } from "@/features/training";
+import { useHfTokenValidation } from "@/hooks";
 import {
   setShowLlamaUpdateBanner,
   useShowLlamaUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
-import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
@@ -473,7 +473,7 @@ export function GeneralTab() {
         >
           <div className="flex flex-col items-end gap-1.5">
             <div className="flex items-center gap-2">
-              <div className="relative w-[260px]">
+              <div dir="ltr" className="relative w-[260px]">
                 <Input
                   type={showToken ? "text" : "password"}
                   name="hf-token"
@@ -525,13 +525,15 @@ export function GeneralTab() {
                 disabled={!draftToken && !hfToken}
                 onClick={clearHfToken}
               >
-                Clear
+                {t("settings.general.clearToken")}
               </Button>
             </div>
             {tokenValidation.isChecking ? (
-              <p className="text-xs text-muted-foreground">Checking token…</p>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.general.checkingToken")}
+              </p>
             ) : tokenValidation.error ? (
-              <p className="max-w-[330px] text-right text-xs text-destructive">
+              <p className="max-w-[330px] text-end text-xs text-destructive">
                 {tokenValidation.error}
               </p>
             ) : null}
@@ -596,7 +598,7 @@ export function GeneralTab() {
               onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
             />
             {previewSharingError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+              <span className="max-w-[260px] text-end text-xs text-destructive">
                 {previewSharingError}
               </span>
             ) : null}
@@ -655,7 +657,7 @@ export function GeneralTab() {
               </Button>
             </div>
             {embeddingModelError ? (
-              <span className="max-w-[300px] text-right text-xs text-destructive">
+              <span className="max-w-[300px] text-end text-xs text-destructive">
                 {embeddingModelError}
               </span>
             ) : null}
@@ -681,7 +683,7 @@ export function GeneralTab() {
                 </Button>
               ) : null}
             </div>
-            <span className="max-w-[300px] text-right text-xs text-muted-foreground">
+            <span className="max-w-[300px] text-end text-xs text-muted-foreground">
               {t("settings.general.rag.reindexWarning")}
             </span>
           </div>
@@ -706,7 +708,7 @@ export function GeneralTab() {
                   max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
                   step={1}
                   value={draftUploadLimit}
-                  aria-label="Training dataset upload cap in MB"
+                  aria-label={t("settings.general.uploads.maxUploadSize")}
                   onChange={(event) => setDraftUploadLimit(event.target.value)}
                   className="h-8 w-24"
                 />
@@ -724,7 +726,7 @@ export function GeneralTab() {
               </Button>
             </div>
             {uploadLimitError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+              <span className="max-w-[260px] text-end text-xs text-destructive">
                 {uploadLimitError}
               </span>
             ) : null}
@@ -771,11 +773,11 @@ export function GeneralTab() {
               onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
             />
             {helperPrecache?.disabledByEnv ? (
-              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+              <span className="max-w-[260px] text-end text-xs text-muted-foreground">
                 {t("settings.general.helperLlm.disabledByEnv")}
               </span>
             ) : helperPrecacheError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+              <span className="max-w-[260px] text-end text-xs text-destructive">
                 {helperPrecacheError}
               </span>
             ) : null}

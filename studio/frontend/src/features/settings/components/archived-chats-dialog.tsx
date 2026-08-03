@@ -128,7 +128,7 @@ export function ArchivedChatsView() {
               <button
                 type="button"
                 onClick={() => openChat(item)}
-                className="min-w-0 flex-1 truncate text-left text-primary hover:underline"
+                className="min-w-0 flex-1 truncate text-start text-primary hover:underline"
                 title={item.title}
               >
                 {item.title}

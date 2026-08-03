@@ -889,7 +889,7 @@ export function ChatProvidersSettings({
   if (page === "form") {
     return (
       <div className="@container -mt-3 flex min-h-0 flex-col gap-2">
-        <header className="flex items-center gap-2 pr-8">
+        <header className="flex items-center gap-2 pe-8">
           <Button
             type="button"
             variant="ghost"
@@ -899,7 +899,10 @@ export function ChatProvidersSettings({
             aria-label="Back to connections"
             title="Back to connections"
           >
-            <HugeiconsIcon icon={ArrowLeft02Icon} className="size-4" />
+            <HugeiconsIcon
+              icon={ArrowLeft02Icon}
+              className="size-4"
+            />
           </Button>
           <div className="flex min-w-0 items-center gap-2 leading-none">
             <span className="text-xs font-medium text-muted-foreground">
@@ -1016,7 +1019,7 @@ export function ChatProvidersSettings({
                       Stored locally.
                     </p>
                   </div>
-                  <div className="relative min-w-0">
+                  <div dir="ltr" className="relative min-w-0">
                     <Input
                       id="provider-api-key"
                       type={showApiKey ? "text" : "password"}
@@ -1077,6 +1080,7 @@ export function ChatProvidersSettings({
                     </p>
                   </div>
                   <Input
+                    dir="ltr"
                     id="provider-base-url"
                     type="text"
                     value={baseUrlDraft}
@@ -1156,7 +1160,7 @@ export function ChatProvidersSettings({
                   >
                     {modelsLoading ? (
                       <>
-                        <Spinner className="mr-2 size-3.5" />
+                        <Spinner className="me-2 size-3.5" />
                         Loading…
                       </>
                     ) : availableModels.length > 0 ? (
@@ -1176,6 +1180,7 @@ export function ChatProvidersSettings({
                         Model IDs (one per line or comma-separated)
                       </Label>
                       <Textarea
+                        dir="ltr"
                         id="provider-manual-models"
                         value={manualModelIds}
                         onChange={(event) =>
@@ -1199,6 +1204,7 @@ export function ChatProvidersSettings({
                             {availableModelsLabel}
                           </span>
                           <Input
+                            dir="ltr"
                             id={`provider-model-search-${modelsPanelKey}`}
                             type="search"
                             value={modelSearchQuery}
@@ -1252,6 +1258,7 @@ export function ChatProvidersSettings({
                                   onClick={(event) => event.stopPropagation()}
                                 />
                                 <span
+                                  dir="ltr"
                                   className="min-w-0 break-all text-sm leading-tight"
                                 >
                                   {model}
@@ -1270,6 +1277,7 @@ export function ChatProvidersSettings({
                         Model IDs (one per line or comma-separated)
                       </Label>
                       <Textarea
+                        dir="ltr"
                         id="provider-manual-models"
                         value={manualModelIds}
                         onChange={(event) =>
@@ -1291,6 +1299,7 @@ export function ChatProvidersSettings({
                             {availableModelsLabel}
                           </span>
                           <Input
+                            dir="ltr"
                             id={`provider-model-search-${modelsPanelKey}`}
                             type="search"
                             value={modelSearchQuery}
@@ -1341,6 +1350,7 @@ export function ChatProvidersSettings({
                                   onClick={(event) => event.stopPropagation()}
                                 />
                                 <span
+                                  dir="ltr"
                                   className="min-w-0 break-all text-sm leading-tight"
                                 >
                                   {model}
@@ -1363,6 +1373,7 @@ export function ChatProvidersSettings({
                             : "Additional model IDs (one per line or comma-separated)"}
                         </Label>
                         <Textarea
+                          dir="ltr"
                           id="provider-manual-models"
                           value={manualModelIds}
                           onChange={(event) =>
@@ -1420,7 +1431,7 @@ export function ChatProvidersSettings({
 
   return (
     <div className="flex min-h-0 flex-col gap-6">
-      <header className="flex flex-col gap-1 pr-8">
+      <header className="flex flex-col gap-1 pe-8">
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="font-heading text-lg font-semibold">Connections</h1>
           <p className="text-xs leading-relaxed text-muted-foreground">
@@ -1447,7 +1458,7 @@ export function ChatProvidersSettings({
         </div>
         <p
           id="chat-connections-description"
-          className="max-w-md text-ui-11 leading-snug text-muted-foreground/65 sm:text-right"
+          className="max-w-md text-ui-11 leading-snug text-muted-foreground/65 sm:text-end"
         >
           When off, all connections are disabled.
         </p>
@@ -1458,7 +1469,7 @@ export function ChatProvidersSettings({
           <button
             type="button"
             onClick={openAddProvider}
-            className="group/add flex w-full items-center justify-between gap-3 border-border/60 border-b px-3 py-2.5 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+            className="group/add flex w-full items-center justify-between gap-3 border-border/60 border-b px-3 py-2.5 text-start text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
           >
             <span className="flex min-w-0 items-center gap-2 rounded-full border border-border bg-background/50 px-3 py-1.5 transition-colors group-hover/add:border-control-accent/25 group-hover/add:text-control-accent">
               <HugeiconsIcon icon={PlusSignIcon} className="size-4 shrink-0" />
@@ -1517,7 +1528,7 @@ export function ChatProvidersSettings({
                           {detail ? (
                             <>
                               {" · "}
-                              <span>{detail}</span>
+                              <bdi dir="ltr">{detail}</bdi>
                             </>
                           ) : null}
                         </div>
@@ -1525,7 +1536,7 @@ export function ChatProvidersSettings({
                           className="mt-1 truncate text-ui-11 leading-4 text-muted-foreground/80"
                           title={provider.models.join(", ")}
                         >
-                          {modelSummary}
+                          <bdi dir="ltr">{modelSummary}</bdi>
                         </div>
                       </div>
                     </div>

@@ -210,7 +210,7 @@ export function ProfilePersonalizationPanel() {
         }}
       />
 
-      <div className="flex items-center gap-10 py-6 pr-2">
+      <div className="flex items-center gap-10 py-6 pe-2">
         <div className="relative shrink-0">
           {/* The picture itself is the shortcut to "upload a photo"; the pencil
               opens the rest of the options. */}

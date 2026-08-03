@@ -11,15 +11,16 @@ import {
   pickHuggingFaceCacheDir,
 } from "@/features/native-intents";
 import {
+  type GpuDevice,
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
-  type GpuDevice,
 } from "@/hooks/use-system";
+import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useT } from "@/i18n";
+import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   type HuggingFaceCacheSettings,
@@ -29,7 +30,6 @@ import {
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
-import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -125,6 +125,7 @@ function MetricTile({
           {label}
         </span>
         <span
+          dir="ltr"
           className={cn(
             "shrink-0 font-mono text-xs tabular-nums",
             percentKnown
@@ -136,7 +137,10 @@ function MetricTile({
         </span>
       </div>
       <div className="min-w-0">
-        <div className="truncate font-mono text-sm tabular-nums text-foreground">
+        <div
+          dir="auto"
+          className="truncate font-mono text-sm tabular-nums text-foreground"
+        >
           {value}
         </div>
         <div className="mt-0.5 truncate text-xs text-muted-foreground">
@@ -168,8 +172,9 @@ function InfoRow({
         {label}
       </span>
       <span
+        dir="auto"
         title={detail ?? value}
-        className="min-w-0 max-w-[60%] truncate text-right font-mono text-xs tabular-nums text-muted-foreground"
+        className="min-w-0 max-w-[60%] truncate text-end font-mono text-xs tabular-nums text-muted-foreground"
       >
         {detail ? `${value} (${detail})` : value}
       </span>
@@ -448,14 +453,16 @@ export function ResourcesTab() {
       <SettingsSection title={t("settings.resources.gpu.title")}>
         {separateInferenceGpu && (
           <div className="flex items-center justify-between gap-4 border-b border-border/60 py-3 text-sm">
-            <span className="text-muted-foreground">GGUF inference</span>
-            <span className="text-right font-mono text-xs uppercase text-foreground">
+            <span className="text-muted-foreground">
+              {t("settings.resources.gpu.ggufInference")}
+            </span>
+            <span className="text-end font-mono text-xs uppercase text-foreground">
               {separateInferenceGpu.backend ?? "GPU"}
               {separateInferenceGpu.available
                 ? inferenceVramTotal
                   ? ` · ${formatGiB(inferenceVramTotal)}`
                   : ""
-                : " · unavailable"}
+                : ` · ${t("settings.resources.gpu.unavailable")}`}
             </span>
           </div>
         )}
@@ -532,11 +539,17 @@ export function ResourcesTab() {
                     <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.used", { value: usedText })}
                     </span>
-                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
+                    <span
+                      aria-hidden={true}
+                      className="h-3 w-px shrink-0 bg-border"
+                    />
                     <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.free", { value: freeText })}
                     </span>
-                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
+                    <span
+                      aria-hidden={true}
+                      className="h-3 w-px shrink-0 bg-border"
+                    />
                     <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.total", {
                         value: totalText,
@@ -577,9 +590,9 @@ export function ResourcesTab() {
           className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
         >
           <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
-            <div className="relative min-w-0">
+            <div dir="ltr" className="relative min-w-0">
               <Input
-                readOnly
+                readOnly={true}
                 aria-label={t("settings.resources.storage.modelsFolder")}
                 value={modelsFolderPath}
                 title={hfCache?.cacheHome}
@@ -618,7 +631,7 @@ export function ResourcesTab() {
               {t("settings.resources.storage.changeAction")}
             </Button>
             {cacheLocationDetail || hfCache?.isCustom ? (
-              <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
+              <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 ps-3.5 pe-1 text-xs text-muted-foreground">
                 {cacheLocationDetail ? (
                   <span
                     title={cacheLocationDetail}

@@ -96,7 +96,7 @@ export function TrainingHighlightsCard({ stats }: { stats: ProfileStats }) {
                 </span>
                 <span
                   className={cn(
-                    "w-16 text-right",
+                    "w-16 text-end",
                     STATUS_TONE[run.status] ?? "text-muted-foreground",
                   )}
                 >

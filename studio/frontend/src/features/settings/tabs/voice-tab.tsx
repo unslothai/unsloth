@@ -19,17 +19,17 @@ import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
-  StudioModelDictationAdapter,
   type SttDownloadStatus,
+  StudioModelDictationAdapter,
+  StudioSpeechSynthesisAdapter,
+  createConfiguredUtterance,
+  curateSystemVoices,
   fetchSttStatus,
+  generateStudioTtsAudio,
   loadSttModel,
   startSttDownload,
   unloadSttModel,
   validateSttModel,
-  StudioSpeechSynthesisAdapter,
-  createConfiguredUtterance,
-  curateSystemVoices,
-  generateStudioTtsAudio,
 } from "@/features/chat";
 import {
   DownloadProgressBar,
@@ -78,6 +78,11 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "hi-IN", label: "हिन्दी" },
   { value: "ar-SA", label: "العربية" },
 ];
+
+// Keep spoken preview content independent of the interface locale. The system
+// voice and loaded local model may not support the language used by the UI.
+const TTS_PREVIEW_TEXT =
+  "Hello from Unsloth! This is a preview of the selected voice.";
 
 // Speech-recognition models, not voices. Name and size are separate so the list
 // can right-align the size; the speed/accuracy note lives in the row description.
@@ -208,7 +213,7 @@ function SttModelPicker({
       <PopoverTrigger asChild={true}>
         <button
           type="button"
-          aria-label="Speech recognition model"
+          aria-label={t("settings.voice.dictation.sttModelLabel")}
           className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10 focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
         >
           <span className="truncate">{sttModelName(value)}</span>
@@ -224,7 +229,7 @@ function SttModelPicker({
           <HugeiconsIcon
             icon={Search01Icon}
             strokeWidth={2}
-            className="text-muted-foreground pointer-events-none absolute top-[calc(50%+2px)] left-4 size-3.5 -translate-y-1/2"
+            className="text-muted-foreground pointer-events-none absolute top-[calc(50%+2px)] start-4 size-3.5 -translate-y-1/2"
           />
           <Input
             value={query}
@@ -232,7 +237,7 @@ function SttModelPicker({
             placeholder={t(
               "settings.voice.dictation.sttModelSearchPlaceholder",
             )}
-            className="h-8 pl-8 text-sm"
+            className="h-8 ps-8 text-sm"
             autoFocus={true}
             onKeyDown={(event) => {
               if (event.key === "Enter" && items.length > 0) {
@@ -269,7 +274,7 @@ function SttModelPicker({
                   type="button"
                   onClick={() => void selectModel(model)}
                   aria-selected={model === value}
-                  className={`flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
+                  className={`flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-start transition-colors hover:bg-muted ${
                     twoLines ? "rounded-sm" : "rounded-full"
                   } ${model === value ? "bg-accent font-medium" : ""}`}
                 >
@@ -278,7 +283,10 @@ function SttModelPicker({
                       {sttModelName(model)}
                     </span>
                     {twoLines ? (
-                      <span className="mt-0.5 block truncate font-mono text-ui-9 leading-tight text-muted-foreground">
+                      <span
+                        dir="ltr"
+                        className="mt-0.5 block truncate font-mono text-ui-9 leading-tight text-muted-foreground"
+                      >
                         {sttModelSource(model)}
                       </span>
                     ) : null}
@@ -297,9 +305,6 @@ function SttModelPicker({
     </Popover>
   );
 }
-
-const TTS_PREVIEW_TEXT =
-  "Hello from Unsloth! This is a preview of the selected voice.";
 
 function useAudioInputDevices() {
   const t = useT();
@@ -759,14 +764,16 @@ export function VoiceTab() {
         audio.addEventListener("error", () => {
           releasePreviewAudio();
           markPreviewing(false);
-          toast.error("TTS preview failed");
+          toast.error(t("settings.voice.readAloud.previewFailed"));
         });
         previewAudioRef.current = audio;
         await audio.play();
       } catch (error) {
         if (!controller.signal.aborted) {
           toast.error(
-            error instanceof Error ? error.message : "TTS preview failed",
+            error instanceof Error
+              ? error.message
+              : t("settings.voice.readAloud.previewFailed"),
           );
         }
         releasePreviewAudio();
@@ -850,7 +857,7 @@ export function VoiceTab() {
             }}
           >
             <SelectTrigger
-              aria-label="Dictation engine"
+              aria-label={t("settings.voice.dictation.engineLabel")}
               className="w-56"
               size="sm"
             >
@@ -953,7 +960,7 @@ export function VoiceTab() {
                         onClick={beginSttDownload}
                       >
                         {sttDownloadStarting || downloadingThisModel ? (
-                          <Spinner className="mr-1.5" />
+                          <Spinner className="me-1.5" />
                         ) : null}
                         {t("settings.voice.dictation.sttDownload")}
                       </Button>
@@ -966,7 +973,7 @@ export function VoiceTab() {
                           disabled={sttUnloading}
                           onClick={releaseSttModel}
                         >
-                          {sttUnloading ? <Spinner className="mr-1.5" /> : null}
+                          {sttUnloading ? <Spinner className="me-1.5" /> : null}
                           {sttUnloading
                             ? t("settings.voice.dictation.sttUnloading")
                             : t("settings.voice.dictation.sttUnload")}
@@ -1022,7 +1029,11 @@ export function VoiceTab() {
         >
           {hasLabels ? (
             <Select value={micDeviceId} onValueChange={setMicDeviceId}>
-              <SelectTrigger aria-label="Microphone" className="min-w-56 max-w-72" size="sm">
+              <SelectTrigger
+                aria-label={t("settings.voice.dictation.microphoneLabel")}
+                className="min-w-56 max-w-72"
+                size="sm"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1033,7 +1044,10 @@ export function VoiceTab() {
                   .filter((d) => d.deviceId && d.deviceId !== "default")
                   .map((d, i) => (
                     <SelectItem key={d.deviceId} value={d.deviceId}>
-                      {d.label || `Microphone ${i + 1}`}
+                      {d.label ||
+                        t("settings.voice.dictation.microphoneFallbackName", {
+                          index: i + 1,
+                        })}
                     </SelectItem>
                   ))}
                 {!knownMic && micDeviceId !== "default" ? (
@@ -1045,7 +1059,7 @@ export function VoiceTab() {
             </Select>
           ) : (
             <Button variant="outline" size="sm" onClick={requestAccess}>
-              <MicIcon className="mr-1.5 size-3.5" />
+              <MicIcon className="me-1.5 size-3.5" />
               {t("settings.voice.dictation.allowMicrophone")}
             </Button>
           )}
@@ -1060,7 +1074,7 @@ export function VoiceTab() {
             onValueChange={setDictationLanguage}
           >
             <SelectTrigger
-              aria-label="Dictation language"
+              aria-label={t("settings.voice.dictation.languageLabel")}
               className="min-w-56 max-w-72"
               size="sm"
             >
@@ -1133,7 +1147,7 @@ export function VoiceTab() {
                 }
               >
                 <SelectTrigger
-                  aria-label="TTS engine"
+                  aria-label={t("settings.voice.readAloud.engineLabel")}
                   className="min-w-56 max-w-72"
                   size="sm"
                 >
@@ -1164,7 +1178,7 @@ export function VoiceTab() {
               >
                 <Select value={ttsVoiceURI} onValueChange={setTtsVoiceURI}>
                   <SelectTrigger
-                    aria-label="Text to speech voice"
+                    aria-label={t("settings.voice.readAloud.voiceLabel")}
                     className="min-w-56 max-w-72"
                     size="sm"
                   >
@@ -1195,7 +1209,7 @@ export function VoiceTab() {
                 step={0.05}
                 onValueChange={([v]) => v !== undefined && setTtsRate(v)}
                 className="w-48"
-                aria-label="Speaking rate"
+                aria-label={t("settings.voice.readAloud.speedLabel")}
               />
             </SettingsRow>
 
@@ -1211,7 +1225,7 @@ export function VoiceTab() {
                   step={0.05}
                   onValueChange={([v]) => v !== undefined && setTtsPitch(v)}
                   className="w-48"
-                  aria-label="Voice pitch"
+                  aria-label={t("settings.voice.readAloud.pitchLabel")}
                 />
               </SettingsRow>
             )}
@@ -1227,7 +1241,7 @@ export function VoiceTab() {
                 step={0.05}
                 onValueChange={([v]) => v !== undefined && setTtsVolume(v)}
                 className="w-48"
-                aria-label="Playback volume"
+                aria-label={t("settings.voice.readAloud.volumeLabel")}
               />
             </SettingsRow>
 
@@ -1242,14 +1256,14 @@ export function VoiceTab() {
               >
                 {previewing ? (
                   <>
-                    <SquareIcon className="mr-1.5 size-3 animate-pulse fill-current text-destructive" />
+                    <SquareIcon className="me-1.5 size-3 animate-pulse fill-current text-destructive" />
                     {t("settings.voice.readAloud.stopAction")}
                   </>
                 ) : (
                   <>
                     <HugeiconsIcon
                       icon={VolumeHighIcon}
-                      className="mr-1.5 size-3.5"
+                      className="me-1.5 size-3.5"
                     />
                     {t("settings.voice.readAloud.previewAction")}
                   </>

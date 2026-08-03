@@ -575,7 +575,7 @@ export function UploadedFilesView() {
                 title={
                   row.threadId ? `Go to ${row.location}` : `Open ${row.name}`
                 }
-                className="group/name flex min-w-0 flex-1 basis-[calc(100%-5rem)] items-center gap-2.5 overflow-hidden text-left sm:basis-auto"
+                className="group/name flex min-w-0 flex-1 basis-[calc(100%-5rem)] items-center gap-2.5 overflow-hidden text-start sm:basis-auto"
               >
                 <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-border/50 bg-muted/40">
                   {row.thumb}
@@ -608,19 +608,19 @@ export function UploadedFilesView() {
                   type="button"
                   onClick={() => goToChat(row)}
                   title={`Go to ${row.location}`}
-                  className="order-3 w-full truncate pl-10 text-left text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline sm:order-none sm:w-36 sm:pl-0"
+                  className="order-3 w-full truncate ps-10 text-start text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline sm:order-none sm:w-36 sm:ps-0"
                 >
                   {row.location}
                 </button>
               ) : (
                 <span
-                  className="order-3 w-full truncate pl-10 text-muted-foreground sm:order-none sm:w-36 sm:pl-0"
+                  className="order-3 w-full truncate ps-10 text-muted-foreground sm:order-none sm:w-36 sm:ps-0"
                   title={row.location}
                 >
                   {row.location}
                 </span>
               )}
-              <span className="order-4 w-full pl-10 text-muted-foreground tabular-nums sm:order-none sm:w-24 sm:pl-0">
+              <span className="order-4 w-full ps-10 text-muted-foreground tabular-nums sm:order-none sm:w-24 sm:ps-0">
                 {formatUploadedAt(row.createdAt)}
               </span>
               <span className="flex w-16 shrink-0 items-center justify-end gap-1">

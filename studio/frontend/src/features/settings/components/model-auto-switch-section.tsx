@@ -162,7 +162,9 @@ export function ModelAutoSwitchSection() {
                 min={0}
                 step={1}
                 value={draftIdleSeconds}
-                aria-label="Idle auto-unload seconds"
+                aria-label={t(
+                  "settings.general.modelAutoSwitch.idleSecondsAriaLabel",
+                )}
                 disabled={!settings?.enabled || isSaving}
                 onChange={(event) => setDraftIdleSeconds(event.target.value)}
                 className="h-8 w-24"
@@ -181,15 +183,15 @@ export function ModelAutoSwitchSection() {
             </Button>
           </div>
           {error ? (
-            <span className="max-w-[260px] text-right text-xs text-destructive">
+            <span className="max-w-[260px] text-end text-xs text-destructive">
               {error}
             </span>
           ) : settings && !settings.enabled && settings.idleUnloadActive ? (
-            <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+            <span className="max-w-[260px] text-end text-xs text-muted-foreground">
               {t("settings.general.modelAutoSwitch.idleActiveViaEnv")}
             </span>
           ) : settings && !settings.enabled ? (
-            <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+            <span className="max-w-[260px] text-end text-xs text-muted-foreground">
               {t("settings.general.modelAutoSwitch.idleNeedsEnable")}
             </span>
           ) : null}

@@ -89,7 +89,10 @@ function CopyableCommand({
   };
 
   return (
-    <div className="flex min-w-0 items-stretch overflow-hidden rounded-md border border-border bg-muted/40">
+    <div
+      dir="ltr"
+      className="flex min-w-0 items-stretch overflow-hidden rounded-md border border-border bg-muted/40"
+    >
       <input
         type="text"
         readOnly={true}

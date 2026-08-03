@@ -4,8 +4,8 @@
 import { useCallback } from "react";
 import { useLocale } from "./locale-store";
 import { translate } from "./messages";
-import type { InterpolationValues } from "./types";
 import type { TranslationKey } from "./messages";
+import type { InterpolationValues } from "./types";
 
 export {
   AUTO_LOCALE,
@@ -29,6 +29,7 @@ export {
   translate,
 } from "./messages";
 export type { Locale, TranslationKey } from "./messages";
+export { formatRelativeTime } from "./relative-time";
 export type {
   DeepPartialMessageTree,
   InterpolationValues,
