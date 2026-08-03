@@ -32,11 +32,17 @@ def test_missing_absolute_upload_reports_404():
     _expect_missing_file_404(str(missing))
 
 
-def test_missing_relative_upload_reports_404():
+# Relative refs can also be Hub repo ids, so they only become the missing-file
+# error once the Hub lookup fails; offline mode makes that failure deterministic.
+def test_missing_relative_upload_reports_404(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("HF_DATASETS_OFFLINE", "1")
     _expect_missing_file_404("uploads/deleted-upload-test-fixture.jsonl")
 
 
-def test_missing_relative_recipe_reports_404():
+def test_missing_relative_recipe_reports_404(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("HF_DATASETS_OFFLINE", "1")
     _expect_missing_file_404("recipes/deleted-recipe-test-fixture/parquet-files")
 
 

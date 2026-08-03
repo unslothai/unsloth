@@ -505,8 +505,15 @@ async def get_dataset_download_progress(
     )
 
 
+_MISSING_DATASET_DETAIL = (
+    "This dataset file no longer exists. Upload it again or pick another dataset."
+)
+
+
 def _is_local_dataset_reference(raw: str) -> bool:
-    """Local upload/recipe reference, absolute or relative, vs a HuggingFace repo id."""
+    """Looks like a local upload/recipe reference. A Hub repo id can share the
+    `uploads/`-style prefix, so this only picks the error message after a failed
+    Hub lookup; an absolute path is decided up front."""
     path = Path(raw)
     if path.is_absolute():
         return True
@@ -540,14 +547,8 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
         dataset_path = resolve_dataset_path(request.dataset_name)
         total_rows = None
 
-        if not dataset_path.exists() and _is_local_dataset_reference(request.dataset_name):
-            raise HTTPException(
-                status_code = 404,
-                detail = (
-                    "This dataset file no longer exists. Upload it again or pick "
-                    "another dataset."
-                ),
-            )
+        if not dataset_path.exists() and Path(request.dataset_name).is_absolute():
+            raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
 
         if dataset_path.exists():
             # ── Local file ──────────────────────────────────────────
@@ -691,6 +692,8 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
         raise
     except Exception as e:
         logger.error(f"Error checking dataset format: {e}", exc_info = True)
+        if _is_local_dataset_reference(request.dataset_name):
+            raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL) from e
         raise HTTPException(status_code = 500, detail = "Failed to check dataset format")
 
 
