@@ -79,6 +79,8 @@ def test_terminal_update_holds_the_gate_through_environment_mutation():
     setup = body.index("_run_setup_script(", release_self)
     verify = body.index("_fail_if_install_damaged()", setup)
     assert consume < guard < idle_scan < release_self < setup < verify
+
+
 def test_terminal_setup_holds_the_gate_through_environment_mutation():
     source = STUDIO_COMMAND.read_text(encoding = "utf-8")
     body = source[source.index("def setup(") : source.index("def _fail_if_install_damaged")]
@@ -123,8 +125,6 @@ def test_interrupted_windows_setup_kills_tree_before_return(monkeypatch):
     assert events[1][1] == ["taskkill", "/PID", "4242", "/T", "/F"]
     assert events[1][2]["check"] is False
     assert events[2] == "wait"
-
-
 
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows ordinal comparison is required")

@@ -849,7 +849,6 @@ def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
     )
     assert setup_python < setup_save < setup_set < setup_invoke < setup_restore
 
-
     assert (
         studio_source.count(
             "runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()"
