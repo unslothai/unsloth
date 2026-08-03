@@ -25,6 +25,7 @@ use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -36,6 +37,7 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 /// runs cleanup; the others block until it is done, so the process never exits
 /// out from under a cleanup that is still killing the backend tree.
 static TERMINATION_CLEANUP: Once = Once::new();
+static QUIT_CONFIRM_OPEN: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 fn has_saved_window_state(app: tauri::AppHandle) -> bool {
@@ -108,7 +110,7 @@ fn set_training_active(state: tauri::State<'_, TrainingActivityState>, active: b
     }
 }
 
-/// Ask before quitting mid-training (true to proceed). Tray Quit only, as below.
+/// Ask before quitting mid-training (true to proceed).
 fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -133,8 +135,8 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
 }
 
 /// Ask before quitting mid-install (true to proceed): `cleanup_child_processes` SIGTERMs the
-/// installer, leaving a venv that looks healthy but cannot start. Tray Quit only, since
-/// RunEvent::Exit must never block on a dialog nobody can answer.
+/// installer, leaving a venv that looks healthy but cannot start. Never called from
+/// RunEvent::Exit, which must not block on a dialog nobody can answer.
 fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -157,6 +159,22 @@ fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
             "Keep installing".to_string(),
         ))
         .blocking_show()
+}
+
+fn confirm_then_quit(app: &tauri::AppHandle) {
+    if QUIT_CONFIRM_OPEN.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let proceed =
+            confirm_quit_during_install(&app_handle) && confirm_quit_during_training(&app_handle);
+        QUIT_CONFIRM_OPEN.store(false, Ordering::SeqCst);
+        if proceed {
+            cleanup_child_processes(&app_handle);
+            app_handle.exit(0);
+        }
+    });
 }
 
 fn cleanup_child_processes(app: &tauri::AppHandle) {
@@ -259,6 +277,38 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+#[cfg(target_os = "macos")]
+const APP_QUIT_MENU_ID: &str = "app-quit";
+
+/// Replace the predefined Quit with our own item, so Cmd+Q can be confirmed:
+/// tao terminates on `applicationWillTerminate` and never emits ExitRequested.
+#[cfg(target_os = "macos")]
+fn setup_quit_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let handle = app.handle();
+    let menu = tauri::menu::Menu::default(handle)?;
+    let Some(app_menu) = menu
+        .items()?
+        .first()
+        .and_then(|item| item.as_submenu().cloned())
+    else {
+        return Ok(());
+    };
+    if let Some(quit) = app_menu.items()?.last() {
+        app_menu.remove(quit)?;
+    }
+    let quit = MenuItemBuilder::with_id(APP_QUIT_MENU_ID, "Quit Unsloth")
+        .accelerator("CmdOrCtrl+Q")
+        .build(app)?;
+    app_menu.append(&quit)?;
+    app.set_menu(menu)?;
+    app.on_menu_event(|app, event| {
+        if event.id() == APP_QUIT_MENU_ID {
+            confirm_then_quit(app);
+        }
+    });
+    Ok(())
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Unsloth").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -276,23 +326,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "toggle" => {
                 let _ = app.emit("tray-toggle-server", ());
             }
-            "quit" => {
-                // Run cleanup off the menu callback, but only exit after the
-                // backend tree has been reaped. Exiting first can terminate this
-                // process while a detached cleanup thread is still waiting,
-                // leaving the backend orphaned.
-                let app_handle = app.clone();
-                std::thread::spawn(move || {
-                    if !confirm_quit_during_install(&app_handle) {
-                        return;
-                    }
-                    if !confirm_quit_during_training(&app_handle) {
-                        return;
-                    }
-                    cleanup_child_processes(&app_handle);
-                    app_handle.exit(0);
-                });
-            }
+            "quit" => confirm_then_quit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -393,6 +427,8 @@ fn main() {
             }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
+            #[cfg(target_os = "macos")]
+            setup_quit_menu(app)?;
             setup_tray(app)?;
             #[cfg(unix)]
             setup_unix_termination_signals(app)?;
