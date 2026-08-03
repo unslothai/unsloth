@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
+import re
 import structlog
 import subprocess
+import uuid
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
@@ -20,6 +24,10 @@ from utils.paths import ensure_dir, oxc_validator_tmp_root
 logger = get_logger(__name__)
 
 OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator"
+TOOL_VALIDATION_FN_MARKER = "unsloth_tool_validator"
+
+_TOOL_FILE_EXT_RE = re.compile(r"^[A-Za-z0-9.+-]{1,20}$")
+_TOOL_RUN_TIMEOUT_SECONDS = 60
 
 _OXC_LANG_TO_NODE_LANG = {
     "javascript": "js",
@@ -49,6 +57,77 @@ class OxcLocalCallableValidatorSpec:
     code_lang: str
     validation_mode: str
     code_shape: str
+
+
+@dataclass(frozen = True)
+class ToolLocalCallableValidatorSpec:
+    name: str
+    drop: bool
+    target_columns: list[str]
+    batch_size: int
+    file_ext: str
+    command: str
+
+
+def split_tool_local_callable_validators(
+    recipe_core: dict[str, Any],
+) -> tuple[dict[str, Any], list[ToolLocalCallableValidatorSpec]]:
+    columns = recipe_core.get("columns")
+    if not isinstance(columns, list):
+        return recipe_core, []
+
+    sanitized = deepcopy(recipe_core)
+    sanitized_columns = sanitized.get("columns")
+    if not isinstance(sanitized_columns, list):
+        return sanitized, []
+
+    kept_columns: list[Any] = []
+    tool_specs: list[ToolLocalCallableValidatorSpec] = []
+
+    for column in sanitized_columns:
+        if not isinstance(column, dict):
+            kept_columns.append(column)
+            continue
+
+        maybe_spec = _parse_tool_spec(column = column)
+        if maybe_spec is None:
+            kept_columns.append(column)
+            continue
+        tool_specs.append(maybe_spec)
+
+    sanitized["columns"] = kept_columns
+    return sanitized, tool_specs
+
+
+def register_tool_local_callable_validators(
+    *, builder, specs: list[ToolLocalCallableValidatorSpec]
+) -> None:
+    if not specs:
+        return
+
+    from data_designer.config.column_configs import ValidationColumnConfig
+    from data_designer.config.validator_params import (
+        LocalCallableValidatorParams,
+        ValidatorType,
+    )
+
+    for spec in specs:
+        validation_function = _build_tool_validation_function(
+            spec.file_ext,
+            spec.command,
+        )
+        builder.add_column(
+            ValidationColumnConfig(
+                name = spec.name,
+                drop = spec.drop,
+                target_columns = spec.target_columns,
+                validator_type = ValidatorType.LOCAL_CALLABLE,
+                validator_params = LocalCallableValidatorParams(
+                    validation_function = validation_function,
+                ),
+                batch_size = spec.batch_size,
+            )
+        )
 
 
 def split_oxc_local_callable_validators(
@@ -176,6 +255,218 @@ def _parse_oxc_validation_marker(fn_name: str) -> tuple[str, str, str]:
     mode = parts[1] if parts[1] in _OXC_VALIDATION_MODES else "syntax"
     code_shape = parts[2] if len(parts) >= 3 and parts[2] in _OXC_CODE_SHAPES else "auto"
     return code_lang, mode, code_shape
+
+
+def _decode_base64url(value: str) -> str:
+    padded = value + "=" * (-len(value) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+    except (binascii.Error, ValueError):
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+
+def _parse_tool_spec(*, column: dict[str, Any]) -> ToolLocalCallableValidatorSpec | None:
+    if str(column.get("column_type") or "").strip() != "validation":
+        return None
+    if str(column.get("validator_type") or "").strip() != "local_callable":
+        return None
+
+    params = column.get("validator_params")
+    if not isinstance(params, dict):
+        return None
+
+    fn_raw = params.get("validation_function")
+    fn_name = fn_raw.strip() if isinstance(fn_raw, str) else ""
+    marker = f"{TOOL_VALIDATION_FN_MARKER}:"
+    if not fn_name.startswith(marker):
+        return None
+
+    encoded = fn_name[len(marker) :].strip()
+    if not encoded:
+        return None
+    decoded = _decode_base64url(encoded)
+    try:
+        spec = json.loads(decoded)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(spec, dict):
+        return None
+
+    file_ext = str(spec.get("ext") or "").strip().lstrip(".")
+    command = str(spec.get("command") or "").strip()
+    if not file_ext or not _TOOL_FILE_EXT_RE.fullmatch(file_ext):
+        return None
+    if not command:
+        return None
+
+    name = str(column.get("name") or "").strip()
+    if not name:
+        return None
+
+    target_columns_raw = column.get("target_columns")
+    target_columns = (
+        [value.strip() for value in target_columns_raw if isinstance(value, str) and value.strip()]
+        if isinstance(target_columns_raw, list)
+        else []
+    )
+    if not target_columns:
+        return None
+
+    return ToolLocalCallableValidatorSpec(
+        name = name,
+        drop = bool(column.get("drop") is True),
+        target_columns = target_columns,
+        batch_size = _parse_batch_size(column.get("batch_size")),
+        file_ext = file_ext,
+        command = command,
+    )
+
+
+@lru_cache(maxsize = 8)
+def _build_tool_validation_function(file_ext: str, command: str):
+    normalized_ext = file_ext
+    normalized_command = command
+
+    def _validator(df):
+        import pandas as pd  # lazy import for local callable runtime
+
+        row_count = int(len(df.index))
+        if row_count == 0:
+            return pd.DataFrame({"is_valid": []})
+
+        code_column = str(df.columns[0]) if len(df.columns) > 0 else ""
+        code_values = (
+            ["" for _ in range(row_count)]
+            if not code_column
+            else ["" if value is None else str(value) for value in df[code_column].tolist()]
+        )
+
+        results = _run_tool_batch(
+            file_ext = normalized_ext,
+            command = normalized_command,
+            code_values = code_values,
+        )
+        if len(results) != row_count:
+            results = _fallback_results(
+                row_count,
+                "Tool validator returned mismatched result size.",
+            )
+        return pd.DataFrame(results)
+
+    _validator.__name__ = f"{TOOL_VALIDATION_FN_MARKER}_{normalized_ext}"
+    return _validator
+
+
+def _run_tool_batch(
+    *, file_ext: str, command: str, code_values: list[str]
+) -> list[dict[str, Any]]:
+    tmp_root = ensure_dir(oxc_validator_tmp_root())
+    results: list[dict[str, Any]] = []
+    for index, code_value in enumerate(code_values):
+        results.append(
+            _run_tool_single(
+                tmp_root = tmp_root,
+                index = index,
+                file_ext = file_ext,
+                command = command,
+                code_value = code_value,
+            )
+        )
+    return results
+
+
+def _run_tool_single(
+    *,
+    tmp_root: Path,
+    index: int,
+    file_ext: str,
+    command: str,
+    code_value: str,
+) -> dict[str, Any]:
+    run_dir = ensure_dir(tmp_root / f"tool-{os.getpid()}-{index}-{uuid.uuid4().hex[:8]}")
+    try:
+        if file_ext == "go":
+            (run_dir / "go.mod").write_text(
+                "module example.com/check\n\ngo 1.21\n",
+                encoding = "utf-8",
+            )
+        source_path = run_dir / f"main.{file_ext}"
+        source_path.write_text(code_value, encoding = "utf-8")
+
+        substituted = (
+            command.replace("{file}", str(source_path)).replace("{dir}", str(run_dir))
+        )
+        env = child_env_without_native_path_secret()
+        proc = subprocess.run(
+            substituted,
+            cwd = str(run_dir),
+            shell = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            capture_output = True,
+            check = False,
+            timeout = _TOOL_RUN_TIMEOUT_SECONDS,
+            env = env,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except subprocess.TimeoutExpired:
+        return _tool_result(
+            is_valid = False,
+            error_count = 1,
+            error_message = f"Tool check timed out after {_TOOL_RUN_TIMEOUT_SECONDS}s.",
+            tool_output = "",
+        )
+    except (OSError, ValueError) as exc:
+        return _tool_result(
+            is_valid = False,
+            error_count = 1,
+            error_message = f"Tool check launch failed: {exc}",
+            tool_output = "",
+        )
+
+    output = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+    output = output.strip()
+    if proc.returncode == 0:
+        return _tool_result(
+            is_valid = True,
+            error_count = 0,
+            error_message = "",
+            tool_output = output,
+        )
+    message = output or "Tool check failed."
+    if len(message) > 300:
+        message = f"{message[:300]}..."
+    return _tool_result(
+        is_valid = False,
+        error_count = 1,
+        error_message = message,
+        tool_output = output,
+    )
+
+
+def _tool_result(
+    *,
+    is_valid: bool,
+    error_count: int,
+    error_message: str,
+    tool_output: str,
+) -> dict[str, Any]:
+    return {
+        "is_valid": bool(is_valid),
+        "error_count": int(error_count),
+        "error_message": str(error_message),
+        "severity": None,
+        "code": None,
+        "labels": [],
+        "codeframe": None,
+        "warning_count": 0,
+        "tool_output": str(tool_output),
+    }
 
 
 @lru_cache(maxsize = 8)

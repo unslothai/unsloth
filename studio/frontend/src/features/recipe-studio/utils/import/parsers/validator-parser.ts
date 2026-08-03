@@ -6,6 +6,12 @@ import { readNumberString } from "../helpers";
 import { normalizeValidatorCodeLang } from "../../validators/code-lang";
 import { normalizeOxcCodeShape } from "../../validators/oxc-code-shape";
 import { normalizeOxcValidationMode } from "../../validators/oxc-mode";
+import {
+  CUSTOM_VALIDATION_FN_MARKER,
+  decodeCustomSource,
+  decodeToolSpec,
+  TOOL_VALIDATION_FN_MARKER,
+} from "../../validators/validation-markers";
 
 const OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator";
 
@@ -50,12 +56,28 @@ export function parseValidator(
     typeof params.validation_function === "string"
       ? params.validation_function.trim()
       : "";
+  const isLocalCallable =
+    String(column.validator_type ?? "").trim() === "local_callable";
   const isOxc =
-    String(column.validator_type ?? "").trim() === "local_callable" &&
-    validationFunctionRaw.startsWith(OXC_VALIDATION_FN_MARKER);
+    isLocalCallable && validationFunctionRaw.startsWith(`${OXC_VALIDATION_FN_MARKER}:`);
+  const isTool =
+    isLocalCallable && validationFunctionRaw.startsWith(`${TOOL_VALIDATION_FN_MARKER}:`);
+  const isCustom =
+    isLocalCallable &&
+    validationFunctionRaw.startsWith(`${CUSTOM_VALIDATION_FN_MARKER}:`);
   const marker = isOxc
     ? parseOxcValidationMarker(validationFunctionRaw)
     : { codeLang: "", mode: "syntax", codeShape: "auto" };
+  const toolSpec = isTool
+    ? decodeToolSpec(
+        validationFunctionRaw.slice(TOOL_VALIDATION_FN_MARKER.length + 1),
+      )
+    : null;
+  const customSource = isCustom
+    ? decodeCustomSource(
+        validationFunctionRaw.slice(CUSTOM_VALIDATION_FN_MARKER.length + 1),
+      )
+    : "";
   return {
     id,
     kind: "validator",
@@ -63,7 +85,7 @@ export function parseValidator(
     drop: column.drop === true,
     // biome-ignore lint/style/useNamingConvention: api schema
     target_columns: targetColumns,
-    validator_type: isOxc ? "oxc" : "code",
+    validator_type: isOxc ? "oxc" : isTool ? "tool" : isCustom ? "custom" : "code",
     // biome-ignore lint/style/useNamingConvention: api schema
     code_lang: normalizeValidatorCodeLang(
       isOxc ? marker.codeLang || "javascript" : params.code_lang,
@@ -74,6 +96,12 @@ export function parseValidator(
     oxc_code_shape: isOxc
       ? normalizeOxcCodeShape(marker.codeShape)
       : "auto",
+    tool_command: isTool ? toolSpec?.command ?? "" : undefined,
+    tool_ext: isTool ? toolSpec?.ext ?? "" : undefined,
+    // Re-importing a saved recipe means the author already opted in.
+    tool_acknowledged: isTool ? true : undefined,
+    custom_source: isCustom ? customSource : undefined,
+    custom_acknowledged: isCustom ? true : undefined,
     batch_size: readNumberString(column.batch_size) || "10",
   };
 }

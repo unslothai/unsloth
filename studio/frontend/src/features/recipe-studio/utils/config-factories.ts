@@ -20,6 +20,23 @@ import type {
 } from "../types";
 import { nextName } from "./naming";
 
+export const DEFAULT_TOOL_EXT = "go";
+export const DEFAULT_TOOL_COMMAND = "go vet ./...";
+
+export const DEFAULT_CUSTOM_VALIDATOR_SOURCE = `# df has one column per "Code to check" target column.
+# Return a DataFrame with a boolean "is_valid" column; extra columns
+# become per-row metadata. Imports and subprocess calls are allowed.
+def validate(df):
+    import pandas as pd
+
+    result = pd.DataFrame()
+    result["is_valid"] = df.iloc[:, 0].str.len() > 0
+    result["error_message"] = result["is_valid"].map(
+        {True: "", False: "Value must be non-empty"}
+    )
+    return result
+`;
+
 export function makeUnstructuredUploadUid(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return globalThis.crypto.randomUUID().replace(/-/g, "").toLowerCase();
@@ -353,11 +370,17 @@ export function makeValidatorConfig(
 ): ValidatorConfig {
   const isSql = validatorType === "code" && codeLang.startsWith("sql:");
   const isOxc = validatorType === "oxc";
+  const isTool = validatorType === "tool";
+  const isCustom = validatorType === "custom";
   let namePrefix = "validator_python";
   if (isSql) {
     namePrefix = "validator_sql";
   } else if (isOxc) {
     namePrefix = "validator_oxc";
+  } else if (isTool) {
+    namePrefix = "validator_tool";
+  } else if (isCustom) {
+    namePrefix = "validator_custom";
   }
   return {
     id,
@@ -371,6 +394,19 @@ export function makeValidatorConfig(
     code_lang: codeLang,
     oxc_validation_mode: "syntax",
     oxc_code_shape: "auto",
+    ...(isTool
+      ? {
+          tool_command: DEFAULT_TOOL_COMMAND,
+          tool_ext: DEFAULT_TOOL_EXT,
+          tool_acknowledged: false,
+        }
+      : {}),
+    ...(isCustom
+      ? {
+          custom_source: DEFAULT_CUSTOM_VALIDATOR_SOURCE,
+          custom_acknowledged: false,
+        }
+      : {}),
     batch_size: "10",
   };
 }

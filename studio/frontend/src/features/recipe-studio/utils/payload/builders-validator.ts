@@ -3,6 +3,7 @@
 
 import type { NodeConfig, ValidatorConfig } from "../../types";
 import { isValidatorCodeLang } from "../validators/code-lang";
+import { validationFunctionFromConfig } from "../validators/validation-markers";
 
 const OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator";
 
@@ -53,6 +54,35 @@ export function buildValidatorColumn(
         // backend resolves this marker to a real callable.
         // biome-ignore lint/style/useNamingConvention: api schema
         validation_function: `${OXC_VALIDATION_FN_MARKER}:${codeLang}:${config.oxc_validation_mode}:${config.oxc_code_shape ?? "auto"}`,
+      },
+      // biome-ignore lint/style/useNamingConvention: api schema
+      batch_size: parseBatchSize(config.batch_size),
+    };
+  }
+
+  if (config.validator_type === "tool" || config.validator_type === "custom") {
+    const validationFunction = validationFunctionFromConfig(config);
+    if (validationFunction === null) {
+      errors.push(
+        config.validator_type === "tool"
+          ? `Validator ${config.name}: a tool command and extension are required.`
+          : `Validator ${config.name}: a custom validator source is required.`,
+      );
+    }
+    return {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      column_type: "validation",
+      name: config.name,
+      drop: config.drop ?? false,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      target_columns: targetColumns,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      validator_type: "local_callable",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      validator_params: {
+        // backend resolves this marker to a real callable.
+        // biome-ignore lint/style/useNamingConvention: api schema
+        validation_function: validationFunction ?? "",
       },
       // biome-ignore lint/style/useNamingConvention: api schema
       batch_size: parseBatchSize(config.batch_size),

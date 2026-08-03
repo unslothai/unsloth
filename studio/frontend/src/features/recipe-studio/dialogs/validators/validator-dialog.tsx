@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Collapsible,
   CollapsibleContent,
@@ -22,6 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useMemo, useRef } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { ValidatorConfig } from "../../types";
@@ -49,6 +52,52 @@ type ValidatorDialogProps = {
 
 const NONE_VALUE = "__none__";
 
+const TOOL_PRESETS: { label: string; command: string; ext: string }[] = [
+  { label: "Go vet", command: "go vet ./...", ext: "go" },
+  { label: "Go build", command: "go build ./...", ext: "go" },
+  {
+    label: "Go vet + build",
+    command: "go vet ./... && go build ./...",
+    ext: "go",
+  },
+  {
+    label: "SQL lint (Postgres)",
+    command: "sqlfluff lint --dialect postgres {file}",
+    ext: "sql",
+  },
+];
+
+const GO_CUSTOM_SAMPLE = String.raw`# Runs go vet and go build on each generated code cell.
+import subprocess
+import tempfile
+from pathlib import Path
+
+import pandas as pd
+
+
+def validate(df):
+    def run_go(code):
+        with tempfile.TemporaryDirectory() as raw:
+            work = Path(raw)
+            (work / "go.mod").write_text("module example.com/check\n\ngo 1.21\n")
+            (work / "main.go").write_text(code)
+            results = []
+            for args in (["go", "vet", "./..."], ["go", "build", "./..."]):
+                results.append(
+                    subprocess.run(args, cwd=work, capture_output=True, text=True, timeout=60)
+                )
+            failed = [result for result in results if result.returncode != 0]
+            if not failed:
+                return {"is_valid": True, "error_message": ""}
+            output = "\n".join(
+                result.stdout + result.stderr for result in failed
+            ).strip()
+            return {"is_valid": False, "error_message": output[:300]}
+
+    rows = [run_go(str(value)) for value in df.iloc[:, 0]]
+    return pd.DataFrame(rows)
+`;
+
 export function ValidatorDialog({
   config,
   onUpdate,
@@ -57,18 +106,33 @@ export function ValidatorDialog({
   const targetColumnId = `${config.id}-target-column`;
   const oxcModeId = `${config.id}-oxc-mode`;
   const oxcCodeShapeId = `${config.id}-oxc-code-shape`;
+  const toolCommandId = `${config.id}-tool-command`;
+  const toolExtId = `${config.id}-tool-ext`;
+  const toolAckId = `${config.id}-tool-ack`;
+  const customSourceId = `${config.id}-custom-source`;
+  const customAckId = `${config.id}-custom-ack`;
   const batchSizeId = `${config.id}-batch-size`;
   const oxcModeAnchorRef = useRef<HTMLDivElement>(null);
   const oxcCodeShapeAnchorRef = useRef<HTMLDivElement>(null);
   const advancedOpen = config.advancedOpen === true;
   const selectedOxcMode = normalizeOxcValidationMode(config.oxc_validation_mode);
   const selectedOxcCodeShape = normalizeOxcCodeShape(config.oxc_code_shape);
+  const acceptsAnyCodeLang =
+    config.validator_type === "tool" || config.validator_type === "custom";
   const codeOptions = useMemo(
     () =>
       Object.values(configs)
         .flatMap((item) => {
           if (!(item.kind === "llm" && item.llm_type === "code")) {
             return [];
+          }
+          if (acceptsAnyCodeLang) {
+            return [
+              {
+                name: item.name,
+                codeLang: item.code_lang?.trim() ?? "",
+              },
+            ];
           }
           if (config.validator_type === "oxc") {
             const lang = item.code_lang?.trim() ?? "";
@@ -95,7 +159,7 @@ export function ValidatorDialog({
         })
         .filter((item) => item.name.trim())
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [configs],
+    [configs, config, acceptsAnyCodeLang],
   );
   const currentTarget = config.target_columns[0] ?? "";
 
@@ -149,11 +213,11 @@ export function ValidatorDialog({
           </SelectContent>
         </Select>
         {codeOptions.length === 0 && (
-              <p className="text-xs text-muted-foreground">
-                {config.validator_type === "oxc"
-                  ? "Add an AI code step that generates JavaScript or TypeScript first."
-                  : "Add an AI code step first."}
-              </p>
+          <p className="text-xs text-muted-foreground">
+            {config.validator_type === "oxc"
+              ? "Add an AI code step that generates JavaScript or TypeScript first."
+              : "Add an AI code step first."}
+          </p>
         )}
       </div>
       {config.validator_type === "oxc" && (
@@ -235,6 +299,137 @@ export function ValidatorDialog({
                 </ComboboxContent>
               </Combobox>
             </div>
+          </div>
+        </div>
+      )}
+      {config.validator_type === "tool" && (
+        <div className="grid gap-4">
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Presets"
+              hint="Pre-fill the command and extension for common checks."
+            />
+            <div className="flex flex-wrap gap-1.5">
+              {TOOL_PRESETS.map((preset) => (
+                <Button
+                  key={preset.label}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="nodrag"
+                  onClick={() =>
+                    onUpdate({
+                      tool_command: preset.command,
+                      tool_ext: preset.ext,
+                    })
+                  }
+                >
+                  {preset.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Tool command"
+              htmlFor={toolCommandId}
+              hint="Use {file} for the generated source file and {dir} for its temp folder. Runs locally in a temp directory."
+            />
+            <Textarea
+              id={toolCommandId}
+              className="nodrag font-mono"
+              fieldSizing="content"
+              value={config.tool_command ?? ""}
+              onChange={(event) =>
+                onUpdate({ tool_command: event.target.value })
+              }
+              placeholder="go vet ./..."
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="File extension"
+              htmlFor={toolExtId}
+              hint="Generated code is written to a temp file with this extension before the command runs."
+            />
+            <Input
+              id={toolExtId}
+              className="nodrag font-mono"
+              value={config.tool_ext ?? ""}
+              onChange={(event) => onUpdate({ tool_ext: event.target.value })}
+              placeholder="go"
+            />
+          </div>
+          <div className="grid gap-2">
+            <label
+              htmlFor={toolAckId}
+              className="flex cursor-pointer items-start gap-1.5 text-xs"
+            >
+              <Checkbox
+                id={toolAckId}
+                checked={config.tool_acknowledged === true}
+                onCheckedChange={(value) =>
+                  onUpdate({ tool_acknowledged: value === true })
+                }
+              />
+              <span>
+                I understand this check runs an arbitrary command on my machine.
+              </span>
+            </label>
+            <p className="text-xs text-destructive">
+              This runs locally in the job worker. Only add checks you trust.
+            </p>
+          </div>
+        </div>
+      )}
+      {config.validator_type === "custom" && (
+        <div className="grid gap-4">
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Python function"
+              htmlFor={customSourceId}
+              hint="Define validate(df) -> df returning a DataFrame with a boolean is_valid column. Imports and subprocess calls are allowed."
+            />
+            <Textarea
+              id={customSourceId}
+              className="nodrag min-h-64 font-mono"
+              fieldSizing="content"
+              value={config.custom_source ?? ""}
+              onChange={(event) =>
+                onUpdate({ custom_source: event.target.value })
+              }
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="nodrag justify-self-start"
+              onClick={() =>
+                onUpdate({ custom_source: GO_CUSTOM_SAMPLE })
+              }
+            >
+              Insert Go vet + build sample
+            </Button>
+          </div>
+          <div className="grid gap-2">
+            <label
+              htmlFor={customAckId}
+              className="flex cursor-pointer items-start gap-1.5 text-xs"
+            >
+              <Checkbox
+                id={customAckId}
+                checked={config.custom_acknowledged === true}
+                onCheckedChange={(value) =>
+                  onUpdate({ custom_acknowledged: value === true })
+                }
+              />
+              <span>
+                I understand this check runs arbitrary Python on my machine.
+              </span>
+            </label>
+            <p className="text-xs text-destructive">
+              This runs locally in the job worker. Only add code you trust.
+            </p>
           </div>
         </div>
       )}

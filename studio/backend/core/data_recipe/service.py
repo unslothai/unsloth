@@ -11,10 +11,16 @@ from typing import Any
 
 from utils.paths import recipe_datasets_root
 
+from .custom_callable_validators import (
+    register_custom_callable_validators,
+    split_custom_callable_validators,
+)
 from .jsonable import to_jsonable
 from .local_callable_validators import (
     register_oxc_local_callable_validators,
+    register_tool_local_callable_validators,
     split_oxc_local_callable_validators,
+    split_tool_local_callable_validators,
 )
 
 _IMAGE_CONTEXT_PATCHED = False
@@ -252,10 +258,20 @@ def build_config_builder(recipe: dict[str, Any]):
     }
     recipe_core = _strip_frontend_model_config_metadata(recipe_core)
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(recipe_core)
+    recipe_core, tool_local_callable_specs = split_tool_local_callable_validators(recipe_core)
+    recipe_core, custom_local_callable_specs = split_custom_callable_validators(recipe_core)
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
         builder = builder,
         specs = oxc_local_callable_specs,
+    )
+    register_tool_local_callable_validators(
+        builder = builder,
+        specs = tool_local_callable_specs,
+    )
+    register_custom_callable_validators(
+        builder = builder,
+        specs = custom_local_callable_specs,
     )
 
     # DataDesignerConfigBuilder.from_config currently skips processors.

@@ -181,6 +181,12 @@ function canApplyCodeLangToValidator(
       normalized as typeof validator.code_lang,
     );
   }
+  if (
+    validator.validator_type === "tool" ||
+    validator.validator_type === "custom"
+  ) {
+    return true;
+  }
   if (normalized === "python") {
     return true;
   }

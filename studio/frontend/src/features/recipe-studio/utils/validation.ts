@@ -248,23 +248,42 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
     if (batch === null || batch < 1) {
       errors.push("Batch size must be an integer >= 1.");
     }
-    if (!config.code_lang.trim()) {
-      errors.push("Choose a code language for this check.");
-    } else if (config.validator_type === "oxc") {
-      if (!VALIDATOR_OXC_CODE_LANGS.includes(config.code_lang)) {
-        errors.push("This JS/TS check only supports JavaScript or TypeScript.");
+    if (config.validator_type === "tool") {
+      if (!(config.tool_command ?? "").trim()) {
+        errors.push("Add a tool command to run.");
       }
-      if (!isOxcValidationMode(config.oxc_validation_mode)) {
-        errors.push("Choose whether to check syntax, lint rules, or both.");
+      if (!(config.tool_ext ?? "").trim()) {
+        errors.push("Add the source-file extension for this check.");
       }
-      if (!isOxcCodeShape(config.oxc_code_shape)) {
-        errors.push("Choose whether this code is a full file or a snippet.");
+      if (config.tool_acknowledged !== true) {
+        errors.push("Acknowledge that this check runs arbitrary commands locally.");
       }
-    } else if (
-      config.code_lang !== "python" &&
-      !VALIDATOR_SQL_CODE_LANGS.includes(config.code_lang)
-    ) {
-      errors.push("This check supports Python or SQL.");
+    } else if (config.validator_type === "custom") {
+      if (!(config.custom_source ?? "").trim()) {
+        errors.push("Add the Python function for this check.");
+      }
+      if (config.custom_acknowledged !== true) {
+        errors.push("Acknowledge that this check runs arbitrary Python locally.");
+      }
+    } else {
+      if (!config.code_lang.trim()) {
+        errors.push("Choose a code language for this check.");
+      } else if (config.validator_type === "oxc") {
+        if (!VALIDATOR_OXC_CODE_LANGS.includes(config.code_lang)) {
+          errors.push("This JS/TS check only supports JavaScript or TypeScript.");
+        }
+        if (!isOxcValidationMode(config.oxc_validation_mode)) {
+          errors.push("Choose whether to check syntax, lint rules, or both.");
+        }
+        if (!isOxcCodeShape(config.oxc_code_shape)) {
+          errors.push("Choose whether this code is a full file or a snippet.");
+        }
+      } else if (
+        config.code_lang !== "python" &&
+        !VALIDATOR_SQL_CODE_LANGS.includes(config.code_lang)
+      ) {
+        errors.push("This check supports Python or SQL.");
+      }
     }
   }
   if (config.kind === "seed") {

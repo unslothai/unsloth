@@ -201,7 +201,40 @@ export function validateValidatorConfigs(
       continue;
     }
     if (
+      config.validator_type === "tool" &&
+      !(config.tool_command ?? "").trim()
+    ) {
+      errors.push(`Validator ${config.name}: tool command required.`);
+    }
+    if (
+      config.validator_type === "tool" &&
+      !(config.tool_ext ?? "").trim()
+    ) {
+      errors.push(`Validator ${config.name}: tool extension required.`);
+    }
+    if (config.validator_type === "tool" && config.tool_acknowledged !== true) {
+      errors.push(
+        `Validator ${config.name}: acknowledge that this check runs arbitrary commands locally.`,
+      );
+    }
+    if (
+      config.validator_type === "custom" &&
+      !(config.custom_source ?? "").trim()
+    ) {
+      errors.push(`Validator ${config.name}: custom validator source required.`);
+    }
+    if (
+      config.validator_type === "custom" &&
+      config.custom_acknowledged !== true
+    ) {
+      errors.push(
+        `Validator ${config.name}: acknowledge that this check runs arbitrary Python locally.`,
+      );
+    }
+    if (
       config.validator_type !== "oxc" &&
+      config.validator_type !== "tool" &&
+      config.validator_type !== "custom" &&
       (targetConfig.code_lang ?? "").trim() !== config.code_lang.trim()
     ) {
       errors.push(
