@@ -369,7 +369,9 @@ def test_setup_helpers_gate_on_canonical_custom_root():
 
     ps_src = SETUP_PS1.read_text(encoding = "utf-8")
     ps_idx = ps_src.index("function Assert-StudioOwnedOrAbsent")
-    ps_func = ps_src[ps_idx : ps_idx + 800]
+    # To the end of the function, not a fixed width, which a new parameter or
+    # comment would push the assertions below out of.
+    ps_func = ps_src[ps_idx:].split("\nfunction ", 1)[0]
     assert (
         "$StudioHomeIsCustom -and" in ps_func
     ), "setup.ps1 Assert-StudioOwnedOrAbsent must gate on $StudioHomeIsCustom"
