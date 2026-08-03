@@ -89,11 +89,32 @@ def test_preset_load_config_carries_reasoning_budget():
     source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
     assert '| "reasoningBudget"' in source
     assert '| "reasoningBudgetMessage"' in source
-    assert "reasoningBudget: isGguf ? snapshot.reasoningBudget : -1" in source
-    assert 'reasoningBudgetMessage: isGguf ? snapshot.reasoningBudgetMessage : ""' in source
+    assert "reasoningBudget: capturesReasoning ? snapshot.reasoningBudget : -1" in source
+    assert "? snapshot.reasoningBudgetMessage" in source
     routes = _read("studio/backend/routes/chat_history.py")
     assert "reasoningBudget: Optional[int]" in routes
     assert "reasoningBudgetMessage: Optional[str]" in routes
+
+
+def test_diffusion_suppresses_reasoning_without_dropping_gguf_context():
+    """loadedIsDiffusion gates the reasoning fields only, never the GGUF test.
+
+    A loaded DiffusionGemma reports is_gguf and is_diffusion, so folding the
+    diffusion check into isGguf made effectiveContextLength fall back to null and
+    stopped capturing store.ggufContextLength. On auto sizing that is the whole
+    load config, so the preset saved none at all.
+    """
+    source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
+    capture = source[source.index("export function capturePresetLoadConfig") :]
+    capture = capture[: capture.index("\n}")]
+    gguf_test = capture[capture.index("const isGguf") : capture.index("const capturesReasoning")]
+    assert "loadedIsDiffusion" not in gguf_test, (
+        "a diffusion GGUF is still a GGUF; its resolved context has to capture"
+    )
+    assert "const capturesReasoning = isGguf && !store.loadedIsDiffusion" in capture
+    assert (
+        "snapshot.customContextLength ?? (isGguf ? store.ggufContextLength : null)" in capture
+    )
 
 
 def test_preset_summary_marks_a_budget_message():

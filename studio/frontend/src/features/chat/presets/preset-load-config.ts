@@ -170,10 +170,12 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
   const snapshot = currentRuntimePerModelConfig({ includeMaxSeqLength: true });
   const store = useChatRuntimeStore.getState();
   const isGguf =
-    !store.loadedIsDiffusion &&
-    (store.activeGgufVariant != null ||
-      store.ggufContextLength != null ||
-      (store.params.checkpoint?.toLowerCase().endsWith(".gguf") ?? false));
+    store.activeGgufVariant != null ||
+    store.ggufContextLength != null ||
+    (store.params.checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  // A diffusion GGUF is still a GGUF: its resolved context has to capture like
+  // any other. Only the reasoning flags, which it takes none of, are suppressed.
+  const capturesReasoning = isGguf && !store.loadedIsDiffusion;
   const effectiveContextLength =
     snapshot.customContextLength ?? (isGguf ? store.ggufContextLength : null);
   const captured: PresetLoadConfig = {
@@ -183,8 +185,10 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),
     specDraftNMax: snapshot.specDraftNMax ?? null,
     nParallel: snapshot.nParallel ?? null,
-    reasoningBudget: isGguf ? snapshot.reasoningBudget : -1,
-    reasoningBudgetMessage: isGguf ? snapshot.reasoningBudgetMessage : "",
+    reasoningBudget: capturesReasoning ? snapshot.reasoningBudget : -1,
+    reasoningBudgetMessage: capturesReasoning
+      ? snapshot.reasoningBudgetMessage
+      : "",
     tensorParallel: snapshot.tensorParallel ?? false,
     ...(snapshot.gpuMemoryMode === "manual"
       ? { gpuMemoryMode: "manual" as const }
