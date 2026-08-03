@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import hashlib
+import ntpath
 import os
 import sys
 from ctypes import wintypes
@@ -61,12 +62,15 @@ def _windows_profile_path() -> Path:
 
 
 def _resolved_windows_path(path: Path) -> str:
-    resolved = str(path.resolve(strict = False)).rstrip("\\/")
+    resolved = str(path.resolve(strict = False))
     if resolved.startswith("\\\\?\\UNC\\"):
         resolved = "\\\\" + resolved[8:]
     elif resolved.startswith("\\\\?\\"):
         resolved = resolved[4:]
-    return resolved
+    drive, tail = ntpath.splitdrive(resolved)
+    if drive and tail and not tail.rstrip("\\/"):
+        return drive + "\\"
+    return resolved.rstrip("\\/")
 
 
 def _canonical_windows_path(path: Path) -> str:

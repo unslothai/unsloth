@@ -240,7 +240,11 @@ function Install-UnslothStudio {
 
     function Get-StudioFinalPath {
         param([Parameter(Mandatory = $true)][string]$Path)
-        $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        $fullRoot = [System.IO.Path]::GetPathRoot($fullPath)
+        if (-not $fullRoot -or $fullPath.Length -gt $fullRoot.Length) {
+            $fullPath = $fullPath.TrimEnd('\', '/')
+        }
         $existingPath = $fullPath
         $missingSegments = @()
         while (-not (Test-Path -LiteralPath $existingPath)) {
@@ -366,6 +370,10 @@ public static class UnslothStudioFinalPath
         }
         foreach ($segment in $missingSegments) {
             $resolved = [System.IO.Path]::Combine($resolved, $segment)
+        }
+        $resolvedRoot = [System.IO.Path]::GetPathRoot($resolved)
+        if ($resolvedRoot -and $resolved.Length -le $resolvedRoot.Length) {
+            return $resolvedRoot
         }
         return $resolved.TrimEnd('\', '/')
     }

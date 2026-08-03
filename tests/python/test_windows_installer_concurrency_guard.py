@@ -612,6 +612,35 @@ Write-Output (Get-StudioRuntimeMutexNameForPath -Path $env:TEST_STUDIO_HOME)
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
+def test_drive_root_identity_and_mutex_names_match_python(shell: str):
+    from unsloth_cli import _studio_runtime_gate as gate
+
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    helpers = _mutex_helpers(source)
+    drive_root = Path(f"{os.environ['SystemDrive']}\\")
+    script = f"""
+$ErrorActionPreference = "Stop"
+{helpers}
+Write-Output (Get-StudioFinalPath -Path $env:TEST_STUDIO_HOME)
+Write-Output (Get-StudioInstallMutexName -Path $env:TEST_STUDIO_HOME)
+Write-Output (Get-StudioRuntimeMutexNameForPath -Path $env:TEST_STUDIO_HOME)
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(drive_root)
+    final_path, install_name, runtime_name = _run_powershell(shell, script, env).splitlines()
+    canonical = gate._resolved_windows_path(drive_root)
+    install_digest = hashlib.sha256(canonical.upper().encode("utf-8")).hexdigest()
+
+    assert final_path == canonical
+    assert final_path.endswith("\\")
+    assert install_name == f"Global\\UnslothStudioInstall-{install_digest}"
+    runtime_digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    expected_runtime = f"Global\\UnslothStudioManagedEnvironmentPath-{runtime_digest}"
+    assert runtime_name == expected_runtime
+
+
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
 def test_runtime_gate_blocks_a_late_backend_start(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     helper = _extract(r"    function Enter-StudioNamedMutex \{.*?\n    \}\n", source)
