@@ -41,6 +41,9 @@ const { applyRecipeConnection } = await import(
 const { validateValidatorConfigs } = await import(
   "../src/features/recipe-studio/utils/payload/validate.ts"
 );
+const { parseValidator } = await import(
+  "../src/features/recipe-studio/utils/import/parsers/validator-parser.ts"
+);
 const markers = await import(
   "../src/features/recipe-studio/utils/validators/validation-markers.ts"
 );
@@ -419,6 +422,70 @@ test("validateValidatorConfigs reports custom source and consent errors", () => 
   );
   validateValidatorConfigs(configs, nameToConfig, errors);
   assert.ok(errors.some((message) => message.includes("source required")));
+  assert.ok(errors.some((message) => message.includes("arbitrary Python")));
+});
+
+test("validateValidatorConfigs reports oversized scaffolds", () => {
+  const tooManyRows = Array.from({ length: 11 }, (_, index) => ({
+    path: `file${index}.txt`,
+    content: "x",
+  }));
+  const errors: string[] = [];
+  const { configs, nameToConfig } = validatorIdMap(
+    toolConfig({ tool_scaffold: tooManyRows, tool_acknowledged: true }),
+    llmCodeNode("code_col", "go"),
+  );
+  validateValidatorConfigs(configs, nameToConfig, errors);
+  assert.ok(
+    errors.some((message) => message.includes("Too many scaffold files")),
+  );
+});
+
+test("validateValidatorConfigs blocks unacknowledged imported validators", () => {
+  // parseValidator now reconstructs imported tool/custom validators as
+  // unacknowledged, so a shared recipe cannot bypass the consent gate.
+  const importedTool = parseValidator(
+    {
+      column_type: "validation",
+      name: "imported_tool",
+      drop: false,
+      target_columns: ["code_col"],
+      validator_type: "local_callable",
+      validator_params: {
+        validation_function:
+          "unsloth_tool_validator:eyJleHQiOiJ0eHQiLCJjb21tYW5kIjoiZWNobyB7ZmlsZX0ifQ",
+      },
+      batch_size: 10,
+    },
+    "imported_tool",
+    "n1",
+  );
+  const importedCustom = parseValidator(
+    {
+      column_type: "validation",
+      name: "imported_custom",
+      drop: false,
+      target_columns: ["code_col"],
+      validator_type: "local_callable",
+      validator_params: {
+        validation_function:
+          "unsloth_custom_validator:ZGVmIHZhbGlkYXRlKGRmKTogcmV0dXJuIGRm",
+      },
+      batch_size: 10,
+    },
+    "imported_custom",
+    "n2",
+  );
+  const errors: string[] = [];
+  validateValidatorConfigs(
+    {
+      imported_tool: importedTool as unknown as NodeConfig,
+      imported_custom: importedCustom as unknown as NodeConfig,
+    },
+    new Map([["code_col", llmCodeNode("code_col", "go") as unknown as NodeConfig]]),
+    errors,
+  );
+  assert.ok(errors.some((message) => message.includes("arbitrary commands")));
   assert.ok(errors.some((message) => message.includes("arbitrary Python")));
 });
 

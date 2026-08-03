@@ -20,7 +20,9 @@ function parseOxcValidationMarker(
 ): { codeLang: string; mode: string; codeShape: string } {
   const marker = `${OXC_VALIDATION_FN_MARKER}:`;
   if (!validationFunctionRaw.startsWith(marker)) {
-    return { codeLang: "", mode: "syntax", codeShape: "auto" };
+    // Legacy bare marker ("unsloth_oxc_validator" with no colon suffix): the
+    // backend still accepts it and treats it as a default JS syntax check.
+    return { codeLang: "javascript", mode: "syntax", codeShape: "auto" };
   }
   const parts = validationFunctionRaw
     .slice(marker.length)
@@ -28,7 +30,7 @@ function parseOxcValidationMarker(
     .map((value) => value.trim())
     .filter(Boolean);
   if (parts.length < 2) {
-    return { codeLang: "", mode: "syntax", codeShape: "auto" };
+    return { codeLang: "javascript", mode: "syntax", codeShape: "auto" };
   }
   return {
     codeLang: parts[0],
@@ -59,7 +61,7 @@ export function parseValidator(
   const isLocalCallable =
     String(column.validator_type ?? "").trim() === "local_callable";
   const isOxc =
-    isLocalCallable && validationFunctionRaw.startsWith(`${OXC_VALIDATION_FN_MARKER}:`);
+    isLocalCallable && validationFunctionRaw.startsWith(OXC_VALIDATION_FN_MARKER);
   const isTool =
     isLocalCallable && validationFunctionRaw.startsWith(`${TOOL_VALIDATION_FN_MARKER}:`);
   const isCustom =
@@ -102,10 +104,12 @@ export function parseValidator(
       isTool && toolSpec && (toolSpec.scaffold?.length ?? 0) > 0
         ? toolSpec.scaffold
         : undefined,
-    // Re-importing a saved recipe means the author already opted in.
-    tool_acknowledged: isTool ? true : undefined,
+    // Importing a recipe does not count as the current user's consent: an
+    // imported marker can hide an arbitrary command or Python body, so the
+    // user must acknowledge the local-execution warning before a run starts.
+    tool_acknowledged: isTool ? false : undefined,
     custom_source: isCustom ? customSource : undefined,
-    custom_acknowledged: isCustom ? true : undefined,
+    custom_acknowledged: isCustom ? false : undefined,
     batch_size: readNumberString(column.batch_size) || "10",
   };
 }

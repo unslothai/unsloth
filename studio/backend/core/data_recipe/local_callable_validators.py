@@ -8,6 +8,7 @@ import binascii
 import json
 import os
 import re
+import signal
 import structlog
 import subprocess
 import tempfile
@@ -464,6 +465,46 @@ def _tool_max_workers() -> int:
     return max(1, os.cpu_count() or 1)
 
 
+def _tool_launch_kwargs() -> dict[str, Any]:
+    """Subprocess kwargs that run the tool command in its own process group.
+
+    The command runs as the leader of a new session (POSIX) or a new process
+    group (Windows), so a timeout can kill the entire tree instead of leaving
+    orphaned children behind.
+    """
+    kwargs: dict[str, Any] = _windows_hidden_subprocess_kwargs()
+    if os.name == "posix":
+        kwargs["start_new_session"] = True
+    else:
+        create_new_process_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        kwargs["creationflags"] = int(kwargs.get("creationflags", 0)) | create_new_process_group
+    return kwargs
+
+
+def _terminate_tool_process_tree(proc: subprocess.Popen[str]) -> None:
+    """Best-effort kill of the tool command and every process it spawned."""
+    if os.name == "posix":
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except (OSError, ValueError):
+            pass
+    else:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output = True,
+                check = False,
+                timeout = 15,
+            )
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+    try:
+        proc.kill()
+    except (OSError, ValueError):
+        pass
+
+
 def _run_tool_single(
     *, file_ext: str, command: str, scaffold: tuple[tuple[str, str], ...], code_value: str
 ) -> dict[str, Any]:
@@ -494,26 +535,35 @@ def _run_tool_single(
 
             substituted = command.replace("{file}", str(source_path)).replace("{dir}", str(run_dir))
             env = child_env_without_native_path_secret()
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 substituted,
                 cwd = str(run_dir),
                 shell = True,
                 text = True,
                 encoding = "utf-8",
                 errors = "replace",
-                capture_output = True,
-                check = False,
-                timeout = _TOOL_RUN_TIMEOUT_SECONDS,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.PIPE,
                 env = env,
-                **_windows_hidden_subprocess_kwargs(),
+                **_tool_launch_kwargs(),
             )
-    except subprocess.TimeoutExpired:
-        return _tool_result(
-            is_valid = False,
-            error_count = 1,
-            error_message = f"Tool check timed out after {_TOOL_RUN_TIMEOUT_SECONDS}s.",
-            tool_output = "",
-        )
+            try:
+                stdout, stderr = proc.communicate(timeout = _TOOL_RUN_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                _terminate_tool_process_tree(proc)
+                # Reap the (now killed) command so it does not linger as a zombie.
+                try:
+                    stdout, stderr = proc.communicate(timeout = 10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                return _tool_result(
+                    is_valid = False,
+                    error_count = 1,
+                    error_message = f"Tool check timed out after {_TOOL_RUN_TIMEOUT_SECONDS}s.",
+                    tool_output = "",
+                )
+            returncode = proc.returncode
     except (OSError, ValueError) as exc:
         return _tool_result(
             is_valid = False,
@@ -522,9 +572,9 @@ def _run_tool_single(
             tool_output = "",
         )
 
-    output = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+    output = (stdout or "") + (("\n" + stderr) if stderr else "")
     output = output.strip()
-    if proc.returncode == 0:
+    if returncode == 0:
         return _tool_result(
             is_valid = True,
             error_count = 0,

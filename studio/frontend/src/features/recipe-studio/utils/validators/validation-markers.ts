@@ -86,22 +86,41 @@ export function firstInvalidToolScaffoldPath(
   return null;
 }
 
+function normalizedToolScaffoldRows(
+  scaffold: ToolScaffoldFile[] | undefined,
+): { rows: ToolScaffoldFile[]; totalChars: number } {
+  const rows: ToolScaffoldFile[] = [];
+  let totalChars = 0;
+  if (Array.isArray(scaffold)) {
+    for (const entry of scaffold) {
+      const normalized = normalizeToolScaffoldEntry(entry);
+      if (normalized === null) {
+        continue;
+      }
+      rows.push(normalized);
+      totalChars += normalized.path.length + normalized.content.length;
+    }
+  }
+  return { rows, totalChars };
+}
+
+export function toolScaffoldLimitError(
+  scaffold: ToolScaffoldFile[] | undefined,
+): string | null {
+  const { rows, totalChars } = normalizedToolScaffoldRows(scaffold);
+  if (rows.length > TOOL_SCAFFOLD_MAX_ROWS) {
+    return `Too many scaffold files (max ${TOOL_SCAFFOLD_MAX_ROWS}).`;
+  }
+  if (totalChars > TOOL_SCAFFOLD_MAX_TOTAL_CHARS) {
+    return "Scaffold content is too large (max 32 KiB).";
+  }
+  return null;
+}
+
 export function normalizeToolScaffold(
   scaffold: ToolScaffoldFile[] | undefined,
 ): ToolScaffoldFile[] {
-  if (!Array.isArray(scaffold)) {
-    return [];
-  }
-  const rows: ToolScaffoldFile[] = [];
-  let totalChars = 0;
-  for (const entry of scaffold) {
-    const normalized = normalizeToolScaffoldEntry(entry);
-    if (normalized === null) {
-      continue;
-    }
-    rows.push(normalized);
-    totalChars += normalized.path.length + normalized.content.length;
-  }
+  const { rows, totalChars } = normalizedToolScaffoldRows(scaffold);
   if (
     rows.length > TOOL_SCAFFOLD_MAX_ROWS ||
     totalChars > TOOL_SCAFFOLD_MAX_TOTAL_CHARS

@@ -165,6 +165,32 @@ test("firstInvalidToolScaffoldPath reports bad rows", () => {
   );
 });
 
+test("toolScaffoldLimitError reports oversized scaffolds", () => {
+  assert.equal(markers.toolScaffoldLimitError(undefined), null);
+  assert.equal(markers.toolScaffoldLimitError(GO_SCAFFOLD), null);
+  const tooManyRows = Array.from({ length: 11 }, (_, index) => ({
+    path: `file${index}.txt`,
+    content: "x",
+  }));
+  assert.ok(markers.toolScaffoldLimitError(tooManyRows)?.includes("max 10"));
+  const tooMuchContent = [{ path: "big.txt", content: "x".repeat(32 * 1024) }];
+  assert.ok(markers.toolScaffoldLimitError(tooMuchContent)?.includes("32 KiB"));
+  // normalizeToolScaffold keeps the same guard for serialization.
+  assert.deepEqual(markers.normalizeToolScaffold(tooManyRows), []);
+  assert.deepEqual(markers.normalizeToolScaffold(tooMuchContent), []);
+});
+
+test("getConfigErrors flags oversized scaffolds", () => {
+  const tooManyRows = Array.from({ length: 11 }, (_, index) => ({
+    path: `file${index}.txt`,
+    content: "x",
+  }));
+  const errors = getConfigErrors(
+    toolConfig({ tool_scaffold: tooManyRows, tool_acknowledged: true }),
+  );
+  assert.ok(errors.some((message) => message.includes("Scaffold: Too many")));
+});
+
 test("getConfigErrors flags invalid scaffold paths", () => {
   const errors = getConfigErrors(
     toolConfig({
@@ -202,7 +228,7 @@ test("parseValidator reconstructs tool_scaffold", () => {
     "n1",
   );
   assert.deepEqual(config.tool_scaffold, GO_SCAFFOLD);
-  assert.equal(config.tool_acknowledged, true);
+  assert.equal(config.tool_acknowledged, false);
 });
 
 test("validationFunctionFromConfig builds a custom marker", () => {
@@ -263,7 +289,7 @@ test("parseValidator reconstructs a tool config", () => {
   assert.equal(config.validator_type, "tool");
   assert.equal(config.tool_command, "go vet ./...");
   assert.equal(config.tool_ext, "go");
-  assert.equal(config.tool_acknowledged, true);
+  assert.equal(config.tool_acknowledged, false);
 });
 
 test("parseValidator reconstructs a custom config", () => {
@@ -283,7 +309,29 @@ test("parseValidator reconstructs a custom config", () => {
   );
   assert.equal(config.validator_type, "custom");
   assert.equal(config.custom_source, customConfig().custom_source);
-  assert.equal(config.custom_acknowledged, true);
+  assert.equal(config.custom_acknowledged, false);
+});
+
+test("parseValidator keeps accepting legacy bare OXC markers", () => {
+  const config = parseValidator(
+    {
+      column_type: "validation",
+      name: "js_check",
+      drop: false,
+      target_columns: ["code"],
+      validator_type: "local_callable",
+      validator_params: { validation_function: "unsloth_oxc_validator" },
+      batch_size: 10,
+    },
+    "js_check",
+    "n1",
+  );
+  // The backend treats a bare marker as a default JS syntax check; the
+  // importer must reconstruct an OXC validator, not a Python code validator.
+  assert.equal(config.validator_type, "oxc");
+  assert.equal(config.code_lang, "javascript");
+  assert.equal(config.oxc_validation_mode, "syntax");
+  assert.equal(config.oxc_code_shape, "auto");
 });
 
 test("getConfigErrors requires tool acknowledgement", () => {
@@ -317,7 +365,8 @@ test("text-to-go learning recipe round-trips the tool validator", async () => {
     config.tool_command,
     "go vet ./... && go build ./...",
   );
-  assert.equal(config.tool_acknowledged, true);
+  // Importing a recipe does not count as the current user's consent.
+  assert.equal(config.tool_acknowledged, false);
 });
 
 test("text-to-go learning recipe carries the go scaffold", async () => {
@@ -354,5 +403,6 @@ test("text-to-rust learning recipe round-trips the custom validator", async () =
   assert.equal(config.validator_type, "custom");
   assert.ok((config.custom_source ?? "").includes("cargo check"));
   assert.ok((config.custom_source ?? "").includes("Cargo.toml"));
-  assert.equal(config.custom_acknowledged, true);
+  // Importing a recipe does not count as the current user's consent.
+  assert.equal(config.custom_acknowledged, false);
 });

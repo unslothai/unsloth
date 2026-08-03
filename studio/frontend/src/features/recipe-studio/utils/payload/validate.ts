@@ -16,7 +16,10 @@ import { VALIDATOR_OXC_CODE_LANGS } from "../validators/code-lang";
 import { isOxcCodeShape } from "../validators/oxc-code-shape";
 import { isOxcValidationMode } from "../validators/oxc-mode";
 import { isValidatorConsentRequired } from "../validators/consent";
-import { firstInvalidToolScaffoldPath } from "../validators/validation-markers";
+import {
+  firstInvalidToolScaffoldPath,
+  toolScaffoldLimitError,
+} from "../validators/validation-markers";
 
 export function validateSubcategoryConfigs(
   configs: Record<string, NodeConfig>,
@@ -220,6 +223,10 @@ export function validateValidatorConfigs(
         errors.push(
           `Validator ${config.name}: scaffold path '${badScaffoldPath}' is invalid.`,
         );
+      }
+      const scaffoldLimitError = toolScaffoldLimitError(config.tool_scaffold);
+      if (scaffoldLimitError !== null) {
+        errors.push(`Validator ${config.name}: ${scaffoldLimitError}`);
       }
     }
     if (config.validator_type === "tool" && isValidatorConsentRequired(config)) {

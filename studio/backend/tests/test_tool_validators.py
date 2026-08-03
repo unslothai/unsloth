@@ -272,6 +272,38 @@ def test_tool_callable_timeout_is_graceful(monkeypatch):
     assert "timed out" in out["error_message"].iloc[0]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups only")
+def test_tool_timeout_kills_child_processes(monkeypatch, tmp_path):
+    """A timeout must kill the command's children, not just the shell."""
+    import os
+    import time
+
+    import pandas as pd
+
+    monkeypatch.setattr(tool, "_TOOL_RUN_TIMEOUT_SECONDS", 1)
+    pid_file = tmp_path / "child.pid"
+    fn = tool._build_tool_validation_function(
+        "txt",
+        f"sh -c 'sleep 30 & echo $! > {pid_file}; wait'",
+    )
+    out = fn(pd.DataFrame({"code": ["x"]}))
+    assert list(out["is_valid"]) == [False]
+    assert "timed out" in out["error_message"].iloc[0]
+    assert pid_file.exists(), "background child never started"
+    child_pid = int(pid_file.read_text().strip())
+    dead = False
+    for _ in range(50):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            dead = True
+            break
+        except PermissionError:
+            pass
+        time.sleep(0.1)
+    assert dead, f"child {child_pid} still alive after timeout"
+
+
 def test_tool_max_workers_at_least_one():
     assert tool._tool_max_workers() >= 1
 
