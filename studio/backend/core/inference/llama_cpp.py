@@ -10610,8 +10610,13 @@ class LlamaCppBackend:
             # warning; doing it first meant SIGKILL was skipped and the server
             # left running with the reference about to be dropped below.
             self._process.kill()
-            self._process.wait(timeout = 5)
+            # Between the two, deliberately. After kill() so the signal never
+            # depends on a log write, and before this wait() because a second
+            # TimeoutExpired raised in here is not caught by the handler it is
+            # raised from -- it escapes, and a truly unkillable server would then
+            # be reported by nothing at all.
             logger.warning("llama-server did not exit on SIGTERM, sent SIGKILL")
+            self._process.wait(timeout = 5)
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
