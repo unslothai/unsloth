@@ -1237,8 +1237,7 @@ def test_a_trigger_skipped_behind_an_in_flight_count_is_replayed():
         "the skipped trigger must be replayed once the stale count settles, or it is not "
         "deferred but lost"
     )
-    # 62, not 12: the replay prices the branch as it is NOW, with the turn that invalidated the
-    # first count. Publishing the older total would be the bug this defers the trigger to avoid.
+    # 62, not 12: the replay prices the branch as it moved, which is the point of deferring it.
     assert (
         (out["contextUsage"] or {}).get("totalTokens") == 62
     ), "and the replay must publish the current branch, which is why it is deferred not dropped"

@@ -29,23 +29,14 @@ function superseded(threadKey: string | null, generation: number): boolean {
   return refreshGenerations.get(threadKey) !== generation;
 }
 
-/**
- * Threads with a count already on the wire. A model load fires two triggers a few milliseconds
- * apart, the explicit post-load call and the effect that watches modelLoading, and both would
- * otherwise render the template and tokenize.
- */
+// Threads with a count on the wire. A model load fires two triggers (the post-load call and the
+// modelLoading effect), and both would otherwise render the template and tokenize.
 const countsInFlight = new Set<string | null>();
 
-/**
- * The options of a trigger that arrived while a count was already going, replayed once that count
- * settles WITHOUT publishing.
- *
- * Skipping outright loses the bar: a run that starts and is stopped before it emits usage flips
- * runActive back and fires the retry this effect depends on, and if that retry is dropped while
- * the in-flight count is still going, the in-flight one then rejects its now-stale branch and
- * nothing changes again. Replaying only when nothing was published keeps the model-load case at
- * one count, since there the first trigger publishes and the second has nothing left to do.
- */
+// A trigger deferred behind an in-flight count, replayed once that count settles WITHOUT
+// publishing. Dropping it loses the bar: a run stopped before it emits usage fires the retry this
+// depends on, and the in-flight count then rejects its now-stale branch. Replaying it
+// unconditionally would restore the doubled model-load count, where the first trigger publishes.
 const retryAfterInFlight = new Map<string | null, RefreshOptions>();
 
 function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
@@ -215,10 +206,8 @@ export async function refreshContextUsage(
   );
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
 
-  // Deep Research does not send this history at all: the adapter routes the turn to a server-side
-  // research run, whose response carries no usage. A total counted here would describe a request
-  // that is never made and nothing would later correct it. The run's own running-state transition
-  // re-fires this once the report lands.
+  // Deep Research routes the turn to a server-side research run whose reply carries no usage, so
+  // a total counted here would describe a request that is never made and nothing would correct it.
   if (store.deepResearchEnabled) return;
 
   // Never count while anything is generating: the endpoint refuses, and the recount effect depends
@@ -277,10 +266,9 @@ export async function refreshContextUsage(
       );
     }
 
-    // /chat/count_tokens always 503s on images, because /apply-template swaps each one for a
-    // short marker. Declining here rather than letting the server say no keeps the base64 out of
-    // the branch hash and out of a request body that can run to megabytes, both on the main
-    // thread. Before the hash below for that reason.
+    // /chat/count_tokens always 503s on images: /apply-template swaps each for a marker. Declining
+    // before the hash below keeps the base64 out of it and out of a request body that can reach
+    // megabytes, both synchronous on the UI thread.
     if (messagesContainImage(runMessages)) return;
 
     // The real request replays the newest user audio as audio_base64 but toOpenAIMessages has
