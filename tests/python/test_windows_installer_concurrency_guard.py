@@ -97,7 +97,7 @@ $ErrorActionPreference = "Stop"
         child.wait(timeout = 10)
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is required")
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_command_line_only_venv_consumer_is_reported(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -126,7 +126,7 @@ function Get-CimInstance {{
     assert _run_powershell(shell, script, env) == "4242"
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is required")
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_command_line_sibling_venv_is_not_reported(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -157,7 +157,7 @@ function Get-CimInstance {{
     assert _run_powershell(shell, script, env) == ""
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is required")
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_mutex_names_are_global_and_install_lock_is_path_scoped(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -185,7 +185,7 @@ Write-Output ((Get-StudioRuntimeMutexName) -eq `
     ]
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is required")
+@pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_tauri_managed_root_path_classification(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
