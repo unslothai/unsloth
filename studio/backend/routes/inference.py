@@ -14945,17 +14945,13 @@ async def chat_count_tokens(
     Unlike the /v1 count endpoints this never auto-switches: ``model`` is informational. The
     caller is a background recount with no abort signal, so switching could drag the backend back
     to the model loaded when the count started, a reload the client's guards cannot undo."""
-    # A count is admitted only while nothing generates, and stands down at the next checkpoint
-    # if that changes. Admission is not atomic with the work, so a run starting just after this
-    # is caught there rather than prevented: true mutual exclusion would mean generation startup
-    # waiting on a lock a count holds, which is the cost this exists to avoid. The client-side
-    # gate only covers our own frontend, so refusing here also covers a second tab or a script
-    # against /api. The bar just stays as it was until the run ends.
-    #
-    # Deliberately coarse: _TrackedCancel registers external-provider runs here too, which never
-    # touch llama-server, so those decline a count they could have served. Narrowing it means
-    # trusting a kind/model field to decide whether to work next to a decode -- being wrong there
-    # costs inference time, while over-refusing only costs a later redraw.
+    # Admitted only while nothing generates, and stood down at the next checkpoint if that changes:
+    # admission is not atomic with the work, and true mutual exclusion would put a lock in front of
+    # generation startup, which is the cost this avoids. Refusing here also covers the second tab or
+    # the script against /api that the client-side gate cannot. Deliberately coarse: _TrackedCancel
+    # registers external-provider runs too, so those decline a count they could have served;
+    # narrowing it means trusting a kind/model field to decide whether to work next to a decode, and
+    # being wrong there costs inference time while over-refusing only costs a redraw.
     if active_generations.count() > 0:
         raise HTTPException(
             status_code = 503,
@@ -14994,11 +14990,10 @@ async def chat_count_tokens(
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
-    # A PENDING turn (unanswered user message, or an unanswered tool result) is the one shape
-    # where the next generation runs on exactly these messages, and the tool loop splices in
-    # whatever build_rag_autoinject retrieves -- thousands of tokens this count never sees, so
-    # the bar would claim room the generation lacks. Any other shape ends in an assistant turn,
-    # where retrieval has no user message to run against.
+    # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop
+    # answers from exactly these messages, splicing in whatever build_rag_autoinject retrieves --
+    # thousands of tokens this never sees, so the bar would claim room the generation lacks. Any
+    # other shape ends on an assistant turn, where retrieval has no user message to run against.
     if (
         payload.rag_scope
         and openai_messages
@@ -15009,9 +15004,8 @@ async def chat_count_tokens(
             detail = "Cannot count tokens for a pending turn that would retrieve documents.",
         )
 
-    # The passthrough is the only route that puts the caller's own catalog on the wire. Every
-    # other route renders tools solely from the selection below, so a catalog surviving here
-    # would price schemas the completion never sends.
+    # The passthrough is the only route that puts the caller's own catalog on the wire; every other
+    # renders from the selection below, so a catalog surviving here would price schemas never sent.
     openai_tools = _passthrough_client_tools(payload) if _takes_passthrough else None
     # The CLI hard-override still applies: _effective_enable_tools resolves it into _tools_on.
     _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
@@ -15029,9 +15023,9 @@ async def chat_count_tokens(
         and _get_tool_policy_ct() is not False
     )
     # Never discovery on a count: get_enabled_mcp_tools spawns stdio servers, writes cache and
-    # cool-off state, and blocks a whole probe timeout on a server that is down. _mcp_allowed
-    # stays False because it is the flag that reaches the network; the schemas come from the
-    # cache that path fills instead, and an incomplete view is declined rather than undercounted.
+    # cool-off state, and blocks a probe timeout on a server that is down. _mcp_allowed stays
+    # False because it is the flag that reaches the network; schemas come from the cache that
+    # path fills instead, and an incomplete view is declined rather than undercounted.
     _mcp_allowed = False
     _mcp_tools: list[dict] = []
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
@@ -15107,9 +15101,8 @@ async def chat_count_tokens(
             openai_tools,
             strict = True,
             chat_template_kwargs = _template_kwargs,
-            # Polled between /apply-template and /tokenize. The guards above admit only while
-            # idle, but admission and the work are separate steps, so a run that starts in
-            # between finds this and the second round trip never happens.
+            # Polled between /apply-template and /tokenize: admission and the work are separate
+            # steps, so a run starting in between is caught here and the second round trip is not.
             should_abort = lambda: active_generations.count() > 0,
         )
     except CountAborted:

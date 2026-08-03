@@ -183,18 +183,16 @@ export async function refreshContextUsage(options?: {
   }
 
   // An output-only audio GGUF never sends a chat completion: the adapter routes the turn to
-  // /audio/generate, which returns no usage, so a chat-template total is a number nothing corrects.
+  // /audio/generate, which returns no usage, so a chat-template total is never corrected.
   const activeModel = store.models?.find(
     (model: { id: string }) => model.id === checkpoint,
   );
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
 
-  // Never count while anything is generating: the endpoint refuses, and the recount effect
-  // depends on this, so the last run finishing re-fires it.
-  //
-  // runningByThreadId, not the narrower localRunByThreadId: the endpoint refuses during an
-  // external-provider run too (active_generations cannot tell them apart), so gating on less than
-  // the server refuses on would spend a request to be told 503 and lose the retry -- nothing
+  // Never count while anything is generating: the endpoint refuses, and the recount effect depends
+  // on this, so the last run finishing re-fires it. runningByThreadId, not the narrower
+  // localRunByThreadId: the endpoint refuses during an external-provider run too, so gating on less
+  // than the server refuses on would spend a request to be told 503 and lose the retry -- nothing
   // re-fires this effect when an external run ends unless it is in the dependency array.
   if (Object.values(store.runningByThreadId ?? {}).some(Boolean)) return;
 

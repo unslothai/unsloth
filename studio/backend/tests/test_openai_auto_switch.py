@@ -3611,8 +3611,8 @@ def test_cached_mcp_tools_reports_an_undiscovered_server_as_incomplete(tmp_path,
 
 
 def test_cached_mcp_tools_counts_a_cooloff_server_as_complete(tmp_path, monkeypatch):
-    # The completion path skips a server in its post-failure cool-off too, so rendering nothing
-    # for it matches the prompt exactly. Declining here would blank the bar over an agreement.
+    # The completion renders nothing for a cool-off server either, so skipping it is exact rather
+    # than short. Declining here would blank the bar over an agreement.
     from core.inference.tools import cached_mcp_tools
 
     _enabled_mcp_server(tmp_path, monkeypatch, cooloff = True)
@@ -3652,11 +3652,8 @@ def test_chat_count_tokens_prices_cached_mcp_schemas(tmp_path, monkeypatch):
 
 def test_chat_count_tokens_ignores_an_mcp_server_the_request_did_not_enable(tmp_path, monkeypatch):
     # Control: the decline keys on the request asking for MCP, not on a server merely existing.
-    # Without mcp_enabled the completion renders no MCP schemas, so nothing is missing.
-    #
     # tool_choice "none" would NOT be a control here: _explicit_studio_tool_loop_requested treats
-    # mcp_enabled as an explicit ask, so it does not disable tool calls and the completion still
-    # renders the catalog.
+    # mcp_enabled as an explicit ask, so the completion still renders the catalog.
     _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
     _enabled_mcp_server(tmp_path, monkeypatch)
     body = _counted_body(_count_request([{"role": "user", "content": "hello"}]))

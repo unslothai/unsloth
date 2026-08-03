@@ -13796,10 +13796,9 @@ class LlamaCppBackend:
                     template_messages = [
                         {"role": "system", "content": system_text}
                     ] + template_messages
-                # An empty list is passed through as-is: llama-server renders through minja,
-                # not jinja2, so messages[0] yields undefined rather than raising and the
-                # template returns its bare preamble. Injecting a placeholder turn instead
-                # would add a system block to the empty-chat count.
+                # An empty list is passed through as-is: llama-server renders through minja, not
+                # jinja2, so messages[0] yields undefined rather than raising and the template
+                # returns its bare preamble. A placeholder turn would add a system block instead.
                 apply_template_failed = False
                 try:
                     # llama-server's /apply-template renders tool declarations
@@ -13823,8 +13822,8 @@ class LlamaCppBackend:
                             return _tokenize(prompt)
                     apply_template_failed = True
                 except CountAborted:
-                    # Not a template failure: falling through would tokenize anyway, which is
-                    # the work this is declining to do.
+                    # Not a template failure: swallowed, the text fallback tokenizes anyway,
+                    # which is the work being declined. Must precede the generic except.
                     raise
                 except Exception:
                     apply_template_failed = True
