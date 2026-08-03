@@ -3,7 +3,8 @@
 
 import { DEFAULT_HYPERPARAMS, STEPS } from "@/config/training";
 import { getLocale, translate } from "@/i18n";
-import type { StepNumber } from "@/types/training";
+import type { DatasetFormat, StepNumber } from "@/types/training";
+import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { validateS3Source } from "../lib/validation";
 import type {
   BrowseDatasetSelection,
@@ -89,6 +90,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
   modelDefaultsError: null,
   modelDefaultsAppliedFor: null,
   advancedSettingsBaseline: null,
+  trainOnCompletionsDefaultPendingFor: null,
   isCheckingDataset: false,
   isDatasetImage: null,
   isDatasetAudio: false,
@@ -160,6 +162,32 @@ export function streamingCompatiblePatch(
   }
 
   return patch;
+}
+
+export function resolveDeferredTrainOnCompletionsDefault({
+  currentValue,
+  datasetFormat,
+  datasetStreaming,
+  isEmbeddingModel,
+  modelDefault,
+  trainingMethod,
+}: {
+  currentValue: boolean;
+  datasetFormat: DatasetFormat;
+  datasetStreaming: boolean;
+  isEmbeddingModel: boolean;
+  modelDefault: boolean | undefined;
+  trainingMethod: TrainingConfigState["trainingMethod"];
+}): boolean {
+  if (
+    datasetStreaming ||
+    trainingMethod === "cpt" ||
+    isRawTextDatasetFormat(datasetFormat) ||
+    isEmbeddingModel
+  ) {
+    return false;
+  }
+  return modelDefault ?? currentValue;
 }
 
 export function formatStreamingDisabledOptions(

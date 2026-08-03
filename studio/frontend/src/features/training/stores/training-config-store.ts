@@ -48,6 +48,7 @@ import {
   formatStreamingDisabledOptions,
   hasSeparateStreamingEvalSplit,
   initialTrainingConfigState,
+  resolveDeferredTrainOnCompletionsDefault,
   streamingCompatiblePatch,
 } from "./training-config-policy";
 import { selectTrainingMethodForHardware } from "./training-method-hardware-policy";
@@ -215,11 +216,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               return;
             }
 
-            const modelDefaultsPatch =
-              mapBackendModelConfigToTrainingPatch(modelDetails.config);
-            const patch = shouldApplyTrainingDefaults
-              ? modelDefaultsPatch
-              : {};
+            const modelDefaultsPatch = mapBackendModelConfigToTrainingPatch(
+              modelDetails.config,
+            );
+            const patch = shouldApplyTrainingDefaults ? modelDefaultsPatch : {};
 
             // Treat a model-config LR as authoritative so async auto-select
             // won't overwrite it.
@@ -235,27 +235,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
 
             // Vision model + known image dataset: force trainOnCompletions off.
-            if (
-              modelDetails.is_vision &&
-              get().isDatasetImage === true
-            ) {
+            if (modelDetails.is_vision && get().isDatasetImage === true) {
               modelDefaultsPatch.trainOnCompletions = false;
             }
 
             const isAudio = !!modelDetails.is_audio;
             // Pure audio model -> always uncheck trainOnCompletions.
-            if (
-              isAudio &&
-              !modelDetails.is_vision
-            ) {
+            if (isAudio && !modelDetails.is_vision) {
               modelDefaultsPatch.trainOnCompletions = false;
             }
             // Audio-capable vision model (e.g. gemma3n) + audio dataset -> uncheck.
-            if (
-              isAudio &&
-              modelDetails.is_vision &&
-              get().isDatasetAudio
-            ) {
+            if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
               modelDefaultsPatch.trainOnCompletions = false;
             }
 
@@ -294,10 +284,27 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             };
             const advancedSettingsBaseline =
               get().advancedSettingsBaseline ?? modelDefaultsBaseline;
+            const deferredCompletionDefault =
+              !shouldApplyTrainingDefaults &&
+              get().trainOnCompletionsDefaultPendingFor === modelName
+                ? {
+                    trainOnCompletions:
+                      resolveDeferredTrainOnCompletionsDefault({
+                        currentValue: get().trainOnCompletions,
+                        datasetFormat: get().datasetFormat,
+                        datasetStreaming: get().datasetStreaming,
+                        isEmbeddingModel: isEmbedding,
+                        modelDefault: modelDefaultsPatch.trainOnCompletions,
+                        trainingMethod: get().trainingMethod,
+                      }),
+                    trainOnCompletionsDefaultPendingFor: null,
+                  }
+                : {};
 
             set({
               ...patch,
               ...cptOverrides,
+              ...deferredCompletionDefault,
               ...(shouldApplyTrainingDefaults
                 ? {
                     trainingMethodProvenance: {
@@ -318,6 +325,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isCheckingVision: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: modelName,
+              ...(shouldApplyTrainingDefaults
+                ? { trainOnCompletionsDefaultPendingFor: null }
+                : {}),
               maxPositionEmbeddings:
                 modelDetails.max_position_embeddings ?? null,
             });
@@ -646,6 +656,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           isEmbeddingModel?: boolean;
           modelDefaultsAppliedFor?: string | null;
           advancedSettingsBaseline?: null;
+          trainOnCompletionsDefaultPendingFor?: null;
         } = {
           selectedModel,
           modelDefaultsError: null,
@@ -670,6 +681,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             options?.isEmbedding ?? effectiveModelType === "embeddings";
           patch.modelDefaultsAppliedFor = null;
           patch.advancedSettingsBaseline = null;
+          patch.trainOnCompletionsDefaultPendingFor = null;
         }
         setUserEdit(patch);
 
@@ -686,6 +698,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             modelDefaultsError: null,
             modelDefaultsAppliedFor: null,
             advancedSettingsBaseline: null,
+            trainOnCompletionsDefaultPendingFor: null,
           });
           return;
         }
@@ -723,6 +736,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             modelDefaultsError: null,
             modelDefaultsAppliedFor: null,
             advancedSettingsBaseline: null,
+            trainOnCompletionsDefaultPendingFor: null,
           });
         },
         setSelectedModel: (selectedModel) => {
@@ -838,7 +852,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setTrainingMethod: (trainingMethod) => {
           _trainingMethodEditGeneration += 1;
           const state = get();
-          setUserEdit(buildTrainingMethodPatch(state, trainingMethod));
+          const patch = buildTrainingMethodPatch(state, trainingMethod);
+          setUserEdit({
+            ...patch,
+            ...(patch.trainOnCompletions !== undefined
+              ? { trainOnCompletionsDefaultPendingFor: null }
+              : {}),
+          });
         },
         setDatasetSource: (datasetSource) => {
           const state = get();
@@ -874,6 +894,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 return {
                   datasetFormat: "raw",
                   trainOnCompletions: false,
+                  trainOnCompletionsDefaultPendingFor: null,
                   trainingMethodProvenance: {
                     ...state.trainingMethodProvenance,
                     datasetFormatBeforeCpt: null,
@@ -883,6 +904,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               return {
                 datasetFormat: "raw",
                 trainOnCompletions: false,
+                trainOnCompletionsDefaultPendingFor: null,
               };
             }
 
@@ -891,6 +913,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               trainOnCompletions: isRawTextDatasetFormat(datasetFormat)
                 ? false
                 : state.trainOnCompletions,
+              ...(isRawTextDatasetFormat(datasetFormat)
+                ? { trainOnCompletionsDefaultPendingFor: null }
+                : {}),
             };
           }),
         setDataset: (dataset) => {
@@ -1020,6 +1045,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({
             datasetStreaming: true,
             trainOnCompletions: false,
+            trainOnCompletionsDefaultPendingFor: null,
             evalSteps: dropsEval ? 0 : state.evalSteps,
             isDatasetImage: null,
             isDatasetAudio: false,
@@ -1145,6 +1171,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _trainOnCompletionsManuallySet = true;
           setUserEdit({
             trainOnCompletions,
+            trainOnCompletionsDefaultPendingFor: null,
             ...(trainOnCompletions ? { datasetStreaming: false } : {}),
           });
         },
@@ -1188,6 +1215,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const patch = mapBackendModelConfigToTrainingPatch(config);
           setUserEdit((state) => ({
             ...patch,
+            ...(patch.trainOnCompletions !== undefined
+              ? { trainOnCompletionsDefaultPendingFor: null }
+              : {}),
             ...(patch.learningRate !== undefined
               ? {
                   trainingMethodProvenance: {
@@ -1207,10 +1237,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       partialize: partializeTrainingConfig,
       merge: mergeTrainingConfig,
       onRehydrateStorage: () => (state) => {
-        // datasetStreaming, maxSteps, and evalSteps persist, while
-        // trainOnCompletions rehydrates to its default. That can resurrect an
-        // invalid combination that the backend rejects with 422. Reconcile
-        // immediately on load instead of relying on a post-mount effect.
         if (!state) return;
         const patch = streamingCompatiblePatch(state);
         if (Object.keys(patch).length > 0) {

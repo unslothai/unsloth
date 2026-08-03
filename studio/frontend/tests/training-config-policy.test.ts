@@ -8,8 +8,11 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { createHfBrowseDatasetSelection, datasetSelectionStreamingPatch } =
-  await import("../src/features/training/stores/training-config-policy.ts");
+const {
+  createHfBrowseDatasetSelection,
+  datasetSelectionStreamingPatch,
+  resolveDeferredTrainOnCompletionsDefault,
+} = await import("../src/features/training/stores/training-config-policy.ts");
 
 test("selecting an on-device Hub dataset disables streaming", () => {
   const deviceOptions = {
@@ -32,5 +35,62 @@ test("selecting an on-device Hub dataset disables streaming", () => {
       createHfBrowseDatasetSelection("org/remote-dataset"),
     ),
     {},
+  );
+});
+
+test("resolves deferred completion defaults without violating training constraints", () => {
+  const base = {
+    currentValue: false,
+    datasetFormat: "chatml" as const,
+    datasetStreaming: false,
+    isEmbeddingModel: false,
+    modelDefault: true,
+    trainingMethod: "qlora" as const,
+  };
+
+  assert.equal(resolveDeferredTrainOnCompletionsDefault(base), true);
+  assert.equal(
+    resolveDeferredTrainOnCompletionsDefault({
+      ...base,
+      currentValue: true,
+      modelDefault: false,
+    }),
+    false,
+  );
+  assert.equal(
+    resolveDeferredTrainOnCompletionsDefault({
+      ...base,
+      currentValue: true,
+      modelDefault: undefined,
+    }),
+    true,
+  );
+  assert.equal(
+    resolveDeferredTrainOnCompletionsDefault({
+      ...base,
+      datasetStreaming: true,
+    }),
+    false,
+  );
+  assert.equal(
+    resolveDeferredTrainOnCompletionsDefault({
+      ...base,
+      datasetFormat: "raw",
+    }),
+    false,
+  );
+  assert.equal(
+    resolveDeferredTrainOnCompletionsDefault({
+      ...base,
+      trainingMethod: "cpt",
+    }),
+    false,
+  );
+  assert.equal(
+    resolveDeferredTrainOnCompletionsDefault({
+      ...base,
+      isEmbeddingModel: true,
+    }),
+    false,
   );
 });

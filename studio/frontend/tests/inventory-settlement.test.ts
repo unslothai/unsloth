@@ -70,3 +70,19 @@ test("keeps an unready failure unsettled for the next enable retry", () => {
     },
   );
 });
+
+test("settles a partial failure when another source returned rows", () => {
+  assert.deepEqual(
+    resolveInventorySettlement({
+      ...emptyReadyInventory,
+      hasInventoryRows: true,
+      hasUnreadyInventoryFailure: true,
+      inventoryFailed: true,
+      lastEmptyRevalidationSignature: null,
+    }),
+    {
+      emptyRevalidationRequired: false,
+      inventorySettled: true,
+    },
+  );
+});

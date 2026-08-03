@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   resolveInferredPickerTabLock,
+  resolvePickerDeviceListState,
   resolvePickerTab,
 } from "../src/components/resource-picker/picker-tab-policy.ts";
 
@@ -58,6 +59,49 @@ test("locks a cold inferred picker to its opening tab", () => {
     "hub",
   );
   assert.equal(resolveInferredPickerTabLock(withoutDeviceItems), "hub");
+});
+
+test("keeps partial-failure retry available when filtering removes every row", () => {
+  assert.equal(
+    resolvePickerDeviceListState({
+      error: null,
+      hasItems: false,
+      hasQuery: true,
+      isLoading: false,
+      warning: true,
+    }),
+    "warning",
+  );
+  assert.equal(
+    resolvePickerDeviceListState({
+      error: null,
+      hasItems: false,
+      hasQuery: true,
+      isLoading: false,
+      warning: false,
+    }),
+    "no-results",
+  );
+  assert.equal(
+    resolvePickerDeviceListState({
+      error: null,
+      hasItems: true,
+      hasQuery: true,
+      isLoading: false,
+      warning: true,
+    }),
+    "items",
+  );
+  assert.equal(
+    resolvePickerDeviceListState({
+      error: null,
+      hasItems: false,
+      hasQuery: true,
+      isLoading: true,
+      warning: true,
+    }),
+    "loading",
+  );
 });
 
 test("keeps the opening tab stable when inventory settles", () => {

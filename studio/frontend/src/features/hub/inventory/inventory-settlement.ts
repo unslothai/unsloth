@@ -32,6 +32,6 @@ export function resolveInventorySettlement({
     inventorySettled:
       downloadedReady &&
       !emptyRevalidationRequired &&
-      !hasUnreadyInventoryFailure,
+      (!hasUnreadyInventoryFailure || hasInventoryRows),
   };
 }

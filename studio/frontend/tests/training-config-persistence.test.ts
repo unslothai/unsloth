@@ -22,6 +22,8 @@ test("persists the applied model defaults identity and summary baseline", () => 
     selectedModel: "org/model",
     modelDefaultsAppliedFor: "org/model",
     advancedSettingsBaseline: { loraRank: 32, saveSteps: 25 },
+    trainOnCompletionsDefaultPendingFor: null,
+    trainOnCompletions: true,
     trainingMethodProvenance: {
       learningRateManuallySet: true,
       modelAdapterLearningRate: 0.00001,
@@ -37,12 +39,14 @@ test("persists the applied model defaults identity and summary baseline", () => 
     loraRank: 32,
     saveSteps: 25,
   });
+  assert.equal(persisted.trainOnCompletions, true);
   assert.deepEqual(persisted.trainingMethodProvenance, {
     learningRateManuallySet: true,
     modelAdapterLearningRate: 0.00001,
     datasetFormatBeforeCpt: "sharegpt",
   });
   assert.equal("isLoadingModelDefaults" in persisted, false);
+  assert.equal("trainOnCompletionsDefaultPendingFor" in persisted, false);
   assert.equal("wandbToken" in persisted, false);
   assert.equal("setLearningRate" in persisted, false);
 });
@@ -58,7 +62,7 @@ test("migration preserves tuned values while protecting them from model defaults
     16,
   );
 
-  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 19);
+  assert.equal(TRAINING_CONFIG_PERSISTENCE_VERSION, 20);
   assert.equal(migrated.learningRate, 0.000031);
   assert.equal(migrated.loraRank, 48);
   assert.equal(migrated.modelDefaultsAppliedFor, "org/model");
@@ -114,4 +118,68 @@ test("merge rejects defaults metadata for a different selected model", () => {
   assert.deepEqual(matching.advancedSettingsBaseline, { loraRank: 32 });
   assert.equal(merged.modelDefaultsAppliedFor, null);
   assert.equal(merged.advancedSettingsBaseline, null);
+});
+
+test("merge restores completion training from legacy model defaults metadata", () => {
+  const legacy = mergeTrainingConfig(
+    {
+      selectedModel: "org/model",
+      modelDefaultsAppliedFor: "org/model",
+      advancedSettingsBaseline: { trainOnCompletions: true },
+    },
+    { trainingMethod: "qlora", trainOnCompletions: false } as never,
+  );
+  const explicit = mergeTrainingConfig(
+    {
+      selectedModel: "org/model",
+      modelDefaultsAppliedFor: "org/model",
+      advancedSettingsBaseline: { trainOnCompletions: true },
+      trainOnCompletions: false,
+    },
+    { trainingMethod: "qlora", trainOnCompletions: true } as never,
+  );
+
+  assert.equal(legacy.trainOnCompletions, true);
+  assert.equal(legacy.trainOnCompletionsDefaultPendingFor, null);
+  assert.equal(explicit.trainOnCompletions, false);
+  assert.equal(explicit.trainOnCompletionsDefaultPendingFor, null);
+});
+
+test("defers an unavailable legacy completion default without persisting a placeholder", () => {
+  const migrated = migrateTrainingConfig(
+    {
+      selectedModel: "org/model",
+      learningRate: 0.000031,
+      loraRank: 48,
+    },
+    16,
+  );
+  const merged = mergeTrainingConfig(migrated, {
+    trainingMethod: "qlora",
+    trainOnCompletions: false,
+  } as never);
+  const persisted = partializeTrainingConfig(merged);
+
+  assert.equal(merged.modelDefaultsAppliedFor, "org/model");
+  assert.equal(merged.advancedSettingsBaseline, null);
+  assert.equal(merged.trainOnCompletionsDefaultPendingFor, "org/model");
+  assert.equal("trainOnCompletions" in persisted, false);
+  assert.equal("trainOnCompletionsDefaultPendingFor" in persisted, false);
+  assert.equal(persisted.learningRate, 0.000031);
+  assert.equal(persisted.loraRank, 48);
+});
+
+test("does not defer an explicitly persisted completion setting", () => {
+  const merged = mergeTrainingConfig(
+    {
+      selectedModel: "org/model",
+      modelDefaultsAppliedFor: "org/model",
+      advancedSettingsBaseline: null,
+      trainOnCompletions: false,
+    },
+    { trainingMethod: "qlora", trainOnCompletions: true } as never,
+  );
+
+  assert.equal(merged.trainOnCompletions, false);
+  assert.equal(merged.trainOnCompletionsDefaultPendingFor, null);
 });

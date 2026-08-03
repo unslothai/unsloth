@@ -119,6 +119,7 @@ export interface TrainingConfigState {
   modelDefaultsError: string | null;
   modelDefaultsAppliedFor: string | null;
   advancedSettingsBaseline: AdvancedSettingsBaseline | null;
+  trainOnCompletionsDefaultPendingFor: string | null;
   isCheckingDataset: boolean;
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;

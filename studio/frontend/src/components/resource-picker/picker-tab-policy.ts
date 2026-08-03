@@ -8,6 +8,42 @@ export interface PickerDeviceInventoryState {
   isDeviceInventorySettled: boolean;
 }
 
+export type PickerDeviceListState =
+  | "empty"
+  | "error"
+  | "items"
+  | "loading"
+  | "no-results"
+  | "warning";
+
+export function resolvePickerDeviceListState({
+  error,
+  hasItems,
+  hasQuery,
+  isLoading,
+  warning,
+}: {
+  error: string | null;
+  hasItems: boolean;
+  hasQuery: boolean;
+  isLoading: boolean;
+  warning: boolean;
+}): PickerDeviceListState {
+  if (hasItems) {
+    return "items";
+  }
+  if (isLoading) {
+    return "loading";
+  }
+  if (error) {
+    return "error";
+  }
+  if (warning) {
+    return "warning";
+  }
+  return hasQuery ? "no-results" : "empty";
+}
+
 export interface PickerTabResolutionInput extends PickerDeviceInventoryState {
   hasExplicitTabPreference: boolean;
   lockedInferredTab: PickerTab | null;

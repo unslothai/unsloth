@@ -8,6 +8,7 @@ import {
   PickerSearchError,
   RetryButton,
 } from "@/components/resource-picker/picker-states";
+import { resolvePickerDeviceListState } from "@/components/resource-picker/picker-tab-policy";
 import { SelectablePickerItem } from "@/components/resource-picker/selectable-picker-item";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -67,30 +68,48 @@ export function TrainModelDeviceList({
   onRetry,
 }: TrainModelDeviceListProps) {
   const t = useT();
-  if (isLoading && items.length === 0) {
+  const listState = resolvePickerDeviceListState({
+    error,
+    hasItems: items.length > 0,
+    hasQuery,
+    isLoading,
+    warning,
+  });
+  const warningContent = (
+    <>
+      <span>{t("studio.modelPicker.someLocationsUnscanned")}</span>
+      <RetryButton onRetry={onRetry} />
+    </>
+  );
+  if (listState === "loading") {
     return (
       <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
         <Spinner className="size-4" /> {t("studio.modelPicker.scanningLocal")}
       </div>
     );
   }
-  if (items.length === 0) {
-    if (error) {
-      return (
-        <div className="flex flex-col items-center gap-1.5 px-4 py-8 text-center">
-          <p className="text-ui-12p5 font-medium text-foreground">
-            {t("studio.modelPicker.couldntScan")}
-          </p>
-          <p className="text-ui-11 leading-snug text-muted-foreground">
-            {error}
-          </p>
-          <RetryButton onRetry={onRetry} />
-        </div>
-      );
-    }
-    if (hasQuery) {
-      return null;
-    }
+  if (listState === "error") {
+    return (
+      <div className="flex flex-col items-center gap-1.5 px-4 py-8 text-center">
+        <p className="text-ui-12p5 font-medium text-foreground">
+          {t("studio.modelPicker.couldntScan")}
+        </p>
+        <p className="text-ui-11 leading-snug text-muted-foreground">{error}</p>
+        <RetryButton onRetry={onRetry} />
+      </div>
+    );
+  }
+  if (listState === "warning") {
+    return (
+      <div className="flex items-center justify-between gap-3 px-2 py-2 text-ui-10p5 text-muted-foreground/80">
+        {warningContent}
+      </div>
+    );
+  }
+  if (listState === "no-results") {
+    return null;
+  }
+  if (listState === "empty") {
     return (
       <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
         <HugeiconsIcon
@@ -133,8 +152,8 @@ export function TrainModelDeviceList({
         </li>
       ))}
       {warning && (
-        <li className="px-2 py-1 text-ui-10p5 text-muted-foreground/80">
-          {t("studio.modelPicker.someLocationsUnscanned")}
+        <li className="flex items-center justify-between gap-3 px-2 py-1 text-ui-10p5 text-muted-foreground/80">
+          {warningContent}
         </li>
       )}
     </ul>

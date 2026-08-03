@@ -8,6 +8,7 @@ import {
   PickerSearchError,
   RetryButton,
 } from "@/components/resource-picker/picker-states";
+import { resolvePickerDeviceListState } from "@/components/resource-picker/picker-tab-policy";
 import { SelectablePickerItem } from "@/components/resource-picker/selectable-picker-item";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -56,34 +57,52 @@ export function DatasetDeviceList({
   onPick: (item: DatasetDeviceItem) => void;
 }) {
   const t = useT();
-  if (isLoading && items.length === 0) {
+  const listState = resolvePickerDeviceListState({
+    error,
+    hasItems: items.length > 0,
+    hasQuery,
+    isLoading,
+    warning,
+  });
+  const warningContent = (
+    <>
+      <span>{t("studio.datasetPicker.someLocationsUnscanned")}</span>
+      <RetryButton onRetry={onRetry} />
+    </>
+  );
+  if (listState === "loading") {
     return (
       <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
         <Spinner className="size-4" /> {t("studio.datasetPicker.scanningLocal")}
       </div>
     );
   }
-  if (items.length === 0) {
-    if (error) {
-      return (
-        <div className="flex flex-col items-center gap-1.5 px-4 py-8 text-center">
-          <p className="text-ui-12p5 font-medium text-foreground">
-            {t("studio.datasetPicker.couldntScan")}
-          </p>
-          <p className="text-ui-11 leading-snug text-muted-foreground">
-            {error}
-          </p>
-          <RetryButton onRetry={onRetry} />
-        </div>
-      );
-    }
-    if (hasQuery) {
-      return (
-        <div className="px-4 py-8 text-center text-xs text-muted-foreground">
-          {t("studio.datasetPicker.noDatasetsFound")}
-        </div>
-      );
-    }
+  if (listState === "error") {
+    return (
+      <div className="flex flex-col items-center gap-1.5 px-4 py-8 text-center">
+        <p className="text-ui-12p5 font-medium text-foreground">
+          {t("studio.datasetPicker.couldntScan")}
+        </p>
+        <p className="text-ui-11 leading-snug text-muted-foreground">{error}</p>
+        <RetryButton onRetry={onRetry} />
+      </div>
+    );
+  }
+  if (listState === "warning") {
+    return (
+      <div className="flex items-center justify-between gap-3 px-2 py-2 text-ui-10p5 text-muted-foreground/80">
+        {warningContent}
+      </div>
+    );
+  }
+  if (listState === "no-results") {
+    return (
+      <div className="px-4 py-8 text-center text-xs text-muted-foreground">
+        {t("studio.datasetPicker.noDatasetsFound")}
+      </div>
+    );
+  }
+  if (listState === "empty") {
     return (
       <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
         <p className="text-xs text-muted-foreground">
@@ -125,8 +144,8 @@ export function DatasetDeviceList({
         );
       })}
       {warning && (
-        <li className="px-2 py-1 text-ui-10p5 text-muted-foreground/80">
-          {t("studio.datasetPicker.someLocationsUnscanned")}
+        <li className="flex items-center justify-between gap-3 px-2 py-1 text-ui-10p5 text-muted-foreground/80">
+          {warningContent}
         </li>
       )}
     </ul>

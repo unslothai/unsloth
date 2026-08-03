@@ -26,7 +26,7 @@ import {
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 19;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 20;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -38,7 +38,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "isDatasetImage",
     "isDatasetAudio",
     "datasetCheckFailed",
-    "trainOnCompletions",
+    "trainOnCompletionsDefaultPendingFor",
     "maxPositionEmbeddings",
     "s3Config",
     "wandbToken",
@@ -50,6 +50,13 @@ export function partializeTrainingConfig(
   return Object.fromEntries(
     Object.entries(state).filter(([key, value]) => {
       if (typeof value === "function") {
+        return false;
+      }
+      if (
+        key === "trainOnCompletions" &&
+        typeof state.trainOnCompletionsDefaultPendingFor === "string" &&
+        state.trainOnCompletionsDefaultPendingFor === state.selectedModel
+      ) {
         return false;
       }
       return !NON_PERSISTED_STATE_KEYS.has(key as keyof TrainingConfigState);
@@ -280,14 +287,34 @@ export function mergeTrainingConfig(
     persistedState.modelDefaultsAppliedFor === persistedState.selectedModel
       ? persistedState.modelDefaultsAppliedFor
       : null;
+  const advancedSettingsBaseline = modelDefaultsAppliedFor
+    ? (persistedState.advancedSettingsBaseline ?? null)
+    : null;
+  const persistedTrainOnCompletions =
+    typeof persistedState.trainOnCompletions === "boolean"
+      ? persistedState.trainOnCompletions
+      : undefined;
+  const baselineTrainOnCompletions =
+    typeof advancedSettingsBaseline?.trainOnCompletions === "boolean"
+      ? advancedSettingsBaseline.trainOnCompletions
+      : undefined;
+  const trainOnCompletions =
+    persistedTrainOnCompletions ??
+    baselineTrainOnCompletions ??
+    current.trainOnCompletions;
+  const trainOnCompletionsDefaultPendingFor =
+    persistedTrainOnCompletions === undefined &&
+    baselineTrainOnCompletions === undefined
+      ? modelDefaultsAppliedFor
+      : null;
   return {
     ...current,
     ...persistedState,
     wandbToken: current.wandbToken,
+    trainOnCompletions,
     modelDefaultsAppliedFor,
-    advancedSettingsBaseline: modelDefaultsAppliedFor
-      ? (persistedState.advancedSettingsBaseline ?? null)
-      : null,
+    advancedSettingsBaseline,
+    trainOnCompletionsDefaultPendingFor,
     trainingMethodProvenance: normalizeTrainingMethodProvenance(
       persistedState.trainingMethodProvenance,
       persistedRecord,
