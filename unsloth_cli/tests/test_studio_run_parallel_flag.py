@@ -164,8 +164,9 @@ def _install_reexec_capture(monkeypatch, *, platform):
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
 
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    fake_python = fake_venv / "bin" / "python"
-    fake_bin = fake_venv / "bin" / "unsloth"
+    host_is_windows = sys.platform == "win32"
+    fake_python = fake_venv / ("Scripts/python.exe" if host_is_windows else "bin/python")
+    fake_bin = fake_python.parent / ("unsloth.exe" if host_is_windows else "unsloth")
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
 
     real_is_file = Path.is_file
@@ -260,13 +261,13 @@ _BASE = ["--model", "unsloth/Qwen3-1.7B-GGUF"]
 def test_reexec_forwards_parallel_all_aliases(monkeypatch, flag, value):
     """Every alias the user can type must reach the re-exec'd child."""
     result, captured = _invoke_run(monkeypatch, _BASE + [flag, value])
-    assert (
-        len(captured) == 1
-    ), f"expected one launch via re-exec, got {captured}; output={result.output!r}"
+    assert len(captured) == 1, (
+        f"expected one launch via re-exec, got {captured}; output={result.output!r}"
+    )
     argv = captured[0]["argv"]
-    assert (
-        _value_after(argv, "--parallel") == value
-    ), f"{flag} {value} was dropped on re-exec; argv = {argv}"
+    assert _value_after(argv, "--parallel") == value, (
+        f"{flag} {value} was dropped on re-exec; argv = {argv}"
+    )
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
@@ -371,9 +372,9 @@ def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     result, captured = _invoke_run(monkeypatch, _BASE + ["--parallel", "12"], platform = platform)
     assert len(captured) == 1
     expected_kind = "popen" if platform == "win32" else "execvp"
-    assert (
-        captured[0]["kind"] == expected_kind
-    ), f"{platform}: expected launcher {expected_kind}, got {captured[0]['kind']}"
+    assert captured[0]["kind"] == expected_kind, (
+        f"{platform}: expected launcher {expected_kind}, got {captured[0]['kind']}"
+    )
     assert _value_after(captured[0]["argv"], "--parallel") == "12"
 
 
@@ -384,9 +385,9 @@ def test_reexec_np_is_first_class_alias(monkeypatch):
     result, captured = _invoke_run(monkeypatch, _BASE + ["-np", "8"])
     assert len(captured) == 1
     argv = captured[0]["argv"]
-    assert (
-        _value_after(argv, "--parallel") == "8"
-    ), f"-np 8 silently became 4 after re-exec; argv = {argv}"
+    assert _value_after(argv, "--parallel") == "8", (
+        f"-np 8 silently became 4 after re-exec; argv = {argv}"
+    )
     # `-np 8` must not clobber --port (default 8888).
     assert _value_after(argv, "--port") == "8888", argv
 
@@ -606,9 +607,9 @@ def test_studio_default_rejects_parallel_when_subcommand_invoked():
     )
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
     assert "--parallel" in combined, combined
-    assert (
-        "run --parallel 8" in combined
-    ), f"error message must show the corrected invocation; got: {combined}"
+    assert "run --parallel 8" in combined, (
+        f"error message must show the corrected invocation; got: {combined}"
+    )
 
 
 def test_studio_default_rejects_api_only_when_subcommand_invoked():
@@ -629,9 +630,9 @@ def test_studio_default_rejects_api_only_when_subcommand_invoked():
     )
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
     assert "--api-only" in combined, combined
-    assert (
-        "run --api-only" in combined
-    ), f"error message must show the corrected invocation; got: {combined}"
+    assert "run --api-only" in combined, (
+        f"error message must show the corrected invocation; got: {combined}"
+    )
 
 
 def test_studio_default_default_parallel_with_subcommand_does_not_error():
@@ -655,16 +656,16 @@ def test_studio_default_exposes_parallel_option():
     import inspect
 
     sig = inspect.signature(studio_mod.studio_default)
-    assert (
-        "parallel" in sig.parameters
-    ), "studio_default missing `parallel`; API-only path can't set llama_parallel_slots"
+    assert "parallel" in sig.parameters, (
+        "studio_default missing `parallel`; API-only path can't set llama_parallel_slots"
+    )
     opt = sig.parameters["parallel"].default
     decls = set(getattr(opt, "param_decls", []) or [])
     assert "--parallel" in decls
     assert "--n-parallel" in decls
-    assert (
-        getattr(opt, "default", None) == studio_mod._PARALLEL_DEFAULT_PLAIN
-    ), "studio_default --parallel must use _PARALLEL_DEFAULT_PLAIN"
+    assert getattr(opt, "default", None) == studio_mod._PARALLEL_DEFAULT_PLAIN, (
+        "studio_default --parallel must use _PARALLEL_DEFAULT_PLAIN"
+    )
     assert getattr(opt, "min", None) == 1
     assert getattr(opt, "max", None) == 64
 
@@ -715,9 +716,9 @@ def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value, stub_too
     )(studio_mod.run)
     CliRunner().invoke(app, _BASE + ["--parallel", str(value)], catch_exceptions = True)
 
-    assert (
-        captured.get("llama_parallel_slots") == value
-    ), f"run_server got llama_parallel_slots={captured.get('llama_parallel_slots')!r}, expected {value}"
+    assert captured.get("llama_parallel_slots") == value, (
+        f"run_server got llama_parallel_slots={captured.get('llama_parallel_slots')!r}, expected {value}"
+    )
 
 
 # --api-only: serve API only (no UI). Both re-exec and in-venv paths must carry it.
@@ -805,10 +806,10 @@ def test_in_venv_path_passes_api_only_to_run_server(
     )(studio_mod.run)
     CliRunner().invoke(app, _BASE + extra, catch_exceptions = True)
 
-    assert (
-        captured.get("api_only") is expected
-    ), f"run_server got api_only={captured.get('api_only')!r}, expected {expected}"
+    assert captured.get("api_only") is expected, (
+        f"run_server got api_only={captured.get('api_only')!r}, expected {expected}"
+    )
     # Headless serving must suppress the Tauri-only TAURI_PORT line.
-    assert (
-        captured.get("emit_tauri_port") is False
-    ), f"run_server got emit_tauri_port={captured.get('emit_tauri_port')!r}, expected False"
+    assert captured.get("emit_tauri_port") is False, (
+        f"run_server got emit_tauri_port={captured.get('emit_tauri_port')!r}, expected False"
+    )

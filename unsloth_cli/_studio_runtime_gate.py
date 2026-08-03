@@ -356,26 +356,50 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
     current_pid = os.getpid()
     excluded_pids = {current_pid}
 
-    current = next(
-        (process for process in processes if int(process.get("ProcessId") or -1) == current_pid),
-        None,
-    )
-    if current is not None:
-        parent_pid = int(current.get("ParentProcessId") or -1)
+    parent_pid = -1
+    parent_images: list[str] = []
+    try:
+        parent_process = psutil.Process(current_pid).parent()
+    except (psutil.Error, OSError):
+        parent_process = None
+    if parent_process is not None:
+        parent_pid = int(parent_process.pid)
+        try:
+            parent_images.append(parent_process.exe())
+        except (psutil.Error, OSError):
+            pass
+
+    if parent_pid <= 0:
+        current = next(
+            (
+                process
+                for process in processes
+                if int(process.get("ProcessId") or -1) == current_pid
+            ),
+            None,
+        )
+        if current is not None:
+            parent_pid = int(current.get("ParentProcessId") or -1)
+
+    if parent_pid > 0:
         parent = next(
             (process for process in processes if int(process.get("ProcessId") or -1) == parent_pid),
             None,
         )
         if parent is not None and parent.get("ExecutablePath"):
-            try:
-                parent_image = _resolved_windows_path(Path(parent["ExecutablePath"]))
-            except OSError:
-                parent_image = str(parent["ExecutablePath"])
-            if any(
-                parent_image.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
-                for path in protected_file_spellings
-            ):
-                excluded_pids.add(parent_pid)
+            parent_images.append(str(parent["ExecutablePath"]))
+
+    for parent_image in parent_images:
+        try:
+            parent_key = _resolved_windows_path(Path(parent_image))
+        except OSError:
+            parent_key = parent_image
+        if any(
+            parent_key.rstrip("\\/").casefold() == path.rstrip("\\/").casefold()
+            for path in protected_file_spellings
+        ):
+            excluded_pids.add(parent_pid)
+            break
 
     for process in processes:
         process_id = int(process.get("ProcessId") or -1)

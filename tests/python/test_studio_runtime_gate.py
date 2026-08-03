@@ -106,8 +106,12 @@ def test_terminal_update_idle_scan_excludes_self_and_blocks_another_consumer(tmp
     worker = studio_home / "unsloth_studio" / "Lib" / "worker.py"
     worker.parent.mkdir(parents = True)
     worker.write_text("pass", encoding = "utf-8")
+    shim = studio_home / "bin" / "unsloth.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_bytes(b"MZ")
+    parent_pid = os.getppid()
     base_process = {
-        "ParentProcessId": os.getppid(),
+        "ParentProcessId": parent_pid,
         "Name": "python.exe",
         "ExecutablePath": str(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"),
         "CommandLine": r"python.exe worker.py",
@@ -116,12 +120,24 @@ def test_terminal_update_idle_scan_excludes_self_and_blocks_another_consumer(tmp
     payload = [
         dict(base_process, ProcessId = -1),
         dict(base_process, ProcessId = os.getpid()),
+        dict(
+            base_process,
+            ProcessId = parent_pid,
+            ParentProcessId = 0,
+            Name = "unsloth.exe",
+            ExecutablePath = "",
+            CommandLine = "unsloth studio update",
+        ),
     ]
+    parent_process = SimpleNamespace(pid = parent_pid, exe = lambda: str(shim))
 
     def fake_process(process_id):
         if process_id <= 0:
             raise ValueError(f"pid must be positive: {process_id}")
-        return SimpleNamespace(cwd = lambda: str(worker.parent))
+        return SimpleNamespace(
+            cwd = lambda: str(worker.parent),
+            parent = lambda: parent_process if process_id == os.getpid() else None,
+        )
 
     fake_psutil = SimpleNamespace(
         Error = Exception,
