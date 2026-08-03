@@ -943,7 +943,9 @@ def test_start_diffusion_server_resets_tensor_parallel():
     # diffusion re-Apply reloads against stale tensor-parallel state.
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
     assert "self._tensor_parallel = False" in src
-    assert "self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None" in src
+    # Still the collapsed single-device pick, but taken from the request rather than the
+    # effective pin, which a forced-CPU launch on virtualised Metal clears.
+    assert "self._requested_gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None" in src
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
@@ -1343,4 +1345,15 @@ def test_cmd_companion_ignores_cpu_forced_drafter():
     assert has(cmd, {}) is False
     # mmproj still counts even alongside a CPU drafter.
     cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0", "--mmproj", "p.gguf"]
+    assert has(cmd, {}) is True
+
+
+def test_cmd_companion_ignores_a_projector_pinned_off_the_gpu():
+    # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole GPU
+    # backend on it, so a CPU-pinned vision server must not look GPU resident.
+    has = LlamaCppBackend._cmd_has_gpu_companion
+    cmd = ["llama-server", "--mmproj", "p.gguf", "--no-mmproj-offload"]
+    assert has(cmd, {}) is False
+    # llama.cpp assigns rather than accumulates for this one, so the last flag wins.
+    cmd = ["llama-server", "--mmproj", "p.gguf", "--no-mmproj-offload", "--mmproj-offload"]
     assert has(cmd, {}) is True

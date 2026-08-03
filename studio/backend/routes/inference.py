@@ -1013,9 +1013,11 @@ try:
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
+        _metal_device_is_paravirtual,
         _planned_main_cache_types,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
+        paravirtual_normalized_request,
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
@@ -1061,9 +1063,11 @@ except ImportError:
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
+        _metal_device_is_paravirtual,
         _planned_main_cache_types,
         _swa_full_from_args_or_env,
         detect_reasoning_flags,
+        paravirtual_normalized_request,
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
@@ -3682,6 +3686,7 @@ def _active_gguf_intent(
         ),
         mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         compare_mtp_draft = True,
+        extra_args_inherited = request.llama_extra_args is None,
     )
 
 
@@ -5229,6 +5234,7 @@ def _resolve_gguf_load_intent(
         n_parallel = n_parallel,
         is_vision = config.is_vision,
         gpu_ids_are_vulkan_ordinals = placement.gpu_ids_are_vulkan_ordinals,
+        extra_args_inherited = getattr(request, "llama_extra_args", None) is None,
     )
 
 
@@ -5268,13 +5274,39 @@ def _guard_chat_load_against_training(
     from core.inference.llama_cpp import _diffusion_manual_ngl, _scale_diffusion_required_gb
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    if is_gguf and request.gpu_memory_mode == "manual" and (diffusion_kind is False):
+    # load_model pins a GGUF to CPU on a virtualised Metal device, so guard what will run:
+    # sized as the raw Auto request, a CPU-only load is refused over VRAM it never takes.
+    _guard_gpu_memory_mode = request.gpu_memory_mode
+    _guard_gpu_layers = request.gpu_layers
+    _guard_tensor_parallel = request.tensor_parallel
+    _pv_guard_forced_cpu = is_gguf and _metal_device_is_paravirtual()
+    if _pv_guard_forced_cpu:
+        _pv = paravirtual_normalized_request(
+            gpu_memory_mode = request.gpu_memory_mode,
+            gpu_layers = request.gpu_layers,
+            tensor_parallel = request.tensor_parallel,
+            tensor_split = None,
+            n_cpu_moe = 0,
+            extra_args = llama_extra_args,
+            log_dropped = False,
+        )
+        _guard_gpu_memory_mode = _pv.gpu_memory_mode
+        _guard_gpu_layers = _pv.gpu_layers
+        _guard_tensor_parallel = _pv.tensor_parallel
+        llama_extra_args = _pv.extra_args
+    # The pin leaves nothing on the GPU (--device none, no mmproj offload, drafter on CPU),
+    # so there is nothing to budget whatever the GGUF turns out to be. Ahead of the checks
+    # below, which only exempt a CONFIRMED diffusion GGUF and would size an unclassified
+    # remote one as GPU-resident and 409 a load that never touches VRAM.
+    if _pv_guard_forced_cpu:
+        return
+    if is_gguf and _guard_gpu_memory_mode == "manual" and (diffusion_kind is False):
         return
     # A zero-layer diffusion split places no model layers on any device, so it cannot compete
     # with training for VRAM. Mirrors the loader, which folds the same condition into its
     # cpu_only (core/inference/llama_cpp.py).
     diffusion_ngl = (
-        _diffusion_manual_ngl(request.gpu_memory_mode, request.gpu_layers) if is_gguf else None
+        _diffusion_manual_ngl(_guard_gpu_memory_mode, _guard_gpu_layers) if is_gguf else None
     )
     if diffusion_ngl is not None and diffusion_kind is not False:
         # The loader drops the split when the shim has no --ngl and launches GPU-resident.
@@ -5318,11 +5350,19 @@ def _guard_chat_load_against_training(
     )
 
     # Size with the count that will actually launch, or a load that fits gets a
-    # 409: diffusion never receives --parallel, and load_model clamps to 1 on an
-    # llama-server without --kv-unified. An unclassified GGUF keeps the ask.
+    # 409: diffusion never receives --parallel, load_model clamps to 1 on an
+    # llama-server without --kv-unified, and it clamps MTP to 1 as well. An
+    # unclassified GGUF keeps the ask.
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
             n_parallel = 1
+        # MTP is deliberately NOT clamped here even though the launch clamps it to one
+        # slot. _estimate_gguf_required_gb counts the drafter file and the main KV, but
+        # not the draft KV, the duplicated target context MLA keeps, or the draft compute
+        # reserve, all of which load_model does budget. Sizing for one slot would drop
+        # the slot KV without replacing it with those, and a guard that under-sizes
+        # evicts the training run it exists to protect: the spare slots stand in for
+        # what is not modelled.
         else:
             try:
                 caps = LlamaCppBackend.probe_server_capabilities()
@@ -5340,7 +5380,7 @@ def _guard_chat_load_against_training(
             n_parallel = n_parallel,
             cache_type_kv = request.cache_type_kv,
             tensor_parallel = (
-                _effective_tensor_parallel(llama_extra_args, request.tensor_parallel)
+                _effective_tensor_parallel(llama_extra_args, _guard_tensor_parallel)
                 and (
                     is_vulkan_backend
                     or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2

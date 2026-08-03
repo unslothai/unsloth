@@ -15,6 +15,7 @@ import os
 import struct
 import sys
 import types as _types
+from importlib.util import find_spec as _find_spec
 from pathlib import Path
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -29,27 +30,36 @@ _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-_httpx_stub = _types.ModuleType("httpx")
-for _exc in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-):
-    setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
-_httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
-_httpx_stub.Client = type(
-    "C",
-    (),
-    {
-        "__init__": lambda s, **kw: None,
-        "__enter__": lambda s: s,
-        "__exit__": lambda s, *a: None,
-    },
-)
-sys.modules.setdefault("httpx", _httpx_stub)
+# Real httpx wins when installed: setdefault only checks whether httpx is already
+# imported, not whether it exists, so the stub used to shadow the real module for the
+# rest of the session, and it is a subset (no Response) that blew routes/inference up in
+# combined runs. find_spec rather than an import, so installing the stub stays this
+# module's only side effect on sys.modules. sys.modules is tested first because find_spec
+# raises ValueError on a module already there without a spec (every bare-ModuleType httpx
+# stub in this tree), which would be a collection error rather than one failed test.
+if "httpx" not in sys.modules and _find_spec("httpx") is None:
+    _httpx_stub = _types.ModuleType("httpx")
+    for _exc in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+    ):
+        setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
+    _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
+    _httpx_stub.Response = type("Response", (), {})
+    _httpx_stub.Client = type(
+        "C",
+        (),
+        {
+            "__init__": lambda s, **kw: None,
+            "__enter__": lambda s: s,
+            "__exit__": lambda s, *a: None,
+        },
+    )
+    sys.modules["httpx"] = _httpx_stub
 
 import pytest
 
@@ -2199,3 +2209,42 @@ def test_already_in_target_state_retries_after_hf_drafter_not_found():
     # Sanity: with no fallback reason the same request still dedupes (matches).
     ok = _mtp_backend(_model_identifier = "unsloth/gemma-4-E4B-it-GGUF", _gguf_path = None)
     assert _matches(ok, **_drafter_not_found_kwargs()) is True
+
+
+_MODERN_DRAFT_NGL_HELP = """usage: llama-server [options]
+
+--spec-draft-ngl N                      layers to offload for the draft model
+--parallel N                            number of parallel sequences
+"""
+
+_LEGACY_DRAFT_NGL_HELP = """usage: llama-server [options]
+
+-ngld, --gpu-layers-draft N             layers to offload for the draft model
+--parallel N                            number of parallel sequences
+"""
+
+
+@_NEEDS_BASH
+def test_probe_reports_the_draft_ngl_alias_the_build_actually_has(tmp_path):
+    """--spec-draft-ngl only exists from llama.cpp b8955, so a plain "yes" for either
+    alias would make the paravirtual drafter pin emit a name an older build does not
+    know and the server would refuse to start."""
+    modern = _make_fake_llama_server(tmp_path / "modern", _MODERN_DRAFT_NGL_HELP)
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(modern))["spec_draft_ngl_flag"] == (
+        "--spec-draft-ngl"
+    )
+
+    legacy = _make_fake_llama_server(tmp_path / "legacy", _LEGACY_DRAFT_NGL_HELP)
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(legacy))["spec_draft_ngl_flag"] == (
+        "--gpu-layers-draft"
+    )
+
+
+@_NEEDS_BASH
+def test_probe_reports_no_draft_ngl_flag_when_the_build_has_neither(tmp_path):
+    """The negative: without it the pin must be skipped, not guessed at."""
+    neither = _make_fake_llama_server(tmp_path / "neither", "usage: llama-server\n\n--parallel N\n")
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(neither))["spec_draft_ngl_flag"] is None
