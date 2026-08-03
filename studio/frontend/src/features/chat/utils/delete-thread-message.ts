@@ -23,6 +23,7 @@ import {
   ensureStoredChatThread,
   syncStoredChatMessages,
 } from "./chat-history-storage";
+import { repairAssistantParentIds } from "./chat-message-tree";
 
 function cloneContent(
   content: ThreadMessage["content"],
@@ -86,13 +87,12 @@ export async function syncExportedRepositoryToBackend(
   options: { pruneMissing?: boolean } = {},
 ): Promise<void> {
   await ensureStoredChatThread(remoteId);
-  await syncStoredChatMessages(
-    remoteId,
-    exp.messages.map(({ message, parentId }) =>
-      exportedItemToRecord(remoteId, parentId, message),
-    ),
-    { pruneMissing: options.pruneMissing },
+  const records = exp.messages.map(({ message, parentId }) =>
+    exportedItemToRecord(remoteId, parentId, message),
   );
+  await syncStoredChatMessages(remoteId, repairAssistantParentIds(records), {
+    pruneMissing: options.pruneMissing,
+  });
 }
 
 type ThreadImportExport = {

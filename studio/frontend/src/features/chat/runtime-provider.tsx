@@ -102,6 +102,11 @@ import {
 } from "./utils/chat-thread-tombstones";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { fallbackTitleFromUserText } from "./utils/chat-title";
+import {
+  prepareBranchedMessagesForImport,
+  repairAssistantParentIds,
+  resolveHeadMessageId,
+} from "./utils/chat-message-tree";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
@@ -1327,15 +1332,18 @@ function useStudioRuntimeAdapters(
           void refreshContextUsage({ threadId: remoteId });
         }
 
-        // If any message has a stored parentId, reconstruct the tree so
-        // retries/regenerations load as branches rather than a flat list. For
-        // mixed legacy/new threads, infer sequential parents for old messages to
-        // preserve the chain. Fall back to fromArray for fully legacy threads.
+        // Reconstruct the branch tree for retries/regenerations. Repair assistant
+        // rows that lost parentId (they were chained under the prior assistant
+        // and resetHead dropped middle branches — #7732), order siblings for
+        // import, and pass headId so MessageRepository picks the active leaf.
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
+          const prepared = prepareBranchedMessagesForImport(msgs);
+          const headId = resolveHeadMessageId(prepared);
           let previousId: string | null = null;
           return {
-            messages: msgs.map((m) => {
+            ...(headId ? { headId } : {}),
+            messages: prepared.map((m) => {
               const parentId = m.parentId != null ? m.parentId : previousId;
               previousId = m.id;
               return {
