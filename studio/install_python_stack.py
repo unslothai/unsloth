@@ -1726,7 +1726,11 @@ def _ensure_xpu_torch() -> None:
         # Returning would write a manifest and repeat the same dead probe on every update.
         probe = None
     _lines = (
-        [line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()]
+        [
+            line.strip()
+            for line in probe.stdout.decode(errors = "replace").splitlines()
+            if line.strip()
+        ]
         if probe is not None
         else []
     )
