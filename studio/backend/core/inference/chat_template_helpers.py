@@ -269,11 +269,10 @@ _TEMPLATE_DELIMITERS = re.compile(
     "|<[^\\s<>'\"]{1,60}>"
     "|\\[/?[A-Za-z_][A-Za-z0-9_.\\-]{0,38}\\]"
 )
-# A Jinja variable index, "loop_messages[i]" or "x[j]", binds directly to the name in front
-# of it. A delimiter a template writes out never does: "[INST]" follows a space, a quote, a
-# newline or "}". Gating on the preceding character keeps the shipped Gemma-4 loop indexes
-# out of the profile without also dropping the Mistral delimiters (#7066).
-_JINJA_INDEX = re.compile(r"[\w\]\)]\Z")
+# A "[" is a Jinja index only where Jinja evaluates it. Gating on the preceding character
+# instead read "{{ 'prefix[ZETA]' }}" as indexing, because a literal the template PRINTS
+# can put a word right before the bracket, and the vocabulary pass rejects unknown families
+# so the marker was lost altogether (#7066).
 # "{# ... #}" never reaches the prompt. The shipped gptoss template mentions "<|final|>"
 # only in a comment (chat_templates.py:1311) while the live protocol emits
 # "<|channel|>final<|message|>", so harvesting comment text rewrote ordinary user and tool
@@ -297,7 +296,9 @@ _DYNAMIC_PIPE_ROLE = re.compile(r"""['"]<\|['"]\s*\+|\+\s*['"]\|>['"]""")
 # call.name + '>' }}", so no complete literal ever appears. Harvesting closers alone left a
 # NON-EMPTY profile -- which disables the curated fallback -- while "<function=pay>" stayed
 # byte-exact, and tool_call_parser treats that as a live call envelope (#7066).
-_CONCATENATED_OPENER = re.compile(r"""['"]<(/?[A-Za-z_][A-Za-z0-9_.\-]{0,30})=['"]\s*\+""")
+# Both concatenation operators: "~" is Jinja's own, and accepting only "+" left the valid
+# "{{ '<function=' ~ call.name ~ '>' }}" spelling profiling the closer alone (#7066).
+_CONCATENATED_OPENER = re.compile(r"""['"]<(/?[A-Za-z_][A-Za-z0-9_.\-]{0,30})=['"]\s*[+~]""")
 
 
 _ROLE_NAMES = (
@@ -520,9 +521,10 @@ def model_markup(
     for body in bodies or _template_strings(chat_template):
         # Blanked rather than removed, so every offset the index check relies on survives.
         body = _JINJA_COMMENT.sub(lambda m: " " * len(m.group(0)), body)
+        expressions = _jinja_expression_spans(body)
         for match in _TEMPLATE_DELIMITERS.finditer(body):
             marker = match.group(0)
-            if marker.startswith("[") and _JINJA_INDEX.search(body, 0, match.start()):
+            if marker.startswith("[") and _within(expressions, match.start()):
                 continue  # "loop_messages[i]": an index, not something the prompt shows.
             if marker in _BLOCK_METADATA:
                 continue
@@ -1634,9 +1636,10 @@ _TOOLS_VARIABLE = re.compile(r"\btools\b")
 # template that renders schemas and the catalog stayed authorized (#7066).
 _JINJA_CODE = re.compile(r"\{\{(.*?)\}\}|\{%(.*?)%\}", re.S)
 # String literals are data, not a variable read: the same prose moved inside an expression
-# would otherwise pass. Non-greedy and per-quote, so an apostrophe in a double-quoted
-# string cannot swallow the rest of the expression.
-_JINJA_STRING = re.compile(r"'[^']*'|\"[^\"]*\"", re.S)
+# would otherwise pass. Per-quote, so an apostrophe in a double-quoted string cannot swallow
+# the rest of the expression, and escape aware, because a literal ending at the first
+# backslash-quote left the rest of its own prose looking like live code (#7066).
+_JINJA_STRING = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", re.S)
 
 
 # A template that replays assistant tool_calls and tool results takes part in tool calling
@@ -1663,6 +1666,28 @@ def _jinja_code(body: str):
     """Yield only what Jinja evaluates: the inside of every {{ }} and {% %}."""
     for match in _JINJA_CODE.finditer(_JINJA_COMMENT.sub("", body)):
         yield match.group(1) or match.group(2) or ""
+
+
+def _jinja_expression_spans(body: str) -> tuple:
+    """The character ranges Jinja evaluates, with string literals taken back out.
+
+    A "[" inside one of these is real indexing. Anywhere else, raw template text or inside
+    a quoted literal the template prints, it is output the prompt will show."""
+    spans: list = []
+    for match in _JINJA_CODE.finditer(body):
+        group = 1 if match.group(1) is not None else 2
+        code, start = match.group(group), match.start(group)
+        cursor = start
+        for literal in _JINJA_STRING.finditer(code):
+            spans.append((cursor, start + literal.start()))
+            cursor = start + literal.end()
+        spans.append((cursor, start + len(code)))
+    return tuple(spans)
+
+
+def _within(spans, index: int) -> bool:
+    """True when *index* falls inside one of *spans*."""
+    return any(start <= index < end for start, end in spans)
 
 
 def _reads_tools_variable(body: str) -> bool:

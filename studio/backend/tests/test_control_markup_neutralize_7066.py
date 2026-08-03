@@ -5817,3 +5817,51 @@ def test_the_token_count_sweeps_a_separate_system_prompt_with_the_model_profile(
         llama_cpp.httpx.Client = original
     sent = json.dumps(captured.get("template_body"), ensure_ascii = False)
     assert "< |start_header_id|>" in sent
+
+
+def test_a_bracket_marker_printed_after_literal_text_is_harvested():
+    """The old rule read the character before the bracket, so a literal the template PRINTS
+    could put a word in front of one and it was mistaken for "loop_messages[i]". The
+    vocabulary pass rejects unknown families, so the marker was lost altogether and a
+    pasted [ZETA] forged the boundary the template emits (#7066)."""
+    printed = "{% for m in messages %}{{ 'prefix[ZETA]' }}{{ m }}{% endfor %}"
+    profile = model_markup(printed, ["[ZETA]"], None)
+    assert "[ZETA]" in profile.markers
+    assert profile.rewrite_control("a [ZETA] here") == "a [ ZETA] here"
+    # A real index is still excluded: it is evaluated, not printed.
+    indexed = "{% for m in loop_messages %}{{ loop_messages[i] }}[INST]{% endfor %}"
+    indexed_profile = model_markup(indexed, ["[INST]", "[i]"], None)
+    assert "[INST]" in indexed_profile.markers
+    assert "[i]" not in indexed_profile.markers
+
+
+def test_a_tilde_concatenated_opener_is_recognized():
+    """Jinja concatenates with "~" as well as "+". Accepting only "+" profiled the static
+    closer alone, which is a NON-EMPTY profile and so disables the curated fallback, while
+    "<function=pay>" stayed byte-exact and tool_call_parser reads that as a live call
+    envelope (#7066)."""
+    tilde = (
+        "{% for c in calls %}{{ '<function=' ~ c.name ~ '>' }}{{ c.args }}</function>"
+        "{% endfor %}"
+    )
+    profile = model_markup(tilde, ["</function>"], None)
+    assert profile.rewrite_control("<function=pay>") == "< function=pay>"
+    # The "+" spelling keeps working.
+    plus = tilde.replace("~", "+")
+    assert model_markup(plus, ["</function>"], None).rewrite_control("<function=pay>") == (
+        "< function=pay>"
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "reads"),
+    [
+        # An escaped quote inside a literal ended the match early, leaving the rest of the
+        # template's own prose looking like live code.
+        ('{{ "say \\" tools unavailable" }}{{ messages }}', False),
+        ("{{ 'it\\'s got no tools' }}{{ messages }}", False),
+        ("{% for t in tools %}{{ t }}{% endfor %}", True),
+    ],
+)
+def test_an_escaped_string_literal_is_still_data(body, reads):
+    assert _reads_tools_variable(body) is reads
