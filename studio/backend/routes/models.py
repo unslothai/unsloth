@@ -2764,9 +2764,7 @@ async def _read_native_context_length_bounded(model: str, is_local: bool) -> Opt
     slots = _native_context_slots()
     began = time.monotonic()
     try:
-        await asyncio.wait_for(
-            slots.acquire(), timeout = _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS
-        )
+        await asyncio.wait_for(slots.acquire(), timeout = _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         logger.debug("native context read for '%s' waited out its slot; reporting none", model)
         return None

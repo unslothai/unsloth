@@ -2166,10 +2166,7 @@ def test_concurrent_native_context_reads_all_keep_their_length(monkeypatch):
 
     async def drive():
         return await asyncio.gather(
-            *[
-                models_route._read_native_context_length_bounded("/tmp", True)
-                for _ in range(64)
-            ]
+            *[models_route._read_native_context_length_bounded("/tmp", True) for _ in range(64)]
         )
 
     assert asyncio.run(drive()) == [8192] * 64
