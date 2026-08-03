@@ -990,12 +990,20 @@ def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_tota
     ("saved", "expect_counts", "expect_total", "expect_completion"),
     [
         # Exact totals for this very model: recounting would trade them for an estimate.
-        ('{ totalTokens: 900, promptTokens: 700, completionTokens: 200, '
-         'modelId: "unsloth/gguf-model" }',
-         0, 900, 200),
+        (
+            "{ totalTokens: 900, promptTokens: 700, completionTokens: 200, "
+            'modelId: "unsloth/gguf-model" }',
+            0,
+            900,
+            200,
+        ),
         # Another model's tokenizer priced these, so they say nothing about this one (#7450).
-        ('{ totalTokens: 900, promptTokens: 700, completionTokens: 200, modelId: "other" }',
-         1, 12, 0),
+        (
+            '{ totalTokens: 900, promptTokens: 700, completionTokens: 200, modelId: "other" }',
+            1,
+            12,
+            0,
+        ),
         # Nothing stored, which is the case the recount was added for.
         ("null", 1, 12, 0),
     ],
@@ -1034,9 +1042,9 @@ def test_history_hydration_keeps_saved_usage_it_restored(
     )
     usage = out["contextUsage"] or {}
     assert usage.get("totalTokens") == expect_total
-    assert usage.get("completionTokens") == expect_completion, (
-        "the completion half of an exact total must survive hydration"
-    )
+    assert (
+        usage.get("completionTokens") == expect_completion
+    ), "the completion half of an exact total must survive hydration"
 
 
 def test_a_new_chat_recount_is_retried_after_a_background_run_ends():
