@@ -33,7 +33,7 @@ APP_PROVIDER = FRONTEND / "app/provider.tsx"
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
-TRAINING_SECTION = FRONTEND / "features/studio/sections/training-section.tsx"
+TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
@@ -192,7 +192,7 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
 
 def test_generated_download_buttons_use_the_native_save_boundary():
     helper = NATIVE_FILES.read_text(encoding = "utf-8")
-    training = TRAINING_SECTION.read_text(encoding = "utf-8")
+    training = TRAINING_CONFIG_ACTIONS.read_text(encoding = "utf-8")
     markdown = MARKDOWN_TEXT.read_text(encoding = "utf-8")
     image = IMAGE.read_text(encoding = "utf-8")
     audio = AUDIO_PLAYER.read_text(encoding = "utf-8")
@@ -200,7 +200,7 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     assert "downloadFile(bytes, filename" in helper
     assert "browserUrlDownload(url, filename)" in helper
     assert "if (!isTauri)" in helper
-    assert "downloadFile(yamlStr, filename" in training
+    assert "downloadFile(yaml, filename" in training
     assert "downloadFile(text, filename" in markdown
     assert "fallbackExt" in markdown
     assert 'rust: "rs"' in markdown
@@ -383,6 +383,22 @@ def test_collapsed_mac_sidebar_hides_divider():
 
     assert "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0" in source
     assert "top-[var(--studio-mac-titlebar-height,34px)]" not in source
+
+
+def test_chat_sidebar_rows_are_compact_without_vertical_padding():
+    sidebar_source = APP_SIDEBAR.read_text(encoding = "utf-8")
+    block = sidebar_source.split("function renderChatSidebarItem", 1)[1]
+
+    assert (
+        '"sidebar-nav-btn h-[30px] cursor-pointer rounded-full py-0 pr-4 '
+        'text-ui-14p5 leading-ui-19 tracking-nav font-medium"'
+    ) in block
+    assert (
+        '"text-foreground h-[30px] w-full border-0 bg-transparent py-0 pr-4 '
+        'text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none"'
+    ) in block
+    assert 'isPinned && variant !== "project" && "gap-[8.5px]"' in block
+    assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
 
 
 def test_chat_sidebar_row_actions_visible_on_coarse_pointers():

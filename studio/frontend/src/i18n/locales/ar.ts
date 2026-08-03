@@ -52,7 +52,7 @@ export const ar = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "قائمة حساب {name}",
     updateAvailable: "يتوفر تحديث",
     resize: {
@@ -511,7 +511,7 @@ export const ar = {
     },
     appearance: {
       title: "المظهر",
-      description: "كيفية ظهور Unsloth Studio على هذا الجهاز.",
+      description: "كيفية ظهور Unsloth على هذا الجهاز.",
       theme: {
         title: "السمة",
         label: "نظام الألوان",
@@ -719,7 +719,7 @@ export const ar = {
       agentDocs: "فتح توثيق إعداد {agent}",
       copyGeneratedCommand: "نسخ الأمر المُنشأ",
       modelNote:
-        "يتطلب Codex نموذج GGUF يقدّمه llama-server. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth Studio.",
+        "يتطلب Codex نموذج GGUF يقدّمه llama-server. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
       subagent: {
         title: "استخدام نموذج محلي كوكيل فرعي",
         description:
@@ -939,7 +939,7 @@ export const ar = {
       osWindows: "Windows",
       secureHttps: "HTTPS آمن",
       secureHttpsHint:
-        "لا يزال منفذ 0.0.0.0 قابلاً للوصول عالميًا. للحصول على أمان كامل، شغّل Unsloth Studio باستخدام --secure لعرض رابط HTTPS هذا فقط.",
+        "لا يزال منفذ 0.0.0.0 قابلاً للوصول عالميًا. للحصول على أمان كامل، شغّل Unsloth باستخدام --secure لعرض رابط HTTPS هذا فقط.",
       copyTunnelUrl: "نسخ رابط النفق",
       copySnippet: "نسخ المقتطف",
       copy: "نسخ",
@@ -993,7 +993,7 @@ export const ar = {
       reportIssue: "الإبلاغ عن مشكلة",
       license: {
         sectionTitle: "الترخيص",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "مفتوح المصدر بموجب GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
@@ -1001,12 +1001,12 @@ export const ar = {
         libraryDescription: "مرخّص بموجب Apache 2.0.",
       },
       dangerZone: "منطقة الخطر",
-      shutDownStudio: "إيقاف تشغيل Unsloth Studio",
+      shutDownStudio: "إيقاف تشغيل Unsloth",
       shutDownStudioDescription:
         "يوقف خادم Unsloth وينهي جلستك.",
       shutDown: "إيقاف التشغيل",
       update: {
-        title: "تحديث Unsloth Studio",
+        title: "تحديث Unsloth",
         commandText: "نص {label}",
         copied: "تم النسخ",
         copyCommand: "نسخ الأمر",

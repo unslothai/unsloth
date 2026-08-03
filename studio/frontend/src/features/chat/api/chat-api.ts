@@ -8,6 +8,8 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
+import { isHuggingFaceOffline } from "@/features/hub/lib/network";
+// eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
@@ -31,6 +33,11 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import {
+  type GgufVariantsRequestOptions,
+  ggufVariantsQuery,
+  runBoundedVariantsRequest,
+} from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
@@ -209,6 +216,27 @@ export async function loadModel(
     }),
   });
   return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+}
+
+export async function countChatInputTokens(payload: {
+  model: string;
+  messages: OpenAIChatCompletionsRequest["messages"];
+  enable_thinking?: boolean;
+  reasoning_effort?: OpenAIChatCompletionsRequest["reasoning_effort"];
+  preserve_thinking?: boolean;
+  enable_tools?: boolean;
+  enabled_tools?: string[];
+  mcp_enabled?: boolean;
+  rag_scope?: Record<string, unknown>;
+  auto_heal_tool_calls?: boolean;
+  // `model` is informational: the endpoint counts with whatever is resident and reports which.
+}): Promise<{ input_tokens: number; model?: string }> {
+  const response = await authFetch("/api/inference/chat/count_tokens", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
 }
 
 export async function validateModel(
@@ -1045,23 +1073,16 @@ export async function browseFolders(
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
-  options?: {
-    preferLocalCache?: boolean;
-    localPath?: string | null;
-  },
+  options?: GgufVariantsRequestOptions,
 ): Promise<GgufVariantsResponse> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  if (options?.preferLocalCache) {
-    params.set("prefer_local_cache", "true");
-  }
-  const localPath = options?.localPath?.trim();
-  if (localPath) {
-    params.set("local_path", localPath);
-  }
-  const response = await authFetch(`/api/models/gguf-variants?${params}`, {
-    headers: hubTokenHeader(hfToken),
+  const params = ggufVariantsQuery(repoId, options, isHuggingFaceOffline());
+  return runBoundedVariantsRequest(options?.signal, async (signal) => {
+    const response = await authFetch(`/api/models/gguf-variants?${params}`, {
+      headers: hubTokenHeader(hfToken),
+      signal,
+    });
+    return parseJsonOrThrow<GgufVariantsResponse>(response);
   });
-  return parseJsonOrThrow<GgufVariantsResponse>(response);
 }
 
 export interface KvCacheEstimate {

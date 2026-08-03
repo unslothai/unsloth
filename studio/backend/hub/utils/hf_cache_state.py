@@ -15,6 +15,11 @@ EXIT_CANCELLED = 130
 TRANSPORT_HTTP = "http"
 TRANSPORT_XET = "xet"
 VALID_TRANSPORTS = frozenset({TRANSPORT_HTTP, TRANSPORT_XET})
+# A *request* preference, deliberately NOT in VALID_TRANSPORTS: "auto" is resolved to a real
+# transport before anything is spawned, and the on-disk .transport marker must keep naming the
+# writer that produced a partial, or a resume picks the wrong strategy.
+TRANSPORT_AUTO = "auto"
+VALID_TRANSPORT_MODES = frozenset({TRANSPORT_HTTP, TRANSPORT_XET, TRANSPORT_AUTO})
 TRANSPORT_MARKER_NAME = ".transport"
 INCOMPLETE_SUFFIX = ".incomplete"
 

@@ -55,7 +55,7 @@ export const hi = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "{name} खाता मेनू",
     updateAvailable: "अपडेट उपलब्ध है",
     resize: {
@@ -515,7 +515,7 @@ export const hi = {
     },
     appearance: {
       title: "रूप-रंग",
-      description: "इस डिवाइस पर Unsloth Studio कैसा दिखता है।",
+      description: "इस डिवाइस पर Unsloth कैसा दिखता है।",
       theme: {
         title: "थीम",
         label: "रंग योजना",
@@ -723,7 +723,7 @@ export const hi = {
       agentDocs: "{agent} के सेटअप दस्तावेज़ खोलें",
       copyGeneratedCommand: "बनाया गया कमांड कॉपी करें",
       modelNote:
-        "Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल चाहिए। दूसरे एजेंट transformers-आधारित मॉडल भी उपयोग कर सकते हैं; Unsloth Studio में पहले से लोड किए गए मॉडल को उपयोग करने के लिए --model हटा दें।",
+        "Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल चाहिए। दूसरे एजेंट transformers-आधारित मॉडल भी उपयोग कर सकते हैं; Unsloth में पहले से लोड किए गए मॉडल को उपयोग करने के लिए --model हटा दें।",
       subagent: {
         title: "लोकल मॉडल को सबएजेंट के रूप में उपयोग करें",
         description:
@@ -946,7 +946,7 @@ export const hi = {
       osWindows: "Windows",
       secureHttps: "सुरक्षित HTTPS",
       secureHttpsHint:
-        "0.0.0.0 पोर्ट अभी भी विश्व स्तर पर पहुंच योग्य है। पूर्ण सुरक्षा के लिए, केवल इस HTTPS लिंक को उजागर करने के लिए Unsloth Studio को --secure के साथ लॉन्च करें।",
+        "0.0.0.0 पोर्ट अभी भी विश्व स्तर पर पहुंच योग्य है। पूर्ण सुरक्षा के लिए, केवल इस HTTPS लिंक को उजागर करने के लिए Unsloth को --secure के साथ लॉन्च करें।",
       copyTunnelUrl: "टनल URL कॉपी करें",
       copySnippet: "स्निपेट कॉपी करें",
       copy: "कॉपी करें",
@@ -1000,7 +1000,7 @@ export const hi = {
       reportIssue: "समस्या रिपोर्ट करें",
       license: {
         sectionTitle: "लाइसेंस",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "GNU AGPL v3.0 के तहत ओपन सोर्स।",
         libraryLabel: "Unsloth Core",
@@ -1008,12 +1008,12 @@ export const hi = {
         libraryDescription: "Apache 2.0 के तहत लाइसेंस प्राप्त।",
       },
       dangerZone: "खतरनाक क्षेत्र",
-      shutDownStudio: "Unsloth Studio शट डाउन करें",
+      shutDownStudio: "Unsloth शट डाउन करें",
       shutDownStudioDescription:
         "Unsloth सर्वर को रोकता है और आपके सत्र को समाप्त करता है।",
       shutDown: "शट डाउन करें",
       update: {
-        title: "Unsloth Studio अपडेट करें",
+        title: "Unsloth अपडेट करें",
         commandText: "{label} टेक्स्ट",
         copied: "कॉपी किया गया",
         copyCommand: "कमांड कॉपी करें",

@@ -14,6 +14,7 @@ import { en } from "./locales/en.ts";
 import { es } from "./locales/es.ts";
 import { fr } from "./locales/fr.ts";
 import { hi } from "./locales/hi.ts";
+import { it } from "./locales/it.ts";
 import { ja } from "./locales/ja.ts";
 import { ko } from "./locales/ko.ts";
 import { ptBR } from "./locales/pt-br.ts";
@@ -115,6 +116,7 @@ const overlays: Record<string, Tree> = {
   ru: ru as unknown as Tree,
   de: de as unknown as Tree,
   ko: ko as unknown as Tree,
+  it: it as unknown as Tree,
 };
 
 const requiredOverlayPrefixes = [
@@ -137,6 +139,10 @@ const requiredOverlayKeys = new Set([
   "studio.dataset.uploadDetailsTooltip",
 ]);
 
+// Italian landed upstream before the local training surfaces. Keep validating
+// its existing keys while allowing English fallback for those newer surfaces.
+const requiredOverlayFallbackLocales = new Set(["it"]);
+
 function requiresOverlay(key: string): boolean {
   return (
     requiredOverlayKeys.has(key) ||
@@ -152,7 +158,10 @@ for (const [locale, overlay] of Object.entries(overlays)) {
   checkOverlay(en as unknown as Tree, overlay, "", errors, missing);
   checkExtras(overlay, en as unknown as Tree, "", errors);
   for (const key of missing) {
-    if (requiresOverlay(key)) {
+    if (
+      !requiredOverlayFallbackLocales.has(locale) &&
+      requiresOverlay(key)
+    ) {
       errors.push(`${key} must be localized`);
     }
   }

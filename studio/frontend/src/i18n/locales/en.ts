@@ -47,7 +47,7 @@ export const en = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "{name} account menu",
     updateAvailable: "Update available",
     resize: {
@@ -502,7 +502,7 @@ export const en = {
     },
     appearance: {
       title: "Appearance",
-      description: "How Unsloth Studio looks on this device.",
+      description: "How Unsloth looks on this device.",
       theme: {
         title: "Theme",
         label: "Color scheme",
@@ -712,7 +712,7 @@ export const en = {
       agentDocs: "Open {agent} setup docs",
       copyGeneratedCommand: "Copy generated command",
       modelNote:
-        "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth Studio.",
+        "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
       subagent: {
         title: "Use a local model as a subagent",
         description:
@@ -932,7 +932,7 @@ export const en = {
       osWindows: "Windows",
       secureHttps: "Secure HTTPS",
       secureHttpsHint:
-        "The 0.0.0.0 port is still reachable globally. For full security, launch Unsloth Studio with --secure to expose only this HTTPS link.",
+        "The 0.0.0.0 port is still reachable globally. For full security, launch Unsloth with --secure to expose only this HTTPS link.",
       copyTunnelUrl: "Copy tunnel URL",
       copySnippet: "Copy snippet",
       copy: "Copy",
@@ -948,7 +948,9 @@ export const en = {
       relativeJustNow: "just now",
       relativeHoursAgo: "{count}h ago",
       relativeDaysAgo: "{count}d ago",
+      relativeOneMonthAgo: "1mo ago",
       relativeMonthsAgo: "{count}mo ago",
+      relativeOneYearAgo: "1y ago",
       relativeYearsAgo: "{count}y ago",
       expired: "expired",
       today: "today",
@@ -986,7 +988,7 @@ export const en = {
       reportIssue: "Report an issue",
       license: {
         sectionTitle: "License",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "Open source under the GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
@@ -994,12 +996,12 @@ export const en = {
         libraryDescription: "Licensed under Apache 2.0.",
       },
       dangerZone: "Danger zone",
-      shutDownStudio: "Shut down Unsloth Studio",
+      shutDownStudio: "Shut down Unsloth",
       shutDownStudioDescription:
         "Stops the Unsloth server and ends your session.",
       shutDown: "Shut down",
       update: {
-        title: "Update Unsloth Studio",
+        title: "Update Unsloth",
         commandText: "{label} text",
         copied: "Copied",
         copyCommand: "Copy command",

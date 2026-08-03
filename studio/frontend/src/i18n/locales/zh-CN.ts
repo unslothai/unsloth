@@ -50,7 +50,7 @@ export const zhCN = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "{name} 账号菜单",
     updateAvailable: "有可用更新",
     resize: {
@@ -126,7 +126,7 @@ export const zhCN = {
     title: "设置",
     dialog: {
       title: "设置",
-      description: "管理你的 Unsloth Studio 偏好设置。",
+      description: "管理你的 Unsloth 偏好设置。",
       closeAriaLabel: "关闭设置",
       searchPlaceholder: "搜索设置…",
       searchNoResults: "未找到设置。",
@@ -271,7 +271,7 @@ export const zhCN = {
     },
     general: {
       title: "通用",
-      description: "Unsloth Studio 的全局偏好设置。",
+      description: "Unsloth 的全局偏好设置。",
       account: "账号",
       huggingFaceToken: "Hugging Face token",
       huggingFaceTokenDescription: "用于加载受限模型和推送产物。",
@@ -496,7 +496,7 @@ export const zhCN = {
     },
     appearance: {
       title: "外观",
-      description: "调整 Unsloth Studio 在此设备上的显示方式。",
+      description: "调整 Unsloth 在此设备上的显示方式。",
       language: {
         title: "语言",
         label: "显示语言",
@@ -699,7 +699,7 @@ export const zhCN = {
       agentDocs: "打开 {agent} 的配置文档",
       copyGeneratedCommand: "复制生成的命令",
       modelNote:
-        "Codex 需要通过 llama-server 提供服务的 GGUF 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth Studio 中已加载的模型。",
+        "Codex 需要通过 llama-server 提供服务的 GGUF 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
       subagent: {
         title: "将本地模型用作子智能体",
         description:
@@ -911,7 +911,7 @@ export const zhCN = {
       osWindows: "Windows",
       secureHttps: "安全 HTTPS",
       secureHttpsHint:
-        "0.0.0.0 端口仍可被全网访问。如需完全安全，请使用 --secure 启动 Unsloth Studio，仅暴露此 HTTPS 链接。",
+        "0.0.0.0 端口仍可被全网访问。如需完全安全，请使用 --secure 启动 Unsloth，仅暴露此 HTTPS 链接。",
       copyTunnelUrl: "复制隧道链接",
       copySnippet: "复制代码片段",
       copy: "复制",
@@ -965,7 +965,7 @@ export const zhCN = {
       reportIssue: "报告问题",
       license: {
         sectionTitle: "许可证",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "基于 GNU AGPL v3.0 开源。",
         libraryLabel: "Unsloth Core",
@@ -973,11 +973,11 @@ export const zhCN = {
         libraryDescription: "基于 Apache License 2.0 许可。",
       },
       dangerZone: "危险区域",
-      shutDownStudio: "关闭 Unsloth Studio",
+      shutDownStudio: "关闭 Unsloth",
       shutDownStudioDescription: "停止 Unsloth 服务进程并结束你的会话。",
       shutDown: "关闭",
       update: {
-        title: "更新 Unsloth Studio",
+        title: "更新 Unsloth",
         commandText: "{label} 文本",
         copied: "已复制",
         copyCommand: "复制命令",
