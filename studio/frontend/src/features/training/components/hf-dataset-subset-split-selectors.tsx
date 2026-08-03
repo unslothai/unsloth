@@ -53,6 +53,7 @@ export function HfDatasetSubsetSplitSelectors({
     splits: hfSplits,
     isLoading,
     error,
+    partialFailure,
   } = useHfDatasetSplits(enabled ? datasetName : null, datasetSubset, {
     accessToken,
   });
@@ -149,6 +150,18 @@ export function HfDatasetSubsetSplitSelectors({
           }
         >
           {error}
+        </div>
+      )}
+
+      {!error && partialFailure && (
+        <div
+          className={
+            variant === "wizard"
+              ? "rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400"
+              : "min-w-0 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400"
+          }
+        >
+          {partialFailure}
         </div>
       )}
 
