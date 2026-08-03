@@ -1553,6 +1553,8 @@ export const ko = {
           "S3 액세스 키를 입력하거나 IAM 역할을 활성화하세요.",
         modelRequired: "기본 모델을 먼저 선택하세요.",
         learningRatePositive: "0보다 큰 학습률을 입력하세요.",
+        embeddingLearningRateRange:
+          "0보다 크고 1보다 작은 임베딩 학습률을 입력하세요.",
         hfDatasetRequired: "Hugging Face 데이터셋을 먼저 선택하세요.",
         localDatasetRequired: "로컬 데이터셋을 먼저 선택하세요.",
         unsupportedDatasetSource: "지원되지 않는 데이터셋 소스입니다.",

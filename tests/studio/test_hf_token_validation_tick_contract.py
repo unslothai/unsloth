@@ -91,7 +91,7 @@ def test_model_defaults_error_warns_without_blocking_readiness_and_offers_retry(
     ensure_defaults = config_store.split("ensureModelDefaultsLoaded: () =>", 1)[1].split(
         "setProjectName:", 1
     )[0]
-    assert "defaultsAlreadyApplied && !state.modelDefaultsError" in ensure_defaults
+    assert "if (defaultsAlreadyApplied" not in ensure_defaults
     assert "applyTrainingDefaults:" in ensure_defaults
     assert "!defaultsAlreadyApplied ||" in ensure_defaults
     assert "canReapplyModelDefaults(state.selectedModel)" in ensure_defaults

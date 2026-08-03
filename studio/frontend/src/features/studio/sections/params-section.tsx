@@ -31,6 +31,16 @@ import { LoraParamsSection } from "./lora-params-section";
 import { TrainingHyperparametersSection } from "./training-hyperparameters-section";
 import { useMlxTrainingConfigPolicy } from "./use-mlx-training-config-policy";
 
+function parsePositiveNumber(input: string): number | null {
+  const value = Number(input);
+  return input !== "" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function parseEmbeddingLearningRate(input: string): number | null {
+  const value = Number(input);
+  return Number.isFinite(value) && value > 0 && value < 1 ? value : null;
+}
+
 export function ParamsSection({
   mode = "advanced",
 }: {
@@ -81,6 +91,17 @@ export function ParamsSection({
     learningRateDraft.learningRate === store.learningRate
       ? learningRateDraft.value
       : String(store.learningRate);
+  const [embeddingLearningRateDraft, setEmbeddingLearningRateDraft] = useState(
+    () => ({
+      embeddingLearningRate: store.embeddingLearningRate,
+      value: String(store.embeddingLearningRate ?? ""),
+    }),
+  );
+  const embeddingLearningRateInput =
+    embeddingLearningRateDraft.embeddingLearningRate ===
+    store.embeddingLearningRate
+      ? embeddingLearningRateDraft.value
+      : String(store.embeddingLearningRate ?? "");
 
   const trySetContextLength = (input: string): number | null => {
     const value = Number(input);
@@ -368,19 +389,14 @@ export function ParamsSection({
                   learningRate: store.learningRate,
                   value: input,
                 });
-                const learningRate = Number(input);
-                if (input !== "" && Number.isFinite(learningRate)) {
+                const learningRate = parsePositiveNumber(input);
+                if (learningRate !== null) {
                   store.setLearningRate(learningRate);
                   setLearningRateDraft({ learningRate, value: input });
                 }
               }}
               onBlur={() => {
-                const learningRate = Number(learningRateInput);
-                if (
-                  learningRateInput === "" ||
-                  !Number.isFinite(learningRate) ||
-                  learningRate <= 0
-                ) {
+                if (parsePositiveNumber(learningRateInput) === null) {
                   setLearningRateDraft({
                     learningRate: store.learningRate,
                     value: String(store.learningRate),
@@ -418,17 +434,41 @@ export function ParamsSection({
                 min="0"
                 max="1"
                 placeholder={`auto (${(store.learningRate / 10).toExponential(1)})`}
-                value={store.embeddingLearningRate ?? ""}
+                value={embeddingLearningRateInput}
                 onChange={(event) => {
                   const raw = event.target.value;
+                  setEmbeddingLearningRateDraft({
+                    embeddingLearningRate: store.embeddingLearningRate,
+                    value: raw,
+                  });
                   if (raw === "") {
                     store.setEmbeddingLearningRate(null);
+                    setEmbeddingLearningRateDraft({
+                      embeddingLearningRate: null,
+                      value: raw,
+                    });
                     return;
                   }
-                  const value = Number(raw);
-                  store.setEmbeddingLearningRate(
-                    Number.isFinite(value) ? value : null,
-                  );
+                  const value = parseEmbeddingLearningRate(raw);
+                  if (value !== null) {
+                    store.setEmbeddingLearningRate(value);
+                    setEmbeddingLearningRateDraft({
+                      embeddingLearningRate: value,
+                      value: raw,
+                    });
+                  }
+                }}
+                onBlur={() => {
+                  if (
+                    embeddingLearningRateInput !== "" &&
+                    parseEmbeddingLearningRate(embeddingLearningRateInput) ===
+                      null
+                  ) {
+                    setEmbeddingLearningRateDraft({
+                      embeddingLearningRate: store.embeddingLearningRate,
+                      value: String(store.embeddingLearningRate ?? ""),
+                    });
+                  }
                 }}
                 className="w-full font-mono"
               />

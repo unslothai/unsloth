@@ -1541,6 +1541,8 @@ export const ar = {
         s3CredentialsRequired: "أدخل مفاتيح الوصول إلى S3 أو فعّل دور IAM.",
         modelRequired: "اختر نموذجًا أساسيًا أولًا.",
         learningRatePositive: "أدخل معدل تعلم أكبر من صفر.",
+        embeddingLearningRateRange:
+          "أدخل معدل تعلم تضمين أكبر من 0 وأقل من 1.",
         hfDatasetRequired: "اختر مجموعة بيانات Hugging Face أولًا.",
         localDatasetRequired: "اختر مجموعة بيانات محلية أولًا.",
         unsupportedDatasetSource: "مصدر مجموعة البيانات غير مدعوم.",

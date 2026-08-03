@@ -162,6 +162,18 @@ export function validateTrainingConfig(
       errorKey: "studio.training.validation.learningRatePositive",
     };
   }
+  if (
+    config.trainingMethod === "cpt" &&
+    config.embeddingLearningRate != null &&
+    (!Number.isFinite(config.embeddingLearningRate) ||
+      config.embeddingLearningRate <= 0 ||
+      config.embeddingLearningRate >= 1)
+  ) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.embeddingLearningRateRange",
+    };
+  }
 
   return validateDatasetSelection(config);
 }

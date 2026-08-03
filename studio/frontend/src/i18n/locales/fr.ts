@@ -1597,6 +1597,8 @@ export const fr = {
           "Indiquez des clés d'accès S3 ou activez le rôle IAM.",
         modelRequired: "Sélectionnez d'abord un modèle de base.",
         learningRatePositive: "Saisissez un taux d'apprentissage supérieur à zéro.",
+        embeddingLearningRateRange:
+          "Saisissez un taux d'apprentissage des embeddings supérieur à 0 et inférieur à 1.",
         hfDatasetRequired:
           "Sélectionnez d'abord un jeu de données Hugging Face.",
         localDatasetRequired: "Sélectionnez d'abord un jeu de données local.",

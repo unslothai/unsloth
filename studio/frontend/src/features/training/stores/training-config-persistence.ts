@@ -20,7 +20,7 @@ import {
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 17;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 18;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -35,6 +35,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "trainOnCompletions",
     "maxPositionEmbeddings",
     "s3Config",
+    "wandbToken",
   ]);
 
 export function partializeTrainingConfig(
@@ -165,6 +166,15 @@ function migrateThroughVersion17(
   }
 }
 
+function migrateThroughVersion18(
+  state: PersistedTrainingConfig,
+  version: number,
+): void {
+  if (version < 18) {
+    Reflect.deleteProperty(state, "wandbToken");
+  }
+}
+
 export function migrateTrainingConfig(
   persisted: unknown,
   version: number,
@@ -174,6 +184,7 @@ export function migrateTrainingConfig(
   migrateThroughVersion12(state, version);
   migrateThroughVersion16(state, version);
   migrateThroughVersion17(state, version);
+  migrateThroughVersion18(state, version);
   return state as unknown as TrainingConfigStore;
 }
 
@@ -191,6 +202,7 @@ export function mergeTrainingConfig(
   return {
     ...current,
     ...persistedState,
+    wandbToken: current.wandbToken,
     modelDefaultsAppliedFor,
     advancedSettingsBaseline: modelDefaultsAppliedFor
       ? (persistedState.advancedSettingsBaseline ?? null)

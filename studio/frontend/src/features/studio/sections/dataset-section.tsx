@@ -4,6 +4,7 @@
 import { DatasetSelector } from "@/features/dataset-picker";
 import { useTrainingConfigStore } from "@/features/training";
 import { useT } from "@/i18n";
+import { toast } from "@/lib/toast";
 import { type ReactNode, useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { DatasetAdvancedSettingsSection } from "./dataset-advanced-settings-section";
@@ -60,8 +61,11 @@ export function DatasetPanel() {
   useEffect(() => {
     if (datasetSource === "s3" && isMultimodalModel) {
       restoreBrowseDatasetSource();
+      toast.info(t("studio.training.validation.s3MultimodalUnsupported"), {
+        id: "training-s3-multimodal-source-reset",
+      });
     }
-  }, [datasetSource, isMultimodalModel, restoreBrowseDatasetSource]);
+  }, [datasetSource, isMultimodalModel, restoreBrowseDatasetSource, t]);
 
   return (
     <div className="flex min-w-0 flex-col gap-5">

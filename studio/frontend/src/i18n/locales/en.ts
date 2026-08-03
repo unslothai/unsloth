@@ -1533,6 +1533,8 @@ export const en = {
         s3CredentialsRequired: "Provide S3 access keys or enable IAM role.",
         modelRequired: "Select a base model first.",
         learningRatePositive: "Enter a learning rate greater than zero.",
+        embeddingLearningRateRange:
+          "Enter an embedding learning rate greater than 0 and less than 1.",
         hfDatasetRequired: "Select a Hugging Face dataset first.",
         localDatasetRequired: "Select a local dataset first.",
         unsupportedDatasetSource: "Unsupported dataset source.",

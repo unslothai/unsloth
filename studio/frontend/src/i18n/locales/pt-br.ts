@@ -1555,6 +1555,8 @@ export const ptBR = {
           "Forneça as chaves de acesso do S3 ou ative a função do IAM.",
         modelRequired: "Selecione primeiro um modelo base.",
         learningRatePositive: "Insira uma taxa de aprendizado maior que zero.",
+        embeddingLearningRateRange:
+          "Insira uma taxa de aprendizado do embedding maior que 0 e menor que 1.",
         hfDatasetRequired: "Selecione primeiro um dataset do Hugging Face.",
         localDatasetRequired: "Selecione primeiro um dataset local.",
         unsupportedDatasetSource: "Fonte de dataset não compatível.",

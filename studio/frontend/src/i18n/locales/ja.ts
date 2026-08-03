@@ -1498,6 +1498,8 @@ export const ja = {
           "S3 アクセスキーを指定するか、IAM ロールを有効にしてください。",
         modelRequired: "先にベースモデルを選択してください。",
         learningRatePositive: "0 より大きい学習率を入力してください。",
+        embeddingLearningRateRange:
+          "0 より大きく 1 より小さい埋め込み学習率を入力してください。",
         hfDatasetRequired:
           "先に Hugging Face データセットを選択してください。",
         localDatasetRequired: "先にローカルデータセットを選択してください。",

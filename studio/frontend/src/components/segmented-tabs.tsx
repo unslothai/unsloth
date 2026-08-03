@@ -3,12 +3,12 @@
 
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
+import { SegmentedControlIndicator } from "./segmented-control";
 import {
-  SegmentedControlIndicator,
   type SegmentedSize,
   segmentedSegmentLabel,
   segmentedTrackHeight,
-} from "./segmented-control";
+} from "./segmented-control-styles";
 import { TabsList, TabsTrigger } from "./ui/tabs";
 
 export interface SegmentedTabOption<T extends string> {

@@ -1491,6 +1491,8 @@ export const zhCN = {
         s3CredentialsRequired: "请提供 S3 访问密钥或启用 IAM 角色。",
         modelRequired: "请先选择基础模型。",
         learningRatePositive: "请输入大于零的学习率。",
+        embeddingLearningRateRange:
+          "请输入大于 0 且小于 1 的 Embedding 学习率。",
         hfDatasetRequired: "请先选择 Hugging Face 数据集。",
         localDatasetRequired: "请先选择本地数据集。",
         unsupportedDatasetSource: "不支持此数据集来源。",

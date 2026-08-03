@@ -3,24 +3,17 @@
 
 import { cn } from "@/lib/utils";
 import { type CSSProperties, type ReactNode, useId } from "react";
+import {
+  type SegmentedSize,
+  segmentedSegmentLabel,
+  segmentedTrackHeight,
+} from "./segmented-control-styles";
 
-export interface SegmentedControlOption<T extends string> {
+interface SegmentedControlOption<T extends string> {
   value: T;
   label: ReactNode;
   disabled?: boolean;
 }
-
-/** Shared sizing so segmented controls and tabs stay in step. */
-export type SegmentedSize = "compact" | "default";
-
-export const segmentedTrackHeight: Record<SegmentedSize, string> = {
-  compact: "h-8",
-  default: "h-9",
-};
-
-/** One line only: a wrapped label breaks the pill height and indicator. */
-export const segmentedSegmentLabel =
-  "whitespace-nowrap px-3 text-ui-12p5" as const;
 
 export function SegmentedControlIndicator({
   activeIndex,

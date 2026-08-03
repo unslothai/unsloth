@@ -1595,6 +1595,8 @@ export const de = {
           "Geben Sie S3-Zugriffsschlüssel an oder aktivieren Sie die IAM-Rolle.",
         modelRequired: "Wählen Sie zuerst ein Basismodell aus.",
         learningRatePositive: "Geben Sie eine Lernrate größer als null ein.",
+        embeddingLearningRateRange:
+          "Geben Sie eine Embedding-Lernrate größer als 0 und kleiner als 1 ein.",
         hfDatasetRequired:
           "Wählen Sie zuerst einen Hugging Face-Datensatz aus.",
         localDatasetRequired: "Wählen Sie zuerst einen lokalen Datensatz aus.",

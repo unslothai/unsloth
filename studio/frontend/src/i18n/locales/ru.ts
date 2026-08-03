@@ -1570,6 +1570,8 @@ export const ru = {
           "Укажите ключи доступа S3 или включите роль IAM.",
         modelRequired: "Сначала выберите базовую модель.",
         learningRatePositive: "Введите скорость обучения больше нуля.",
+        embeddingLearningRateRange:
+          "Введите скорость обучения эмбеддингов больше 0 и меньше 1.",
         hfDatasetRequired: "Сначала выберите датасет Hugging Face.",
         localDatasetRequired: "Сначала выберите локальный датасет.",
         unsupportedDatasetSource: "Источник датасета не поддерживается.",

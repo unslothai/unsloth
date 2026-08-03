@@ -1586,6 +1586,8 @@ export const es = {
           "Proporciona las claves de acceso de S3 o activa el rol de IAM.",
         modelRequired: "Selecciona primero un modelo base.",
         learningRatePositive: "Introduce una tasa de aprendizaje mayor que cero.",
+        embeddingLearningRateRange:
+          "Introduce una tasa de aprendizaje de embeddings mayor que 0 y menor que 1.",
         hfDatasetRequired:
           "Selecciona primero un conjunto de datos de Hugging Face.",
         localDatasetRequired: "Selecciona primero un conjunto de datos local.",

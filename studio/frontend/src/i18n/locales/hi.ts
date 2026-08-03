@@ -1548,6 +1548,8 @@ export const hi = {
         s3CredentialsRequired: "S3 एक्सेस कुंजियाँ दें या IAM रोल सक्षम करें।",
         modelRequired: "पहले बेस मॉडल चुनें।",
         learningRatePositive: "शून्य से अधिक लर्निंग रेट दर्ज करें।",
+        embeddingLearningRateRange:
+          "0 से अधिक और 1 से कम एम्बेडिंग लर्निंग रेट दर्ज करें।",
         hfDatasetRequired: "पहले Hugging Face डेटासेट चुनें।",
         localDatasetRequired: "पहले स्थानीय डेटासेट चुनें।",
         unsupportedDatasetSource: "असमर्थित डेटासेट स्रोत।",

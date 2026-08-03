@@ -19,6 +19,7 @@ const validConfig = {
   modelLocalPath: null,
   modelFormat: null,
   learningRate: 0.0002,
+  embeddingLearningRate: null,
   datasetSource: "huggingface" as const,
   dataset: "org/dataset",
   uploadedFile: null,
@@ -52,6 +53,38 @@ test("training validation rejects non-positive learning rates", () => {
 test("training validation accepts a positive learning rate", () => {
   assert.deepEqual(
     validateTrainingConfig({ ...validConfig, learningRate: 0.0002 }),
+    { ok: true, errorKey: null },
+  );
+});
+
+test("training validation enforces the CPT embedding learning-rate range", () => {
+  for (const embeddingLearningRate of [0, 1, -0.0001, Number.NaN]) {
+    assert.deepEqual(
+      validateTrainingConfig({
+        ...validConfig,
+        trainingMethod: "cpt",
+        embeddingLearningRate,
+      }),
+      {
+        ok: false,
+        errorKey: "studio.training.validation.embeddingLearningRateRange",
+      },
+    );
+  }
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      trainingMethod: "cpt",
+      embeddingLearningRate: 0.00002,
+    }),
+    { ok: true, errorKey: null },
+  );
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      trainingMethod: "qlora",
+      embeddingLearningRate: 0,
+    }),
     { ok: true, errorKey: null },
   );
 });
