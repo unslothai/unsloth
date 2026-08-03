@@ -88,6 +88,7 @@ class _RaisingLogger:
     def __getattr__(self, name):
         def boom(*a, **k):
             raise ValueError("I/O operation on closed file")
+
         return boom
 
 
