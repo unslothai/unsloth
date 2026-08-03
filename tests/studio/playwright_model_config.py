@@ -400,15 +400,9 @@ with sync_playwright() as p:
         page.wait_for_timeout(800)
         return row
 
-    # The collapsed single-quant row appears only once the picker's sole-quant
-    # probe lands, and that is a real /api/hub/gguf-variants fetch restarted on
-    # every reload. Until then the row carries no gear, so "no gear" means either
-    # a multi-quant repo or a probe still in flight. Waiting instead of sleeping
-    # keeps a slow probe from being read as multi-quant.
-    # Same budget the rest of this driver allows a slow page (open_picker, the
-    # networkidle waits). A pending probe and a genuine multi-quant repo render
-    # through the same branch, so there is no DOM state to wait on instead; only
-    # a multi-quant repo pays this, and it pays it once per open_config.
+    # The collapsed sole-quant row appears only after an async probe lands, so an absent
+    # gear means either a multi-quant repo or a probe in flight, with no DOM state to
+    # tell them apart. Only a multi-quant repo pays the full wait, once per open_config.
     SOLE_QUANT_SETTLE_MS = 30_000
 
     def row_gear(
@@ -416,9 +410,8 @@ with sync_playwright() as p:
         hint,
         timeout_ms = SOLE_QUANT_SETTLE_MS,
     ):
-        # The gear is a sibling of the row, not inside [data-model-picker-option],
-        # so scope it by the repo id its aria-label carries. Matched
-        # case-insensitively, like the has_text lookup that found the row.
+        # The gear is a sibling of the row, not inside [data-model-picker-option], so
+        # scope it by repo id; case-insensitive to match the has_text row lookup.
         gear = popover.get_by_role(
             "button",
             name = re.compile(f"^Inference settings for .*{re.escape(hint)}", re.IGNORECASE),
@@ -432,17 +425,15 @@ with sync_playwright() as p:
     def open_config(popover, hint):
         if reveal_on_device_row(popover, hint) is None:
             return None
-        # A repo with one quant on disk renders as a single collapsed row whose
-        # click selects the model and closes the picker, so its gear has to be
-        # clicked without touching the row. A multi-quant repo still shows its
-        # gears only once the row is expanded.
+        # A sole-quant repo is a collapsed row whose click selects the model and closes
+        # the picker, so click its gear without touching the row; a multi-quant repo
+        # shows gears only once the row is expanded.
         gear = row_gear(popover, hint)
         if gear is None:
             if select_on_device_row(popover, hint) is None:
                 return None
             if not popover.is_visible():
-                # The probe landed while the row was being clicked, so the click
-                # hit the collapsed row and selected the model. Reopen and use
+                # The probe landed mid-click, so the row selected the model; reopen for
                 # the gear that is now there.
                 popover = open_picker()
                 if reveal_on_device_row(popover, hint) is None:
