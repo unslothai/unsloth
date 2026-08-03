@@ -163,12 +163,27 @@ def _build_custom_validation_function(source: str):
     returned frame contains a boolean ``is_valid`` column. Any extra columns
     become per-row validation metadata.
 
+    The namespace is pre-seeded with the common modules ``pd`` (pandas),
+    ``subprocess``, ``tempfile`` and ``Path`` (pathlib.Path) so sources do not
+    need to import them; imports are only required for additional modules the
+    user's code relies on.
+
     Running user-supplied Python is arbitrary code execution. This is only ever
     reached for recipes that explicitly opt in through the "Advanced custom
     check" node (the UI requires a consent acknowledgement before a run can
     start) and executes inside the local job worker subprocess.
     """
-    namespace: dict[str, Any] = {}
+    import pandas as pd
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    namespace: dict[str, Any] = {
+        "pd": pd,
+        "subprocess": subprocess,
+        "tempfile": tempfile,
+        "Path": Path,
+    }
     try:
         exec(source, namespace)  # noqa: S102 - user-authored validator source
     except Exception as exc:

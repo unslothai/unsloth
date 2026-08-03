@@ -25,10 +25,9 @@ export const DEFAULT_TOOL_COMMAND = "go vet ./...";
 
 export const DEFAULT_CUSTOM_VALIDATOR_SOURCE = `# df has one column per "Code to check" target column.
 # Return a DataFrame with a boolean "is_valid" column; extra columns
-# become per-row metadata. Imports and subprocess calls are allowed.
+# become per-row metadata. pd, subprocess, tempfile and Path are
+# pre-imported; add imports only for modules your code needs.
 def validate(df):
-    import pandas as pd
-
     result = pd.DataFrame()
     result["is_valid"] = df.iloc[:, 0].str.len() > 0
     result["error_message"] = result["is_valid"].map(

@@ -134,6 +134,23 @@ def test_callable_contract():
     assert list(out["error_message"]) == ["too short", ""]
 
 
+def test_callable_pre_injected_names_need_no_imports():
+    import pandas as pd
+
+    source = (
+        "def validate(df):\n"
+        "    subprocess.run(['true'])\n"
+        "    with tempfile.TemporaryDirectory() as raw:\n"
+        "        marker = Path(raw) / 'marker.txt'\n"
+        "        marker.write_text('ok')\n"
+        "        content = marker.read_text()\n"
+        "    return pd.DataFrame({'is_valid': [content == 'ok'] * len(df)})\n"
+    )
+    fn = custom._build_custom_validation_function(source)
+    out = fn(pd.DataFrame({"code": ["a", "b"]}))
+    assert list(out["is_valid"]) == [True, True]
+
+
 def test_callable_swallows_user_exception():
     import pandas as pd
 

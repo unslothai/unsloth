@@ -28,6 +28,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useMemo, useRef } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
 import type { ValidatorConfig } from "../../types";
+import { DEFAULT_CUSTOM_VALIDATOR_SOURCE } from "../../utils/config-factories";
 import {
   isValidatorCodeLang,
   VALIDATOR_OXC_CODE_LANGS,
@@ -67,13 +68,6 @@ const TOOL_EXAMPLES: { label: string; command: string; ext: string }[] = [
 ];
 
 const GO_CUSTOM_SAMPLE = String.raw`# Runs go vet and go build on each generated code cell.
-import subprocess
-import tempfile
-from pathlib import Path
-
-import pandas as pd
-
-
 def validate(df):
     def run_go(code):
         with tempfile.TemporaryDirectory() as raw:
@@ -98,13 +92,6 @@ def validate(df):
 `;
 
 const CARGO_CUSTOM_SAMPLE = String.raw`# Runs cargo check on each generated code cell.
-import subprocess
-import tempfile
-from pathlib import Path
-
-import pandas as pd
-
-
 def validate(df):
     def run_cargo(code):
         with tempfile.TemporaryDirectory() as raw:
@@ -421,7 +408,7 @@ export function ValidatorDialog({
             <FieldLabel
               label="Python function"
               htmlFor={customSourceId}
-              hint="Define validate(df) -> df returning a DataFrame with a boolean is_valid column. Imports and subprocess calls are allowed."
+              hint="Define validate(df) -> df returning a DataFrame with a boolean is_valid column. pd, subprocess, tempfile and Path are pre-imported; only add imports for modules specific to your code."
             />
             <Textarea
               id={customSourceId}
@@ -452,6 +439,17 @@ export function ValidatorDialog({
                 }
               >
                 Insert cargo check sample
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="nodrag"
+                onClick={() =>
+                  onUpdate({ custom_source: DEFAULT_CUSTOM_VALIDATOR_SOURCE })
+                }
+              >
+                Reset
               </Button>
             </div>
           </div>
