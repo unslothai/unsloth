@@ -397,17 +397,38 @@ with sync_playwright() as p:
                 row = popover.locator("[data-model-picker-option]", has_text = hint).first
         return row if _count(row) else None
 
-    def open_config(popover, hint):
-        if find_on_device_row(popover, hint) is None:
-            return None
+    def find_gear(popover, hint, tries = 6):
         # data-model-picker-option sits on the row button; the gear is its
         # sibling, so it cannot be reached through the row. Match it by the model
         # its own label names, which also keeps this from pressing the gear of
         # whichever row happens to come first.
-        gear = popover.locator(
-            f'button[aria-label^="Inference settings for"][aria-label*="{hint}"]'
-        ).first
-        if _count(gear) == 0:
+        #
+        # Polled rather than read once: a row waiting on its sole-quant probe
+        # renders with no gear at all for a moment, and a single miss there would
+        # read as "this model has no run-settings".
+        sel = f'button[aria-label^="Inference settings for"][aria-label*="{hint}"]'
+        for _ in range(tries):
+            gear = popover.locator(sel).first
+            if _count(gear):
+                return gear
+            page.wait_for_timeout(500)
+        return None
+
+    def open_config(popover, hint):
+        row = find_on_device_row(popover, hint)
+        if row is None:
+            return None
+        gear = find_gear(popover, hint)
+        if gear is None:
+            # No gear on the row itself means this is a multi-quant parent, which
+            # mounts one per variant only once expanded. Clicking it is safe here
+            # and only here: the parent's onClick is toggleGgufExpanded, while the
+            # collapsed single-quant row -- the one that loads and closes the
+            # picker -- is exactly the row that already had a gear above.
+            row.click()
+            page.wait_for_timeout(800)
+            gear = find_gear(popover, hint)
+        if gear is None:
             return None
         gear.click()
         page.wait_for_timeout(800)
