@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -44,9 +45,23 @@ def _mutex_helpers(source: str) -> str:
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
             "Enter-StudioNamedMutex",
+            "Get-StudioPathHash",
             "Get-StudioInstallMutexName",
+            "Test-StudioPathEqual",
+            "Get-StudioRuntimeMutexNameForSid",
+            "Get-StudioRuntimeMutexName",
             "Enter-StudioInstallMutex",
             "Exit-StudioInstallMutex",
+        )
+    )
+
+
+def _process_helpers(source: str) -> str:
+    return "\n".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in (
+            "Test-StudioCommandLinePathReference",
+            "Get-RunningStudioVenvProcesses",
         )
     )
 
@@ -55,7 +70,7 @@ def _mutex_helpers(source: str) -> str:
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_running_venv_process_is_reported(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    detector = _extract(r"    function Get-RunningStudioVenvProcesses \{.*?\n    \}\n", source)
+    detector = _process_helpers(source)
     scripts = tmp_path / "unsloth_studio" / "Scripts"
     scripts.mkdir(parents = True)
     probe = scripts / "guard-probe.exe"
@@ -86,7 +101,7 @@ $ErrorActionPreference = "Stop"
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_command_line_only_venv_consumer_is_reported(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    detector = _extract(r"    function Get-RunningStudioVenvProcesses \{.*?\n    \}\n", source)
+    detector = _process_helpers(source)
     venv = tmp_path / "unsloth_studio"
     venv.mkdir()
     script = f"""
@@ -109,6 +124,88 @@ function Get-CimInstance {{
     env["TEST_VENV"] = str(venv)
     env["TEST_BASE_PYTHON"] = shutil.which("python") or "python.exe"
     assert _run_powershell(shell, script, env) == "4242"
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_command_line_sibling_venv_is_not_reported(tmp_path: Path, shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    detector = _process_helpers(source)
+    venv = tmp_path / "unsloth_studio"
+    sibling = tmp_path / "unsloth_studio_backup" / "Lib" / "worker.py"
+    venv.mkdir()
+    script = f"""
+$ErrorActionPreference = "Stop"
+function Get-Process {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) return @() }}
+function Get-CimInstance {{
+    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
+    [pscustomobject]@{{
+        ProcessId = 9191
+        Name = "python.exe"
+        ExecutablePath = $env:TEST_BASE_PYTHON
+        CommandLine = ('"' + $env:TEST_BASE_PYTHON + '" "' + $env:TEST_SIBLING + '"')
+    }}
+}}
+{detector}
+@(Get-RunningStudioVenvProcesses -VenvPath $env:TEST_VENV) |
+    ForEach-Object {{ Write-Output $_.Id }}
+"""
+    env = os.environ.copy()
+    env["TEST_VENV"] = str(venv)
+    env["TEST_SIBLING"] = str(sibling)
+    env["TEST_BASE_PYTHON"] = shutil.which("python") or "python.exe"
+    assert _run_powershell(shell, script, env) == ""
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_mutex_names_are_global_and_install_lock_is_path_scoped(tmp_path: Path, shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    studio_home = tmp_path / "studio"
+    studio_home.mkdir()
+    script = f"""
+$ErrorActionPreference = "Stop"
+{_mutex_helpers(source)}
+Write-Output (Get-StudioInstallMutexName -Path $env:TEST_STUDIO_HOME)
+Write-Output (Get-StudioRuntimeMutexNameForSid -Sid "S-1-5-21-111-222-333-1001")
+Write-Output (Get-StudioRuntimeMutexNameForSid -Sid "S-1-5-21-111-222-333-1002")
+$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+Write-Output ((Get-StudioRuntimeMutexName) -eq `
+    (Get-StudioRuntimeMutexNameForSid -Sid $currentSid))
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_home)
+    canonical = str(studio_home.resolve()).rstrip("\\/").upper()
+    digest = hashlib.sha256(canonical.encode()).hexdigest()
+    assert _run_powershell(shell, script, env).splitlines() == [
+        f"Global\\UnslothStudioInstall-{digest}",
+        "Global\\UnslothStudioManagedEnvironment-S-1-5-21-111-222-333-1001",
+        "Global\\UnslothStudioManagedEnvironment-S-1-5-21-111-222-333-1002",
+        "True",
+    ]
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is required")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_tauri_managed_root_path_classification(tmp_path: Path, shell: str):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    profile = tmp_path / "profile"
+    studio_home = profile / ".unsloth" / "studio"
+    studio_home.mkdir(parents = True)
+    alias = studio_home / ".." / "studio"
+    script = f"""
+$ErrorActionPreference = "Stop"
+{_mutex_helpers(source)}
+Write-Output (Test-StudioPathEqual -Left $env:TEST_STUDIO_HOME -Right $env:TEST_ALIAS)
+Write-Output (Test-StudioPathEqual -Left $env:TEST_STUDIO_HOME -Right $env:TEST_CASE_VARIANT)
+Write-Output (Test-StudioPathEqual -Left $env:TEST_STUDIO_HOME -Right $env:TEST_SIBLING)
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_home)
+    env["TEST_ALIAS"] = str(alias)
+    env["TEST_CASE_VARIANT"] = str(studio_home).upper()
+    env["TEST_SIBLING"] = str(profile / ".unsloth" / "studio-backup")
+    assert _run_powershell(shell, script, env).splitlines() == ["True", "True", "False"]
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
@@ -177,7 +274,7 @@ def test_runtime_gate_blocks_a_late_backend_start(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     helper = _extract(r"    function Enter-StudioNamedMutex \{.*?\n    \}\n", source)
     release = _extract(r"    function Exit-StudioInstallMutex \{.*?\n    \}\n", source)
-    mutex_name = f"Local\\UnslothStudioRuntimeGateTest-{os.getpid()}-{tmp_path.name}"
+    mutex_name = f"Global\\UnslothStudioRuntimeGateTest-{os.getpid()}-{tmp_path.name}"
     env = os.environ.copy()
     env["TEST_RUNTIME_MUTEX"] = mutex_name
 
@@ -224,22 +321,38 @@ Exit-StudioInstallMutex -Mutex $mutex
 def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     acquire = source.index("$studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome")
+    managed_root = source.index("$studioUsesTauriManagedRoot =", acquire)
+    legacy_layout = source.index("$studioUsesLegacyLayout =", managed_root)
+    runtime_name = source.index("Get-StudioRuntimeMutexName", legacy_layout)
+    legacy_scan = source.index("if ($studioUsesLegacyLayout)", runtime_name)
     runtime_lock = source.index(
-        "Enter-StudioNamedMutex -Name $script:StudioManagedRuntimeMutexName",
-        acquire,
+        "Enter-StudioNamedMutex -Name $studioRuntimeMutexName",
+        runtime_name,
     )
-    runtime_guard = source.index(
-        "Get-RunningStudioVenvProcesses -VenvPath $VenvDir",
-        runtime_lock,
-    )
+    scan_candidates = source.index("$venvPathsToScan = @($VenvDir)", runtime_lock)
+    legacy_source = source.index('Join-Path $StudioHome ".venv"', scan_candidates)
+    cwd_source = source.index('Join-Path $env:USERPROFILE "unsloth_studio"', legacy_source)
+    runtime_guard = source.index("foreach ($candidateVenv", cwd_source)
     desktop_guard = source.index('Get-Process -Name "unsloth-studio"', runtime_guard)
     rollback = source.index("Start-StudioVenvRollback -ExistingDir $VenvDir", desktop_guard)
+    old_venv_move = source.index("Move-Item -LiteralPath $OldVenv", rollback)
+    cwd_venv_move = source.index("Move-Item -LiteralPath $CwdVenv", old_venv_move)
     restore = source.rindex("Restore-StudioVenvRollback")
+    prompt = source.index("Start Unsloth Studio now?", restore)
+    autostart = source.index("Start-Process -FilePath $UnslothExe", prompt)
     release_runtime = source.rindex("Exit-StudioInstallMutex -Mutex $studioRuntimeMutex")
     release_install = source.rindex("Exit-StudioInstallMutex -Mutex $studioInstallMutex")
+    wait_for_exit = source.rindex("$studioAutoStartProcess.WaitForExit()")
 
-    assert acquire < runtime_lock < runtime_guard < desktop_guard < rollback
-    assert rollback < restore < release_runtime < release_install
+    assert acquire < managed_root < legacy_layout < runtime_name < runtime_lock
+    assert runtime_lock < scan_candidates < legacy_scan < legacy_source < cwd_source
+    assert cwd_source < runtime_guard < desktop_guard
+    assert source.count("$studioUsesLegacyLayout `") >= 2
+    assert "-not $TauriMode -and $studioUsesLegacyLayout" in source
+    assert runtime_guard < rollback < old_venv_move < cwd_venv_move
+    assert rollback < restore < prompt < autostart < release_runtime < release_install < wait_for_exit
+    assert "if ($StudioRedirectMode -eq 'legacy')" not in source
+    assert "& $UnslothExe studio -p 8888" not in source
     assert "--clear" not in source[source.index("uv venv $VenvDir") :][:200]
 
 
@@ -247,8 +360,13 @@ def test_tauri_runtime_uses_the_same_gate_before_backend_spawn():
     install_source = INSTALL_PS1.read_text(encoding = "utf-8")
     process_source = PROCESS_RS.read_text(encoding = "utf-8")
 
-    assert '"Local\\UnslothStudioManagedEnvironment"' in install_source
-    assert '"Local\\\\UnslothStudioManagedEnvironment"' in process_source
+    assert '"Global\\UnslothStudioManagedEnvironment-$Sid"' in install_source
+    assert '"Global\\\\UnslothStudioManagedEnvironment-"' in process_source
+    assert "Get-StudioRuntimeMutexName" in install_source
+    assert "Get-StudioRuntimeMutexNameForSid" in install_source
+    assert "studio_runtime_mutex_name_for_sid" in process_source
+    assert "current_windows_user_sid()?" in process_source
+    assert "studio_runtime_mutex_name_for_path" not in process_source
     start = process_source.index("pub fn start_backend(")
     guard = process_source.index("acquire_studio_runtime_launch_guard()?", start)
     resolve = process_source.index("resolve_backend_binary()", guard)

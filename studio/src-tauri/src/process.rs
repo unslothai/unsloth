@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 const MAX_LOG_LINES: usize = 1000;
 
 #[cfg(windows)]
-const STUDIO_MANAGED_RUNTIME_MUTEX_NAME: &str = "Local\\UnslothStudioManagedEnvironment";
+const STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX: &str = "Global\\UnslothStudioManagedEnvironment-";
 
 #[cfg(windows)]
 #[derive(Debug)]
@@ -75,8 +75,97 @@ fn acquire_named_studio_runtime_launch_guard(
 }
 
 #[cfg(windows)]
+fn studio_runtime_mutex_name_for_sid(sid: &str) -> String {
+    format!("{STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX}{sid}")
+}
+
+#[cfg(windows)]
+fn current_windows_user_sid() -> Result<String, String> {
+    use windows_sys::Win32::Security::{
+        GetSidIdentifierAuthority, GetSidSubAuthority, GetSidSubAuthorityCount,
+        GetTokenInformation, IsValidSid, TokenUser, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(format!(
+            "Could not open the Windows user token for the Studio runtime lock: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let result = (|| -> Result<String, String> {
+        let mut required = 0_u32;
+        unsafe {
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required);
+        }
+        if required == 0 {
+            return Err(format!(
+                "Could not size the Windows user SID for the Studio runtime lock: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let word_size = std::mem::size_of::<usize>();
+        let mut buffer = vec![0_usize; (required as usize).div_ceil(word_size)];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "Could not read the Windows user SID for the Studio runtime lock: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+        let sid = token_user.User.Sid;
+        if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
+            return Err("Windows returned an invalid user SID for the Studio runtime lock".into());
+        }
+
+        let authority_ptr = unsafe { GetSidIdentifierAuthority(sid) };
+        let count_ptr = unsafe { GetSidSubAuthorityCount(sid) };
+        if authority_ptr.is_null() || count_ptr.is_null() {
+            return Err(
+                "Could not inspect the Windows user SID for the Studio runtime lock".into(),
+            );
+        }
+        let authority = unsafe { (*authority_ptr).Value }
+            .iter()
+            .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte));
+        let revision = unsafe { *sid.cast::<u8>() };
+        let count = unsafe { *count_ptr };
+        let mut sid_text = format!("S-{revision}-{authority}");
+        for index in 0..u32::from(count) {
+            let sub_authority = unsafe { GetSidSubAuthority(sid, index) };
+            if sub_authority.is_null() {
+                return Err(
+                    "Could not inspect the Windows user SID for the Studio runtime lock".into(),
+                );
+            }
+            sid_text.push_str(&format!("-{}", unsafe { *sub_authority }));
+        }
+        Ok(sid_text)
+    })();
+
+    unsafe {
+        let _ = windows_sys::Win32::Foundation::CloseHandle(token);
+    }
+    result
+}
+
+#[cfg(windows)]
 fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGuard, String> {
-    acquire_named_studio_runtime_launch_guard(STUDIO_MANAGED_RUNTIME_MUTEX_NAME)
+    let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
+    acquire_named_studio_runtime_launch_guard(&name)
 }
 
 #[cfg(all(test, windows))]
@@ -105,6 +194,18 @@ mod studio_runtime_launch_guard_tests {
         assert!(error.contains("installation is modifying"));
         drop(first);
         acquire_named_studio_runtime_launch_guard(&name).unwrap();
+    }
+
+    #[test]
+    fn runtime_mutex_name_is_global_and_user_scoped() {
+        let first = studio_runtime_mutex_name_for_sid("S-1-5-21-111-222-333-1001");
+        let second = studio_runtime_mutex_name_for_sid("S-1-5-21-111-222-333-1002");
+        assert_eq!(
+            first,
+            "Global\\UnslothStudioManagedEnvironment-S-1-5-21-111-222-333-1001"
+        );
+        assert_ne!(first, second);
+        assert!(current_windows_user_sid().unwrap().starts_with("S-1-"));
     }
 }
 
