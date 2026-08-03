@@ -3639,9 +3639,9 @@ export function HubModelPicker({
               ) : (
                 connectedGroups.map((group) => (
                   <div key={group.providerId}>
-                    {/* Same spacing as the On Device section labels, so a
-                        provider's name sits clear of the rows above it. */}
-                    <div className="flex items-center gap-2 px-2.5 pb-1 pt-3 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
+                    {/* Wider than the On Device section labels: nothing
+                        divides these groups but the gap. */}
+                    <div className="flex items-center gap-2 px-2.5 pb-1 pt-5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
                       <ApiProviderLogo
                         providerType={group.providerType}
                         className="size-3.5"
