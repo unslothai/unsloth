@@ -1106,13 +1106,16 @@ def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
 def _stats_finish_reason(stats, default: str = "stop") -> str:
     """``"length"`` when the backend reports the turn ran out of token budget.
 
-    Only the in-process backends fill ``truncated``. llama-server and MLX report their
-    own finish reason and never set it, so they keep ``default``, as does a backend
-    shipping no stats at all.
+    A backend that names its own reason is believed: MLX decides between a stop
+    token and exhaustion from the last token it sampled, which a count at the cap
+    cannot distinguish. The in-process backends instead fill ``truncated``, and a
+    backend reporting neither keeps ``default``.
     """
-    if isinstance(stats, dict) and stats.get("truncated"):
-        return "length"
-    return default
+    if not isinstance(stats, dict):
+        return default
+    if stats.get("finish_reason") in ("stop", "length"):
+        return stats["finish_reason"]
+    return "length" if stats.get("truncated") else default
 
 
 def _chat_tool_calls_chunk(completion_id, created, model_name, tool_calls) -> str:

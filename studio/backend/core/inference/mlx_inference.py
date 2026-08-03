@@ -324,14 +324,53 @@ def _vlm_messages_have_tool_history(messages):
     )
 
 
+def _mlx_stop_token_ids(tokenizer, model = None):
+    """Ids the runtime actually stops on, as a tuple.
+
+    Prefer the stopping criteria mlx_vlm consults, then the model config that
+    seeds them, before the tokenizer attribute: they disagree on some repos
+    (Kimi-VL lists two config ids and a different tokenizer id), and picking the
+    wrong source misreads a real stop as truncation. Each source may be a bare
+    int or a collection.
+    """
+    for source in (
+        getattr(getattr(tokenizer, "stopping_criteria", None), "eos_token_ids", None),
+        getattr(getattr(model, "config", None), "eos_token_id", None),
+        getattr(tokenizer, "eos_token_ids", None),
+    ):
+        if source is None:
+            continue
+        return (source,) if isinstance(source, int) else tuple(source)
+    return ()
+
+
+def _mlx_finish_reason(response, stop_ids, generated_n, max_tokens):
+    """Why generation stopped: "length" only when the limit was reached.
+
+    mlx_lm reports it directly. mlx_vlm's result carries no reason, and a count
+    at the limit is ambiguous -- a stop token sampled as the final allowed token
+    looks identical to ordinary exhaustion -- so fall back to the last token's
+    identity, which separates them.
+    """
+    reason = getattr(response, "finish_reason", None)
+    if reason in ("stop", "length"):
+        return reason
+    if generated_n < max_tokens:
+        return "stop"
+    token = getattr(response, "token", None)
+    return "stop" if token is not None and token in tuple(stop_ids) else "length"
+
+
 def _build_generation_stats(
     prompt_n,
     prompt_tps,
     gen_n,
     gen_tps,
     cached_n = 0,
+    finish_reason = None,
 ):
-    """Map mlx stream stats onto the usage/timings shape llama-server emits."""
+    """Map mlx stream stats onto the usage/timings shape llama-server emits,
+    plus the reason generation ended."""
     prompt_n = int(prompt_n or 0)
     gen_n = int(gen_n or 0)
     cached_n = int(cached_n or 0)
@@ -357,6 +396,9 @@ def _build_generation_stats(
             "predicted_per_second": gen_tps,
             "cache_n": cached_n,
         },
+        # Latched where generation exits, so a cancel arriving afterwards
+        # cannot rewrite the reason the completion actually ended for.
+        "finish_reason": finish_reason,
     }
 
 
@@ -1142,7 +1184,8 @@ class MLXInferenceBackend:
         self.loaded_local_models = []
         self.device = "mlx"
         self._generation_lock = threading.Lock()
-        # usage/timings of the latest generation, shipped on gen_done.
+        # usage, timings and terminal reason of the latest generation,
+        # shipped on gen_done.
         self.last_generation_stats = None
 
         self._model = None
@@ -1829,7 +1872,8 @@ class MLXInferenceBackend:
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
                 raise
             finally:
-                # Latch final cumulative stats for the usage/timings chunk.
+                # Latch final stats here, so a cancel arriving later cannot
+                # rewrite the reason the generation actually ended for.
                 if final_response is not None:
                     self.last_generation_stats = _build_generation_stats(
                         getattr(final_response, "prompt_tokens", 0),
@@ -1837,6 +1881,12 @@ class MLXInferenceBackend:
                         getattr(final_response, "generation_tokens", 0),
                         getattr(final_response, "generation_tps", 0.0),
                         cached_n,
+                        finish_reason = _mlx_finish_reason(
+                            final_response,
+                            _mlx_stop_token_ids(self._tokenizer, self._model),
+                            getattr(final_response, "generation_tokens", 0),
+                            max_new_tokens,
+                        ),
                     )
         if normalizer is not None:
             cancelled = cancel_event is not None and cancel_event.is_set()
@@ -2040,13 +2090,22 @@ class MLXInferenceBackend:
                         if cancel_event and cancel_event.is_set():
                             break
                 finally:
-                    # mlx_vlm exposes the same stats fields as mlx_lm.
+                    # mlx_vlm exposes the same stats fields as mlx_lm, minus a
+                    # finish reason, so that one is derived.
                     if final_response is not None:
+                        tokenizer = getattr(self._processor, "tokenizer", self._processor)
+                        stop_ids = _mlx_stop_token_ids(tokenizer, self._model)
                         self.last_generation_stats = _build_generation_stats(
                             getattr(final_response, "prompt_tokens", 0),
                             getattr(final_response, "prompt_tps", 0.0),
                             getattr(final_response, "generation_tokens", 0),
                             getattr(final_response, "generation_tps", 0.0),
+                            finish_reason = _mlx_finish_reason(
+                                final_response,
+                                stop_ids,
+                                getattr(final_response, "generation_tokens", 0),
+                                max_new_tokens,
+                            ),
                         )
 
         yield from normalize_reasoning_snapshots(

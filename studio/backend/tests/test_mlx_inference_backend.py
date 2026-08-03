@@ -2903,3 +2903,21 @@ def test_mlx_processors_penalize_in_range_ids_and_route_strays_away(
     out = proc(mx.array(sequence), mx.zeros((1, vocab)))
     for token, value in expected.items():
         assert float(out[0, token]) == pytest.approx(value), token
+
+
+def test_finish_reason_separates_truncation_from_natural_end():
+    """At the limit the count alone is ambiguous -- a stop token sampled as the
+    final allowed token looks identical to exhaustion -- so the last token
+    decides, against the ids read from the source the runtime stops on. Those
+    sources disagree on real repos: Kimi-VL lists two config ids and a different
+    tokenizer id, and each may be a bare int (Qwen2-VL) rather than a list."""
+    from core.inference.mlx_inference import _mlx_finish_reason, _mlx_stop_token_ids
+
+    model = SimpleNamespace(config = SimpleNamespace(eos_token_id = [163584, 163586]))
+    ids = _mlx_stop_token_ids(SimpleNamespace(eos_token_ids = 163594), model)
+    assert ids == (163584, 163586)
+    assert _mlx_stop_token_ids(SimpleNamespace(eos_token_ids = 151645)) == (151645,)
+    assert _mlx_stop_token_ids(SimpleNamespace()) == ()
+    assert _mlx_finish_reason(SimpleNamespace(token = 5), ids, 3, 8) == "stop"
+    assert _mlx_finish_reason(SimpleNamespace(token = 5), ids, 8, 8) == "length"
+    assert _mlx_finish_reason(SimpleNamespace(token = 163584), ids, 8, 8) == "stop"
