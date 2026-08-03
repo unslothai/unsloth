@@ -50,7 +50,7 @@ sys.modules.setdefault("structlog", _structlog_stub)
 import httpx  # noqa: F401
 
 from core.inference import llama_cpp as llama_cpp_module
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 from models.inference import (
     InferenceStatusResponse,
     LoadRequest,
@@ -157,17 +157,19 @@ def _loaded_backend(gpu_memory_mode: str) -> LlamaCppBackend:
 
 
 def _target_state(backend: LlamaCppBackend, gpu_memory_mode: str) -> bool:
-    return backend._already_in_target_state(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        gpu_memory_mode = gpu_memory_mode,
+    return backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            gpu_memory_mode = gpu_memory_mode,
+        )
     )
 
 
@@ -313,7 +315,7 @@ def test_route_normalizes_explicit_extras_before_reload_dedupe():
     normalize = load_impl.index(
         'request = request.model_copy(update = {"llama_extra_args": extra_llama_args})'
     )
-    dedupe = load_impl.index("and _request_matches_loaded_settings(")
+    dedupe = load_impl.index("_reuse_loaded_gguf(")
     assert preserve < translate < strip < normalize < dedupe
 
 
@@ -387,20 +389,22 @@ def _target_state_manual(
     n_cpu_moe,
     tensor_split = None,
 ):
-    return backend._already_in_target_state(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        gpu_memory_mode = "manual",
-        gpu_layers = gpu_layers,
-        n_cpu_moe = n_cpu_moe,
-        tensor_split = tensor_split,
+    return backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            gpu_memory_mode = "manual",
+            gpu_layers = gpu_layers,
+            n_cpu_moe = n_cpu_moe,
+            tensor_split = tensor_split,
+        )
     )
 
 
@@ -594,50 +598,34 @@ def test_load_request_accepts_gpu_ids():
     assert LoadRequest(model_path = "owner/repo").gpu_ids is None
 
 
-@pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
-def test_response_models_emit_gpu_ids(model_cls):
-    if model_cls is LoadResponse:
-        obj = model_cls(
-            status = "loaded",
-            model = "m",
-            display_name = "m",
-            inference = {},
-            gpu_ids = [1],
-            requested_gpu_ids = [1, 2],
-        )
-    else:
-        obj = model_cls(gpu_ids = [1], requested_gpu_ids = [1, 2])
-    assert obj.model_dump()["gpu_ids"] == [1]
-    assert obj.model_dump()["requested_gpu_ids"] == [1, 2]
-
-
-def test_gguf_load_and_status_responses_include_requested_gpu_pool():
-    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
-    assert route_src.count("requested_gpu_ids = llama_backend.requested_gpu_ids") == 3
-
-
 def test_gpu_ids_property_default_and_reset():
     backend = LlamaCppBackend()
     assert backend.gpu_ids is None
+    assert backend.requested_gpu_ids is None
     backend._gpu_ids = [0, 1]
+    backend._requested_gpu_ids = [0, 1, 2]
     assert backend.gpu_ids == [0, 1]
+    assert backend.requested_gpu_ids == [0, 1, 2]
     backend._process = _FakeProcess()
     backend.unload_model()
     assert backend.gpu_ids is None
+    assert backend.requested_gpu_ids is None
 
 
 def _target_state_gpu_ids(backend, gpu_ids):
-    return backend._already_in_target_state(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        gpu_ids = gpu_ids,
+    return backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            gpu_ids = gpu_ids,
+        )
     )
 
 
@@ -660,7 +648,10 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
     backend = _loaded_backend("auto")
     backend._requested_gpu_ids = [0, 1]
     backend._gpu_ids = [0]
-    backend._last_load_kwargs = {"gpu_ids": [0, 1], "model_identifier": "owner/repo"}
+    backend._last_load_intent = GgufLoadIntent(
+        gpu_ids = [0, 1],
+        model_identifier = "owner/repo",
+    )
 
     # The original request still matches after the fitter narrows it.
     assert _target_state_gpu_ids(backend, [1, 0]) is True
@@ -670,10 +661,32 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
     # reload do not restore GPU 1 after the user removed it.
     assert _target_state_gpu_ids(backend, [0]) is True
     assert backend.requested_gpu_ids == [0]
-    assert backend._last_load_kwargs == {"gpu_ids": [0], "model_identifier": "owner/repo"}
+    assert backend._last_load_intent.gpu_ids == (0,)
+    assert backend._last_load_intent.model_identifier == "owner/repo"
     # A genuinely different placement pool still reloads.
     assert _target_state_gpu_ids(backend, [1]) is False
     assert _target_state_gpu_ids(backend, None) is False
+
+
+@pytest.mark.parametrize(
+    ("gpu_ids", "expected_ids", "matches"),
+    [([], None, False), ([0], (0,), True)],
+)
+def test_gpu_ids_control_owned_device_extra_args(gpu_ids, expected_ids, matches):
+    backend = _loaded_backend("auto")
+    if gpu_ids:
+        backend._gpu_ids = backend._requested_gpu_ids = [0]
+    intent = GgufLoadIntent(
+        model_identifier = "owner/repo",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        speculative_type = "auto",
+        gpu_ids = gpu_ids,
+        extra_args = ["--main-gpu", "1"],
+    )
+
+    assert intent.gpu_ids == expected_ids
+    assert backend.adopt_load_intent_if_matched(intent) is matches
 
 
 def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
@@ -737,16 +750,18 @@ def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
     )
     monkeypatch.setattr(
         llama_cpp_module,
-        "_hf_offline_if_dns_dead",
+        "_hf_offline_if_unreachable",
         lambda: __import__("contextlib").nullcontext(),
     )
 
     with pytest.raises(ValueError, match = "DiffusionGemma"):
         backend.load_model(
-            hf_repo = "owner/model",
-            hf_variant = "Q4_K_M",
-            model_identifier = "owner/model",
-            gpu_ids = [0],
+            GgufLoadIntent(
+                hf_repo = "owner/model",
+                hf_variant = "Q4_K_M",
+                model_identifier = "owner/model",
+                gpu_ids = [0],
+            )
         )
 
     assert killed == []
@@ -786,16 +801,18 @@ def test_remote_vulkan_preflight_download_failure_keeps_active_server(monkeypatc
         monkeypatch.setattr(llama_cpp_module, "_resolve_repo_id_casing", lambda repo: repo)
         monkeypatch.setattr(
             llama_cpp_module,
-            "_hf_offline_if_dns_dead",
+            "_hf_offline_if_unreachable",
             lambda: __import__("contextlib").nullcontext(),
         )
 
         with pytest.raises(type(failure)):
             backend.load_model(
-                hf_repo = "owner/model",
-                hf_variant = "Q4_K_M",
-                model_identifier = "owner/model",
-                gpu_ids = [0],
+                GgufLoadIntent(
+                    hf_repo = "owner/model",
+                    hf_variant = "Q4_K_M",
+                    model_identifier = "owner/model",
+                    gpu_ids = [0],
+                )
             )
 
         assert order == ["download"], failure
@@ -815,9 +832,11 @@ def test_local_vulkan_diffusion_rejection_keeps_active_server(monkeypatch, tmp_p
 
     with pytest.raises(ValueError, match = "DiffusionGemma"):
         backend.load_model(
-            gguf_path = str(gguf_path),
-            model_identifier = "local/diffusion",
-            gpu_ids = [0],
+            GgufLoadIntent(
+                gguf_path = str(gguf_path),
+                model_identifier = "local/diffusion",
+                gpu_ids = [0],
+            )
         )
 
     assert killed == []
@@ -873,9 +892,11 @@ def test_local_vulkan_pre_teardown_reads_the_real_gguf_header(monkeypatch, tmp_p
 
     with pytest.raises(_ReachedServerStart):
         backend.load_model(
-            gguf_path = _write_gguf_header(tmp_path / "chat.gguf", "llama"),
-            model_identifier = "local/chat",
-            gpu_ids = [0],
+            GgufLoadIntent(
+                gguf_path = _write_gguf_header(tmp_path / "chat.gguf", "llama"),
+                model_identifier = "local/chat",
+                gpu_ids = [0],
+            )
         )
 
     assert killed == [True]
@@ -888,9 +909,11 @@ def test_local_vulkan_diffusion_header_rejects_before_teardown(monkeypatch, tmp_
 
     with pytest.raises(ValueError, match = "DiffusionGemma"):
         backend.load_model(
-            gguf_path = _write_gguf_header(tmp_path / "d.gguf", "gemma3", diffusion = True),
-            model_identifier = "local/diffusion",
-            gpu_ids = [0],
+            GgufLoadIntent(
+                gguf_path = _write_gguf_header(tmp_path / "d.gguf", "gemma3", diffusion = True),
+                model_identifier = "local/diffusion",
+                gpu_ids = [0],
+            )
         )
 
     assert killed == []
@@ -903,9 +926,11 @@ def test_local_vulkan_missing_gguf_is_reported_before_teardown(monkeypatch, tmp_
 
     with pytest.raises(FileNotFoundError):
         backend.load_model(
-            gguf_path = str(tmp_path / "absent.gguf"),
-            model_identifier = "local/missing",
-            gpu_ids = [0],
+            GgufLoadIntent(
+                gguf_path = str(tmp_path / "absent.gguf"),
+                model_identifier = "local/missing",
+                gpu_ids = [0],
+            )
         )
 
     assert killed == []
@@ -918,16 +943,9 @@ def test_start_diffusion_server_resets_tensor_parallel():
     # diffusion re-Apply reloads against stale tensor-parallel state.
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
     assert "self._tensor_parallel = False" in src
-    assert "self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None" in src
-
-
-def test_route_matches_loaded_settings_uses_shared_gpu_pin_matcher():
-    # Route-level and backend race dedupe must share one normalization path so
-    # raw, effective, and diffusion pins cannot drift apart.
-    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
-    match_impl = route_src[route_src.index("def _request_matches_loaded_settings") :]
-    assert "if not llama_backend.matches_gpu_ids(request.gpu_ids):" in match_impl
-    assert "llama_backend._record_matching_gpu_request(request.gpu_ids)" in match_impl
+    # Still the collapsed single-device pick, but taken from the request rather than the
+    # effective pin, which a forced-CPU launch on virtualised Metal clears.
+    assert "self._requested_gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None" in src
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
@@ -1327,4 +1345,15 @@ def test_cmd_companion_ignores_cpu_forced_drafter():
     assert has(cmd, {}) is False
     # mmproj still counts even alongside a CPU drafter.
     cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0", "--mmproj", "p.gguf"]
+    assert has(cmd, {}) is True
+
+
+def test_cmd_companion_ignores_a_projector_pinned_off_the_gpu():
+    # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole GPU
+    # backend on it, so a CPU-pinned vision server must not look GPU resident.
+    has = LlamaCppBackend._cmd_has_gpu_companion
+    cmd = ["llama-server", "--mmproj", "p.gguf", "--no-mmproj-offload"]
+    assert has(cmd, {}) is False
+    # llama.cpp assigns rather than accumulates for this one, so the last flag wins.
+    cmd = ["llama-server", "--mmproj", "p.gguf", "--no-mmproj-offload", "--mmproj-offload"]
     assert has(cmd, {}) is True

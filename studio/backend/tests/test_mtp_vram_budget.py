@@ -68,6 +68,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
     _extra_args_draft_cache_types,
+    _extra_args_draft_device_pin,
     _extra_args_draft_offloaded_to_cpu,
     _extra_args_mtp_draft_path,
     _extra_args_n_ubatch,
@@ -461,41 +462,43 @@ class TestExtraArgsMtpDetection:
         assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "none"}) is False
 
     def test_requests_mtp_effective_spec_type(self):
-        # llama.cpp uses the LAST CLI --spec-type and ignores the env when any CLI
-        # --spec-type is present. The reserve must track that effective value, not
-        # any earlier/MTP-ish one, or it over-reserves a drafter the launch won't
-        # load (Finding B).
+        # llama.cpp ACCUMULATES spec types: the env is applied first through the same
+        # handler and each --spec-type inserts at the end, so nothing later clears an
+        # earlier MTP (even --spec-type none only appends NONE) and the reserve has to
+        # count every source.
         env_mtp = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
-        # Later CLI value overrides an earlier MTP one (last-wins).
         assert (
             _extra_args_requests_mtp(
                 ["--spec-type", "draft-mtp", "--spec-type", "ngram-mod"], env = {}
             )
-            is False
+            is True
         )
-        # A non-MTP CLI flag overrides a stale MTP env.
-        assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = env_mtp) is False
-        assert _extra_args_requests_mtp(["--spec-type", "none"], env = env_mtp) is False
-        # A later MTP CLI value still engages.
+        assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = env_mtp) is True
+        assert _extra_args_requests_mtp(["--spec-type", "none"], env = env_mtp) is True
         assert (
             _extra_args_requests_mtp(
                 ["--spec-type", "ngram-mod", "--spec-type", "draft-mtp"], env = {}
             )
             is True
         )
-        # Same precedence for separate (draft-simple/eagle3) detection.
+        # The negative that still has to hold: no source names MTP.
+        assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = {}) is False
+        # Separate (draft-simple/eagle3) detection accumulates the same way: the draft
+        # model still loads, so the budget must still reserve for it.
         assert (
             _extra_args_requests_separate_draft(
                 ["--spec-type", "draft-simple", "--spec-type", "ngram-mod"], env = {}
             )
-            is False
+            is True
         )
         assert (
             _extra_args_requests_separate_draft(
                 ["--spec-type", "ngram-mod"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
             )
-            is False
+            is True
         )
+        # And the negative: ngram-* alone loads no separate model.
+        assert _extra_args_requests_separate_draft(["--spec-type", "ngram-mod"], env = {}) is False
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -550,28 +553,33 @@ class TestExtraArgsMtpDetection:
         # -> _user_draft_via_extras True; _env_draft_for_budget sizes the drafter.
         assert _extra_args_mtp_draft_path([], env = dict(os.environ)) == "/large.gguf"
 
-    def test_load_model_gates_env_spec_type_on_off_mode(self):
-        # LLAMA_ARG_SPEC_TYPE only reaches the child when Unsloth emits no spec
-        # flag (UI mode "off", no user --spec-type); otherwise the emitted
-        # --spec-type/--spec-default overrides the env, so the reserve must not
-        # consult it or a stale MTP env over-reserves (Finding F3). Whitespace-
-        # stripped so the check survives formatter line-wrapping.
+    def test_the_fit_reads_the_env_only_when_the_extras_own_the_spec_type(self):
+        # An emitted --spec-type/--spec-default cannot override the env, since llama.cpp
+        # appends. So the launch scrubs LLAMA_ARG_SPEC_TYPE whenever Unsloth owns the
+        # spec block, and the reserve consults the env only where it still reaches the
+        # child: the extras own --spec-type, and their flags and the env accumulate.
+        # Whitespace-stripped so the check survives formatter line-wrapping.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert '_mtp_canonical=="off"' in compact  # the env-reaches-child gate
+        assert "_spec_env:Mapping[str,str]=_child_spec_env(extra_args)" in compact
         assert "_extra_args_requests_mtp(extra_args,env=_spec_env)" in compact
+        # The other half: the launch really does clear it for a managed block.
+        assert "ornot_extra_args_set_spec_type(extra_args):" in compact
+        assert "env.pop(_pv_spec_var,None)" in compact
 
-    def test_spec_default_overrides_env_mtp(self):
-        # --spec-default is a CLI spec flag (resolves to the model default,
-        # non-MTP) that overrides a stale LLAMA_ARG_SPEC_TYPE env, so the reserve
-        # must not treat it as MTP (reviewer.py R4).
+    def test_spec_default_does_not_clear_an_inherited_spec_type(self):
+        # --spec-default push_backs NGRAM_MOD rather than replacing the vector, so it
+        # cannot clear an inherited type and the reserve must still count it.
         env_mtp = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
-        assert _extra_args_requests_mtp(["--spec-default"], env = env_mtp) is False
+        assert _extra_args_requests_mtp(["--spec-default"], env = env_mtp) is True
         assert (
             _extra_args_requests_separate_draft(
                 ["--spec-default"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
             )
-            is False
+            is True
         )
+        # With nothing inherited it stays non-MTP and loads no separate model.
+        assert _extra_args_requests_mtp(["--spec-default"], env = {}) is False
+        assert _extra_args_requests_separate_draft(["--spec-default"], env = {}) is False
         # A later --spec-type still wins over an earlier --spec-default.
         assert (
             _extra_args_requests_mtp(["--spec-default", "--spec-type", "draft-mtp"], env = {}) is True
@@ -580,10 +588,11 @@ class TestExtraArgsMtpDetection:
     def test_load_model_drafter_budget_precedence(self):
         # The budget sizes the drafter the launch actually loads: CLI extras win,
         # then Unsloth's emitted mtp_draft_path (overrides LLAMA_ARG_SPEC_DRAFT_MODEL),
-        # then the env drafter -- not the env before Unsloth's (reviewer.py R3).
+        # then the env drafter, and only when the env survives the launch scrub, else it
+        # reserves for a model the child never loads.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})" in compact
-        assert "_env_draft_for_budget=_extra_args_mtp_draft_path([],env=os.environ)" in compact
+        assert "_env_draft_for_budget=_extra_args_mtp_draft_path([],env=_spec_env)" in compact
         assert "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
 
     def test_load_model_drops_cpu_offloaded_drafter_from_budget(self):
@@ -663,6 +672,33 @@ class TestExtraArgsMtpDetection:
             is False
         )
         assert _extra_args_draft_offloaded_to_cpu([], env = {}) is False
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            # No draft-device flag -> no pin to reject.
+            (None, None),
+            ([], None),
+            (["-c", "4096"], None),
+            # cpu / none offload is a supported placement, not a GPU escape.
+            (["--spec-draft-device", "cpu"], None),
+            (["--spec-draft-device", "CPU,none"], None),
+            (["-devd", "none"], None),
+            # A real GPU device escapes the gpu_ids pin -> return the offending value.
+            (["--spec-draft-device", "CUDA1"], "CUDA1"),
+            (["--device-draft", "Vulkan2"], "Vulkan2"),
+            (["--spec_draft_device", "Vulkan1"], "Vulkan1"),
+            (["-devd", "CUDA0,CPU"], "CUDA0,CPU"),  # any GPU in the list conflicts
+            # inline flag=value form.
+            (["--spec-draft-device=Vulkan3"], "Vulkan3"),
+            (["--device_draft=Vulkan4"], "Vulkan4"),
+            # last-wins: only the final draft-device value counts.
+            (["--spec-draft-device", "CUDA1", "--spec-draft-device", "cpu"], None),
+            (["--spec-draft-device", "cpu", "--spec-draft-device", "CUDA1"], "CUDA1"),
+        ],
+    )
+    def test_draft_device_pin(self, args, expected):
+        assert _extra_args_draft_device_pin(args) == expected
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -957,36 +993,6 @@ class TestExtraArgsMtpDetection:
             _tensor_parallel_matches_loaded(["--split-mode", "layer"], False, True, env = tensor_env)
             is False
         )
-
-    def test_route_matcher_uses_tensor_parallel_matches_loaded(self):
-        # Fix: the route duplicate-load matcher must use the downgrade-aware
-        # helper, or an env-driven tensor server (or its layer downgrade) is
-        # needlessly reloaded (#6312). Read from disk (importing routes.inference
-        # drags in heavy deps).
-        routes_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
-            encoding = "utf-8"
-        )
-        start = routes_src.index("def _request_matches_loaded_settings")
-        end = routes_src.index("\ndef ", start + 1)
-        body = "".join(routes_src[start:end].split())
-        assert (
-            "_tensor_parallel_matches_loaded(effective_extra,"
-            "request.tensor_parallel,llama_backend.tensor_parallel)" in body
-        )
-
-    def test_route_matcher_retries_after_drafter_not_found(self):
-        # drafter_not_found must not report "already loaded" or the reload never
-        # retries the download (#6459). Read source: importing routes pulls deps.
-        routes_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
-            encoding = "utf-8"
-        )
-        start = routes_src.index("def _request_matches_loaded_settings")
-        end = routes_src.index("\ndef ", start + 1)
-        body = "".join(routes_src[start:end].split())
-        assert 'llama_backend.spec_fallback_reason=="drafter_not_found"' in body
-        assert "not_extra_args_set_spec_type(effective_extra)" in body
-        # HF-only (hf_repo): local/native loads have no download to retry.
-        assert "llama_backend.hf_repo" in body
 
     def test_extra_args_main_cache_type_heavier_axis(self):
         # Asymmetric --cache-type-k/-v must budget the heavier axis (extras win

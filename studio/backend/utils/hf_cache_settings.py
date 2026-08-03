@@ -59,7 +59,11 @@ class HuggingFaceCachePaths:
         return self.source == "studio"
 
     def child_env(self, base: Optional[Mapping[str, str]] = None) -> dict[str, str]:
-        env = dict(os.environ if base is None else base)
+        # Scrub either way: an explicit base is usually the caller's own os.environ
+        # copy, so it carries any scoped offline flags an open guard has set.
+        from utils.utils import hf_environment_for_spawn, hf_environment_scrubbed
+
+        env = hf_environment_for_spawn() if base is None else hf_environment_scrubbed(base)
         # Do not rewrite HF_HOME. It also owns HF's token path, and credentials
         # must not be moved onto a removable cache volume.
         env["HF_HUB_CACHE"] = str(self.hub_cache)
@@ -149,6 +153,19 @@ def active_hf_hub_cache() -> str:
 
 
 @contextmanager
+def _xet_loader_barrier() -> Iterator[None]:
+    """Block while a Xet shim loader holds its process-wide env override. Never fails a spawn."""
+    try:
+        from utils.hf_xet_fallback import env_override_barrier
+        barrier = env_override_barrier()
+    except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend on it
+        yield
+        return
+    with barrier:
+        yield
+
+
+@contextmanager
 def child_environment_for_spawn(environment: Mapping[str, str]) -> Iterator[None]:
     """Apply captured env before spawn imports the child entrypoint.
 
@@ -157,7 +174,13 @@ def child_environment_for_spawn(environment: Mapping[str, str]) -> Iterator[None
     this short parent-process override atomic through ``Process.start()``.
     """
 
-    with _spawn_env_lock:
+    from utils.utils import hf_environment_restored_for_spawn
+
+    # Also exclude the Xet shim's GPU-init override window: a child spawned inside it inherits the
+    # flag for life, whereupon unsloth_zoo hands it STUB triton and bitsandbytes and the run
+    # silently produces nothing. Filtering a child env dict cannot help here, since spawn copies the
+    # live environment and takes no env argument.
+    with _spawn_env_lock, _xet_loader_barrier(), hf_environment_restored_for_spawn():
         missing = object()
         saved_environment: dict[str, str | object] = {}
         for key, value in environment.items():

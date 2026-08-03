@@ -85,7 +85,7 @@ export interface LoadModelRequest {
   n_cpu_moe?: number;
   /** Manual mode: relative model share per GPU (--tensor-split), in GPU order. */
   tensor_split?: number[] | null;
-  /** Picked physical GPU indices (omit/empty = automatic). */
+  /** Picked CUDA/ROCm physical IDs or Vulkan ordinals (omit/empty = automatic). */
   gpu_ids?: number[];
 }
 
@@ -95,6 +95,10 @@ export interface ValidateModelResponse {
   identifier?: string | null;
   display_name?: string | null;
   is_gguf?: boolean;
+  is_diffusion?: boolean;
+  /** The diffusion check was inconclusive, so `is_diffusion: false` above means
+   *  "not known to be diffusion", not "known to be ordinary". */
+  diffusion_unknown?: boolean;
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
@@ -164,7 +168,12 @@ export interface LoadModelResponse {
   is_vision: boolean;
   is_lora: boolean;
   is_gguf?: boolean;
+  is_local_model?: boolean;
   is_diffusion?: boolean;
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
+   *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while
+   *  this carries the standing request. */
+  diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -227,7 +236,12 @@ export interface InferenceStatusResponse {
   model_identifier?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
+  is_local_model?: boolean;
   is_diffusion?: boolean;
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
+   *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while
+   *  this carries the standing request. */
+  diffusion_requested_ngl?: number | null;
   gguf_variant?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
@@ -301,6 +315,8 @@ export interface ApiMonitorEntry {
   model: string;
   prompt?: string;
   reply?: string;
+  // True for API-key callers, not UI sessions: the panel auto-opens off this.
+  via_api_key: boolean;
   prompt_preview: string;
   reply_preview: string;
   prompt_truncated: boolean;
@@ -326,9 +342,14 @@ export interface ApiMonitorEntry {
 
 export interface ApiMonitorResponse {
   status: "idle" | "ready" | "generating";
+  // Server wall clock (seconds) at snapshot, so started_at can be dated without trusting
+  // the browser's clock. Absent on a backend older than the field.
+  server_time?: number;
   active_model?: string | null;
   context_length?: number | null;
   active_requests: number;
+  /** Absent on older backends -- treat only an explicit `false` as disabled. */
+  logging_enabled?: boolean;
   entries: ApiMonitorEntry[];
 }
 

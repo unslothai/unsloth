@@ -1,17 +1,51 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# Unsloth Studio uninstaller for Windows PowerShell.
-# Stops running servers and removes install dir, launcher data, CLI shim,
-# desktop and Start Menu shortcuts, the user PATH entry, and the PathBackup
-# registry key. Honors custom roots set via UNSLOTH_STUDIO_HOME / STUDIO_HOME
-# at install time (read back from share\studio.conf).
+# Unsloth Studio uninstaller for Windows PowerShell. Run -Help for details.
+# Custom roots (UNSLOTH_STUDIO_HOME / STUDIO_HOME) come from share\studio.conf.
 #
 # Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
 # Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\scripts\uninstall.ps1
 
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
+
+    function _Usage {
+        Write-Host @'
+Unsloth Studio uninstaller (Windows PowerShell).
+
+Usage:
+  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
+  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\scripts\uninstall.ps1
+
+Stops running Unsloth Studio servers, then removes the install dir, launcher
+data, CLI shim, desktop and Start Menu shortcuts, the user PATH entry and the
+PathBackup registry key. In a default-mode install it also removes the shared
+prebuilts that sit beside the install dir:
+%USERPROFILE%\.unsloth\{llama.cpp,node,whisper.cpp,.cache}. The Hugging Face
+cache is left in place, as is anything else you keep under %USERPROFILE%\.unsloth.
+
+Options:
+  -Help, -h, --help, -?, /?  Print this message and exit without removing anything.
+
+Run with no arguments to uninstall. Unrecognized arguments never trigger
+removal.
+
+Environment:
+  UNSLOTH_STUDIO_HOME  Also remove this custom install root. Set it to the value
+                       used at install time.
+  STUDIO_HOME          Alias for the above, ignored when both are set.
+'@
+    }
+
+    # Reject unknown arguments before destructive work. Use throw so embedded
+    # invocations report failure without exiting the caller's PowerShell session.
+    foreach ($arg in $args) {
+        if ($arg -in @('-h', '-help', '--help', '-?', '/?')) { _Usage; return }
+        Write-Host "uninstall.ps1: unrecognized argument: $arg" -ForegroundColor Red
+        Write-Host "Nothing was removed. Re-run with no arguments to uninstall, or -Help."
+        throw "uninstall.ps1: unrecognized argument: $arg"
+    }
 
     function _Step { param([string]$Msg) Write-Host $Msg }
     function _Substep { param([string]$Msg, [string]$Color = "Gray") Write-Host "  $Msg" -ForegroundColor $Color }
@@ -344,6 +378,10 @@ function Uninstall-UnslothStudio {
     # build can leave a "<name>.staging-XXXX" tree; removing it lets the empty-dir
     # cleanup of ~/.unsloth below succeed. No-op in env/custom mode and when absent.
     $defaultStaging = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".staging" } else { $null }
+    # Managed whisper.cpp dictation engine (setup.ps1 PHASE 3.4 installs it at
+    # $UnslothHome\whisper.cpp), a sibling of studio in default mode. No-op in
+    # env/custom mode (nested under the custom root) and when absent.
+    $defaultWhisperCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "whisper.cpp" } else { $null }
 
     # Build known-root list FIRST so the port-file kill can verify ownership.
     $customRoots = @(_CustomStudioRoots)
@@ -362,7 +400,7 @@ function Uninstall-UnslothStudio {
     _StopStudioProcesses -KnownRoots $knownRoots
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode))
+    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
@@ -389,9 +427,30 @@ function Uninstall-UnslothStudio {
     # custom mode (nested under the custom root, removed with it) and when absent.
     if ($defaultNode) { _RemovePath $defaultNode }
     if ($defaultStaging) { _RemovePath $defaultStaging }
-    # llama.cpp install lock (serializes the shared build); a stray lock keeps
+    # Managed whisper.cpp prebuilt (sibling of studio under ~/.unsloth). Only
+    # present when a whisper prebuilt matching the pinned llama.cpp build existed
+    # at install time, so many installs lack it.
+    if ($defaultWhisperCpp) { _RemovePath $defaultWhisperCpp }
+    # Prebuilt install locks. Every prebuilt serializes on
+    # <parent>\.<name>.install.lock (prebuilt_core.py install_lock_path), so
+    # llama.cpp, node and whisper.cpp each leave one; a stray lock keeps
     # ~/.unsloth from being pruned below. No-op in env/custom mode and when absent.
-    if ($defaultUnslothHome) { _RemovePath (Join-Path $defaultUnslothHome ".llama.cpp.install.lock") }
+    if ($defaultUnslothHome) {
+        foreach ($lockName in @(".llama.cpp.install.lock", ".node.install.lock", ".whisper.cpp.install.lock")) {
+            _RemovePath (Join-Path $defaultUnslothHome $lockName)
+        }
+        # Taking over an abandoned lock renames it to .stale.<pid> before unlinking
+        # (install_node_prebuilt.py); a crash between the two steps strands the
+        # rename, so sweep any leftovers. -Force to see the dot-prefixed names.
+        if (Test-Path -LiteralPath $defaultUnslothHome) {
+            # -like, not -Filter: the provider's Win32 filter is unreliable for
+            # dot-leading names with several dots.
+            foreach ($stale in @(Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue |
+                                 Where-Object { $_.Name -like "*.install.lock.stale.*" })) {
+                _RemovePath $stale.FullName
+            }
+        }
+    }
     # Drop ~/.unsloth itself, but ONLY if now empty -- never nuke unrelated content.
     if ($defaultUnslothHome -and (Test-Path -LiteralPath $defaultUnslothHome) -and
         -not (Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue)) {

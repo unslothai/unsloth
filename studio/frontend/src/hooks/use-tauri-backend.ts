@@ -105,6 +105,12 @@ export function useTauriBackend() {
   const mountedRef = useRef(false);
   // Track the discovered port from server-port event
   const portRef = useRef<number | null>(null);
+  // Set once server-start-timeout has reported a stalled startup. commands.rs's
+  // health watchdog kills that same portless backend ~30 s later and emits a
+  // payload-free server-crashed, so without this the log tail the timeout carried
+  // is replaced by "Server stopped unexpectedly" on an unattended error screen.
+  // Cleared whenever a start attempt begins or a validated port arrives.
+  const startTimedOutRef = useRef(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
   const [elevationPackages, setElevationPackages] = useState<string[]>([]);
   const [progressDetail, setProgressDetail] = useState<string | null>(null);
@@ -265,6 +271,7 @@ export function useTauriBackend() {
     }
     startingRef.current = true;
     portRef.current = null;
+    startTimedOutRef.current = false;
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -384,6 +391,7 @@ export function useTauriBackend() {
     setLogs([]);
     startingRef.current = false;
     portRef.current = null;
+    startTimedOutRef.current = false;
     setCurrentStepIndex(-1);
     setProgressDetail(null);
     setElevationPackages([]);
@@ -548,12 +556,27 @@ export function useTauriBackend() {
 
       register<number>("server-port", (e) => {
         portRef.current = e.payload;
+        // A validated port means startup finished after all, so a later crash is
+        // a real crash and deserves the generic message.
+        startTimedOutRef.current = false;
         setApiBase(e.payload);
       });
 
       register<void>("server-crashed", () => {
         startingRef.current = false;
+        // Startup already timed out and left a message naming the backend's last
+        // output. That is strictly more actionable than this one, and the kill it
+        // reports is the timeout's own consequence, so keep the detail.
+        if (startTimedOutRef.current) return;
         setBackendError("Server stopped unexpectedly");
+      });
+
+      // A backend that hangs never closes stdout, so server-crashed never fires and the
+      // startup screen would otherwise spin forever. Payload carries the backend's tail.
+      register<string>("server-start-timeout", (e) => {
+        startingRef.current = false;
+        startTimedOutRef.current = true;
+        setBackendError(e.payload || "The Unsloth backend did not start in time");
       });
 
       register<string>("server-log", (e) => {

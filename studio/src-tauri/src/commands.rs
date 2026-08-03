@@ -276,9 +276,7 @@ pub async fn check_health(port: u16) -> Result<bool, String> {
 
 async fn check_health_inner(port: u16) -> Result<bool, reqwest::Error> {
     let url = format!("http://127.0.0.1:{}/api/health", port);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()?;
+    let client = crate::loopback_http::client(std::time::Duration::from_secs(2))?;
     let resp = client.get(&url).send().await?;
     let json: serde_json::Value = resp.json().await?;
 

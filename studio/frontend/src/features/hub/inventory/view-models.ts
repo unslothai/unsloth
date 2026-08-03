@@ -166,6 +166,7 @@ export function buildCachedInventoryRow(
     cache_path?: string;
     partial?: boolean;
     partial_transport?: string | null;
+    has_variant_state?: boolean;
     pipeline_tag?: string | null;
     tags?: string[];
     library_name?: string | null;
@@ -224,6 +225,7 @@ export function buildCachedInventoryRow(
         : null,
     partial: row.partial ?? false,
     partialTransport: row.partial_transport ?? null,
+    hasVariantState: row.has_variant_state ?? false,
     pipelineTag: row.pipeline_tag ?? null,
     tags: row.tags,
     libraryName: row.library_name ?? null,
