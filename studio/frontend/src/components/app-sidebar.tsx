@@ -962,6 +962,13 @@ export function AppSidebar() {
             : // Hover room for the kebab only; title keeps one more character.
               // Touch rows clear the full always-visible kebab hit area (pr-10).
               "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-10",
+      // A focused kebab is revealed without hover, so a spinner row reserves the same room.
+      isGenerating &&
+        (variant === "project"
+          ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
+          : isPinned
+            ? "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16"
+            : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-8"),
     );
 
     const isRenamingThis =

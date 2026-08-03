@@ -81,4 +81,13 @@ test("a generating Recents row clears the kebab on hover", async () => {
   for (const pad of pads) {
     assert.ok(pad >= kebabInset, `${pad}px padding, needs ${kebabInset}px to clear the kebab`);
   }
+
+  // focus-visible reveals the kebab without hover, so every spinner row reserves room there too.
+  const focusPads = [...source.matchAll(/:focus-visible\]\/[a-z-]+:pr-([0-9.]+)/g)].map(
+    (m) => Number(m[1]) * TAILWIND_UNIT,
+  );
+  assert.equal(focusPads.length, 3, `expected 3 focus paddings, got ${focusPads.length}`);
+  for (const pad of focusPads) {
+    assert.ok(pad >= kebabInset, `${pad}px focus padding, needs ${kebabInset}px`);
+  }
 });
