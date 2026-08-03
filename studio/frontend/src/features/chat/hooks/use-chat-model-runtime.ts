@@ -632,20 +632,59 @@ export function useChatModelRuntime() {
         }
       }
 
+      // Block queue materialization before taking the cancellation snapshot.
+      // A queue that appears while the dialog is open must not be stopped
+      // without having been included in the user's confirmation.
+      const lifecycleLease = useChatRuntimeStore
+        .getState()
+        .beginModelLoading();
+      if (lifecycleLease === null) {
+        restorePreviousConfig();
+        toast.info("A model is loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
+        return;
+      }
+      loadLifecycleLeaseRef.current = lifecycleLease;
+      const releasePreflightLifecycleLease = () => {
+        if (loadLifecycleLeaseRef.current !== lifecycleLease) {
+          return;
+        }
+        loadLifecycleLeaseRef.current = null;
+        useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
+      };
+
       // Every chat decodes on the llama-server this load replaces, so ask first, then allow the
       // cancel; the 409 gate stays armed for callers that never confirmed.
-      const stopDecision = await confirmStopRunningChatsIfNeeded(
-        forceReload ? "Applying these settings" : "Loading a different model",
-      );
+      let stopDecision: Awaited<
+        ReturnType<typeof confirmStopRunningChatsIfNeeded>
+      >;
+      try {
+        stopDecision = await confirmStopRunningChatsIfNeeded(
+          forceReload ? "Applying these settings" : "Loading a different model",
+        );
+      } catch (error) {
+        releasePreflightLifecycleLease();
+        throw error;
+      }
       if (!stopDecision.proceed) {
+        releasePreflightLifecycleLease();
         if (typeof selection !== "string" && selection.previousConfig) {
           applyPerModelConfigToRuntime(selection.previousConfig);
         }
         return;
       }
-      // Re-check: the confirm above awaits a GET, so a pick in that window would start a rival
-      // load over the same refs. Nothing awaits before the reservation below.
-      if (bailIfLoadInFlight()) return;
+      // Re-check the tracked picker for a load that was already starting when
+      // this lifecycle lease was acquired.
+      try {
+        if (bailIfLoadInFlight()) {
+          releasePreflightLifecycleLease();
+          return;
+        }
+      } catch (error) {
+        releasePreflightLifecycleLease();
+        throw error;
+      }
       const forceCancelActive = stopDecision.forceCancelActive;
 
       const explicitIsLora =
@@ -711,17 +750,6 @@ export function useChatModelRuntime() {
         ggufVariant: ggufVariant ?? null,
         nativePathToken: nativePathToken ?? null,
       };
-      const lifecycleLease = useChatRuntimeStore
-        .getState()
-        .beginModelLoading();
-      if (lifecycleLease === null) {
-        restorePreviousConfig();
-        toast.info("A model is loading", {
-          description: "Wait for it to finish or cancel it first.",
-        });
-        return;
-      }
-      loadLifecycleLeaseRef.current = lifecycleLease;
       setLoadingModel(loadInfo);
       useChatRuntimeStore.getState().setLoadingModelPick(pickOf(loadInfo));
       setLoadProgress(

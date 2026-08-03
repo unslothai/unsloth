@@ -350,21 +350,24 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "complete: discardOldestPendingSettings" in target
     assert "getActivePromptQueueItem(run)?.target.complete()" in THREAD
     assert "notifyPromptQueueRunFailed(resolvedThreadId ?? null)" in CHAT_ADAPTER
-    assert "const adapterRunStartedSignals = new WeakSet<AbortSignal>();" in CHAT_ADAPTER
-    assert CHAT_ADAPTER.count("adapterRunStartedSignals.add(abortSignal);") == 3
-    assert "!adapterRunStartedSignals.has(args.abortSignal)" in CHAT_ADAPTER
-    assert "adapterRunStartedSignals.delete(args.abortSignal);" in CHAT_ADAPTER
+    assert "adapterRunStartedSignals" not in CHAT_ADAPTER
     assert CHAT_ADAPTER.index(
         "const queuedRunWasPending = preStreamThreadIds.some("
     ) < CHAT_ADAPTER.index("yield* adapter.run(args);")
     assert "preStreamThreadIds.some(\n        hasQueuedChatRunSettings," in CHAT_ADAPTER
     assert "pendingSettings.some((entry) => entry.threadIds.has(threadId))" in QUEUED_SETTINGS
-    assert CHAT_ADAPTER.index(
-        "!adapterRunStartedSignals.has(args.abortSignal)"
-    ) < CHAT_ADAPTER.index(
-        "throw error;",
-        CHAT_ADAPTER.index("!adapterRunStartedSignals.has(args.abortSignal)"),
+    queued_run_failure = _between(
+        CHAT_ADAPTER,
+        "const queuedRunWasPending = preStreamThreadIds.some(",
+        "} finally {",
     )
+    assert "queuedRunWasPending && !args.abortSignal.aborted" in queued_run_failure
+    assert queued_run_failure.index("notifyPromptQueueRunFailed(") < queued_run_failure.index(
+        "throw error;"
+    )
+    assert "loadedIsMultimodal: isMultimodalResponse(status)" in lifecycle
+    assert "loadedIsMultimodal: state.loadedIsMultimodal" in CHAT_ADAPTER
+    assert "queuedEmptyModelRuntime?.loadedIsMultimodal" in auto_load_merge
     assert CHAT_ADAPTER.index("const notifyQueuedRunFailed = () =>") < CHAT_ADAPTER.index(
         "if (\n        runtime.deepResearchEnabled"
     )
@@ -388,6 +391,16 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         MODEL_RUNTIME,
         "const ejectModel = useCallback(",
         "return {",
+    )
+    select_model = _between(
+        MODEL_RUNTIME,
+        "const selectModel = useCallback(",
+        "const ejectModel = useCallback(",
+    )
+    assert (
+        select_model.index("beginModelLoading()")
+        < select_model.index("await confirmStopRunningChatsIfNeeded(")
+        < select_model.index("requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds)")
     )
     assert "beginModelLoading()" in eject
     assert "endModelLoading(lifecycleLease)" in eject
@@ -443,6 +456,17 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "localPromptQueueModelBoundary.advance()" in QUEUE_BOUNDARY
     assert "entry.local" in QUEUE_BOUNDARY
     assert "queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
+    persisted_adapter = _between(
+        RUNTIME_PROVIDER,
+        "function createPersistedRunAdapter(",
+        "function useStudioRuntimeAdapters(",
+    )
+    assert "runStartThreadIdsForMessages(options.messages)" in persisted_adapter
+    assert persisted_adapter.index(
+        "requestPromptQueueStop(persistedRunThreadIds)"
+    ) < persisted_adapter.index("notifyPromptQueueRunFailed(")
+    assert "pendingRunStartThreadIdsByMessageId" in RUNTIME_PROVIDER
+    assert "localThreadId," in RUNTIME_PROVIDER
     assert "!runningByThreadId[threadId] && !cancel" in STOP_CHAT_THREAD
     assert "serverCancels.length === 0" in STOP_CHAT_THREAD
     assert "await confirmStopRunningChatsIfNeeded(" in SHARED_COMPOSER

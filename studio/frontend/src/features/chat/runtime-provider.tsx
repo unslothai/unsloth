@@ -61,7 +61,11 @@ import {
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
-import { notifyPromptQueueRunFailed } from "./utils/prompt-queue-boundary";
+import {
+  notifyPromptQueueRunFailed,
+  requestPromptQueueStop,
+  requestTemporaryPromptQueueStop,
+} from "./utils/prompt-queue-boundary";
 import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
@@ -92,7 +96,6 @@ import {
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
-import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
@@ -103,6 +106,7 @@ const pendingRunStartReadyByMessageId = new Map<
   string,
   Promise<string | undefined>
 >();
+const pendingRunStartThreadIdsByMessageId = new Map<string, string[]>();
 
 type TitleResponse = {
   choices?: Array<{
@@ -898,17 +902,44 @@ function trackHistoryAppend(
 function trackRunStartReady(
   messageId: string,
   ready: Promise<string | undefined>,
+  localThreadId: string,
 ): Promise<string | undefined> {
   pendingRunStartReadyByMessageId.set(messageId, ready);
+  pendingRunStartThreadIdsByMessageId.set(messageId, [localThreadId]);
+  ready.then(
+    (remoteId) => {
+      if (
+        remoteId &&
+        pendingRunStartReadyByMessageId.get(messageId) === ready
+      ) {
+        pendingRunStartThreadIdsByMessageId.set(messageId, [
+          ...new Set([localThreadId, remoteId]),
+        ]);
+      }
+    },
+    () => undefined,
+  );
   const cleanup = () => {
     setTimeout(() => {
       if (pendingRunStartReadyByMessageId.get(messageId) === ready) {
         pendingRunStartReadyByMessageId.delete(messageId);
+        pendingRunStartThreadIdsByMessageId.delete(messageId);
       }
     }, 30_000);
   };
   ready.then(cleanup, cleanup);
   return ready;
+}
+
+function runStartThreadIdsForMessages(
+  messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
+): string[] {
+  const userMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  return userMessage
+    ? (pendingRunStartThreadIdsByMessageId.get(userMessage.id) ?? [])
+    : [];
 }
 
 async function waitForRunStartHistoryAppend(
@@ -957,6 +988,13 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
       );
       const reservationToken =
         findPreStreamRunReservation(reservationThreadIds);
+      const persistedRunThreadIds = preStreamRunThreadIdsForRuntime(
+        [
+          ...reservationThreadIds,
+          ...runStartThreadIdsForMessages(options.messages),
+        ],
+        undefined,
+      );
       let adoptedThreadId: string | undefined;
       try {
         adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
@@ -966,9 +1004,11 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
         }
         // Queued runs do not carry a direct-send reservation. Their persisted
         // preflight can still fail before the model adapter consumes the queued
-        // settings, so always notify the owning queue and let it clean up.
+        // settings. Stop matching pending/waiting work as well as an already
+        // dispatched item so a rapid follow-up cannot run after persistence failed.
+        requestPromptQueueStop(persistedRunThreadIds);
         notifyPromptQueueRunFailed(
-          options.unstable_threadId ?? reservationThreadIds[0] ?? null,
+          options.unstable_threadId ?? persistedRunThreadIds[0] ?? null,
         );
         throw error;
       }
@@ -1298,6 +1338,7 @@ function useStudioRuntimeAdapters(
         trackRunStartReady(
           message.id,
           initializeThread.then(({ remoteId }) => remoteId),
+          localThreadId,
         );
         const write = (async () => {
           const { remoteId } = await initializeThread;

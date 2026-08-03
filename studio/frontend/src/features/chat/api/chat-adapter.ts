@@ -272,7 +272,6 @@ type ThreadAutosaveHandle = {
 };
 
 const pendingFirstThreadSaves = new Map<string, Promise<void>>();
-const adapterRunStartedSignals = new WeakSet<AbortSignal>();
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1693,6 +1692,7 @@ type QueuedResolvedModelRuntime = {
   >["reasoningEffortLevels"];
   supportsPreserveThinking: boolean;
   ggufContextLength: number | null;
+  loadedIsMultimodal: boolean;
 };
 
 function queuedResolvedModelFromStore(
@@ -1708,6 +1708,7 @@ function queuedResolvedModelFromStore(
     reasoningEffortLevels: state.reasoningEffortLevels,
     supportsPreserveThinking: state.supportsPreserveThinking,
     ggufContextLength: state.ggufContextLength,
+    loadedIsMultimodal: state.loadedIsMultimodal,
   };
 }
 
@@ -2588,6 +2589,7 @@ async function resolveQueuedEmptyLocalModel(
             ggufContextLength: status.is_gguf
               ? (status.context_length ?? null)
               : null,
+            loadedIsMultimodal: isMultimodalResponse(status),
           },
         };
       }
@@ -2911,7 +2913,6 @@ export function createOpenAIStreamAdapter(
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
         releaseCurrentPreStreamRun();
         runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
-        adapterRunStartedSignals.add(abortSignal);
         let report = "";
         let releaseResearchFollow: (() => void) | null = null;
         const researchFollowController = new AbortController();
@@ -3153,6 +3154,9 @@ export function createOpenAIStreamAdapter(
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.ggufContextLength
                   : liveRuntime.ggufContextLength,
+              loadedIsMultimodal:
+                queuedEmptyModelRuntime?.loadedIsMultimodal ??
+                liveRuntime.loadedIsMultimodal,
             }
         : liveRuntime;
       const { params } = runtime;
@@ -3567,7 +3571,6 @@ export function createOpenAIStreamAdapter(
         runtime.registerThreadServerCancel(threadKey, audioCancel);
         releaseCurrentPreStreamRun();
         runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
-        adapterRunStartedSignals.add(abortSignal);
         try {
           yield {
             content: [{ type: "text" as const, text: "Generating audio..." }],
@@ -3659,7 +3662,6 @@ export function createOpenAIStreamAdapter(
         local: !isExternalRequest,
         owner: serverCancel,
       });
-      adapterRunStartedSignals.add(abortSignal);
       let cumulativeText = "";
       const reasoningDurationTracker = createReasoningDurationTracker();
       // True while wrapping a `delta.reasoning_content` stream in
@@ -5337,17 +5339,13 @@ export function createOpenAIStreamAdapter(
       try {
         yield* adapter.run(args);
       } catch (error) {
-        if (
-          queuedRunWasPending &&
-          !adapterRunStartedSignals.has(args.abortSignal)
-        ) {
+        if (queuedRunWasPending && !args.abortSignal.aborted) {
           notifyPromptQueueRunFailed(
             args.unstable_threadId ?? preStreamThreadIds[0] ?? null,
           );
         }
         throw error;
       } finally {
-        adapterRunStartedSignals.delete(args.abortSignal);
         if (
           reservationToken &&
           releasePreStreamRunReservation(reservationToken)
