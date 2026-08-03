@@ -58,8 +58,25 @@ def pytest_addoption(parser):
 # E2E server fixtures
 
 
+@pytest.fixture(scope = "session", autouse = True)
+def _isolate_xet_health_home(tmp_path_factory):
+    """Point HF_HOME at a temp dir for the whole session, before any server is spawned.
+
+    Session scope is load-bearing: pytest builds higher-scoped fixtures first, so setting HF_HOME
+    from the function-scoped fixture below landed AFTER ``studio_server`` had already snapshotted
+    os.environ into the spawned server's environment, leaving that server reading and rewriting the
+    developer's real unsloth_xet_health.json.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    mp.setenv("HF_HOME", str(tmp_path_factory.mktemp("xet_health_home")))
+    yield
+    mp.undo()
+
+
 @pytest.fixture(autouse = True)
-def _isolate_xet_health_state(tmp_path_factory, monkeypatch):
+def _isolate_xet_health_state():
     """Keep the persisted Xet health verdict out of the developer's real HF home.
 
     The verdict is deliberately sticky across sessions -- two consecutive Xet failures pin a machine
@@ -69,7 +86,6 @@ def _isolate_xet_health_state(tmp_path_factory, monkeypatch):
     happen without the Xet attempt it was asserting. Clean CI runners hide it, developer machines
     do not.
     """
-    monkeypatch.setenv("HF_HOME", str(tmp_path_factory.mktemp("xet_health_home")))
     try:
         from unsloth_zoo import hf_xet_health
     except Exception:  # noqa: BLE001 - degraded unsloth_zoo: nothing to isolate

@@ -636,6 +636,22 @@ def _record_xet_failure(reason: str, logger) -> None:
         logger.debug("could not record Xet outcome: %s", exc)
 
 
+def _repo_bytes_on_disk(repo_type, repo_id: str, cache_dir) -> "Optional[int]":
+    """Bytes present for this repo, or None when unmeasurable.
+
+    Used only to tell an actual Xet transfer from a job that found everything already cached: the
+    worker reports nothing but an exit code, and the .transport marker is written before the
+    transfer starts, so there is no other signal.
+    """
+    try:
+        from utils.hf_xet_fallback import get_hf_download_state
+
+        state = get_hf_download_state([repo_id], repo_type = repo_type, cache_dir = cache_dir)
+    except Exception:  # noqa: BLE001 - a missing measurement must never fail a download
+        return None
+    return None if state is None else int(state[0])
+
+
 def _record_xet_success(logger) -> None:
     """Tell the health tracker a Xet transfer completed here, which resets the failure streak."""
     try:
@@ -727,6 +743,13 @@ def register_worker(
         return False
 
     worker_token = hf_token
+    # getattr, not a direct call: test doubles and older registries do not all implement this.
+    _get_metadata = getattr(registry, "get_job_metadata", None)
+    _metadata = _get_metadata(key) if callable(_get_metadata) else None
+    _cache_dir = getattr(_metadata, "hub_cache", None) if _metadata is not None else None
+    # Sampled before the worker can write anything, so "did this job actually move bytes over Xet"
+    # is answerable when it exits.
+    _bytes_before = _repo_bytes_on_disk(repo_type, repo_id, _cache_dir)
 
     def _watch() -> None:
         stalled: list[str] = []
@@ -781,7 +804,19 @@ def register_worker(
                 # Clear the streak, so "two failures in a row" means in a row. Without this a
                 # stall today and another next week are counted as consecutive despite every
                 # download in between succeeding, pinning Auto to HTTP for no reason.
-                _record_xet_success(logger)
+                #
+                # Only a job that actually moved bytes says anything about Xet's health, though: a
+                # fully cached repo (the UI's re-download action on an up-to-date model) exits 0
+                # without touching the network, and clearing a correctly earned demotion on that
+                # would put a bad machine back on Xet. Unmeasurable means do not clear -- a missed
+                # clear costs one extra streak entry, a wrong clear undoes the demotion.
+                bytes_after = _repo_bytes_on_disk(repo_type, repo_id, _cache_dir)
+                if (
+                    _bytes_before is not None
+                    and bytes_after is not None
+                    and bytes_after > _bytes_before
+                ):
+                    _record_xet_success(logger)
             # XET-to-HTTP recovery: when a non-cancelled XET worker fails and
             # HTTP is available, attempt one automatic retry over HTTP.  The
             # transport check is the recursion guard: an HTTP worker that errors

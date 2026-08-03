@@ -419,25 +419,41 @@ def test_capabilities_probe_is_opt_in(monkeypatch):
         use_xet = False
         reason = "probed: CAS unreachable"
 
-    import utils.hf_xet_fallback as shim
-
     def _fake_health(*, probe = True):
         seen.append(probe)
         return _Health()
 
-    monkeypatch.setattr(shim, "xet_health", _fake_health)
+    # Patch the sys.modules entry, not an imported alias: get_download_transport_capabilities does
+    # a local `from utils.hf_xet_fallback import xet_health`, and test_hf_xet_fallback.py swaps that
+    # sys.modules entry in and out, so an alias captured here can be a different module object.
+    import sys
+    import types
 
-    download_registry.get_download_transport_capabilities()
+    stub = types.ModuleType("utils.hf_xet_fallback")
+    stub.xet_health = _fake_health
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", stub)
+
+    caps = download_registry.get_download_transport_capabilities()
+    if not caps.xet.available:
+        # The health lookup sits behind an hf_xet availability check, so with no hf_xet installed
+        # neither call reaches it. Same guard the neighbouring capability tests use.
+        pytest.skip("hf_xet is not installed in this environment")
     download_registry.get_download_transport_capabilities(probe = True)
 
     assert seen == [False, True]
 
 
 def test_gpu_init_override_is_serialized(monkeypatch):
-    """Concurrent optional-module loads must not leave the process-wide override set.
+    """The optional-module retry must not leak the process-wide GPU-init override.
 
-    Interleaved save/set/restore could otherwise end with UNSLOTH_ZOO_DISABLE_GPU_INIT stuck at 1
-    for the life of the process, and every later worker would inherit it and skip Zoo's GPU init.
+    A leaked UNSLOTH_ZOO_DISABLE_GPU_INIT=1 is inherited by every spawned worker, which then skips
+    Zoo's GPU init for the life of the process.
+
+    Scope of this test, stated honestly: it races the loader against itself, which pins the
+    single-loader path. It does NOT reproduce the cross-loader interleave with _load_shared -- that
+    needs A and B to be inside their env blocks at once, and thread timing would not reproduce it
+    reliably here. That property is instead established by construction: both loaders take the same
+    `_load_lock` around their save/set/restore, so only one can be inside at a time.
     """
     import importlib
     import os
@@ -448,8 +464,7 @@ def test_gpu_init_override_is_serialized(monkeypatch):
     monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
 
     def _always_fail(name):
-        # Widen the race window: without the lock this is where the interleave happens.
-        time.sleep(0.005)
+        time.sleep(0.005)  # widen the window the lock has to close
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(importlib, "import_module", _always_fail)
@@ -458,9 +473,27 @@ def test_gpu_init_override_is_serialized(monkeypatch):
         threading.Thread(target = shim._load_optional, args = ("unsloth_zoo.hf_xet_tuning",))
         for _ in range(8)
     ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
 
     assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" not in os.environ
+
+
+def test_both_loaders_share_one_env_lock():
+    """The cross-loader guarantee, checked structurally rather than by racing threads.
+
+    Two separate locks would each be correct in isolation and still allow the interleave that
+    leaves the override set permanently, so what matters is that it is one lock, not two.
+    """
+    import inspect
+
+    import utils.hf_xet_fallback as shim
+
+    for fn in (shim._load_shared, shim._load_optional):
+        source = inspect.getsource(fn)
+        assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" in source
+        assert "with _load_lock:" in source, (
+            f"{fn.__name__} mutates the GPU-init override outside the shared _load_lock"
+        )

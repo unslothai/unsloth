@@ -40,6 +40,10 @@ DEFAULT_HTTP_STALL_TIMEOUT = 180.0
 _shared: Any = None
 _shared_available: Optional[bool] = None  # None = not yet attempted
 _shared_import_error: Optional[BaseException] = None
+# Guards the memoized _shared_available AND every UNSLOTH_ZOO_DISABLE_GPU_INIT save/set/restore in
+# this module. Both loaders below mutate that one process-wide variable, so they must serialize
+# against each other, not merely against themselves: two locks would still allow A-saves-unset /
+# B-saves-"1" / A-restores-unset / B-restores-"1", leaving it set for the life of the process.
 _load_lock = threading.Lock()
 
 
@@ -94,10 +98,6 @@ def _load_shared() -> bool:
                     _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = _prev_gpu_init
 
 
-# Serializes the GPU-init retry below, which mutates process-wide environment state.
-_OPTIONAL_LOAD_LOCK = threading.Lock()
-
-
 def _load_optional(module_name: str) -> Any:
     """Import an optional shared Xet helper module, or return ``None``.
 
@@ -121,8 +121,9 @@ def _load_optional(module_name: str) -> Any:
     # The retry mutates process-wide state, so it must not run concurrently with itself. Two
     # requests could otherwise interleave save/set/restore -- A saves unset and sets 1, B saves 1,
     # A restores unset, B restores 1 -- and leave UNSLOTH_ZOO_DISABLE_GPU_INIT set for the life of
-    # the process, so every later worker inherits it and skips Zoo's GPU init.
-    with _OPTIONAL_LOAD_LOCK:
+    # the process, so every later worker inherits it and skips Zoo's GPU init. Deliberately the
+    # SAME lock _load_shared holds while it runs its own copy of this sequence.
+    with _load_lock:
         previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
         _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
         try:
