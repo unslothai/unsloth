@@ -519,7 +519,9 @@ function ExpandChevron({ open }: { open: boolean }) {
   return (
     <span
       aria-hidden="true"
-      className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/60"
+      // The chevron's glyph is wider than the dots menu's, so on its own at the
+      // end of a row it needs a nudge left to sit under it.
+      className="flex size-5 shrink-0 items-center justify-center text-muted-foreground/60 last:mr-1"
     >
       {open ? (
         <ChevronDownIcon className="size-3" />
