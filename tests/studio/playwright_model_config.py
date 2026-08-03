@@ -397,26 +397,28 @@ with sync_playwright() as p:
                 row = popover.locator("[data-model-picker-option]", has_text = hint).first
         return row if _count(row) else None
 
-    def find_gear(
-        popover,
-        hint,
-        tries = 6,
-    ):
+    # `i`: find_on_device_row matches with has_text, which is case-insensitive,
+    # so without it the two disagree on a hint whose case differs from the repo id
+    # -- and STUDIO_MODEL_HINT is an env var. The row would be found, the gear
+    # missed, and the fallback below would then click a row that loads.
+    GEAR = 'button[aria-label^="Inference settings for" i][aria-label*="{h}" i]'
+
+    def find_gear(scope, hint, timeout = 3000):
         # data-model-picker-option sits on the row button; the gear is its
         # sibling, so it cannot be reached through the row. Match it by the model
         # its own label names, which also keeps this from pressing the gear of
         # whichever row happens to come first.
         #
-        # Polled rather than read once: a row waiting on its sole-quant probe
-        # renders with no gear at all for a moment, and a single miss there would
-        # read as "this model has no run-settings".
-        sel = f'button[aria-label^="Inference settings for"][aria-label*="{hint}"]'
-        for _ in range(tries):
-            gear = popover.locator(sel).first
-            if _count(gear):
-                return gear
-            page.wait_for_timeout(500)
-        return None
+        # Waited for rather than read once: a row still resolving its sole-quant
+        # probe renders with no gear at all for a moment, and a single miss there
+        # would read as "this model has no run-settings". wait_for returns as soon
+        # as it mounts rather than sleeping out a fixed poll.
+        gear = scope.locator(GEAR.format(h = hint)).first
+        try:
+            gear.wait_for(state = "attached", timeout = timeout)
+        except Exception:
+            return None
+        return gear
 
     def open_config(popover, hint):
         row = find_on_device_row(popover, hint)
@@ -424,14 +426,20 @@ with sync_playwright() as p:
             return None
         gear = find_gear(popover, hint)
         if gear is None:
-            # No gear on the row itself means this is a multi-quant parent, which
-            # mounts one per variant only once expanded. Clicking it is safe here
-            # and only here: the parent's onClick is toggleGgufExpanded, while the
-            # collapsed single-quant row -- the one that loads and closes the
-            # picker -- is exactly the row that already had a gear above.
+            # No gear beside the row means a multi-quant parent, which mounts one
+            # per variant only once expanded. Clicking is safe here and only here:
+            # every gearless row in this section expands rather than loads, while
+            # the collapsed single-quant row -- the one that loads and closes the
+            # picker -- is exactly the row that already had a gear above. So the
+            # absence of a gear is itself what makes this click safe.
             row.click()
             page.wait_for_timeout(800)
-            gear = find_gear(popover, hint)
+            # Scoped to this row's group first: after expanding, every variant
+            # mounts a gear and all of them carry the repo id, so `.first` over
+            # the whole popover would configure an arbitrary quant, possibly one
+            # that is not even downloaded.
+            group = row.locator("xpath=ancestor::div[1]")
+            gear = find_gear(group, hint, timeout = 2000) or find_gear(popover, hint)
         if gear is None:
             return None
         gear.click()
