@@ -11,27 +11,35 @@ import { cn } from "@/lib/utils";
 function Progress({
   className,
   indicatorClassName,
+  indeterminate = false,
   value,
   ...props
 }: React.ComponentProps<typeof ProgressPrimitive.Root> & {
   indicatorClassName?: string;
+  indeterminate?: boolean;
 }) {
   return (
     <ProgressPrimitive.Root
+      {...props}
       data-slot="progress"
       className={cn(
         "bg-foreground/[0.06] h-3 rounded-4xl relative flex w-full items-center overflow-x-hidden",
         className,
       )}
-      {...props}
+      value={indeterminate ? undefined : value}
     >
       <ProgressPrimitive.Indicator
         data-slot="progress-indicator"
         className={cn(
           "bg-control-accent size-full flex-1 transition-all",
+          indeterminate && "w-1/3 flex-none loading-bar-slide",
           indicatorClassName,
         )}
-        style={{ transform: `translateX(-${100 - (value || 0)}%)` }}
+        style={
+          indeterminate
+            ? undefined
+            : { transform: `translateX(-${100 - (value || 0)}%)` }
+        }
       />
     </ProgressPrimitive.Root>
   );

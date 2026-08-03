@@ -15,9 +15,13 @@ from loggers import get_logger
 
 from hub.services import resolve_destructive_repo_ids
 from hub.services.datasets import downloads
+from hub.services.datasets.local import DATA_EXTS
 from hub.utils import download_manifest
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.dataset_cache import hf_datasets_cache_roots
+from hub.utils.dataset_cache import (
+    dataset_snapshot_from_cache_path,
+    hf_datasets_cache_roots,
+)
 from hub.utils.dataset_processed_cache import (
     app_processed_dataset_cache_from_path,
     delete_app_processed_dataset_caches,
@@ -106,6 +110,21 @@ def _hub_dataset_snapshot_count(path: Path) -> int:
         return 0
 
 
+def _raw_dataset_cache_has_data(repo_id: str, cache_path: Path) -> bool:
+    snapshot = dataset_snapshot_from_cache_path(str(cache_path), repo_id)
+    if snapshot is None:
+        return False
+    try:
+        for directory, dirnames, filenames in os.walk(snapshot, followlinks = False):
+            base = Path(directory)
+            dirnames[:] = [name for name in dirnames if not (base / name).is_symlink()]
+            if any(filename.lower().endswith(DATA_EXTS) for filename in filenames):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _scan_hub_dataset_cache_dirs() -> list[dict]:
     """Fallback scanner: ``scan_cache_dir()`` skips repos when one cache entry is partially corrupt, so this keeps On Device matching disk."""
     seen_lower: dict[str, dict] = {}
@@ -125,9 +144,11 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                 continue
             key = repo_id.lower()
             existing = seen_lower.get(key)
-            snapshot_partial = _hub_dataset_snapshot_count(
-                entry
-            ) == 0 or hf_cache_scan.is_snapshot_partial("dataset", repo_id, entry)
+            snapshot_partial = (
+                _hub_dataset_snapshot_count(entry) == 0
+                or hf_cache_scan.is_snapshot_partial("dataset", repo_id, entry)
+                or not _raw_dataset_cache_has_data(repo_id, entry)
+            )
             row = {
                 "repo_id": repo_id,
                 "size_bytes": size_bytes,
@@ -256,10 +277,12 @@ def _scan_app_processed_dataset_caches() -> list[dict]:
                 "processed_cache": True,
                 "app_processed_cache": True,
                 "app_processed_hub_cache": str(entry.hub_cache),
-                "partial": True,
+                "partial": not entry.complete,
             }
         else:
             existing["size_bytes"] += size_bytes
+            if entry.complete:
+                existing["partial"] = False
     return sorted(
         grouped.values(),
         key = lambda row: (row["repo_id"].casefold(), row["app_processed_hub_cache"]),
@@ -295,7 +318,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
                     "dataset",
                     repo_info.repo_id,
                     cache_dir,
-                )
+                ) or not _raw_dataset_cache_has_data(repo_info.repo_id, cache_dir)
                 row = {
                     "repo_id": repo_info.repo_id,
                     "size_bytes": total_size,
@@ -345,6 +368,9 @@ def _scan_hf_dataset_caches() -> list[dict]:
         key = row["repo_id"].lower()
         existing = seen_lower.get(key)
         if existing is None:
+            # an app cache needs its source snapshot to reconstruct the dataset.
+            # keep orphaned entries out of the selectable on-device inventory.
+            row["partial"] = True
             seen_lower[key] = row
             continue
         raw_hub_cache = _raw_row_hub_cache(existing)
@@ -358,6 +384,9 @@ def _scan_hf_dataset_caches() -> list[dict]:
             )
             existing["processed_cache"] = True
             existing["app_processed_cache"] = True
+            if not row.get("partial"):
+                existing["partial"] = False
+                existing["partial_transport"] = None
     logger.info(
         "Cached dataset scan: roots=%d inspected=%d returned=%d",
         len(seen_roots) or len(scans),

@@ -1756,6 +1756,7 @@ export const ptBR = {
     },
     trainingStart: {
       ready: "Pronto",
+      downloadedStatus: "Baixado",
       downloading: "Baixando",
       preparing: "Preparando",
       left: "restam {eta}",

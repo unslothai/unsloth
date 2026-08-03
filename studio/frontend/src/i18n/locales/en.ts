@@ -1751,6 +1751,7 @@ export const en = {
     },
     trainingStart: {
       ready: "Ready",
+      downloadedStatus: "Downloaded",
       downloading: "Downloading",
       preparing: "Preparing",
       left: "{eta} left",

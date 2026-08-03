@@ -17,6 +17,7 @@ type CheckDatasetFormatArgs = {
   isVlm?: boolean;
   preferLocalCache?: boolean;
   localPath?: string | null;
+  signal?: AbortSignal;
 };
 
 class DatasetFormatError extends Error {
@@ -59,9 +60,11 @@ export async function checkDatasetFormat({
   isVlm,
   preferLocalCache,
   localPath,
+  signal,
 }: CheckDatasetFormatArgs): Promise<CheckFormatResponse> {
   const res = await authFetch("/api/hub/datasets/check-format", {
     method: "POST",
+    signal,
     headers: {
       "Content-Type": "application/json",
       ...hubTokenHeader(hfToken),

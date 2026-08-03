@@ -357,7 +357,7 @@ export function DatasetPreviewDialog({
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
 
     checkDatasetFormat({
       datasetName: previewRequest.datasetName,
@@ -367,9 +367,10 @@ export function DatasetPreviewDialog({
       isVlm: previewRequest.isVlm,
       preferLocalCache: previewRequest.preferLocalCache,
       localPath: previewRequest.localPath,
+      signal: controller.signal,
     })
       .then((res) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setPreviewResult({
             requestKey: previewRequest.requestKey,
             data: res,
@@ -378,7 +379,7 @@ export function DatasetPreviewDialog({
         }
       })
       .catch((err) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setPreviewResult({
             requestKey: previewRequest.requestKey,
             data: null,
@@ -389,7 +390,7 @@ export function DatasetPreviewDialog({
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [previewRequest]);
 

@@ -1805,6 +1805,7 @@ export const de = {
     },
     trainingStart: {
       ready: "Bereit",
+      downloadedStatus: "Heruntergeladen",
       downloading: "Wird heruntergeladen",
       preparing: "Wird vorbereitet",
       left: "{eta} verbleibend",

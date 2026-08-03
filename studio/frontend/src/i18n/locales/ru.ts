@@ -1759,6 +1759,7 @@ export const ru = {
     },
     trainingStart: {
       ready: "Готово",
+      downloadedStatus: "Скачано",
       downloading: "Загрузка",
       preparing: "Подготовка",
       left: "осталось {eta}",

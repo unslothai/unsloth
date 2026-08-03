@@ -536,6 +536,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           preferLocalCache,
           localPath:
             isHfSelection && preferLocalCache ? state.datasetLocalPath : null,
+          signal: controller.signal,
         })
           .then((res) => {
             if (controller.signal.aborted) return;

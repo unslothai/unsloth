@@ -27,11 +27,24 @@ import {
 import { useTransferStats } from "@/features/chat/hooks/use-transfer-stats";
 import { formatEta, formatRate } from "@/features/chat/utils/format-transfer";
 import {
+  coerceCachedStateReady,
+  downloadStateFromProgress,
+  EMPTY_DOWNLOAD_STATE,
+  isDownloadComplete,
+  parsePreparationProgress,
+  shouldShowPreparationStatus,
+  type DownloadState,
+  type PreparationProgress,
+} from "./training-start-progress";
+import {
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import {
+  Cancel01Icon,
+  CheckmarkCircle02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, type ReactElement } from "react";
 import { useT } from "@/i18n";
@@ -57,42 +70,12 @@ function formatCachePath(path: string): string {
     .replace(/^[A-Za-z]:[/\\]Users[/\\][^/\\]+/, "~");
 }
 
-type DownloadState = {
-  downloadedBytes: number;
-  totalBytes: number;
-  percent: number;
-  cachePath: string | null;
-};
-
-const EMPTY_DOWNLOAD_STATE: DownloadState = {
-  downloadedBytes: 0,
-  totalBytes: 0,
-  percent: 0,
-  cachePath: null,
-};
-
-function coerceCachedStateReady(state: DownloadState): DownloadState {
-  if (!state.cachePath) return state;
-  if (state.downloadedBytes > 0 && state.percent < 100) return state;
-  const totalBytes =
-    state.totalBytes > 0 ? state.totalBytes : state.downloadedBytes;
-  if (totalBytes <= 0) {
-    return { ...state, percent: 100 };
-  }
-  return {
-    ...state,
-    downloadedBytes: totalBytes,
-    totalBytes,
-    percent: 100,
-  };
-}
-
 type Fetcher = (repoId: string) => Promise<DownloadProgressResponse>;
 
 /**
- * Polls a HF repo's download progress on a 1.5s tick. Serves both model weights
- * and dataset blobs by swapping the fetcher. Stops once `progress >= 1.0`; the
- * bar freezes at the final value rather than disappearing, matching chat flow.
+ * polls a HF repo's download progress on a 1.5s tick. Serves both model weights
+ * and dataset blobs by swapping the fetcher. Stops once the backend verifies
+ * the snapshot on disk.
  */
 function useHfDownloadProgress(
   repoId: string | null,
@@ -126,18 +109,9 @@ function useHfDownloadProgress(
       try {
         const prog = await fetcher(repoId);
         if (cancelled) return;
-        const downloaded = prog.downloaded_bytes ?? 0;
-        const total = prog.expected_bytes ?? 0;
-        const ratio = prog.progress ?? 0;
-        const pct =
-          total > 0 ? Math.min(100, Math.round(ratio * 100)) : 0;
-        setState({
-          downloadedBytes: downloaded,
-          totalBytes: total,
-          percent: pct,
-          cachePath: prog.cache_path ?? null,
-        });
-        if (ratio >= 1.0) {
+        const nextState = downloadStateFromProgress(prog);
+        setState(nextState);
+        if (nextState.completeOnDisk) {
           finished = true;
           if (interval) {
             clearInterval(interval);
@@ -181,9 +155,9 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
   const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
 
   if (state.downloadedBytes <= 0 && !state.cachePath) return null;
-  const isComplete = state.totalBytes > 0 && state.percent >= 100;
+  const isComplete = isDownloadComplete(state);
   const statusLabel = isComplete
-    ? t("studio.trainingStart.ready")
+    ? t("studio.trainingStart.downloadedStatus")
     : state.totalBytes > 0
       ? t("studio.trainingStart.downloading")
       : state.downloadedBytes === 0
@@ -207,6 +181,13 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
     <div className="flex flex-col gap-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
+          {isComplete ? (
+            <HugeiconsIcon
+              icon={CheckmarkCircle02Icon}
+              className="size-4 text-emerald-500"
+              strokeWidth={2.25}
+            />
+          ) : null}
           <span className="text-xs text-foreground/90">{label}</span>
           {statusLabel ? (
             <span
@@ -217,7 +198,7 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
           ) : null}
         </div>
         <span className="text-xs tabular-nums text-muted-foreground">
-          {state.totalBytes > 0 ? `${state.percent}%` : ""}
+          {!isComplete && state.totalBytes > 0 ? `${state.percent}%` : ""}
         </span>
       </div>
       {sizeLabel ? (
@@ -225,7 +206,7 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
           {sizeLabel}
         </div>
       ) : null}
-      {state.totalBytes > 0 ? (
+      {state.totalBytes > 0 && !isComplete ? (
         <Progress
           value={state.percent}
           indicatorClassName="bg-[linear-gradient(90deg,var(--control-accent)_0%,color-mix(in_oklab,var(--control-accent)_72%,white)_100%)]"
@@ -239,6 +220,39 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
           {formatCachePath(state.cachePath)}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function PreparationRow({ progress }: { progress: PreparationProgress }): ReactElement {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
+      <div className="flex items-center justify-between gap-3">
+        <span className="truncate text-xs text-foreground/90" title={progress.title}>
+          {progress.title}
+        </span>
+        {progress.percent !== null ? (
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {Math.round(progress.percent)}%
+          </span>
+        ) : null}
+      </div>
+      {progress.detail ? (
+        <div className="text-ui-11 tabular-nums text-muted-foreground">
+          {progress.detail}
+        </div>
+      ) : null}
+      {progress.percent !== null ? (
+        <Progress
+          value={progress.percent}
+          indicatorClassName="bg-[linear-gradient(90deg,var(--control-accent)_0%,color-mix(in_oklab,var(--control-accent)_72%,white)_100%)]"
+        />
+      ) : (
+        <Progress
+          indeterminate
+          indicatorClassName="bg-[linear-gradient(90deg,var(--control-accent)_0%,color-mix(in_oklab,var(--control-accent)_72%,white)_100%)]"
+        />
+      )}
     </div>
   );
 }
@@ -284,6 +298,11 @@ export function TrainingStartOverlay({
     : useConfiguredResources
       ? hfDatasetName
       : null;
+  const showPreparationStatus = shouldShowPreparationStatus(
+    phase,
+    currentStep,
+    isStarting,
+  );
   const displayMessage =
     startFromResume && !isDownloadPhase && /^download/i.test(message)
       ? t("studio.trainingStart.resumingTraining")
@@ -292,10 +311,14 @@ export function TrainingStartOverlay({
   const rawDatasetDownload = useDatasetDownloadProgress(datasetName);
   const modelDownload = isDownloadPhase
     ? rawModelDownload
-    : coerceCachedStateReady(rawModelDownload);
+    : coerceCachedStateReady(rawModelDownload, showPreparationStatus);
   const datasetDownload = isDownloadPhase
     ? rawDatasetDownload
-    : coerceCachedStateReady(rawDatasetDownload);
+    : coerceCachedStateReady(rawDatasetDownload, showPreparationStatus);
+  const preparationProgress = parsePreparationProgress(
+    displayMessage,
+    t("studio.trainingStart.preparing"),
+  );
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelRequested, setCancelRequested] = useState(false);
 
@@ -402,6 +425,11 @@ export function TrainingStartOverlay({
                 label={t("studio.trainingStart.modelWeights")}
                 state={modelDownload}
               />
+            </AnimatedSpan>
+          ) : null}
+          {showPreparationStatus ? (
+            <AnimatedSpan className="mt-3">
+              <PreparationRow progress={preparationProgress} />
             </AnimatedSpan>
           ) : null}
           </Terminal>

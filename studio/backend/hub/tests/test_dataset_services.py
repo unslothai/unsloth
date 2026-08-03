@@ -60,6 +60,7 @@ def test_dataset_cache_scan_merges_raw_and_processed_rows(monkeypatch):
         "is_snapshot_partial",
         lambda _repo_type, _repo_id, _cache_dir: False,
     )
+    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: True)
     monkeypatch.setattr(
         cache_inventory,
         "_scan_hub_dataset_cache_dirs",
@@ -105,6 +106,7 @@ def test_dataset_cache_scan_attaches_app_bytes_without_replacing_raw_path(monkey
         "is_snapshot_partial",
         lambda *_args, **_kwargs: False,
     )
+    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: True)
     monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
     monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
     monkeypatch.setattr(
@@ -158,6 +160,78 @@ def test_app_processed_cache_without_raw_snapshot_is_partial(monkeypatch):
     )
 
     assert cache_inventory._scan_hf_dataset_caches() == [app_row]
+
+
+def test_metadata_only_dataset_cache_is_partial(monkeypatch):
+    raw_repo = SimpleNamespace(
+        repo_id = "Org/Data",
+        repo_type = "dataset",
+        repo_path = "/cache/hub/datasets--Org--Data",
+        size_on_disk = 100,
+        revisions = [SimpleNamespace(files = [], commit_hash = "abc")],
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "_collect_hf_cache_scans",
+        lambda: ([SimpleNamespace(repos = [raw_repo])], {"/cache/hub"}),
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: False)
+    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+    monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
+    monkeypatch.setattr(cache_inventory, "_scan_app_processed_dataset_caches", lambda: [])
+
+    rows = cache_inventory._scan_hf_dataset_caches()
+
+    assert len(rows) == 1
+    assert rows[0]["partial"] is True
+
+
+def test_complete_app_cache_makes_metadata_only_snapshot_usable(monkeypatch):
+    raw_repo = SimpleNamespace(
+        repo_id = "Org/Data",
+        repo_type = "dataset",
+        repo_path = "/cache/hub/datasets--Org--Data",
+        size_on_disk = 100,
+        revisions = [SimpleNamespace(files = [], commit_hash = "abc")],
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "_collect_hf_cache_scans",
+        lambda: ([SimpleNamespace(repos = [raw_repo])], {"/cache/hub"}),
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: False)
+    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+    monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
+    monkeypatch.setattr(
+        cache_inventory,
+        "_scan_app_processed_dataset_caches",
+        lambda: [
+            {
+                "repo_id": "org/data",
+                "size_bytes": 40,
+                "cache_path": "/app/entry",
+                "processed_cache": True,
+                "app_processed_cache": True,
+                "app_processed_hub_cache": "/cache/hub",
+                "partial": False,
+            }
+        ],
+    )
+
+    rows = cache_inventory._scan_hf_dataset_caches()
+
+    assert len(rows) == 1
+    assert rows[0]["partial"] is False
 
 
 def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_path):

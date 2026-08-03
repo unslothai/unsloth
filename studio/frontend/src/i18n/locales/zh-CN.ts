@@ -1673,6 +1673,7 @@ export const zhCN = {
     },
     trainingStart: {
       ready: "就绪",
+      downloadedStatus: "已下载",
       downloading: "下载中",
       preparing: "准备中",
       left: "剩余 {eta}",

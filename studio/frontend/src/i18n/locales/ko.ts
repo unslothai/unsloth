@@ -1741,6 +1741,7 @@ export const ko = {
     },
     trainingStart: {
       ready: "준비됨",
+      downloadedStatus: "다운로드됨",
       downloading: "다운로드 중",
       preparing: "준비 중",
       left: "{eta} 남음",

@@ -1747,6 +1747,7 @@ export const hi = {
     },
     trainingStart: {
       ready: "तैयार",
+      downloadedStatus: "डाउनलोड हो चुका",
       downloading: "डाउनलोड हो रहा है",
       preparing: "तैयार हो रहा है",
       left: "{eta} शेष",

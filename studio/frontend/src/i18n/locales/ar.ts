@@ -1740,6 +1740,7 @@ export const ar = {
     },
     trainingStart: {
       ready: "جاهز",
+      downloadedStatus: "تم التنزيل",
       downloading: "جارٍ التنزيل",
       preparing: "جارٍ التحضير",
       left: "{eta} متبقٍ",

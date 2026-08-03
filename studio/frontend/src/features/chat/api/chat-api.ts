@@ -389,6 +389,10 @@ export async function getGgufDownloadProgress(
 
 export interface DownloadProgressResponse {
   downloaded_bytes: number;
+  /** bytes verified as complete by the backend snapshot check. */
+  completed_bytes?: number;
+  /** true only after the snapshot manifest and blobs are usable on disk. */
+  complete_on_disk?: boolean;
   expected_bytes: number;
   progress: number;
   /**

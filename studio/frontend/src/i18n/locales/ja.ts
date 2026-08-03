@@ -1680,6 +1680,7 @@ export const ja = {
     },
     trainingStart: {
       ready: "準備完了",
+      downloadedStatus: "ダウンロード済み",
       downloading: "ダウンロード中",
       preparing: "準備中",
       left: "残り {eta}",
