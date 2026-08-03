@@ -10592,24 +10592,26 @@ class LlamaCppBackend:
         self._diffusion_requested_ngl = None
         if self._process is None:
             return
-        # Not every _process is a Popen. Tests stand one in to mean "a server is
-        # loaded" without spawning anything, and a backend torn down mid-start can
-        # hold whatever __init__ got as far as. Terminating what cannot be
-        # terminated is not an error worth reporting -- the state still has to be
-        # cleared either way, which the finally below does.
-        if not hasattr(self._process, "terminate"):
+        # Not every _process is a Popen: tests stand one in to mean "a server is
+        # loaded" without spawning anything. Terminating what cannot be terminated
+        # is not an error worth reporting, but everything else still has to happen,
+        # so this skips only the signalling and falls through to the finally rather
+        # than returning early and duplicating part of it.
+        terminable = hasattr(self._process, "terminate")
+        if not terminable:
             logger.debug("no terminable llama-server process to kill; clearing state")
-            self._process = None
-            self._clear_server_pid()
-            self._healthy = False
-            return
         try:
-            self._process.terminate()
-            self._process.wait(timeout = 5)
+            if terminable:
+                self._process.terminate()
+                self._process.wait(timeout = 5)
         except subprocess.TimeoutExpired:
-            logger.warning("llama-server did not exit on SIGTERM, sending SIGKILL")
+            # Signal first, report after. logger here is a structlog PrintLogger
+            # writing straight to stdout, so a closed stream raises out of the
+            # warning; doing it first meant SIGKILL was skipped and the server
+            # left running with the reference about to be dropped below.
             self._process.kill()
             self._process.wait(timeout = 5)
+            logger.warning("llama-server did not exit on SIGTERM, sent SIGKILL")
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
@@ -11022,11 +11024,16 @@ class LlamaCppBackend:
 
         Nothing here may report a failure through the logging machinery. By the
         time atexit runs, the streams the handlers write to can already be closed,
-        and logging then prints its own traceback about that on top of whatever it
-        was trying to say -- so a warning about a kill that did not work turns into
-        several unrelated tracebacks after the test summary, which is how this was
-        found. raiseExceptions is the switch logging provides for exactly this, and
-        the process is ending, so restoring it is a formality rather than a need.
+        and a write then fails -- which is how this was found, as several unrelated
+        tracebacks printed after the test summary.
+
+        Two different mechanisms, because there are two kinds of logger in play.
+        This module's own logger is a structlog PrintLogger writing straight to
+        stdout (loggers/config.py), which has no error handling of its own and does
+        not consult raiseExceptions at all, so only the except below covers it.
+        raiseExceptions covers the stdlib loggers other libraries install, which
+        report a broken handler by printing their own traceback instead of raising.
+        Neither one alone is enough.
         """
         raise_exceptions = logging.raiseExceptions
         logging.raiseExceptions = False

@@ -13,6 +13,7 @@ which is how this was found, by them burying the summary line.
 import io
 import logging
 import os
+import subprocess
 import sys
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
@@ -74,30 +75,94 @@ def test_a_process_that_cannot_be_terminated_is_not_an_error(monkeypatch):
     assert recorder.warnings == [], f"warned about a non-process: {recorder.warnings}"
 
 
-def test_the_atexit_handler_writes_nothing_to_a_closed_stream(monkeypatch, capsys):
-    """The failure mode itself: a handler whose stream has gone, which is the state
-    the interpreter leaves them in by the time atexit runs."""
+class _RaisingLogger:
+    """A logger whose writes fail, like the real one once stdout is closed.
+
+    The module logger is a structlog PrintLogger writing straight to stdout, so a
+    closed stream raises ValueError out of the call. Deliberately not a stdlib
+    logger: that reports a broken handler by printing its own traceback rather
+    than raising, so a stdlib stand-in exercises raiseExceptions and proves
+    nothing about the path this module actually takes.
+    """
+
+    def __getattr__(self, name):
+        def boom(*a, **k):
+            raise ValueError("I/O operation on closed file")
+        return boom
+
+
+def test_a_logger_that_raises_does_not_escape_the_atexit_handler(monkeypatch):
+    from core.inference import llama_cpp as mod
+
+    monkeypatch.setattr(mod, "logger", _RaisingLogger())
+    backend = _stub()
+    backend._process = _Unterminable()
+
+    backend._cleanup()
+
+
+def test_the_atexit_handler_quiets_stdlib_loggers_too(monkeypatch, capsys):
+    """Other libraries install stdlib loggers that fire during teardown, and those
+    print their own traceback about a closed handler rather than raising, so the
+    except above never sees them."""
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     stream.close()
+    other = logging.getLogger("unsloth-atexit-test-stdlib")
+    other.addHandler(handler)
+    other.propagate = False
 
     from core.inference import llama_cpp as mod
 
-    monkeypatch.setattr(mod, "logger", logging.getLogger("unsloth-atexit-test"))
-    mod.logger.addHandler(handler)
-    mod.logger.propagate = False
+    def kill_and_log():
+        other.warning("something a dependency logs at exit")
+
+    backend = _stub()
+    monkeypatch.setattr(backend, "_kill_process", kill_and_log)
     try:
-        backend = _stub()
-        backend._process = _Unterminable()
-
         backend._cleanup()
-
-        # Logging reports a broken handler by printing to stderr itself, so that
-        # is where the noise lands rather than in caplog.
         assert capsys.readouterr().err == ""
     finally:
-        mod.logger.removeHandler(handler)
-        mod.logger.propagate = True
+        other.removeHandler(handler)
+        other.propagate = True
+
+
+class _StubbornProcess:
+    """A llama-server that ignores SIGTERM, which is what SIGKILL is for."""
+
+    def __init__(self):
+        self.killed = False
+
+    def terminate(self):
+        pass
+
+    def wait(self, timeout = None):
+        if not self.killed:
+            raise subprocess.TimeoutExpired("llama-server", timeout)
+
+    def kill(self):
+        self.killed = True
+
+
+def test_sigkill_still_happens_when_the_log_write_fails(monkeypatch):
+    """The escalation must not depend on a log write succeeding. logger here is a
+    structlog PrintLogger straight to stdout, so a closed stream raises out of the
+    warning, and reporting first meant the kill was skipped while the finally
+    dropped the last reference to the process -- leaving the server running with
+    nothing left to kill it."""
+    from core.inference import llama_cpp as mod
+
+    monkeypatch.setattr(mod, "logger", _RaisingLogger())
+    backend = _stub()
+    proc = _StubbornProcess()
+    backend._process = proc
+
+    try:
+        backend._kill_process()
+    except ValueError:
+        pass  # the write still fails; what matters is that it failed after the kill
+
+    assert proc.killed, "SIGKILL was skipped because the warning raised first"
 
 
 def test_the_handler_leaves_raise_exceptions_as_it_found_it(monkeypatch):
