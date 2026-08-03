@@ -235,9 +235,7 @@ _TTS_MARKUP_BY_CODEC = {
     # 992-995): a pasted opener is counted as audio with none behind it and the EOS ends the
     # spoken text early. The processor is called with add_special_tokens = True, so the
     # document boundaries it adds are forgeable from the text as well (#7066).
-    "csm": re.compile(
-        r"\[(?=\d+\])|<(?=\|(?:AUDIO|audio_eos|begin_of_text|end_of_text)\|>)"
-    ),
+    "csm": re.compile(r"\[(?=\d+\])|<(?=\|(?:AUDIO|audio_eos|begin_of_text|end_of_text)\|>)"),
 }
 # An unrecognised codec gets the union: still far narrower than the chat sweep, but it does
 # not assume a prompt shape this module has not seen.
