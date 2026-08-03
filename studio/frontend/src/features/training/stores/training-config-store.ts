@@ -10,7 +10,7 @@ import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
 import { toast } from "sonner";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { checkDatasetFormat } from "../api/datasets-api";
+import { checkDatasetFormat, DatasetFormatError } from "../api/datasets-api";
 import { checkVisionModel, getModelConfig } from "../api/models-api";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
@@ -516,8 +516,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
             set(updates);
           })
-          .catch(() => {
+          .catch((error: unknown) => {
             if (controller.signal.aborted) return;
+            // A deleted upload stays selected forever otherwise, re-failing on
+            // every visit.
+            if (error instanceof DatasetFormatError && error.status === 404) {
+              if (get().dataset === datasetName) {
+                get().setDataset("");
+                toast.error(error.message);
+              }
+              return;
+            }
             set({ isDatasetImage: null, isCheckingDataset: false });
           });
       };
