@@ -157,7 +157,6 @@ def _xet_loader_barrier() -> Iterator[None]:
     """Block while a Xet shim loader holds its process-wide env override. Never fails a spawn."""
     try:
         from utils.hf_xet_fallback import env_override_barrier
-
         barrier = env_override_barrier()
     except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend on it
         yield

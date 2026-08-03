@@ -73,7 +73,7 @@ def _load_shared() -> bool:
             global _gpu_init_override_depth
             _prev_gpu_init = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
             _ours = _prev_gpu_init != "1"
-            _gpu_init_override_depth += _ours       # claimed before the write, released after
+            _gpu_init_override_depth += _ours  # claimed before the write, released after
             _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
             try:
                 import unsloth_zoo.hf_xet_fallback as shared
