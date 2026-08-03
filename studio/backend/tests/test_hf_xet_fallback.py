@@ -363,6 +363,65 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
             sys.modules["utils.hf_xet_fallback"] = saved_shim
 
 
+def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_override(monkeypatch):
+    """The shim sets UNSLOTH_ZOO_DISABLE_GPU_INIT=1 process-wide while it retries an optional
+    import. unsloth_zoo answers that flag by installing STUB triton and bitsandbytes modules, so a
+    training or inference child that inherited it would run its whole life against no-ops -- and
+    unlike the parent it never clears it. Any child spawned in that window must be handed an
+    environment without it."""
+    import importlib
+    import os
+
+    from utils.child_stdio import utf8_child_env
+
+    monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
+    child_envs = []
+
+    class _SpawnsAWorkerMidImport:
+        def find_spec(self, name, path = None, target = None):
+            if name == "unsloth_zoo":
+                # A concurrent request lands mid-retry and spawns its worker right here.
+                child_envs.append(utf8_child_env())
+                raise NotImplementedError("Unsloth cannot find any torch accelerator")
+            return None
+
+    finder = _SpawnsAWorkerMidImport()
+    saved = {
+        k: v
+        for k, v in list(sys.modules.items())
+        if k == "unsloth_zoo" or k.startswith("unsloth_zoo.")
+    }
+    for k in saved:
+        del sys.modules[k]
+    saved_shim = sys.modules.pop("utils.hf_xet_fallback", None)
+    sys.meta_path.insert(0, finder)
+    try:
+        shim = importlib.import_module("utils.hf_xet_fallback")
+        shim.DownloadStallError  # drives the load: plain attempt, then the retry
+        assert len(child_envs) == 2, child_envs
+        # The retry is the attempt that sets it; neither child may see it.
+        assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
+        for env in child_envs:
+            assert "UNSLOTH_ZOO_DISABLE_GPU_INIT" not in env, env
+            assert env["PYTHONIOENCODING"] == "utf-8"
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("utils.hf_xet_fallback", None)
+        sys.modules.update(saved)
+        if saved_shim is not None:
+            sys.modules["utils.hf_xet_fallback"] = saved_shim
+
+
+def test_an_operator_set_gpu_init_override_still_reaches_the_child(monkeypatch):
+    """Only the loader's own transient value is dropped. Someone who exported the flag themselves
+    on a GPU-less box meant it, and their children must keep it."""
+    from utils.child_stdio import utf8_child_env
+
+    monkeypatch.setenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", "1")
+    monkeypatch.setattr(xf, "_gpu_init_override_depth", 0, raising = False)
+    assert utf8_child_env()["UNSLOTH_ZOO_DISABLE_GPU_INIT"] == "1"
+
+
 def test_importing_child_should_disable_xet_stays_light(monkeypatch):
     """Regression guard for the stale-transformers-sidecar bug: importing the shim (and
     ``child_should_disable_xet``) must NOT pull in ``transformers``/``unsloth_zoo``. The worker calls

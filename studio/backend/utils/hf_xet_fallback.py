@@ -70,8 +70,11 @@ def _load_shared() -> bool:
             _shared_import_error = exc
             import os as _os
 
+            global _gpu_init_override_depth
             _prev_gpu_init = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
             _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
+            _ours = _prev_gpu_init != "1"
+            _gpu_init_override_depth += _ours
             try:
                 import unsloth_zoo.hf_xet_fallback as shared
 
@@ -92,6 +95,7 @@ def _load_shared() -> bool:
                 )
                 return False
             finally:
+                _gpu_init_override_depth -= _ours
                 if _prev_gpu_init is None:
                     _os.environ.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
                 else:
@@ -124,8 +128,11 @@ def _load_optional(module_name: str) -> Any:
     # the process, so every later worker inherits it and skips Zoo's GPU init. Deliberately the
     # SAME lock _load_shared holds while it runs its own copy of this sequence.
     with _load_lock:
+        global _gpu_init_override_depth
         previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
         _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
+        ours = previous != "1"
+        _gpu_init_override_depth += ours
         try:
             module = importlib.import_module(module_name)
         except Exception as exc:  # noqa: BLE001
@@ -135,6 +142,7 @@ def _load_optional(module_name: str) -> Any:
             )
             module = None
         finally:
+            _gpu_init_override_depth -= ours
             if previous is None:
                 _os.environ.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
             else:
@@ -308,6 +316,19 @@ _DEGRADED_ATTRS = {
     "DownloadStallError": _DegradedDownloadStallError,
     "get_hf_download_state": _degraded_get_hf_download_state,
 }
+
+
+# Nonzero while a loader is inside its UNSLOTH_ZOO_DISABLE_GPU_INIT retry, during which that
+# variable is set process-wide. Read by utf8_child_env so a child spawned in that window does not
+# inherit it: unsloth_zoo injects triton and bitsandbytes STUBS when it is set, so a training child
+# that inherited it would silently run against no-ops. Only counted when the loader actually
+# introduced the value -- an operator who exported it themselves keeps it.
+_gpu_init_override_depth = 0
+
+
+def gpu_init_override_active() -> bool:
+    """Is a loader currently holding UNSLOTH_ZOO_DISABLE_GPU_INIT set for its own import?"""
+    return _gpu_init_override_depth > 0
 
 
 def _supported_kwargs(fn: Any, kwargs: "dict[str, Any]") -> "dict[str, Any]":
