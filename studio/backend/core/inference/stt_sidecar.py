@@ -21,9 +21,10 @@ import os
 import re
 import threading
 import uuid
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Iterator, Optional
 
 from loggers import get_logger
 
@@ -83,6 +84,71 @@ class _SelectedHubFile:
 class _CachedSttSnapshot:
     path: Optional[Path]
     is_multilingual: Optional[bool]
+
+
+class _HfByteProgress:
+    """Small tqdm-compatible sink for Hugging Face transport byte updates."""
+
+    def __init__(self, report: Callable[[int], None], initial: int = 0) -> None:
+        self._report = report
+        self._lock = threading.Lock()
+        self._bytes = max(int(initial), 0)
+        self._safe_report(self._bytes)
+
+    def _safe_report(self, value: int) -> None:
+        try:
+            self._report(value)
+        except Exception:
+            # Progress is best-effort and must never fail the actual download.
+            pass
+
+    def update(self, amount: float = 1) -> None:
+        with self._lock:
+            self._bytes += max(int(amount), 0)
+            value = self._bytes
+        self._safe_report(value)
+
+
+_HF_PROGRESS_PATCH_LOCK = threading.RLock()
+
+
+@contextmanager
+def _capture_hf_download_progress(
+    report: Callable[[int], None],
+) -> Iterator[None]:
+    """Route Hugging Face's byte progress for this thread into ``report``.
+
+    ``hf_hub_download`` does not expose its transport progress callback. Both
+    HTTP and Xet do, however, create their tqdm sink through one internal
+    helper. Temporarily intercept that helper for the calling thread and leave
+    every unrelated Hub download on the original path.
+    """
+    from huggingface_hub import file_download
+
+    original = getattr(file_download, "_get_progress_bar_context", None)
+    if not callable(original):
+        # Compatibility fallback for a future Hub release that moves the
+        # helper. Cache-file accounting below still provides coarse progress.
+        yield
+        return
+
+    owner_thread = threading.get_ident()
+
+    def progress_context(**kwargs):
+        if threading.get_ident() != owner_thread:
+            return original(**kwargs)
+        return nullcontext(_HfByteProgress(report, initial = kwargs.get("initial", 0)))
+
+    # The patched function is process-global, so serialize the short scoped
+    # replacement. Other Hub threads are not blocked; the wrapper delegates
+    # them to the original implementation.
+    with _HF_PROGRESS_PATCH_LOCK:
+        file_download._get_progress_bar_context = progress_context
+        try:
+            yield
+        finally:
+            if file_download._get_progress_bar_context is progress_context:
+                file_download._get_progress_bar_context = original
 
 
 class SttUnavailableError(RuntimeError):
@@ -423,7 +489,7 @@ def validate_remote_model(model: Optional[str], hf_token: Optional[str] = None) 
             f"Could not resolve an immutable revision for STT model '{model_id}'."
         )
     # The commit that was validated; the download pins to it so the repo cannot
-    # be swapped between validation and snapshot_download (TOCTOU).
+    # be swapped between validation and the file downloads (TOCTOU).
     return {"model": model_id, "repo": repo, "revision": revision}
 
 
@@ -490,10 +556,10 @@ def is_model_downloaded(model: Optional[str]) -> bool:
 
 
 class _SnapshotDownloadState:
-    """Tracks one background snapshot_download of a dictation repository.
+    """Tracks one background download of a dictation repository snapshot.
 
     Like stt_ggml_sidecar's tracker, but a Transformers checkpoint is a whole
-    repo, so progress is the byte count of its cache blobs.
+    repo, so progress combines its transport callbacks and cache state.
     """
 
     def __init__(self) -> None:
@@ -501,9 +567,11 @@ class _SnapshotDownloadState:
         self._thread: Optional[threading.Thread] = None
         self._model_id: Optional[str] = None
         self._repo: Optional[str] = None
+        self._revision: Optional[str] = None
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._selected_files: tuple[_SelectedHubFile, ...] = ()
+        self._transport_bytes = 0
         self._complete = False
 
     def status(self) -> dict:
@@ -515,33 +583,46 @@ class _SnapshotDownloadState:
                 "model": self._model_id if downloading else None,
                 "error": self._error,
                 "bytes_total": self._total_bytes if show_progress else None,
-                "bytes_done": self._blob_bytes() if show_progress else None,
+                "bytes_done": self._downloaded_bytes() if show_progress else None,
             }
 
-    def _blob_bytes(self) -> Optional[int]:
-        """Best-effort progress: bytes in the repo's HF cache blobs.
+    def _downloaded_bytes(self) -> Optional[int]:
+        """Best-effort progress from the transport and repo's HF cache.
 
-        Counts only the selected support files and one selected weight format,
-        including in-progress ``.incomplete`` blobs.
+        Counts only the selected support files and weight format. Transport
+        callbacks cover Xet's chunk transfer; finalized blobs, in-progress
+        ``.incomplete`` files, and Windows snapshot copies are fallbacks.
         """
         try:
             # Caller may hold the non-reentrant self._lock; a bare read is safe.
             repo = self._repo
+            revision = self._revision
             selected_files = self._selected_files
             if not repo or not selected_files:
                 return None
-            blobs = _repo_cache_dir(repo) / "blobs"
-            if not blobs.is_dir():
-                return 0
+            repo_cache = _repo_cache_dir(repo)
+            blobs = repo_cache / "blobs"
+            snapshot = repo_cache / "snapshots" / revision if revision else None
             done = 0
             for selected in selected_files:
-                if not selected.blob_key:
-                    continue
-                complete = blobs / selected.blob_key
-                incomplete = blobs / f"{selected.blob_key}.incomplete"
-                candidate = complete if complete.is_file() else incomplete
-                if candidate.is_file():
+                candidate = None
+                if selected.blob_key:
+                    complete = blobs / selected.blob_key
+                    incomplete = blobs / f"{selected.blob_key}.incomplete"
+                    if complete.is_file():
+                        candidate = complete
+                    elif incomplete.is_file():
+                        candidate = incomplete
+                # Without Windows Developer Mode, huggingface_hub cannot make
+                # snapshot symlinks and copies completed files directly. Count
+                # that copy only when its blob is absent, avoiding duplicates.
+                if candidate is None and snapshot is not None:
+                    snapshot_file = snapshot / selected.path
+                    if snapshot_file.is_file():
+                        candidate = snapshot_file
+                if candidate is not None:
                     done += min(candidate.stat().st_size, selected.size)
+            done = max(done, self._transport_bytes)
             total = self._total_bytes
             return min(done, total) if total is not None else done
         except Exception:
@@ -564,9 +645,11 @@ class _SnapshotDownloadState:
                 )
             self._model_id = model_id
             self._repo = resolve_model_repo(model_id)
+            self._revision = None
             self._error = None
             self._total_bytes = None
             self._selected_files = ()
+            self._transport_bytes = 0
             self._complete = False
             thread = threading.Thread(
                 target = self._run, args = (self._repo, hf_token, revision), daemon = True
@@ -581,8 +664,9 @@ class _SnapshotDownloadState:
         revision: Optional[str] = None,
     ) -> None:
         try:
-            from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+            from huggingface_hub import HfApi, hf_hub_download
 
+            cache_dir = str(_active_hf_hub_cache())
             info = HfApi(token = hf_token or None).model_info(
                 repo,
                 revision = revision,
@@ -595,6 +679,8 @@ class _SnapshotDownloadState:
                 raise SttModelCompatibilityError(
                     f"Could not resolve an immutable revision for STT model '{repo}'."
                 )
+            with self._lock:
+                self._revision = revision
 
             def load_index(filename: str) -> dict:
                 path = hf_hub_download(
@@ -602,6 +688,7 @@ class _SnapshotDownloadState:
                     filename = filename,
                     revision = revision,
                     token = hf_token or None,
+                    cache_dir = cache_dir,
                 )
                 return _read_json_object(Path(path))
 
@@ -610,13 +697,38 @@ class _SnapshotDownloadState:
             with self._lock:
                 self._selected_files = selected_files
                 self._total_bytes = total or None
-            snapshot = Path(
-                snapshot_download(
-                    repo_id = repo,
-                    revision = revision,
-                    allow_patterns = [selected.path for selected in selected_files],
-                    token = hf_token or None,
-                )
+            # Keep transfers on this dedicated worker thread. snapshot_download
+            # moves each file into a shared executor, where a progress hook
+            # could not distinguish this STT job from unrelated Hub downloads.
+            completed = 0
+            for selected in selected_files:
+                def report_file_progress(
+                    file_bytes: int,
+                    *,
+                    base: int = completed,
+                    size: int = selected.size,
+                ) -> None:
+                    with self._lock:
+                        current = base + min(max(file_bytes, 0), size)
+                        self._transport_bytes = max(self._transport_bytes, current)
+
+                with _capture_hf_download_progress(report_file_progress):
+                    hf_hub_download(
+                        repo_id = repo,
+                        filename = selected.path,
+                        revision = revision,
+                        token = hf_token or None,
+                        cache_dir = cache_dir,
+                    )
+                completed += selected.size
+                with self._lock:
+                    self._transport_bytes = max(self._transport_bytes, completed)
+
+            snapshot = (
+                Path(cache_dir)
+                / f"models--{repo.replace('/', '--')}"
+                / "snapshots"
+                / revision
             )
             if not _snapshot_is_complete(snapshot):
                 raise SttModelCompatibilityError(

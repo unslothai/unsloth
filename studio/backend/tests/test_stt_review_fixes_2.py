@@ -11,7 +11,7 @@
 3. _snapshot_is_complete must require tokenizer assets (tokenizer.json or
    vocab.json + merges.txt); weights + config alone decode to blank text.
 4. Custom-repo downloads must pin the revision validated beforehand and
-   restrict snapshot_download to the model/tokenizer/config/preprocessor file
+   restrict downloads to the model/tokenizer/config/preprocessor file
    classes (TOCTOU + unbounded-download hardening).
 5. The GGML sidecar's readiness probe must not treat an arbitrary local HTTP
    responder as whisper-server (mic audio would be posted to it), and the port
@@ -221,13 +221,13 @@ def test_validate_remote_model_returns_the_validated_revision(monkeypatch):
 
 
 def test_download_pins_revision_and_limits_patterns(monkeypatch):
-    captured = {}
+    captured = []
     validated_revision = "a" * 40
     head_revision = "b" * 40
 
-    def fake_snapshot_download(**kwargs):
-        captured.update(kwargs)
-        return "/cached"
+    def fake_hf_hub_download(**kwargs):
+        captured.append(kwargs)
+        return f"/cached/{kwargs['filename']}"
 
     class _FakeApi:
         def __init__(self, token = None):
@@ -254,22 +254,22 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
     import huggingface_hub
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _FakeApi)
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hf_hub_download)
 
     state = stt_sidecar_module._SnapshotDownloadState()
     # The revision resolved at validation time wins over the current head.
     state._run("someone/custom-whisper", None, revision = validated_revision)
-    assert captured["revision"] == validated_revision
-    patterns = captured["allow_patterns"]
-    assert "model.safetensors" in patterns and "tokenizer.json" in patterns
-    # No wildcard that would admit arbitrary repo contents.
-    assert "*" not in patterns
+    assert captured
+    assert all(call["revision"] == validated_revision for call in captured)
+    filenames = {call["filename"] for call in captured}
+    assert "model.safetensors" in filenames and "tokenizer.json" in filenames
+    assert "pytorch_model.bin" not in filenames
 
     # Without a validated revision (curated repos), pin to the metadata head.
     captured.clear()
     state._run("someone/custom-whisper", None)
-    assert captured["revision"] == head_revision
-    assert captured["allow_patterns"]
+    assert captured
+    assert all(call["revision"] == head_revision for call in captured)
 
 
 # 5. GGML readiness must identify whisper-server --------------------------------

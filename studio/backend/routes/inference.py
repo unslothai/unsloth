@@ -8082,13 +8082,13 @@ async def stt_download(
     module = stt_ggml_sidecar if engine == "gguf" else stt_sidecar
     try:
         # Transformers accepts custom `owner/model` repos, so confirm the repo is
-        # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
+        # a Whisper checkpoint (metadata-only) before downloading a
         # possibly-large non-STT repo into the shared cache. Curated ids
         # short-circuit; GGUF only accepts curated ids, so it needs no check.
         if engine != "gguf":
             validated = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
             # Pin the download to the commit that was just validated so the
-            # repo cannot be swapped between validation and snapshot_download.
+            # repo cannot be swapped between validation and the file downloads.
             await asyncio.to_thread(
                 module.start_model_download,
                 payload.model,

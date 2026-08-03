@@ -9,6 +9,7 @@ import threading
 import time
 import wave
 import weakref
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -47,10 +48,6 @@ def stub_audio_decoder(monkeypatch):
         stt_sidecar_module,
         "_decode_audio_bounded",
         lambda _audio: np.zeros(8000, dtype = np.float32),
-    )
-    monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
-        lambda **_kwargs: "/cached/model",
     )
     monkeypatch.setattr(
         stt_sidecar_module,
@@ -1108,8 +1105,98 @@ def test_progress_counts_only_selected_blobs_and_caps_incomplete_files(monkeypat
     assert status["bytes_done"] == 30
 
 
-def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_path):
+def test_progress_counts_selected_snapshot_files_when_windows_cannot_symlink(monkeypatch, tmp_path):
+    revision = "d" * 40
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    snapshot = (
+        tmp_path
+        / "hub"
+        / "models--owner--whisper"
+        / "snapshots"
+        / revision
+    )
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_bytes(b"x" * 10)
+    state = stt_sidecar_module._SnapshotDownloadState()
+    state._repo = "owner/whisper"
+    state._revision = revision
+    state._selected_files = (
+        stt_sidecar_module._SelectedHubFile("config.json", 10, "one"),
+        stt_sidecar_module._SelectedHubFile("model.safetensors", 20, "two"),
+    )
+    state._total_bytes = 30
+    state._complete = True
+
+    status = state.status()
+
+    assert status["bytes_total"] == 30
+    assert status["bytes_done"] == 10
+
+
+def test_hf_progress_capture_reports_transport_bytes():
+    from huggingface_hub import file_download
+
+    reported = []
+    with stt_sidecar_module._capture_hf_download_progress(reported.append):
+        progress_context = file_download._get_progress_bar_context(
+            desc = "model.safetensors",
+            log_level = 20,
+            total = 100,
+            initial = 5,
+            name = "huggingface_hub.xet_get",
+        )
+        with progress_context as progress:
+            progress.update(35)
+
+    assert reported == [5, 40]
+
+
+def test_hf_progress_capture_is_thread_scoped_and_restored(monkeypatch):
+    from huggingface_hub import file_download
+
+    delegated_threads = []
+
+    def original_context(**_kwargs):
+        delegated_threads.append(threading.get_ident())
+        return nullcontext("original")
+
+    monkeypatch.setattr(file_download, "_get_progress_bar_context", original_context)
+    reported = []
+    other_result = []
+
+    def use_progress_from_another_thread():
+        with file_download._get_progress_bar_context() as progress:
+            other_result.append(progress)
+
+    with stt_sidecar_module._capture_hf_download_progress(reported.append):
+        worker = threading.Thread(target = use_progress_from_another_thread)
+        worker.start()
+        worker.join(timeout = 2)
+        with file_download._get_progress_bar_context(initial = 3) as progress:
+            progress.update(4)
+
+    assert worker.is_alive() is False
+    assert other_result == ["original"]
+    assert len(delegated_threads) == 1
+    assert reported == [3, 7]
+    assert file_download._get_progress_bar_context is original_context
+
+
+def test_hf_progress_capture_restores_hook_after_failure(monkeypatch):
+    from huggingface_hub import file_download
+
+    original_context = file_download._get_progress_bar_context
+    with pytest.raises(RuntimeError, match = "forced"):
+        with stt_sidecar_module._capture_hf_download_progress(lambda _value: None):
+            raise RuntimeError("forced")
+
+    assert file_download._get_progress_bar_context is original_context
+
+
+def test_download_metadata_and_files_use_the_same_revision(monkeypatch, tmp_path):
     revision = "e" * 40
+    hub_cache = tmp_path / "hub"
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub_cache))
     calls = []
     siblings = [
         _sibling("config.json", 10, "config"),
@@ -1127,19 +1214,16 @@ def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_p
             calls.append(("info", repo, kwargs))
             return SimpleNamespace(sha = revision, siblings = siblings)
 
-    def fake_snapshot_download(**kwargs):
-        calls.append(("snapshot", kwargs))
+    def fake_hf_hub_download(**kwargs):
+        calls.append(("download", kwargs))
         return str(tmp_path)
 
     monkeypatch.setattr("huggingface_hub.HfApi", FakeApi)
-    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
-    monkeypatch.setattr(
-        "huggingface_hub.hf_hub_download",
-        lambda **_kwargs: pytest.fail("unsharded selection must not load an index"),
-    )
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_hf_hub_download)
     monkeypatch.setattr(stt_sidecar_module, "_snapshot_is_complete", lambda _path: True)
     monkeypatch.setattr(stt_sidecar_module, "_write_revision_record", lambda *_args: None)
     state = stt_sidecar_module._SnapshotDownloadState()
+    state._repo = "owner/whisper"
 
     state._run("owner/whisper", None, revision)
 
@@ -1148,10 +1232,18 @@ def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_p
         "owner/whisper",
         {"revision": revision, "files_metadata": True, "timeout": 30},
     )
-    assert calls[1][0] == "snapshot"
-    assert calls[1][1]["revision"] == revision
-    assert "model.safetensors" in calls[1][1]["allow_patterns"]
-    assert "pytorch_model.bin" not in calls[1][1]["allow_patterns"]
+    downloads = [kwargs for kind, kwargs in calls[1:] if kind == "download"]
+    assert {call["filename"] for call in downloads} == {
+        "config.json",
+        "preprocessor_config.json",
+        "tokenizer.json",
+        "model.safetensors",
+    }
+    assert all(call["revision"] == revision for call in downloads)
+    assert all(call["repo_id"] == "owner/whisper" for call in downloads)
+    assert all(call["cache_dir"] == str(hub_cache) for call in downloads)
+    assert state.status()["bytes_done"] == 160
+    assert state.status()["bytes_total"] == 160
 
 
 def test_download_status_is_idle_before_any_download():
