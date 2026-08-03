@@ -2717,9 +2717,7 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
         studio_db,
         "get_app_setting",
         lambda key, default = None: (
-            str(cache_home[0])
-            if key == hf_cache_settings.CACHE_HOME_SETTING_KEY
-            else default
+            str(cache_home[0]) if key == hf_cache_settings.CACHE_HOME_SETTING_KEY else default
         ),
     )
 
