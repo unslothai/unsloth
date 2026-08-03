@@ -380,13 +380,37 @@ export function RegisterCompareHandle({
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
       waitForRunEnd: () =>
-        new Promise<void>((resolve) => {
-          let wasRunning = false;
-          const unsub = useChatRuntimeStore.subscribe((state) => {
-            const anyRunning = Object.keys(state.runningByThreadId).length > 0;
-            if (anyRunning) wasRunning = true;
-            if (wasRunning && !anyRunning) {
-              unsub();
+        new Promise<void>((resolve, reject) => {
+          const runtime =
+            aui.threads().__internal_getAssistantRuntime?.();
+          const itemState = aui.threadListItem().getState();
+          const threadIds = Array.from(
+            new Set(
+              [itemState.id, itemState.remoteId].filter(
+                (id): id is string => Boolean(id),
+              ),
+            ),
+          );
+          let thread = null;
+          for (const threadId of threadIds) {
+            try {
+              thread = runtime?.threads.getById(threadId) ?? null;
+              if (thread) break;
+            } catch {
+              // Thread hydration can retire an alias; try the next one.
+            }
+          }
+          if (!thread) {
+            reject(new Error("Comparison thread is unavailable"));
+            return;
+          }
+          let wasRunning = thread.getState().isRunning;
+          let unsubscribe = () => {};
+          unsubscribe = thread.subscribe(() => {
+            const isRunning = thread.getState().isRunning;
+            if (isRunning) wasRunning = true;
+            if (wasRunning && !isRunning) {
+              unsubscribe();
               resolve();
             }
           });

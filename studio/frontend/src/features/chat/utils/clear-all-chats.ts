@@ -25,5 +25,6 @@ export async function clearAllChats() {
     stopChatThread(threadId);
   }
   requestPromptQueueStop();
+  await chatHistoryClearBoundary.waitForPending();
   return await clearStoredChats();
 }

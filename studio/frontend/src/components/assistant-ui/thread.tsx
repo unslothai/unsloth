@@ -1108,11 +1108,10 @@ function handlePromptQueueRunFailed(threadId?: string | null) {
   discardQueuedChatRunSettingsForThread(threadId);
   if (threadId) {
     const failedRun = findPromptQueueRunByThreadIds([threadId]);
-    if (failedRun && promptQueueActiveRunIds.has(failedRun.id)) {
-      const activeItem = getActivePromptQueueItem(failedRun);
-      if (activeItem?.dispatched) {
-        deletePromptQueueRun(failedRun);
-      }
+    if (failedRun) {
+      // A provider failure invalidates both an already-dispatched queue item
+      // and follow-ups still waiting for the direct run to become idle.
+      deletePromptQueueRun(failedRun);
     }
   }
   // A queued adapter can fail validation before its running flag turns on.

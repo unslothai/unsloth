@@ -95,7 +95,11 @@ import {
   saveStoredChatThread,
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
-import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
+import {
+  isChatThreadDeleted,
+  markChatThreadDeleted,
+} from "./utils/chat-thread-tombstones";
+import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
@@ -1349,7 +1353,24 @@ function useStudioRuntimeAdapters(
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
         const localThreadId = aui.threadListItem().getState().id;
-        const initializeThread = aui.threadListItem().initialize();
+        const historyClearGeneration = chatHistoryClearBoundary.capture();
+        const throwIfHistoryWasCleared = async (remoteId: string) => {
+          if (
+            chatHistoryClearBoundary.capture() === historyClearGeneration
+          ) {
+            return;
+          }
+          markChatThreadDeleted(remoteId);
+          await deleteStoredChatThreads([remoteId]);
+          throw new DOMException("Chat history was cleared", "AbortError");
+        };
+        const initializeThread = aui
+          .threadListItem()
+          .initialize()
+          .then(async (initialized) => {
+            await throwIfHistoryWasCleared(initialized.remoteId);
+            return initialized;
+          });
         trackRunStartReady(
           message.id,
           initializeThread.then(({ remoteId }) => remoteId),
@@ -1375,8 +1396,10 @@ function useStudioRuntimeAdapters(
             }
           }
           const thread = await getStoredChatThread(remoteId);
+          await throwIfHistoryWasCleared(remoteId);
           if (thread) {
             await ensureStoredChatThread(remoteId, thread);
+            await throwIfHistoryWasCleared(remoteId);
           }
           if (thread?.modelType === "base" && !thread.pairId) {
             const store = useChatRuntimeStore.getState();
@@ -1393,7 +1416,9 @@ function useStudioRuntimeAdapters(
           const attachments =
             message.role === "user" ? cloneAttachments(message.attachments) : [];
           const custom = message.metadata?.custom;
-          const existingMessage = (await listStoredChatMessages(remoteId)).find(
+          const storedMessages = await listStoredChatMessages(remoteId);
+          await throwIfHistoryWasCleared(remoteId);
+          const existingMessage = storedMessages.find(
             (storedMessage) => storedMessage.id === message.id,
           );
           const createdAt =
@@ -1433,8 +1458,12 @@ function useStudioRuntimeAdapters(
             ...(metadata && { metadata }),
             createdAt,
           });
+          await throwIfHistoryWasCleared(remoteId);
         })();
-        return trackHistoryAppend(message.id, write);
+        return trackHistoryAppend(
+          message.id,
+          chatHistoryClearBoundary.trackPending(write),
+        );
       },
     }),
     [aui, modelType, pairId],

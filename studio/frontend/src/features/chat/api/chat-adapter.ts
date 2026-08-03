@@ -18,7 +18,6 @@ import {
 } from "../utils/pre-stream-run-reservation";
 import {
   consumeQueuedChatRunSettings,
-  hasQueuedChatRunSettings,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
@@ -1704,8 +1703,6 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "activeLoadId",
   "activeGgufVariant",
   "activeModelIsLocal",
-  "contextUsage",
-  "contextUsageByThreadId",
   "ggufContextLength",
   "ggufMaxContextLength",
   "ggufNativeContextLength",
@@ -1778,8 +1775,8 @@ function snapshotVisibleModelState(
 }
 
 function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
-  useChatRuntimeStore
-    .getState()
+  const liveUsage = useChatRuntimeStore.getState();
+  liveUsage
     .setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
       trackQueuedSettings: false,
     });
@@ -1787,6 +1784,10 @@ function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
     ...snapshot.runtime,
     ...snapshot.settings,
     params: { ...snapshot.settings.params },
+    // A visible provider run can finish while the background model loads.
+    // Preserve those newer per-thread totals instead of restoring stale usage.
+    contextUsage: liveUsage.contextUsage,
+    contextUsageByThreadId: liveUsage.contextUsageByThreadId,
   });
 }
 
@@ -5405,13 +5406,10 @@ export function createOpenAIStreamAdapter(
       if (reservationToken) {
         adoptPreStreamRunReservation(reservationToken, preStreamThreadIds);
       }
-      const queuedRunWasPending = preStreamThreadIds.some(
-        hasQueuedChatRunSettings,
-      );
       try {
         yield* adapter.run(args);
       } catch (error) {
-        if (queuedRunWasPending && !args.abortSignal.aborted) {
+        if (!args.abortSignal.aborted) {
           notifyPromptQueueRunFailed(
             args.unstable_threadId ?? preStreamThreadIds[0] ?? null,
           );

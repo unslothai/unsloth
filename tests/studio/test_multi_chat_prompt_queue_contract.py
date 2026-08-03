@@ -339,6 +339,16 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert '"ggufNativeContextLength"' in CHAT_ADAPTER
     assert '"loadedIsMultimodal"' in CHAT_ADAPTER
     assert '"loadedIsDiffusion"' in CHAT_ADAPTER
+    assert (
+        '"contextUsage"'
+        not in CHAT_ADAPTER[
+            CHAT_ADAPTER.index("const VISIBLE_MODEL_RUNTIME_KEYS") : CHAT_ADAPTER.index(
+                "] as const satisfies", CHAT_ADAPTER.index("const VISIBLE_MODEL_RUNTIME_KEYS")
+            )
+        ]
+    )
+    assert "contextUsage: liveUsage.contextUsage" in CHAT_ADAPTER
+    assert "contextUsageByThreadId: liveUsage.contextUsageByThreadId" in CHAT_ADAPTER
     assert "visibleState.activeThreadEpoch" in CHAT_ADAPTER
     assert "activeThreadEpoch ===" in CHAT_ADAPTER
     assert "visibleState.queuedSettingsEpoch" in CHAT_ADAPTER
@@ -376,20 +386,24 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "getActivePromptQueueItem(run)?.target.complete()" in THREAD
     assert "notifyPromptQueueRunFailed(resolvedThreadId ?? null)" in CHAT_ADAPTER
     assert "adapterRunStartedSignals" not in CHAT_ADAPTER
-    assert CHAT_ADAPTER.index(
-        "const queuedRunWasPending = preStreamThreadIds.some("
-    ) < CHAT_ADAPTER.index("yield* adapter.run(args);")
-    assert "preStreamThreadIds.some(\n        hasQueuedChatRunSettings," in CHAT_ADAPTER
     assert "pendingSettings.some((entry) => entry.threadIds.has(threadId))" in QUEUED_SETTINGS
     queued_run_failure = _between(
         CHAT_ADAPTER,
-        "const queuedRunWasPending = preStreamThreadIds.some(",
+        "try {\n        yield* adapter.run(args);",
         "} finally {",
     )
-    assert "queuedRunWasPending && !args.abortSignal.aborted" in queued_run_failure
+    assert "if (!args.abortSignal.aborted)" in queued_run_failure
     assert queued_run_failure.index("notifyPromptQueueRunFailed(") < queued_run_failure.index(
         "throw error;"
     )
+    queue_failure_handler = _between(
+        THREAD,
+        "function handlePromptQueueRunFailed(",
+        'if (typeof window !== "undefined")',
+    )
+    assert "if (failedRun)" in queue_failure_handler
+    assert "deletePromptQueueRun(failedRun);" in queue_failure_handler
+    assert "promptQueueActiveRunIds.has(failedRun.id)" not in queue_failure_handler
     assert "loadedIsMultimodal: isMultimodalResponse(status)" in lifecycle
     assert "loadedIsMultimodal: state.loadedIsMultimodal" in CHAT_ADAPTER
     assert "queuedEmptyModelRuntime?.loadedIsMultimodal" in auto_load_merge
@@ -433,6 +447,15 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "beginModelLoading()" in SHARED_COMPOSER
     assert "endModelLoading(compareLifecycleLease)" in SHARED_COMPOSER
     assert SHARED_COMPOSER.count("releaseCompareModelLifecycle();") >= 3
+    compare_handle = _between(
+        SHARED_COMPOSER,
+        "export function RegisterCompareHandle(",
+        "type PendingImage =",
+    )
+    assert "aui.threads().__internal_getAssistantRuntime?.()" in compare_handle
+    assert "runtime?.threads.getById(threadId)" in compare_handle
+    assert "thread.subscribe(" in compare_handle
+    assert "useChatRuntimeStore.subscribe(" not in compare_handle
     gpu_discovery = _between(
         SHARED_COMPOSER,
         "// Warm the device cache before the snapshot below",
@@ -578,7 +601,15 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     assert CLEAR_ALL_CHATS.index("chatHistoryClearBoundary.advance();") < CLEAR_ALL_CHATS.index(
         "requestPromptQueueStop();"
     )
+    assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < CLEAR_ALL_CHATS.index(
+        "await chatHistoryClearBoundary.waitForPending();"
+    )
+    assert "const historyClearGeneration = chatHistoryClearBoundary.capture();" in RUNTIME_PROVIDER
+    assert "await throwIfHistoryWasCleared(initialized.remoteId);" in RUNTIME_PROVIDER
+    assert "await throwIfHistoryWasCleared(remoteId);" in RUNTIME_PROVIDER
+    assert "chatHistoryClearBoundary.trackPending(write)" in RUNTIME_PROVIDER
     assert "class ChatHistoryClearBoundary" in CHAT_CLEAR_BOUNDARY
+    assert "async waitForPending(): Promise<void>" in CHAT_CLEAR_BOUNDARY
 
 
 def test_noop_setting_refreshes_do_not_invalidate_pending_queues():
