@@ -1720,11 +1720,19 @@ def _ensure_xpu_torch() -> None:
             timeout = 90,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return
-    _lines = [
-        line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
-    ]
-    if probe.returncode == 0:
+        # Unlike the CPU counterpart, an inconclusive probe here is EVIDENCE: the usual reason
+        # `import torch` wedges on this path is a stalled Intel driver under an unsupported
+        # +xpu wheel, and the resolver keeps that wheel because it satisfies the base range.
+        # Returning would write a manifest and repeat the same dead probe on every update.
+        probe = None
+    _lines = (
+        [line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()]
+        if probe is not None
+        else []
+    )
+    if probe is None:
+        _why = "torch could not be probed"
+    elif probe.returncode == 0:
         if not _lines:
             return  # unreadable -- the base install step handles a missing torch
         if _lines[-1] == "ok":
@@ -1887,19 +1895,33 @@ def _ensure_xpu_triton() -> None:
                 )
             )
             return
-        subprocess.run(
+        removed = subprocess.run(
             [sys.executable, "-m", "pip", "uninstall", "-y", "triton"],
             stdout = subprocess.DEVNULL,
             stderr = subprocess.DEVNULL,
         )
-        if not pip_install_try(
+        if removed.returncode != 0:
+            # A read-only or locked venv leaves generic triton REGISTERED. Installing over it
+            # would let a later upgrade or uninstall of that distribution delete the shared
+            # files again, and every dependency pass would repeat this swap. Change nothing.
+            print(
+                _red(
+                    f"   could not remove generic triton {generic}; leaving it in place -- it "
+                    "shadows torch XPU triton, so torch.compile will not use the XPU"
+                )
+            )
+            return
+        # Past this point the venv has NO triton: the uninstall took the shared top-level files
+        # with it. pip_install, not pip_install_try -- a warning here would let the caller write
+        # a completion manifest over a venv whose torch.compile is broken, and the next update
+        # would fast-path straight past it because no generic distribution is left to trigger on.
+        pip_install(
             "triton (Intel XPU)",
             "--force-reinstall",
             "--no-deps",
             wheels[0],
             constrain = False,
-        ):
-            print(_red(f"   could not reinstall {spec}; torch.compile may not use the XPU"))
+        )
     finally:
         shutil.rmtree(tmp, ignore_errors = True)
 

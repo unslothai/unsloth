@@ -1105,7 +1105,10 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # test silently misses it -- which reads as "no XPU pin" and skips the repair.
         _setup_pin="${_setup_pin%%\#*}"
         _setup_pin="${_setup_pin%%\?*}"
-        case "${_setup_pin%/}" in
+        # ALL trailing slashes, not one: the shared leaf parsers normalise "…/xpu//" and a
+        # single %/ leaves a slash behind, which reads as "no XPU pin" and skips the repair.
+        while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
+        case "$_setup_pin" in
             *xpu)
                 # Disk first, no interpreter: torch/version.py carries the local label, so a
                 # wedged Intel driver cannot hang `studio update` inside `import torch` here,
@@ -1128,8 +1131,21 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
                     esac
                     break
                 done
+                # Correct torch is not enough: the only caller of the Triton swap is inside
+                # install_python_stack, which the fast path skips, so a migrated environment
+                # with a supported +xpu torch and a leftover generic triton would keep the
+                # CUDA-oriented build shadowing the XPU one forever. Read the dist-info name
+                # off disk -- "triton-<ver>.dist-info" is the generic one; the XPU builds are
+                # pytorch_triton_xpu-* / triton_xpu-*, which this glob does not match.
+                _setup_generic_triton=false
+                for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
+                    [ -d "$_setup_tri" ] && _setup_generic_triton=true && break
+                done
                 if [ "$_setup_pin_ok" = false ]; then
                     substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
+                    _SKIP_PYTHON_DEPS=false
+                elif [ "$_setup_generic_triton" = true ]; then
+                    substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
                     _SKIP_PYTHON_DEPS=false
                 fi
                 ;;

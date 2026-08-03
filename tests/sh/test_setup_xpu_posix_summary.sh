@@ -137,11 +137,25 @@ check "pin match strips the query" \
 check "pin match strips the fragment" \
     "$(grep -q '_setup_pin="\${_setup_pin%%\\#\*}"' "$SETUP_SH" && echo yes || echo no)" "yes"
 # The escape must not launch an interpreter: a wedged Intel driver hangs inside `import torch`,
-# and this runs before the bounded probes.
+# and this runs before the bounded probes. Bounded by the case block rather than a line offset,
+# so adding a check inside it cannot silently move the window off the code under test.
+_blk=$(awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on{print} on && /^        esac$/{exit}' "$SETUP_SH")
+check "escape block was found" "$([ -n "$_blk" ] && echo yes || echo no)" "yes"
 check "escape reads the flavour off disk" \
-    "$(awk -v a="$_esc" 'NR>=a-24 && NR<=a && /site-packages\/torch\/version.py/{f=1} END{print (f?"yes":"no")}' "$SETUP_SH")" "yes"
+    "$(printf '%s' "$_blk" | grep -q 'site-packages/torch/version.py' && echo yes || echo no)" "yes"
 check "escape launches no interpreter" \
-    "$(awk -v a="$_esc" 'NR>=a-24 && NR<=a && /\$VENV_DIR\/bin\/python/{f=1} END{print (f?"no":"yes")}' "$SETUP_SH")" "yes"
+    "$(printf '%s' "$_blk" | grep -q '\$VENV_DIR/bin/python' && echo no || echo yes)" "yes"
+# Correct torch is not enough: the Triton swap only runs inside the dependency pass, so a
+# leftover generic triton must force it too.
+# Assert the BRANCH, not just the detection loop: grepping for the dist-info glob alone still
+# matched after the acting elif was deleted, so that check proved nothing.
+check "escape also catches stale generic triton" \
+    "$(printf '%s' "$_blk" | grep -A1 'elif \[ "\$_setup_generic_triton" = true \]' | grep -qc 'forcing dependency pass' && echo yes || echo no)" "yes"
+check "stale triton clears the skip flag" \
+    "$(printf '%s' "$_blk" | awk '/elif \[ "\$_setup_generic_triton" = true \]/{on=1} on && /_SKIP_PYTHON_DEPS=false/{print "yes"; exit}' | head -1)" "yes"
+# One %/ leaves a slash on ".../xpu//", which reads as "no XPU pin".
+check "pin match strips every trailing slash" \
+    "$(printf '%s' "$_blk" | grep -q 'while \[ "\${_setup_pin%/}" != "\$_setup_pin" \]' && echo yes || echo no)" "yes"
 
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

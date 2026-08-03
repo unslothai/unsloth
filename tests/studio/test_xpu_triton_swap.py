@@ -39,6 +39,8 @@ def _load(
     ensurepip_works = True,
     download_ok = True,
     drops_wheel = True,
+    uninstall_ok = True,
+    install_ok = True,
 ):
     """Import the module with the world stubbed, and return (module, action log)."""
     log: list[str] = []
@@ -78,7 +80,7 @@ def _load(
             return subprocess.CompletedProcess(cmd, 0 if download_ok else 1, stdout = b"")
         if "uninstall" in cmd:
             log.append("UNINSTALL")
-            return subprocess.CompletedProcess(cmd, 0)
+            return subprocess.CompletedProcess(cmd, 0 if uninstall_ok else 1)
         return subprocess.CompletedProcess(cmd, 0, stdout = b"")
 
     def fake_pip_install_try(label, *args, **kw):
@@ -89,6 +91,13 @@ def _load(
             return pip_state["present"]
         log.append("INSTALL")
         return True
+
+    def fake_pip_install(label, *args, **kw):
+        # The real one exits the process via run(); that is what keeps the completion
+        # manifest unwritten, so the stub raises SystemExit rather than returning.
+        log.append("INSTALL")
+        if not install_ok:
+            raise SystemExit(1)
 
     ns = {
         "subprocess": types.SimpleNamespace(
@@ -109,6 +118,7 @@ def _load(
         "IS_WINDOWS": False,
         "_explicit_xpu_torch_index_url": lambda: "https://download.pytorch.org/whl/xpu",
         "pip_install_try": fake_pip_install_try,
+        "pip_install": fake_pip_install,
         "_red": lambda s: s,
         "print": lambda *a, **k: log.append("WARN") if a and "left in place" in str(a[0]) else None,
     }
@@ -177,6 +187,33 @@ class TestXpuTritonSwap:
             monkeypatch, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", drops_wheel = False
         )
         assert "UNINSTALL" not in log and "INSTALL" not in log
+
+
+class TestFailedSwapIsNotSurvivable:
+    def test_a_failed_uninstall_changes_nothing(self, monkeypatch):
+        # A read-only or locked venv leaves generic triton registered. Installing over it would
+        # let a later upgrade of that distribution delete the shared files again, and every
+        # dependency pass would repeat the swap.
+        log = _run(
+            monkeypatch,
+            spec = "pytorch-triton-xpu==3.5.0",
+            generic = "3.7.1",
+            uninstall_ok = False,
+        )
+        assert log == ["DOWNLOAD", "UNINSTALL"]
+        assert "INSTALL" not in log
+
+    def test_a_failed_install_propagates(self, monkeypatch):
+        # The uninstall already took the shared files, so a warning would let the caller write a
+        # completion manifest over a venv whose torch.compile is broken -- and the next update
+        # would fast-path past it, since no generic distribution is left to trigger on.
+        with pytest.raises(SystemExit):
+            _run(
+                monkeypatch,
+                spec = "pytorch-triton-xpu==3.5.0",
+                generic = "3.7.1",
+                install_ok = False,
+            )
 
 
 class TestPlatformGuards:
