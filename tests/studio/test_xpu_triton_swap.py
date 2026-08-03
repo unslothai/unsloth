@@ -30,8 +30,16 @@ REPO = Path(__file__).resolve().parents[2]
 STACK = REPO / "studio/install_python_stack.py"
 
 
-def _load(monkeypatch, *, spec, generic, has_pip = True, ensurepip_works = True,
-          download_ok = True, drops_wheel = True):
+def _load(
+    monkeypatch,
+    *,
+    spec,
+    generic,
+    has_pip = True,
+    ensurepip_works = True,
+    download_ok = True,
+    drops_wheel = True,
+):
     """Import the module with the world stubbed, and return (module, action log)."""
     log: list[str] = []
 
@@ -91,8 +99,14 @@ def _load(monkeypatch, *, spec, generic, has_pip = True, ensurepip_works = True,
             PIPE = subprocess.PIPE,
             STDOUT = subprocess.STDOUT,
         ),
-        "sys": sys, "glob": _glob, "os": _os, "shutil": _shutil, "tempfile": _tempfile,
-        "NO_TORCH": False, "IS_MACOS": False, "IS_WINDOWS": False,
+        "sys": sys,
+        "glob": _glob,
+        "os": _os,
+        "shutil": _shutil,
+        "tempfile": _tempfile,
+        "NO_TORCH": False,
+        "IS_MACOS": False,
+        "IS_WINDOWS": False,
         "_explicit_xpu_torch_index_url": lambda: "https://download.pytorch.org/whl/xpu",
         "pip_install_try": fake_pip_install_try,
         "_red": lambda s: s,
@@ -122,14 +136,18 @@ class TestXpuTritonSwap:
 
     def test_bootstraps_pip_when_the_venv_has_none(self, monkeypatch):
         # uv venv has no --seed, so a fresh venv cannot run pip download at all.
-        log = _run(monkeypatch, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1",
-                   has_pip = False)
+        log = _run(monkeypatch, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", has_pip = False)
         assert log[0] == "ENSUREPIP"
         assert log[-3:] == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
 
     def test_falls_back_to_installing_pip(self, monkeypatch):
-        log = _run(monkeypatch, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1",
-                   has_pip = False, ensurepip_works = False)
+        log = _run(
+            monkeypatch,
+            spec = "pytorch-triton-xpu==3.5.0",
+            generic = "3.7.1",
+            has_pip = False,
+            ensurepip_works = False,
+        )
         # ensurepip failed, so it tries a real pip install; that fails too here, and the swap
         # must warn rather than uninstall with nothing to install from.
         assert "BOOTSTRAP" in log
@@ -138,9 +156,9 @@ class TestXpuTritonSwap:
     @pytest.mark.parametrize(
         "spec, generic",
         [
-            ("pytorch-triton-xpu==3.5.0", ""),   # nothing shadowing it
-            ("triton==3.7.1", "3.7.1"),          # torch is not the +xpu wheel
-            ("", "3.7.1"),                       # torch declares no triton at all
+            ("pytorch-triton-xpu==3.5.0", ""),  # nothing shadowing it
+            ("triton==3.7.1", "3.7.1"),  # torch is not the +xpu wheel
+            ("", "3.7.1"),  # torch declares no triton at all
         ],
     )
     def test_leaves_a_healthy_venv_alone(self, monkeypatch, spec, generic):
@@ -148,14 +166,16 @@ class TestXpuTritonSwap:
 
     def test_a_dead_mirror_removes_nothing(self, monkeypatch):
         # Warn and leave the venv working; never uninstall with nothing to install from.
-        log = _run(monkeypatch, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1",
-                   download_ok = False)
+        log = _run(
+            monkeypatch, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", download_ok = False
+        )
         assert "UNINSTALL" not in log and "INSTALL" not in log
 
     def test_a_successful_exit_with_no_wheel_removes_nothing(self, monkeypatch):
         # The exit code alone is not enough: no wheel on disk means nothing to install from.
-        log = _run(monkeypatch, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1",
-                   drops_wheel = False)
+        log = _run(
+            monkeypatch, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", drops_wheel = False
+        )
         assert "UNINSTALL" not in log and "INSTALL" not in log
 
 

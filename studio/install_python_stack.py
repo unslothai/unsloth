@@ -1757,12 +1757,18 @@ def _ensure_venv_pip() -> bool:
     `uv venv` is created without --seed, so a fresh venv has no pip at all. Mirrors the
     bootstrap install.sh already does before its pre-release bitsandbytes wheel.
     """
+
     def _has_pip() -> bool:
         try:
-            return subprocess.run(
-                [sys.executable, "-m", "pip", "--version"],
-                stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL, timeout = 90,
-            ).returncode == 0
+            return (
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "--version"],
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                    timeout = 90,
+                ).returncode
+                == 0
+            )
         except (OSError, subprocess.TimeoutExpired):
             return False
 
@@ -1771,7 +1777,9 @@ def _ensure_venv_pip() -> bool:
     try:
         subprocess.run(
             [sys.executable, "-m", "ensurepip", "--upgrade"],
-            stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL, timeout = 300,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            timeout = 300,
         )
     except (OSError, subprocess.TimeoutExpired):
         pass
@@ -1834,8 +1842,12 @@ def _ensure_xpu_triton() -> None:
 
     print(f"   replacing triton {generic} with {spec} (Intel XPU)")
     if not _ensure_venv_pip():
-        print(_red(f"   no pip in the venv to fetch {spec}; generic triton {generic} left in "
-                   "place -- it shadows torch XPU triton, so torch.compile will not use the XPU"))
+        print(
+            _red(
+                f"   no pip in the venv to fetch {spec}; generic triton {generic} left in "
+                "place -- it shadows torch XPU triton, so torch.compile will not use the XPU"
+            )
+        )
         return
 
     # Fetch, THEN uninstall, THEN install from the file. The uninstall cannot go last: the
@@ -1847,27 +1859,44 @@ def _ensure_xpu_triton() -> None:
         try:
             dl = subprocess.run(
                 [
-                    sys.executable, "-m", "pip", "download",
-                    "--no-deps", "--only-binary=:all:", "-d", tmp, spec,
-                    "--index-url", pin,
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "download",
+                    "--no-deps",
+                    "--only-binary=:all:",
+                    "-d",
+                    tmp,
+                    spec,
+                    "--index-url",
+                    pin,
                 ],
-                stdout = subprocess.PIPE, stderr = subprocess.STDOUT, timeout = 900,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                timeout = 900,
             )
         except (OSError, subprocess.TimeoutExpired):
             dl = None
         wheels = glob.glob(os.path.join(tmp, "*.whl"))
         # The exit code alone is not enough: no wheel on disk means nothing to install from.
         if dl is None or dl.returncode != 0 or not wheels:
-            print(_red(f"   could not fetch {spec}; generic triton {generic} left in place -- "
-                       "it shadows torch XPU triton, so torch.compile will not use the XPU"))
+            print(
+                _red(
+                    f"   could not fetch {spec}; generic triton {generic} left in place -- "
+                    "it shadows torch XPU triton, so torch.compile will not use the XPU"
+                )
+            )
             return
         subprocess.run(
             [sys.executable, "-m", "pip", "uninstall", "-y", "triton"],
-            stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
         )
         if not pip_install_try(
             "triton (Intel XPU)",
-            "--force-reinstall", "--no-deps", wheels[0],
+            "--force-reinstall",
+            "--no-deps",
+            wheels[0],
             constrain = False,
         ):
             print(_red(f"   could not reinstall {spec}; torch.compile may not use the XPU"))
