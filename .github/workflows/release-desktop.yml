@@ -787,7 +787,21 @@ jobs:
             exit 1
           fi
 
-          xcrun stapler staple "$dmg_path"
+          # Apple's ticket lookup can lag behind an Accepted verdict or time
+          # out against CloudKit. Retry it without weakening final validation.
+          for attempt in 1 2 3; do
+            staple_status=0
+            xcrun stapler staple "$dmg_path" || staple_status=$?
+            if [ "$staple_status" -eq 0 ]; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit "$staple_status"
+            fi
+            delay=$((15 * attempt))
+            echo "::warning::Stapling failed (attempt $attempt/3); retrying in ${delay}s."
+            sleep "$delay"
+          done
           # Stapling rewrites the image. `stapler validate` is what proves the
           # offline case, since spctl can clear an unstapled image from an
           # online CDN check; spctl then gives the verdict a user's machine
