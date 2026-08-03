@@ -82,6 +82,30 @@ Write-Output $found.Path
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
+def test_arch_probe_ignores_startup_output(tmp_path: Path, shell: str):
+    """Startup output must not reach the arch tag.
+
+    The caller compares the tag with -eq "win-amd64", so a contaminated answer reads
+    as "unknown" and Windows on ARM silently settles for a native ARM64 interpreter.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    probe = _extract(r"    function Get-PythonPlatformTag \{.*?\n    \}\n", source)
+    (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding = "utf-8")
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{probe}
+Write-Output (Get-PythonPlatformTag $env:TEST_PYTHON)
+"""
+    env = os.environ.copy()
+    env["TEST_PYTHON"] = sys.executable
+    env["PYTHONPATH"] = str(tmp_path)
+    tag = _run_powershell(shell, script, env)
+    assert tag and "\n" not in tag and "startup_banner" not in tag, tag
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
 def test_venv_base_home_comes_from_pyvenv_config(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     reader = _extract(r"    function Get-VenvBaseHome \{.*?\n    \}\n", source)

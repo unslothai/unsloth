@@ -1269,17 +1269,19 @@ exit 0
         param([string]$Exe)
         if ($Exe -match $script:CondaSkipPattern) { return $true }
         try {
-            $basePrefix = (& $Exe -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
+            $basePrefix = (& $Exe -S -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
             if ($basePrefix -match $script:CondaSkipPattern) { return $true }
         } catch { }
         return $false
     }
 
     # The interpreter's own arch, asked of it: win-amd64|win-arm64|win32|"".
+    # -S: the caller compares this with -eq, so a sitecustomize banner would read as
+    # "unknown" and lose the x64-over-ARM64 preference.
     function Get-PythonPlatformTag {
         param([string]$Exe)
         try {
-            return (& $Exe -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+            return (& $Exe -S -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
         } catch { return "" }
     }
 
@@ -1312,7 +1314,7 @@ exit 0
                         $ver = $Matches[1]
                         # Resolve the actual executable path and verify it is not conda-based
                         $resolvedExe = (& $pyLauncher.Source "-$minor" -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                        if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsCondaPython $resolvedExe)) {
+                        if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
                             if (-not $preferX64) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
                             $candidates += @{ Version = $ver; Path = $resolvedExe }
                         }
@@ -1932,13 +1934,10 @@ exit 0
         $recordedBaseHome = Get-VenvBaseHome -VenvRoot $VenvDir
         Write-Host "[ERROR] The managed Python interpreter is missing or cannot be launched." -ForegroundColor Red
         Write-Host "        Managed Python: $VenvPython" -ForegroundColor Yellow
-        if ($recordedBaseHome) {
-            Write-Host "        Recorded base Python home: $recordedBaseHome" -ForegroundColor Yellow
-        } else {
-            Write-Host "        Recorded base Python home: unavailable" -ForegroundColor Yellow
-        }
-        Write-Host "        Restore the Python installation referenced by this environment, or move" -ForegroundColor Yellow
-        Write-Host "        $VenvDir aside and re-run install.ps1." -ForegroundColor Yellow
+        if (-not $recordedBaseHome) { $recordedBaseHome = "unavailable" }
+        Write-Host "        Recorded base Python home: $recordedBaseHome" -ForegroundColor Yellow
+        # The ownership marker is written above, so a plain re-run replaces this venv.
+        Write-Host "        Restore that Python installation, or just re-run install.ps1." -ForegroundColor Yellow
         return (Exit-InstallFailure "Managed Python is unavailable at $VenvPython (recorded base home: $recordedBaseHome)")
     }
 
