@@ -227,8 +227,7 @@ with sync_playwright() as p:
         step("setup: API login + token seed (attach to running Studio)")
         _tok = _login_token_via_api(BASE, LOGIN_USER, LOGIN_PW)
         ctx.add_init_script(
-            f"try{{localStorage.setItem('unsloth_auth_token', {json.dumps(_tok)});}}"
-            f"catch(e){{}}"
+            f"try{{localStorage.setItem('unsloth_auth_token', {json.dumps(_tok)});}}catch(e){{}}"
         )
         page.goto(BASE, wait_until = "domcontentloaded", timeout = 60_000)
     else:
