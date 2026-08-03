@@ -169,18 +169,31 @@ fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-fn confirm_then_quit(app: &tauri::AppHandle) {
+/// Run the quit confirmations off the calling thread, then hand the verdict to
+/// `done`. Returns false when a confirmation is already on screen and this
+/// request was dropped.
+fn spawn_quit_confirmation<F>(app: &tauri::AppHandle, done: F) -> bool
+where
+    F: FnOnce(&tauri::AppHandle, bool) + Send + 'static,
+{
     if QUIT_CONFIRM_OPEN.swap(true, Ordering::SeqCst) {
-        return;
+        return false;
     }
     let app_handle = app.clone();
     std::thread::spawn(move || {
         let proceed =
             confirm_quit_during_install(&app_handle) && confirm_quit_during_training(&app_handle);
         QUIT_CONFIRM_OPEN.store(false, Ordering::SeqCst);
+        done(&app_handle, proceed);
+    });
+    true
+}
+
+fn confirm_then_quit(app: &tauri::AppHandle) {
+    spawn_quit_confirmation(app, |app, proceed| {
         if proceed {
-            cleanup_child_processes(&app_handle);
-            app_handle.exit(0);
+            cleanup_child_processes(app);
+            app.exit(0);
         }
     });
 }
@@ -328,6 +341,7 @@ extern "C-unwind" fn application_should_terminate(
 ) -> usize {
     const NS_TERMINATE_CANCEL: usize = 0;
     const NS_TERMINATE_NOW: usize = 1;
+    const NS_TERMINATE_LATER: usize = 2;
 
     let Some(app) = TERMINATE_APP_HANDLE.get() else {
         return NS_TERMINATE_NOW;
@@ -335,15 +349,45 @@ extern "C-unwind" fn application_should_terminate(
     if !install_is_active(app) && !training_is_active(app) {
         return NS_TERMINATE_NOW;
     }
-    confirm_then_quit(app);
-    NS_TERMINATE_CANCEL
+    // NSTerminateLater keeps a logout/restart/shutdown pending while the user
+    // decides; cancelling here would deny it before they had answered, so a
+    // confirmed quit would still leave the logout aborted.
+    if spawn_quit_confirmation(app, |app, proceed| {
+        if proceed {
+            cleanup_child_processes(app);
+        }
+        reply_to_termination_request(app, proceed);
+    }) {
+        NS_TERMINATE_LATER
+    } else {
+        // Another quit path already has the dialog up; deny this request
+        // rather than promise a reply nobody will send.
+        NS_TERMINATE_CANCEL
+    }
+}
+
+/// Deliver the NSTerminateLater verdict. AppKit expects it on the main thread;
+/// if the main loop is already gone, so is the pending termination request.
+#[cfg(target_os = "macos")]
+fn reply_to_termination_request(app: &tauri::AppHandle, proceed: bool) {
+    use objc2::runtime::{AnyObject, Bool};
+
+    let result = app.run_on_main_thread(move || unsafe {
+        let nsapp: *mut AnyObject =
+            objc2::msg_send![objc2::class!(NSApplication), sharedApplication];
+        let () = objc2::msg_send![nsapp, replyToApplicationShouldTerminate: Bool::new(proceed)];
+    });
+    if let Err(error) = result {
+        warn!("Could not reply to the pending termination request: {error}");
+    }
 }
 
 /// Dock quits, logout and AppleScript quits ask the delegate via
 /// `applicationShouldTerminate:`, which tao leaves unimplemented, so they
 /// terminate without reaching the menu handler above. Add the missing method to
-/// tao's delegate: cancel and confirm when a run is active, otherwise keep the
-/// stock path (`applicationWillTerminate` -> RunEvent::Exit -> cleanup).
+/// tao's delegate: when a run is active the answer is deferred with
+/// NSTerminateLater until the user confirms, otherwise keep the stock path
+/// (`applicationWillTerminate` -> RunEvent::Exit -> cleanup).
 #[cfg(target_os = "macos")]
 fn setup_terminate_interception(app: &tauri::App) {
     use objc2::ffi::{class_addMethod, object_getClass};
