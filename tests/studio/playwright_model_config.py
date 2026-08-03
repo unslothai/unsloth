@@ -91,6 +91,44 @@ _n = [0]
 _failed: list[str] = []
 
 
+# Ported from features/hub/lib/local-path.ts and features/hub/lib/model-identity.ts.
+_LOCAL_PATH_PREFIX_RE = re.compile(
+    r"^(?:/|\.{1,2}(?:$|[\\/])|~(?:$|[\\/])|~[^\\/]+[\\/]|[A-Za-z]:[\\/]|\\\\)"
+)
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_WSL_DRIVE_PATH_RE = re.compile(r"^/mnt/[A-Za-z](?:/|$)")
+
+
+def _normalize_case_insensitive_path(path: str, min_length: int) -> str:
+    slashed = path.replace("\\", "/")
+    end = len(slashed)
+    while end > min_length and slashed[end - 1] == "/":
+        end -= 1
+    return slashed[:end].lower()
+
+
+def _normalize_model_identity(model_id: str) -> str:
+    """Mirror of normalizeModelIdentity in features/hub/lib/model-identity.ts.
+
+    Case folding is not unconditional there: a plain POSIX path keeps its case,
+    because /models/Foo.gguf and /models/foo.gguf are different files. Only a hub
+    id and the case-insensitive roots -- a Windows drive, a UNC share, a WSL mount
+    -- fold. Lowercasing everything here merged paths the app keeps apart, so an
+    entry belonging to one could satisfy a check that the other had saved.
+    """
+    trimmed = model_id.strip()
+    if not (trimmed and _LOCAL_PATH_PREFIX_RE.match(trimmed)):
+        return trimmed.lower()
+    slash_path = trimmed.replace("\\", "/")
+    if _WINDOWS_DRIVE_PATH_RE.match(trimmed):
+        return _normalize_case_insensitive_path(trimmed, 3)
+    if slash_path.startswith("//"):
+        return _normalize_case_insensitive_path(trimmed, 2)
+    if _WSL_DRIVE_PATH_RE.match(slash_path):
+        return _normalize_case_insensitive_path(trimmed, 6)
+    return trimmed
+
+
 def step(s: str) -> None:
     print(f"[ui-modelcfg] STEP {s}", flush = True)
 
@@ -255,7 +293,7 @@ with sync_playwright() as p:
         shape, so a schema change degrades to the old behaviour rather than silently
         asserting nothing.
         """
-        want = (GGUF_REPO.strip().lower(), GGUF_VARIANT.strip().lower())
+        want = (_normalize_model_identity(GGUF_REPO), GGUF_VARIANT.strip().lower())
         recognised = [k for k in cfg if re.match(r"^v\d+:\[", str(k))]
         if not recognised:
             return config_entries(cfg)
@@ -270,7 +308,8 @@ with sync_playwright() as p:
                 continue
             if not isinstance(parts, list) or not parts:
                 continue
-            got = tuple(str(x).strip().lower() for x in (list(parts) + [""])[:2])
+            raw = (list(parts) + [""])[:2]
+            got = (_normalize_model_identity(str(raw[0])), str(raw[1]).strip().lower())
             if got == want and isinstance(cfg[key], dict):
                 matched.append(cfg[key])
         # Scoping is meaningful, so an empty result is a real answer: returning every
@@ -514,7 +553,12 @@ with sync_playwright() as p:
         # variant and they all carry the repo id.
         sel = GEAR.format(h = hint)
         if quant:
-            sel += f'[aria-label*="{quant}" i]'
+            # Ends-with, not contains: every label is "<repo> <quant>", so the quant
+            # is the final token, and an unbounded substring lets F16 match BF16 --
+            # whereupon `.first` among independently ordered variants can open the
+            # other one, and the exact-key storage checks then fail on a quant that
+            # was working.
+            sel += f'[aria-label$=" {quant}" i]'
         gear = scope.locator(sel).first
         try:
             gear.wait_for(state = "attached", timeout = timeout)
