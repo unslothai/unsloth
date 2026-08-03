@@ -16,6 +16,13 @@ if str(_BACKEND_ROOT) not in sys.path:
 from routes import datasets as datasets_route  # noqa: E402
 
 
+@pytest.fixture(autouse = True)
+def isolated_studio_home(tmp_path, monkeypatch):
+    """Keep fixtures out of the developer's real Studio uploads directory."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    return tmp_path
+
+
 def _check(dataset_name: str) -> HTTPException:
     request = datasets_route.CheckFormatRequest(dataset_name = dataset_name)
     with pytest.raises(HTTPException) as exc:
