@@ -74,11 +74,11 @@ def test_running_venv_process_is_reported(tmp_path: Path, shell: str):
     scripts = tmp_path / "unsloth_studio" / "Scripts"
     scripts.mkdir(parents = True)
     probe = scripts / "guard-probe.exe"
-    shutil.copy2(os.environ["COMSPEC"], probe)
+    shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     child = subprocess.Popen(
-        [str(probe), "/d", "/c", "ping", "-n", "6", "127.0.0.1"],
+        [str(probe), "-n", "6", "127.0.0.1"],
         creationflags = creationflags,
     )
     try:
