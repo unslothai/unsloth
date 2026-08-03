@@ -2022,9 +2022,7 @@ def test_native_context_read_still_reports_a_length_within_budget(monkeypatch, t
     gguf = tmp_path / "model-Q4_K_M.gguf"
     gguf.write_bytes(b"x")
 
-    monkeypatch.setattr(
-        models_route, "_iter_gguf_paths", lambda root, deadline = None: iter([gguf])
-    )
+    monkeypatch.setattr(models_route, "_iter_gguf_paths", lambda root, deadline = None: iter([gguf]))
     monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", lambda _path: 8192)
 
     assert models_route._read_native_context_length(str(tmp_path), is_local = True) == 8192
