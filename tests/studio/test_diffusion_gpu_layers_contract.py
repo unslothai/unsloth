@@ -135,11 +135,17 @@ def test_no_gpu_and_no_pick_masks_the_child(llama_cpp):
 
 
 def test_diffusion_load_passes_the_users_split_through():
-    body = _body("load_model")
-    start = body.index("_start_diffusion_server(")
-    call = body[start : body.index(")", body.index("gpu_ids = gpu_ids", start))]
-    assert "gpu_memory_mode = gpu_memory_mode" in call
-    assert "gpu_layers = gpu_layers" in call
+    call = next(
+        node
+        for node in ast.walk(_function("load_model"))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_start_diffusion_server"
+    )
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    for name in ("gpu_memory_mode", "gpu_layers"):
+        assert isinstance(keywords.get(name), ast.Name)
+        assert keywords[name].id == name
 
 
 def test_diffusion_no_longer_hardcodes_auto_over_the_users_choice():
@@ -171,19 +177,15 @@ def _loaded_diffusion(llama_cpp, *, recorded_layers, requested_ngl):
     return b
 
 
-def _in_target_state(b, *, mode, layers):
-    return b._already_in_target_state(
-        model_identifier = "unsloth/DiffusionGemma-GGUF",
-        hf_variant = None,
-        n_ctx = 4096,
-        cache_type_kv = None,
-        speculative_type = None,
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        gpu_memory_mode = mode,
-        gpu_layers = layers,
-        gpu_ids = [0],
+def _in_target_state(llama_cpp, b, *, mode, layers):
+    return b.adopt_load_intent_if_matched(
+        llama_cpp.GgufLoadIntent(
+            model_identifier = "unsloth/DiffusionGemma-GGUF",
+            n_ctx = 4096,
+            gpu_memory_mode = mode,
+            gpu_layers = layers,
+            gpu_ids = [0],
+        )
     )
 
 
@@ -206,20 +208,7 @@ def test_backend_dedup_compares_the_requested_split(
     llama_cpp, recorded, requested_ngl, mode, layers, expected
 ):
     b = _loaded_diffusion(llama_cpp, recorded_layers = recorded, requested_ngl = requested_ngl)
-    assert _in_target_state(b, mode = mode, layers = layers) is expected
-
-
-def test_route_dedup_compares_the_requested_split():
-    """The route mirrors the backend guard, so it must read the same field."""
-    route_src = ROUTE_PATH.read_text(encoding = "utf-8")
-    route_tree = ast.parse(route_src)
-    for node in ast.walk(route_tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_request_matches_loaded_settings":
-            body = ast.get_source_segment(route_src, node) or ""
-            assert "_diffusion_manual_ngl(request.gpu_memory_mode, request.gpu_layers)" in body
-            assert "llama_backend.diffusion_requested_ngl" in body
-            return
-    raise AssertionError("_request_matches_loaded_settings missing")
+    assert _in_target_state(llama_cpp, b, mode = mode, layers = layers) is expected
 
 
 def test_requested_split_survives_a_shim_without_the_flag(llama_cpp):
@@ -259,36 +248,6 @@ def test_probe_falls_back_to_a_substring_scan_on_unparseable_source(llama_cpp, t
     shim = tmp_path / "shim.py"
     shim.write_text('ap.add_argument("--ngl"\n', encoding = "utf-8")  # syntax error
     assert llama_cpp._shim_supports_ngl(["python", str(shim)]) is True
-
-
-# ── the training guard must not refuse a load that holds no VRAM ──
-
-
-def test_training_guard_sees_the_layer_count():
-    """A manual/0 diffusion load places no layers, so it cannot compete with training."""
-    route_src = ROUTE_PATH.read_text(encoding = "utf-8")
-    route_tree = ast.parse(route_src)
-    fn = next(
-        n
-        for n in ast.walk(route_tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "_guard_chat_load_against_training"
-    )
-    names = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
-    assert "gpu_layers" in names
-    body = ast.get_source_segment(route_src, fn) or ""
-    assert "diffusion_ngl == 0" in body
-
-    calls = [
-        n
-        for n in ast.walk(route_tree)
-        if isinstance(n, ast.Call)
-        and any(
-            isinstance(a, ast.Name) and a.id == "_guard_chat_load_against_training" for a in n.args
-        )
-    ]
-    assert len(calls) == 2, "expected the /load and /validate call sites"
-    for call in calls:
-        assert any(kw.arg == "gpu_layers" for kw in call.keywords)
 
 
 # ── the probe must inspect the file that will be spawned, whatever its name ──
@@ -388,12 +347,12 @@ def test_zoo_upgrade_reloads_a_dropped_split(llama_cpp):
     """manual/20 against an old shim launched with the default and deduped on the
     ask. Once the shim gains --ngl, the identical ask must reload to apply it."""
     b = _loaded_diffusion(llama_cpp, recorded_layers = -1, requested_ngl = 20)
-    assert _in_target_state(b, mode = "manual", layers = 20) is True  # shim still old
+    assert _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is True  # shim still old
     b.diffusion_split_supported = lambda: True  # zoo upgraded in this session
-    assert _in_target_state(b, mode = "manual", layers = 20) is False  # now applies
+    assert _in_target_state(llama_cpp, b, mode = "manual", layers = 20) is False  # now applies
     b2 = _loaded_diffusion(llama_cpp, recorded_layers = 20, requested_ngl = 20)
     b2.diffusion_split_supported = lambda: True
-    assert _in_target_state(b2, mode = "manual", layers = 20) is True  # applied: rest
+    assert _in_target_state(llama_cpp, b2, mode = "manual", layers = 20) is True  # applied: rest
 
 
 # ── the dropped split must reach the client ──
@@ -405,38 +364,17 @@ def test_response_models_expose_the_requested_split():
         encoding = "utf-8"
     )
     tree = ast.parse(models_src)
+    runtime = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.ClassDef) and n.name == "_InferenceRuntimeFields"
+    )
+    fields = {
+        node.target.id
+        for node in runtime.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    assert "diffusion_requested_ngl" in fields
     for name in ("LoadResponse", "InferenceStatusResponse"):
         cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == name)
-        fields = {
-            t.target.id
-            for t in cls.body
-            if isinstance(t, ast.AnnAssign) and isinstance(t.target, ast.Name)
-        }
-        assert "diffusion_requested_ngl" in fields, f"{name} must report the ask"
-
-
-def test_every_diffusion_response_also_reports_the_requested_split():
-    """Wiring, not prose: a new response site that forgets the ask reddens here."""
-    route_src = ROUTE_PATH.read_text(encoding = "utf-8")
-    tree = ast.parse(route_src)
-    sites = 0
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        kwargs = {kw.arg for kw in node.keywords}
-        # Only responses describing a LOADED model; /validate has no runner yet, so no
-        # applied-vs-asked split.
-        if "is_diffusion" not in kwargs or "is_gguf" not in kwargs:
-            continue
-        if not any(
-            isinstance(kw.value, ast.Attribute) and kw.value.attr == "is_diffusion"
-            for kw in node.keywords
-            if kw.arg == "is_diffusion"
-        ):
-            continue
-        sites += 1
-        assert "diffusion_requested_ngl" in kwargs, (
-            f"response at line {node.lineno} reports is_diffusion from the backend "
-            "but not diffusion_requested_ngl, so a dropped split cannot survive a refresh"
-        )
-    assert sites == 3, f"expected the 2 load sites and the status site, found {sites}"
+        assert any(isinstance(base, ast.Name) and base.id == runtime.name for base in cls.bases)

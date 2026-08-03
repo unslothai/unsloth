@@ -75,8 +75,8 @@ def test_autoload_records_backend_loaded_model_identity():
     autoload = autoload.split("\n  try {", 1)[0]
     assert "const loadedModelId = loadResp.model || modelPath" in autoload
     assert "setCheckpoint(loadedModelId," in autoload
-    assert "id: loadedModelId" in autoload
-    assert "m.id === loadedModelId" in autoload
+    # syncModelCapabilities upserts the summary, matching on the id it is handed.
+    assert "syncModelCapabilities(loadedModelId," in autoload
 
 
 def test_chat_autoload_toast_is_persistent_and_dismissible():

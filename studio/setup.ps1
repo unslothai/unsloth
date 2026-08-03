@@ -2940,6 +2940,14 @@ function Get-StudioAdoptableState {
         }
     }
     if ($denied) { return "Denied" }
+    # Windows reports a MISSING child of an unreadable directory as absent, so the
+    # probes above cannot tell "no markers here" from "cannot look"; listing the
+    # directory itself can. Without this a denied tree reads as unowned.
+    try { $null = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1) }
+    catch {
+        if (Test-AccessDeniedError $_) { return "Denied" }
+        # Anything else was not adoptable before either; this must not throw.
+    }
     return "No"
 }
 # Boolean view for callers that only gate a cosmetic cleanup on adoption.
@@ -2950,7 +2958,10 @@ function Test-StudioOwnedAdoptable {
 function Assert-StudioOwnedOrAbsent {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Label
+        [Parameter(Mandatory = $true)][string]$Label,
+        # whisper.cpp is non-fatal by contract, so it needs the denial handed back
+        # rather than exited on. Only this mode returns a value.
+        [switch]$NonFatal
     )
     # Denied is not Absent: a root we cannot read cannot be proven ours, and
     # returning here would let the caller replace it. Both stops stay gated on
@@ -2959,17 +2970,20 @@ function Assert-StudioOwnedOrAbsent {
     $pathState = Get-PathState -Path $Path -PathType Container
     if ($pathState -ne "Present") {
         if ($StudioHomeIsCustom -and $pathState -eq "Denied") {
+            if ($NonFatal) { return "Denied" }
             Exit-PathAccessDenied -Path $Path -Label $Label -OwnershipUnverified
         }
         return
     }
     $markerState = Get-PathState -Path (Join-Path $Path $StudioOwnedMarker) -PathType Leaf
     if ($StudioHomeIsCustom -and $markerState -eq "Denied") {
+        if ($NonFatal) { return "Denied" }
         Exit-PathAccessDenied -Path $Path -Label $Label -OwnershipUnverified
     }
     if ($StudioHomeIsCustom -and $markerState -ne "Present") {
         $adoptState = Get-StudioAdoptableState -Path $Path
         if ($adoptState -eq "Denied") {
+            if ($NonFatal) { return "Denied" }
             Exit-PathAccessDenied -Path $Path -Label $Label -OwnershipUnverified
         }
         if ($adoptState -eq "Yes") {
@@ -4333,6 +4347,12 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
     substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
 } elseif ($env:UNSLOTH_SKIP_WHISPER_INSTALL -eq "1") {
     substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
+} elseif ($StudioHomeIsCustom -and (Test-Path -LiteralPath $WhisperInstaller) -and
+        (Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install" -NonFatal) -eq "Denied") {
+    # Never fatal, per the phase header: the guard below would exit the whole run
+    # on an unreadable tree, taking llama.cpp down with it. Only the denial is
+    # caught here; an unowned tree still stops.
+    step "whisper.cpp" "install directory cannot be read: access is denied; curated whisper.cpp dictation is unavailable; restore access to $WhisperCppDir or move it aside, then re-run setup; browser and Transformers dictation remain available" "Yellow"
 } elseif (Test-Path -LiteralPath $WhisperInstaller) {
     # The installer's atomic activation replaces the whole directory, so the
     # custom-home ownership guard must run first (mirrors the llama block).
@@ -4372,7 +4392,7 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
         } else {
             step "whisper.cpp" "prebuilt installed"
         }
-        if ($StudioHomeIsCustom -and (Test-Path -LiteralPath $WhisperCppDir -PathType Container)) {
+        if ($StudioHomeIsCustom -and (Test-PathQuiet $WhisperCppDir "Container")) {
             Mark-StudioOwned -Path $WhisperCppDir
         }
     } elseif ($whisperExit -eq 3) {
@@ -4466,10 +4486,25 @@ $HasGitForBuild = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 # Check if existing llama-server matches current GPU mode. A CUDA-built binary
 # on a now-CPU-only machine (or vice versa) needs to be rebuilt.
 $NeedRebuild = $false
-if (Test-Path -LiteralPath $LlamaServerBin) {
+# A forced compile, a pinned PR or a custom source skips the prebuilt path and its
+# phase 3.4 denial guard, so this can be the first probe to read inside the tree.
+# A linked local dir is skipped: it reads through the junction into the user's own
+# checkout, and nothing here is consumed on that path anyway.
+$llamaBinState = if ($LocalLlamaCppLinked) { "Absent" } else { Get-PathState -Path $LlamaServerBin -PathType Leaf }
+if ($llamaBinState -eq "Denied") {
+    # Nothing proved this tree is ours here, so do not advise deleting it.
+    Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$StudioHomeIsCustom
+}
+if ($llamaBinState -eq "Present") {
     $CmakeCacheFile = Join-Path $BuildDir "CMakeCache.txt"
-    if (Test-Path -LiteralPath $CmakeCacheFile) {
-        $cachedCuda = Select-String -LiteralPath $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
+    if (Test-PathQuiet $CmakeCacheFile "Leaf") {
+        # A listed file can still deny the read, which Test-PathQuiet cannot see.
+        try {
+            $cachedCuda = Select-String -LiteralPath $CmakeCacheFile -Pattern 'GGML_CUDA:BOOL=ON' -Quiet
+        } catch {
+            if (-not (Test-AccessDeniedError $_)) { throw }
+            Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install" -OwnershipUnverified:$StudioHomeIsCustom
+        }
         if ($HasNvidiaSmi -and -not $cachedCuda) {
             Write-Host "   Existing llama-server is CPU-only but GPU is available -- rebuilding" -ForegroundColor Yellow
             $NeedRebuild = $true
@@ -4485,7 +4520,7 @@ if (Test-Path -LiteralPath $LlamaServerBin) {
 # build runs only when needed and no usable binary is already present. A linked
 # local dir sets $NeedLlamaSourceBuild = $false, so this no-ops for that path.
 $WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and `
-    -not ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master")
+    -not ((Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master")
 if ($WillBuildLlamaFromSource) {
     if (-not $HasGitForBuild) {
         # Phase 1 keeps git optional, so only the automatic fallback after a failed prebuilt
@@ -4519,7 +4554,7 @@ if ($LocalLlamaCppLinked) {
 } elseif (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
-} elseif ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
+} elseif ((Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
     # Skip rebuild only for pinned tags (e.g. b8635).  When the requested
     # tag is "master" (a moving target), always rebuild so the binary picks
     # up new model architecture support (e.g. Gemma 4).
@@ -5063,16 +5098,16 @@ if ($LocalLlamaCppLinked) {
     $totalSec = [math]::Round($totalSw.Elapsed.TotalSeconds % 60, 1)
 
     # -- Summary --
-    if ($BuildOk -and (Test-Path -LiteralPath $LlamaServerBin)) {
+    if ($BuildOk -and (Test-PathQuiet $LlamaServerBin "Leaf")) {
         step "llama.cpp" "built"
         $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
-        if (Test-Path -LiteralPath $QuantizeBin) {
+        if (Test-PathQuiet $QuantizeBin "Leaf") {
             step "llama-quantize" "built"
         }
         step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
     } else {
         $altBin = Join-Path $BuildDir "bin\llama-server.exe"
-        if ($BuildOk -and (Test-Path -LiteralPath $altBin)) {
+        if ($BuildOk -and (Test-PathQuiet $altBin "Leaf")) {
             step "llama.cpp" "built"
             step "build time" "${totalMin}m ${totalSec}s" "DarkGray"
         } else {
