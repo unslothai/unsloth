@@ -3,11 +3,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { toast } from "@/lib/toast";
-import {
-  clearRemoteBackoff,
-  type HubFailure,
-  sanitizeHubErrorMessage,
-} from "@/features/hub/lib/network";
+import { clearRemoteBackoff, type HubFailure } from "@/features/hub/lib/network";
 import { useHubAvailability } from "./use-online-status";
 import {
   type HfModelResult,
@@ -147,13 +143,8 @@ export function useDiscoverSearch({
   const rawFetchMore = isDatasetMode
     ? datasetSearch.fetchMore
     : modelSearch.fetchMore;
-  // Sanitized once here so the toast and both catalog branches are covered:
-  // the proxy-first path records no classified failure, so this is the only
-  // thing standing between the SDK's URL trailer and the screen.
-  const rawErrorMessage = isDatasetMode ? datasetSearch.error : modelSearch.error;
-  const rawSearchError = rawErrorMessage
-    ? sanitizeHubErrorMessage(rawErrorMessage)
-    : rawErrorMessage;
+  // Already sanitized in useHubPaginatedSearch, where every consumer reads it.
+  const rawSearchError = isDatasetMode ? datasetSearch.error : modelSearch.error;
   const retrySearch = isDatasetMode ? datasetSearch.retry : modelSearch.retry;
   // Surfaced regardless of availability: the failure IS the thing worth showing.
   const searchError = isDiscoverTab ? rawSearchError : null;

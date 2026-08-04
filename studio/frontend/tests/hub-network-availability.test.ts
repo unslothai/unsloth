@@ -249,3 +249,13 @@ test("sanitizing leaves a message with no trailer alone", () => {
   assert.equal(sanitizeHubErrorMessage("Search failed"), "Search failed");
   assert.equal(sanitizeHubErrorMessage(""), "");
 });
+
+test("a proxy URL trailer is stripped as well as a Hub one", () => {
+  // The proxy path's Response.url is same-origin but still carries the query,
+  // and the training and dataset pickers render this string raw.
+  const raw =
+    "Api error with status 502. URL: http://127.0.0.1:8888/api/hub/discovery/models?search=acme-internal&limit=100";
+  const clean = sanitizeHubErrorMessage(raw);
+  assert.ok(!clean.includes("acme-internal"));
+  assert.equal(clean, "Api error with status 502");
+});

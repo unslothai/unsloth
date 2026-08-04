@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { sanitizeHubErrorMessage } from "../lib/network";
 
 interface HfPaginatedState<T> {
   results: T[];
@@ -66,6 +67,15 @@ export async function pullBatch<T>(
 
 function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
+}
+
+// Sanitized here, at the one point every consumer reads: the SDK appends the
+// request URL to its message, and for a proxied request that URL carries the
+// user's search query. The training and dataset pickers render this raw.
+function hubErrorText(err: unknown, fallback: string): string {
+  return err instanceof Error
+    ? sanitizeHubErrorMessage(err.message)
+    : fallback;
 }
 
 function isDocumentHidden(): boolean {
@@ -227,7 +237,7 @@ export function useHubPaginatedSearch<T>(
           isLoading: false,
           isLoadingMore: false,
           hasMore: false,
-          error: err instanceof Error ? err.message : "Search failed",
+          error: hubErrorText(err, "Search failed"),
           queryKey,
         });
       })
@@ -341,7 +351,7 @@ export function useHubPaginatedSearch<T>(
           // Keep results and hasMore=true: the iterator is still valid, so the
           // next fetchMore() resumes the failed page without discarding the list
           // (retry() restarts from page 1).
-          error: err instanceof Error ? err.message : "Failed to load more",
+          error: hubErrorText(err, "Failed to load more"),
         }));
       })
       .finally(() => {
