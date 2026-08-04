@@ -47,9 +47,14 @@ def test_signed_plugin_dirs_precede_every_plugin_use(template: str) -> None:
     lines = template.splitlines()
     first_dir = min(i for i, l in enumerate(lines) if l.strip().startswith("!addplugindir"))
     plugin_calls = [
-        i for i, l in enumerate(lines)
-        if "::" in l and not l.strip().startswith((";", "#", "!"))
-        and any(p in l for p in ("System::", "nsDialogs::", "StartMenu::", "NSISdl::", "nsis_tauri_utils::"))
+        i
+        for i, l in enumerate(lines)
+        if "::" in l
+        and not l.strip().startswith((";", "#", "!"))
+        and any(
+            p in l
+            for p in ("System::", "nsDialogs::", "StartMenu::", "NSISdl::", "nsis_tauri_utils::")
+        )
     ]
     assert plugin_calls, "expected the template to call NSIS plugins"
     assert first_dir < min(plugin_calls)
