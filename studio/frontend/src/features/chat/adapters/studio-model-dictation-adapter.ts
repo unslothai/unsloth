@@ -19,6 +19,7 @@ import {
   markDictationFailed,
   markDictationTranscript,
 } from "./dictation-outcome";
+import { isUnrecoverableSttLoadError, sttRequestError } from "./stt-load-error";
 import {
   type StudioDictationSession,
   isMissingDeviceError,
@@ -205,7 +206,10 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
       const body = (await response.json().catch(() => null)) as {
         detail?: string;
       } | null;
-      throw new Error(body?.detail ?? `HTTP ${response.status}`);
+      throw sttRequestError(
+        body?.detail ?? `HTTP ${response.status}`,
+        response.status,
+      );
     }
   });
 }
@@ -629,9 +633,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         }
         // Warm the model only after mic access. The backend loads cache-only
         // and never downloads here.
-        void loadSttModel(sessionModel, sessionEngine).catch(
-          reportTranscriptionError,
-        );
+        void loadSttModel(sessionModel, sessionEngine).catch((error) => {
+          reportTranscriptionError(error);
+          // A model that cannot load will not transcribe at stop time either,
+          // so end now rather than record audio that is already lost.
+          if (isUnrecoverableSttLoadError(error)) finishSession("error");
+        });
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
           onAudioFrame(rawRms, now);
         });
