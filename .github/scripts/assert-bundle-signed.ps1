@@ -12,7 +12,11 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$exeExtensions = @('.exe', '.dll', '.sys', '.ocx', '.cpl', '.scr')
+# .ps1/.psm1 are here on purpose: install.ps1 ships as a bundle resource and is
+# what the app executes on first run, so it is as much "what the installer drops
+# on disk" as any DLL. Authenticode covers scripts and Smart App Control checks
+# them.
+$exeExtensions = @('.exe', '.dll', '.sys', '.ocx', '.cpl', '.scr', '.ps1', '.psm1')
 
 $unsigned = @()
 $checked = 0
