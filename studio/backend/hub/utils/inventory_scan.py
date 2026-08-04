@@ -1488,6 +1488,53 @@ def _current_revisions(repo_info):
     return revisions
 
 
+# One definition of "the denoiser is on disk", shared by the repo-wide and the snapshot-scoped
+# check so the two cannot drift into disagreeing about the same directory.
+_DENOISER_DIRS = ("transformer", "unet")
+_DENOISER_WEIGHT_SUFFIXES = (".safetensors", ".bin")
+
+
+def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
+    """Whether *snapshot* itself carries a ROOT ``model_index.json``.
+
+    The snapshot-scoped twin of :func:`repo_has_pipeline_index`, for callers that already know the
+    ONE directory their row loads from. ``from_pretrained`` reads the manifest at the root of the
+    revision it resolves, so a sibling revision's manifest says nothing about this row.
+    """
+    if snapshot is None:
+        return False
+    try:
+        return (Path(snapshot) / "model_index.json").is_file()
+    except OSError:
+        return False
+
+
+def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
+    """The companion-only-prefetch check scoped to ONE snapshot dir.
+
+    Same signal as :func:`repo_pipeline_missing_denoiser` -- a root ``model_index.json`` with no
+    weight under ``transformer/`` or ``unet/`` -- but judged on the directory the caller's row
+    actually loads, not on whichever revision this module would have picked for itself. Two
+    snapshot selectors disagree: a row pinned to (or resolving through ``refs/main`` to) a complete
+    revision would otherwise be marked partial by a newer companion-only one sitting beside it.
+    Best-effort in the same direction: a read error reports not-missing.
+    """
+    if not snapshot_has_pipeline_index(snapshot):
+        return False
+    try:
+        for denoiser in _DENOISER_DIRS:
+            component = Path(snapshot) / denoiser
+            if not component.is_dir():
+                continue
+            for entry in component.rglob("*"):
+                # is_file() follows the snapshot symlink, so a dangling blob is correctly absent.
+                if entry.is_file() and entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES):
+                    return False
+        return True
+    except OSError:
+        return False
+
+
 def repo_has_pipeline_index(repo_info) -> bool:
     """Whether the cached snapshot carries a ROOT model_index.json, i.e. is loadable
     as a full diffusers pipeline (from_pretrained reads only the repo root). A nested
@@ -1522,8 +1569,6 @@ def repo_pipeline_missing_denoiser(repo_info) -> bool:
     genuinely complete pipeline."""
     if not repo_has_pipeline_index(repo_info):
         return False
-    _DENOISER_DIRS = ("transformer", "unet")
-    _WEIGHT_SUFFIXES = (".safetensors", ".bin")
     try:
         for rev in _current_revisions(repo_info):
             snapshot = getattr(rev, "snapshot_path", None)
@@ -1542,7 +1587,7 @@ def repo_pipeline_missing_denoiser(repo_info) -> bool:
                 if (
                     len(parts) >= 2
                     and parts[0].lower() in _DENOISER_DIRS
-                    and parts[-1].lower().endswith(_WEIGHT_SUFFIXES)
+                    and parts[-1].lower().endswith(_DENOISER_WEIGHT_SUFFIXES)
                 ):
                     return False
         return True

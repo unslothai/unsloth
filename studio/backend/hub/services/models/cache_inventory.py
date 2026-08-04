@@ -645,6 +645,13 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         if snapshot is not None:
             for config_name, key in (
                 ("config.json", "has_config"),
+                # A diffusers pipeline's root manifest, which plays exactly the role config.json
+                # plays for transformers: from_pretrained reads it at the snapshot root to learn
+                # the component layout. Without it here no pure pipeline snapshot could classify
+                # (real repos ship model_index.json and per-component configs, never a root
+                # config.json), payload_snapshots came back empty, and every cached diffusion base
+                # pipeline was force-flagged partial and dropped from the On Device lists.
+                ("model_index.json", "has_config"),
                 ("adapter_config.json", "has_adapter_config"),
             ):
                 try:
@@ -854,7 +861,9 @@ def _scan_cached_models() -> list[dict]:
                 )
                 # A companion-only prefetch (pipeline manifest + VAE / text-encoder but no transformer shards, left by a GGUF load) passes
                 # the download check yet cannot from_pretrained, so mark it partial and the pickers stop advertising it as on-device.
-                companion_only = hf_cache_scan.repo_pipeline_missing_denoiser(repo_info)
+                # Scoped to the row's own snapshot, like the download check above it: the repo-wide twin picks the newest revision for
+                # itself, so a newer companion-only snapshot beside the complete one refs/main resolves to marked this row partial.
+                companion_only = hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
                 snapshot_partial = download_partial or companion_only
                 # Flags are OR-ed over revisions, so no payload snapshot means no directory
                 # serves the row and it would reach for the Hub.
@@ -878,10 +887,11 @@ def _scan_cached_models() -> list[dict]:
                         else None
                     ),
                     # Diffusion repos with no pipeline index load only via from_single_file, so the task pickers must not offer them as
-                    # pipeline loads. Without this the picker's single_file gate sees undefined on every hub-sourced row.
+                    # pipeline loads. Without this the picker's single_file gate sees undefined on every hub-sourced row. Read from the
+                    # row's snapshot: the manifest a sibling revision carries is not the one this row's load_id opens.
                     "single_file": bool(
                         row_task is not None
-                        and not hf_cache_scan.repo_has_pipeline_index(repo_info)
+                        and not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
                     ),
                     **local_metadata,
                 }
