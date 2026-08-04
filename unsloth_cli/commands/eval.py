@@ -114,6 +114,12 @@ def _lm_eval_version() -> tuple:
     return (999,)
 
 
+# HFLM's device_list gained f"xpu:{i}" in 0.4.10 and f"hpu:{i}" only in
+# 0.4.12; npu has been listed since 0.4.4. A kind missing from that list is
+# not an error in HFLM — it drops through to the default-device fallback
+_HFLM_DEVICE_MIN_VERSION = {"xpu": (0, 4, 10), "hpu": (0, 4, 12)}
+
+
 def _hf_device_error(device: str) -> Optional[str]:
     # lm-eval's HFLM only recognises 'cuda', canonical 'cuda:<i>', 'mps' and
     # 'mps:0'; anything else (cuda0, cuda:, cuda:01, an out-of-range index)
@@ -151,11 +157,13 @@ def _hf_device_error(device: str) -> Optional[str]:
         # an unavailable or out-of-range accelerator would also silently fall
         # back, so validate against the installed torch build like cuda above
         kind, index = match.group(1), int(match.group(2))
-        if kind in ("xpu", "hpu") and _lm_eval_version() < (0, 4, 10):
-            # HFLM only enumerated cuda/cpu/mps/npu before 0.4.10; xpu/hpu
-            # strings fell through to its silent default-device fallback
+        minimum = _HFLM_DEVICE_MIN_VERSION.get(kind)
+        if minimum is not None and _lm_eval_version() < minimum:
+            # before the release that added this kind to HFLM's device_list the
+            # string fell through to its silent default-device fallback
+            wanted = ".".join(str(part) for part in minimum)
             return (
-                f"--device {device} needs lm-eval >= 0.4.10 — upgrade with "
+                f"--device {device} needs lm-eval >= {wanted} — upgrade with "
                 "`pip install -U lm_eval`."
             )
         import torch
@@ -348,6 +356,7 @@ def resolve_tasks(
     include_paths: List[str] = []
     sibling_names: set = set()
     yaml_names: set = set()
+    alias_names: set = set()
     # (kind, value) in argument order; datasets are generated in a second
     # pass so every yaml/group/child name is known first — the names a
     # generated task gets must not depend on argument order
@@ -425,11 +434,13 @@ def resolve_tasks(
                 raise ValueError(f"Custom task file '{entry}' is missing a 'task:' name.")
             # tag: (and legacy string group:) values register alias names in
             # lm-eval's index, so generated datasets must avoid them too
+            aliases: List[str] = []
             for alias_key in ("tag", "group"):
                 alias_value = spec.get(alias_key)
                 for alias in alias_value if isinstance(alias_value, list) else [alias_value]:
                     if isinstance(alias, str) and alias:
                         sibling_names.add(alias)
+                        aliases.append(alias)
             name = str(name)
             if name in reserved:
                 raise ValueError(
@@ -439,6 +450,25 @@ def resolve_tasks(
                 )
             if name in yaml_names:
                 raise ValueError(f"Duplicate task name '{name}' in --tasks.")
+            # lm-eval indexes tag/group aliases and task names in one registry:
+            # whichever it reaches first keeps the name and the other is dropped
+            # with no error, so the loser would silently never run
+            if name in alias_names:
+                raise ValueError(
+                    f"Custom task file '{entry}' defines task '{name}', which another "
+                    "custom task file in --tasks declares as a 'tag:'/'group:' alias — "
+                    "lm-eval keeps only one of them, so a task would be silently "
+                    "skipped. Rename one of them."
+                )
+            for alias in aliases:
+                if alias in yaml_names:
+                    raise ValueError(
+                        f"Custom task file '{entry}' declares '{alias}' as a "
+                        "'tag:'/'group:' alias, but another custom task file in --tasks "
+                        "defines it as a task — lm-eval keeps only one of them, so a "
+                        "task would be silently skipped. Rename one of them."
+                    )
+            alias_names.update(aliases)
             if "include" in spec or isinstance(spec.get("task"), list) or "!function" in text:
                 # include-bearing, group and !function configs reference
                 # sibling files (base yaml, subtasks, helper modules), so
@@ -580,8 +610,11 @@ def evaluate(
     num_fewshot: Optional[int] = typer.Option(
         None, "--num-fewshot", "-n", help = "Few-shot examples (default: per-task)."
     ),
-    limit: Optional[int] = typer.Option(
-        None, "--limit", help = "Cap examples per task (for quick smoke tests)."
+    limit: Optional[float] = typer.Option(
+        None,
+        "--limit",
+        help = "Cap examples per task (for quick smoke tests): a whole count, or a "
+        "fraction between 0 and 1 for a proportion of each task.",
     ),
     batch_size: str = typer.Option("auto", "--batch-size", "-b", help = "Batch size, or 'auto'."),
     max_seq_length: int = typer.Option(
@@ -637,11 +670,19 @@ def evaluate(
         typer.echo("Error: --num-fewshot must be >= 0.", err = True)
         raise typer.Exit(code = 2)
 
-    if limit is not None and limit <= 0:
-        # lm-eval reads values below 1 as a dataset fraction: 0 builds no
-        # requests and crashes, negatives take an unintended slice
-        typer.echo("Error: --limit must be a positive integer.", err = True)
-        raise typer.Exit(code = 2)
+    if limit is not None:
+        # lm-eval reads a limit below 1 as a fraction of each task's docs and
+        # >= 1 as a count: 0 builds no requests and crashes, negatives take an
+        # unintended slice
+        if limit <= 0:
+            typer.echo(
+                "Error: --limit must be a positive integer or a fraction between 0 and 1.",
+                err = True,
+            )
+            raise typer.Exit(code = 2)
+        if limit >= 1 and limit.is_integer():
+            # forward whole counts as int so results metadata records 100, not 100.0
+            limit = int(limit)
 
     if max_seq_length <= 0:
         # HFLM treats a falsy 0 as unset (silently dropping the cap) and

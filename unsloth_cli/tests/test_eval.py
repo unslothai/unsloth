@@ -1355,15 +1355,80 @@ def test_resolve_tasks_rejects_builtin_child_shadowed_in_subdirectory(tmp_path):
 
 
 def test_hf_device_error_gates_xpu_hpu_on_lm_eval_version(monkeypatch):
-    # HFLM only enumerated xpu/hpu from 0.4.10; older versions silently fall back
+    # HFLM's device_list added xpu:{i} in 0.4.10 but hpu:{i} only in 0.4.12;
+    # a kind it does not list silently falls back to its default device
     _fake_torch(monkeypatch, xpu_available = True, xpu_count = 1)
     monkeypatch.setattr(evalmod, "_lm_eval_version", lambda: (0, 4, 4))
     assert "needs lm-eval >= 0.4.10" in evalmod._hf_device_error("xpu:0")
-    assert "needs lm-eval >= 0.4.10" in evalmod._hf_device_error("hpu:0")
+    assert "needs lm-eval >= 0.4.12" in evalmod._hf_device_error("hpu:0")
     # npu has been enumerated since 0.4.4
     assert "NPU is not available" in evalmod._hf_device_error("npu:0")
     monkeypatch.setattr(evalmod, "_lm_eval_version", lambda: (0, 4, 10))
     assert evalmod._hf_device_error("xpu:0") is None
+
+
+def test_hf_device_error_gates_hpu_until_lm_eval_0412(monkeypatch):
+    # 0.4.10/0.4.11 list xpu:{i} but not hpu:{i}, so --device hpu:0 used to pass
+    # validation and then land on cuda/cpu without a word
+    _fake_torch(monkeypatch, xpu_available = True, xpu_count = 1)
+    for release in ((0, 4, 10), (0, 4, 11)):
+        monkeypatch.setattr(evalmod, "_lm_eval_version", lambda release = release: release)
+        assert "needs lm-eval >= 0.4.12" in evalmod._hf_device_error("hpu:0")
+        assert evalmod._hf_device_error("xpu:0") is None
+    monkeypatch.setattr(evalmod, "_lm_eval_version", lambda: (0, 4, 12))
+    # gate passes at 0.4.12; this torch build simply has no hpu module
+    assert "HPU is not available" in evalmod._hf_device_error("hpu:0")
+
+
+def test_eval_forwards_fractional_limit(fake_eval_env, tmp_path):
+    # lm-eval reads a limit below 1 as a fraction of each task's docs
+    # (simple_evaluate(limit: int | float), get_sample_size:
+    # ceil(len(eval_docs) * limit) if limit < 1.0), and its own CLI declares
+    # --limit as type=float, so a fraction must reach it unchanged
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", "gsm8k", "--limit", "0.1", "--output-dir", str(tmp_path / "o")],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["simple_evaluate_kwargs"]["limit"] == 0.1
+
+
+def test_eval_forwards_whole_limit_as_int(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", "gsm8k", "--limit", "100", "--output-dir", str(tmp_path / "o")],
+    )
+    assert result.exit_code == 0, result.output
+    forwarded = fake_eval_env["simple_evaluate_kwargs"]["limit"]
+    assert forwarded == 100 and isinstance(forwarded, int), repr(forwarded)
+
+
+def test_resolve_tasks_rejects_alias_colliding_with_custom_task(tmp_path):
+    # lm-eval indexes tags and tasks under one key: the tag wins and the task
+    # yaml is dropped as a duplicate, so it would silently never run
+    (tmp_path / "a.yaml").write_text(
+        yaml.safe_dump({"task": "a_task", "tag": "foo", "dataset_path": "json"})
+    )
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump({"task": "foo", "dataset_path": "json"}))
+
+    for order in (("a.yaml", "b.yaml"), ("b.yaml", "a.yaml")):
+        spec = ",".join(str(tmp_path / part) for part in order)
+        with pytest.raises(ValueError, match = "silently skipped"):
+            evalmod.resolve_tasks(spec, "question", "answer", tmp_path / "gen")
+
+
+def test_resolve_tasks_allows_shared_tag_across_custom_tasks(tmp_path):
+    # a tag shared by several tasks is what tags are for — it must still work
+    (tmp_path / "a.yaml").write_text(
+        yaml.safe_dump({"task": "t1", "tag": "suite", "dataset_path": "json"})
+    )
+    (tmp_path / "b.yaml").write_text(
+        yaml.safe_dump({"task": "t2", "tag": "suite", "dataset_path": "json"})
+    )
+    names, _ = evalmod.resolve_tasks(
+        f"{tmp_path / 'a.yaml'},{tmp_path / 'b.yaml'}", "question", "answer", tmp_path / "gen"
+    )
+    assert names == ["t1", "t2"]
 
 
 def test_resolve_tasks_reserves_tag_aliases_for_datasets(tmp_path):
