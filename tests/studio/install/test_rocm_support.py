@@ -3245,8 +3245,8 @@ class TestSetupPs1ShadowingParity:
         # with no AMD Windows wheels resolves to no index and drops the host to CPU,
         # which is worse than the shadowing the preference exists to undo.
         source = self._setup_ps1()
-        body = source[source.index("function Resolve-ShadowingGfxPick"):]
-        body = body[:body.index("\n}\n")]
+        body = source[source.index("function Resolve-ShadowingGfxPick") :]
+        body = body[: body.index("\n}\n")]
         assert "archFamilyMap" in body, "repick must consult the wheel index map"
         assert "pickedHasWheels" in body
 
@@ -3263,16 +3263,16 @@ class TestSetupPs1ShadowingParity:
         # the first AMD match reintroduced #7776 on Adrenalin-only hosts (a 780M
         # ahead of an RX 9060 XT inferred gfx1103 and installed gfx110X-all wheels).
         source = self._setup_ps1()
-        block = source[source.index("$wmiGpus = @(Get-WmiObject Win32_VideoController"):]
-        block = block[:block.index("$ROCmGpuLabel = $script:ROCmGpuLabels[0]")]
+        block = source[source.index("$wmiGpus = @(Get-WmiObject Win32_VideoController") :]
+        block = block[: block.index("$ROCmGpuLabel = $script:ROCmGpuLabels[0]")]
         assert "Select-Object -First 1" not in block
 
     def test_name_inference_runs_the_shadowing_pick(self):
         # Every AMD adapter name gets an arch, then the same preference chooses.
         source = self._setup_ps1()
         assert "Get-GfxArchFromGpuName" in source
-        infer = source[source.index("$nameArches = @()"):]
-        infer = infer[:infer.index("Tip: set UNSLOTH_ROCM_GFX_ARCH")]
+        infer = source[source.index("$nameArches = @()") :]
+        infer = infer[: infer.index("Tip: set UNSLOTH_ROCM_GFX_ARCH")]
         assert "Resolve-ShadowingGfxPick" in infer
 
 
