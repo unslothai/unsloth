@@ -31,12 +31,7 @@ from hub.utils.paths import (
 )
 from hub.services import resolve_destructive_repo_ids
 from hub.services.models import cache_inventory, downloads, gguf_variants
-from hub.services.models.common import (
-    _is_gguf_filename,
-    _is_main_gguf_filename,
-    _is_mmproj_filename,
-    _is_mtp_drafter_path,
-)
+from hub.services.models.common import _is_gguf_filename
 
 logger = get_logger(__name__)
 
