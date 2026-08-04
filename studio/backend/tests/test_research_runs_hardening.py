@@ -916,7 +916,12 @@ def test_stream_completion_first_output_timeout_covers_response_headers(monkeypa
         def build_request(self, method, url, **kwargs):
             return (method, url)
 
-        async def send(self, request, *, stream = False):
+        async def send(
+            self,
+            request,
+            *,
+            stream = False,
+        ):
             try:
                 await asyncio.Event().wait()
             finally:
