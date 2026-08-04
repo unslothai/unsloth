@@ -305,6 +305,20 @@
 	   18px), so icons read slightly smaller than enlarged text. */
 	--ui-icon-size: min(calc(1rem * var(--ui-font-scale, 1)), calc(0.5rem + 0.5rem * var(--ui-font-scale, 1)));
 	--icon-size: var(--ui-icon-size);
+	/* Mirrors the size-3.5 rule applied inside popovers (see the icon block
+	   below), so widths that reserve room for those icons track them. */
+	--ui-icon-size-sm: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1)));
+	/* Model picker header controls. Padding and gaps come from the pinned
+	   --spacing, the icons and label both scale, so reserve each separately.
+	   The trigger is 2.25rem of padding and gaps, two icons, then the label.
+	   All match the h-9 / w-[110px] / 506px they replace at the 16px default. */
+	--picker-control-h: calc(1.125rem + 1.125rem * var(--ui-font-scale, 1));
+	--picker-control-w: calc(2.25rem + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
+	/* Panel: pl-4, two gaps and pr-2, the pills' padding, their two icons and
+	   label, then the two dropdowns. */
+	--picker-panel-w: calc(6.25rem + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
+	/* Provider row adds one more control; split like the rest. */
+	--picker-panel-w-external: calc(var(--picker-panel-w) + 4rem + 2.75rem * var(--ui-font-scale, 1));
 	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
 	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
 	   chat-message action bar so the leftmost icon's visual edge aligns
@@ -2388,10 +2402,14 @@ html[data-chat-font] .aui-root {
 
 [data-sonner-toast][data-styled='true']:has([data-button]) {
 	display: grid !important;
-	grid-template-columns: 16px minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr);
 	align-items: start !important;
 	column-gap: 10px !important;
 	row-gap: 10px !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) {
+	grid-template-columns: 16px minmax(0, 1fr);
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]) [data-icon] {
@@ -2400,13 +2418,21 @@ html[data-chat-font] .aui-root {
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]) [data-content] {
+	grid-column: 1;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) [data-content] {
 	grid-column: 2;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]) [data-button] {
-	grid-column: 2;
+	grid-column: 1;
 	justify-self: start;
 	margin: 0 !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) [data-button] {
+	grid-column: 2;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-close-button]) {
@@ -2415,8 +2441,21 @@ html[data-chat-font] .aui-root {
 
 /* Loading toast keeps its own vertical padding from #7683. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
+	display: flex !important;
+	align-items: center !important;
+	gap: 12px !important;
 	padding-top: 14px !important;
 	padding-bottom: 14px !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
+	flex: 1 1 auto;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast [data-button] {
+	align-self: center;
+	flex: none;
+	margin-left: auto !important;
 }
 
 /* Progress bar is the last row; give it room below. */

@@ -74,11 +74,11 @@ export const ja = {
     dialog: {
       deleteChat: {
         title: "チャットの削除",
-        description: '本当にこのチャット "{name}" を削除しますか？',
+        description: "チャット「{name}」を削除してもよろしいですか？",
       },
       deleteRun: {
         title: "トレーニング実行の削除",
-        description: '本当にこの実行 "{name}" を削除しますか？',
+        description: "トレーニング実行「{name}」を削除してもよろしいですか？",
       },
       renameChat: {
         title: "チャット名の変更",
@@ -114,7 +114,7 @@ export const ja = {
       chat: "チャット",
       connections: "接続",
       apiKeys: "API",
-      about: "情報",
+      about: "Unsloth について",
       voice: "音声",
       data: "データ",
       agents: "エージェント",
@@ -162,12 +162,13 @@ export const ja = {
         sttUnload: "アンロード",
         sttUnloading: "アンロード中…",
         microphoneLabel: "マイク",
+        microphoneFallbackName: "マイク {index}",
         microphoneDescription: "音声入力に使用します",
         microphoneFallbackHint:
           "音声入力に使用します。ブラウザーの音声エンジンがこのデバイスを使用できない場合は、システムのデフォルトに切り替わります",
         microphoneGrantDescription:
           "デバイス名を表示するにはマイクへのアクセスを許可してください",
-        allowMicrophone: "マイクを許可",
+        allowMicrophone: "マイクへのアクセスを許可",
         micAccessBlocked:
           "マイクへのアクセスがブロックされました。この Unsloth のページでマイクへのアクセスを許可してから、もう一度お試しください。",
         micAccessUnsupported:
@@ -185,6 +186,10 @@ export const ja = {
         manage: "管理",
         backToVoice: "音声に戻る",
         addEntry: "項目を追加",
+        newEntryAria: "新しい辞書項目",
+        entryPlaceholder: "山田 花子",
+        entryAria: "辞書項目 {index}",
+        removeEntryAria: "辞書項目 {index} を削除",
       },
       recents: {
         sectionTitle: "音声入力の履歴",
@@ -215,7 +220,7 @@ export const ja = {
         deleteDescription:
           "この保存された音声入力を削除しますか？元に戻せません。",
         deleteLinkedDescription:
-          "この保存された音声入力を削除しますか？使用したチャットも合わせて削除できます。元に戻せません。",
+          "この保存済みの音声入力を削除しますか？この音声入力を使用したチャットも同時に削除できます。この操作は元に戻せません。",
         deleteWithChat: "チャットと音声入力を削除",
         deleteWithChatFailed: "チャットを削除できませんでした",
         clear: "履歴を消去",
@@ -247,6 +252,7 @@ export const ja = {
         previewLabel: "音声を試聴",
         previewDescription: "短いサンプルを再生します",
         previewAction: "試聴",
+        previewFailed: "TTS のプレビューに失敗しました",
         stopAction: "停止",
         ttsLabel: "音声合成",
         notSupported: "このブラウザーでは対応していません",
@@ -260,6 +266,8 @@ export const ja = {
       huggingFaceTokenDescription: "ゲート付きモデルの読み込みや、アーティファクトのプッシュに使用されます。",
       hideToken: "トークンを非表示",
       showToken: "トークンを表示",
+      clearToken: "クリア",
+      checkingToken: "トークンを確認中...",
       tokenValidated: "トークンは検証済みです",
       password: "パスワード",
       passwordDescription: "この Unsloth アカウントのパスワードを変更します。",
@@ -294,9 +302,12 @@ export const ja = {
       modelAutoSwitch: {
         sectionTitle: "モデル自動切り替え (OpenAI API)",
         enable: "リクエストごとにモデルを切り替え",
-        enableDescription: "OpenAI互換のリクエストが別のダウンロード済み GGUF を指定した場合、応答する前にそのモデルを読み込みます。デフォルトはオフです。不明な名前の場合は、読み込み済みのモデルで応答を続けます。",
+        enableDescription:
+          "API リクエストで指定されたダウンロード済みの GGUF を、応答前に読み込みます。デフォルトではオフです。",
         idleUnload: "アイドル時の自動アンロード",
-        idleUnloadDescription: "指定した秒数だけアイドル状態が続くとモデルをアンロードして VRAM を解放します。次のリクエストで再読み込みされます。0 にすると読み込んだままにします。最小 60 秒。",
+        idleUnloadDescription:
+          "指定した秒数だけアイドル状態が続くと、モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
+        idleSecondsAriaLabel: "アイドル時の自動アンロードまでの秒数",
         idleNeedsEnable: "アンロードされたモデルが次回使用時に再読み込みされるように、「リクエストごとにモデルを切り替え」をオンにしてください。",
         idleActiveViaEnv: "アイドル時の自動アンロードは UNSLOTH_MODEL_IDLE_TTL 環境変数によって有効になっています。",
         loadError: "モデル自動切り替え設定の読み込みに失敗しました。",
@@ -312,11 +323,13 @@ export const ja = {
       previewSharing: {
         sectionTitle: "プレビュー共有",
         enableLabel: "公開プレビューリンク",
-        enableDescription: "署名付きリンクを持つ人なら誰でも、ログインなしで完了したモデルとチャットできるようになります。オフにすると公開プレビュー画面がオフラインになり、共有リンクが機能しなくなります。",
+        enableDescription:
+          "署名付きリンクを持つ人なら誰でも、ログインせずにトレーニングが完了したモデルとチャットできます。オフにすると公開プレビューが利用できなくなり、共有済みのリンクも機能しなくなります。",
         loadError: "プレビュー共有設定の読み込みに失敗しました。",
         saveError: "プレビュー共有設定の保存に失敗しました。",
         revokeLabel: "すべてのプレビューリンクを失効",
-        revokeDescription: "署名シークレットをローテーションして、共有したすべてのリンクを即座に機能不全にします。新しくコピーしたリンクは引き続き機能します。",
+        revokeDescription:
+          "署名用シークレットを更新し、これまでに共有したすべてのリンクを無効にします。今後新たにコピーするリンクは引き続き使用できます。",
         revokeAction: "リンクを失効",
         revoking: "失効中...",
         revokeConfirmTitle: "すべてのプレビューリンクを失効させますか？",
@@ -394,10 +407,10 @@ export const ja = {
       noPicture: "プロフィール画像なし",
       noneLabel: "なし",
       nameSaved: "プロフィール名を保存しました",
-      namePersistErrorTitle: "プロフィール名を永続化できませんでした",
+      namePersistErrorTitle: "プロフィール名を保存できませんでした",
       namePersistErrorDescription: "名前はこのセッション用に更新されましたが、再読み込み後に保持されない可能性があります。",
       photoUpdated: "プロフィール写真を更新しました",
-      photoPersistErrorTitle: "プロフィール写真を永続化できませんでした",
+      photoPersistErrorTitle: "プロフィール写真を保存できませんでした",
       photoPersistErrorDescription: "写真はこのセッション用に更新されましたが、再読み込み後に保持されない可能性があります。",
       photoUpdateErrorTitle: "プロフィール写真を更新できませんでした",
       imageUseError: "この画像は使用できませんでした。",
@@ -442,7 +455,7 @@ export const ja = {
         toolCalls: "ツール呼び出し",
         attachments: "添付ファイル",
         avgSpeed: "平均速度",
-        bestSpeed: "最速の応答",
+        bestSpeed: "最高生成速度",
         firstToken: "最初のトークンまでの平均時間",
         tokensPerSecond: "{value} tok/s",
         topModelsTitle: "よく使うモデル",
@@ -584,6 +597,13 @@ export const ja = {
       disableOverlay: "オーバーレイを無効化",
       liveMonitor: {
         title: "リアルタイムモニター",
+        apiTitle: "API モニター",
+        summary: "処理中のリクエスト、エラー、トークン使用量",
+        status: "処理中 {active} 件 · 最近 {recent} 件 · {model}",
+        noModelLoaded: "モデル未読み込み",
+        autoOpen: "フローティングモニターを自動表示",
+        autoOpenDescription:
+          "API トラフィックを受信すると小さなパネルを開きます。",
         cpu: "CPU",
         ram: "RAM",
         disk: "ディスク",
@@ -595,7 +615,10 @@ export const ja = {
       },
       gpu: {
         title: "GPU デバイス",
-        noGpu: "認識できる GPU が検出されませんでした。上には CPU のみのリソースが表示されています。",
+        ggufInference: "GGUF 推論",
+        unavailable: "利用不可",
+        noGpu:
+          "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
         unknownDevice: "不明な GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -611,7 +634,8 @@ export const ja = {
         modelsFolder: "モデルフォルダ",
         modelsFolderKeywords:
           "モデル フォルダ ディレクトリ パス 保存先 場所 ダウンロード キャッシュ ストレージ ディスク ドライブ 移動 変更 models folder path hugging face",
-        modelsFolderDescription: "ダウンロードしたモデルの保存先。",
+        modelsFolderDescription:
+          "ダウンロードしたモデルの保存先です。変更すると、システムドライブ以外にモデルを保存できます。",
         openAction: "開く",
         copyAction: "パスをコピー",
         copied: "パスをコピーしました",
@@ -743,13 +767,36 @@ export const ja = {
     },
     chat: {
       title: "チャット",
-      description: "このデバイスに保存されているチャット履歴を管理します。",
+      description: "このデバイスでのチャットの動作をカスタマイズします。",
+      modelSelection: {
+        title: "モデル選択の設定",
+        expandQuantizations: "量子化オプションを展開",
+        expandQuantizationsDescription:
+          "オン: 「On Device」の GGUF モデルで量子化オプションをすぐに表示します。オフ: モデルをクリックすると、その量子化オプションを表示します。",
+        showAllQuantizations: "すべての量子化オプションを表示",
+        showAllQuantizationsDescription:
+          "オン: 「On Device」にあるすべての量子化オプションを、未ダウンロードのものも含めて一覧表示します。オフ: ダウンロード済みの量子化オプションのみを表示します。",
+      },
+      menu: {
+        title: "チャットメニュー",
+        description:
+          "項目をチャットの「+」サイドメニューに固定します。その他の項目は「More」に移動します。",
+        chatWithFiles: "ファイルとチャット (RAG)",
+        mcp: "MCP",
+        savedPrompts: "保存済みプロンプト",
+        compareChat: "チャットを比較",
+        exportChat: "チャットをエクスポート",
+      },
+      showResponseModel: "応答モデルを表示",
+      showResponseModelDescription:
+        "アシスタントの応答にモデルのメタデータを表示します。",
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTMLブロックを折りたたむ",
-        collapseHtmlBlocksDescription: "CanvasモードではフルHTMLを自動的に折りたたみます。CanvasがオフのときにもフェンスされたHTMLドキュメントを折りたたむには、これをオンにします。",
+        collapseHtmlBlocksDescription:
+          "Canvas モードでは完全な HTML を自動的に折りたたみます。Canvas がオフのときも、コードフェンスで囲まれた HTML ドキュメントを折りたたむには、この設定をオンにします。",
         allowNetworkAccess: "Canvas のネットワークアクセスを許可",
         allowNetworkAccessDescription: "CanvasのプレビューがCDNからスクリプト、スタイル、フォント、メディア、ネットワークリソースを読み込むことを許可します。完全にオフラインでプレビューする場合はオフのままにしてください。",
       },
@@ -759,7 +806,8 @@ export const ja = {
       exportAction: "エクスポート",
       exportingAction: "エクスポート中...",
       exportConversations: "履歴とプロジェクトをエクスポート",
-      exportConversationsDescription: "履歴、または履歴とプロジェクトのチャットを、生の JSONL、CSV、または ShareGPT JSONL として、一括またはチャットごとにダウンロードします。",
+      exportConversationsDescription:
+        "履歴、または履歴とプロジェクトのチャットを、Raw JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。",
       exportConversationsAction: "エクスポート",
       exportScopeRecents: "履歴",
       exportScopeAll: "履歴 + プロジェクト",
@@ -801,6 +849,8 @@ export const ja = {
     },
     data: {
       title: "データ",
+      backToData: "データに戻る",
+      exportFailed: "チャットをエクスポートできませんでした",
       description:
         "このデバイスに保存されているチャット履歴とアップロード済みファイルを管理します。",
       archivedChats: "アーカイブ済みチャット",
@@ -857,9 +907,9 @@ export const ja = {
       title: "API",
       description: "OpenAI互換 API を介して Unsloth にアクセスします。",
       readDocs: "API ドキュメントを読む",
-      noAccess: "まだ API アクセス権がありません。",
+      noAccess: "アクセストークンはまだありません。",
       accessTokens: "アクセストークン",
-      loadError: "API アクセス権を読み込めませんでした。",
+      loadError: "アクセストークンを読み込めませんでした。",
       createError: "アクセストークンを作成できませんでした。",
       revokeError: "アクセストークンを失効させることができませんでした。",
       never: "なし",
@@ -895,13 +945,8 @@ export const ja = {
       codingAgentsDetectedHint: "このマシンで検出されました: {agents}。",
       relativeNever: "なし",
       relativeJustNow: "たった今",
-      relativeHoursAgo: "{count}時間前",
-      relativeDaysAgo: "{count}日前",
-      relativeMonthsAgo: "{count}ヶ月前",
-      relativeYearsAgo: "{count}年前",
       expired: "期限切れ",
       today: "今日",
-      inDays: "{count}日後",
       created: "作成日時 {value}",
       used: "使用日時 {value}",
       expires: "有効期限 {value}",
@@ -920,11 +965,14 @@ export const ja = {
       description: "ドキュメント、リリースノート、フィードバック、およびビルド情報。",
       studioVersion: "Unsloth バージョン",
       packageVersion: "パッケージバージョン",
+      desktopAppVersion: "デスクトップアプリのバージョン",
+      desktopAppVersionUnavailable: "利用できません",
       llamaCppVersion: "llama.cpp バージョン",
       hardware: "ハードウェア",
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "アップデート",
       help: "ヘルプ",
       documentation: "ドキュメント",
@@ -947,7 +995,7 @@ export const ja = {
       shutDown: "シャットダウン",
       update: {
         title: "Unsloth のアップデート",
-        commandText: "{label} テキスト",
+        commandText: "{label}のテキスト",
         copied: "コピーしました",
         copyCommand: "コマンドをコピー",
         commandCopied: "{label} をコピーしました",
@@ -961,12 +1009,39 @@ export const ja = {
         pullThenUpdate: "最新の変更をプルしてから、ローカルインストーラーを実行してください:",
         gitPullCommand: "git pull コマンド",
         localInstallerCommand: "ローカルインストーラーコマンド",
-        sourceInstallDetected: "ソース or VCS パッケージのインストールが検出されました。元のローカルパスまたは Git URL から再インストールしてください。",
+        sourceInstallDetected:
+          "ソースまたは VCS パッケージからのインストールが検出されました。元のローカルパスまたは Git URL から再インストールしてください。",
         repoCheckoutFallback: "リポジトリが手元に残っている場合は、そこからローカルインストーラーを実行してください:",
         restartAfterUpdate: "アップデート後に Unsloth を再起動してください。",
-        desktopManaged: "デスクトップアプリは同梱されているバックエンドを自動的に最新に保ち、新しいバージョンが利用可能になると通知します。",
+        desktopManaged:
+          "デスクトップアプリは新しいバージョンを自動的に確認します。ここからいつでも手動で確認またはアップデートできます。",
+        desktopReady: "デスクトップアプリのアップデート",
+        desktopReadyDescription:
+          "新しいバージョンのデスクトップアプリが利用可能か確認します。",
+        desktopChecking: "アップデートを確認中",
+        desktopCheckingDescription: "通常は数秒で完了します。",
+        desktopAvailable: "デスクトップアプリ {version} を利用できます",
+        desktopAvailableDescription:
+          "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
+        desktopExternalServer:
+          "サーバーを起動したターミナルで `unsloth studio update` を実行してください。",
+        desktopManualInstall:
+          "リリースページを開き、最新の Linux パッケージをインストールしてください。",
+        desktopCheckFailed: "アップデートを確認できませんでした",
+        desktopCheckFailedDescription:
+          "接続を確認して、もう一度お試しください。",
+        desktopCurrent: "デスクトップアプリは最新です",
+        desktopCurrentDescription:
+          "Unsloth は今後も自動的にアップデートを確認します。",
+        checkForUpdates: "アップデートを確認",
+        checkAgain: "もう一度確認",
+        retryCheck: "再試行",
+        checking: "確認中...",
+        updateNow: "今すぐアップデート",
+        openReleasePage: "リリースページを開く",
         unknownInstall: "Unsloth がどのようにインストールされたか検出できませんでした。インストーラーまたは PyPI インストールの場合は、上記のコマンドを使用してください。",
-        localCheckout: "ローカルインストールの場合は、そのリポジトリからローカルインストーラーを実行してください:",
+        localCheckout:
+          "ローカルチェックアウトからインストールした場合は、そのチェックアウトでローカルインストーラーを実行してください:",
         docs: "インストールガイド:",
         docsInstall: "インストール",
         docsUpdating: "アップデート方法",
@@ -1149,8 +1224,10 @@ export const ja = {
       learningRateTooltip: "重み更新のステップサイズ。低い値ほど学習は遅くなりますが安定します。",
       learningRateDescription: "推奨値: LoRAは2e-4、CPTは5e-5、フルファインチューニングは2e-5",
       embeddingLearningRate: "埋め込み学習率",
-      embeddingLearningRateTooltip: "CPT が embed_tokens をトレーニングする場合にのみ使用されます。埋め込みは LoRA の重みよりも不安定になりやすいため、通常はより小さな学習率が必要です。空のままにすると lr/10 が使用されます。一般的な範囲はメインの学習率の2倍から10倍小さい値です。語彙やドメイン固有トークンの適応が遅すぎる場合にのみ増やしてください。",
-      embeddingLearningRateDescription: "空欄にすると lr/10 が使用されます（推奨）。一般的な範囲はメインの学習率の 2倍〜10倍小さい値です。",
+      embeddingLearningRateTooltip:
+        "CPT が embed_tokens をトレーニングする場合にのみ使用されます。埋め込みは LoRA の重みよりも不安定になりやすいため、通常はより小さな学習率が必要です。空のままにすると lr/10 が使用されます。一般的にはメインの学習率の 1/2～1/10 が目安です。語彙やドメイン固有トークンの適応が遅すぎる場合にのみ増やしてください。",
+      embeddingLearningRateDescription:
+        "空欄にすると lr/10 が使用されます（推奨）。一般的にはメインの学習率の 1/2～1/10 が目安です。",
       rank: "Rank",
       rankTooltip: "低ランク行列の次元数。高いほど表現能力が向上します。",
       alpha: "Alpha",
@@ -1234,12 +1311,13 @@ export const ja = {
       parametersReset: "パラメーターをモデルのデフォルト値にリセットしました",
       audioIncompatible: "このモデルはオーディオをサポートしていません。オーディオ対応のモデルに切り替えるか、オーディオ以外のデータセットを選択してください。",
       visionIncompatible: "テキストモデルはマルチモーダルデータセットと互換性がありません。ビジョンモデルに切り替えるか、テキストのみのデータセットを選択してください。",
-      cancelTitle: "トレーニングを取り消し",
-      cancelDescription: "現在のトレーニング実行を取り消しますか？",
+      cancelTitle: "トレーニングをキャンセル",
+      cancelDescription: "現在のトレーニング実行をキャンセルしますか？",
       continueAction: "トレーニングを続行",
-      cancelAction: "トレーニングを取り消し",
+      cancelAction: "トレーニングをキャンセル",
       stopTitle: "トレーニングを停止",
-      stopDescription: "現在のトレーニング実行をどのように停止するか選択してください。",
+      stopDescription:
+        "現在のトレーニング実行をどのように停止するか選択してください。「停止して保存」では後で再開できるチェックポイントが保存されますが、「停止」では再開できません。",
       stopAction: "停止",
       stopping: "停止中...",
       stopAndSave: "停止して保存",
@@ -1272,9 +1350,6 @@ export const ja = {
       steps: "ステップ数",
       lossTrendSparkline: "Loss トレンドスパークライン",
       relativeJustNow: "たった今",
-      relativeMinutesAgo: "{count}分前",
-      relativeHoursAgo: "{count}時間前",
-      relativeDaysAgo: "{count}日前",
       status: {
         completed: "完了",
         stopped: "停止",
