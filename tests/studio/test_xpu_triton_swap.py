@@ -518,3 +518,56 @@ class TestCpuRepairSeesAnXpuWheel:
         # The XPU arm must be additive: a CPU build still has to read as CPU, or every
         # explicit CPU pin would force-reinstall torch on every update.
         assert self._classify(ver, cuda, hip) == want
+
+
+class TestCpuPinSurvivesAWedgedImport:
+    """A hung `import torch` must not turn an explicit CPU pin into a no-op.
+
+    The classifier probe has a 90s timeout, and on a wedged Intel driver `import torch` blocks
+    in the SYCL runtime until it fires -- which is exactly the host the pin is meant to
+    rescue. Returning there meant the one case that needed the repair never got it.
+    """
+
+    @staticmethod
+    def _fn(name):
+        src = STACK.read_text(encoding = "utf-8")
+        start = src.index(f"def {name}(")
+        body = src[start : src.index("\n\ndef ", start)]
+        ns: dict = {"re": __import__("re"), "importlib": __import__("importlib.util", fromlist = ["util"]), "Path": Path}
+        exec(compile(body, str(STACK), "exec"), ns)
+        return ns[name]
+
+    @pytest.mark.parametrize(
+        "label,want",
+        [
+            ("2.9.1+xpu", True),
+            ("2.9.1+cu128", True),
+            ("2.9.1+rocm6.4", True),
+            ("2.9.1+cpu", False),
+            ("2.9.1", False),
+            ("", False),
+        ],
+    )
+    def test_gpu_label_classification(self, label, want):
+        # The CPU/untagged rows are the important ones: a slow but healthy CPU-only host
+        # must not force-reinstall torch on every single update.
+        assert self._fn("_is_gpu_torch_label")(label) is want
+
+    def test_timeout_falls_through_to_the_repair(self):
+        src = STACK.read_text(encoding = "utf-8")
+        start = src.index("def _ensure_cpu_torch() -> None:")
+        body = src[start : src.index("\n\ndef ", start)]
+        exc = body.index("except (OSError, subprocess.TimeoutExpired):")
+        guard = body.index("_is_gpu_torch_label(_installed_torch_label_on_disk())", exc)
+        # ...and the repair below must accept the probe-less path, or the fall-through
+        # dereferences None instead of reinstalling.
+        assert "probe = None" in body[guard : guard + 300]
+        assert "if probe is None or probe.returncode != 0:" in body
+
+    def test_the_disk_read_launches_no_interpreter(self):
+        # An interpreter here would reintroduce the hang the disk read exists to avoid.
+        src = STACK.read_text(encoding = "utf-8")
+        start = src.index("def _installed_torch_label_on_disk() -> str:")
+        body = src[start : src.index("\n\ndef ", start)]
+        assert "subprocess" not in body
+        assert "find_spec" in body

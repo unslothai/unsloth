@@ -2316,7 +2316,18 @@ if [ -x "$VENV_DIR/bin/python" ]; then
     # rebuilds the venv for clean state, but must keep the torch release the user
     # already has (see _previous_torch_pin below). Last line only: sitecustomize or
     # import-hook noise on stdout must not corrupt the version.
-    _PREV_TORCH_VER=$("$VENV_DIR/bin/python" -c \
+    # Disk first, no interpreter: `import torch` loads the SYCL runtime and can block
+    # indefinitely on a wedged Intel driver, and this runs before setup.sh's bounded probes,
+    # so a hang here takes the whole installer with it. version.py carries the same label.
+    # The interpreter stays as the fallback for a layout without one, where torch is absent
+    # and the import fails fast anyway.
+    _PREV_TORCH_VER=""
+    for _prev_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_prev_tv" ] || continue
+        _PREV_TORCH_VER=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_prev_tv" | head -n 1)
+        break
+    done
+    [ -n "$_PREV_TORCH_VER" ] || _PREV_TORCH_VER=$("$VENV_DIR/bin/python" -c \
         "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
     # New layout already exists — replace only after preserving rollback copy.
     substep "preserving existing environment for rollback..."

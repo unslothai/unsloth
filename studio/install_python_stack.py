@@ -1995,6 +1995,32 @@ def _ensure_xpu_triton() -> None:
         shutil.rmtree(tmp, ignore_errors = True)
 
 
+def _installed_torch_label_on_disk() -> str:
+    """torch.__version__ read from torch/version.py, launching no interpreter.
+
+    `import torch` loads the SYCL runtime and can block indefinitely on a wedged Intel driver
+    -- which is the host an explicit pin is meant to rescue, so the classifier cannot depend
+    on the import succeeding. find_spec locates the package without importing it.
+    """
+    try:
+        spec = importlib.util.find_spec("torch")
+        if spec is None or not spec.origin:
+            return ""
+        text = (Path(spec.origin).parent / "version.py").read_text(
+            encoding = "utf-8", errors = "replace"
+        )
+    except Exception:
+        return ""
+    m = re.search(r"^__version__ = '([^']*)'", text, re.M)
+    return m.group(1).lower() if m else ""
+
+
+def _is_gpu_torch_label(label: str) -> bool:
+    """GPU build by local label alone. Weaker than the probe (which also reads
+    torch.version.hip/cuda), so it is only used when the probe could not run."""
+    return "+xpu" in label or "+rocm" in label or bool(re.search(r"\+cu\d+", label))
+
+
 def _ensure_cpu_torch() -> None:
     """Reinstall CPU torch when an explicit CPU pin is set but the venv has a GPU build.
 
@@ -2033,8 +2059,13 @@ def _ensure_cpu_torch() -> None:
             timeout = 90,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return
-    if probe.returncode != 0:
+        # A hung import is the wedged-driver case this pin exists to rescue, so returning here
+        # made the pin a no-op on exactly that host. Classify off disk instead, and only go on
+        # for a GPU label: a merely slow CPU-only box must not reinstall torch every update.
+        if not _is_gpu_torch_label(_installed_torch_label_on_disk()):
+            return
+        probe = None
+    if probe is None or probe.returncode != 0:
         # torch present but can't import. The explicit CPU pin forces this pass (failed
         # probe) and the base update won't reinstall an already-installed torch, so
         # reinstall from the pin (self-resolving, no loop).
