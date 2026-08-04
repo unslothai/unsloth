@@ -749,6 +749,61 @@ def _wrap_grpo_hidden_states_fallback(trainer_cls):
     trainer_cls.__init__ = wrapped_init
 
 
+def _backport_vision_dataset_gate(RLTrainer_source):
+    """Make TRL 0.22.x decide by DATASET, not by model, for SFT vision paths.
+
+    On TRL 0.22.x a VLM skips dataset preparation and picks the vision
+    collator based on `_is_vlm` alone. Fine-tuning a VLM on a text-only
+    dataset therefore reaches the trainer with a raw `text` column, no
+    tokenized columns exist, and transformers strips everything:
+
+        ValueError: No columns in the dataset match the model's forward
+        method signature ... The following columns have been ignored: [text]
+
+    Magistral_(24B)-Reasoning-Conversational fails exactly this way; it pins
+    trl==0.22.2 and trains a VLM on a plain `text` dataset. Merging the
+    signature columns (done above) is not enough, because with preparation
+    skipped none of those tokenized columns are ever produced.
+
+    TRL 0.25.1+ fixed this by keying the decisions off `_is_vision_dataset`,
+    so back-port precisely that. No-op when TRL already defines the flag, so
+    newer versions keep their own logic.
+
+    Returns the source, patched or unchanged."""
+    if 'self._is_vision_dataset = "image" in dataset_sample' in RLTrainer_source:
+        return RLTrainer_source
+    anchor = "        dataset_sample = next(iter(train_dataset))\n"
+    if anchor not in RLTrainer_source:
+        return RLTrainer_source
+
+    RLTrainer_source = RLTrainer_source.replace(
+        anchor,
+        anchor
+        + "        # Unsloth: back-port of TRL 0.25.1's dataset-based check, so a\n"
+          "        # text-only fine-tune of a VLM is prepared and collated as text.\n"
+          '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n',
+        1,
+    )
+    # Text collator whenever the data is not actually vision data.
+    RLTrainer_source = RLTrainer_source.replace(
+        "if data_collator is None and not self._is_vlm:",
+        "if data_collator is None and not (self._is_vlm and self._is_vision_dataset):",
+    )
+    RLTrainer_source = RLTrainer_source.replace(
+        "elif data_collator is None and self._is_vlm:",
+        "elif data_collator is None and self._is_vlm and self._is_vision_dataset:",
+    )
+    # And actually tokenize the dataset. Skipping preparation is an image-cost
+    # optimisation; with no images there is nothing to save and everything to
+    # lose.
+    RLTrainer_source = RLTrainer_source.replace(
+        'args.dataset_kwargs.get("skip_prepare_dataset", False) or self._is_vlm',
+        'args.dataset_kwargs.get("skip_prepare_dataset", False)'
+        " or (self._is_vlm and self._is_vision_dataset)",
+    )
+    return RLTrainer_source
+
+
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Defensive wrapper: matches patch_trl_rl_trainers()'s try/except so
     # direct callers don't see exceptions from the impl on TRL versions
@@ -1773,6 +1828,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             ' "input_ids", "labels", "attention_mask", "seq_lengths", "completion_mask", "assistant_masks"]'
         )
         RLTrainer_source = RLTrainer_source.replace(_sig_vlm_old, _sig_vlm_new)
+
+        RLTrainer_source = _backport_vision_dataset_gate(RLTrainer_source)
 
         # Inject model reference before _prepare_dataset for dynamic
         # token_type_ids detection in sft_prepare_dataset
