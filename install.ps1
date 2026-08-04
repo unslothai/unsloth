@@ -1645,18 +1645,35 @@ exit 0
             $destDir = Join-Path $userHome ".local\bin"
         }
 
+        # Same mirrors and precedence astral's installer uses. Each serves the
+        # identical release asset, so the pinned hash below holds across all of
+        # them. UV_DOWNLOAD_URL is deliberately not honoured: it points at an
+        # arbitrary version, which the pin would then correctly reject.
+        $uvBase = if ($env:UV_INSTALLER_GHE_BASE_URL) {
+            @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
+        } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
+            @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
+        } else {
+            @("https://releases.astral.sh/github/uv/releases/download/$UvPinnedVersion",
+              "https://github.com/astral-sh/uv/releases/download/$UvPinnedVersion")
+        }
+
         $work = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-uv-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
         $zip  = Join-Path $work $asset
         try {
             [System.IO.Directory]::CreateDirectory($work) | Out-Null
-            substep "downloading uv $UvPinnedVersion ($arch) from github.com/astral-sh/uv..." "Yellow"
-            try {
-                Invoke-WebRequest -UseBasicParsing -OutFile $zip `
-                    -Uri "https://github.com/astral-sh/uv/releases/download/$UvPinnedVersion/$asset"
-            } catch {
-                substep "uv download failed: $($_.Exception.Message)" "Yellow"
-                return $false
+            $downloaded = $false
+            foreach ($base in $uvBase) {
+                substep "downloading uv $UvPinnedVersion ($arch) from $base..." "Yellow"
+                try {
+                    Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$asset"
+                    $downloaded = $true
+                    break
+                } catch {
+                    substep "uv download failed: $($_.Exception.Message)" "Yellow"
+                }
             }
+            if (-not $downloaded) { return $false }
 
             $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
             if ($actual -ne $wanted) {
@@ -1684,11 +1701,15 @@ exit 0
             Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         }
 
-        # Same PATH treatment and opt-out variable astral's installer uses.
-        if (-not $env:UV_NO_MODIFY_PATH) {
+        # Same PATH treatment and opt-outs astral's installer uses: an unmanaged
+        # install forces no-modify-path there, so it must here too.
+        if (-not $env:UV_NO_MODIFY_PATH -and -not $env:UV_UNMANAGED_INSTALL) {
             Add-ToUserPath -Directory $destDir -Position Prepend | Out-Null
         }
         $env:PATH = "$destDir;$env:PATH"
+        # Refresh-SessionPath rebuilds PATH machine-first and drops that prepend,
+        # so record where uv actually landed for the probe below.
+        $script:UvInstallDestDir = $destDir
         return $true
     }
 
@@ -1722,7 +1743,7 @@ exit 0
     # venv, Scoop/pipx shim). Prefer a just-installed uv from a known location.
     if (-not (Test-UvVersionOk)) {
         $origPath = $env:PATH
-        foreach ($d in @($env:UV_INSTALL_DIR, $env:XDG_BIN_HOME,
+        foreach ($d in @($script:UvInstallDestDir, $env:UV_INSTALL_DIR, $env:XDG_BIN_HOME,
                          (Join-Path $env:USERPROFILE ".local\bin"),
                          (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"))) {
             if ($d -and (Test-Path $d)) {
