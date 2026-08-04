@@ -41,11 +41,10 @@ def _bearer_token(scope) -> Optional[str]:
 
 
 def _post_chat_authorized(scope, path: str) -> bool:
-    # The only POST surface is chat completions. Verify the capability BEFORE
-    # forwarding: FastAPI parses the request body ahead of the handler's own
-    # token check, which would let unauthenticated callers burn CPU/memory on
-    # large bodies with no rate limit. Mirrors routes.preview._extract_token
-    # (?k= query, else Authorization: Bearer).
+    # Chat completions are the only POST surface. Verify the capability BEFORE
+    # forwarding: FastAPI parses the body ahead of the handler's own token
+    # check, letting unauthenticated callers burn CPU/memory on large bodies
+    # with no rate limit. Mirrors routes.preview._extract_token (?k=, else Bearer).
     if not path.endswith(_CHAT_SUFFIX):
         return False
     ref = path[len(_PREVIEW_PATH_PREFIX) : -len(_CHAT_SUFFIX)]
@@ -78,11 +77,10 @@ def is_public_preview_path(path: str) -> bool:
 
 def _matches_preview_route(path: str, method: str) -> bool:
     # The prefix test alone is not enough: the wrapped app ends in a GET
-    # catch-all that serves the SPA for any unmatched path, so /p/<anything>
-    # (or /p/../<file>, which also defeats the prefix) would leak index.html
-    # and the frontend build through the public port. Dot segments never
-    # appear in a legitimate preview URL; everything else must match a route
-    # the preview router itself can answer.
+    # catch-all serving the SPA for any unmatched path, so /p/<anything> (or
+    # /p/../<file>, which also defeats the prefix) would leak index.html and the
+    # frontend build. Dot segments never appear in a legitimate preview URL;
+    # everything else must match a route the preview router can answer.
     if any(segment in (".", "..") for segment in path.split("/")):
         return False
 

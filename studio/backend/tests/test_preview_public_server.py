@@ -440,8 +440,8 @@ def test_health_does_not_shadow_a_run_on_the_authenticated_app(app, tmp_path):
 
 
 def test_signed_health_run_is_served_through_the_listener(app, tmp_path):
-    # The reviewer scenario: a shared link for a run named "_health" must reach
-    # the token-checked page on the public listener, not the probe.
+    # A shared link for a run named "_health" must reach the token-checked page
+    # on the public listener, not the probe.
     _make_run(tmp_path / "outputs", name = "_health")
     token = preview_token.sign_preview_ref("_health")
     statuses = _serve_and_get(app, [f"/p/_health?k={token}", "/p/_health"])
