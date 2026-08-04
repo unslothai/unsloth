@@ -853,12 +853,15 @@ TREE_B = "e96ffb0e063f66952b0c54796a74755b6041c867"
 def test_llama_runtime_pairs_prefers_ggml_tree(
     installed, required, installed_tree, required_tree, pairs
 ):
-    assert M.llama_runtime_pairs(
-        installed,
-        required,
-        installed_ggml_tree = installed_tree,
-        required_ggml_tree = required_tree,
-    ) is pairs
+    assert (
+        M.llama_runtime_pairs(
+            installed,
+            required,
+            installed_ggml_tree = installed_tree,
+            required_ggml_tree = required_tree,
+        )
+        is pairs
+    )
 
 
 def test_installed_llama_ggml_tree_reads_marker(tmp_path):

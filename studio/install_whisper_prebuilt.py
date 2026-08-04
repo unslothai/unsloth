@@ -366,8 +366,10 @@ def llama_runtime_pairs(
     if installed_tag == required_tag:
         return True
     if (
-        isinstance(installed_ggml_tree, str) and installed_ggml_tree
-        and isinstance(required_ggml_tree, str) and required_ggml_tree
+        isinstance(installed_ggml_tree, str)
+        and installed_ggml_tree
+        and isinstance(required_ggml_tree, str)
+        and required_ggml_tree
     ):
         return installed_ggml_tree == required_ggml_tree
     commit = _llama_ggml_commit(installed_tag)
