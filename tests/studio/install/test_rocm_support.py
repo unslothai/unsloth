@@ -3231,6 +3231,51 @@ class TestGfxArchNameFallback:
         assert 'shutil.which("amd-smi") is None' in source
 
 
+class TestSetupPs1ShadowingParity:
+    """setup.ps1 resolves the arch and builds $ROCmIndexUrl itself, before the Python
+    stack installer ever runs, so both halves of the #7776 preference have to exist in
+    the PowerShell mirror too or a fresh Windows install still picks the iGPU."""
+
+    @staticmethod
+    def _setup_ps1() -> str:
+        return (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+
+    def test_repick_is_wheel_aware(self):
+        # Mirrors _dedup_pick()'s guard: deposing a supported APU for a discrete card
+        # with no AMD Windows wheels resolves to no index and drops the host to CPU,
+        # which is worse than the shadowing the preference exists to undo.
+        source = self._setup_ps1()
+        body = source[source.index("function Resolve-ShadowingGfxPick"):]
+        body = body[:body.index("\n}\n")]
+        assert "archFamilyMap" in body, "repick must consult the wheel index map"
+        assert "pickedHasWheels" in body
+
+    def test_arch_family_map_precedes_the_repick(self):
+        # The map is consumed during detection now, not just at install time, so it
+        # has to be defined before the function that reads it.
+        source = self._setup_ps1()
+        assert source.index("$archFamilyMap = @{") < source.index(
+            "function Resolve-ShadowingGfxPick"
+        )
+
+    def test_wmi_fallback_keeps_every_amd_adapter(self):
+        # WMI orders controllers however the driver stack enumerated them, so taking
+        # the first AMD match reintroduced #7776 on Adrenalin-only hosts (a 780M
+        # ahead of an RX 9060 XT inferred gfx1103 and installed gfx110X-all wheels).
+        source = self._setup_ps1()
+        block = source[source.index("$wmiGpus = @(Get-WmiObject Win32_VideoController"):]
+        block = block[:block.index("$ROCmGpuLabel = $script:ROCmGpuLabels[0]")]
+        assert "Select-Object -First 1" not in block
+
+    def test_name_inference_runs_the_shadowing_pick(self):
+        # Every AMD adapter name gets an arch, then the same preference chooses.
+        source = self._setup_ps1()
+        assert "Get-GfxArchFromGpuName" in source
+        infer = source[source.index("$nameArches = @()"):]
+        infer = infer[:infer.index("Tip: set UNSLOTH_ROCM_GFX_ARCH")]
+        assert "Resolve-ShadowingGfxPick" in infer
+
+
 # TEST: install_python_stack.py -- _install_bnb_windows_rocm
 
 
