@@ -3,7 +3,7 @@
 
 """Tests for the offload-avoidance serving-slot reduction (`_slots_that_fit_on_gpu`).
 
-When a pinned context does not fit at the requested `--parallel` slot count, Studio would
+When a pinned context does not fit at the requested `--parallel` slot count, Unsloth would
 flip to `--fit on` and llama-server offloads layers to host RAM, collapsing decode ~3x
 (oobabooga #6718). Instead the loader retries the on-GPU fit at fewer slots and keeps the
 largest count that stays fully on GPU (`-ngl -1`). These tests drive the real helper with
@@ -36,6 +36,7 @@ def _backend(
     vocab = 248320,
     embd = 5120,
     kv_fixed_mib = 0,
+    kv_calls = None,
 ):
     """Backend with the dims the compute buffer reads; KV mocked to a fixed size so the
     only slot-dependent term is the compute buffer (485 MiB/slot f32 output x 1.15)."""
@@ -43,7 +44,17 @@ def _backend(
     b._vocab_size = vocab
     b._embedding_length = embd
     b._key_length_mla = None
-    b._estimate_kv_cache_bytes = lambda ctx, t = None, **k: kv_fixed_mib * MIB
+
+    def estimate(
+        ctx,
+        t = None,
+        **kwargs,
+    ):
+        if kv_calls is not None:
+            kv_calls.append(kwargs)
+        return kv_fixed_mib * MIB
+
+    b._estimate_kv_cache_bytes = estimate
     b._can_estimate_kv = lambda: True
     return b
 
@@ -55,7 +66,11 @@ def _run(
     gpus,
     total_by_idx,
     overhead_mib = 0,
+    swa_full = False,
+    split_extra_mib = 0,
 ):
+    # Split step passed only when set, so the other cases keep exercising the default.
+    extra = {"split_extra_bytes": int(split_extra_mib * MIB)} if split_extra_mib else {}
     return b._slots_that_fit_on_gpu(
         n_parallel,
         CTX,
@@ -66,7 +81,9 @@ def _run(
         FRAC,
         int(overhead_mib * MIB),
         1,
-        512,
+        n_ubatch = 512,
+        swa_full = swa_full,
+        **extra,
     )
 
 
@@ -113,3 +130,30 @@ class TestSlotsThatFitOnGpu:
         # base 19500 (= 22500 total at par-independent terms) the same par3 fit holds.
         gi, use_fit, slots = _run(_backend(kv_fixed_mib = 3000), 4, 19500, [(0, 24576)], {0: 24576})
         assert use_fit is False and slots == 3
+
+    def test_split_rate_is_rechecked_on_multi_gpu_candidates(self):
+        # The base footprint carries the context-compute buffer at the single-device
+        # rate, so a candidate that lands on 2 GPUs owes one enlarged copy per card.
+        # Charging it drops the count further (3 -> 1) rather than pinning an OOM.
+        gpus, totals = [(0, 24576), (1, 24576)], {0: 24576, 1: 24576}
+        assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib = 500) == ([0, 1], False, 1)
+        # And when no count clears it, offload (the pre-existing failure mode).
+        assert _run(_backend(), 4, 46200, gpus, totals, split_extra_mib = 1000) == (None, True, 4)
+
+    def test_split_step_does_not_touch_a_single_gpu_candidate(self):
+        assert _run(_backend(), 4, 22500, [(0, 24576)], {0: 24576}, split_extra_mib = 500) == (
+            _run(_backend(), 4, 22500, [(0, 24576)], {0: 24576})
+        )
+
+    def test_swa_full_is_used_for_every_candidate(self):
+        calls = []
+        _run(
+            _backend(kv_calls = calls),
+            4,
+            22500,
+            [(0, 24576)],
+            {0: 24576},
+            swa_full = True,
+        )
+        assert calls
+        assert all(call["swa_full"] is True for call in calls)

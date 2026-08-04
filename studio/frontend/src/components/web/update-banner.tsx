@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
 import { type DeviceType, usePlatformStore } from "@/config/env";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { isTauri } from "@/lib/api-base";
@@ -40,6 +41,7 @@ export function WebUpdateBanner({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const installCmd = installCommandForDevice(deviceType);
   const [copiedVersion, setCopiedVersion] = useState<string | null>(null);
+  const [notesVersion, setNotesVersion] = useState<string | null>(null);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -68,6 +70,8 @@ export function WebUpdateBanner({
   }
 
   const copied = status != null && copiedVersion === status.latestVersion;
+  // Keyed by version so a new offer collapses the panel.
+  const notesOpen = status != null && notesVersion === status.latestVersion;
 
   return (
     <AnimatePresence>
@@ -78,13 +82,14 @@ export function WebUpdateBanner({
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
+            // Wider than the other overlays: notes preview plus three buttons.
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[400px]"
-              : "pointer-events-auto w-full",
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
+              : "pointer-events-auto flex min-h-0 w-[calc(100vw-2rem)] max-w-[448px] flex-col",
           )}
           data-testid="web-update-banner"
         >
-          <div className="relative overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             <button
               type="button"
               onClick={dismiss}
@@ -127,22 +132,33 @@ export function WebUpdateBanner({
               </div>
             </div>
 
+            <ReleaseNotesPanel
+              version={status.latestVersion}
+              open={notesOpen}
+              releaseNotesUrl={RELEASE_NOTES_URL}
+              className="min-h-0 flex-1"
+            />
+
+            {/* one row at one type size; wraps only on narrow viewports */}
             <div className="mt-4 flex flex-wrap items-center justify-between gap-y-2">
-              <a
-                href={RELEASE_NOTES_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="-ml-2 whitespace-nowrap rounded-full px-2.5 py-2 text-[13px] font-medium text-foreground transition-colors hover:bg-muted"
-                data-testid="web-update-release-notes-link"
+              <Button
+                size="sm"
+                variant="ghost"
+                className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                onClick={() =>
+                  setNotesVersion(notesOpen ? null : status.latestVersion)
+                }
+                aria-expanded={notesOpen}
+                data-testid="web-update-release-notes-toggle"
               >
-                Release notes
-              </a>
+                {notesOpen ? "Hide release notes" : "Show release notes"}
+              </Button>
               {/* wrap + right-align so buttons stack instead of clipping on very narrow banners */}
               <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                  className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
                   onClick={snooze}
                   data-testid="web-update-snooze-button"
                 >
@@ -151,7 +167,7 @@ export function WebUpdateBanner({
                 <Button
                   size="sm"
                   // -mr optically aligns the filled pill's edge with the card padding
-                  className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+                  className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                   onClick={handleCopyCommand}
                   data-testid="web-update-copy-button"
                 >

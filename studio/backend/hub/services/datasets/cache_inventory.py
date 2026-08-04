@@ -20,12 +20,11 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_cache_state import (
     purge_partial_repo,
     purge_repo_cache_dirs,
+    resolve_delete_target_root,
     resolve_destructive_case_matches,
 )
 from hub.utils.paths import (
-    hf_default_cache_dir,
     is_valid_repo_id as _is_valid_repo_id,
-    legacy_hf_cache_dir,
     resolve_cached_repo_id_case,
 )
 
@@ -43,38 +42,8 @@ def _collect_hf_cache_scans() -> tuple[list, set[str]]:
 
 
 def _hf_hub_cache_roots() -> list[Path]:
-    roots: list[Path] = []
-    seen: set[str] = set()
-
-    def _add(path: Optional[Path]) -> None:
-        if path is None or not path.is_dir():
-            return
-        try:
-            resolved = str(path.resolve())
-        except OSError:
-            return
-        if resolved in seen:
-            return
-        seen.add(resolved)
-        roots.append(path)
-
-    try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-        _add(Path(HF_HUB_CACHE))
-    except Exception:
-        pass
-
-    hf_hub_cache = os.environ.get("HF_HUB_CACHE")
-    if hf_hub_cache:
-        _add(Path(hf_hub_cache).expanduser())
-
-    hf_home = os.environ.get("HF_HOME")
-    if hf_home:
-        _add(Path(hf_home).expanduser() / "hub")
-
-    _add(legacy_hf_cache_dir())
-    _add(hf_default_cache_dir())
-    return roots
+    from hub.utils.hf_cache_state import hf_cache_roots
+    return hf_cache_roots()
 
 
 def _repo_id_from_hub_dataset_dir(name: str) -> str | None:
@@ -205,6 +174,21 @@ def _repo_id_from_datasets_cache_dir(name: str) -> str | None:
     owner, repo = name.split("___", 1)
     repo_id = f"{owner}/{repo}"
     return repo_id if _is_valid_repo_id(repo_id) else None
+
+
+def _is_processed_dataset_cache_path(repo_id: str, cache_path: str) -> bool:
+    """True when *cache_path* is this repo's processed Arrow cache dir
+    (``<owner>___<repo>`` directly under an HF_DATASETS_CACHE root). Such rows
+    have no Hub ``datasets--`` layout, so they are deleted via the processed
+    path and must not be rejected as an invalid cache_path."""
+    try:
+        resolved = Path(cache_path).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if resolved.name.lower() != repo_id.replace("/", "___").lower():
+        return False
+    roots = {r.resolve(strict = False) for r in _hf_datasets_cache_roots()}
+    return resolved.parent.resolve(strict = False) in roots
 
 
 def _processed_dataset_cache_size(path: Path) -> int:
@@ -361,7 +345,7 @@ async def list_cached_datasets_response() -> dict:
         ) from exc
 
 
-async def delete_cached_dataset_response(repo_id: str) -> dict:
+async def delete_cached_dataset_response(repo_id: str, cache_path: Optional[str] = None) -> dict:
     """Remove a cached dataset repo from the HF cache."""
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
@@ -373,22 +357,40 @@ async def delete_cached_dataset_response(repo_id: str) -> dict:
             detail = "Cancel the active download before deleting.",
         )
     try:
-        return await asyncio.to_thread(_delete_cached_dataset_blocking, repo_key)
+        return await asyncio.to_thread(_delete_cached_dataset_blocking, repo_key, cache_path)
     finally:
         downloads.registry.end_delete(repo_key)
         hf_cache_scan.invalidate_hf_cache_scans()
 
 
-def _delete_cached_dataset_blocking(repo_id: str) -> dict:
+def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = None) -> dict:
     scans, _seen_roots = _collect_hf_cache_scans()
 
-    candidate_entries = []
+    # Group this dataset's copies by owning cache root, then target exactly one
+    # cache so a delete never removes copies in other, previously selected caches.
+    owners: dict = {}
     for hf_cache in scans:
         for repo_info in hf_cache.repos:
             if str(repo_info.repo_type) != "dataset":
                 continue
-            if repo_info.repo_id.lower() == repo_id.lower():
-                candidate_entries.append((hf_cache, repo_info))
+            if repo_info.repo_id.lower() != repo_id.lower():
+                continue
+            try:
+                owner = Path(repo_info.repo_path).parent.resolve(strict = False)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            owners.setdefault(owner, []).append((hf_cache, repo_info))
+
+    target_root = resolve_delete_target_root("dataset", repo_id, cache_path, owners.keys())
+    # A processed-only dataset row sends its Arrow cache path (<owner>___<repo>
+    # under HF_DATASETS_CACHE), which is not a Hub datasets-- dir, so
+    # resolve_delete_target_root returns None. Accept it and fall through to the
+    # processed-cache delete rather than rejecting a legitimate row.
+    if target_root is None and not (
+        cache_path and _is_processed_dataset_cache_path(repo_id, cache_path)
+    ):
+        raise HTTPException(status_code = 400, detail = "Invalid cache_path")
+    candidate_entries = owners.get(target_root, []) if target_root is not None else []
     matched_repo_ids = resolve_destructive_repo_ids(
         repo_id,
         [str(repo_info.repo_id) for _hf_cache, repo_info in candidate_entries],
@@ -414,7 +416,26 @@ def _delete_cached_dataset_blocking(repo_id: str) -> dict:
                 exc_info = True,
             )
 
-    processed_deleted, processed_failures = _delete_processed_dataset_cache(repo_id)
+    # Restrict the processed Arrow-cache delete to the selected cache's datasets
+    # root so it never removes copies under other cache homes. A processed
+    # cache_path scopes to its own root; a Hub target scopes to the datasets root
+    # sharing its cache home; an unspecified cache_path stays global (legacy).
+    processed_roots: Optional[set[Path]]
+    if not cache_path:
+        processed_roots = None
+    elif _is_processed_dataset_cache_path(repo_id, cache_path):
+        processed_roots = {Path(cache_path).expanduser().resolve(strict = False).parent}
+    else:
+        home = target_root.parent if target_root is not None else None
+        processed_roots = {
+            root.resolve(strict = False)
+            for root in _hf_datasets_cache_roots()
+            if home is not None and root.resolve(strict = False).parent == home
+        }
+
+    processed_deleted, processed_failures = _delete_processed_dataset_cache(
+        repo_id, only_roots = processed_roots
+    )
     failures.extend(processed_failures)
     if failures:
         raise HTTPException(
@@ -427,15 +448,23 @@ def _delete_cached_dataset_blocking(repo_id: str) -> dict:
 
     # ``scan_cache_dir()`` skips blob-only/corrupt repos the revision delete
     # can't touch, yet the fallback scanner shows them; purge the whole dir.
-    cache_purged = purge_repo_cache_dirs("dataset", repo_id)
-    partial_purged = purge_partial_repo("dataset", repo_id)
-    state_purged = download_manifest.purge_all_state_for_repo("dataset", repo_id) > 0
+    # Only for a Hub cache target; a processed-only path has no Hub dir/state.
+    cache_purged = partial_purged = state_purged = False
+    if target_root is not None:
+        cache_purged = purge_repo_cache_dirs("dataset", repo_id, root = target_root)
+        partial_purged = purge_partial_repo("dataset", repo_id, root = target_root)
+        state_purged = (
+            download_manifest.purge_all_state_for_repo("dataset", repo_id, hub_cache = target_root)
+            > 0
+        )
     if not (deleted or processed_deleted or cache_purged or partial_purged or state_purged):
         raise HTTPException(status_code = 404, detail = "Dataset not found in cache")
     return {"status": "deleted", "repo_id": repo_id}
 
 
-def _delete_processed_dataset_cache(repo_id: str) -> tuple[bool, list[str]]:
+def _delete_processed_dataset_cache(
+    repo_id: str, only_roots: Optional[set[Path]] = None
+) -> tuple[bool, list[str]]:
     import shutil
 
     target = repo_id.replace("/", "___")
@@ -443,6 +472,10 @@ def _delete_processed_dataset_cache(repo_id: str) -> tuple[bool, list[str]]:
     deleted = False
     failures: list[str] = []
     for root in _hf_datasets_cache_roots():
+        # Scope to the selected cache's datasets root(s): a delete must not remove
+        # processed copies living under other, previously selected cache homes.
+        if only_roots is not None and root.resolve(strict = False) not in only_roots:
+            continue
         try:
             entries = [
                 entry

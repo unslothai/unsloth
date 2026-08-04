@@ -2,14 +2,14 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Interactive terminal prompt that forces a bootstrap password change before
-Studio is exposed on a public Cloudflare URL (``--secure`` / ``--cloudflare``).
+Unsloth is exposed on a public Cloudflare URL (``--secure`` / ``--cloudflare``).
 
 Masked input echoes one ``*`` per keystroke (unlike ``getpass``). Works on
 Windows (``msvcrt``) and Linux/macOS (``termios``). All output goes to stderr so
 redirected stdout never swallows the prompt.
 
 Mirrored for the CLI at ``unsloth_cli/commands/_password_prompt.py`` (the CLI
-cannot import the Studio backend package); keep the two in sync.
+cannot import the Unsloth backend package); keep the two in sync.
 """
 
 from __future__ import annotations
@@ -236,6 +236,10 @@ def prompt_for_password_change(
                 out.write(f"Password must be at least {min_length} characters; try again.\n")
                 out.flush()
                 continue
+            if any(ch.isspace() for ch in new_password):
+                out.write("Password cannot contain spaces; try again.\n")
+                out.flush()
+                continue
             if is_current_password(new_password):
                 out.write(
                     "New password must differ from the current bootstrap password; try again.\n"
@@ -252,7 +256,7 @@ def prompt_for_password_change(
             out.flush()
             return True
     except (KeyboardInterrupt, EOFError):
-        out.write("Password change aborted; not exposing Studio.\n")
+        out.write("Password change aborted; not exposing Unsloth.\n")
         out.flush()
         return False
 

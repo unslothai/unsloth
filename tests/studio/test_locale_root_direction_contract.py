@@ -1,4 +1,4 @@
-"""Regression guard for locale changes affecting the entire Studio layout."""
+"""Regression guard for locale changes affecting the entire Unsloth layout."""
 
 from pathlib import Path
 

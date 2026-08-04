@@ -3,7 +3,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
 # Download a single file from a Hugging Face repo with a stall-retry
-# watchdog. Used by the Studio CI workflows so a hung hf-xet transfer
+# watchdog. Used by the Unsloth CI workflows so a hung hf-xet transfer
 # kills + retries instead of silently consuming the job's timeout.
 #
 # Usage: hf-download-with-retry.sh REPO FILE LOCAL_DIR
@@ -35,7 +35,7 @@ REPO="${1:?usage: hf-download-with-retry.sh REPO FILE [LOCAL_DIR]}"
 FILE="${2:?usage: hf-download-with-retry.sh REPO FILE [LOCAL_DIR]}"
 # LOCAL_DIR is optional. If empty, hf falls back to HF_HUB_CACHE
 # (~/.cache/huggingface/hub) which is the desired path for callers
-# that populate HF_HOME for a downstream Studio model load.
+# that populate HF_HOME for a downstream Unsloth model load.
 LOCAL_DIR="${3:-}"
 
 # Stall threshold per attempt, in seconds. Override with

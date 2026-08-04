@@ -4,7 +4,7 @@
 """Sandbox-side compatibility shim for ChatGPT code-interpreter paths.
 
 Models habitually write to /mnt/data (or /mnt/outputs, /home/sandbox,
-/workspace), none of which exist in the Studio sandbox. This module sits on the
+/workspace), none of which exist in the Unsloth sandbox. This module sits on the
 sandbox subprocess PYTHONPATH (see ``tools._build_safe_env``), so it loads at
 interpreter startup in every sandboxed ``python`` run and any Python the
 ``terminal`` tool launches.
@@ -111,7 +111,7 @@ def _load_sidecar(cwd):
     """Return the persisted ``source -> healed target`` map, or {} on any error
     (missing/corrupt/foreign sidecar degrades to in-process-only behaviour)."""
     try:
-        with open(_sidecar_path(cwd)) as fh:
+        with open(_sidecar_path(cwd), encoding = "utf-8") as fh:
             data = json.load(fh)
     except Exception:  # noqa: BLE001 - a bad sidecar must never break user code
         return {}
@@ -131,7 +131,7 @@ def _record_sidecar(cwd, source, target):
             return
         data[source] = target
         tmp = _sidecar_path(cwd) + ".tmp"
-        with open(tmp, "w") as fh:
+        with open(tmp, "w", encoding = "utf-8") as fh:
             json.dump(data, fh)
         os.replace(tmp, _sidecar_path(cwd))
     except Exception:  # noqa: BLE001 - persistence is best effort only

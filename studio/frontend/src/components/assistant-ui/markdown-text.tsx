@@ -13,15 +13,18 @@ import {
 } from "@/features/chat/artifacts/html-fences";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
-import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
+import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { toast } from "@/lib/toast";
+import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Block, type BlockProps, Streamdown, defaultUrlTransform, type UrlTransform } from "streamdown";
+import { Block, type BlockProps, Streamdown } from "streamdown";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -65,6 +68,8 @@ function getMermaidSource(blockContent: string): string | null {
 function getCodeFilename(language: string | null) {
   const extByLanguage: Record<string, string> = {
     bash: "sh",
+    "c++": "cpp",
+    csharp: "cs",
     javascript: "js",
     js: "js",
     json: "json",
@@ -73,6 +78,8 @@ function getCodeFilename(language: string | null) {
     md: "md",
     python: "py",
     py: "py",
+    ruby: "rb",
+    rust: "rs",
     shell: "sh",
     sh: "sh",
     sql: "sql",
@@ -115,15 +122,13 @@ function SvgPreview({ source }: { source: string }) {
 }
 
 function downloadTextFile(filename: string, text: string): void {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  void downloadFile(text, filename, "text/plain;charset=utf-8").catch(
+    (error) => {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not save file.");
+      }
+    },
+  );
 }
 
 function useCopiedState() {
@@ -368,24 +373,11 @@ function useRafCoalescedText(text: string, isStreaming: boolean): string {
   return text;
 }
 
-const safeImageUrl: UrlTransform = (url, _key, node) => {
-  // Only images are restricted; links/other nodes use the default transform.
-  if (node.tagName !== "img") return defaultUrlTransform(url, _key, node);
-
-  // Strip ASCII controls first: browsers drop them mid-parse, so a value like
-  // "\t//attacker.com" would otherwise slip past the guards below.
-  // eslint-disable-next-line no-control-regex
-  const normalized = url.replace(/[\x00-\x1f\x7f]/g, "").trim();
-  const lower = normalized.toLowerCase();
-
-  if (lower.startsWith("data:") || lower.startsWith("blob:")) return normalized;
-  if (/^[/\\]{2}/.test(normalized)) return null; // protocol-relative: // \\ /\ \/
-  if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(normalized)) return null; // scheme prefix (colon later in path is fine)
-  return normalized; // relative -> same-origin
-};
-
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
+  // Parts are keyed by index, so switching conversations hands this instance a different
+  // message, and Streamdown only extends its parsed blocks: key it per message instead.
+  const messageId = useAuiState(({ message }) => message.id);
   const displayText = useRafCoalescedText(text, status.type === "running");
   const processedText = useMemo(
     () => preprocessLaTeX(displayText),
@@ -400,11 +392,12 @@ const MarkdownTextImpl = () => {
   return (
     <div data-status={status.type} className="min-w-0 max-w-full">
       <Streamdown
+        key={messageId}
         mode="streaming"
         isAnimating={status.type === "running"}
         plugins={{ code, math, mermaid }}
         components={STREAMDOWN_COMPONENTS}
-        urlTransform={safeImageUrl}
+        urlTransform={safeMarkdownUrl}
         controls={{
           code: false,
           mermaid: {

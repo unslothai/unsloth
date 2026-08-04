@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Barrel import (lint rule); the model-picker cycle is fine because the call
+// happens at runtime, not module eval.
+import { resolveResidentInitialConfig } from "@/features/model-picker";
 import { getInferenceStatus } from "../api/chat-api";
-import { mergeBackendRecommendedInference } from "../presets/preset-policy";
+import {
+  mergeBackendRecommendedInference,
+  resolveManualAutoCtxPin,
+} from "../presets/preset-policy";
 import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   CHAT_REASONING_ENABLED_KEY,
   type ReasoningEffort,
   type ReasoningStyle,
   loadOptionalBool,
+  loadedGpuMemoryFields,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -17,8 +24,14 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
+import { sameGpuSelection } from "@/hooks/gpu-selection";
+import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
+
+function sameArray<T>(a: T[] | null, b: T[] | null): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 // Canonicalises backend / persisted speculative mode values onto the UI modes.
 export function normalizeSpeculativeType(
@@ -101,7 +114,20 @@ function ensureActiveModelInStoreList(
   checkpointId: string,
 ): void {
   const store = useChatRuntimeStore.getState();
-  if (store.models.some((model) => model.id === checkpointId)) {
+  const caps = {
+    isAudio: status.is_audio ?? false,
+    audioType: status.audio_type ?? null,
+    hasAudioInput: status.has_audio_input ?? false,
+  };
+  const existing = store.models.find((model) => model.id === checkpointId);
+  if (existing) {
+    // Backend capability outranks catalog metadata, and adoption has no later
+    // syncModelCapabilities call. Write only on an actual change.
+    if (Object.entries(caps).some(([k, v]) => existing[k as keyof typeof caps] !== v)) {
+      store.setModels(
+        store.models.map((m) => (m.id === checkpointId ? { ...m, ...caps } : m)),
+      );
+    }
     return;
   }
   const summary: ChatModelSummary = {
@@ -110,15 +136,20 @@ function ensureActiveModelInStoreList(
     isVision: status.is_vision ?? false,
     isLora: false,
     isGguf: status.is_gguf ?? false,
-    isAudio: status.is_audio ?? false,
-    audioType: status.audio_type ?? null,
-    hasAudioInput: status.has_audio_input ?? false,
+    ...caps,
   };
   store.setModels([...store.models, summary]);
 }
 
 export type ApplyInferenceStatusOptions = {
   previousCheckpoint?: string;
+  /** activeGgufVariant BEFORE the caller's setCheckpoint synced it to the
+   * status -- without it a variant-only switch underneath the tab reads as
+   * steady state and the hydration reseed keeps the old quant's baselines. */
+  previousGgufVariant?: string | null;
+  /** The caller verified the status is the model this tab just picked, so the
+   * slot control it holds belongs to that model and must survive. */
+  readoptingSameModel?: boolean;
 };
 
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
@@ -144,9 +175,13 @@ export function applyActiveModelStatusToStore(
     );
   }
 
+  const previousGgufVariant =
+    options.previousGgufVariant !== undefined
+      ? options.previousGgufVariant
+      : store.activeGgufVariant;
   const hydratingExistingModel =
     previousCheckpoint !== checkpointId ||
-    store.activeGgufVariant !== (status.gguf_variant ?? null);
+    previousGgufVariant !== (status.gguf_variant ?? null);
   const supportsReasoning = status.supports_reasoning ?? false;
   const reasoningAlwaysOn = status.reasoning_always_on ?? false;
   const reasoningStyle = status.reasoning_style ?? "enable_thinking";
@@ -185,6 +220,101 @@ export function applyActiveModelStatusToStore(
   // While a load is in flight, performLoad owns the load params. Seeding them
   // from a stale poll here would clobber the values the load dialog just set.
   const seedLoadParams = !prevState.modelLoading;
+  // A model/variant change underneath this tab, as opposed to re-adopting the
+  // model the tab just picked, where hydratingExistingModel fires on the stale
+  // checkpoint. The echo cannot stand in: a new model can report the old count.
+  const slotsModelChanged =
+    hydratingExistingModel && !options.readoptingSameModel;
+  // This model's remembered override, read only on a fresh store or a model
+  // change, so a steady poll cannot re-pin a control the user just blanked.
+  // Through the resident resolver, not the raw id: an API-driven load reports the
+  // snapshot path a cached repo loaded from, while its settings are keyed by the
+  // repo id, and the plain lookup misses that record.
+  const slotsUnseeded =
+    prevState.loadedNParallel === null && prevState.nParallel === null;
+  const remembered =
+    status.is_gguf && (slotsUnseeded || slotsModelChanged)
+      ? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)
+      : null;
+  const rememberedNParallel = remembered?.remembered
+    ? (remembered.config.nParallel ?? null)
+    : null;
+  // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
+  // and status only exposes the RESOLVED context; re-seed the pin from the
+  // requested value (parity with the load paths' keepCustomCtx). Baselines
+  // unconditionally: anything but an applicable pin is null, so a previous
+  // model's pin can't survive a model change underneath and reload at the old length.
+  const gpuPin = status.is_gguf
+    ? resolveManualAutoCtxPin(
+        status.gpu_memory_mode ?? "auto",
+        status.gpu_layers ?? -1,
+        status.requested_context_length ?? null,
+      )
+    : null;
+  const incomingGpuMode = status.is_gguf
+    ? (status.gpu_memory_mode ?? "auto")
+    : null;
+  const incomingGpuLayers =
+    incomingGpuMode === "manual" ? (status.gpu_layers ?? null) : null;
+  const incomingNCpuMoe =
+    incomingGpuMode === "manual" ? (status.n_cpu_moe ?? null) : null;
+  const incomingSplit =
+    incomingGpuMode === "manual" ? (status.tensor_split ?? null) : null;
+  const incomingGpuFields = loadedGpuMemoryFields(status);
+  const incomingGpuIds = incomingGpuFields.loadedGpuIds;
+  const incomingGpuIndexKind = incomingGpuFields.loadedGpuIndexKind;
+  const gpuStatusChanged =
+    prevState.loadedGpuMemoryMode !== incomingGpuMode ||
+    prevState.loadedGpuLayers !== incomingGpuLayers ||
+    prevState.loadedNCpuMoe !== incomingNCpuMoe ||
+    !sameArray(prevState.loadedSplitRatio, incomingSplit) ||
+    !sameGpuSelection(
+      {
+        ids: prevState.loadedGpuIds,
+        indexKind: prevState.loadedGpuIndexKind,
+      },
+      { ids: incomingGpuIds, indexKind: incomingGpuIndexKind },
+    ) ||
+    prevState.loadedCustomContextLength !== gpuPin;
+  const gpuMemoryEditsPending =
+    (prevState.loadedGpuMemoryMode !== null &&
+      prevState.gpuMemoryMode !== prevState.loadedGpuMemoryMode) ||
+    (prevState.loadedGpuMemoryMode === "manual" &&
+      (prevState.gpuLayers !== prevState.loadedGpuLayers ||
+        prevState.nCpuMoe !== prevState.loadedNCpuMoe ||
+        !sameArray(prevState.splitRatio, prevState.loadedSplitRatio))) ||
+    prevState.customContextLength !== prevState.loadedCustomContextLength;
+  const gpuIdsEditPending = !sameGpuSelection(
+    {
+      ids: prevState.selectedGpuIds,
+      indexKind: prevState.selectedGpuIndexKind,
+    },
+    {
+      ids: prevState.loadedGpuIds,
+      indexKind: prevState.loadedGpuIndexKind,
+    },
+  );
+  // A same-model reload from another client advances every loaded baseline.
+  // Preserve each editable group only when this tab has an unapplied change.
+  const preserveSameModelEdits = gpuStatusChanged && !hydratingExistingModel;
+  const gpuStatusFields = {
+    ...incomingGpuFields,
+    customContextLength: gpuPin,
+    loadedCustomContextLength: gpuPin,
+    ...(preserveSameModelEdits &&
+      gpuMemoryEditsPending && {
+        gpuMemoryMode: prevState.gpuMemoryMode,
+        gpuLayers: prevState.gpuLayers,
+        nCpuMoe: prevState.nCpuMoe,
+        splitRatio: prevState.splitRatio,
+        customContextLength: prevState.customContextLength,
+      }),
+    ...(preserveSameModelEdits &&
+      gpuIdsEditPending && {
+        selectedGpuIds: prevState.selectedGpuIds,
+        selectedGpuIndexKind: prevState.selectedGpuIndexKind,
+      }),
+  };
 
   useChatRuntimeStore.setState({
     supportsReasoning,
@@ -204,47 +334,98 @@ export function applyActiveModelStatusToStore(
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
     ggufNativeContextLength,
-    // A non-GGUF status must also drop a stale native-path token: without this the
-    // isGguf OR (activeGgufVariant || activeNativePathToken || ggufContextLength)
-    // stays true after switching from a native GGUF to a transformers model, so a
-    // Codex-only detection would auto-select for a model its preflight rejects. A real
-    // GGUF load reports is_gguf: true, so its token is preserved (the load path owns it).
-    ...(status.is_gguf ? {} : { activeNativePathToken: null }),
+    ...(status.is_gguf
+      ? {}
+      : { activeNativePathToken: null, activeNativePathExpiresAtMs: null }),
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
     loadedIsDiffusion: status.is_diffusion ?? false,
+    activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
+    // The spec / KV seeds share the GPU-fields reseed mechanism below: a
+    // non-GGUF status leaves their loaded baselines null, so the "unseeded"
+    // guard re-fires every refresh -- hold them too while a staged pick's
+    // settings are being edited, or the refresh resets the staged edit.
+    // hydratingExistingModel reopens every load-param seed: when the active
+    // model changed underneath this tab (auto-switch, another client), the
+    // old model's baselines are stale and must adopt the new status.
     ...(seedLoadParams &&
-      prevState.loadedSpeculativeType === null && {
+      (prevState.loadedSpeculativeType === null || hydratingExistingModel) && {
         speculativeType: currentSpecType,
         loadedSpeculativeType: currentSpecType,
       }),
     ...(seedLoadParams &&
       status.spec_draft_n_max !== undefined &&
-      prevState.loadedSpecDraftNMax === null &&
-      prevState.specDraftNMax === null && {
+      (hydratingExistingModel ||
+        (prevState.loadedSpecDraftNMax === null &&
+          prevState.specDraftNMax === null)) && {
         specDraftNMax: status.spec_draft_n_max ?? null,
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
       }),
     ...(seedLoadParams &&
       status.cache_type_kv !== undefined &&
-      prevState.loadedKvCacheDtype === null && {
+      (prevState.loadedKvCacheDtype === null || hydratingExistingModel) && {
         kvCacheDtype: status.cache_type_kv,
         loadedKvCacheDtype: status.cache_type_kv,
       }),
     ...(seedLoadParams &&
       status.tensor_parallel !== undefined &&
-      prevState.loadedTensorParallel === null && {
+      (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
-    ...(status.chat_template_override !== undefined &&
-      prevState.loadedChatTemplateOverride === null &&
-      prevState.chatTemplateOverride === null && {
-        chatTemplateOverride: status.chat_template_override,
-        loadedChatTemplateOverride: status.chat_template_override,
+    // Baseline only, never the control: the echo is the RESOLVED count and would
+    // pin a blank "server default" control. The rollback re-sends the baseline,
+    // so without this a rollback after a tab reload loses the override.
+    ...(seedLoadParams &&
+      status.requested_parallel_slots != null &&
+      (prevState.loadedNParallel === null || hydratingExistingModel) && {
+        loadedNParallel: status.requested_parallel_slots,
       }),
+    // A slotless model must not keep the previous GGUF's baseline: the rollback
+    // re-sends it. /status omits the echo for non-GGUF and sends an explicit
+    // null for diffusion, so an absent field on a GGUF is an older backend.
+    ...(seedLoadParams &&
+      (status.is_gguf === false || status.requested_parallel_slots === null) && {
+        loadedNParallel: null,
+      }),
+    // Per-model: a change underneath this tab blanks the control like
+    // performLoad's cross-model reset, or the old count follows onto the new
+    // model. The baseline above still carries the rollback.
+    ...(seedLoadParams && slotsModelChanged && { nParallel: null }),
+    // AFTER that clear, which both a first hydration and a model change trip:
+    // either would leave the control blank while the model runs on a remembered
+    // override, so the next Apply would save the blank over it. Adopted only
+    // when the running count matches, proving it is this model's own.
+    ...(seedLoadParams &&
+      (slotsUnseeded || slotsModelChanged) &&
+      rememberedNParallel != null &&
+      rememberedNParallel === status.requested_parallel_slots && {
+        nParallel: rememberedNParallel,
+      }),
+    // Re-seed on first hydration, model/variant changes, or a same-model backend
+    // placement change. gpuStatusFields preserves dirty local edits in the last
+    // case while advancing their loaded baselines.
+    ...(seedLoadParams &&
+      (prevState.loadedGpuMemoryMode === null ||
+        hydratingExistingModel ||
+        gpuStatusChanged) &&
+      gpuStatusFields),
+    // The one load param that only ever seeded from null, so a switch left the previous model's
+    // template in the store, which the Hub settings page reads as the new model's loaded config:
+    // Apply then saves A's template under B. A same-model reload from another client moves it
+    // too, so the seed also follows a changed status the way the GPU group above does: baseline
+    // always, control only while it still sits on that baseline. See resolveChatTemplateSeed.
+    ...resolveChatTemplateSeed({
+      incoming: status.chat_template_override,
+      previous: {
+        chatTemplateOverride: prevState.chatTemplateOverride,
+        loadedChatTemplateOverride: prevState.loadedChatTemplateOverride,
+      },
+      hydratingExistingModel,
+      seedLoadParams,
+    }),
   });
 
   ensureActiveModelInStoreList(status, checkpointId);
@@ -254,12 +435,28 @@ export function applyActiveModelStatusToStore(
     hydratingExistingModel &&
     storedReasoningEnabled === null
   ) {
+    // Anchored regex: first "Xb" / "X.Xb" after start-of-string or
+    // [-_/.] so the version literal in "qwen3.5" / "qwen3.6" doesn't match
+    // first, and for "Qwen3.5-35B-A3B" the result is 35 (total params),
+    // not 3 (MoE active params). Mirrors the regex in
+    // use-chat-model-runtime.ts and the inline one in llama_cpp.py.
     let reasoningDefault = true;
     const mid = checkpointId.toLowerCase();
     if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-      const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-      if (sizeMatch && Number.parseFloat(sizeMatch[1]) < 9) {
-        reasoningDefault = false;
+      // Scan path segments right to left so the size nearest the leaf wins over
+      // a size-like parent dir; trailing boundary prevents matching "8bit".
+      const sizeRe = /(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])/;
+      const sizeMatch = mid
+        .replace(/\\/g, "/")
+        .split("/")
+        .reduceRight<RegExpMatchArray | null>(
+          (found, seg) => found ?? seg.match(sizeRe),
+          null,
+        );
+      if (sizeMatch) {
+        const size = Number.parseFloat(sizeMatch[1]);
+        const sizeB = sizeMatch[2] === "m" ? size / 1000 : size;
+        if (sizeB <= 9) reasoningDefault = false;
       }
     }
     useChatRuntimeStore.setState({ reasoningEnabled: reasoningDefault });
@@ -298,7 +495,11 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
   if (previousCheckpoint) {
     return true;
   }
+  const previousGgufVariant = useChatRuntimeStore.getState().activeGgufVariant;
   store.setCheckpoint(checkpointId, status.gguf_variant);
-  applyActiveModelStatusToStore(status, { previousCheckpoint });
+  applyActiveModelStatusToStore(status, {
+    previousCheckpoint,
+    previousGgufVariant,
+  });
   return true;
 }

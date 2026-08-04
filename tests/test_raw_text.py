@@ -295,7 +295,302 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
     return True
 
 
+def test_load_from_file_skips_non_object_json_lines():
+    """Non-object .jsonl lines (valid JSON, not dicts) are skipped, not fatal."""
+    # "context" contains "text", ["text"] holds it, 42 isn't iterable -- each
+    # would reach data[field] and raise TypeError without the isinstance guard.
+    with tempfile.NamedTemporaryFile("w", suffix = ".jsonl", delete = False) as f:
+        f.write('"context"\n["text", "x"]\n42\n{"text": "keep this"}\n')
+        path = f.name
+    try:
+        text = RawTextDataLoader(None)._read_file_by_format(path, "json_lines")
+        assert text == "keep this", text
+    finally:
+        os.unlink(path)
+
+    print("test_load_from_file_skips_non_object_json_lines passed")
+    return True
+
+
+def test_smart_chunk_text_empty_input_returns_no_chunks():
+    """Empty/whitespace text must yield no chunks. This tokenizer keeps one token
+    per char (like BPE/SentencePiece keeping spaces), so a len(tokens)==0 check
+    would miss whitespace; the fix guards on text.strip() before tokenizing."""
+
+    class WhitespacePreservingTokenizer:
+        def __init__(self, eos_token_id):
+            self.eos_token = "</s>" if eos_token_id is not None else None
+            self.eos_token_id = eos_token_id
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = [ord(c) % 100 for c in text]  # whitespace -> real tokens
+            if return_tensors == "pt":
+                return {"input_ids": [token_ids]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return "".join(chr(32 + (t % 90)) for t in token_ids)
+
+    for eos_token_id in (2, None):
+        loader = RawTextDataLoader(
+            WhitespacePreservingTokenizer(eos_token_id), chunk_size = 2048, stride = 512
+        )
+        # Whitespace tokenizes to >0 tokens, so [] proves the pre-tokenize guard.
+        assert len(loader.tokenizer("   \n\t  ")["input_ids"]) > 0
+        for text in ("", "   \n\t  "):
+            for return_tokenized in (True, False):
+                assert (
+                    loader.smart_chunk_text(
+                        text, chunk_size = 2048, stride = 512, return_tokenized = return_tokenized
+                    )
+                    == []
+                ), f"no chunks for empty input (eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
+                assert loader.chunk_text(text, return_tokenized = return_tokenized) == [], (
+                    f"chunk_text: no chunks for empty input "
+                    f"(eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
+                )
+    print("test_smart_chunk_text_empty_input_returns_no_chunks passed")
+    return True
+
+
+def test_load_from_files_all_empty_raises():
+    """All-empty file list must raise (like load_from_file) instead of returning
+    a 0-row text-column dataset in return_tokenized mode."""
+
+    class WhitespacePreservingTokenizer:
+        eos_token = "</s>"
+        eos_token_id = 2
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = [ord(c) % 100 for c in text]
+            if return_tensors == "pt":
+                return {"input_ids": [token_ids]}
+            return {"input_ids": token_ids}
+
+    loader = RawTextDataLoader(WhitespacePreservingTokenizer(), chunk_size = 2048, stride = 512)
+    paths = []
+    try:
+        for content in ("", "   \n\t  "):
+            with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
+                f.write(content)
+                paths.append(f.name)
+        raised = False
+        try:
+            loader.load_from_files(paths, return_tokenized = True)
+        except ValueError as e:
+            raised = True
+            assert "empty" in str(e).lower() or "whitespace" in str(e).lower(), str(e)
+        assert raised, "load_from_files must raise when all files are empty/whitespace"
+    finally:
+        for p in paths:
+            os.unlink(p)
+    print("test_load_from_files_all_empty_raises passed")
+    return True
+
+
+def test_validate_dataset_handles_tokenized_and_text_columns():
+    """validate_dataset() must work for both dataset shapes:
+    - text-column datasets (return_tokenized=False), no tokenizer needed
+    - input_ids-column datasets (return_tokenized=True, the default), which
+      require a tokenizer to decode back to text for validation
+    Also asserts the clear ValueError when input_ids is present but no
+    tokenizer was passed, and when neither column exists.
+    """
+
+    class MockTokenizer:
+        def __init__(self):
+            self.eos_token = "</s>"
+            self.eos_token_id = 2
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            words = text.split()
+            token_ids = list(range(len(words)))
+
+            if return_tensors == "pt":
+
+                class MockTensor:
+                    def __init__(self, data):
+                        self.data = data
+
+                    def __getitem__(self, idx):
+                        return self.data
+
+                    def __len__(self):
+                        return len(self.data)
+
+                    def tolist(self):
+                        return self.data
+
+                return {"input_ids": [MockTensor(token_ids)]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return " ".join(f"word_{i}" for i in token_ids)
+
+    tokenizer = MockTokenizer()
+    loader = RawTextDataLoader(tokenizer, chunk_size = 5, stride = 2)
+    preprocessor = TextPreprocessor()
+
+    test_content = "This is a test file for raw text training. " * 10
+    with tempfile.NamedTemporaryFile(mode = "w", suffix = ".txt", delete = False) as f:
+        f.write(test_content)
+        test_file = f.name
+
+    try:
+        text_dataset = loader.load_from_file(test_file, return_tokenized = False)
+        stats = preprocessor.validate_dataset(text_dataset)
+        assert stats["total_samples"] > 0, "Should count samples from text column"
+        assert "warnings" in stats
+
+        tokenized_dataset = loader.load_from_file(test_file, return_tokenized = True)
+        stats = preprocessor.validate_dataset(tokenized_dataset, tokenizer = tokenizer)
+        assert stats["total_samples"] > 0, "Should count samples decoded from input_ids"
+        assert "warnings" in stats
+        assert stats["max_length"] > 0
+
+        try:
+            preprocessor.validate_dataset(tokenized_dataset)
+            assert False, "Should raise ValueError when input_ids present but no tokenizer given"
+        except ValueError as e:
+            assert "tokenizer" in str(e).lower(), str(e)
+
+        class FakeEmptyDataset:
+            column_names = ["some_other_column"]
+
+            def __len__(self):
+                return 0
+
+        try:
+            preprocessor.validate_dataset(FakeEmptyDataset())
+            assert False, "Should raise ValueError when neither text nor input_ids column exists"
+        except ValueError as e:
+            assert "text" in str(e).lower() and "input_ids" in str(e).lower(), str(e)
+
+        print("test_validate_dataset_handles_tokenized_and_text_columns passed")
+        return True
+
+    finally:
+        os.unlink(test_file)
+
+
+def test_validate_dataset_accepts_objects_without_column_names():
+    """Dispatching on `column_names` must not narrow the accepted input types.
+
+    validate_dataset() read dataset["text"] directly, so it worked for any
+    mapping-like object: DataFrames, plain dicts, custom __getitem__ wrappers.
+    """
+
+    preprocessor = TextPreprocessor()
+    texts = ["first sample with enough characters", "second sample with enough characters"]
+    longest = max(len(t) for t in texts)
+
+    class DuckTypedDataset:
+        # Only __len__ + __getitem__, i.e. the pre-existing implicit contract.
+        def __init__(self, data):
+            self.data = data
+
+        def __len__(self):
+            return len(next(iter(self.data.values())))
+
+        def __getitem__(self, key):
+            return self.data[key]
+
+    stats = preprocessor.validate_dataset(DuckTypedDataset({"text": texts}))
+    assert stats["total_samples"] == 2, stats
+    assert stats["empty_samples"] == 0, stats
+    assert stats["max_length"] == longest, stats
+
+    stats = preprocessor.validate_dataset({"text": texts})
+    assert stats["max_length"] == longest, stats
+
+    try:
+        import pandas as pd
+    except ImportError:
+        pd = None
+
+    if pd is not None:
+        stats = preprocessor.validate_dataset(pd.DataFrame({"text": texts}))
+        assert stats["total_samples"] == 2, stats
+        assert stats["max_length"] == longest, stats
+
+    print("test_validate_dataset_accepts_objects_without_column_names passed")
+    return True
+
+
+def test_validate_dataset_streams_instead_of_materialising_columns():
+    """Columns must be streamed via Dataset.iter(), not copied whole.
+
+    dataset[column] pulls every row into Python objects at once, which for token
+    ids is the bulk of peak memory and grows with the dataset.
+    """
+
+    class BatchedDataset:
+        column_names = ["input_ids"]
+
+        def __init__(self, rows):
+            self.rows = rows
+            self.materialised = 0
+
+        def __len__(self):
+            return len(self.rows)
+
+        def iter(self, batch_size):
+            for start in range(0, len(self.rows), batch_size):
+                yield {"input_ids": self.rows[start : start + batch_size]}
+
+        def __getitem__(self, key):
+            self.materialised += 1
+            return self.rows
+
+    class Tokenizer:
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return " ".join(f"word_{i}" for i in token_ids)
+
+    dataset = BatchedDataset([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    stats = TextPreprocessor().validate_dataset(dataset, tokenizer = Tokenizer())
+
+    assert stats["total_samples"] == 3, stats
+    assert stats["empty_samples"] == 0, stats
+    assert dataset.materialised == 0, "column was materialised instead of streamed"
+
+    print("test_validate_dataset_streams_instead_of_materialising_columns passed")
+    return True
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
+    success = test_load_from_file_skips_non_object_json_lines() and success
+    success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
+    success = test_load_from_files_all_empty_raises() and success
+    success = test_validate_dataset_handles_tokenized_and_text_columns() and success
+    success = test_validate_dataset_accepts_objects_without_column_names() and success
+    success = test_validate_dataset_streams_instead_of_materialising_columns() and success
     sys.exit(0 if success else 1)

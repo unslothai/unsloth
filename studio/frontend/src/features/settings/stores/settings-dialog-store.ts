@@ -12,10 +12,12 @@ export type SettingsTab =
   | "chat"
   | "voice"
   | "connections"
+  | "data"
   | "api-keys"
+  | "agents"
   | "about";
 
-export type SettingsScrollTarget = "about-updates";
+export type SettingsScrollTarget = "about-updates" | "appearance-sidebar-nav";
 
 interface OpenDialogOptions {
   scrollTarget?: SettingsScrollTarget;
@@ -32,7 +34,7 @@ interface SettingsDialogState {
   // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
   // Set when something asks to jump straight to the archived chats list (the
-  // archive toast). ChatTab consumes it to open the dialog, then clears it.
+  // archive toast). DataTab uses it as its initial subpage, then clears it.
   archivedChatsRequested: boolean;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
@@ -60,7 +62,9 @@ function loadInitialTab(): SettingsTab {
     "chat",
     "voice",
     "connections",
+    "data",
     "api-keys",
+    "agents",
     "about",
   ];
   return valid.includes(stored as SettingsTab)
@@ -87,7 +91,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   openArchivedChats: () =>
     set({
       open: true,
-      activeTab: "chat",
+      activeTab: "data",
       scrollTarget: null,
       archivedChatsRequested: true,
       opener: captureFocusedElement(),

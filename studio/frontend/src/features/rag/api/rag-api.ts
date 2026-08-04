@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
   DocumentUploadResult,
@@ -10,6 +11,7 @@ import type {
   KnowledgeBase,
   PreviewTarget,
   RagDocument,
+  UploadedDocument,
 } from "../types/rag";
 
 const RAG_BASE = "/api/rag";
@@ -39,14 +41,22 @@ async function ragRequest<T>(
   return json as T;
 }
 
+/** A desktop drop the webview can only name through a Rust-signed grant. */
+export interface NativeUploadRef {
+  nativePathLease: string;
+}
+
+export type UploadSource = File | NativeUploadRef;
+
 async function ragUpload(
   path: string,
-  file: File,
+  source: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {
   const form = new FormData();
-  form.append("file", file);
+  if (source instanceof File) form.append("file", source);
+  else form.append("nativePathLease", source.nativePathLease);
   // Per-upload overrides for the vision passes; omitted -> backend config default.
   if (ocr !== undefined) form.append("ocr", String(ocr));
   if (caption !== undefined) form.append("caption", String(caption));
@@ -110,7 +120,7 @@ export async function listKnowledgeBaseDocuments(
 
 export function uploadKnowledgeBaseDocument(
   kbId: string,
-  file: File,
+  file: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {
@@ -133,7 +143,7 @@ export async function listThreadDocuments(
 
 export function uploadThreadDocument(
   threadId: string,
-  file: File,
+  file: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {
@@ -156,7 +166,7 @@ export async function listProjectDocuments(
 
 export function uploadProjectDocument(
   projectId: string,
-  file: File,
+  file: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {
@@ -194,10 +204,25 @@ export function invalidateProjectSources(projectId: string): void {
   projectSourcesCache.delete(projectId);
 }
 
-export function deleteDocument(documentId: string): Promise<{ ok: boolean }> {
-  return ragRequest(`/documents/${encodeURIComponent(documentId)}`, {
-    method: "DELETE",
-  });
+export async function listAllDocuments(): Promise<UploadedDocument[]> {
+  const data = await ragRequest<{ documents: UploadedDocument[] }>(
+    "/documents",
+  );
+  return data.documents ?? [];
+}
+
+export async function deleteDocument(
+  documentId: string,
+  projectId?: string | null,
+): Promise<{ ok: boolean }> {
+  const result = await ragRequest<{ ok: boolean }>(
+    `/documents/${encodeURIComponent(documentId)}`,
+    {
+      method: "DELETE",
+    },
+  );
+  if (projectId) invalidateProjectSources(projectId);
+  return result;
 }
 
 export function getJob(jobId: string): Promise<IndexJob> {
@@ -237,7 +262,8 @@ export async function* streamJobEvents(
 
         const dataLines: string[] = [];
         for (const line of rawEvent.split(/\r?\n/)) {
-          if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+          if (line.startsWith("data:"))
+            dataLines.push(line.slice(5).trimStart());
         }
         if (dataLines.length > 0) {
           const dataText = dataLines.join("\n");
@@ -271,10 +297,12 @@ export function getPreviewTarget(
   );
 }
 
-// Signed URL (no bearer) so pdf.js can issue Range requests.
+// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because
+// consumers bypass authFetch, and a relative path under Tauri resolves against
+// the webview origin.
 export async function getDocumentFileUrl(documentId: string): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,
   );
-  return data.url;
+  return apiUrl(data.url);
 }

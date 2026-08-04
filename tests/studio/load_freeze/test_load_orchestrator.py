@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 import re
 import socket
@@ -49,7 +50,16 @@ import logging as _logging  # noqa: E402
 _loggers_stub = types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: _logging.getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
-sys.modules.setdefault("structlog", types.ModuleType("structlog"))
+# structlog is a hard studio.txt requirement imported only lazily, so a bare setdefault would
+# shadow the real package. Stub only a genuinely absent one (check sys.modules first: find_spec()
+# raises ValueError on another module's bare stub), then backfill get_logger.
+_structlog = sys.modules.get("structlog")
+if _structlog is None and importlib.util.find_spec("structlog") is None:
+    _structlog = sys.modules.setdefault("structlog", types.ModuleType("structlog"))
+if _structlog is not None and not hasattr(_structlog, "get_logger"):
+    _structlog.get_logger = lambda *args, **kwargs: _logging.getLogger(
+        args[0] if args else "structlog"
+    )
 
 import httpx  # noqa: E402
 
@@ -441,7 +451,7 @@ def test_load_model_caches_audio_type_inside_serial_load_lock():
     """Audio-type detection must run inside load_model under _serial_load_lock,
     else a concurrent /load can replace the backend mid-probe (review on #5669)."""
     f = _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
-    text = f.read_text()
+    text = f.read_text(encoding = "utf-8")
     assert (
         "with self._serial_load_lock" in text
     ), "LlamaCppBackend.load_model must hold self._serial_load_lock"
@@ -462,7 +472,7 @@ def test_routes_inference_reads_cached_audio_type_not_calls_detect():
     """routes/inference.py must read cached _audio_type/_is_audio, not call
     detect_audio_type / init_audio_codec directly (both moved into load_model)."""
     f = _REPO_ROOT / "studio" / "backend" / "routes" / "inference.py"
-    text = f.read_text()
+    text = f.read_text(encoding = "utf-8")
     assert "llama_backend.detect_audio_type(" not in text, (
         "routes/inference.py should not call detect_audio_type directly; "
         "load_model already cached it under the lock."
@@ -485,7 +495,7 @@ def test_no_other_async_route_calls_detect_audio_type_unwrapped():
     # function helper is excluded below.
     pattern = re.compile(r"\b\w+\.detect_audio_type\s*\(")
     for path in routes_dir.rglob("*.py"):
-        for i, line in enumerate(path.read_text().splitlines(), start = 1):
+        for i, line in enumerate(path.read_text(encoding = "utf-8").splitlines(), start = 1):
             m = pattern.search(line)
             if not m:
                 continue

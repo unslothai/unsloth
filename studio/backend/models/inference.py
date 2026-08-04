@@ -18,6 +18,9 @@ from pydantic import (
     model_validator,
 )
 
+from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
+from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+
 
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
@@ -54,17 +57,38 @@ class LoadRequest(BaseModel):
     @field_validator("chat_template_override")
     @classmethod
     def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and value.strip() == "":
+        if value is None:
             return None
+        # Char count is a lower bound on UTF-8 byte length: reject an oversized
+        # template before spending work encoding it.
+        if len(value) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
+        if value.strip() == "":
+            return None
+        if len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
+        description = (
+            "KV cache data type for both K and V "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
+        ),
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
+        description = (
+            "GPU placement pool, for example [0, 1]. Omit or pass [] to use "
+            "automatic selection. CUDA/ROCm values are physical GPU indices; "
+            "Vulkan values are ggml device ordinals. Explicit selection is not "
+            "supported on XPU, and physical IDs are unsupported when the parent "
+            "visibility mask uses "
+            "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
+            "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
+            "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
+            "models the fitter may pin the smallest subset of this pool that fits."
+        ),
     )
     speculative_type: Optional[str] = Field(
         None,
@@ -91,6 +115,18 @@ class LoadRequest(BaseModel):
             "'mtp' or 'mtp+ngram'."
         ),
     )
+    n_parallel: Optional[int] = Field(
+        None,
+        ge = PARALLEL_MIN,
+        le = PARALLEL_MAX,
+        description = (
+            "Parallel decode slots for llama-server (--parallel) for this "
+            f"load ({PARALLEL_MIN}..{PARALLEL_MAX}). Omit for the server-wide "
+            "default set at launch (the --parallel CLI flag). The VRAM fitter "
+            "may launch fewer slots to keep the model fully on GPU. Ignored "
+            "for non-GGUF models."
+        ),
+    )
     tensor_parallel: bool = Field(
         False,
         description = (
@@ -100,13 +136,80 @@ class LoadRequest(BaseModel):
             "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = (
+            "GPU memory strategy for GGUF models. 'auto' (default): Unsloth "
+            "selects GPUs and caps context to fit VRAM. 'manual': you own the "
+            "offload. Leave gpu_layers at -1 (Auto) to hand memory management to "
+            "llama.cpp's --fit (no device masking, no context auto-reduce, no "
+            "gpu-layer/tensor-split planning); set gpu_layers >= 0 to pin layers "
+            "and n_cpu_moe yourself (--fit off), with tensor_parallel still "
+            "applying (split by free VRAM unless tensor_split is set, no planner). "
+            "Ignored for non-GGUF."
+        ),
+    )
+    gpu_layers: int = Field(
+        -1,
+        ge = -1,
+        description = (
+            "Manual mode only: number of layers to offload to the GPU "
+            "(--gpu-layers, with --fit off). A value >= the model's layer count "
+            "offloads all of them. -1 = Auto: hand layer + context sizing to "
+            "llama.cpp's --fit. Ignored unless gpu_memory_mode is 'manual'."
+        ),
+    )
+    n_cpu_moe: int = Field(
+        0,
+        ge = 0,
+        description = (
+            "Manual mode only: keep the first N MoE expert layers on the CPU "
+            "(--n-cpu-moe) to save VRAM on MoE models. 0 = none, N = number of "
+            "MoE layers offloaded (the backend offsets past any leading dense "
+            "layers). Ignored unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
+        ),
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = (
+            "Manual mode only: relative share of the model per GPU (--tensor-split), "
+            "in the order of the GPUs in use, e.g. [2, 1] for 2:1. Omit it to let "
+            "llama.cpp use its default, which splits by free VRAM. Any list given is "
+            "passed through as-is, so send [1, 1] to force an even split. Ignored "
+            "unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
+        ),
+    )
+
+    @field_validator("tensor_split")
+    @classmethod
+    def _reject_degenerate_tensor_split(cls, value: Optional[List[float]]) -> Optional[List[float]]:
+        # A negative / non-finite / all-zero split is silently dropped at launch
+        # (stored as None) yet still compared raw in the reload dedupe, so an
+        # identical Apply reloads forever. Reject it up front; [] = no split.
+        if not value:
+            return value
+        import math
+
+        if any((not math.isfinite(v)) or v < 0 for v in value):
+            raise ValueError("tensor_split entries must be finite and non-negative")
+        if sum(value) <= 0:
+            raise ValueError("tensor_split must have a positive total")
+        return value
+
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
             "Extra arguments forwarded verbatim to llama-server for GGUF models. "
             "One token per list entry, e.g. ['--top-k', '20', '--seed', '42']. "
-            "Studio-managed flags (model identity, port, context length, GPU placement, "
+            "Unsloth-managed flags (model identity, port, context length, GPU placement, "
             "auth, UI/server mode) are rejected. Ignored for non-GGUF models."
+        ),
+    )
+    force_cancel_active: bool = Field(
+        False,
+        description = (
+            "Stop chats still generating instead of refusing with 409. A load "
+            "replaces the llama-server every open conversation decodes on."
         ),
     )
 
@@ -115,6 +218,39 @@ class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
     model_path: str = Field(..., description = "Model identifier to unload")
+    force_cancel_active: bool = Field(
+        False,
+        description = (
+            "Stop chats still generating instead of refusing with 409. An "
+            "unload takes away the llama-server they are decoding on."
+        ),
+    )
+
+
+class TranscribeRequest(BaseModel):
+    """Speech-to-text request for the dictation STT sidecar."""
+
+    audio: str = Field(..., description = "Base64-encoded audio (any common format)")
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    language: Optional[str] = Field(None, description = "BCP-47 language, or 'auto'/None to detect")
+    fast: bool = Field(
+        False,
+        description = "Use low-latency single-candidate decoding for dictation",
+    )
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
+
+
+class SttLoadRequest(BaseModel):
+    """Warm the STT sidecar with a model without transcribing."""
+
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
 
 
 class ValidateModelRequest(BaseModel):
@@ -132,11 +268,48 @@ class ValidateModelRequest(BaseModel):
     # /load; defaults preserve old behavior for callers that omit them.
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
+    cache_type_kv: Optional[str] = Field(None)
+    tensor_parallel: bool = Field(False)
     gpu_ids: Optional[List[int]] = Field(None)
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = (
+            "GGUF GPU-memory strategy intended for the follow-up load. Manual "
+            "placement bypasses the training coexistence estimate: Auto layers "
+            "delegate fitting to llama.cpp, while explicit layers are user-owned."
+        ),
+    )
+    gpu_layers: int = Field(
+        -1,
+        ge = -1,
+        description = (
+            "Layer count intended for the follow-up load, so the coexistence estimate "
+            "sizes like /load. Only 0 changes the verdict: a zero-layer DiffusionGemma "
+            "split places no layers on any device, so it cannot compete with training "
+            "for VRAM. -1 (Auto) keeps the previous behaviour for callers that omit it."
+        ),
+    )
+    n_parallel: Optional[int] = Field(
+        None,
+        ge = PARALLEL_MIN,
+        le = PARALLEL_MAX,
+        description = (
+            "Parallel decode slots intended for the follow-up load, so the "
+            "coexistence estimate sizes the KV cache like /load. Omit for the "
+            "server-wide --parallel default."
+        ),
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
         "Opt-in so the normal load preflight doesn't pay for a cache scan it doesn't need.",
+    )
+    include_chat_template: bool = Field(
+        False,
+        description = "Also read the embedded chat template from the local GGUF header, so a "
+        "native (picked / drag-drop) file's default template can be shown before it is loaded. "
+        "Opt-in and, like include_context_length, a metadata-only probe that skips the training "
+        "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
     )
 
 
@@ -151,13 +324,13 @@ class TransformersUpgradeInfo(BaseModel):
     )
     supported_in_pypi: bool = Field(
         False,
-        description = "True if the latest PyPI release ships this model_type; Studio can "
+        description = "True if the latest PyPI release ships this model_type; Unsloth can "
         "install it into a persistent sidecar after user consent.",
     )
     supported_in_main: bool = Field(
         False,
         description = "True if transformers GitHub main ships this model_type (dev-only; "
-        "not installable through Studio yet).",
+        "not installable through Unsloth yet).",
     )
 
 
@@ -172,6 +345,17 @@ class ValidateModelResponse(BaseModel):
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
     display_name: Optional[str] = Field(None, description = "Display name derived from identifier")
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether this is a block-diffusion model (DiffusionGemma)"
+    )
+    diffusion_unknown: bool = Field(
+        False,
+        description = "Whether the diffusion check came back inconclusive: the GGUF is not "
+        "downloaded yet (or its header is unreadable) and its name does not carry the "
+        "DiffusionGemma family, so is_diffusion == False here means 'not known to be "
+        "diffusion', NOT 'known to be an ordinary GGUF'. Callers that choose a GPU-layer "
+        "split before the load must treat this as possibly-diffusion.",
+    )
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
     requires_trust_remote_code: bool = Field(
@@ -187,6 +371,21 @@ class ValidateModelResponse(BaseModel):
         None,
         description = "Native training context length, read from the GGUF header when the file "
         "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
+    )
+    layer_count: Optional[int] = Field(
+        None,
+        description = "Total layer count (GGUF block_count), the manual gpu-layers ceiling, read "
+        "from the header alongside context_length; None when not read.",
+    )
+    moe_layer_count: Optional[int] = Field(
+        None,
+        description = "MoE expert-layer count (the manual --n-cpu-moe ceiling), read from the GGUF "
+        "header alongside context_length; 0 for dense models, None when not read.",
+    )
+    chat_template: Optional[str] = Field(
+        None,
+        description = "Embedded GGUF chat template, read from the header when include_chat_template "
+        "is set (native lease-backed picks); None for non-GGUF, over-cap, or not-read templates.",
     )
     # Additive fields; the consuming consent dialog ships in a follow-up frontend PR.
     requires_transformers_upgrade: bool = Field(
@@ -211,6 +410,14 @@ class InstallLatestTransformersRequest(BaseModel):
         max_length = 64,
         description = "Exact transformers version to install; must match the current "
         "latest PyPI release reported by /validate.",
+    )
+    force_cancel_active: bool = Field(
+        False,
+        description = (
+            "Stop chats still generating instead of refusing with 409. The install "
+            "is a step of the model swap that raised the same prompt, so a client "
+            "that already got consent for that swap can carry it through here."
+        ),
     )
 
 
@@ -247,24 +454,23 @@ class GenerateRequest(BaseModel):
     image_base64: Optional[str] = Field(None, description = "Base64 encoded image for vision models")
 
 
-class LoadResponse(BaseModel):
-    """Response after loading a model"""
+class _InferenceRuntimeFields(BaseModel):
+    """Runtime fields shared by load and status responses."""
 
-    status: str = Field(..., description = "Load status")
-    model: str = Field(..., description = "Model identifier")
-    display_name: str = Field(..., description = "Display name of the model")
     is_vision: bool = Field(False, description = "Whether model is a vision model")
-    is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
-    is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
+    )
+    diffusion_requested_ngl: Optional[int] = Field(
+        None,
+        description = "GPU-layer count the diffusion runner was ASKED for, when that differs "
+        "from what it applied: an unsloth_zoo shim without --ngl drops the split and runs "
+        "Auto, so gpu_layers reports -1 while this reports the standing request. None for "
+        "non-diffusion models and whenever the ask and the applied split agree.",
     )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
-    inference: dict = Field(
-        ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
-    )
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
@@ -307,7 +513,10 @@ class LoadResponse(BaseModel):
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache data type for K and V (e.g. 'f16', 'bf16', 'q8_0')",
+        description = (
+            "KV cache data type for K and V "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
+        ),
     )
     chat_template: Optional[str] = Field(
         None,
@@ -332,6 +541,74 @@ class LoadResponse(BaseModel):
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = "Active GPU memory strategy ('auto' or 'manual').",
+    )
+    gpu_layers: int = Field(
+        -1,
+        description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
+    )
+    n_cpu_moe: int = Field(
+        0,
+        description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
+    )
+    n_layers: Optional[int] = Field(
+        None,
+        description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
+    )
+    n_moe_layers: int = Field(
+        0,
+        description = "Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not an MoE model.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
+        ),
+    )
+    requested_parallel_slots: Optional[int] = Field(
+        None,
+        description = (
+            "Parallel decode slots the load was invoked with (per-load "
+            "n_parallel, else the server-wide --parallel default). None for "
+            "non-GGUF loads and for the diffusion runner, which ignores "
+            "--parallel."
+        ),
+    )
+    parallel_slots: Optional[int] = Field(
+        None,
+        description = (
+            "Serving slots the active llama-server actually runs (--parallel "
+            "after any fit-time slot reduction). None for non-GGUF loads and "
+            "for the diffusion runner, which ignores --parallel."
+        ),
+    )
+
+
+class LoadResponse(_InferenceRuntimeFields):
+    """Response after loading a model"""
+
+    status: str = Field(..., description = "Load status")
+    model: str = Field(..., description = "Model identifier")
+    display_name: str = Field(..., description = "Display name of the model")
+    is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
+    is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
+    is_local_model: bool = Field(
+        False, description = "Whether the loaded model came from a local filesystem path"
+    )
+    inference: dict = Field(
+        ..., description = "Inference parameters (temperature, top_p, top_k, min_p)"
     )
 
 
@@ -370,7 +647,7 @@ class LoadProgressResponse(BaseModel):
     fraction: float = Field(0.0, description = "bytes_loaded / bytes_total, clamped to 0..1.")
 
 
-class InferenceStatusResponse(BaseModel):
+class InferenceStatusResponse(_InferenceRuntimeFields):
     """Current inference backend status"""
 
     active_model: Optional[str] = Field(
@@ -380,86 +657,27 @@ class InferenceStatusResponse(BaseModel):
         None,
         description = "Loadable identifier for the active model.",
     )
-    is_vision: bool = Field(False, description = "Whether the active model is a vision model")
     is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")
-    is_diffusion: bool = Field(
-        False, description = "Whether the active model is a block-diffusion model (DiffusionGemma)"
+    is_local_model: bool = Field(
+        False, description = "Whether the active model came from a local filesystem path"
     )
     gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
-    is_audio: bool = Field(False, description = "Whether the active model is a TTS audio model")
-    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
-    has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )
-    requires_trust_remote_code: bool = Field(
-        False,
-        description = "Whether the active model requires trust_remote_code to be enabled for loading.",
-    )
-    supports_reasoning: bool = Field(
-        False, description = "Whether the active model supports reasoning/thinking mode"
-    )
-    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
-        Field(
-            "enable_thinking",
-            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
-        )
-    )
-    reasoning_effort_levels: List[str] = Field(
-        default_factory = list,
-        description = "Discrete reasoning_effort levels the template offers when reasoning_style is 'enable_thinking_effort' (e.g. ['high', 'max']); empty otherwise",
-    )
-    reasoning_always_on: bool = Field(
-        False, description = "Whether reasoning is always on (not toggleable)"
-    )
-    supports_preserve_thinking: bool = Field(
-        False,
-        description = "Whether the active model's template understands the optional preserve_thinking kwarg",
-    )
-    supports_tools: bool = Field(
-        False, description = "Whether the active model supports tool calling"
-    )
-    context_length: Optional[int] = Field(None, description = "Context length of the active model")
-    max_context_length: Optional[int] = Field(
-        None,
-        description = "Maximum context length currently available for the active model",
-    )
-    native_context_length: Optional[int] = Field(
-        None,
-        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
-    )
-    cache_type_kv: Optional[str] = Field(
-        None,
-        description = "KV cache quantization dtype (e.g. 'q8_0'), or None for default",
-    )
-    chat_template: Optional[str] = Field(
-        None, description = "Model's default chat template (Jinja2 source), if any"
-    )
     chat_template_override: Optional[str] = Field(
         None,
         description = "Active chat template override applied at load time, or None if model is using its default",
     )
-    speculative_type: Optional[str] = Field(
+    requested_context_length: Optional[int] = Field(
         None,
         description = (
-            "Canonical UI-facing requested speculative decoding mode "
-            "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
-            "'ngram-simple'), round-tripped from the original LoadRequest. "
-            "None when no model is loaded."
+            "The n_ctx the active GGUF load was invoked with (0 = Auto). Lets the "
+            "UI re-seed a Manual + Auto-layers context pin on hydration, where "
+            "context_length only exposes the resolved value. None for non-GGUF."
         ),
-    )
-    spec_draft_n_max: Optional[int] = Field(
-        None,
-        description = (
-            "Active --spec-draft-n-max for MTP speculative decoding, or "
-            "None when the platform default is in effect."
-        ),
-    )
-    tensor_parallel: bool = Field(
-        False,
-        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,
@@ -533,7 +751,7 @@ class ImageContentPart(BaseModel):
 class InputDocumentContentPart(BaseModel):
     """Document (PDF / file) content part in a multimodal message.
 
-    Studio-normalised shape (file_data or file_url, plus optional filename/media_type).
+    Unsloth-normalised shape (file_data or file_url, plus optional filename/media_type).
     Mapped onto Anthropic ``document`` / OpenAI ``input_file`` for vision providers;
     dropped for non-vision providers.
     """
@@ -689,18 +907,18 @@ class ThinkingConfig(BaseModel):
     """Anthropic-compatible thinking/reasoning configuration.
     Use type='disabled' to turn off thinking, or type='enabled' to turn it on.
     Only type is read; extra fields (e.g. budget_tokens) are ignored, since
-    Studio sets provider thinking budgets itself.
+    Unsloth sets provider thinking budgets itself.
     """
 
     type: Literal["disabled", "enabled"] = "disabled"
 
 
 # Recognized permission_mode values. The field accepts a plain string rather than
-# a Literal so an unrecognized value from a newer UI/client degrades to the
-# safest gate ("ask") instead of a 422; the tool loops apply the same unknown ->
-# ask fallback, so normalizing here keeps that forward-compat path reachable at
-# the API boundary. None stays unset ("behaves as 'ask'" without self-enabling
-# the confirm gate).
+# a Literal so an unrecognized value from a newer UI/client degrades to the safest
+# gate ("ask") instead of a 422. None stays unset at the request boundary: the tool
+# loops normalize it to the product default "auto", while the route's confirm-gate
+# derivation keeps an unset mode lenient (a non-streaming request cannot prompt, so
+# it runs) to keep non-streaming clients and health checks working.
 _KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
 
 
@@ -748,7 +966,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "OpenAI function-tool definitions. When provided without `enable_tools=true`, "
-            "Studio forwards the tools to the backend so the model returns structured "
+            "Unsloth forwards the tools to the backend so the model returns structured "
             "tool_calls for the client to execute (standard OpenAI function calling)."
         ),
     )
@@ -863,11 +1081,13 @@ class ChatCompletionRequest(BaseModel):
             "[x-unsloth] Permission level for local tool calls. 'ask' pauses every "
             "call for approval; 'ask'/'auto' enable the confirmation gate on their "
             "own (needs a streaming request to deliver prompts). 'auto' ('Approve for "
-            "me') only pauses calls detected as potentially unsafe (state-mutating "
-            "terminal/python/MCP calls); read-only calls run immediately, and the "
-            "sandbox stays on. 'full' is equivalent to bypass_permissions=true (no "
-            "confirmation, no sandbox). Unset behaves as 'ask'. An unrecognized value "
-            "(e.g. from a newer client) is treated as 'ask'."
+            "me') only pauses calls detected as high risk (credential reads, privilege "
+            "escalation, destructive/persistence, network exfil); ordinary calls run "
+            "immediately, and the sandbox stays on. 'full' is equivalent to "
+            "bypass_permissions=true (no confirmation, no sandbox). Unset defaults to "
+            "'auto' for the per-call gate; a non-streaming request without an explicit "
+            "mode cannot prompt and runs the loop. An unrecognized value (e.g. from a "
+            "newer client) is treated as 'ask'."
         ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
@@ -1154,13 +1374,28 @@ class ChatCompletionRequest(BaseModel):
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
         elif (
+            self.permission_mode is None
+            and self.confirm_tool_calls is True
+            and not (self.provider_id or self.provider_type)
+        ):
+            # An explicit confirm_tool_calls=True with no mode opted into the
+            # pre-permission-mode contract of gating every call, so resolve it to
+            # "ask" rather than let the loop apply the "auto" default, which would
+            # silently weaken that opt-in to high-risk calls only. Unlike the "ask"
+            # branch below this only sets permission_mode, which is inert unless
+            # Unsloth's own tool loop runs, so it needs no enable_tools/mcp gate --
+            # deliberate, since a process-wide --enable-tools policy can force the
+            # loop when the request sets neither flag. A bare unset request
+            # (confirm_tool_calls is None) still defaults to auto.
+            self.permission_mode = "ask"
+        elif (
             self.permission_mode == "ask"
             and self.confirm_tool_calls is None
             and not (self.provider_id or self.provider_type)
             and (self.enable_tools is True or bool(self.mcp_enabled))
         ):
             # "Ask" gates every call, so a direct API caller that omits the legacy
-            # confirm flag must still hit the confirmation gate for Studio's own
+            # confirm flag must still hit the confirmation gate for Unsloth's own
             # tool loop. An explicit confirm_tool_calls=False wins over the mode
             # (mirrors _permission_mode_confirm and the Anthropic pre-switch guard),
             # so only self-enable when the flag is unset. Only self-enable when that
@@ -1168,7 +1403,7 @@ class ChatCompletionRequest(BaseModel):
             # (enable_tools / mcp_enabled) -- the router enters the loop on those
             # signals, not on enabled_tools alone (which merely filters which tools
             # run). A plain client-tool passthrough (client-supplied `tools` that
-            # Studio does not execute) must route verbatim, and external-provider
+            # Unsloth does not execute) must route verbatim, and external-provider
             # routing rejects confirm_tool_calls with tools, so skip the fold there.
             #
             # "auto" is deliberately NOT folded: it only prompts for a call the
@@ -1178,6 +1413,57 @@ class ChatCompletionRequest(BaseModel):
             # stream=true. The mode still drives the loop's per-call gate.
             self.confirm_tool_calls = True
         return self
+
+
+class ChatCountTokensRequest(BaseModel):
+    """Count prompt tokens for a local GGUF chat without generating."""
+
+    model_config = {"extra": "allow"}
+
+    model: str = Field(
+        "default",
+        description = "Model identifier (informational; the active model is used)",
+    )
+    messages: list[ChatMessage] = Field(
+        ...,
+        description = "Conversation messages in OpenAI chat form",
+    )
+    tools: Optional[list[dict]] = Field(
+        None,
+        description = "Optional OpenAI tool definitions included in the prompt",
+    )
+    enable_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Render the template in thinking mode, as a completion would",
+    )
+    reasoning_effort: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Reasoning effort level the completion would request",
+    )
+    preserve_thinking: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Keep historical <think> blocks in the rendered prompt",
+    )
+    enable_tools: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Enable tool calling for supported models",
+    )
+    enabled_tools: Optional[list[str]] = Field(
+        None,
+        description = "[x-unsloth] List of enabled built-in tool names",
+    )
+    mcp_enabled: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Append tools from every enabled MCP server",
+    )
+    rag_scope: Optional[dict] = Field(
+        None,
+        description = "[x-unsloth] Hidden RAG retrieval scope for search_knowledge_base",
+    )
+    auto_heal_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
+    )
 
 
 class ToolConfirmRequest(BaseModel):
@@ -1791,7 +2077,8 @@ class AnthropicMessage(BaseModel):
 
 
 class AnthropicTool(BaseModel):
-    # Client tools have input_schema; server tools may only have type/name.
+    # User-defined client tools have input_schema; Anthropic-schema client tools
+    # and server tools use type/name.
     type: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None
@@ -1836,7 +2123,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     permission_mode: Optional[str] = Field(
         None,
-        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' only pauses calls detected as potentially unsafe, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset behaves as 'ask'; an unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -1935,3 +2222,994 @@ class AnthropicMessagesResponse(BaseModel):
     stop_reason: Optional[str] = None
     stop_sequence: Optional[str] = None
     usage: AnthropicUsage = Field(default_factory = AnthropicUsage)
+
+
+# ── Diffusion (local text-to-image) ──
+
+
+class DiffusionLoadRequest(BaseModel):
+    """Request to load a local diffusion (text-to-image) checkpoint."""
+
+    model_path: str = Field(..., description = "Diffusion repo id or local path")
+    gguf_filename: Optional[str] = Field(
+        None,
+        description = "The chosen single-file checkpoint (GGUF or safetensors) inside "
+        "model_path. Required for the gguf / single_file kinds; omit for a full pipeline.",
+    )
+    model_kind: Optional[Literal["gguf", "single_file", "pipeline"]] = Field(
+        None,
+        description = "How to load the model (null = auto-detect from gguf_filename): gguf "
+        "(single-file GGUF transformer, dequantised on-device), single_file (single-file "
+        "safetensors transformer, e.g. fp8), or pipeline (a full diffusers repo via "
+        "from_pretrained, embedded quant auto-applied). Non-GGUF kinds are restricted to "
+        "unsloth/* repos (or a local path).",
+    )
+    base_repo: Optional[str] = Field(
+        None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
+    )
+    family_override: Optional[str] = Field(
+        None, description = "Force a family when it can't be inferred from the repo id"
+    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated repos")
+    cpu_offload: bool = Field(False, description = "Enable model CPU offload to fit low-VRAM cards")
+    memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram"]] = Field(
+        None,
+        description = "Memory policy: auto (measured), fast (resident), balanced "
+        "(stream the transformer, near-resident speed, moderate VRAM "
+        "cut), low_vram (offload every component, lowest VRAM, slower). "
+        "Overrides cpu_offload when set.",
+    )
+    speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
+        None,
+        description = "Opt-in speed optims (default off -> bit-identical output): "
+        "eager (channels_last + cudnn + attention + fused RMSNorm/AdaLayerNorm patches, "
+        "NO torch.compile -> fast first image, no compile tax), "
+        "default (also regional torch.compile where eligible), "
+        "max (also TF32 + fused QKV).",
+    )
+    text_encoder_quant: Optional[Literal["fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+        None,
+        description = "Quantise the companion text encoder(s): fp8 (layerwise cast, ~2x smaller, "
+        "CUDA cc>=8.9), fp8_dynamic (torchao compute fp8 on the tensor cores, ~2x + faster, "
+        "cc>=8.9), int8 (torchao compute int8 with per-family keep-bf16 layers; falls back to "
+        "fp8 where no schedule exists; cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). A "
+        "memory-vs-quality tradeoff (shifts fine detail), not free; pairs well with balanced mode.",
+    )
+    transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
+        Field(
+            None,
+            description = "Transformer compute dtype. UNSET or auto (the default) picks the "
+            "fastest precision the hardware supports: the DENSE bf16 transformer "
+            "is loaded instead of the GGUF and torchao-quantised onto the "
+            "low-precision tensor cores (data-center fp8, consumer/Ampere int8), "
+            "falling back to the GGUF when the device, VRAM or disk cannot take "
+            "it. none/off pins running the GGUF as-is; an explicit scheme forces "
+            "that scheme. Dense path needs CUDA + bf16.",
+        )
+    )
+    transformer_quant_fast_accum: Optional[bool] = Field(
+        None,
+        description = "fp8 only: FP8 matmul accumulate. null auto-detects by GPU class "
+        "(fast FP16 accumulate on consumer/workstation cards, where FP32 "
+        "accumulate is ~2x slower; precise FP32 accumulate on data-center "
+        "HBM cards, which are not nerfed). true/false force it. Negligible "
+        "quality effect (below the fp8 quant noise floor); no overflow risk.",
+    )
+    transformer_prequant_path: Optional[str] = Field(
+        None,
+        description = "Local path to a pre-quantized transformer checkpoint (built by "
+        "scripts/build_prequant_checkpoint.py) for the requested transformer_quant "
+        "scheme. Loads the already-quantized weights with the dense bf16 never on the "
+        "GPU (~half the load VRAM and a smaller download). null uses the family's hosted "
+        "checkpoint if configured, else quantises the dense transformer at load time. "
+        "Loading a local path unpickles the file (arbitrary code execution), so it is "
+        "ignored unless the path resolves inside a directory the operator allowlisted "
+        "via UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH (one or more directories, separated by "
+        "the OS path separator). A bare on/off value such as '1' is deliberately not "
+        "accepted -- it must name an allowed directory.",
+    )
+    loras: Optional[list[LoraSpec]] = Field(
+        None,
+        max_length = 8,
+        description = "LoRA adapters to BAKE into a torchao int8/fp8 build: they attach on "
+        "the dense transformer before quantisation and compilation (the only ordering the "
+        "quantized fast path supports), so they ride inside the compiled build. Weight "
+        "changes and disabling apply live at generation time; CHANGING the adapter set "
+        "needs a reload with the new selection. Ignored by every other load kind (bf16 / "
+        "bnb-4bit loads take adapters at generation time; GGUF-as-is has no dense "
+        "transformer). Also forces the dense build path: a baked-LoRA load skips the "
+        "hosted pre-quantized checkpoint and pays the dense load peak.",
+    )
+    attention_backend: Optional[
+        Literal[
+            "auto",
+            "native",
+            "sdpa",
+            "cudnn",
+            "flash",
+            "flash2",
+            "flash3",
+            "flash4",
+            "sage",
+            "xformers",
+            "aiter",
+        ]
+    ] = Field(
+        None,
+        description = "Attention kernel via the diffusers dispatcher. auto picks the best "
+        "exact backend for the device (cuDNN fused attention on NVIDIA, ~1.18x and "
+        "near-lossless, when a speed profile is active; native SDPA elsewhere and when "
+        "speed=off). native (alias sdpa) forces default SDPA; cudnn/flash/flash3/flash4 are exact "
+        "(kernel/arch-gated); sage is INT8 attention (a small quality cost, consumer "
+        "friendly); xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An "
+        "unavailable kernel falls back to the default.",
+    )
+    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+        None,
+        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
+        "reuse the transformer tail across denoise steps when the first block's residual "
+        "barely changes (~1.4x on Flux 28-step at LPIPS ~0.08). For MANY-step models "
+        "(Flux / Qwen-Image); leave off for few-step distilled models (e.g. Z-Image-Turbo), "
+        "which have no caching headroom. Composes with compile (drops fullgraph "
+        "automatically); incompatible models run uncached.",
+    )
+    transformer_cache_threshold: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "FBCache residual threshold (higher = skips more steps = faster, lower "
+        "quality). null auto-picks 0.08 (0.12 when the transformer is quantised, which "
+        "shifts the residual distribution).",
+    )
+
+    @field_validator("attention_backend", mode = "before")
+    @classmethod
+    def _normalize_attention_backend(cls, value):
+        # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("loras")
+    @classmethod
+    def _unique_lora_ids(cls, value: Optional[list["LoraSpec"]]) -> Optional[list["LoraSpec"]]:
+        # Same guard DiffusionGenerateRequest carries, and it matters more here: _resolve_lora_set
+        # suffixes colliding adapter names, so a repeated id resolves the SAME adapter twice and
+        # set_adapters stacks both copies past the per-adapter weight bound. On the generation path
+        # that is one bad image; on this path the adapters are baked into the quantized build
+        # before compilation, so the unintended combination rides every image until a reload.
+        if value:
+            seen: set[str] = set()
+            for spec in value:
+                if spec.id in seen:
+                    raise ValueError(
+                        f"duplicate LoRA id '{spec.id}'; list each adapter at most once"
+                    )
+                seen.add(spec.id)
+        return value
+
+
+class LoraSpec(BaseModel):
+    """One LoRA adapter to apply for a generation, referenced by its discovery id.
+
+    The id is resolved against the backend's own LoRA catalog + local scan (see
+    core/inference/diffusion_lora.py); the client never supplies a raw filesystem
+    path, so an arbitrary file can't be loaded. Weight 0 disables the adapter.
+    """
+
+    id: str = Field(
+        ..., min_length = 1, max_length = 512, description = "LoRA discovery id (repo id or local stem)"
+    )
+    weight: float = Field(
+        1.0, ge = 0.0, le = 2.0, description = "Adapter strength; 0 disables, 1.0 is full strength"
+    )
+
+
+class ControlNetSpec(BaseModel):
+    """A ControlNet to condition this generation on: a discovery id plus a control image.
+
+    The id resolves against the backend's ControlNet catalog + local scan (see
+    core/inference/diffusion_controlnet.py); the client never supplies a raw filesystem path.
+    ``image`` is either an already-made control map (``control_type='passthrough'``) or a source
+    image the backend turns into a map (``control_type='canny'``). strength 0 disables it.
+    """
+
+    id: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 512,
+        description = "ControlNet discovery id (repo id or local name)",
+    )
+    image: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL control image (a source image or a preprocessed map)",
+    )
+    control_type: str = Field(
+        "passthrough",
+        description = "How to derive the control map: 'passthrough' (already a map) or 'canny'",
+    )
+    strength: float = Field(
+        1.0, ge = 0.0, le = 2.0, description = "ControlNet conditioning scale; 0 disables"
+    )
+    guidance_start: float = Field(
+        0.0, ge = 0.0, le = 1.0, description = "Fraction of steps at which ControlNet begins"
+    )
+    guidance_end: float = Field(
+        1.0, ge = 0.0, le = 1.0, description = "Fraction of steps at which ControlNet ends"
+    )
+
+    @model_validator(mode = "after")
+    def _check_guidance_range(self) -> "ControlNetSpec":
+        # An inverted range means "act over no steps"; reject it as a clean 422 instead of a 500 deep in the denoise.
+        if self.guidance_start > self.guidance_end:
+            raise ValueError("guidance_start must be <= guidance_end")
+        return self
+
+
+class DiffusionGenerateRequest(BaseModel):
+    """Request to generate one image from the loaded diffusion model."""
+
+    prompt: str = Field(..., min_length = 1, description = "Text prompt")
+    negative_prompt: Optional[str] = Field(
+        None, description = "What to avoid (if the model supports it)"
+    )
+    width: int = Field(1024, ge = 256, le = 2048, description = "Image width in pixels (multiple of 16)")
+    height: int = Field(
+        1024, ge = 256, le = 2048, description = "Image height in pixels (multiple of 16)"
+    )
+    steps: int = Field(9, ge = 1, le = 100, description = "Number of denoising steps")
+    guidance: float = Field(0.0, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
+    # le = 2**53-1: seeds round-trip through JSON recipes, where JavaScript rounds larger integers and a restored recipe would differ.
+    seed: Optional[int] = Field(
+        None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
+    )
+    batch_size: int = Field(
+        1, ge = 1, le = 32, description = "Images generated in one forward pass (VRAM-heavy)"
+    )
+    # Batched multi-image generation: a prompt list renders one image per prompt (txt2img only), a seed list one per seed. Each image carries its OWN seed.
+    prompts: Optional[list[str]] = Field(
+        None,
+        min_length = 1,
+        max_length = 32,
+        description = "Prompt list for batched generation: one image per prompt in a single "
+        "forward pass (plain text-to-image only). Overrides `prompt` for the images; "
+        "`prompt` is still required as the fallback/display value.",
+    )
+    seeds: Optional[list[int]] = Field(
+        None,
+        min_length = 1,
+        max_length = 32,
+        description = "Per-image seeds for batched generation: one image per seed (with "
+        "`prompts`, lengths must match; alone, every image uses `prompt`). Each image is "
+        "individually reproducible from its own seed.",
+    )
+
+    @field_validator("prompts")
+    @classmethod
+    def _non_empty_prompts(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is not None and any(not p.strip() for p in value):
+            raise ValueError("every prompt in prompts must be non-empty")
+        return value
+
+    @field_validator("seeds")
+    @classmethod
+    def _seeds_json_safe(cls, value: Optional[list[int]]) -> Optional[list[int]]:
+        # Same JSON safe-integer bound as `seed`, so every per-image seed survives the gallery recipe.
+        if value is not None and any(s < 0 or s > 2**53 - 1 for s in value):
+            raise ValueError("every seed must be between 0 and 2**53 - 1")
+        return value
+
+    @model_validator(mode = "after")
+    def _prompts_seeds_lengths_match(self) -> "DiffusionGenerateRequest":
+        if (
+            self.prompts is not None
+            and self.seeds is not None
+            and len(self.prompts) != len(self.seeds)
+        ):
+            raise ValueError(
+                f"prompts and seeds must have the same length (got {len(self.prompts)} "
+                f"prompts, {len(self.seeds)} seeds)"
+            )
+        return self
+
+    # Image-conditioned workflows (base64 or data-URL): init_image alone runs img2img, init_image + mask_image runs inpaint.
+    # Cap each base64 string so one request cannot buffer a multi-GB payload; ~32 MiB fits a full 4096px image.
+    init_image: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL source image for img2img or inpaint (omit for txt2img)",
+    )
+    mask_image: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL mask for inpaint (white = repaint, black = keep). "
+        "Requires init_image.",
+    )
+    strength: Optional[float] = Field(
+        None,
+        # EXCLUSIVE lower bound: strength 0 leaves zero denoising steps, which raises in FLUX/Qwen/Z-Image and crashes SDXL img2img.
+        gt = 0.0,
+        le = 1.0,
+        description = "img2img/inpaint denoise strength: low values stay close to the "
+        "source, 1 fully redraws it. Must be greater than 0. Ignored for txt2img.",
+    )
+    upscale: Optional[float] = Field(
+        None,
+        ge = 1.0,
+        le = 4.0,
+        description = "Upscale (hires fix) factor for an init_image: enlarges the source "
+        "by this multiple and re-denoises at low strength. Requires init_image; "
+        "ignored for txt2img/inpaint/edit.",
+    )
+    reference_images: Optional[list[str]] = Field(
+        None,
+        max_length = 3,
+        description = "Additional reference images (base64/data-URL) for the FLUX.2 reference "
+        "workflow, combined with init_image. Up to 3; ignored by other workflows.",
+    )
+    loras: Optional[list[LoraSpec]] = Field(
+        None,
+        max_length = 8,
+        description = "LoRA adapters to apply for this generation (by discovery id + weight). "
+        "Omitted/empty applies none and behaves exactly as before. Rejected with a clear "
+        "message when the loaded model or its quantisation can't apply LoRA.",
+    )
+    controlnet: Optional[ControlNetSpec] = Field(
+        None,
+        description = "ControlNet conditioning for this generation (id + control image + strength). "
+        "Omitted applies none and behaves exactly as before. Rejected with a clear message when "
+        "the loaded model or its quantisation can't apply ControlNet.",
+    )
+
+    @field_validator("loras")
+    @classmethod
+    def _unique_lora_ids(cls, value: Optional[list[LoraSpec]]) -> Optional[list[LoraSpec]]:
+        # Both apply paths suffix colliding adapter names, so a repeated id would load the SAME adapter twice and stack its effect past the weight bound.
+        if value:
+            seen: set[str] = set()
+            for spec in value:
+                if spec.id in seen:
+                    raise ValueError(
+                        f"duplicate LoRA id '{spec.id}'; list each adapter at most once"
+                    )
+                seen.add(spec.id)
+        return value
+
+    @field_validator("reference_images")
+    @classmethod
+    def _bounded_reference_items(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        # Each reference is a base64 image; bound its length like init_image so several cannot buffer a multi-GB payload.
+        if value is not None:
+            for item in value:
+                if len(item) > 32 * 1024 * 1024:
+                    raise ValueError("each reference image must be at most 32 MiB (base64)")
+        return value
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_16(cls, value: int) -> int:
+        # Z-Image requires dimensions divisible by 16 (8x VAE downsample + 2x patch); non-multiples crash deep in the pipeline.
+        if value % 16 != 0:
+            raise ValueError("must be a multiple of 16")
+        return value
+
+    @model_validator(mode = "after")
+    def _batch_seeds_json_safe(self) -> "DiffusionGenerateRequest":
+        # A batch derives seeds as seed..seed+batch_size-1, so a derived top-of-batch seed can exceed the 2**53-1 JSON-safe cap.
+        if self.seed is not None and self.seed + self.batch_size - 1 > 2**53 - 1:
+            raise ValueError(
+                "seed + batch_size - 1 must not exceed 2**53 - 1 so every per-image seed "
+                "stays JSON-safe (lower the seed or the batch_size)"
+            )
+        return self
+
+
+class GalleryImage(BaseModel):
+    """A persisted image's full generation recipe (embedded in the PNG too)."""
+
+    id: str = Field(..., description = "Stable id (the on-disk filename stem)")
+    url: str = Field(..., description = "Relative URL to fetch the PNG bytes")
+    prompt: str = Field(..., description = "Prompt used")
+    negative_prompt: Optional[str] = Field(None, description = "Negative prompt, if any")
+    width: int = Field(..., description = "Image width")
+    height: int = Field(..., description = "Image height")
+    steps: int = Field(..., description = "Denoising steps")
+    guidance: float = Field(..., description = "Guidance scale")
+    seed: int = Field(..., description = "Seed used for THIS image")
+    batch_seed: Optional[int] = Field(
+        None,
+        description = (
+            "Seed restore must replay this image from. For a batch_size batch that is the base "
+            "seed the batch launched with (the native engine derives per-image seeds as "
+            "base + index, so the derived seed alone would not reproduce it); for a "
+            "prompts/seeds list, where each image carries its own seed, it equals seed. "
+            "Older records without it fall back to seed."
+        ),
+    )
+    batch_index: int = Field(0, description = "Position within its batch (0-based)")
+    batch_size: int = Field(
+        1, description = "Batch size used; with batch_index it lets restore replay this image"
+    )
+    model: Optional[str] = Field(None, description = "Model repo id that produced it")
+    # The load-time BUILD. The repo id alone does not identify a pipeline (quant choice, torchao scheme, baked adapters), so without these a recipe cannot be rebuilt.
+    model_kind: Optional[str] = Field(
+        None, description = "How the model was loaded: gguf, single_file or pipeline"
+    )
+    gguf_filename: Optional[str] = Field(
+        None,
+        description = "The single-file checkpoint the load committed, for a gguf/single_file load",
+    )
+    transformer_quant: Optional[str] = Field(
+        None,
+        description = "Transformer quantisation scheme actually engaged on the dense fast path "
+        "(int8/fp8/nvfp4/mxfp8), or null when the GGUF ran as-is",
+    )
+    baked_loras: list[str] = Field(
+        default_factory = list,
+        description = "Adapter ids baked into the transformer AT LOAD TIME (before quantize + "
+        "compile). Part of the build, not of this generation: reloading without them gives a "
+        "different pipeline even though disabling them here contributes nothing to the image.",
+    )
+    loras: list[str] = Field(
+        default_factory = list, description = "LoRA adapters applied, formatted as 'id:weight'"
+    )
+    controlnet: Optional[str] = Field(
+        None, description = "ControlNet applied, formatted as 'id:control_type:strength'"
+    )
+    # Conditioned-workflow settings. The images themselves are NOT persisted (user uploads with their own lifetime), so these say what ran and let the client ask for them back.
+    workflow: Optional[str] = Field(
+        None,
+        description = "Workflow that produced it: txt2img, img2img, inpaint, upscale, edit, "
+        "reference or controlnet. Absent on records written before this was recorded.",
+    )
+    strength: Optional[float] = Field(
+        None, description = "img2img/inpaint denoise strength, when the workflow used one"
+    )
+    upscale: Optional[float] = Field(None, description = "Upscale factor, for the upscale workflow")
+    controlnet_guidance: Optional[str] = Field(
+        None, description = "ControlNet guidance interval, formatted as 'start:end'"
+    )
+    reference_image_count: Optional[int] = Field(
+        None, description = "How many reference images the reference workflow used"
+    )
+    created_at: float = Field(..., description = "Creation time (epoch seconds)")
+
+
+class DiffusionGenerateResponse(BaseModel):
+    """The persisted gallery records for one generation call (a batch)."""
+
+    images: list[GalleryImage] = Field(..., description = "Saved records, one per image in the batch")
+
+
+class GalleryListResponse(BaseModel):
+    """A newest-first page of persisted images, for infinite scroll."""
+
+    images: list[GalleryImage] = Field(default_factory = list)
+    has_more: bool = Field(False, description = "Whether older images remain past this page")
+
+
+class DiffusionGenerateProgressResponse(BaseModel):
+    """Live per-step progress for an in-flight generation."""
+
+    active: bool = Field(False, description = "Whether a generation is running")
+    step: int = Field(0, description = "Denoising steps completed so far")
+    total_steps: int = Field(0, description = "Total denoising steps for this run")
+    fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
+    eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+
+
+class DiffusionLoadProgressResponse(BaseModel):
+    """Download/finalize progress for an in-flight diffusion load."""
+
+    phase: Optional[Literal["downloading", "finalizing", "ready", "error"]] = Field(
+        None, description = "Load phase; null when idle"
+    )
+    bytes_downloaded: int = Field(0, description = "Bytes present in the HF cache so far")
+    bytes_total: int = Field(0, description = "Estimated total bytes to download (0 = unknown)")
+    fraction: float = Field(0.0, description = "bytes_downloaded / bytes_total, clamped to [0,1]")
+    error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+
+
+class DiffusionResolvedControl(BaseModel):
+    """One Advanced control's engaged value + provenance, for the "Auto: X" badges.
+
+    ``value`` is what actually applied (a scheme string, a mode string, ``null`` when the
+    control is off, or ``true``/``false`` for cpu_offload), so it is typed ``Any``.
+    ``source`` is "auto" when this backend decided it or "explicit" when the caller did;
+    ``reason`` is the short human-readable why the frontend shows as a tooltip.
+    """
+
+    value: Any = Field(
+        None, description = "The engaged value: a string, a boolean (cpu_offload), or null."
+    )
+    source: str = Field(..., description = '"auto" (backend decided) or "explicit" (caller set it)')
+    reason: str = Field("", description = "Short human-readable reason for the resolved value.")
+
+
+class DiffusionDownloadPlanEntry(BaseModel):
+    """One repo the pick needs, with the exact files to fetch from it."""
+
+    repo_id: str = Field(..., description = "Repo to download from")
+    files: List[str] = Field(
+        default_factory = list,
+        description = "Exact files the loader reads. Scoped on purpose: a full snapshot would "
+        "also pull the packaged root single, transformer/ shards and fp16 twins the loader "
+        "never opens (tens of GB on a FLUX repo).",
+    )
+    bytes: int = Field(0, description = "Declared size of those files, 0 when unknown")
+    gguf_filename: Optional[str] = Field(
+        None, description = "Set when this entry is the single-file GGUF checkpoint"
+    )
+
+
+class DiffusionDownloadPlanResponse(BaseModel):
+    """What to download before a load, so the Hub download manager can fetch it with the
+    same file scope the loader would. Empty entries mean nothing to download (local path)."""
+
+    entries: List[DiffusionDownloadPlanEntry] = Field(default_factory = list)
+    total_bytes: int = Field(0, description = "Sum across entries, 0 when the estimate failed")
+
+
+class DiffusionStatusResponse(BaseModel):
+    """Current diffusion backend state."""
+
+    loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
+    repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    family: Optional[str] = Field(None, description = "Detected diffusion family")
+    base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
+    device: Optional[str] = Field(None, description = "Device the pipeline is on")
+    dtype: Optional[str] = Field(None, description = "Compute dtype")
+    model_kind: Optional[str] = Field(
+        None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
+    )
+    cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
+    offload_policy: Optional[str] = Field(
+        None, description = "Resolved offload policy: none | group | model | sequential"
+    )
+    vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
+    memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
+    speed_mode: Optional[str] = Field(None, description = "Requested speed mode")
+    speed_optims: list[str] = Field(
+        default_factory = list, description = "Speed optimisations actually engaged"
+    )
+    text_encoder_quant: Optional[str] = Field(
+        None, description = "Text-encoder quantisation engaged: fp8 | nvfp4 | null"
+    )
+    transformer_quant: Optional[str] = Field(
+        None,
+        description = "Transformer quant engaged on the dense fast path: int8 | fp8 | "
+        "nvfp4 | mxfp8 | null (null = the GGUF transformer was loaded)",
+    )
+    attention_backend: Optional[str] = Field(
+        None,
+        description = "Attention backend engaged via the diffusers dispatcher (e.g. "
+        "_native_cudnn), or null for the default SDPA",
+    )
+    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    workflows: list[str] = Field(
+        default_factory = list,
+        description = "Image workflows the loaded family supports (drives UI tab gating): "
+        "txt2img, img2img, inpaint. Empty when nothing is loaded or on the native engine.",
+    )
+    engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
+    native_mode: Optional[str] = Field(
+        None,
+        description = "Native sd.cpp execution mode: server (resident sd-server) | oneshot "
+        "(per-image sd-cli) | null (diffusers engine)",
+    )
+    fallback_reason: Optional[str] = Field(
+        None,
+        description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",
+    )
+    supports_lora: bool = Field(
+        False,
+        description = "Whether the loaded model + quantisation can apply LoRA adapters (drives the "
+        "LoRA picker's enabled state). torchao int8/fp8 builds support LoRA via the load-time "
+        "bake: select the adapters when loading; weight changes apply live, a different adapter "
+        "set needs a reload. False on unsupported families/quant (e.g. nvfp4/mxfp8, "
+        "GGUF-via-diffusers, or Qwen-Image on the native engine).",
+    )
+    supports_controlnet: bool = Field(
+        False,
+        description = "Whether the loaded model can apply a ControlNet (drives the ControlNet "
+        "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
+        "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
+    )
+    # Additive per-control provenance {control: {value, source, reason}}; null when nothing is loaded. Declared explicitly so pydantic extra='ignore' keeps it.
+    resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
+        None,
+        description = "Per-control resolved value + provenance (source auto|explicit + reason), "
+        "keyed by Advanced control name; null when unloaded or unavailable.",
+    )
+
+
+class DiffusionInferenceInfo(BaseModel):
+    """One family's bf16 component sizes + estimated resident footprint per quant scheme.
+
+    Mirrors the dicts ``family_inference_infos()`` returns: the bf16-resident transformer /
+    text-encoder / VAE sizes, and the estimated resident GB under bf16 and each dense
+    transformer-quant scheme (transformer * factor + companions), rounded to 1 decimal."""
+
+    family: str = Field(..., description = "Diffusion family name (auto-policy table key).")
+    transformer_bf16_gb: float = Field(..., description = "bf16-resident transformer size in GB.")
+    text_encoders_bf16_gb: float = Field(
+        ..., description = "bf16-resident text encoder(s) size in GB."
+    )
+    vae_bf16_gb: float = Field(..., description = "bf16-resident VAE size in GB.")
+    estimated_resident_gb: Dict[str, float] = Field(
+        ...,
+        description = "Estimated resident GB keyed by scheme: bf16, int8, fp8, mxfp8, nvfp4.",
+    )
+
+
+class DiffusionInferenceInfoResponse(BaseModel):
+    """Static per-family footprint summary for the Advanced Dtype tradeoff (GET
+    /api/inference/images/info). Hardware-independent: no GPU probing, so it is served
+    from the pure auto-policy tables and is safe to fetch before anything is loaded."""
+
+    families: List[DiffusionInferenceInfo] = Field(default_factory = list)
+
+
+# ── OpenAI-compatible images API (POST /v1/images/generations) ──
+# Shapes mirror OpenAI's CreateImageRequest / ImagesResponse. GPT-image-only knobs are accepted and ignored, like dall-e-2.
+# The size string is parsed and `stream` rejected in the route; everything Pydantic can check declaratively is here.
+
+
+class ImageGenerationRequest(BaseModel):
+    """OpenAI ``CreateImageRequest`` for ``POST /v1/images/generations``.
+
+    ``prompt`` is the only required field, per the spec. Unlisted OpenAI fields
+    are ignored (Pydantic's default), matching dall-e-2's treatment of the
+    GPT-image-only parameters."""
+
+    prompt: str = Field(..., min_length = 1, description = "Text description of the image(s).")
+    model: Optional[str] = Field(
+        None, description = "Model id (informational; the loaded image model is used)."
+    )
+    n: int = Field(1, ge = 1, le = 10, description = "Number of images to generate (1-10).")
+    size: str = Field(
+        "auto", description = "'auto' or '<width>x<height>' (256-2048, each a multiple of 16)."
+    )
+    response_format: Literal["url", "b64_json"] = Field(
+        "url", description = "Return each image as a URL or a base64-encoded PNG."
+    )
+    user: Optional[str] = Field(None, description = "End-user identifier (accepted, unused).")
+    # gpt-image-only; declared so we can reject it clearly instead of returning JSON to a client that asked for an SSE stream.
+    stream: Optional[bool] = Field(
+        None, description = "Streaming image generation is not supported; omit or set false."
+    )
+
+    @field_validator("n", "size", "response_format", mode = "before")
+    @classmethod
+    def _null_means_default(cls, value, info):
+        # OpenAI marks these nullable WITH a default, so an explicit null means "use the default": coalesce rather than 400.
+        if value is None:
+            return cls.model_fields[info.field_name].default
+        return value
+
+
+class ImageGenerationData(BaseModel):
+    """One image in an ``ImagesResponse`` (OpenAI ``Image``). Exactly one of
+    ``url`` / ``b64_json`` is set, per the request's ``response_format``; the
+    route serializes with ``exclude_none`` so the unused key is omitted."""
+
+    b64_json: Optional[str] = Field(
+        None, description = "Base64-encoded PNG (response_format=b64_json)."
+    )
+    url: Optional[str] = Field(None, description = "URL to the PNG bytes (response_format=url).")
+
+
+class ImageGenerationResponse(BaseModel):
+    """OpenAI ``ImagesResponse``. dall-e-shaped: the GPT-image-only top-level
+    fields (background/output_format/size/quality/usage) are omitted, since our
+    sizes wouldn't satisfy their fixed enums and we report no token usage."""
+
+    created: int = Field(..., description = "Unix timestamp (seconds) the images were created.")
+    data: list[ImageGenerationData] = Field(..., description = "The generated images.")
+
+
+# ── Video (local text-to-video) ──
+
+
+class VideoLoadRequest(BaseModel):
+    """Request to load a local text-to-video checkpoint."""
+
+    model_path: str = Field(..., description = "Video repo id or local path")
+    gguf_filename: Optional[str] = Field(
+        None,
+        description = "The chosen single-file checkpoint (GGUF or safetensors) inside "
+        "model_path. Required for the gguf / single_file kinds; omit for a full pipeline.",
+    )
+    model_kind: Optional[Literal["gguf", "single_file", "pipeline"]] = Field(
+        None,
+        description = "How to load the model (null = auto-detect from gguf_filename): gguf "
+        "(single-file GGUF transformer, dequantised on-device), single_file (single-file "
+        "safetensors transformer, e.g. fp8), or pipeline (a full diffusers repo via "
+        "from_pretrained). Non-GGUF kinds are restricted to unsloth/* repos, the official "
+        "family base repos, or a local path.",
+    )
+    base_repo: Optional[str] = Field(
+        None,
+        description = "Companion diffusers repo for VAE/text-encoders (default: family base)",
+    )
+    family_override: Optional[str] = Field(
+        None, description = "Force a family when it can't be inferred from the repo id"
+    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated repos")
+    memory_mode: Optional[Literal["auto", "fast", "balanced", "low_vram"]] = Field(
+        None,
+        description = "Memory policy: auto (measured), fast (resident), balanced "
+        "(stream the transformer, near-resident speed, moderate VRAM cut), low_vram "
+        "(offload every component, lowest VRAM, slower).",
+    )
+    speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
+        None,
+        description = "Opt-in speed optims (default off -> bit-identical output): "
+        "eager (channels_last + cudnn + attention + fused norm patches, NO torch.compile), "
+        "default (also regional torch.compile where eligible), "
+        "max (also TF32 + fused QKV). GGUF video loads default to the near-lossless "
+        "compile profile.",
+    )
+    attention_backend: Optional[
+        Literal[
+            "auto",
+            "native",
+            "sdpa",
+            "cudnn",
+            "flash",
+            "flash2",
+            "flash3",
+            "flash4",
+            "sage",
+            "xformers",
+            "aiter",
+        ]
+    ] = Field(
+        None,
+        description = "Attention kernel via the diffusers dispatcher. auto picks the best "
+        "exact backend for the device (cuDNN fused attention on NVIDIA when a speed profile "
+        "is active; native SDPA elsewhere and when speed=off). native (alias sdpa) forces "
+        "default SDPA; cudnn/flash/flash3/flash4 are exact (kernel/arch-gated); sage is INT8 "
+        "attention; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
+        "kernel falls back to the default.",
+    )
+    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+        None,
+        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
+        "reuse the transformer tail across denoise steps when the first block's residual "
+        "barely changes. Engages on many-step schedules only; incompatible models run "
+        "uncached.",
+    )
+    transformer_cache_threshold: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 1.0,
+        description = "FBCache residual threshold (higher = skips more steps = faster, lower "
+        "quality). null auto-picks the family default.",
+    )
+    transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
+        Field(
+            None,
+            description = "Quantise the dense DiT(s) on a full-pipeline load. On a diffusers "
+            "pipeline load the dense bf16 transformer(s) are torchao-quantised in place onto "
+            "the low-precision tensor cores (data-center fp8, consumer/Ampere int8), which is "
+            "faster than running dense bf16. For a dual-expert MoE family (Wan2.2-A14B) BOTH "
+            "experts are quantised with the same scheme. null/none/off keeps the DiT(s) at "
+            "their loaded precision; an explicit scheme forces it. Needs CUDA + bf16; ignored "
+            "on gguf/single_file loads (they carry their own precision). Mirrors the image "
+            "backend's transformer_quant field.",
+        )
+    )
+    text_encoder_quant: Optional[Literal["fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+        None,
+        description = "Quantise the dense companion text encoder (Gemma3 / UMT5 / Qwen2.5-VL), "
+        "which loads bf16 from the base repo regardless of how the DiT was sourced and is often "
+        "the largest resident component. fp8 = diffusers layerwise casting (memory only, cc >= "
+        "8.9); fp8_dynamic = torchao per-row fp8 COMPUTE on the tensor cores (cc >= 8.9); int8 = "
+        "torchao int8 COMPUTE with per-family keep-bf16 selection (cc >= 8.0; falls back to fp8 "
+        "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only (Blackwell "
+        "sm_100+). null keeps the encoder dense. Mirrors the image backend's field.",
+    )
+
+    @field_validator("attention_backend", mode = "before")
+    @classmethod
+    def _normalize_attention_backend(cls, value):
+        # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
+        return value.strip().lower() if isinstance(value, str) else value
+
+
+class VideoGenerateRequest(BaseModel):
+    """Request to generate one clip from the loaded video model."""
+
+    prompt: str = Field(..., min_length = 1, description = "Text prompt")
+    negative_prompt: Optional[str] = Field(
+        None, description = "What to avoid (if the model supports it)"
+    )
+    # Width/height/num_frames/fps default per loaded family (the backend snaps them to its lattice), so they are optional here.
+    width: Optional[int] = Field(
+        None, ge = 32, le = 2048, description = "Frame width in pixels (family multiple)"
+    )
+    height: Optional[int] = Field(
+        None, ge = 32, le = 2048, description = "Frame height in pixels (family multiple)"
+    )
+    num_frames: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 1024,
+        description = "Number of frames; snapped to the family's temporal lattice",
+    )
+    fps: Optional[int] = Field(
+        None, ge = 1, le = 120, description = "Playback frame rate (default per family)"
+    )
+    steps: Optional[int] = Field(
+        None, ge = 1, le = 100, description = "Number of denoising steps (default per model)"
+    )
+    guidance: Optional[float] = Field(
+        None, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale (default per model)"
+    )
+    guidance_2: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 20.0,
+        description = "Low-noise-stage guidance scale for a dual-expert MoE family (Wan2.2-A14B): "
+        "the guidance the second transformer uses on the low-noise denoise steps. null lets the "
+        "pipeline default it to the main guidance. Ignored by single-DiT families (their pipeline "
+        "signature has no second guidance kwarg).",
+    )
+    # le = 2**53-1: seeds round-trip through JSON recipes, where JavaScript rounds larger integers and a restored recipe would differ.
+    seed: Optional[int] = Field(
+        None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
+    )
+
+
+class GalleryVideo(BaseModel):
+    """A persisted clip's full generation recipe (the JSON sidecar of the MP4)."""
+
+    id: str = Field(..., description = "Stable id (the on-disk filename stem)")
+    url: str = Field(..., description = "Relative URL to fetch the MP4 bytes")
+    prompt: str = Field(..., description = "Prompt used")
+    negative_prompt: Optional[str] = Field(None, description = "Negative prompt, if any")
+    width: int = Field(..., description = "Frame width")
+    height: int = Field(..., description = "Frame height")
+    num_frames: int = Field(..., description = "Number of frames")
+    fps: int = Field(..., description = "Playback frame rate")
+    duration_s: float = Field(..., description = "Clip duration in seconds")
+    steps: int = Field(..., description = "Denoising steps")
+    guidance: float = Field(..., description = "Guidance scale")
+    guidance_2: Optional[float] = Field(
+        None, description = "Second-expert guidance scale (dual-expert families), if sent"
+    )
+    seed: int = Field(..., description = "Seed used")
+    has_audio: bool = Field(False, description = "Whether the MP4 carries an audio track")
+    model: Optional[str] = Field(None, description = "Model repo id that produced it")
+    created_at: str = Field(..., description = "Creation time (ISO 8601 timestamp)")
+
+
+class VideoGenerateResponse(BaseModel):
+    """Acknowledgement that a generation was accepted and started.
+
+    Generation runs as a background job (a clip takes minutes, and secure mode's
+    tunnel caps the origin response window near 100 seconds, so the POST cannot
+    span it). The saved gallery record arrives via GET /video/generate-progress
+    when its phase reaches "completed"."""
+
+    status: Literal["started"] = Field(
+        "started", description = "Discriminator: the generation job was started"
+    )
+    video: Optional[GalleryVideo] = Field(
+        None,
+        description = "Always null (kept for response-shape compatibility); the saved "
+        "record is delivered by generate-progress on completion",
+    )
+
+
+class VideoGalleryListResponse(BaseModel):
+    """A newest-first page of persisted videos, for infinite scroll."""
+
+    videos: list[GalleryVideo] = Field(default_factory = list)
+    has_more: bool = Field(False, description = "Whether older videos remain past this page")
+
+
+class VideoGenerateProgressResponse(BaseModel):
+    """Live progress for an in-flight video generation, plus the terminal outcome
+    of the background job POST /video/generate started."""
+
+    active: bool = Field(False, description = "Whether a generation is running")
+    phase: Optional[str] = Field(
+        None,
+        description = "Current phase: queued | denoise | export | completed | failed | null",
+    )
+    step: int = Field(0, description = "Denoising steps completed so far")
+    total: int = Field(0, description = "Total denoising steps for this run")
+    # Image-endpoint-compatible aliases so one poller works against both APIs.
+    total_steps: int = Field(0, description = "Total denoising steps (alias of total)")
+    fraction: float = Field(0.0, description = "step / total, clamped to [0,1]")
+    eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+    video: Optional[GalleryVideo] = Field(
+        None, description = "Saved gallery record when phase is 'completed'"
+    )
+    error: Optional[str] = Field(
+        None, description = "Client-safe failure detail when phase is 'failed'"
+    )
+
+
+class VideoLoadProgressResponse(BaseModel):
+    """Download/finalize progress for an in-flight video load."""
+
+    phase: Optional[Literal["downloading", "finalizing", "ready", "error"]] = Field(
+        None, description = "Load phase; null when idle"
+    )
+    downloaded_bytes: int = Field(0, description = "Bytes present in the HF cache so far")
+    expected_bytes: Optional[int] = Field(
+        None, description = "Estimated total bytes to download (null = unknown)"
+    )
+    error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+
+
+class VideoGenerationDefaults(BaseModel):
+    """Per-family generation defaults + shape constraints for the loaded video model."""
+
+    steps: int = Field(..., description = "Default denoising steps")
+    guidance: float = Field(..., description = "Default guidance scale")
+    num_frames: int = Field(..., description = "Default frame count")
+    fps: int = Field(..., description = "Default playback frame rate")
+    frame_step: int = Field(
+        ..., description = "Temporal lattice: valid counts are k * frame_step + 1"
+    )
+    resolution_multiple: int = Field(..., description = "Width/height must be divisible by this")
+    resolution_presets: list[list[int]] = Field(
+        default_factory = list, description = "(width, height) presets the UI offers, default first"
+    )
+
+
+class VideoStatusResponse(BaseModel):
+    """Current video backend state."""
+
+    loaded: bool = Field(False, description = "Whether a video model is loaded")
+    repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    family: Optional[str] = Field(None, description = "Detected video family")
+    base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
+    device: Optional[str] = Field(None, description = "Device the pipeline is on")
+    dtype: Optional[str] = Field(None, description = "Compute dtype")
+    model_kind: Optional[str] = Field(
+        None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
+    )
+    offload_policy: Optional[str] = Field(
+        None, description = "Resolved offload policy: none | group | model | sequential"
+    )
+    vae_tiling: bool = Field(False, description = "Whether VAE tiling is enabled")
+    memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
+    speed_mode: Optional[str] = Field(None, description = "Requested speed mode")
+    speed_optims: list[str] = Field(
+        default_factory = list, description = "Speed optimisations actually engaged"
+    )
+    attention_backend: Optional[str] = Field(
+        None,
+        description = "Attention backend engaged via the diffusers dispatcher (e.g. "
+        "_native_cudnn), or null for the default SDPA",
+    )
+    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    transformer_quant: Optional[str] = Field(
+        None,
+        description = "Dense transformer quant engaged on a pipeline load: int8 | fp8 | nvfp4 | "
+        "mxfp8 | null (null = the DiT(s) run at their loaded bf16 precision). For a dual-expert "
+        "MoE family both experts share the reported scheme.",
+    )
+    text_encoder_quant: Optional[str] = Field(
+        None,
+        description = "Text-encoder quant engaged: fp8 | fp8_dynamic | int8 | nvfp4 | null "
+        "(null = the dense bf16 encoder is loaded). An int8 request without a per-family "
+        "keep-bf16 schedule is reported as the fp8 it fell back to.",
+    )
+    has_audio: bool = Field(
+        False, description = "Whether the loaded family produces a synchronized audio track"
+    )
+    defaults: Optional[VideoGenerationDefaults] = Field(
+        None, description = "Per-family generation defaults + shape constraints; null when unloaded"
+    )
+    # Additive per-control provenance, same shape as the diffusion status; null when nothing is loaded.
+    resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
+        None,
+        description = "Per-control resolved value + provenance (source auto|explicit + reason), "
+        "keyed by Advanced control name; null when unloaded or unavailable.",
+    )

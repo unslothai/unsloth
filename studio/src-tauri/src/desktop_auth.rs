@@ -201,7 +201,7 @@ async fn exchange_desktop_secret(
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(AuthError::StaleResponder(
-            "Running Studio backend is too old for this desktop app. Update that backend and restart."
+            "Running Unsloth backend is too old for this desktop app. Update that backend and restart."
                 .to_string(),
         ));
     }
@@ -335,9 +335,7 @@ async fn desktop_auth_inner(
     if backend.source == PortSource::Discovered {
         diagnostics::record_attached_external_backend(diagnostics, backend.port);
     }
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
+    let client = crate::loopback_http::client(std::time::Duration::from_secs(5))
         .map_err(|e| format!("Desktop auth failed: {}", e))?;
 
     for attempt in 0..2 {
@@ -364,7 +362,7 @@ async fn desktop_auth_inner(
     }
 
     Err(
-        "Desktop auth failed. Update or repair the managed Studio install, then restart Studio."
+        "Desktop auth failed. Update or repair the managed Unsloth install, then restart Unsloth."
             .to_string(),
     )
 }
@@ -465,7 +463,7 @@ mod tests {
             .message();
         assert_eq!(
             error,
-            "Running Studio backend is too old for this desktop app. Update that backend and restart."
+            "Running Unsloth backend is too old for this desktop app. Update that backend and restart."
         );
     }
 }

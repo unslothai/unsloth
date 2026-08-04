@@ -118,9 +118,6 @@ function PaletteContent() {
     chatRuntime.setActiveThreadId(null);
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setIncognito(false);
-    // Detach the staging UI but keep any in-flight download running, like Hub.
-    if (chatRuntime.pendingSelection)
-      chatRuntime.abandonStagedModel({ keepDownload: true });
     void navigate({ to: "/chat", search: { new: createNavigationNonce() } });
   });
 

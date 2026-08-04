@@ -24,7 +24,12 @@ import {
   TRANSPORT_STATUS_RETRY_DELAY_MS,
   TRANSPORT_STATUS_TIMEOUT_MS,
 } from "./download-manager-config";
-import { DOWNLOAD_KIND, TRANSPORT, type TransportMode } from "./constants";
+import {
+  DOWNLOAD_KIND,
+  TRANSPORT,
+  type ResolvedTransport,
+  type TransportMode,
+} from "./constants";
 import type {
   DownloadRequest,
   ManagedDownload,
@@ -90,17 +95,25 @@ export function apiStart(
   useXet: boolean,
   hfToken: string | null,
 ): Promise<DownloadStartResult> {
+  // Already RESOLVED ("xet"/"http"), never "auto": effectiveTransportMode() asked the backend what
+  // auto means here, and that answer must reach both the worker and the on-disk transport marker.
+  const transport_mode = useXet ? TRANSPORT.XET : TRANSPORT.HTTP;
   return req.kind === DOWNLOAD_KIND.DATASET
     ? startDatasetDownload({
         repo_id: req.repoId,
         hf_token: hfToken,
         use_xet: useXet,
+        transport_mode,
       })
     : startModelDownload({
         repo_id: req.repoId,
-        gguf_variant: req.variant,
+        // A scoped job carries its scope instead of a quant; the backend derives the same "@scope" variant this surface keyed it under.
+        gguf_variant: req.scopeId ? null : req.variant,
+        scope_id: req.scopeId ?? null,
+        files: req.files,
         hf_token: hfToken,
         use_xet: useXet,
+        transport_mode,
       });
 }
 
@@ -171,11 +184,22 @@ export async function apiTransportStatusWithRetry(
 
 export async function effectiveTransportMode(
   preferred: TransportMode,
-): Promise<TransportMode> {
-  if (preferred !== TRANSPORT.XET) {
-    return preferred;
+): Promise<ResolvedTransport> {
+  if (preferred === TRANSPORT.HTTP) {
+    return TRANSPORT.HTTP;
   }
-  const capabilities = await getDownloadTransportCapabilities();
+  // Probe only for Auto, and only at download start: a host whose CAS is unreachable but which has
+  // recorded no failure yet would otherwise discover that by stalling for 30s.
+  const capabilities = await getDownloadTransportCapabilities(
+    preferred === TRANSPORT.AUTO ? { probe: true } : {},
+  );
+  if (preferred === TRANSPORT.AUTO) {
+    // Resolve "auto" from the backend's own verdict, not independently: the resolved transport is
+    // compared against an existing partial's `.transport` marker, so the two must agree.
+    return capabilities.auto_resolves_to === TRANSPORT.HTTP
+      ? TRANSPORT.HTTP
+      : TRANSPORT.XET;
+  }
   if (capabilities.xet.available === true) {
     lastXetUnavailableWarningReason = null;
     return preferred;

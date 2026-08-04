@@ -23,6 +23,7 @@ import {
   ArrowReloadHorizontalIcon,
   Delete02Icon,
   Download01Icon,
+  Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -79,6 +80,39 @@ export function CardDivider() {
       aria-hidden="true"
       className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-white/[0.04]"
     />
+  );
+}
+
+export function CardSettingsButton({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          onClick={(e) => {
+            e.stopPropagation();
+            onClick();
+          }}
+          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:opacity-100 group-hover/dl:opacity-100 dark:hover:bg-white/[0.08]"
+        >
+          <HugeiconsIcon
+            icon={Settings02Icon}
+            strokeWidth={1.75}
+            className="size-4"
+          />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        {label}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -140,7 +174,7 @@ export function CardUpdateButton({
               e.stopPropagation();
               onClick();
             }}
-            className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-amber-500/[0.07] pl-2 pr-2.5 text-[12px] font-medium text-amber-800/90 transition-colors duration-150 hover:bg-amber-500/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-500/25 dark:bg-amber-400/[0.08] dark:text-amber-200/85 dark:hover:bg-amber-400/[0.16]"
+            className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-amber-500/[0.07] pl-2 pr-2.5 text-ui-12 font-medium text-amber-800/90 transition-colors duration-150 hover:bg-amber-500/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-500/25 dark:bg-amber-400/[0.08] dark:text-amber-200/85 dark:hover:bg-amber-400/[0.16]"
           >
             <HugeiconsIcon
               icon={ArrowReloadHorizontalIcon}

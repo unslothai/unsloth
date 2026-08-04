@@ -14,6 +14,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
+from starlette.middleware.gzip import GZipMiddleware
 
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -33,16 +34,25 @@ def main_module():
 def _make_protected_app(
     max_bytes: int,
     main_module,
+    request_max_bytes_getter = None,
     upload_passthrough_prefixes: tuple = (),
     upload_passthrough_max_bytes_getter = None,
+    upload_passthrough_exact_paths: tuple = (),
 ):
     app = FastAPI()
     app.add_middleware(
         main_module.MaxBodyMiddleware,
         max_bytes_getter = lambda: max_bytes,
-        protected_prefixes = ("/v1/chat/completions", "/api/settings", "/api/train"),
+        protected_prefixes = (
+            "/v1/chat/completions",
+            "/api/inference",
+            "/api/settings",
+            "/api/train",
+        ),
+        request_max_bytes_getter = request_max_bytes_getter,
         upload_passthrough_prefixes = upload_passthrough_prefixes,
         upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
+        upload_passthrough_exact_paths = upload_passthrough_exact_paths,
     )
 
     @app.post("/v1/chat/completions")
@@ -66,6 +76,10 @@ def _make_protected_app(
                 chunks += 1
                 total += len(chunk)
         return {"ok": True, "chunks": chunks, "total": total}
+
+    @app.post("/api/inference/audio/transcribe/raw")
+    async def transcribe_raw(request: Request):
+        return {"ok": True, "total": len(await request.body())}
 
     @app.get("/api/train/status")
     async def status_get():
@@ -95,6 +109,43 @@ class TestMaxBodyMiddleware:
         r = c.post("/api/other", json = {"text": "x" * 5000})
         assert r.status_code == 200
         assert r.json()["unprotected"] is True
+
+    def test_route_specific_cap_overrides_default(self, main_module):
+        app = _make_protected_app(
+            4096,
+            main_module,
+            request_max_bytes_getter = lambda path: (
+                128 if path.endswith("/transcribe/raw") else 4096
+            ),
+        )
+        c = TestClient(app)
+
+        rejected = c.post(
+            "/api/inference/audio/transcribe/raw",
+            content = b"x" * 129,
+        )
+        accepted = c.post(
+            "/api/inference/audio/transcribe/raw",
+            content = b"x" * 128,
+        )
+
+        assert rejected.status_code == 413
+        assert accepted.status_code == 200
+        assert accepted.json()["total"] == 128
+
+    def test_stt_routes_use_audio_specific_caps(self, main_module):
+        from utils.upload_limits import (
+            STT_AUDIO_JSON_MAX_BYTES,
+            STT_AUDIO_RAW_MAX_BYTES,
+        )
+        assert (
+            main_module._get_request_body_max_bytes("/api/inference/audio/transcribe/raw")
+            == STT_AUDIO_RAW_MAX_BYTES
+        )
+        assert (
+            main_module._get_request_body_max_bytes("/api/inference/audio/transcribe")
+            == STT_AUDIO_JSON_MAX_BYTES
+        )
 
     def test_settings_put_body_over_cap_rejected(self, main_module):
         app = _make_protected_app(1024, main_module)
@@ -165,6 +216,98 @@ class TestMaxBodyMiddleware:
         assert r.status_code == 200
         assert r.json()["total"] == 512
 
+    def test_diffusion_dataset_upload_in_body_passthrough(self, main_module):
+        # The diffusion dataset upload route lives under the protected /api/train prefix, so it must be in the REAL passthrough allowlist with the
+        # DB-aware + multipart-overhead cap, else MaxBodyMiddleware 413s near-limit batches. EXACT path, so its JSON sub-routes keep the small cap.
+        from utils.upload_limits import (
+            default_request_body_limit_bytes,
+            upload_request_limit_bytes,
+        )
+
+        path = "/api/train/diffusion/dataset"
+        assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        assert not any(path.startswith(p) for p in main_module._BODY_UPLOAD_PASSTHROUGH_PREFIXES)
+        cap = main_module._get_upload_passthrough_request_max_bytes(path)
+        assert cap == upload_request_limit_bytes()  # DB-aware cap + multipart overhead
+        assert cap > default_request_body_limit_bytes()  # not the plain default body cap
+
+    def test_diffusion_dataset_json_subroutes_keep_default_cap(self, main_module):
+        # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same prefix: a prefix match would let a large
+        # caption/import body bypass the default JSON cap and be buffered up to the far larger upload limit.
+        from utils.upload_limits import default_request_body_limit_bytes
+        for path in (
+            "/api/train/diffusion/dataset/my-set/caption/img.png",
+            "/api/train/diffusion/dataset/import-example",
+        ):
+            assert path not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert not any(
+                path.startswith(p) for p in main_module._BODY_UPLOAD_PASSTHROUGH_PREFIXES
+            ), path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                default_request_body_limit_bytes()
+            ), path
+
+    def test_diffusion_dataset_trailing_slash_gets_upload_cap(self, main_module):
+        # The trailing-slash variant reaches the middleware BEFORE the router's redirect_slashes 307, so it must resolve to the
+        # same passthrough + upload cap. JSON sub-routes keep extra components after normalization, so they stay capped.
+        from utils.upload_limits import (
+            default_request_body_limit_bytes,
+            upload_request_limit_bytes,
+        )
+
+        slashed = "/api/train/diffusion/dataset/"
+        assert main_module._get_upload_passthrough_request_max_bytes(slashed) == (
+            upload_request_limit_bytes()
+        )
+        # End to end through the middleware: a body over the default cap but under the upload cap passes on both path spellings.
+        app = _make_protected_app(
+            128,
+            main_module,
+            upload_passthrough_max_bytes_getter = lambda _p: 1024,
+            upload_passthrough_exact_paths = ("/api/train/diffusion/dataset",),
+        )
+
+        @app.post("/api/train/diffusion/dataset")
+        async def upload(request: Request):
+            body = await request.body()
+            return {"total": len(body)}
+
+        c = TestClient(app)
+        for path in ("/api/train/diffusion/dataset", "/api/train/diffusion/dataset/"):
+            r = c.post(
+                path,
+                content = b"x" * 512,
+                headers = {"content-type": "application/octet-stream"},
+            )
+            assert r.status_code == 200, path
+            assert r.json()["total"] == 512, path
+        # A slashed JSON sub-route is still NOT passthrough: over-cap body is rejected.
+        r = c.post(
+            "/api/train/diffusion/dataset/import-example/",
+            content = b"x" * 512,
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 413
+        assert (
+            main_module._get_upload_passthrough_request_max_bytes(
+                "/api/train/diffusion/dataset/import-example/"
+            )
+            == default_request_body_limit_bytes()
+        )
+
+    def test_v1_surface_is_body_protected(self, main_module):
+        # /images/generations is mounted at both /api/inference and /v1, and every /v1 POST must be body-capped via the blanket
+        # prefix or an unbounded prompt buffers outside the Studio request limit. Also confirms /v1 chat/completions stays protected.
+        for path in (
+            "/v1/images/generations",
+            "/v1/audio/generate",
+            "/v1/embeddings",
+            "/v1/responses",
+            "/v1/messages",
+            "/v1/chat/completions",
+        ):
+            assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES), path
+
     def test_upload_passthrough_rejects_declared_body_over_dedicated_cap(self, main_module):
         app = _make_protected_app(
             128,
@@ -201,6 +344,40 @@ class TestMaxBodyMiddleware:
         )
         assert r.status_code == 411
         assert "Content-Length" in r.json()["detail"]
+
+    def test_exact_path_passthrough_does_not_cover_subroutes(self, main_module):
+        # The exact-path passthrough lifts the cap for the upload path itself, but a sibling sub-path under the same prefix stays capped.
+        app = FastAPI()
+        app.add_middleware(
+            main_module.MaxBodyMiddleware,
+            max_bytes_getter = lambda: 128,
+            protected_prefixes = ("/api/train",),
+            upload_passthrough_exact_paths = ("/api/train/ds",),
+            upload_passthrough_max_bytes_getter = lambda path: 10_000,
+        )
+
+        @app.post("/api/train/ds")
+        async def _upload(request: Request):
+            total = 0
+            async for chunk in request.stream():
+                total += len(chunk)
+            return {"ok": True, "total": total}
+
+        @app.post("/api/train/ds/import-example")
+        async def _import(payload: dict):
+            return {"ok": True}
+
+        c = TestClient(app)
+        # The exact upload path takes the large cap: a 512-byte body passes.
+        r = c.post(
+            "/api/train/ds",
+            content = b"x" * 512,
+            headers = {"content-type": "application/octet-stream"},
+        )
+        assert r.status_code == 200 and r.json()["total"] == 512
+        # The sibling JSON sub-route keeps the 128-byte default cap: a large body is 413'd.
+        r = c.post("/api/train/ds/import-example", json = {"text": "x" * 5000})
+        assert r.status_code == 413
 
 
 # SecurityHeadersMiddleware / CSP
@@ -469,6 +646,114 @@ class TestSecurityHeadersMiddleware:
         names = {n.lower() for n, _ in start["headers"]}
         assert b"content-security-policy" in names
         assert b"server" in names
+
+
+class TestResearchPortMiddleware:
+    def test_is_pure_asgi_and_forwards_receive_unchanged(self, main_module):
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        cls = main_module.ResearchPortMiddleware
+        assert not issubclass(cls, BaseHTTPMiddleware)
+        assert not hasattr(cls, "dispatch")
+
+        seen = {}
+
+        class Supervisor:
+            def note_server_port(self, server):
+                seen["server"] = server
+
+        async def inner_app(scope, receive, send):
+            seen["receive"] = receive
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+        request_app = type("App", (), {})()
+        request_app.state = type("State", (), {"research_supervisor": Supervisor()})()
+        sentinel_receive = object()
+
+        async def send(_message):
+            return None
+
+        asyncio.run(
+            cls(inner_app)(
+                {
+                    "type": "http",
+                    "path": "/api/research/runs/run-1/events",
+                    "app": request_app,
+                    "server": ("127.0.0.1", 4321),
+                },
+                sentinel_receive,
+                send,
+            )
+        )
+
+        assert seen["receive"] is sentinel_receive
+        assert seen["server"] == ("127.0.0.1", 4321)
+
+
+class TestFrontendAssets:
+    def test_hashed_assets_are_compressed_and_cached(self, tmp_path, main_module):
+        content = b"export const value = 'responsive';\n" * 200
+        (tmp_path / "page-abc123.js").write_bytes(content)
+        app = FastAPI()
+        assets_app = GZipMiddleware(
+            main_module.ImmutableStaticFiles(directory = tmp_path),
+            minimum_size = 1024,
+            compresslevel = 6,
+        )
+        app.mount("/assets", assets_app, name = "assets")
+
+        response = TestClient(app).get(
+            "/assets/page-abc123.js",
+            headers = {"Accept-Encoding": "gzip"},
+        )
+
+        assert response.status_code == 200
+        assert response.content == content
+        assert response.headers["content-encoding"] == "gzip"
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
+        assert "accept-encoding" in response.headers["vary"].lower()
+
+    def test_asset_revalidation_keeps_immutable_cache_header(self, tmp_path, main_module):
+        (tmp_path / "page-abc123.js").write_text("export {};", encoding = "utf-8")
+        app = FastAPI()
+        app.mount(
+            "/assets",
+            main_module.ImmutableStaticFiles(directory = tmp_path),
+            name = "assets",
+        )
+        client = TestClient(app)
+        first = client.get("/assets/page-abc123.js")
+
+        response = client.get(
+            "/assets/page-abc123.js",
+            headers = {"If-None-Match": first.headers["etag"]},
+        )
+
+        assert response.status_code == 304
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
+
+    def test_range_request_is_not_compressed(self, tmp_path, main_module):
+        content = b"export const value = 'responsive';\n" * 200
+        (tmp_path / "page-abc123.js").write_bytes(content)
+        app = FastAPI()
+        assets_app = main_module._AssetGZipMiddleware(
+            main_module.ImmutableStaticFiles(directory = tmp_path),
+            minimum_size = 1024,
+            compresslevel = 6,
+        )
+        app.mount("/assets", assets_app, name = "assets")
+
+        response = TestClient(app).get(
+            "/assets/page-abc123.js",
+            headers = {"Accept-Encoding": "gzip", "Range": "bytes=0-99"},
+        )
+
+        assert response.status_code == 206
+        assert response.headers.get("content-encoding") != "gzip"
+        assert response.headers["content-range"] == f"bytes 0-99/{len(content)}"
+        assert response.content == content[:100]
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
 
 
 # /api/health auth gate

@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Runs installer parity and autostart opt-out tests on Windows and macOS.
+# Runs installer parity and autostart opt-out tests across all three platforms.
 #
-# Why: that test is the guard that install.sh and install.ps1 stay in
-# sync, but today it only runs on ubuntu-latest (auto-discovered by
-# studio-backend-ci.yml's "Repo tests (CPU)" job). The test reads both
-# installer scripts, and on Windows Path.read_text() defaults to the
-# cp1252 locale encoding, so a non-cp1252 byte in install.sh (it already
-# contains a U+274C) raises UnicodeDecodeError there even though Linux and
-# macOS default to UTF-8. The reads were pinned to encoding="utf-8" in
-# #6166; this job keeps that from silently regressing by exercising the
-# test on the platforms it claims parity for. Pure pytest, no GPU,
-# sub-second, so the matrix is cheap.
+# Why: the parity test guards that install.sh and install.ps1 stay in sync.
+# It originally ran only on ubuntu-latest through studio-backend-ci.yml.
+# On Windows, Path.read_text() defaults to the cp1252 locale encoding, so a
+# non-cp1252 byte in install.sh raises UnicodeDecodeError even though Linux
+# and macOS default to UTF-8. The reads were pinned to encoding="utf-8" in
+# #6166; this matrix keeps that from silently regressing. Pure pytest, no GPU,
+# sub-second, so the matrix is cheap. Linux also runs the POSIX rollback test
+# under dash, matching the supported curl-to-sh installer path.
 
 name: Cross-platform parity
 
@@ -21,16 +19,42 @@ on:
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'unsloth_cli/__init__.py'
       - 'tests/test_installer_skip_autostart.py'
+      - 'tests/test_installer_system32_guard.py'
       - 'tests/python/test_cross_platform_parity.py'
+      - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/sh/test_install_rollback_lifecycle.sh'
+      - 'tests/studio/test_install_rollback_lifecycle.ps1'
+      - 'tests/studio/test_intel_registry_fallback.ps1'
+      - 'studio/setup.ps1'
+      - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
+      - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
+      - 'tests/sh/test_setup_xpu_fastpath_escape.sh'
+      - 'tests/sh/test_setup_xpu_posix_summary.sh'
+      - 'studio/setup.sh'
       - '.github/workflows/cross-platform-parity-ci.yml'
   push:
     branches: [main]
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'unsloth_cli/__init__.py'
       - 'tests/test_installer_skip_autostart.py'
+      - 'tests/test_installer_system32_guard.py'
       - 'tests/python/test_cross_platform_parity.py'
+      - 'tests/python/test_windows_python_venv_hardening.py'
+      - 'tests/sh/test_install_rollback_lifecycle.sh'
+      - 'tests/studio/test_install_rollback_lifecycle.ps1'
+      - 'tests/studio/test_intel_registry_fallback.ps1'
+      - 'studio/setup.ps1'
+      - 'tests/studio/test_setup_xpu_runtime_prereport.ps1'
+      - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
+      - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
+      - 'tests/sh/test_setup_xpu_fastpath_escape.sh'
+      - 'tests/sh/test_setup_xpu_posix_summary.sh'
+      - 'studio/setup.sh'
       - '.github/workflows/cross-platform-parity-ci.yml'
   workflow_dispatch:
 
@@ -47,7 +71,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -65,5 +89,37 @@ jobs:
         run: >-
           python -m pytest
           tests/python/test_cross_platform_parity.py
+          tests/python/test_windows_python_venv_hardening.py
           tests/test_installer_skip_autostart.py
+          tests/test_installer_system32_guard.py
           -q
+      - name: PowerShell rollback lifecycle tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_install_rollback_lifecycle.ps1
+      # Mocks the registry cmdlets rather than reading a hive, so it runs on all three.
+      - name: Intel registry fallback tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_intel_registry_fallback.ps1
+      # Same reason: the filesystem is mocked, so no real venv or Windows is needed.
+      - name: Setup XPU pre-report tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_setup_xpu_runtime_prereport.ps1
+      # Parses install.ps1 with the AST and executes the extracted builder, so no venv.
+      - name: XPU arm64 torchaudio tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_xpu_arm64_torchaudio.ps1
+      - name: POSIX rollback lifecycle tests
+        if: runner.os == 'Linux'
+        run: sh tests/sh/test_install_rollback_lifecycle.sh
+      # bash, not sh: the helper under test is extracted from install.sh, which is bash.
+      - name: install.sh XPU flavor probe tests
+        if: runner.os != 'Windows'
+        run: bash tests/sh/test_install_sh_xpu_flavor_probe.sh
+      # Same reason: the escape and the hardware summary are extracted from setup.sh and run
+      # against built venv trees, so no real install is needed.
+      - name: setup.sh XPU fast-path + summary tests
+        if: runner.os != 'Windows'
+        run: |
+          bash tests/sh/test_setup_xpu_fastpath_escape.sh
+          bash tests/sh/test_setup_xpu_posix_summary.sh

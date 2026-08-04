@@ -61,9 +61,11 @@ async def list_cached_datasets(current_subject: str = Depends(get_current_subjec
 
 @router.delete("/cached", response_model = DeleteCachedDatasetResponse)
 async def delete_cached_dataset(
-    repo_id: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
+    repo_id: str = Body(..., embed = True),
+    cache_path: Optional[str] = Body(None, embed = True),
+    current_subject: str = Depends(get_current_subject),
 ):
-    return await cache_inventory.delete_cached_dataset_response(repo_id)
+    return await cache_inventory.delete_cached_dataset_response(repo_id, cache_path)
 
 
 @router.get("/download-progress", response_model = DownloadProgressResponse)
