@@ -449,6 +449,5 @@ class TestHealthHubEndpoint:
     )
     def test_only_a_normalised_origin_is_reported(self, monkeypatch, endpoint, expected):
         import main
-
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         assert main._hub_endpoint() == expected
