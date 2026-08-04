@@ -419,6 +419,12 @@ export async function getGgufDownloadProgress(
 
 export interface DownloadProgressResponse {
   downloaded_bytes: number;
+  /**
+   * Finalized-blob bytes only. Bytes still landing in a `.incomplete` blob count
+   * toward `downloaded_bytes` but not here, so the two are equal exactly when
+   * nothing is in flight.
+   */
+  completed_bytes: number;
   expected_bytes: number;
   progress: number;
   /**
