@@ -133,6 +133,7 @@ function makeDatasetSortFetch(
     direct: (input, init) =>
       fetchWithTimeout(input, init, HF_DATASET_SEARCH_TIMEOUT_MS, {
         recordFailure: false,
+        service: "discovery",
       }),
     proxyFirst: hubProxyFirst,
   });

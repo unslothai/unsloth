@@ -282,3 +282,54 @@ test("recordFailure false leaves the origin unmarked for a caller with a fallbac
     globalThis.fetch = original;
   }
 });
+
+test("an avatar success does not erase the discovery diagnosis", async () => {
+  reset();
+  markRemoteNetworkOffline(
+    HF,
+    30_000,
+    { kind: "csp-blocked", message: "blocked", origin: HF, retryable: true },
+    "discovery",
+  );
+  const original = globalThis.fetch;
+  // The owner-avatar probe resolves 404 for a user account, and any resolved
+  // response counts as reachability, so this is the everyday case.
+  globalThis.fetch = (async () =>
+    new Response("", { status: 404 })) as typeof fetch;
+  try {
+    await fetchWithTimeout(`${HF}/api/organizations/acme/overview`, {}, 1_000);
+  } finally {
+    globalThis.fetch = original;
+  }
+  assert.equal(
+    getLastHubFailure(HF)?.kind,
+    "csp-blocked",
+    "a different endpoint on the same origin must not clear the cause on screen",
+  );
+  assert.notEqual(
+    getHubPhase(HF),
+    "available",
+    "reverting to available here restores the generic panel this change removes",
+  );
+});
+
+test("a discovery success does clear the discovery diagnosis", async () => {
+  reset();
+  markRemoteNetworkOffline(
+    HF,
+    30_000,
+    { kind: "network-opaque", message: "boom", origin: HF, retryable: true },
+    "discovery",
+  );
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("[]", { status: 200 })) as typeof fetch;
+  try {
+    await fetchWithTimeout(`${HF}/api/models`, {}, 1_000, {
+      service: "discovery",
+    });
+  } finally {
+    globalThis.fetch = original;
+  }
+  assert.equal(getLastHubFailure(HF), null);
+  assert.equal(getHubPhase(HF), "available");
+});

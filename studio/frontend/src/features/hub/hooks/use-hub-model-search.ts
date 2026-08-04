@@ -147,6 +147,7 @@ function makeHfFetch(signal?: AbortSignal): typeof fetch {
     direct: (input, init) =>
       fetchWithTimeout(input, init, HF_SEARCH_TIMEOUT_MS, {
         recordFailure: false,
+        service: "discovery",
       }),
     proxyFirst: hubProxyFirst,
   });
@@ -163,6 +164,7 @@ function makeSortFetch(
     direct: (input, init) =>
       fetchWithTimeout(input, init, HF_SEARCH_TIMEOUT_MS, {
         recordFailure: false,
+        service: "discovery",
       }),
     proxyFirst: hubProxyFirst,
   });

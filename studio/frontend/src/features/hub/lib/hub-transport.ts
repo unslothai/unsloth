@@ -188,7 +188,10 @@ export function createHubTransport(
   const direct =
     deps.direct ??
     ((input, init) =>
-      fetchWithTimeout(input, init, undefined, { recordFailure: false }));
+      fetchWithTimeout(input, init, undefined, {
+        recordFailure: false,
+        service: "discovery",
+      }));
   const backend = deps.backend ?? defaultBackend;
   const proxyFirst = deps.proxyFirst ?? defaultProxyFirst;
   let useProxy = false;
@@ -216,7 +219,7 @@ export function createHubTransport(
       setHubProxyServing(false);
       if (directFailure && !wasAborted(init, error)) {
         const origin = hubUrlOf(raw)?.origin ?? DEFAULT_HUB_ENDPOINT;
-        markRemoteNetworkOffline(origin, undefined, directFailure);
+        markRemoteNetworkOffline(origin, undefined, directFailure, "discovery");
       }
       throw error;
     }
@@ -228,7 +231,7 @@ export function createHubTransport(
       // failure is dropped and the panel loses the classified cause.
       const origin = hubUrlOf(raw)?.origin;
       if (origin) {
-        markRemoteNetworkOffline(origin, undefined, directFailure);
+        markRemoteNetworkOffline(origin, undefined, directFailure, "discovery");
       }
     }
     return response;
@@ -258,7 +261,12 @@ export function createHubTransport(
     }
 
     try {
-      return await direct(input, init);
+      const response = await direct(input, init);
+      // A listing this browser fetched itself means the backend is not serving
+      // the feed. Leaving the flag set would keep forcing the phase to
+      // "available" and hide the next direct failure behind an idle proxy.
+      setHubProxyServing(false);
+      return response;
     } catch (error) {
       if (!isHubFetchError(error) || !FALLBACK_KINDS.has(error.failure.kind)) {
         throw error;
@@ -275,7 +283,7 @@ export function createHubTransport(
         // a superseded query must not back off its own replacement.
         const origin = hubUrlOf(raw)?.origin;
         if (origin && !wasAborted(init, proxyError)) {
-          markRemoteNetworkOffline(origin, undefined, error.failure);
+          markRemoteNetworkOffline(origin, undefined, error.failure, "discovery");
         }
         throw proxyError;
       }

@@ -62,7 +62,17 @@ const remoteOfflineUntilByOrigin = new Map<string, number>();
 let hubProxyServing = false;
 // The TTL controls when we retry; this controls what we tell the user. Cleared
 // only by a success, so the cause outlives the backoff window.
-const lastFailureByOrigin = new Map<string, HubFailure>();
+const lastFailureByOrigin = new Map<
+  string,
+  { failure: HubFailure; service: HubService }
+>();
+
+/**
+ * Which feed a request belongs to. The origin is shared, but a block can be
+ * per-path, so an avatar or README success must not clear the discovery
+ * diagnosis: the panel would revert to the generic message it replaced.
+ */
+export type HubService = "discovery" | "other";
 
 function isNavigatorOffline(): boolean {
   return typeof navigator !== "undefined" && navigator.onLine === false;
@@ -153,10 +163,13 @@ export function getLastHubFailure(
   if (hubProxyServing && origin === HUGGING_FACE_ORIGIN) {
     return null;
   }
-  return lastFailureByOrigin.get(origin) ?? null;
+  return lastFailureByOrigin.get(origin)?.failure ?? null;
 }
 
-export function markRemoteNetworkOnline(origin?: string): void {
+export function markRemoteNetworkOnline(
+  origin?: string,
+  service: HubService = "other",
+): void {
   if (origin === undefined) {
     if (remoteOfflineUntilByOrigin.size === 0 && lastFailureByOrigin.size === 0) {
       return;
@@ -168,7 +181,11 @@ export function markRemoteNetworkOnline(origin?: string): void {
     return;
   }
   const hadWindow = remoteOfflineUntilByOrigin.delete(origin);
-  const hadFailure = lastFailureByOrigin.delete(origin);
+  // Only the feed that recorded a diagnosis may retire it. Reachability is
+  // origin-wide, but the cause on screen belongs to the request that failed.
+  const hadFailure =
+    lastFailureByOrigin.get(origin)?.service === service &&
+    lastFailureByOrigin.delete(origin);
   if (!hadWindow && !hadFailure) {
     return;
   }
@@ -179,6 +196,7 @@ export function markRemoteNetworkOffline(
   originOrTtl: string | number = HUGGING_FACE_ORIGIN,
   ttlMs = REMOTE_OFFLINE_TTL_MS,
   failure?: HubFailure,
+  service: HubService = "other",
 ): void {
   const origin =
     typeof originOrTtl === "string"
@@ -191,9 +209,9 @@ export function markRemoteNetworkOffline(
   // longer, otherwise the panel keeps describing a stale first failure.
   const failureChanged =
     failure !== undefined &&
-    lastFailureByOrigin.get(origin)?.kind !== failure.kind;
+    lastFailureByOrigin.get(origin)?.failure.kind !== failure.kind;
   if (failure !== undefined) {
-    lastFailureByOrigin.set(origin, failure);
+    lastFailureByOrigin.set(origin, { failure, service });
   }
   if (nextUntil <= previousUntil) {
     if (failureChanged) {
@@ -405,10 +423,11 @@ export async function fetchWithTimeout(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1] = {},
   timeoutMs = 15_000,
-  // The Hub transport defers this: marking the origin offline here re-renders
-  // consumers, which aborts the very fallback about to run.
-  options: { recordFailure?: boolean } = {},
+  // The Hub transport defers recordFailure: marking the origin offline here
+  // re-renders consumers, which aborts the very fallback about to run.
+  options: { recordFailure?: boolean; service?: HubService } = {},
 ): Promise<Response> {
+  const service = options.service ?? "other";
   const parentSignal = init.signal;
   const controller = new AbortController();
   let timedOut = false;
@@ -430,7 +449,7 @@ export async function fetchWithTimeout(
   try {
     const response = await fetch(input, { ...init, signal: controller.signal });
     if (origin) {
-      markRemoteNetworkOnline(origin);
+      markRemoteNetworkOnline(origin, service);
     }
     return response;
   } catch (error) {
@@ -444,7 +463,7 @@ export async function fetchWithTimeout(
       options.recordFailure !== false &&
       (timedOut || isNetworkFetchError(error))
     ) {
-      markRemoteNetworkOffline(origin, REMOTE_OFFLINE_TTL_MS, failure);
+      markRemoteNetworkOffline(origin, REMOTE_OFFLINE_TTL_MS, failure, service);
     }
     throw new HubFetchError(failure, { cause: error });
   } finally {

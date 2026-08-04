@@ -528,3 +528,44 @@ test("a later proxied page still carries the original direct failure", async () 
   await transport("/api/hub/discovery/models?search=gemma&cursor=x", {});
   assert.equal(getLastHubFailure(HF_ORIGIN)?.kind, "csp-blocked");
 });
+
+test("a direct listing success retires the proxy-serving flag", async () => {
+  markRemoteNetworkOnline();
+  const backend = captureBackend();
+
+  // A first transport falls back, so the backend is serving the feed.
+  const fallen = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    backend: backend.backend,
+  });
+  await fallen(HF_URL, {});
+  assert.equal(isHubProxyServing(), true);
+
+  // A later search reaches the Hub itself, so the proxy is out of the picture.
+  const recovered = createHubTransport("models", {
+    direct: async () => new Response("[]", { status: 200 }),
+    backend: backend.backend,
+  });
+  await recovered(HF_URL, {});
+  assert.equal(
+    isHubProxyServing(),
+    false,
+    "a stale flag keeps forcing the phase to available off an idle proxy",
+  );
+
+  // The point of clearing it: the next direct failure is visible again.
+  markRemoteNetworkOffline(
+    HF_ORIGIN,
+    30_000,
+    {
+      kind: "csp-blocked",
+      message: "blocked",
+      origin: HF_ORIGIN,
+      retryable: true,
+    },
+    "discovery",
+  );
+  assert.equal(getHubPhase(HF_ORIGIN), "unavailable");
+  assert.equal(getLastHubFailure(HF_ORIGIN)?.kind, "csp-blocked");
+  markRemoteNetworkOnline();
+});
