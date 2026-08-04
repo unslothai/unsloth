@@ -166,12 +166,19 @@ def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> O
     """The path of a hosted (``kind == "repo"``) checkpoint ALREADY in the local Hub cache.
 
     A pure lookup (a refs read plus a stat, no network), so memory planning can ask on every pick.
-    Both names ``_resolve_checkpoint_path`` would fetch count, and both cache roots are searched:
-    Studio pins the LIVE cache setting while an unpinned ``hf_hub_download`` falls back to
-    huggingface_hub's import-time constant, so the file can sit under either. The loader resolves
-    through this same helper, so a hit here is the file it loads. Never raises: an answer it cannot
-    give is None, i.e. "this would have to download"."""
+    Only the PRIMARY ``filename`` counts. ``fallback_filename`` names the legacy artifact for repos
+    that never published the canonical one, so a cached legacy copy must not short-circuit the
+    primary: that would pin a stale ``transformer_<scheme>.pt`` forever even after the repo starts
+    shipping the real name. Whether the primary exists remotely cannot be known without a network
+    call, so a fallback-only cache reads as "this would have to download" and the GGUF simply runs.
+
+    Both cache roots are searched: Studio pins the LIVE cache setting while an unpinned
+    ``hf_hub_download`` falls back to huggingface_hub's import-time constant, so the file can sit
+    under either. Never raises: an answer it cannot give is None."""
     if source is None or getattr(source, "kind", None) != "repo":
+        return None
+    name = getattr(source, "filename", None)
+    if not name:
         return None
     try:
         import os
@@ -180,16 +187,13 @@ def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> O
     except Exception:  # noqa: BLE001 — no cache API to ask: treat as not cached
         return None
     for root in (cache_dir, None) if cache_dir else (None,):
-        for name in (source.filename, source.fallback_filename):
-            if not name:
-                continue
-            try:
-                hit = try_to_load_from_cache(source.location, name, cache_dir = root)
-            except Exception:  # noqa: BLE001 — a malformed cache entry is not a hit
-                continue
-            # A str is the cached path; a miss is None and a known-absent file is a sentinel object.
-            if isinstance(hit, str) and os.path.isfile(hit):
-                return hit
+        try:
+            hit = try_to_load_from_cache(source.location, name, cache_dir = root)
+        except Exception:  # noqa: BLE001 — a malformed cache entry is not a hit
+            continue
+        # A str is the cached path; a miss is None and a known-absent file is a sentinel object.
+        if isinstance(hit, str) and os.path.isfile(hit):
+            return hit
     return None
 
 
@@ -343,7 +347,9 @@ def _resolve_checkpoint_path(
 
         # Reuse the hit the caller cleared this load on: it searched the live cache root as well as
         # huggingface_hub's import-time one, so without this an unpinned download re-fetches the
-        # multi-GB checkpoint into the root Studio is not reading.
+        # multi-GB checkpoint into the root Studio is not reading. PRIMARY only, so the fallback is
+        # still reached solely through EntryNotFoundError below and a cached legacy artifact cannot
+        # pre-empt a canonical one the repo has since published.
         cached = cached_checkpoint_path(source, cache_dir = cache_dir)
         if cached is not None:
             return cached

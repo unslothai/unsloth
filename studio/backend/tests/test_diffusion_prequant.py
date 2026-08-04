@@ -770,10 +770,12 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     # The live root is asked first, and the model-name file resolves, so no legacy lookup.
     assert asked == [("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt", "/models/hub")]
 
-    # Only the legacy name on disk still counts: _resolve_checkpoint_path falls back to it.
+    # Only the legacy name on disk does NOT count. fallback_filename is for repos that never
+    # published the canonical one, and whether this repo has it now cannot be known without a
+    # network call, so a legacy-only cache reads as "would have to download" and the GGUF runs.
     ckpt.unlink()
-    assert prequant_checkpoint_cached(source) is True
-    # Neither name cached -> this pick would have to download.
+    assert prequant_checkpoint_cached(source) is False
+    # Neither name cached -> same answer, for the ordinary reason.
     legacy.unlink()
     assert prequant_checkpoint_cached(source) is False
 
@@ -850,3 +852,63 @@ def test_prequant_checkpoint_cached_never_raises(monkeypatch):
     # A local override is the operator's own file, so it is not a cache question.
     assert prequant_checkpoint_cached(PrequantSource(kind = "path", location = "/tmp/x.pt")) is False
     assert prequant_checkpoint_cached(None) is False
+
+
+def test_a_cached_legacy_file_does_not_pre_empt_the_canonical_one(monkeypatch, tmp_path):
+    """fallback_filename is primary-first by contract: it is only reached once the canonical name
+    is absent remotely. Short-circuiting on a cached legacy artifact would pin a stale
+    transformer_<scheme>.pt forever, even after the repo starts publishing the real name."""
+    from core.inference.diffusion_prequant import _resolve_checkpoint_path
+
+    legacy = tmp_path / "transformer_fp8.pt"
+    legacy.write_bytes(b"stale")
+    source = PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None: (
+            str(tmp_path / filename) if (tmp_path / filename).is_file() else None
+        ),
+    )
+    asked: list = []
+
+    def _download(repo_id, filename, token = None, cache_dir = None):
+        asked.append(filename)
+        return str(tmp_path / "downloaded-canonical.pt")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert _resolve_checkpoint_path(source, None) == str(tmp_path / "downloaded-canonical.pt")
+    assert asked == ["Z-Image-Turbo-FP8.pt"]  # the canonical name, not the cached legacy one
+
+
+def test_the_legacy_name_is_still_used_once_the_canonical_one_is_absent(monkeypatch, tmp_path):
+    """The other direction, which is what fallback_filename exists for: a repo that only ever
+    shipped the legacy artifact must still load."""
+    from huggingface_hub.errors import EntryNotFoundError
+
+    from core.inference.diffusion_prequant import _resolve_checkpoint_path
+
+    source = PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    asked: list = []
+
+    def _download(repo_id, filename, token = None, cache_dir = None):
+        asked.append(filename)
+        if filename == "Z-Image-Turbo-FP8.pt":
+            raise EntryNotFoundError("404")
+        return str(tmp_path / filename)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert _resolve_checkpoint_path(source, None) == str(tmp_path / "transformer_fp8.pt")
+    assert asked == ["Z-Image-Turbo-FP8.pt", "transformer_fp8.pt"]  # primary first, then legacy
