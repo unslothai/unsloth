@@ -17,7 +17,38 @@ test("the backend's message survives on the error", () => {
 });
 
 test("a model that is not downloaded ends the recording", () => {
-  assert.equal(isUnrecoverableSttLoadError(sttRequestError("nope", 409)), true);
+  for (const detail of [
+    "STT model 'small' is not downloaded. Download it in Settings, then Voice, before loading it.",
+    "STT model 'small' (GGUF) is not downloaded. Download it in Settings, then Voice, before loading it.",
+  ]) {
+    assert.equal(
+      isUnrecoverableSttLoadError(sttRequestError(detail, 409)),
+      true,
+    );
+  }
+});
+
+test("a load cancelled so training could start keeps recording", () => {
+  // Same 409 as not-downloaded, but /transcribe/raw reloads on CPU while
+  // training holds the GPU, so the audio is still worth keeping.
+  for (const detail of [
+    "STT model loading was cancelled so training could start.",
+    "GGUF STT model loading was cancelled so training could start.",
+  ]) {
+    assert.equal(
+      isUnrecoverableSttLoadError(sttRequestError(detail, 409)),
+      false,
+    );
+  }
+});
+
+test("a 409 nobody recognises keeps recording", () => {
+  // Erring this way costs a wasted recording; erring the other way costs the
+  // words the user already spoke.
+  assert.equal(
+    isUnrecoverableSttLoadError(sttRequestError("HTTP 409", 409)),
+    false,
+  );
 });
 
 test("a backend without STT support ends the recording", () => {
@@ -39,6 +70,11 @@ test("a load that failed for another reason keeps recording", () => {
 test("an error carrying no status keeps recording", () => {
   // Older servers, and any non-HTTP failure such as a dropped connection.
   assert.equal(isUnrecoverableSttLoadError(new Error("boom")), false);
+  // Not even when it happens to carry the not-downloaded wording.
+  assert.equal(
+    isUnrecoverableSttLoadError(new Error("model is not downloaded")),
+    false,
+  );
   assert.equal(isUnrecoverableSttLoadError(undefined), false);
   assert.equal(isUnrecoverableSttLoadError(null), false);
   assert.equal(isUnrecoverableSttLoadError("409"), false);

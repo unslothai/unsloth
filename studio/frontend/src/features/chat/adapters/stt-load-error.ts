@@ -12,14 +12,27 @@ export function sttRequestError(
 }
 
 /**
+ * The backend's wording for a model that was never downloaded (stt_sidecar.py
+ * and stt_ggml_sidecar.py, pinned by tests/studio/test_stt_load_409_contract.py).
+ */
+const NOT_DOWNLOADED = /is not downloaded/i;
+
+/**
  * Whether a failed model load means transcription cannot succeed later either.
  *
- * 409 (model not downloaded) and 501 (STT support not installed) come back
- * unchanged at stop time, so a recording started after one is already lost.
- * Every other failure may still transcribe, since /transcribe/raw loads the
- * model itself, and must not cost the user their dictation.
+ * Only two failures are final. 501 means STT support is not installed. 409 is
+ * overloaded: it is also how a load cancelled so training could start is
+ * reported (routes/inference.py), and /transcribe/raw recovers from that by
+ * reloading on CPU, so only the not-downloaded wording counts.
+ *
+ * Everything else keeps recording, because /transcribe/raw loads the model
+ * itself and may still succeed. An unrecognised 409 therefore errs towards
+ * keeping the audio: a stale match costs a wasted recording, a wrong one costs
+ * the user words they already spoke.
  */
 export function isUnrecoverableSttLoadError(error: unknown): boolean {
   const status = (error as { status?: unknown } | null)?.status;
-  return status === 409 || status === 501;
+  if (status === 501) return true;
+  if (status !== 409) return false;
+  return error instanceof Error && NOT_DOWNLOADED.test(error.message);
 }
