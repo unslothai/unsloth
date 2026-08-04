@@ -518,9 +518,9 @@ def test_rl_codegen_imports_the_module_that_exists():
     snippet = _rl_num_proc_snippet()
     assert f"from {GENERATED_IMPORT_MODULE} import {GENERATED_IMPORT_NAME}" in snippet
     assert f"from {GENERATED_FALLBACK_MODULE} import {GENERATED_IMPORT_NAME}" in snippet
-    assert snippet.index(GENERATED_IMPORT_MODULE) < snippet.index(GENERATED_FALLBACK_MODULE), (
-        "the zoo has to be tried first; the unsloth copy is only the fallback"
-    )
+    assert snippet.index(GENERATED_IMPORT_MODULE) < snippet.index(
+        GENERATED_FALLBACK_MODULE
+    ), "the zoo has to be tried first; the unsloth copy is only the fallback"
     assert MODULE_PATH.is_file()
     module = _load_module()
     assert callable(getattr(module, GENERATED_IMPORT_NAME))
@@ -549,9 +549,9 @@ def test_generated_source_reaches_for_the_zoo_before_unsloth():
     assert len(reaching) == 2, "expected the num_proc selection and the map() wrapper"
     for text in reaching:
         assert f"from {GENERATED_IMPORT_MODULE} import" in text
-        assert text.index(GENERATED_IMPORT_MODULE) < text.index(GENERATED_FALLBACK_MODULE), (
-            f"this injection imports unsloth before the zoo:\n{text}"
-        )
+        assert text.index(GENERATED_IMPORT_MODULE) < text.index(
+            GENERATED_FALLBACK_MODULE
+        ), f"this injection imports unsloth before the zoo:\n{text}"
 
 
 def test_the_two_copies_have_not_drifted():
@@ -571,11 +571,17 @@ def test_the_two_copies_have_not_drifted():
     def _shape(path):
         tree = ast.parse(path.read_text(encoding = "utf-8"))
         for node in ast.walk(tree):
-            if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if not isinstance(
+                node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
                 continue
             body = node.body
-            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
-                    and isinstance(body[0].value.value, str):
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
                 node.body = body[1:] or [ast.Pass()]
         return ast.dump(ast.parse(ast.unparse(tree)))
 
