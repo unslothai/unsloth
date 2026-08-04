@@ -26,6 +26,7 @@ TAURI_UPDATE_CONTEXT = FRONTEND / "hooks/tauri-update-context.ts"
 TAURI_UPDATE_HOOK = FRONTEND / "hooks/use-tauri-update.ts"
 UPDATE_INSTRUCTIONS = FRONTEND / "features/settings/components/update-studio-instructions.tsx"
 DESKTOP_UPDATE_CONTROL = FRONTEND / "features/settings/components/desktop-update-control.tsx"
+GENERAL_SETTINGS = FRONTEND / "features/settings/tabs/general-tab.tsx"
 DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 
 
@@ -63,6 +64,13 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     assert "const available = update.info !== null && !checking;" in settings
     assert "void update.installUpdate();" in settings
     assert "void update.checkForUpdate();" in settings
+
+
+def test_desktop_update_search_has_a_stable_general_tab_destination():
+    general = GENERAL_SETTINGS.read_text(encoding = "utf-8")
+
+    assert 'data-settings-label={t("settings.about.updates")}' in general
+    assert "<DesktopUpdateControl />" in general
 
 
 def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():

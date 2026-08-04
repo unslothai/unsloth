@@ -471,8 +471,12 @@ export function GeneralTab() {
       {/* Desktop-only, and self-gating: outside the desktop app both render
           nothing and the section keeps just the version rows. */}
       <StudioVersionSection>
-        <DesktopUpdateControl />
-        <DesktopUpdateNote />
+        {isTauri ? (
+          <div data-settings-label={t("settings.about.updates")}>
+            <DesktopUpdateControl />
+            <DesktopUpdateNote />
+          </div>
+        ) : null}
       </StudioVersionSection>
 
       <SettingsSection title={t("settings.general.account")}>

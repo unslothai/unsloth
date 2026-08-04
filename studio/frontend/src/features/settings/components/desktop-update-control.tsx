@@ -24,7 +24,7 @@ export function DesktopUpdateNote(): ReactElement | null {
 }
 
 // Lives in General, under the version rows it acts on: that is the tab the
-// settings dialog opens on. Desktop-only — outside Tauri there is no controller
+// settings dialog opens on. Desktop-only, outside Tauri there is no controller
 // in context and the row renders nothing.
 export function DesktopUpdateControl(): ReactElement | null {
   const t = useT();

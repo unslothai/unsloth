@@ -156,6 +156,21 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
 };
 
+export function createSettingsSearchIndex(
+  desktop: boolean,
+): Record<SettingsTab, TranslationKey[]> {
+  if (!desktop) {
+    return SETTINGS_SEARCH_INDEX;
+  }
+  return {
+    ...SETTINGS_SEARCH_INDEX,
+    general: [...SETTINGS_SEARCH_INDEX.general, "settings.about.updates"],
+    about: SETTINGS_SEARCH_INDEX.about.filter(
+      (key) => key !== "settings.about.updates",
+    ),
+  };
+}
+
 /**
  * Extra terms a row matches on, beyond its own label. The value is a
  * translation key holding space-separated synonyms; it is never rendered.
