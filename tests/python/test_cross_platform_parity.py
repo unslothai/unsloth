@@ -68,6 +68,53 @@ class TestInstallShHasGpuDetection:
         ), "install.sh should assign TORCH_INDEX_URL from get_torch_index_url()"
 
 
+class TestPreTuringCapParity:
+    """Every wheel-selection site caps cu128/cu130 on a pre-Turing host (issue #7765).
+
+    PyTorch 2.11 builds those families for sm_75 and newer, so a Maxwell/Pascal/Volta
+    box needs cu126 -- both for torch itself and for the CUDA 12 runtime that gets it
+    a llama.cpp GGUF bundle. Four scripts pick the family; none may be left behind.
+    """
+
+    # (file, call spelling, selection function that must invoke it, its end marker). The
+    # spelling carries the first argument, so a prose mention cannot satisfy the assertion.
+    _SITES = (
+        (INSTALL_SH, '_cap_cuda_family_for_pre_turing "', "get_torch_index_url() {", "\n}"),
+        (
+            INSTALL_PS1,
+            "Get-CudaFamilyCappedForPreTuring $",
+            "function Get-TorchIndexUrl",
+            "\n    }",
+        ),
+        (SETUP_PS1, "Get-CudaFamilyCappedForPreTuring $", "function Get-PytorchCudaTag", "\n}"),
+        (
+            STACK_PY,
+            "_cap_cuda_family_for_pre_turing(",
+            "def _detect_cuda_torch_index_url",
+            "\ndef ",
+        ),
+    )
+
+    def test_cu126_span_agrees_across_the_python_modules(self):
+        # Neither module imports the other (the installer runs before dependencies
+        # exist), so assert the shared span here rather than let it drift silently.
+        span = "_CU126_SM_RANGE = (50, 90)"
+        for path in (STACK_PY, REPO_ROOT / "studio" / "install_llama_prebuilt.py"):
+            assert span in path.read_text(encoding = "utf-8"), f"{path.name} lost {span}"
+
+    @pytest.mark.parametrize("path,call,start,end", _SITES)
+    def test_selection_function_applies_the_cap(self, path, call, start, end):
+        text = path.read_text(encoding = "utf-8")
+        assert start in text, f"{path.name} no longer defines {start!r}"
+        body = text.split(start, 1)[1].split(end, 1)[0]
+        assert call in body, f"{path.name}'s selection function never applies {call!r}"
+
+
+# A ladder rung names its family either as an index-URL suffix ("$base/cu128") or as a
+# variable a later step can still cap ("_cuda_tag=cu128"), so accept both spellings.
+_CUDA_LEAF_RE = r"""[/=]\s*["']?(cu\d+|cpu)"""
+
+
 class TestCudaMappingParity:
     """CUDA version thresholds must match between install.sh and install.ps1."""
 
@@ -84,7 +131,7 @@ class TestCudaMappingParity:
             if in_func and line.startswith("}"):
                 break
             if in_func and ("_major" in line or "_minor" in line):
-                m = re.search(r"/(cu\d+|cpu)", line)
+                m = re.search(_CUDA_LEAF_RE, line)
                 if m:
                     results.append(m.group(1))
         return results
@@ -106,7 +153,7 @@ class TestCudaMappingParity:
                     break
                 # Only match the if-chain lines that compare $major/$minor
                 if "$major" in line or "$minor" in line:
-                    m = re.search(r"/(cu\d+|cpu)", line)
+                    m = re.search(_CUDA_LEAF_RE, line)
                     if m:
                         results.append(m.group(1))
         return results

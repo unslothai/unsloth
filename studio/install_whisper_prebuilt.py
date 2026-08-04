@@ -95,6 +95,7 @@ InstallSelection = core.InstallSelection
 ReleaseBundle = core.ReleaseBundle
 llama_detect_host = llama.detect_host
 installed_llama_runtime = llama.installed_llama_runtime
+installed_llama_ggml_tree = llama.installed_llama_ggml_tree
 
 # Late-binding seam for prebuilt_core: name lookups hit this module's globals
 # first (so monkeypatches apply), then the core defaults.
@@ -336,26 +337,44 @@ def artifacts_for_host(
 
 # ── Slim selection (paired with the installed llama.cpp ggml runtime) ──
 def _llama_ggml_commit(tag: str) -> str | None:
-    """The ggml commit a llama.cpp fork tag was built against. Fork tags are
-    "b<upstream_build>-mix-<ggml_commit>"; the ggml commit after "-mix-" fixes
-    the ggml ABI the slim whisper bundle links against, while the build number
-    only tracks upstream llama / fork PRs outside ggml. None when the tag has no
-    "-mix-" marker (then only an exact tag pairs)."""
+    """The "-mix-" suffix of a fork tag "b<upstream_build>-mix-<suffix>".
+
+    Despite the name this is NOT a ggml commit: it hashes the pinned PR set and
+    stays constant while the base tag, and ggml with it, moves (one value covered
+    b9909..b10001, whose ggml trees differ). Fallback for releases predating
+    ggml_tree."""
     marker = "-mix-"
     idx = tag.rfind(marker)
     end = idx + len(marker)
     return tag[end:] if idx >= 0 and end < len(tag) else None
 
 
-def llama_runtime_pairs(installed_tag: str, required_tag: Any) -> bool:
+def llama_runtime_pairs(
+    installed_tag: str,
+    required_tag: Any,
+    *,
+    installed_ggml_tree: Any = None,
+    required_ggml_tree: Any = None,
+) -> bool:
     """Whether an installed llama tag can back a slim bundle needing required_tag.
-    An exact tag always pairs; so does a shared ggml commit, since a newer llama
-    build with the same ggml ships an ABI-identical runtime. requires_ggml_sonames
-    stays the real per-file ABI gate."""
+    An exact tag always pairs; otherwise the ggml tree ids decide, since they
+    change exactly when ggml does. The "-mix-" suffix does not track ggml at all
+    (see _llama_ggml_commit) and is only used when either tree is missing.
+    requires_ggml_sonames stays the per-file ABI gate."""
     if not isinstance(required_tag, str):
         return False
     if installed_tag == required_tag:
         return True
+    # Only decidable with both trees. Refusing when the install predates
+    # ggml_tree would strand it: nothing can backfill a tree-less marker
+    # without a llama release to install.
+    if (
+        isinstance(installed_ggml_tree, str)
+        and installed_ggml_tree
+        and isinstance(required_ggml_tree, str)
+        and required_ggml_tree
+    ):
+        return installed_ggml_tree == required_ggml_tree
     commit = _llama_ggml_commit(installed_tag)
     return commit is not None and commit == _llama_ggml_commit(required_tag)
 
@@ -373,7 +392,12 @@ def slim_pairing_for_artifact(
         return None
     llama_bin_dir, llama_tag, _profile = runtime
     requires_tag = artifact.get("requires_llama_tag")
-    if not llama_runtime_pairs(llama_tag, requires_tag):
+    if not llama_runtime_pairs(
+        llama_tag,
+        requires_tag,
+        installed_ggml_tree = installed_llama_ggml_tree(),
+        required_ggml_tree = artifact.get("requires_ggml_tree"),
+    ):
         log(
             f"slim_selection: {asset} skipped: installed llama tag {llama_tag!r} "
             f"does not pair with required {requires_tag!r}"
@@ -486,12 +510,26 @@ def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> s
     if runtime is None:
         return None
     installed_tag = runtime[1]
-    required_tags = {
-        artifact.get("requires_llama_tag")
+    installed_tree = installed_llama_ggml_tree()
+    # Normalise the tree: llama_runtime_pairs treats a non-string as absent, but
+    # an unhashable one (list/dict) would blow up the set first.
+    required_pairs = {
+        (
+            artifact.get("requires_llama_tag"),
+            artifact["requires_ggml_tree"]
+            if isinstance(artifact.get("requires_ggml_tree"), str)
+            else None,
+        )
         for artifact in os_compatible
         if isinstance(artifact.get("requires_llama_tag"), str)
     }
-    if required_tags and not any(llama_runtime_pairs(installed_tag, tag) for tag in required_tags):
+    required_tags = {tag for tag, _tree in required_pairs}
+    if required_tags and not any(
+        llama_runtime_pairs(
+            installed_tag, tag, installed_ggml_tree = installed_tree, required_ggml_tree = tree
+        )
+        for tag, tree in required_pairs
+    ):
         required_tag = sorted(required_tags)[0]
         return (
             f"slim bundle requires llama.cpp {required_tag}; installed llama.cpp is {installed_tag}"
@@ -844,7 +882,12 @@ def selection_from_artifact(
     # A slim selection carries its pairing so the install wiring and marker know
     # which llama runtime provides the ggml libraries.
     runtime = installed_llama_runtime()
-    if runtime is None or not llama_runtime_pairs(runtime[1], artifact.get("requires_llama_tag")):
+    if runtime is None or not llama_runtime_pairs(
+        runtime[1],
+        artifact.get("requires_llama_tag"),
+        installed_ggml_tree = installed_llama_ggml_tree(),
+        required_ggml_tree = artifact.get("requires_ggml_tree"),
+    ):
         raise PrebuiltFallback(
             "the paired llama.cpp runtime changed underneath the slim whisper selection"
         )

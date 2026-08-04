@@ -9,7 +9,7 @@ export const ptBR = {
     cancel: "Cancelar",
     close: "Fechar",
     delete: "Excluir",
-    done: "Concluído",
+    done: "Concluir",
     error: "Erro",
     export: "Exportar",
     help: "Ajuda",
@@ -25,7 +25,7 @@ export const ptBR = {
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
-    accountMenu: "Menu de conta {name}",
+    accountMenu: "Menu da conta de {name}",
     updateAvailable: "Atualização disponível",
     resize: {
       collapse: "Clique para recolher",
@@ -43,9 +43,9 @@ export const ptBR = {
       runOptions: "Opções de execução",
     },
     navigation: {
-      newChat: "Novo Chat",
-      returnToChat: "Retornar ao Chat",
-      returnToChats: "Retornar a {count} chats",
+      newChat: "Novo chat",
+      returnToChat: "Voltar ao chat",
+      returnToChats: "Voltar aos {count} chats",
       chatGenerating: "Gerando",
       compare: "Comparar",
       search: "Buscar",
@@ -58,9 +58,9 @@ export const ptBR = {
       noChatsYet: "Nenhum chat ainda",
       settings: "Configurações",
       api: "API",
-      lightMode: "Modo Claro",
-      darkMode: "Modo Escuro",
-      guidedTour: "Tour Guiado",
+      lightMode: "Modo claro",
+      darkMode: "Modo escuro",
+      guidedTour: "Tour guiado",
       help: "Ajuda",
       logOut: "Sair",
       shutdown: "Desligar",
@@ -162,12 +162,13 @@ export const ptBR = {
         sttUnload: "Descarregar",
         sttUnloading: "Descarregando…",
         microphoneLabel: "Microfone",
+        microphoneFallbackName: "Microfone {index}",
         microphoneDescription: "Usado para ditado",
         microphoneFallbackHint:
-          "Usado para ditado. Volta para o padrão do sistema se o mecanismo de fala do navegador não conseguir usar este dispositivo",
+          "Usado para ditado. Usa o dispositivo padrão do sistema se o mecanismo de fala do navegador não conseguir usar este dispositivo",
         microphoneGrantDescription:
           "Permita o acesso ao microfone para ver os nomes dos dispositivos",
-        allowMicrophone: "Permitir microfone",
+        allowMicrophone: "Permitir acesso ao microfone",
         micAccessBlocked:
           "O acesso ao microfone foi bloqueado. Permita o acesso ao microfone nesta página do Unsloth e tente novamente.",
         micAccessUnsupported:
@@ -186,6 +187,10 @@ export const ptBR = {
         manage: "Gerenciar",
         backToVoice: "Voltar para Voz",
         addEntry: "Adicionar entrada",
+        newEntryAria: "Nova entrada do dicionário",
+        entryPlaceholder: "Maria Silva",
+        entryAria: "Entrada do dicionário {index}",
+        removeEntryAria: "Remover entrada {index} do dicionário",
       },
       recents: {
         sectionTitle: "Histórico de ditados",
@@ -248,9 +253,10 @@ export const ptBR = {
         previewLabel: "Ouvir a voz",
         previewDescription: "Reproduz uma amostra curta",
         previewAction: "Ouvir",
+        previewFailed: "Não foi possível reproduzir a prévia de TTS",
         stopAction: "Parar",
         ttsLabel: "Conversão de texto em fala",
-        notSupported: "Não suportado neste navegador",
+        notSupported: "Este navegador não oferece suporte",
       },
     },
     general: {
@@ -263,6 +269,8 @@ export const ptBR = {
       tokenValidated: "Token validado",
       hideToken: "Ocultar token",
       showToken: "Mostrar token",
+      clearToken: "Limpar",
+      checkingToken: "Verificando token...",
       password: "Senha",
       passwordDescription: "Altere a senha desta conta do Unsloth.",
       passwordDialog: {
@@ -290,10 +298,10 @@ export const ptBR = {
       autoTitleNewChatsDescription:
         "Gera um título curto a partir da primeira mensagem.",
       helperLlm: {
-        sectionTitle: "LLM Auxiliar",
-        preloadOnStartup: "Pré-carregar LLM Auxiliar na inicialização",
+        sectionTitle: "LLM auxiliar",
+        preloadOnStartup: "Armazenar o LLM auxiliar em cache na inicialização",
         preloadOnStartupDescription:
-          "Baixa o modelo auxiliar do Assistente de IA em segundo plano ao iniciar. Desativado por padrão; o Assistente de IA ainda pode buscá-lo sob demanda.",
+          "Baixa o modelo auxiliar do AI Assist em segundo plano na inicialização. Desativado por padrão; o AI Assist ainda pode baixá-lo sob demanda.",
         disabledByEnv:
           "Desativado por UNSLOTH_HELPER_MODEL_DISABLE no ambiente de backend.",
         loadError: "Falha ao carregar as configurações do LLM Auxiliar.",
@@ -303,14 +311,14 @@ export const ptBR = {
         sectionTitle: "Troca automática de modelo (API OpenAI)",
         enable: "Trocar de modelo por requisição",
         enableDescription:
-          "Quando uma requisição compatível com OpenAI nomear um GGUF baixado diferente, carrega-o antes de responder. Desativado por padrão; nomes desconhecidos continuam usando o modelo carregado.",
+          "Carrega, antes de responder, um GGUF baixado indicado em uma requisição da API. Desativado por padrão.",
         idleUnload: "Descarregamento automático por inatividade",
         idleUnloadDescription:
-          "Descarrega o modelo após esta quantidade de segundos de inatividade para liberar VRAM; a próxima requisição o recarrega. 0 mantém o modelo carregado. Mínimo de 60 segundos.",
-        idleNeedsEnable:
-          "Ative Trocar de modelo por requisição para que um modelo descarregado seja recarregado no próximo uso.",
-        idleActiveViaEnv:
-          "O descarregamento automático por inatividade está ativo por meio da variável de ambiente UNSLOTH_MODEL_IDLE_TTL.",
+          "Libera a VRAM após esta quantidade de segundos de inatividade. 0 mantém o modelo carregado; o mínimo é 60.",
+        idleSecondsAriaLabel:
+          "Segundos até o descarregamento automático por inatividade",
+        idleNeedsEnable: "Primeiro, ative Trocar de modelo por requisição.",
+        idleActiveViaEnv: "Ativo por meio de UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Falha ao carregar as configurações de troca automática de modelo.",
         saveError: "Falha ao salvar as configurações de troca automática de modelo.",
         idleError: "Insira 0 para manter o modelo carregado, ou pelo menos 60 segundos.",
@@ -344,13 +352,13 @@ export const ptBR = {
         sectionTitle: "Notificações",
         showLlamaUpdates: "Notificações de atualização do llama.cpp",
         showLlamaUpdatesDescription:
-          "Notifica quando uma nova versão do llama.cpp estiver disponível. Desative se você apenas realiza treinos.",
+          "Notifica quando uma versão mais recente do llama.cpp está disponível para executar novos modelos. Desative se você só treina modelos.",
       },
       gettingStarted: "Primeiros passos",
-      startOnboarding: "Iniciar integração",
+      startOnboarding: "Iniciar configuração",
       startOnboardingDescription:
         "Reabre o assistente de configuração sem alterar sua conta.",
-      startOnboardingAction: "Iniciar integração",
+      startOnboardingAction: "Iniciar configuração",
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Limite de upload do dataset de treino",
@@ -411,19 +419,19 @@ export const ptBR = {
       avatarShape: "Formato da foto de perfil",
       avatarShapeCircle: "Círculo",
       avatarShapeRounded: "Arredondado",
-      greetingSloth: "Preguiça na saudação",
-      greetingSlothDescription: "Mostra a preguiça na saudação do chat.",
-      chooseSloth: "Ou escolha uma preguiça como foto de perfil",
+      greetingSloth: "Bicho-preguiça na saudação",
+      greetingSlothDescription: "Mostra o bicho-preguiça na saudação do chat.",
+      chooseSloth: "Ou escolha um bicho-preguiça",
       noPicture: "Sem foto de perfil",
       noneLabel: "Nenhuma",
       nameSaved: "Nome de perfil salvo",
-      namePersistErrorTitle: "Não foi possível persistir o nome de perfil",
+      namePersistErrorTitle: "Não foi possível salvar o nome do perfil",
       namePersistErrorDescription:
-        "Nome atualizado para esta sessão, mas pode não persistir após recarregar.",
+        "O nome foi atualizado nesta sessão, mas talvez não seja mantido após recarregar a página.",
       photoUpdated: "Foto de perfil atualizada",
-      photoPersistErrorTitle: "Não foi possível persistir a foto de perfil",
+      photoPersistErrorTitle: "Não foi possível salvar a foto do perfil",
       photoPersistErrorDescription:
-        "Foto atualizada para esta sessão, mas pode não persistir após recarregar.",
+        "A foto foi atualizada nesta sessão, mas talvez não seja mantida após recarregar a página.",
       photoUpdateErrorTitle: "Não foi possível atualizar a foto de perfil",
       imageUseError: "Não foi possível usar esta imagem.",
       uploadPhoto: "Enviar foto",
@@ -488,11 +496,11 @@ export const ptBR = {
     },
     appearance: {
       title: "Aparência",
-      description: "Como o Unsloth se parece neste dispositivo.",
+      description: "A aparência do Unsloth neste dispositivo.",
       theme: {
         title: "Tema",
         label: "Esquema de cores",
-        description: "Claro, escuro ou seguir o sistema.",
+        description: "Tema claro, escuro ou o mesmo do sistema.",
         system: "Sistema",
         light: "Claro",
         dark: "Escuro",
@@ -610,6 +618,13 @@ export const ptBR = {
       disableOverlay: "Desativar sobreposição",
       liveMonitor: {
         title: "Monitor ao vivo",
+        apiTitle: "Monitor da API",
+        summary: "Solicitações ativas, erros e uso de tokens",
+        status: "{active} ativas · {recent} recentes · {model}",
+        noModelLoaded: "nenhum modelo carregado",
+        autoOpen: "Mostrar o monitor flutuante automaticamente",
+        autoOpenDescription:
+          "Abre um pequeno painel quando chega tráfego da API.",
         cpu: "CPU",
         ram: "RAM",
         disk: "Disco",
@@ -620,7 +635,9 @@ export const ptBR = {
         noGpu: "Nenhuma GPU visível",
       },
       gpu: {
-        title: "Dispositivos GPU",
+        title: "Dispositivos de GPU",
+        ggufInference: "Inferência com GGUF",
+        unavailable: "indisponível",
         noGpu: "Nenhuma GPU visível detectada. Os recursos somente CPU aparecem acima.",
         unknownDevice: "GPU desconhecida",
         deviceWithIndex: "GPU {index}",
@@ -637,7 +654,8 @@ export const ptBR = {
         modelsFolder: "Pasta de modelos",
         modelsFolderKeywords:
           "modelos pasta diretorio diretório caminho local localizacao localização downloads baixar cache armazenamento disco unidade mover alterar models folder path hugging face",
-        modelsFolderDescription: "Onde os modelos baixados são armazenados.",
+        modelsFolderDescription:
+          "Onde os modelos baixados são armazenados. Altere o local para manter os modelos fora da unidade do sistema.",
         openAction: "Abrir",
         copyAction: "Copiar caminho",
         copied: "Caminho copiado",
@@ -661,7 +679,7 @@ export const ptBR = {
         python: "Python",
         torch: "Torch",
         transformers: "Transformers",
-        uptime: "Tempo ativo",
+        uptime: "Tempo de atividade",
         processMemory: "Memória do processo",
         notInstalled: "Não instalado",
         unknown: "Desconhecido",
@@ -743,7 +761,7 @@ export const ptBR = {
         serve: "Ativa ou desativa o servidor local automático.",
         launch: "Inicia o agente ou apenas exibe o comando e o ambiente.",
         persist:
-          "Mantém entre execuções os dados de agente gerenciados pelo Unsloth.",
+          "Mantém entre execuções o armazenamento de agentes gerenciado pelo Unsloth.",
         asSubagent:
           "Mantém o agente principal no modelo atual e registra o Unsloth como subagente local (Claude Code, Codex e OpenCode).",
         apiKey:
@@ -768,7 +786,29 @@ export const ptBR = {
     },
     chat: {
       title: "Chat",
-      description: "Gerencie o histórico de chat armazenado neste dispositivo.",
+      description: "Personalize o funcionamento do chat neste dispositivo.",
+      modelSelection: {
+        title: "Configurações de seleção de modelo",
+        expandQuantizations: "Expandir quantizações",
+        expandQuantizationsDescription:
+          "Ativado: os modelos GGUF no dispositivo exibem imediatamente suas quantizações. Desativado: clique em um modelo para ver suas quantizações.",
+        showAllQuantizations: "Mostrar todas as quantizações",
+        showAllQuantizationsDescription:
+          "Ativado: lista todas as quantizações no dispositivo, inclusive as que não foram baixadas. Desativado: mostra apenas as quantizações baixadas.",
+      },
+      menu: {
+        title: "Menu do chat",
+        description:
+          "Fixe itens no menu lateral do botão + do chat. Os demais ficam em “Mais”.",
+        chatWithFiles: "Chat com arquivos (RAG)",
+        mcp: "MCP",
+        savedPrompts: "Prompts salvos",
+        compareChat: "Comparar chats",
+        exportChat: "Exportar chat",
+      },
+      showResponseModel: "Mostrar o modelo da resposta",
+      showResponseModelDescription:
+        "Mostra os metadados do modelo nas respostas do assistente.",
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
@@ -776,7 +816,7 @@ export const ptBR = {
         title: "Canvas",
         collapseHtmlBlocks: "Recolher blocos HTML",
         collapseHtmlBlocksDescription:
-          "O modo Canvas recolhe o HTML completo automaticamente. Ative isso para também recolher documentos HTML delimitados quando o Canvas estiver desativado.",
+          "O modo Canvas recolhe automaticamente páginas HTML completas. Ative esta opção para também recolher documentos HTML em blocos de código delimitados quando o Canvas estiver desativado.",
         allowNetworkAccess: "Permitir acesso à rede no canvas",
         allowNetworkAccessDescription:
           "Permite que as pré-visualizações do canvas carreguem scripts, estilos, fontes, mídia e recursos de rede de CDNs. Mantenha desativado para pré-visualizações totalmente offline.",
@@ -789,7 +829,7 @@ export const ptBR = {
       exportingAction: "Exportando...",
       exportConversations: "Exportar Recentes e Projetos",
       exportConversationsDescription:
-        "Baixe os Recentes ou Recentes mais chats de projetos como JSONL bruto, CSV ou ShareGPT JSONL, combinados ou por chat.",
+        "Baixe os chats de Recentes ou de Recentes e Projetos como JSONL bruto, CSV ou JSONL do ShareGPT, em um arquivo combinado ou em arquivos separados por chat.",
       exportConversationsAction: "Exportar",
       exportScopeRecents: "Recentes",
       exportScopeAll: "Recentes + Projetos",
@@ -797,11 +837,11 @@ export const ptBR = {
       exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
-        "Importe um arquivo exportado em JSONL, NDJSON ou CSV para os Recentes.",
+        "Importe um arquivo exportado em JSONL, NDJSON ou CSV para Recentes.",
       importChatsAction: "Importar",
       importNoConversations: "Nenhuma conversa encontrada no arquivo.",
-      importedOneChat: "Importada 1 conversa para os Recentes.",
-      importedChatCount: "Importadas {count} conversas para os Recentes.",
+      importedOneChat: "1 conversa foi importada para Recentes.",
+      importedChatCount: "{count} conversas foram importadas para Recentes.",
       importFailed: "Falha na importação.",
       clearHistory: "Limpar histórico de chat",
       clearHistoryDescription: "Exclui o histórico de chat deste dispositivo.",
@@ -840,6 +880,8 @@ export const ptBR = {
     },
     data: {
       title: "Dados",
+      backToData: "Voltar para Dados",
+      exportFailed: "Não foi possível exportar os chats",
       description:
         "Gerencie o histórico de chats e os arquivos enviados que ficam armazenados neste dispositivo.",
       archivedChats: "Chats arquivados",
@@ -853,13 +895,13 @@ export const ptBR = {
       failedToExportArchivedChats: "Falha ao exportar os chats arquivados",
       archiveAllChats: "Arquivar todos os chats",
       archiveAllChatsDescription:
-        "Move para o arquivo todos os chats em Recentes e Projetos.",
+        "Arquiva todos os chats de Recentes e Projetos.",
       noChatsToArchive: "Nenhum chat para arquivar.",
       archiveAllAction: "Arquivar todos",
       archivingAction: "Arquivando...",
       archiveAllChatsTitle: "Arquivar todos os chats?",
       archiveAllChatsConfirmDescription:
-        "Move para o arquivo todos os chats deste dispositivo. Os chats arquivados continuam disponíveis e podem ser desarquivados a qualquer momento.",
+        "Arquiva todos os chats deste dispositivo. Os chats arquivados continuam disponíveis e podem ser desarquivados a qualquer momento.",
       archivedAllChats: "Todos os chats foram arquivados",
       archivedOneChat: "1 chat arquivado",
       archivedChatCount: "{count} chats arquivados",
@@ -900,14 +942,14 @@ export const ptBR = {
       createError: "Não foi possível criar o token de acesso.",
       revokeError: "Não foi possível revogar o token de acesso.",
       never: "Nunca",
-      tokenNamePlaceholder: "Nome do token (ex: produção)",
+      tokenNamePlaceholder: "Nome do token (ex.: produção)",
       newAccessTokenName: "Nome do novo token de acesso",
       createToken: "Criar token",
       creating: "Criando...",
       newTokenCreated: "Novo token de acesso criado",
       accessTokenCopied: "Token de acesso copiado",
       copyAccessToken: "Copiar token de acesso",
-      copyNow: "Copie agora - isto não será exibido novamente.",
+      copyNow: "Copie agora. O token não será exibido novamente.",
       usageExamples: "Exemplos de uso",
       usageTools: "Ferramentas",
       exampleCurlTools: "curl + ferramentas",
@@ -918,9 +960,9 @@ export const ptBR = {
       exampleJavaScriptAdvanced: "JavaScript + avançado",
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
-      secureHttps: "HTTPS Seguro",
+      secureHttps: "HTTPS seguro",
       secureHttpsHint:
-        "A porta 0.0.0.0 ainda está acessível globalmente. Para segurança total, inicie o Unsloth com --secure para expor apenas este link HTTPS.",
+        "O endereço 0.0.0.0 ainda está acessível globalmente. Para segurança total, inicie o Unsloth com --secure para expor apenas este link HTTPS.",
       copyTunnelUrl: "Copiar URL do túnel",
       copySnippet: "Copiar trecho de código",
       copy: "Copiar",
@@ -931,16 +973,11 @@ export const ptBR = {
         "Inicie um agente de código conectado a este servidor. Ele usa o modelo carregado; um servidor local gera uma chave de API automaticamente, um remoto a inclui no comando.",
       codingAgentsSwap: "Troque claude por codex, openclaw, opencode ou hermes.",
       codingAgentDetected: "Instalado nesta máquina",
-      codingAgentsDetectedHint: "Detectado nesta máquina: {agents}.",
+      codingAgentsDetectedHint: "Detectados nesta máquina: {agents}.",
       relativeNever: "nunca",
       relativeJustNow: "agora mesmo",
-      relativeHoursAgo: "há {count}h",
-      relativeDaysAgo: "há {count}d",
-      relativeMonthsAgo: "há {count} meses",
-      relativeYearsAgo: "há {count} anos",
       expired: "expirado",
       today: "hoje",
-      inDays: "em {count}d",
       created: "Criado {value}",
       used: "Usado {value}",
       expires: "Expira {value}",
@@ -958,14 +995,17 @@ export const ptBR = {
     about: {
       title: "Sobre",
       description:
-        "Documentação, notas de lançamento, feedback e informações da build.",
+        "Documentação, notas de lançamento, feedback e informações da compilação.",
       studioVersion: "Versão do Unsloth",
-      packageVersion: "Versão do Pacote",
+      packageVersion: "Versão do pacote",
+      desktopAppVersion: "Versão do aplicativo de desktop",
+      desktopAppVersionUnavailable: "Indisponível",
       llamaCppVersion: "Versão do llama.cpp",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Atualização",
       help: "Ajuda",
       documentation: "Documentação",
@@ -981,10 +1021,10 @@ export const ptBR = {
           "Código aberto sob a licença GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
         libraryLicense: "Apache-2.0",
-        libraryDescription: "Licenciado sob Apache 2.0.",
+        libraryDescription: "Licenciado sob a licença Apache 2.0.",
       },
       dangerZone: "Zona de perigo",
-      shutDownStudio: "Desligar Unsloth",
+      shutDownStudio: "Desligar o Unsloth",
       shutDownStudioDescription:
         "Interrompe o servidor Unsloth e encerra sua sessão.",
       shutDown: "Desligar",
@@ -1001,21 +1041,47 @@ export const ptBR = {
         installCommandUnix: "Comando de instalação para macOS/Linux",
         installCommandWindows: "Comando de instalação para Windows",
         localInstallDetected:
-          "Instalação local detectada. Atualize a partir do seu repositório original para evitar substituí-lo pelo PyPI.",
-        pullThenUpdate: "Puxe as últimas alterações (git pull) e depois execute o instalador local:",
+          "Instalação local detectada. Atualize a partir da cópia de trabalho original para evitar substituí-la por uma instalação do PyPI.",
+        pullThenUpdate:
+          "Obtenha as alterações mais recentes e depois execute o instalador local:",
         gitPullCommand: "comando git pull",
         localInstallerCommand: "comando do instalador local",
         sourceInstallDetected:
-          "Instalação do pacote por código-fonte ou VCS detectada. Reinstale a partir do caminho local original ou URL do Git.",
+          "Foi detectada uma instalação do pacote via código-fonte ou VCS. Reinstale a partir do caminho local original ou da URL do Git.",
         repoCheckoutFallback:
-          "Se você ainda tiver o repositório baixado, execute o instalador local a partir dele:",
+          "Se você ainda tiver a cópia local do repositório, execute o instalador local a partir dela:",
         restartAfterUpdate: "Reinicie o Unsloth após a atualização.",
         desktopManaged:
-          "O aplicativo de desktop mantém seu backend integrado atualizado e avisará quando uma nova versão estiver disponível.",
+          "O aplicativo de desktop verifica automaticamente se há novas versões. Você também pode verificar ou atualizar aqui a qualquer momento.",
+        desktopReady: "Atualizações do aplicativo de desktop",
+        desktopReadyDescription:
+          "Verifique se há uma versão mais recente do aplicativo de desktop.",
+        desktopChecking: "Verificando se há atualizações",
+        desktopCheckingDescription: "Isso costuma levar alguns segundos.",
+        desktopAvailable:
+          "A versão {version} do aplicativo de desktop está disponível",
+        desktopAvailableDescription:
+          "Atualize agora. O aplicativo de desktop será reiniciado quando a atualização terminar.",
+        desktopExternalServer:
+          "Execute `unsloth studio update` no terminal usado para iniciar o servidor.",
+        desktopManualInstall:
+          "Abra a página de lançamentos para instalar o pacote mais recente para Linux.",
+        desktopCheckFailed: "Não foi possível verificar se há atualizações",
+        desktopCheckFailedDescription:
+          "Verifique sua conexão e tente novamente.",
+        desktopCurrent: "O aplicativo de desktop está atualizado",
+        desktopCurrentDescription:
+          "O Unsloth continuará verificando automaticamente.",
+        checkForUpdates: "Verificar se há atualizações",
+        checkAgain: "Verificar novamente",
+        retryCheck: "Tentar novamente",
+        checking: "Verificando...",
+        updateNow: "Atualizar agora",
+        openReleasePage: "Abrir página de lançamentos",
         unknownInstall:
           "Não foi possível detectar como o Unsloth foi instalado. Para instalações via instalador ou PyPI, use os comandos acima.",
         localCheckout:
-          "Para instalações de repositório local, execute o instalador local a partir desse diretório:",
+          "Para instalações feitas a partir de uma cópia local do repositório, execute o instalador local nesse diretório:",
         docs: "Docs de instalação:",
         docsInstall: "Instalação",
         docsUpdating: "Atualização",
@@ -1081,7 +1147,7 @@ export const ptBR = {
       searching: "Buscando...",
       noModelsFound: "Nenhum modelo encontrado",
       needsVram: "Precisa de ~{vram}GB de VRAM (GPU: {gpu}GB)",
-      tightVram: "~{vram}GB de VRAM (limite na {gpu}GB)",
+      tightVram: "~{vram} GB de VRAM (quase no limite de {gpu} GB)",
       vramEstimate: "~{vram}GB de VRAM",
       method: "Método",
       methodTooltip:
@@ -1129,7 +1195,7 @@ export const ptBR = {
       upload: "Upload",
       uploadEvalFile: "Enviar arquivo de validação",
       evalDatasetDescription:
-        "Opcional. Se não for fornecido, uma pequena parte será dividida a partir dos dados de treinamento.",
+        "Opcional. Se não for fornecido, uma pequena parte dos dados de treinamento será separada para validação.",
       advanced: "Avançado",
       targetFormat: "Formato de Destino",
       targetFormatTooltip:
@@ -1272,9 +1338,9 @@ export const ptBR = {
         "Fração dos passos totais de treino entre as validações (0-1). Defina como 0 para desativar. Ex: 0.01 = valida a cada 1% dos passos.",
       seed: "Seed",
       seedTooltip: "Semente aleatória para reprodutibilidade.",
-      gradCheckpoint: "Grad Checkpoint",
+      gradCheckpoint: "Checkpoint de gradiente",
       gradCheckpointTooltip:
-        "Troca processamento por memória recalculando as ativações.",
+        "Reduz o uso de memória ao recalcular as ativações, em troca de maior custo computacional.",
       none: "Nenhum",
       standard: "Padrão",
       enablePacking: "Ativar empacotamento (packing)",
@@ -1313,7 +1379,8 @@ export const ptBR = {
       continueAction: "Continuar Treinamento",
       cancelAction: "Cancelar Treinamento",
       stopTitle: "Interromper Treinamento",
-      stopDescription: "Escolha como você deseja interromper a execução de treino atual.",
+      stopDescription:
+        "Escolha como interromper a execução de treino atual. Interromper e Salvar cria um checkpoint que poderá ser retomado mais tarde; Interromper não permite retomar o treino.",
       stopAction: "Interromper",
       stopping: "Interrompendo...",
       stopAndSave: "Interromper e Salvar",
@@ -1322,7 +1389,7 @@ export const ptBR = {
       milestone: "Marco",
       halfwayDone: "Metade concluída. O treinamento passou de 50%.",
       doneNextStep:
-        "Treinamento concluído. Próximo passo: comparar as saídas do modelo base vs fine-tuned.",
+        "Treinamento concluído. Próximo passo: compare as saídas do modelo base com as do modelo ajustado.",
     },
     history: {
       title: "Histórico",
@@ -1349,9 +1416,6 @@ export const ptBR = {
       steps: "Passos",
       lossTrendSparkline: "Minigráfico de tendência da loss",
       relativeJustNow: "agora mesmo",
-      relativeMinutesAgo: "há {count}m",
-      relativeHoursAgo: "há {count}h",
-      relativeDaysAgo: "há {count}d",
       status: {
         completed: "Concluído",
         stopped: "Interrompido",

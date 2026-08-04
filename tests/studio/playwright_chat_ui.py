@@ -1217,9 +1217,17 @@ with sync_playwright() as p:
                     return {
                         fontWeight: [...new Set(styles.map((style) => style.fontWeight))],
                         letterSpacing: [...new Set(styles.map((style) => style.letterSpacing))],
+                        // The tracking is authored in em, so it only means anything next to the
+                        // size it resolved against.
+                        fontSize: [...new Set(styles.map((style) => style.fontSize))],
                     };
                 };
                 return {
+                    // The scale the size tokens are multiplied by: index.css sets the 15px
+                    // product default, and the appearance store overrides it inline as
+                    // preference / 16 for any other size.
+                    uiFontScale: getComputedStyle(root)
+                        .getPropertyValue('--ui-font-scale').trim(),
                     actualRenderLinux: root.classList.contains('render-linux'),
                     isDesktopLinux: ua.includes('linux') && !ua.includes('android'),
                     isDark: root.classList.contains('dark'),
@@ -1234,17 +1242,24 @@ with sync_playwright() as p:
             }""",
         )
 
+    # text-ui-15p5 unscaled (index.css: calc(0.96875rem * var(--ui-font-scale, 1))).
+    _TEXT_UI_15P5_PX = 15.5
+
     def assert_chat_typography(label, typography):
         if typography.get("error"):
             fail(typography["error"])
         if typography["actualRenderLinux"] != typography["isDesktopLinux"]:
             fail(f"desktop Linux detection mismatch: {typography!r}")
         is_dark = typography["isDark"]
-        expected_spacing = "0.31px" if is_dark else "0.155px"
+        # Tracking is authored in em (thread.tsx tracking-[0.01em] / dark:tracking-[0.02em], and
+        # 0.023em for the lighter dark-mode instance on Linux), so assert the em and let the size
+        # come from the element. Pinning px assumed a 16px base and broke the moment the product
+        # default became 15px (--ui-font-scale in index.css), which any font-size preference does too.
+        expected_em = 0.02 if is_dark else 0.01
         if typography["isDesktopLinux"] and not typography["usesBaselineTypography"]:
             expected_weight = "350" if is_dark else "390"
             if is_dark:
-                expected_spacing = "0.3565px"
+                expected_em = 0.023
         else:
             expected_weight = "410"
         for role in ("assistant", "user"):
@@ -1254,10 +1269,36 @@ with sync_playwright() as p:
                     f"chat font weight {label}/{role}: expected {expected_weight}, "
                     f"got {actual['fontWeight']!r}"
                 )
-            if actual["letterSpacing"] != [expected_spacing]:
+            if len(actual["fontSize"]) != 1:
+                fail(f"chat font size {label}/{role}: not uniform, got {actual['fontSize']!r}")
+            font_size = float(actual["fontSize"][0].removesuffix("px"))
+            # Pin the token, not a range: one spanning every preference (12 to 20, so
+            # 11.625px to 19.375px) also admits the neighbouring tokens.
+            try:
+                ui_font_scale = float(typography.get("uiFontScale") or "1")
+            except ValueError:
+                ui_font_scale = None
+            if ui_font_scale is None:
+                fail(f"chat font size {label}/{role}: unreadable --ui-font-scale")
+            expected_size = _TEXT_UI_15P5_PX * ui_font_scale
+            if abs(font_size - expected_size) > 0.01:
                 fail(
-                    f"chat letter spacing {label}/{role}: expected {expected_spacing}, "
-                    f"got {actual['letterSpacing']!r}"
+                    f"chat font size {label}/{role}: expected text-ui-15p5, "
+                    f"{_TEXT_UI_15P5_PX}px * {ui_font_scale} = {expected_size:g}px, "
+                    f"got {font_size}px"
+                )
+            expected_spacing = expected_em * font_size
+            # float() raises on "normal", which is how zero tracking is reported.
+            spacings = [
+                0.0 if v.strip() == "normal" else float(v.removesuffix("px"))
+                for v in actual["letterSpacing"]
+            ]
+            # Sub-pixel tolerance only: the browser reports the exact product, so anything larger
+            # would stop the check from noticing a changed tracking value.
+            if len(spacings) != 1 or abs(spacings[0] - expected_spacing) > 0.005:
+                fail(
+                    f"chat letter spacing {label}/{role}: expected {expected_em}em of "
+                    f"{font_size}px = {expected_spacing:g}px, got {actual['letterSpacing']!r}"
                 )
 
     # ─────────────────────────────────────────────────────
@@ -1415,6 +1456,20 @@ with sync_playwright() as p:
             if c.count() > 0:
                 btn = c
                 break
+        if btn is None:
+            # Unpinned rows (Video, Recipes, Export by default) live in the sidebar's "More" flyout, which opens on hover, so hover
+            # first: a click would toggle it back shut. Click is the fallback for a no-hover environment.
+            more_btn = page.get_by_role("button", name = re.compile(r"^\s*More\s*$", re.I)).first
+            if more_btn.count() > 0:
+                more_btn.hover()
+                page.wait_for_timeout(500)
+                item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
+                if item.count() == 0:
+                    more_btn.click(force = True)
+                    page.wait_for_timeout(500)
+                    item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
+                if item.count() > 0:
+                    btn = item
         if btn is None:
             soft_fail(f"nav '{label}' not found")
             return False

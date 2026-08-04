@@ -410,10 +410,14 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
     # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants.
-    assert (
-        "listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)"
-        in picker
-    )
+    # #7767 added the expander's abort signal to this call, so the options are an object
+    # literal now rather than the bare localSource ternary.
+    call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
+    assert call, "the expander must still list variants for the row's own repo"
+    assert "...(localSource ? { localPath: localSource } : {})" in call.group(
+        0
+    ), "the expander drops the row's own cache directory"
+    assert "preferLocalCache" not in call.group(0)
     assert "cachePath={c.cache_path}" in picker
 
     # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.
@@ -528,11 +532,19 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     assert auto_load.count("preferLocalCache: true") >= 2
     assert auto_load.count("localPath: repo.cache_path") >= 2
 
+    # #7767 moved the query building out of chat-api into its own module, so the listing
+    # imports without the auth barrel. Both halves are pinned: the caller must still hand
+    # its options to the builder, and the builder must still forward them.
     chat_api = _read("features/chat/api/chat-api.ts")
     variants_fn = chat_api.split("export async function listGgufVariants", 1)[1]
     variants_fn = variants_fn.split("export interface KvCacheEstimate", 1)[0]
-    assert 'params.set("prefer_local_cache", "true")' in variants_fn
-    assert 'params.set("local_path", localPath)' in variants_fn
+    assert "ggufVariantsQuery(repoId, options, isHuggingFaceOffline())" in variants_fn
+
+    query_src = _read("features/chat/api/gguf-variants-request.ts")
+    query_fn = query_src.split("export function ggufVariantsQuery", 1)[1]
+    query_fn = query_fn.split("\nexport ", 1)[0]
+    assert 'params.set("prefer_local_cache", "true")' in query_fn
+    assert 'params.set("local_path", localPath)' in query_fn
 
 
 def test_cache_location_update_invalidates_frontend_inventory():
@@ -980,6 +992,281 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
     # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src
+
+
+def test_variant_expander_forwards_the_gguf_filename():
+    """A quant pick must carry the exact .gguf filename. The diffusion pages load
+    by filename and cannot map a quant label back to one, so without it every hub
+    GGUF pick on Images/Video fell through to a silent return and nothing loaded."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    handler = re.search(r"const handleVariantClick = useCallback\(.*?\n  \);", src, re.S)
+    assert handler, "handleVariantClick not found"
+    assert "ggufFilename: filename," in handler.group(0)
+    # The call site must pass it through in the handler's argument order. Matched structurally, since prettier wraps the call once it grows.
+    call = re.search(r"handleVariantClick\(([^)]*)\)", src)
+    assert call, "handleVariantClick call site not found"
+    args = [a.strip() for a in call.group(1).split(",") if a.strip()]
+    assert args[:2] == ["v.quant", "v.filename"], args
+
+
+def test_a_routed_local_single_file_pick_keeps_its_load_kind():
+    """A pick routed from the chat picker arrives as ?model=&quant= with no picker metadata,
+    so a bare local .gguf / .safetensors has to be recognised from the path. Loading one as a
+    pipeline evicts the resident model and then fails on the missing model_index.json, because
+    an explicit model_kind wins over the backend's filename sniffing."""
+    helper = _read("lib/diffusion-route-pick.ts")
+    assert '"gguf"' in helper and '"single_file"' in helper
+    assert 'lower.endsWith(".gguf")' in helper
+    assert 'lower.endsWith(".safetensors")' in helper
+    # A repo id (no recognised extension) still loads as a pipeline, as before.
+    assert 'kind: "pipeline"' in helper
+
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        assert "diffusionRoutePick(" in src, f"{rel}: route pick not derived"
+        # And the derived pick is what gets loaded, not the raw search params.
+        assert re.search(r"loadOrStage\(\s*pick\.repoId,\s*pick\.opts", src), rel
+
+
+def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
+    """The chat picker can only forward a GGUF filename (ggufFilename is GGUF-specific), so a
+    curated single-file artifact -- an LTX-2.3 checkpoint, an FP8 transformer -- arrives with no
+    quant. Classifying it by shape alone made it a pipeline load, which calls from_pretrained on a
+    repo that has no model_index.json. The catalog spec the page's own picker consults has to win."""
+    helper = _read("lib/diffusion-route-pick.ts")
+    assert re.search(r"spec\?:\s*\{\s*kind:", helper), "the helper takes no catalog spec"
+    assert (
+        "if (spec) return { repoId: model, opts: { kind: spec.kind, filename: spec.filename } };"
+        in helper
+    )
+    for rel, catalog in (
+        ("features/images/images-page.tsx", "IMAGE_CATALOG"),
+        ("features/video/video-page.tsx", "VIDEO_CATALOG"),
+    ):
+        src = _read(rel)
+        call = re.search(
+            r"diffusionRoutePick\(\s*wanted,\s*routeSearch\.quant,\s*(.*?),?\s*\);", src, re.S
+        )
+        assert call, f"{rel}: the routed pick passes no spec"
+        assert f"loadSpecFor(wanted, {catalog})" in call.group(1), rel
+
+
+def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
+    """int8/fp8 builds take adapters only at load time. Switching artifact inside one family
+    keeps the selection (same family, no clear) while the load did not bake it, so Generate
+    would 400 with the picker still showing the adapter as active."""
+    src = _read("features/images/images-page.tsx")
+    assert "bakedLorasOnLoad.current = bakeLoras.length > 0;" in src
+    guard = re.search(
+        r"if \(!loraCapable \|\| checkedBuildForBake\.current === residentBuildKey\) return;.*?\n  \}, \[",
+        src,
+        re.S,
+    )
+    assert guard, "the bake-only check is missing"
+    body = guard.group(0)
+    assert '"int8"' in body and '"fp8"' in body
+    assert "bakedLorasOnLoad.current" in body, "a baked selection must be kept"
+    assert "setLoras([])" in body and "toast.info(" in body, "cleared without telling the user"
+
+
+def test_diffusion_pages_never_drop_a_gguf_pick_silently():
+    """The fallback branch splits a local path; a repo pick reaching it has no
+    filename. It must say so instead of returning with no request and no toast."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        branch = re.search(
+            r'if \(!filename\.toLowerCase\(\)\.endsWith\("\.gguf"\)\) \{.*?\}', src, re.S
+        )
+        assert branch, f"{rel}: gguf extension guard not found"
+        assert "toast.error(" in branch.group(0), f"{rel}: guard returns silently"
+
+
+def test_diffusion_pages_stage_downloads_through_the_manager():
+    """Images/Video must not download inside the load: an undownloaded hub pick goes to
+    the Hub download manager first, so it shares the panel, progress, cancel/resume,
+    disk preflight and manifest verification with every other model."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        assert "useStagedDownload" in src, f"{rel}: not wired to the download manager"
+        # The plan carries the loader's own file scope, so nothing extra is pulled.
+        assert "DownloadPlan(" in src, f"{rel}: does not fetch a download plan"
+        stage_fn = re.search(r"const loadOrStage = useCallback\(.*?\n  \);", src, re.S)
+        assert stage_fn, f"{rel}: loadOrStage not found"
+        body = stage_fn.group(0)
+        # Already-downloaded (and local) picks must skip staging and load straight away.
+        assert "isDownloaded !== false" in body, f"{rel}: cached picks would re-stage"
+        # A missing plan must still load rather than dead-end.
+        assert "catch" in body, f"{rel}: no fallback when the plan is unavailable"
+
+
+def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
+    """Images and Video stay mounted behind the router, and a load evicts whoever holds the
+    GPU. A multi-GB staged download finishing while the user is on another page must not take
+    the model out from under them; the pick waits for its page to be visible again."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        ready = re.search(r"onReady: \(\) => \{.*?\n    \},", src, re.S)
+        assert ready, f"{rel}: staged-download onReady not found"
+        assert "if (!active)" in ready.group(0), f"{rel}: a hidden page still takes the GPU"
+        # Deferred, not dropped: something has to fire the held pick when the page returns.
+        assert "stagedLoadDeferred" in ready.group(0), f"{rel}: the pick is discarded"
+        flush = re.search(
+            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[active\]\);",
+            src,
+            re.S,
+        )
+        assert flush, f"{rel}: nothing flushes the deferred load when the page is shown"
+        assert "handleLoadRef.current(" in flush.group(0), f"{rel}: deferred load never runs"
+
+
+def test_staged_downloads_always_scope_their_files():
+    """Every staged entry must go out as a scoped job carrying its file list, GGUF
+    checkpoints included. A plain snapshot job drops *.gguf via the Hub's ignore list, so
+    it would finish instantly having fetched everything except the weights and leave the
+    repo on device unloadable."""
+    src = _read("features/hub/download-manager/use-staged-download.ts")
+    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", src, re.S)
+    assert start, "requestStart call not found"
+    body = start.group(0)
+    # Unconditional: no branch may send a null scope or omit the files.
+    assert "scopeId," in body and "files: current.files," in body
+    assert "? null" not in body and "? undefined" not in body
+    assert "const activeVariant = current ? scopedVariant(scopeId) : null;" in src
+
+
+def test_local_model_sections_respect_the_task_filter():
+    """LM Studio / ./models / custom-folder rows must honour the picker's task filter.
+    The backend tags every local model with a task for exactly this; without the gate the
+    Images picker listed chat GGUFs (which 400 on a diffusion load) and buried the
+    diffusion models the page can actually run."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    for memo in ("sortedLmStudio", "sortedLocalDir", "sortedCustomFolderModels"):
+        block = re.search(rf"const {memo} = useMemo\(.*?\n  \);", src, re.S)
+        assert block, f"{memo} not found"
+        assert "passesTaskGate(m.task" in block.group(0), f"{memo} does not apply the task gate"
+
+
+def test_chat_picker_routes_diffusion_picks_to_their_page():
+    """Chat cannot load a diffusion model. Rather than hiding an on-device one or letting
+    it 400, the unfiltered picker routes the pick to the Images/Video page, which loads it."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    gate = re.search(r"function passesTaskGate\(.*?\n\}", src, re.S)
+    assert gate, "passesTaskGate not found"
+    # The chat branch no longer drops the generation tasks outright.
+    assert "UNSUPPORTED_DIFFUSION_TASK" in gate.group(0)
+    wrapper = re.search(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
+    assert wrapper, "the routing wrapper around onSelect is missing"
+    body = wrapper.group(0)
+    assert "diffusionPageForTask" in body and "navigateToPage" in body
+    # Task-scoped pickers (already on those pages) must select normally.
+    assert "if (!task)" in body
+
+
+def test_staged_download_callbacks_only_answer_their_own_variant():
+    """subscribeJobListeners is per repo, not per job, so a staged entry hears every job on
+    that repo (the Models tab fetching a chat quant of the same repo, say). Each callback
+    carries the variant it fired for: without comparing it, a sibling job's completion advanced
+    the staged queue and started a load whose scoped files were still downloading, and its
+    failure wiped a queue that was still running."""
+    src = _read("features/hub/download-manager/use-staged-download.ts")
+    # The comparison lives in the shared isOurs() guard the three callbacks run (which also binds them to the started file set).
+    assert "(variant ?? null) === activeVariant &&" in src
+    for callback in ("onComplete", "onError", "onCancelled"):
+        handler = re.search(rf"{callback}: \(variant\) => \{{\n(.*?)\n    \}},", src, re.S)
+        assert handler, f"{callback} does not take the variant"
+        assert "isOurs(variant)" in handler.group(1), callback
+
+
+def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
+    """Each gallery record's src is a blob holding the whole MP4 until the page closes, so
+    fetching a full page of them up front pinned hundreds of MB (gigabytes across "load more"
+    pages) for cards the user may never scroll to. Fetch on visibility instead, and always
+    fetch the selected clip, since that is the one the preview player plays."""
+    src = _read("features/video/video-page.tsx")
+    assert "new IntersectionObserver(" in src
+    assert "ref={stripRef}" in src and "data-clip-id={video.id}" in src
+    assert 'root.querySelectorAll("[data-clip-id]")' in src
+    # rootMargin applies to the root box only, so the strip (the clipping scroller) must BE the root or the prefetch margin never reaches a clipped card.
+    assert '{ root, rootMargin: "0px 600px" }' in src
+    # The only surviving whole-page fetches are the no-IntersectionObserver fallbacks.
+    eager = list(re.finditer(r"page\.videos\.forEach\(\(video\) => void ensureSrc\(video\)\)", src))
+    assert eager, "the jsdom/old-webview fallback fetch is missing"
+    for match in eager:
+        assert (
+            'typeof IntersectionObserver === "undefined"'
+            in src[max(0, match.start() - 260) : match.start()]
+        )
+    assert re.search(
+        r"if \(!selected\) return;\s*\n\s*void \(async \(\) => \{\s*\n\s*await ensureSrc\(selected\);",
+        src,
+    )
+
+
+def test_on_device_rows_carry_the_task_the_pickers_filter_on():
+    """The picker's On Device rows come from the /api/hub inventory, not the models API, and the
+    task-scoped pickers drop every row whose task is unset. Without the task threaded through the
+    hub inventory and its adapter, the Images and Video pickers listed nothing on device and the
+    chat picker never routed a diffusion pick, since diffusionTaskById reads the same field."""
+    api = _read("features/hub/inventory/api.ts")
+    assert api.count("task?: string | null;") >= 3, "the hub row response types carry no task"
+    rows = _read("features/hub/inventory/types.ts")
+    assert rows.count("task?: string | null;") >= 2, "the inventory row types carry no task"
+    vm = _read("features/hub/inventory/view-models.ts")
+    assert "task: row.task ?? null," in vm and "task: model.task ?? null," in vm
+    conv = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
+    assert conv.count("task: row.task ?? null,") == 3, "a picker converter drops the task"
+    # A generation-task row is not a chat row, so the chat-only guard must not hide it from the pickers that can load it.
+    assert "row.capabilities.canChat || studioPageForTask(row.task) !== undefined" in conv
+
+
+def test_local_diffusion_routing_is_keyed_by_the_id_the_row_selects():
+    """A local row's click passes m.id (a filesystem load id), while m.model_id is its HF-style
+    name. Keying the routing map on one alone let the lookup miss, so the pick fell through to the
+    chat loader instead of navigating to Images or Video."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    block = re.search(r"const diffusionTaskById = useMemo\(.*?\n  \}, \[", src, re.S)
+    assert block, "diffusionTaskById not found"
+    body = block.group(0)
+    assert "put(m.id, m.task);" in body and "put(m.model_id, m.task);" in body
+
+
+def test_a_staged_download_that_never_starts_clears_the_queue():
+    """requestStart can answer "error" (network failure, rejected scoped request, worker refused).
+    Nothing completes after that, so leaving the head in place stranded the pick: the effect never
+    re-ran and onReady never fired."""
+    src = _read("features/hub/download-manager/use-staged-download.ts")
+    assert 'if (outcome === "error") {' in src
+    branch = src[src.index('if (outcome === "error") {') :][:400]
+    assert "setQueue(null)" in branch
+
+
+def test_staged_download_callbacks_are_bound_to_the_started_file_set():
+    """Every scoped pick in a repo shares the "@diffusion" variant, so the variant alone cannot
+    tell two file sets in that repo apart: restaging while the first job finishes let its
+    completion pass for the new pick and load a checkpoint that had not downloaded."""
+    src = _read("features/hub/download-manager/use-staged-download.ts")
+    assert "const inFlight = useRef<{ key: string; generation: number } | null>(null);" in src
+    assert "inFlight.current.key === entryKey(current)" in src
+    assert "inFlight.current.generation === generation.current" in src
+    # A fresh plan invalidates the previous job's callbacks.
+    stage = re.search(r"const stage = useCallback\(.*?\}, \[\]\);", src, re.S)
+    assert stage and "generation.current += 1;" in stage.group(0)
+    for callback in ("onComplete", "onError", "onCancelled"):
+        handler = re.search(rf"{callback}: \(variant\) => \{{\n(.*?)\n    \}},", src, re.S)
+        assert handler and "isOurs(variant)" in handler.group(1), callback
+
+
+def test_a_lost_generate_post_must_prove_it_reached_the_backend():
+    """A rejected fetch does not say whether the POST landed. Treating an immediately idle progress
+    read as success made a submission that never reached the server look like a finished image."""
+    src = _read("features/images/images-page.tsx")
+    fn = src[src.index("async function settleLostGeneration") :]
+    fn = fn[: fn.index("\n}\n")]
+    assert "knownIds" in fn and "sawActive" in fn
+    assert "!knownIds.has(image.id)" in fn
+    assert "did not reach the server" in fn
+    # And the caller snapshots the ids BEFORE the POST.
+    assert "new Set(galleryCache.images.map((image) => image.id))" in src
 
 
 def test_parallel_slots_setting_wired_end_to_end():
