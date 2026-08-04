@@ -120,9 +120,7 @@ def _accepts_kwarg(func, name: str) -> bool:
         params = inspect.signature(func).parameters
     except (TypeError, ValueError):
         return False
-    return name in params or any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-    )
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 # HFLM's device_list gained f"xpu:{i}" in 0.4.10 and f"hpu:{i}" only in
@@ -273,10 +271,7 @@ def _load_task_spec(
 
 
 def _sibling_task_file(
-    directory: Path,
-    group_file: Path,
-    child: str,
-    pattern: str,
+    directory: Path, group_file: Path, child: str, pattern: str
 ) -> Optional[Path]:
     # rglob: lm-eval indexes include paths recursively, so a child yaml in a
     # subdirectory shadows just the same
