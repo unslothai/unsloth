@@ -3465,6 +3465,34 @@ def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp
     assert len(calls) == 1
 
 
+def test_the_plan_reads_pydantic_lora_specs_as_the_load_reads_tuples(fake_runtime, monkeypatch):
+    # /images/load converts to (id, weight) tuples but /images/download-plan passes the LoraSpec
+    # models through, and unpacking a pydantic model yields its (field, value) pairs, so a plain
+    # (_lid, w) unpack binds w to ("weight", 0.0) and reads a disabled adapter as an active bake.
+    from core.inference import diffusion as dmod
+    from models.inference import LoraSpec
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    fam = detect_family("unsloth/Z-Image-GGUF")
+    consulted: list = []
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: consulted.append(kw) or types.SimpleNamespace(prequant = True),
+    )
+    _stub_hosted_prequant(monkeypatch, cached = False)
+
+    assert backend._dense_quant_prefetch_needed(
+        fam, {"loras": [LoraSpec(id = "adapter", weight = 0)]}
+    ) is False
+    assert consulted == []  # declined on the cache verdict, never sized as a bake
+
+    # A weighted spec is still a bake, so the normalisation did not disable the candidate path.
+    backend._dense_quant_prefetch_needed(fam, {"loras": [LoraSpec(id = "adapter", weight = 0.8)]})
+    assert consulted != []
+
+
 def test_the_plan_reads_zero_weight_loras_exactly_as_the_load_does(fake_runtime, monkeypatch):
     # The plan and the load must agree on what a bake is. Gating the prefetch on the raw list while
     # load_pipeline gates on active weights stages the base transformer/ shards for a load that

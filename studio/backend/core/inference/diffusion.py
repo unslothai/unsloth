@@ -654,6 +654,32 @@ def _install_gguf_prefix_strip(transformer_cls: Any, logger: Any) -> None:
         logger.warning("diffusion.gguf: prefix-strip shim not installed: %s", exc)
 
 
+_NO_WEIGHT = object()
+
+
+def _has_active_lora(loras: Any) -> bool:
+    """True when any adapter would actually be baked, for either shape the callers pass.
+
+    Weight 0 means disabled everywhere else in this file, but the two entry points disagree on
+    shape: /images/load hands over ``(id, weight)`` tuples while /images/download-plan passes the
+    ``LoraSpec`` models through untouched. Unpacking a pydantic model yields its ``(field, value)``
+    pairs, so ``(_lid, w)`` would bind ``w`` to ``("weight", 0.0)`` and read a disabled adapter as
+    active. Reading the attribute first and only then falling back to unpacking covers both."""
+    for entry in loras or ():
+        weight = getattr(entry, "weight", _NO_WEIGHT)
+        if weight is _NO_WEIGHT:
+            try:
+                _lid, weight = entry
+            except (TypeError, ValueError):  # an unrecognised shape is not a disabled adapter
+                return True
+        try:
+            if float(weight) != 0:
+                return True
+        except (TypeError, ValueError):  # likewise: an unreadable weight must not skip the bake
+            return True
+    return False
+
+
 def _uncached_prequant_repo(
     fam: Optional[DiffusionFamily],
     target: Any,
@@ -790,7 +816,7 @@ class DiffusionBackend:
                 auto
                 # Active weights, as load_pipeline reads them: an all-zero list is not a bake, and
                 # disagreeing here stages the base transformer/ shards for a load that runs the GGUF.
-                and not any(w != 0 for (_lid, w) in (kwargs.get("loras") or ()))
+                and not _has_active_lora(kwargs.get("loras"))
                 and _uncached_prequant_repo(
                     fam,
                     target,
@@ -1621,7 +1647,7 @@ class DiffusionBackend:
                 # An all-zero-weight list is not a bake: LoraSpec and every sibling check read
                 # weight 0 as disabled, so plain truthiness here would skip the decline and fetch
                 # the dense companion for a request that applies no adapter at all.
-                baking_loras = any(w != 0 for (_lid, w) in (loras or ()))
+                baking_loras = _has_active_lora(loras)
                 if kind == "gguf" and transformer_quant_auto and not baking_loras:
                     uncached_prequant = _uncached_prequant_repo(
                         fam,
