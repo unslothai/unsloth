@@ -198,6 +198,9 @@ export function createHubTransport(
   const backend = deps.backend ?? defaultBackend;
   const proxyFirst = deps.proxyFirst ?? defaultProxyFirst;
   let useProxy = false;
+  // Held for the transport's proxy lifetime: later pages have no failure of
+  // their own, and the direct one was deliberately never recorded.
+  let savedDirectFailure: HubFailure | undefined;
 
   // A page the backend served proves the Hub's content is reachable even though
   // this browser could not fetch it. fetchWithTimeout has already recorded the
@@ -210,7 +213,20 @@ export function createHubTransport(
     directFailure?: HubFailure,
   ): Promise<Response> => {
     const req = toProxyRequest(raw, resource, init);
-    const response = await backend(req.url, req.init);
+    let response: Response;
+    try {
+      response = await backend(req.url, req.init);
+    } catch (error) {
+      // A rejection leaves the flag stale, which would keep reporting the Hub
+      // available off a proxy that is gone. Once affinity is on this is the
+      // only path a later page takes, so the diagnosis is recorded here too.
+      setHubProxyServing(false);
+      if (directFailure && !wasAborted(init, error)) {
+        const origin = hubUrlOf(raw)?.origin ?? DEFAULT_HUB_ENDPOINT;
+        markRemoteNetworkOffline(origin, undefined, directFailure);
+      }
+      throw error;
+    }
     // Only that the backend can serve us. The origin's own state is left alone
     // so the direct clients stay suppressed instead of failing and re-marking.
     setHubProxyServing(response.ok);
@@ -231,7 +247,7 @@ export function createHubTransport(
     // The backend hands back a next-page link pointing at itself, so a proxy
     // URL here means the SDK is already paginating through the fallback.
     if (isProxyUrl(raw)) {
-      return viaBackend(raw, init);
+      return viaBackend(raw, init, savedDirectFailure);
     }
 
     if (!isListingUrl(raw, resource)) {
@@ -245,7 +261,7 @@ export function createHubTransport(
     }
 
     if (useProxy || proxyFirst()) {
-      return viaBackend(raw, init);
+      return viaBackend(raw, init, savedDirectFailure);
     }
 
     try {
@@ -257,6 +273,7 @@ export function createHubTransport(
       // Aborts and HTTP statuses are excluded above: the browser genuinely
       // could not make the request, but the server may still manage it.
       useProxy = true;
+      savedDirectFailure = error.failure;
       try {
         return await viaBackend(raw, init, error.failure);
       } catch (proxyError) {

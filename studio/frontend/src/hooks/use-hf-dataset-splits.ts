@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useState } from "react";
+import { hubProxyFirst } from "@/features/hub/lib/hub-endpoint";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -101,6 +102,9 @@ export function useHfDatasetSplits(
 
   const fetchSplits = useCallback(
     async (dataset: string, signal: AbortSignal) => {
+      // Hardcoded public service: with a mirror configured this would send the
+      // dataset id and the mirror token to the wrong host.
+      if (hubProxyFirst()) return [];
       const url = `${HF_SPLITS_API}?dataset=${encodeURIComponent(dataset)}`;
       const headers: Record<string, string> = {};
       if (accessToken) {

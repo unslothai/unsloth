@@ -491,3 +491,42 @@ test("a caller abort during the fallback does not start a backoff", async () => 
     "an abort is not evidence that both routes are unavailable",
   );
 });
+
+test("a rejecting backend clears proxy availability instead of going stale", async () => {
+  markRemoteNetworkOnline();
+  let fail = false;
+  const transport = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    backend: async () => {
+      if (fail) throw new Error("studio server restarted");
+      return new Response("[]", { status: 200 });
+    },
+  });
+  await transport(HF_URL, {});
+  assert.equal(getHubPhase(HF_ORIGIN), "available");
+
+  fail = true;
+  await assert.rejects(transport(HF_URL, {}));
+  assert.notEqual(
+    getHubPhase(HF_ORIGIN),
+    "available",
+    "a stale proxy flag would keep reporting a Hub served by a proxy that is gone",
+  );
+});
+
+test("a later proxied page still carries the original direct failure", async () => {
+  markRemoteNetworkOnline();
+  let ok = true;
+  const transport = createHubTransport("models", {
+    direct: failWith("csp-blocked"),
+    backend: async () =>
+      ok
+        ? new Response("[]", { status: 200 })
+        : new Response("bad gateway", { status: 502 }),
+  });
+  await transport(HF_URL, {});
+  ok = false;
+  // Page two: no failure of its own, and the direct one was never recorded.
+  await transport("/api/hub/discovery/models?search=gemma&cursor=x", {});
+  assert.equal(getLastHubFailure(HF_ORIGIN)?.kind, "csp-blocked");
+});
