@@ -3032,6 +3032,40 @@ class TestDetectWindowsGfxArch:
                 result = stack_mod._detect_windows_gfx_arch()
         assert result == "gfx1036"
 
+    def test_unsupported_discrete_does_not_depose_a_supported_igpu(self, monkeypatch):
+        # A supported APU next to a discrete card AMD ships no Windows wheels
+        # for (gfx1010 is absent from _GFX_TO_AMD_INDEX_ARCH). Preferring the
+        # dGPU purely for being discrete resolves to no index and falls back to
+        # CPU, which is worse than the shadowing this preference undoes.
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        assert stack_mod._windows_rocm_index_url("gfx1010") is None
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1010\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1036"
+        assert stack_mod._windows_rocm_index_url(result) is not None
+
+    def test_unsupported_igpu_still_yields_to_the_discrete_card(self, monkeypatch):
+        # Mirror case: when neither pick has wheels the swap costs nothing, so
+        # the discrete card still wins and the guard is not over-tightened.
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        assert stack_mod._windows_rocm_index_url("gfx1013") is None
+        assert stack_mod._windows_rocm_index_url("gfx1010") is None
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1013\ngcnArchName : gfx1010\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1010"
+
     def test_cuda_visible_devices_also_pins_the_igpu(self, monkeypatch):
         # HIP honours CUDA_VISIBLE_DEVICES with the same semantics as its own
         # masks (cf. _pick_rocm_gfx_target in studio/install_llama_prebuilt.py),

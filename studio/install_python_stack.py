@@ -724,18 +724,26 @@ def _detect_windows_gfx_arch() -> str | None:
         # enumeration order is the only thing that put the APU first, and the
         # user may still want a different device.
         if _pick in _SHADOWING_INTEGRATED_GFX:
+            _pick_has_wheels = _windows_rocm_index_url(_pick) is not None
             for _other in tokens:
-                if _other not in _SHADOWING_INTEGRATED_GFX:
-                    print(
-                        f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
-                        f"installing for the discrete {_other} instead of the "
-                        f"integrated {_pick}."
-                    )
-                    print(
-                        f"   Set HIP_VISIBLE_DEVICES to the GPU index you want "
-                        f"(then rerun) to install for a different device."
-                    )
-                    return _other
+                if _other in _SHADOWING_INTEGRATED_GFX:
+                    continue
+                # Deposing a supported APU for a discrete card AMD ships no
+                # Windows wheels for (e.g. gfx1036 + an older gfx1010) resolves
+                # to no index at all and drops the host to CPU -- strictly worse
+                # than the shadowing this preference exists to undo.
+                if _pick_has_wheels and _windows_rocm_index_url(_other) is None:
+                    continue
+                print(
+                    f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
+                    f"installing for the discrete {_other} instead of the "
+                    f"integrated {_pick}."
+                )
+                print(
+                    f"   Set HIP_VISIBLE_DEVICES to the GPU index you want "
+                    f"(then rerun) to install for a different device."
+                )
+                return _other
         print(
             f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
             f"installing for {_pick}. Set HIP_VISIBLE_DEVICES to the GPU index "
