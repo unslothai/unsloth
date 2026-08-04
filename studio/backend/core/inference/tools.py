@@ -6575,6 +6575,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
+        # A GUI backend opens a native window and blocks plt.show() until closed.
+        "MPLBACKEND": "Agg",
         # sitecustomize shim: remaps ChatGPT code-interpreter paths (/mnt/data
         # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
         "PYTHONPATH": _SANDBOX_SITE_DIR,
@@ -6779,6 +6781,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     for var in _BYPASS_ENV_WINDOWS_PROFILE_VARS:
         if var in os.environ:
             env[var] = workdir
+    env.setdefault("MPLBACKEND", "Agg")
     return env
 
 
