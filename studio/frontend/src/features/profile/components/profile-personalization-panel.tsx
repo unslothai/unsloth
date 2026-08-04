@@ -5,20 +5,35 @@ import { publicAssetUrl } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { getAuthToken } from "@/features/auth";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
-import { Camera01Icon } from "@hugeicons/core-free-icons";
+import {
+  Delete02Icon,
+  Edit03Icon,
+  Image01Icon,
+  Upload01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SLOTH_AVATARS } from "../sloth-avatars";
 import { decodeJwtSubject } from "../utils/jwt-subject";
 import { resizeImageFileToDataUrl } from "../utils/resize-image-file";
-import { useUserProfileStore } from "../stores/user-profile-store";
+import {
+  PROFILE_TEXT_MAX_LENGTH,
+  useUserProfileStore,
+} from "../stores/user-profile-store";
 import { UserAvatar } from "./user-avatar";
 
 const PROFILE_STORAGE_KEY = "unsloth_user_profile";
+const SLOTH_NAME = /^large\s+/i;
+const PNG_SUFFIX = /\.png$/i;
 
 function readPersistedProfile(): {
   displayName: string;
@@ -32,7 +47,8 @@ function readPersistedProfile(): {
     if (!parsed || typeof parsed !== "object") return null;
 
     // Zustand persist shape: { state: {...}, version }
-    const maybeState = "state" in parsed ? (parsed as { state?: unknown }).state : parsed;
+    const maybeState =
+      "state" in parsed ? (parsed as { state?: unknown }).state : parsed;
     if (!maybeState || typeof maybeState !== "object") return null;
     const state = maybeState as {
       displayName?: unknown;
@@ -41,9 +57,11 @@ function readPersistedProfile(): {
     };
 
     return {
-      displayName: typeof state.displayName === "string" ? state.displayName : "",
+      displayName:
+        typeof state.displayName === "string" ? state.displayName : "",
       nickname: typeof state.nickname === "string" ? state.nickname : "",
-      avatarDataUrl: typeof state.avatarDataUrl === "string" ? state.avatarDataUrl : null,
+      avatarDataUrl:
+        typeof state.avatarDataUrl === "string" ? state.avatarDataUrl : null,
     };
   } catch {
     return null;
@@ -64,19 +82,28 @@ export function ProfilePersonalizationPanel() {
   const [imageError, setImageError] = useState<string | null>(null);
   const [draftName, setDraftName] = useState(displayName);
   const [draftNickname, setDraftNickname] = useState(nickname);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastDisplayNameRef = useRef(displayName);
+  const lastNicknameRef = useRef(nickname);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
   const previewName = draftName.trim() || sessionSub || "Unsloth";
-  const hasNameChanges = useMemo(
-    () => draftName.trim() !== displayName.trim(),
-    [draftName, displayName],
-  );
-  const hasNicknameChanges = useMemo(
-    () => draftNickname.trim() !== nickname.trim(),
-    [draftNickname, nickname],
-  );
 
+  useEffect(() => {
+    const previous = lastDisplayNameRef.current;
+    lastDisplayNameRef.current = displayName;
+    setDraftName((draft) => (draft === previous ? displayName : draft));
+  }, [displayName]);
+
+  useEffect(() => {
+    const previous = lastNicknameRef.current;
+    lastNicknameRef.current = nickname;
+    setDraftNickname((draft) => (draft === previous ? nickname : draft));
+  }, [nickname]);
+
+  // Committed on blur and on Enter rather than behind a Save button, so each
+  // field is a single row like the rest of Settings.
   const saveName = () => {
     const trimmed = draftName.trim();
     if (trimmed !== draftName) setDraftName(trimmed);
@@ -111,8 +138,19 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
-  // Persist an avatar value (data URL or asset URL) and toast the result.
-  const applyAvatar = (value: string) => {
+  // Escape, or any programmatic close, unmounts the tab without dispatching a
+  // blur, which would drop whatever was typed. Commit the drafts on the way
+  // out; both saves no-op on an unchanged value, so a double commit is safe.
+  const flushDrafts = useRef<() => void>(() => {});
+  useEffect(() => {
+    flushDrafts.current = () => {
+      saveName();
+      saveNickname();
+    };
+  });
+  useEffect(() => () => flushDrafts.current(), []);
+
+  const applyAvatar = (value: string | null) => {
     setAvatarDataUrl(value);
     const persisted = readPersistedProfile();
     if (persisted && persisted.avatarDataUrl === value) {
@@ -138,153 +176,253 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
-  // Use a bundled sloth sticker as the avatar.
-  const pickSloth = (path: string) => {
+  // The avatar is shown all over the app (sidebar, chat messages, greeting),
+  // so writing it to the store can trigger a wide re-render. Mark the picked
+  // value locally first so its ring moves this frame, then commit the store
+  // write on the next frame. Boxed because null is a valid pick (no picture).
+  const [pendingAvatar, setPendingAvatar] = useState<{
+    value: string | null;
+  } | null>(null);
+  const shownAvatar = pendingAvatar ? pendingAvatar.value : avatarDataUrl;
+
+  useEffect(() => {
+    if (pendingAvatar && avatarDataUrl === pendingAvatar.value) {
+      setPendingAvatar(null);
+    }
+  }, [avatarDataUrl, pendingAvatar]);
+
+  const pickAvatarValue = (value: string | null) => {
     setImageError(null);
-    applyAvatar(publicAssetUrl(path));
+    setPendingAvatar({ value });
+    requestAnimationFrame(() => applyAvatar(value));
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-[640px] flex-col items-center gap-6 rounded-2xl border border-border/70 bg-muted/10 px-8 py-7">
-      <div className="relative">
-        <UserAvatar
-          name={previewName}
-          imageUrl={avatarDataUrl}
-          size="lg"
-          className="size-[124px] text-[3.15rem]"
-        />
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/jpeg,image/png,image/webp,image/gif"
-          className="sr-only"
-          onChange={(e) => {
-            void onPickFile(e.target.files?.[0]);
-            e.target.value = "";
-          }}
-        />
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className="absolute right-0 bottom-0 -translate-x-[15.625%] -translate-y-[15.625%] flex size-8 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-          aria-label={t("settings.profile.changePicture")}
-        >
-          <HugeiconsIcon icon={Camera01Icon} className="size-3.5" strokeWidth={2} />
-        </button>
-      </div>
+    <div className="flex w-full flex-col">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/gif"
+        className="sr-only"
+        onChange={(e) => {
+          void onPickFile(e.target.files?.[0]);
+          e.target.value = "";
+        }}
+      />
 
-      <div className="flex w-full max-w-[560px] flex-col gap-2">
-        <Label htmlFor="profile-display-name" className="text-xs font-medium text-muted-foreground">
-          {t("settings.profile.displayName")}
-        </Label>
-        <div className="flex items-center gap-2">
-          <Input
-            id="profile-display-name"
-            type="text"
-            value={draftName}
-            onChange={(e) => setDraftName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                saveName();
-              }
-            }}
-            autoComplete="off"
-            placeholder={sessionSub || "Unsloth"}
-            className="h-10 min-w-0 flex-1 rounded-full text-sm"
-          />
-          <Button type="button" size="sm" className="h-10 px-5" onClick={saveName} disabled={!hasNameChanges}>
-            {t("common.save")}
-          </Button>
-        </div>
-      </div>
+      <div className="flex items-center gap-10 py-6 pr-2">
+        <div className="relative shrink-0">
+          {/* The picture itself is the shortcut to "upload a photo"; the pencil
+              opens the rest of the options. */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            aria-label={t("settings.profile.changePicture")}
+            className="group relative block rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <UserAvatar
+              name={previewName}
+              imageUrl={shownAvatar}
+              size="lg"
+              className="size-[128px] text-[calc(3.2rem*var(--ui-font-scale,1))]"
+            />
+            <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 transition-opacity group-hover:opacity-100">
+              <HugeiconsIcon
+                icon={Image01Icon}
+                className="size-8 text-white"
+                strokeWidth={2}
+              />
+            </span>
+          </button>
 
-      <div className="flex w-full max-w-[560px] flex-col gap-2">
-        <Label htmlFor="profile-nickname" className="text-xs font-medium text-muted-foreground">
-          {t("settings.profile.nickname")}
-        </Label>
-        <div className="flex items-center gap-2">
-          <Input
-            id="profile-nickname"
-            type="text"
-            value={draftNickname}
-            onChange={(e) => setDraftNickname(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                saveNickname();
-              }
-            }}
-            autoComplete="off"
-            placeholder={t("settings.profile.nicknamePlaceholder")}
-            className="h-10 min-w-0 flex-1 rounded-full text-sm"
-          />
-          <Button type="button" size="sm" className="h-10 px-5" onClick={saveNickname} disabled={!hasNicknameChanges}>
-            {t("common.save")}
-          </Button>
-        </div>
-      </div>
-
-      <div className="flex w-full max-w-[560px] flex-col gap-2">
-        <Label className="text-xs font-medium text-muted-foreground">
-          {t("settings.profile.avatarShape")}
-        </Label>
-        <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
-          {(["circle", "rounded"] as const).map((shape) => (
-            <button
-              key={shape}
-              type="button"
-              onClick={() => setAvatarShape(shape)}
-              aria-pressed={avatarShape === shape}
-              className={cn(
-                "inline-flex h-8 items-center rounded-full px-4 text-[13px] font-medium transition-colors",
-                avatarShape === shape
-                  ? "hub-tab-toggle-pill text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {shape === "circle"
-                ? t("settings.profile.avatarShapeCircle")
-                : t("settings.profile.avatarShapeRounded")}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex w-full max-w-[560px] flex-col gap-2">
-        <Label className="text-xs font-medium text-muted-foreground">
-          {t("settings.profile.chooseSloth")}
-        </Label>
-        <div className="grid grid-cols-7 gap-2 sm:grid-cols-9">
-          {SLOTH_AVATARS.map((path) => {
-            const url = publicAssetUrl(path);
-            const selected = avatarDataUrl === url;
-            // Readable accessible name from the filename, e.g. "sloth yay".
-            const label =
-              path.split("/").pop()?.replace(/\.png$/i, "").replace(/^large\s+/i, "").trim() ??
-              "sloth";
-            return (
+          <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+            <PopoverTrigger asChild={true}>
               <button
-                key={path}
                 type="button"
-                onClick={() => pickSloth(path)}
-                aria-pressed={selected}
-                aria-label={label}
-                title={label}
-                className={cn(
-                  "relative aspect-square overflow-hidden rounded-full bg-muted ring-1 ring-border transition hover:ring-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  selected && "ring-2 ring-primary",
-                )}
+                aria-label={t("settings.profile.pictureOptions")}
+                title={t("settings.profile.pictureOptions")}
+                className="absolute top-[85.36%] left-[85.36%] flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.14] dark:hover:bg-white/20"
               >
-                <img src={url} alt="" loading="lazy" className="size-full object-cover" />
+                <HugeiconsIcon
+                  icon={Edit03Icon}
+                  className="size-4.5"
+                  strokeWidth={2}
+                />
               </button>
-            );
-          })}
+            </PopoverTrigger>
+            <PopoverContent
+              align="start"
+              sideOffset={10}
+              className="w-[320px] gap-4 p-4"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-ui-11 font-medium uppercase tracking-wide text-muted-foreground">
+                  {t("settings.profile.avatarShape")}
+                </span>
+                <div className="hub-tab-toggle flex h-8 shrink-0 items-center rounded-full">
+                  {(["circle", "rounded"] as const).map((shape) => (
+                    <button
+                      key={shape}
+                      type="button"
+                      onClick={() => setAvatarShape(shape)}
+                      aria-pressed={avatarShape === shape}
+                      className={cn(
+                        "inline-flex h-8 items-center justify-center rounded-full px-3.5 text-ui-13 font-medium transition-colors",
+                        avatarShape === shape
+                          ? "hub-tab-toggle-pill text-foreground"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {shape === "circle"
+                        ? t("settings.profile.avatarShapeCircle")
+                        : t("settings.profile.avatarShapeRounded")}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="h-9 w-fit gap-2 rounded-full px-4 text-sm"
+                >
+                  <HugeiconsIcon
+                    icon={Upload01Icon}
+                    className="size-4"
+                    strokeWidth={2}
+                  />
+                  {t("settings.profile.uploadPhoto")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => pickAvatarValue(null)}
+                  disabled={shownAvatar === null}
+                  aria-label={t("settings.profile.removePhoto")}
+                  title={t("settings.profile.removePhoto")}
+                  className="size-9 shrink-0 rounded-full p-0 text-muted-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={Delete02Icon}
+                    className="size-4"
+                    strokeWidth={2}
+                  />
+                </Button>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <span className="text-ui-11 font-medium uppercase tracking-wide text-muted-foreground">
+                  {t("settings.profile.chooseSloth")}
+                </span>
+                <div className="grid grid-cols-7 gap-2">
+                  {SLOTH_AVATARS.map((path) => {
+                    const url = publicAssetUrl(path);
+                    const selected = shownAvatar === url;
+                    const label =
+                      path
+                        .split("/")
+                        .pop()
+                        ?.replace(PNG_SUFFIX, "")
+                        .replace(SLOTH_NAME, "")
+                        .trim() ?? "sloth";
+                    return (
+                      <button
+                        key={path}
+                        type="button"
+                        onClick={() => pickAvatarValue(url)}
+                        aria-pressed={selected}
+                        aria-label={label}
+                        title={label}
+                        className={cn(
+                          // No transition here: animating the ring makes the old
+                          // icon's selection border linger when switching sloths.
+                          "relative aspect-square overflow-hidden rounded-full bg-muted ring-1 ring-border hover:ring-ring focus-visible:outline-none focus-visible:ring-ring",
+                          selected &&
+                            "ring-2 ring-ring-strong hover:ring-ring-strong",
+                        )}
+                      >
+                        <img
+                          src={url}
+                          alt=""
+                          loading="lazy"
+                          className="size-full object-cover"
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
+        </div>
+
+        {/* Name fields sit beside the picture. These are not SettingsRows, so
+            data-settings-label is set by hand for settings search. */}
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          <div
+            data-settings-label={t("settings.profile.displayName")}
+            className="flex min-w-0 flex-col gap-1.5"
+          >
+            <Label
+              htmlFor="profile-display-name"
+              className="text-xs font-medium text-muted-foreground"
+            >
+              {t("settings.profile.displayName")}
+            </Label>
+            <Input
+              id="profile-display-name"
+              type="text"
+              value={draftName}
+              maxLength={PROFILE_TEXT_MAX_LENGTH}
+              onChange={(e) => setDraftName(e.target.value)}
+              onBlur={saveName}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                }
+              }}
+              autoComplete="off"
+              placeholder={sessionSub || "Unsloth"}
+              className="h-9 w-full rounded-full text-sm"
+            />
+          </div>
+
+          <div
+            data-settings-label={t("settings.profile.nickname")}
+            className="flex min-w-0 flex-col gap-1.5"
+          >
+            <Label
+              htmlFor="profile-nickname"
+              className="text-xs font-medium text-muted-foreground"
+            >
+              {t("settings.profile.nickname")}
+            </Label>
+            <Input
+              id="profile-nickname"
+              type="text"
+              value={draftNickname}
+              maxLength={PROFILE_TEXT_MAX_LENGTH}
+              onChange={(e) => setDraftNickname(e.target.value)}
+              onBlur={saveNickname}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                }
+              }}
+              autoComplete="off"
+              placeholder={t("settings.profile.nicknamePlaceholder")}
+              className="h-9 w-full rounded-full text-sm"
+            />
+          </div>
         </div>
       </div>
 
       {imageError ? (
-        <p className="w-full text-xs text-destructive" role="alert">
+        <p className="pt-2 text-xs text-destructive" role="alert">
           {imageError}
         </p>
       ) : null}

@@ -5,18 +5,19 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type AvatarShape = "circle" | "rounded";
+export const PROFILE_TEXT_MAX_LENGTH = 200;
 
 export interface UserProfileState {
   displayName: string;
-  // Preferred name used to address the user (greetings, etc.).
   nickname: string;
   avatarDataUrl: string | null;
-  // Avatar outline: full circle or rounded rectangle.
   avatarShape: AvatarShape;
+  showGreetingSloth: boolean;
   setDisplayName: (displayName: string) => void;
   setNickname: (nickname: string) => void;
   setAvatarDataUrl: (avatarDataUrl: string | null) => void;
   setAvatarShape: (avatarShape: AvatarShape) => void;
+  setShowGreetingSloth: (showGreetingSloth: boolean) => void;
 }
 
 export const useUserProfileStore = create<UserProfileState>()(
@@ -26,10 +27,12 @@ export const useUserProfileStore = create<UserProfileState>()(
       nickname: "",
       avatarDataUrl: null,
       avatarShape: "circle",
+      showGreetingSloth: true,
       setDisplayName: (displayName) => set({ displayName }),
       setNickname: (nickname) => set({ nickname }),
       setAvatarDataUrl: (avatarDataUrl) => set({ avatarDataUrl }),
       setAvatarShape: (avatarShape) => set({ avatarShape }),
+      setShowGreetingSloth: (showGreetingSloth) => set({ showGreetingSloth }),
     }),
     { name: "unsloth_user_profile" },
   ),

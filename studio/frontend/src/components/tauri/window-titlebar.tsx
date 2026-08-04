@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { SIDEBAR_WIDTH, SIDEBAR_WIDTH_ICON } from "@/components/ui/sidebar";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
+import {
+  Cancel01Icon,
+  LayoutAlignLeftIcon,
+  MinusSignIcon,
+  SquareIcon,
+  SquareSquareIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
 import {
   type MouseEvent,
@@ -12,6 +21,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -33,7 +43,7 @@ type NavigatorWithUserAgentData = Navigator & {
   };
 };
 
-function getClientPlatform(): string {
+export function getClientPlatform(): string {
   if (typeof navigator === "undefined") {
     return "";
   }
@@ -54,6 +64,13 @@ export function shouldUseCustomWindowTitlebar(): boolean {
     return false;
   }
   return CUSTOM_TITLEBAR_PLATFORMS.some((token) => platform.includes(token));
+}
+
+export function shouldUseNativeMacWindowTitlebar(): boolean {
+  if (!isTauri) {
+    return false;
+  }
+  return getClientPlatform().includes("mac");
 }
 
 async function getAppWindow(): Promise<TauriWindow> {
@@ -79,7 +96,7 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        "relative z-[80] inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/80 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "relative z-[80] inline-flex size-8 items-center justify-center rounded-[10px] text-muted-foreground/90 transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         className,
       )}
     >
@@ -88,36 +105,85 @@ function WindowControlButton({
   );
 }
 
-function MinimizeGlyph(): ReactElement {
-  return (
-    <span aria-hidden="true" className="h-px w-3.5 rounded-full bg-current" />
-  );
-}
+export function DesktopTitlebarNavigation({
+  expanded,
+  onToggleSidebar,
+  className,
+}: {
+  expanded: boolean;
+  onToggleSidebar: () => void;
+  className?: string;
+}): ReactElement {
+  const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+  const buttonClass =
+    "inline-flex size-[33px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-function MaximizeGlyph(): ReactElement {
   return (
-    <span
-      aria-hidden="true"
-      className="size-3 rounded-[2px] border border-current"
-    />
-  );
-}
-
-function RestoreGlyph(): ReactElement {
-  return (
-    <span aria-hidden="true" className="relative size-3.5">
-      <span className="absolute left-0.5 top-0 size-2.5 rounded-[2px] border border-current" />
-      <span className="absolute bottom-0 right-0 size-2.5 rounded-[2px] border border-current bg-muted" />
-    </span>
-  );
-}
-
-function CloseGlyph(): ReactElement {
-  return (
-    <span aria-hidden="true" className="relative size-3.5">
-      <span className="absolute left-1/2 top-0 h-3.5 w-px -translate-x-1/2 rotate-45 rounded-full bg-current" />
-      <span className="absolute left-1/2 top-0 h-3.5 w-px -translate-x-1/2 -rotate-45 rounded-full bg-current" />
-    </span>
+    <div
+      className={cn(
+        "flex mt-1 translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center gap-0.5",
+        className,
+      )}
+      role="toolbar"
+      aria-label="Sidebar and page navigation"
+    >
+      <button
+        type="button"
+        title={expanded ? "Collapse sidebar" : "Expand sidebar"}
+        aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+        onMouseDown={stopTitlebarDrag}
+        onDoubleClick={stopTitlebarDrag}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleSidebar();
+        }}
+        className={buttonClass}
+      >
+        <HugeiconsIcon
+          icon={LayoutAlignLeftIcon}
+          strokeWidth={1.75}
+          className="size-icon"
+        />
+      </button>
+      <button
+        type="button"
+        title="Go back"
+        aria-label="Go back"
+        onMouseDown={stopTitlebarDrag}
+        onDoubleClick={stopTitlebarDrag}
+        onClick={(event) => {
+          event.stopPropagation();
+          window.history.back();
+        }}
+        className={buttonClass}
+      >
+        <ArrowLeft
+          aria-hidden="true"
+          strokeWidth={1.75}
+          className="size-icon"
+        />
+      </button>
+      <button
+        type="button"
+        title="Go forward"
+        aria-label="Go forward"
+        onMouseDown={stopTitlebarDrag}
+        onDoubleClick={stopTitlebarDrag}
+        onClick={(event) => {
+          event.stopPropagation();
+          window.history.forward();
+        }}
+        className={buttonClass}
+      >
+        <ArrowRight
+          aria-hidden="true"
+          strokeWidth={1.75}
+          className="size-icon"
+        />
+      </button>
+    </div>
   );
 }
 
@@ -128,19 +194,49 @@ export function WindowTitlebar({
 }): ReactElement | null {
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
-  const { pinned } = useSidebarPin();
+  const { pinned, togglePinned } = useSidebarPin();
+
+  const maximizeRefreshSequence = useRef(0);
+  const maximizeRefreshTimer = useRef<number | null>(null);
+  // The titlebar sits outside the sidebar wrapper, so it cannot inherit
+  // --sidebar-width. Read the resized width from the same store instead.
+  const { width } = useSidebarWidth();
+  const sidebarWidth = showSidebarSurface
+    ? pinned
+      ? // The live value only exists mid-drag; otherwise the committed width.
+        `var(--studio-sidebar-live-width, ${width}px)`
+      : "var(--studio-sidebar-collapsed-width,3rem)"
+    : "0px";
+
+  const titlebarNavigationWidth =
+    showSidebarSurface && !pinned ? "7rem" : sidebarWidth;
+  const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
       return;
     }
+    const refreshSequence = ++maximizeRefreshSequence.current;
     try {
       const appWindow = await getAppWindow();
-      setMaximized(await appWindow.isMaximized());
+      const nextMaximized = await appWindow.isMaximized();
+      if (refreshSequence === maximizeRefreshSequence.current) {
+        setMaximized(nextMaximized);
+      }
     } catch {
       // Window permission not ready yet: keep previous visual state.
     }
   }, [enabled]);
+
+  const scheduleMaximizedRefresh = useCallback(() => {
+    if (maximizeRefreshTimer.current !== null) {
+      window.clearTimeout(maximizeRefreshTimer.current);
+    }
+    maximizeRefreshTimer.current = window.setTimeout(() => {
+      maximizeRefreshTimer.current = null;
+      refreshMaximized().catch(() => undefined);
+    }, 80);
+  }, [refreshMaximized]);
 
   useEffect(() => {
     if (!enabled) {
@@ -158,10 +254,10 @@ export function WindowTitlebar({
         }
         setMaximized(await appWindow.isMaximized());
         unlistenResize = await appWindow.onResized(() => {
-          refreshMaximized().catch(() => undefined);
+          scheduleMaximizedRefresh();
         });
         unlistenFocus = await appWindow.onFocusChanged(() => {
-          refreshMaximized().catch(() => undefined);
+          scheduleMaximizedRefresh();
         });
       } catch {
         // Missing capabilities should not break the rest of the app shell.
@@ -172,10 +268,16 @@ export function WindowTitlebar({
 
     return () => {
       mounted = false;
+
+      maximizeRefreshSequence.current += 1;
+      if (maximizeRefreshTimer.current !== null) {
+        window.clearTimeout(maximizeRefreshTimer.current);
+        maximizeRefreshTimer.current = null;
+      }
       unlistenResize?.();
       unlistenFocus?.();
     };
-  }, [enabled, refreshMaximized]);
+  }, [enabled, refreshMaximized, scheduleMaximizedRefresh]);
 
   const runWindowAction = useCallback(
     (action: (appWindow: TauriWindow) => Promise<void>) => {
@@ -183,7 +285,7 @@ export function WindowTitlebar({
         try {
           const appWindow = await getAppWindow();
           await action(appWindow);
-          await refreshMaximized();
+          scheduleMaximizedRefresh();
         } catch {
           // Keep custom chrome inert rather than throwing into React on denied commands.
         }
@@ -191,7 +293,7 @@ export function WindowTitlebar({
 
       runAction().catch(() => undefined);
     },
-    [refreshMaximized],
+    [scheduleMaximizedRefresh],
   );
 
   const handleDragMouseDown = useCallback(
@@ -239,29 +341,61 @@ export function WindowTitlebar({
   return (
     <>
       <header
-        className="relative z-[60] flex h-[var(--studio-titlebar-height)] shrink-0 select-none items-center text-foreground"
+        className={cn(
+          "pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
+          showSidebarSurface && "bg-sidebar text-sidebar-foreground",
+        )}
         aria-label="Window titlebar"
       >
+        {showSidebarSurface && pinned && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"
+            style={{ left: sidebarWidth }}
+          />
+        )}
+        {showSidebarSurface && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute top-full h-px bg-sidebar-border"
+            style={{ left: contentBorderLeft, right: 0 }}
+          />
+        )}
+        {showSidebarSurface && pinned && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
+            style={{ left: sidebarWidth }}
+          />
+        )}
         {showSidebarSurface && (
           <div
             className={cn(
-              "h-full shrink-0 border-r border-sidebar-border dark:border-r-0",
-              pinned ? "bg-sidebar" : "bg-white dark:bg-background",
+              "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
+              "pl-3",
             )}
-            style={{ width: pinned ? SIDEBAR_WIDTH : SIDEBAR_WIDTH_ICON }}
+            style={{ width: titlebarNavigationWidth }}
             onMouseDown={handleDragMouseDown}
             onDoubleClick={handleDragDoubleClick}
-            aria-hidden="true"
-          />
+          >
+            <DesktopTitlebarNavigation
+              expanded={pinned}
+              onToggleSidebar={togglePinned}
+            />
+          </div>
         )}
         <div
-          className="h-full min-w-0 flex-1 border-b border-border/35 bg-muted/35"
+          className="pointer-events-auto absolute top-0 h-full"
+          style={{
+            left: titlebarNavigationWidth,
+            right: "calc(var(--studio-window-control-inset,112px) + 0.5rem)",
+          }}
           onMouseDown={handleDragMouseDown}
           onDoubleClick={handleDragDoubleClick}
           aria-hidden="true"
         />
         <div
-          className="flex h-full shrink-0 items-center gap-0.5 border-b border-border/35 bg-muted/35 px-1"
+          className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5 px-1"
           role="toolbar"
           aria-label="Window controls"
         >
@@ -269,7 +403,11 @@ export function WindowTitlebar({
             label="Minimize window"
             onClick={() => runWindowAction((appWindow) => appWindow.minimize())}
           >
-            <MinimizeGlyph />
+            <HugeiconsIcon
+              icon={MinusSignIcon}
+              strokeWidth={1.75}
+              className="size-[15px]"
+            />
           </WindowControlButton>
           <WindowControlButton
             label={maximized ? "Restore window" : "Maximize window"}
@@ -277,14 +415,22 @@ export function WindowTitlebar({
               runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
           >
-            {maximized ? <RestoreGlyph /> : <MaximizeGlyph />}
+            <HugeiconsIcon
+              icon={maximized ? SquareSquareIcon : SquareIcon}
+              strokeWidth={1.75}
+              className="size-[14px]"
+            />
           </WindowControlButton>
           <WindowControlButton
             label="Close window"
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
-            className="hover:bg-destructive hover:text-destructive-foreground focus-visible:ring-destructive/70"
+            className="hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20"
           >
-            <CloseGlyph />
+            <HugeiconsIcon
+              icon={Cancel01Icon}
+              strokeWidth={1.75}
+              className="size-[15px]"
+            />
           </WindowControlButton>
         </div>
       </header>

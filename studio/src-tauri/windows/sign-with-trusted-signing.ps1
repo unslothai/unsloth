@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 param(
     [Parameter(Mandatory = $true)]
     [string] $Path
@@ -15,7 +17,7 @@ $trustedSigningArgs = @(
     "-e",
     "https://eus.codesigning.azure.net",
     "-d",
-    "Unsloth Studio (Desktop)",
+    "Unsloth",
     $Path
 )
 

@@ -72,7 +72,7 @@ function DiagnosticsCopyActions({
           readOnly
           value={manualReport}
           onFocus={(event) => event.currentTarget.select()}
-          className="h-32 w-full max-w-md resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground"
+          className="h-32 w-full max-w-md resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
         />
       )}
     </div>
@@ -101,9 +101,19 @@ const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
 function Logo() {
   return (
-    <div className="flex flex-col items-center gap-4">
-      <img src="/sticker.png" alt="Unsloth" className="h-[72px] w-[72px] object-contain" />
-      <img src="/studio.png" alt="Unsloth Studio" className="h-auto w-[250px] object-contain dark:invert" />
+    <div className="flex items-center justify-center gap-3">
+      <img
+        src="/sticker.png"
+        alt=""
+        aria-hidden="true"
+        className="h-[60px] w-[60px] object-contain"
+      />
+      <span
+        className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
+        style={{ fontFamily: '"Hellix", sans-serif' }}
+      >
+        unsloth
+      </span>
     </div>
   );
 }
@@ -152,11 +162,14 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 flex-col items-center justify-center">
         <Logo />
-        <p className="mt-4 text-xs font-bold text-muted-foreground">
+      </div>
+      <div className="mb-10 flex flex-col items-center gap-3">
+        <p
+          className="text-ui-13 font-semibold tracking-[-0.01em] text-muted-foreground"
+          style={{ fontFamily: '"Hellix", sans-serif' }}
+        >
           To install Unsloth, click Get Started.
         </p>
-      </div>
-      <div className="mb-10">
         <ShimmerButton
           onClick={onInstall}
           shimmerColor="#a7f3d0"
@@ -189,7 +202,8 @@ function InstallingContent({
         <Spinner className="size-6 text-primary" />
         <p className="text-sm font-bold text-foreground">Installing...</p>
         <p className="text-sm font-bold text-muted-foreground">
-          Please wait a few mins, then you can start training.
+          Your AI workspace is taking shape. Chat with AI, build projects, and
+          train models, all on your computer.
         </p>
         {currentStepIndex >= 0 && (
           <p className="mt-1 text-xs font-bold text-muted-foreground">
@@ -433,12 +447,12 @@ export function StartupScreen({
   }
 
   return (
-    <div className="flex h-full w-full flex-col items-center bg-background">
-      <div className="flex flex-1 w-full max-w-md items-center justify-center px-6">
+    <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
+      <div className="flex min-h-0 flex-1 w-full max-w-md items-center justify-center px-6">
         <AnimatePresence mode="wait">
           <motion.div
             key={status}
-            className="flex h-full w-full flex-col items-center text-center"
+            className="flex h-full w-full flex-col items-center justify-center text-center"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}

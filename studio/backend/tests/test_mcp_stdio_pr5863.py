@@ -93,7 +93,12 @@ class _RecordingClient:
     async def list_tools(self):
         return [_FakeTool("list_directory"), _FakeTool("write_file")]
 
-    async def call_tool(self, name, args):
+    async def call_tool(
+        self,
+        name,
+        args,
+        raise_on_error = True,
+    ):
         return _FakeResult(f"called {name}")
 
 

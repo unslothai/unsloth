@@ -26,7 +26,24 @@ class DownloadModelRequest(BaseModel):
     )
     use_xet: bool = Field(
         True,
-        description = "Use Xet parallel chunked transport. Default True; set False for HTTP Range-resume.",
+        description = "Legacy transport flag, superseded by transport_mode. Kept so an older "
+        "frontend or a scripted caller keeps working.",
+    )
+    transport_mode: Optional[Literal["auto", "xet", "http"]] = Field(
+        None,
+        description = "Transport preference. 'auto' (the default in the UI) lets the backend pick "
+        "per machine: it knows this host's RAM, its hf_xet build, and whether Xet has "
+        "been failing here. 'xet'/'http' force one. Omitted -> use_xet decides.",
+    )
+    scope_id: Optional[str] = Field(
+        None,
+        description = "Marks a partial-by-design download of `files` only (e.g. 'diffusion', "
+        "whose loader reads a scoped subset of a repo). Keyed separately from the full "
+        "snapshot of the same repo, so neither one's manifest describes the other.",
+    )
+    files: List[str] = Field(
+        default_factory = list,
+        description = "Exact files to fetch. Required with scope_id, ignored without it.",
     )
 
 
@@ -75,6 +92,15 @@ class ActiveDownload(BaseModel):
     variant: Optional[str] = None
     transport: Optional[str] = None
     state: str
+    files: Optional[List[str]] = Field(
+        None,
+        description = (
+            "For a SCOPED job (variant '@name'), the exact file list it is fetching; null for a "
+            "full-snapshot or variant download. Every file set of one repo shares the scope slot, "
+            "so an adopting client needs this to tell whether a live job is its own transfer or a "
+            "sibling checkpoint's."
+        ),
+    )
     generation: int = Field(
         0,
         description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
@@ -93,6 +119,8 @@ class TransportCapability(BaseModel):
 class TransportCapabilities(BaseModel):
     http: TransportCapability
     xet: TransportCapability
+    auto_resolves_to: Literal["xet", "http"] = "xet"
+    auto_reason: Optional[str] = None
 
 
 class TransportStatusResponse(BaseModel):
@@ -126,7 +154,14 @@ class DownloadDatasetRequest(BaseModel):
     repo_id: str = Field(..., description = "HuggingFace dataset repo ID")
     use_xet: bool = Field(
         True,
-        description = "Use Xet parallel chunked transport. Default True; set False for HTTP Range-resume.",
+        description = "Legacy transport flag, superseded by transport_mode. Kept so an older "
+        "frontend or a scripted caller keeps working.",
+    )
+    transport_mode: Optional[Literal["auto", "xet", "http"]] = Field(
+        None,
+        description = "Transport preference. 'auto' (the default in the UI) lets the backend pick "
+        "per machine: it knows this host's RAM, its hf_xet build, and whether Xet has "
+        "been failing here. 'xet'/'http' force one. Omitted -> use_xet decides.",
     )
 
 

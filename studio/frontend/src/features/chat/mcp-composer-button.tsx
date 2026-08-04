@@ -61,6 +61,11 @@ type McpPreset = {
 // Hugging Face runs anonymously; add a token via "Manage MCP servers".
 const MCP_PRESETS: readonly McpPreset[] = [
   {
+    id: "unsloth-docs",
+    displayName: "Unsloth Docs",
+    url: "https://unsloth.ai/docs/~gitbook/mcp",
+  },
+  {
     id: "context7",
     displayName: "Context7",
     url: "https://mcp.context7.com/mcp",

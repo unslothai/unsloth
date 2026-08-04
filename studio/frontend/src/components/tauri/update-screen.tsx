@@ -21,9 +21,19 @@ const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
 function Logo() {
   return (
-    <div className="flex flex-col items-center gap-4">
-      <img src="/sticker.png" alt="Unsloth" className="h-[72px] w-[72px] object-contain" />
-      <img src="/studio.png" alt="Unsloth Studio" className="h-auto w-[250px] object-contain dark:invert" />
+    <div className="flex items-center justify-center gap-3">
+      <img
+        src="/sticker.png"
+        alt=""
+        aria-hidden="true"
+        className="h-[60px] w-[60px] object-contain"
+      />
+      <span
+        className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
+        style={{ fontFamily: '"Hellix", sans-serif' }}
+      >
+        unsloth
+      </span>
     </div>
   );
 }
@@ -72,7 +82,7 @@ function LogViewer({ logs }: { logs: string[] }) {
   return (
     <div
       ref={scrollRef}
-      className="mt-4 h-[180px] w-full max-w-xl overflow-y-auto rounded-lg border border-border/40 bg-muted/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground"
+      className="mt-4 h-[180px] w-full max-w-xl overflow-y-auto rounded-lg border border-border/40 bg-muted/30 p-3 font-mono text-ui-11 leading-relaxed text-muted-foreground"
     >
       {logs.map((line, i) => (
         <div key={i} className="whitespace-pre-wrap break-all">
@@ -117,12 +127,12 @@ export function UpdateScreen({
   }
 
   return (
-    <div className="flex h-full w-full items-center justify-center bg-background">
+    <div className="box-border flex h-full w-full overflow-y-auto bg-background">
       <motion.div
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4, ease: EASE_OUT_QUART }}
-        className="flex w-full max-w-xl flex-col items-center px-6"
+        className="mx-auto flex min-h-full w-full max-w-xl flex-col items-center justify-center px-6 pb-6 pt-[var(--studio-startup-top-inset,0px)]"
       >
         <Logo />
 
@@ -197,7 +207,7 @@ export function UpdateScreen({
             readOnly
             value={manualReport}
             onFocus={(event) => event.currentTarget.select()}
-            className="mt-2 h-32 w-full max-w-xl resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground"
+            className="mt-2 h-32 w-full max-w-xl resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
           />
         )}
 

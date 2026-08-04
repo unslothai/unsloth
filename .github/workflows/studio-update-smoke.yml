@@ -9,7 +9,7 @@
 # This catches regressions in setup.sh's update path that the existing
 # GGUF / wheel jobs would miss because they only invoke install.sh once.
 
-name: Studio Update CI
+name: Unsloth Update CI
 
 on:
   pull_request:
@@ -36,7 +36,7 @@ permissions:
 
 jobs:
   update-idempotency:
-    name: Studio Updating Tests
+    name: Unsloth Updating Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -63,7 +63,7 @@ jobs:
           # post-step then fatal-errors with "Cache folder path is
           # retrieved for pip but doesn't exist on disk".
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         # Pass the workflow token so the llama.cpp prebuilt installer's
         # GitHub-API call to list releases isn't rate-limited (60/hr
         # unauthenticated). Without this, three consecutive install +
@@ -71,7 +71,8 @@ jobs:
         # prebuilt path falls back to source build.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -86,7 +87,8 @@ jobs:
         # idempotency regressed.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           set -o pipefail
           unsloth studio update --local 2>&1 | tee logs/update.log
@@ -109,7 +111,8 @@ jobs:
         # the first one.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           set -o pipefail
           unsloth studio update --local 2>&1 | tee logs/update2.log
@@ -119,7 +122,7 @@ jobs:
           grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
           echo "second update was clean"
 
-      - name: Boot Studio briefly to confirm the install is still usable
+      - name: Boot Unsloth briefly to confirm the install is still usable
         # If `update --local` accidentally broke the venv or wiped the
         # llama-server binary, the server would fail to start here.
         run: |
@@ -135,13 +138,53 @@ jobs:
             sleep 1
           done
           if ! jq -e '.status == "healthy"' /tmp/health.json 2>/dev/null; then
-            echo "Studio failed to come up after `update`"
+            echo "Unsloth failed to come up after `update`"
             tail -200 logs/studio.log
             kill "$PID" 2>/dev/null || true
             exit 1
           fi
           kill "$PID" 2>/dev/null || true
-          echo "post-update Studio /api/health OK"
+          echo "post-update Unsloth /api/health OK"
+
+      - name: A complete install reports itself complete
+        run: |
+          set -o pipefail
+          unsloth studio verify-install
+          unsloth studio desktop-capabilities --json | tee /tmp/caps.json
+          jq -e '.studio_install_ok == true' /tmp/caps.json
+          jq -e '.desktop_manageability_version >= 2' /tmp/caps.json
+
+      - name: An incomplete install must not report itself ready
+        # An installer killed part-way leaves a working CLI but no studio.txt
+        # deps, which the old preflight called ManagedReady. The manifest is
+        # written last, so removing it reproduces that state.
+        run: |
+          set -o pipefail
+          # install.sh's default root, resolved explicitly: `python` on PATH
+          # here is setup-python's, not the managed venv.
+          MANIFEST="$HOME/.unsloth/studio/unsloth_studio/unsloth_install_manifest.json"
+          test -f "$MANIFEST" || { echo "::error::installer never wrote $MANIFEST"; exit 1; }
+          rm -f "$MANIFEST"
+          unsloth studio desktop-capabilities --json | tee /tmp/caps_bad.json
+          jq -e '.studio_install_ok == false' /tmp/caps_bad.json
+          if unsloth studio verify-install; then
+            echo "::error::verify-install passed on an install with no manifest"
+            exit 1
+          fi
+          echo "incomplete install correctly reported not-ready"
+
+      - name: Update repairs an incomplete install
+        # `--local` bypasses setup.sh's PyPI version compare, so this asserts
+        # the repair OUTCOME. The non-local fast path the desktop Repair button
+        # uses is covered by tests/studio/install/test_setup_fast_path_guard.py.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update_repair.log
+          unsloth studio verify-install
+          unsloth studio desktop-capabilities --json | jq -e '.studio_install_ok == true'
+          echo "update repaired the incomplete install"
 
       - name: Uninstall and verify clean
         # Round-trip the installer through scripts/uninstall.sh: confirms the
@@ -163,6 +206,10 @@ jobs:
           leak=0
           for p in \
             "$HOME/.unsloth/studio" \
+            "$HOME/.unsloth/whisper.cpp" \
+            "$HOME/.unsloth/.llama.cpp.install.lock" \
+            "$HOME/.unsloth/.node.install.lock" \
+            "$HOME/.unsloth/.whisper.cpp.install.lock" \
             "$HOME/.local/share/unsloth" \
             "$HOME/Desktop/Unsloth Studio.desktop" \
             "$HOME/.local/bin/unsloth"; do
@@ -172,6 +219,16 @@ jobs:
               leak=$((leak + 1))
             fi
           done
+          # Catch-all that does not need updating when a new artifact is added:
+          # nothing but Unsloth writes under ~/.unsloth on a runner, so a
+          # surviving directory means the uninstaller missed something. This is
+          # what caught the node/whisper install locks, which individually look
+          # harmless but keep the uninstaller's rmdir from pruning ~/.unsloth.
+          if [ -d "$HOME/.unsloth" ]; then
+            echo "::error::leak: ~/.unsloth survived the uninstall"
+            find "$HOME/.unsloth" | head -40
+            leak=$((leak + 1))
+          fi
           [ "$leak" -eq 0 ] || exit 1
           # Idempotent: re-runs exit 0 on an empty $HOME.
           sh scripts/uninstall.sh 2>&1 | tail -5

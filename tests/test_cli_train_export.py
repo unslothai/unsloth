@@ -80,7 +80,12 @@ def cli_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
     monkeypatch.setattr(export_cmd, "export_checkpoint", _fake_export_checkpoint)
 
+    from unsloth_cli.commands import train as train_cmd
     from unsloth_cli.commands.train import train
+
+    # Main routes trainer creation through _create_cli_trainer, whose studio
+    # install gate aborts in this stubbed environment.
+    monkeypatch.setattr(train_cmd, "_create_cli_trainer", lambda model, token: _FakeTrainer())
 
     app = typer.Typer()
     app.command()(train)

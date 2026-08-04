@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# Assert Studio installed a llama.cpp that loads and runs on THIS macOS. Tests
+# Assert Unsloth installed a llama.cpp that loads and runs on THIS macOS. Tests
 # the contract that matters (binaries load and their minimum-OS is <= this host)
 # instead of the old "did install.sh fall back to a source build?" grep, since a
 # source build with a correct deployment target is a valid outcome.

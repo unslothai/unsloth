@@ -3,6 +3,7 @@
 
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Collapsible,
   CollapsibleContent,
@@ -27,29 +28,38 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
+import { useHubDatasetSearch } from "@/features/hub/hooks/use-hub-dataset-search";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import {
-  useDebouncedValue,
-  useHfDatasetSearch,
-  useHfTokenValidation,
-  useInfiniteScroll,
-} from "@/hooks";
+  formatUploadSize,
+  getCachedUploadLimitBytes,
+  getCachedUploadLimitLabel,
+  loadUploadLimitSettings,
+  subscribeUploadLimitSettings,
+} from "@/features/settings/api/upload-limit";
 import {
   HfDatasetSubsetSplitSelectors,
+  type LocalDatasetInfo,
   listLocalDatasets,
   uploadTrainingDataset,
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
-  type LocalDatasetInfo,
 } from "@/features/training";
-import { useNavigate } from "@tanstack/react-router";
+// Imported directly from the store module rather than the "@/features/training"
+// barrel to avoid an import cycle (the barrel re-exports this section's siblings).
+import { hasSeparateStreamingEvalSplit } from "@/features/training/stores/training-config-store";
+import { useDebouncedValue } from "@/hooks";
+import { translate, useT } from "@/i18n";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
   Cancel01Icon,
   CloudUploadIcon,
   Database02Icon,
@@ -59,26 +69,20 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
+import { motion, useReducedMotion } from "motion/react";
 import {
   type ChangeEvent,
   type DragEvent,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { toast } from "@/lib/toast";
-import {
-  formatUploadSize,
-  getCachedUploadLimitBytes,
-  getCachedUploadLimitLabel,
-  loadUploadLimitSettings,
-  subscribeUploadLimitSettings,
-} from "@/features/settings/api/upload-limit";
 import { useShallow } from "zustand/react/shallow";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
-import { translate, useT } from "@/i18n";
 import { S3ConfigForm } from "./s3-config-form";
 
 const TRAINING_UPLOAD_EXTENSIONS = [
@@ -151,6 +155,9 @@ function normalizeSliceInput(value: string): string | null {
 export function DatasetSection() {
   const t = useT();
   const navigate = useNavigate();
+  const reducedMotion = useReducedMotion();
+  // Scopes the pill layoutId so multiple instances never share one.
+  const sourcePillLayoutId = useId();
   const {
     dataset,
     datasetSource,
@@ -165,13 +172,21 @@ export function DatasetSection() {
     setDatasetSplit,
     datasetEvalSplit,
     setDatasetEvalSplit,
+    datasetStreaming,
+    setDatasetStreaming,
+    trainOnCompletions,
+    maxSteps,
+    evalSteps,
+    isVisionModel,
+    isAudioModel,
+    isEmbeddingModel,
+    isDatasetImage,
+    isDatasetAudio,
     uploadedFile,
     uploadedEvalFile,
     setUploadedEvalFile,
     hfToken,
     modelType,
-    isVisionModel,
-    isAudioModel,
     datasetSliceStart,
     setDatasetSliceStart,
     datasetSliceEnd,
@@ -191,19 +206,88 @@ export function DatasetSection() {
       setDatasetSplit: s.setDatasetSplit,
       datasetEvalSplit: s.datasetEvalSplit,
       setDatasetEvalSplit: s.setDatasetEvalSplit,
+      datasetStreaming: s.datasetStreaming,
+      setDatasetStreaming: s.setDatasetStreaming,
+      trainOnCompletions: s.trainOnCompletions,
+      maxSteps: s.maxSteps,
+      evalSteps: s.evalSteps,
+      isVisionModel: s.isVisionModel,
+      isAudioModel: s.isAudioModel,
+      isEmbeddingModel: s.isEmbeddingModel,
+      isDatasetImage: s.isDatasetImage,
+      isDatasetAudio: s.isDatasetAudio,
       uploadedFile: s.uploadedFile,
       uploadedEvalFile: s.uploadedEvalFile,
       setUploadedEvalFile: s.setUploadedEvalFile,
       hfToken: s.hfToken,
       modelType: s.modelType,
-      isVisionModel: s.isVisionModel,
-      isAudioModel: s.isAudioModel,
       datasetSliceStart: s.datasetSliceStart,
       setDatasetSliceStart: s.setDatasetSliceStart,
       datasetSliceEnd: s.datasetSliceEnd,
       setDatasetSliceEnd: s.setDatasetSliceEnd,
     })),
   );
+
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+
+  // Streaming is only supported for Hugging Face text datasets. Rather than
+  // hiding the toggle when a constraint isn't met, keep it visible but disabled
+  // and list the exact unmet requirement(s) in its tooltip — a control that
+  // silently disappears is confusing. Downstream preprocessing
+  // (convert_to_vlm_format, audio collators) needs random access and would
+  // crash on an IterableDataset, hence the constraints below.
+  const streamingBlockers: string[] = [];
+  if (datasetSource !== "huggingface")
+    streamingBlockers.push(
+      "Use a Hugging Face dataset (not a local upload or S3 source).",
+    );
+  if (maxSteps <= 0)
+    streamingBlockers.push(
+      "Set Max Steps > 0 — streaming datasets have no known length.",
+    );
+  if (trainOnCompletions)
+    streamingBlockers.push('Turn off "Assistant completions only".');
+  if (
+    !hasSeparateStreamingEvalSplit({
+      evalSteps,
+      datasetSplit,
+      datasetEvalSplit,
+    })
+  )
+    streamingBlockers.push(
+      "Pick a separate eval split — evaluation is on but no distinct eval split is set.",
+    );
+  if (isVisionModel)
+    streamingBlockers.push("Vision models don't support streaming.");
+  if (isAudioModel)
+    streamingBlockers.push("Audio models don't support streaming.");
+  if (isEmbeddingModel)
+    streamingBlockers.push(
+      "Embedding models don't support streaming (training needs the full dataset).",
+    );
+  if (isDatasetImage)
+    streamingBlockers.push(
+      "This dataset looks like images, which can't stream.",
+    );
+  if (isDatasetAudio)
+    streamingBlockers.push(
+      "This dataset looks like audio, which can't stream.",
+    );
+  if (platformDeviceType === "mac")
+    streamingBlockers.push(
+      "Streaming isn't supported on Apple Silicon (MLX) yet.",
+    );
+
+  const isStreamingSupported = streamingBlockers.length === 0;
+
+  // If streaming was previously enabled but the config became incompatible
+  // (model switched to vision, dataset detected as image, etc.), clear it so
+  // the backend never receives a stale flag.
+  useEffect(() => {
+    if (datasetStreaming && !isStreamingSupported) {
+      setDatasetStreaming(false);
+    }
+  }, [datasetStreaming, isStreamingSupported, setDatasetStreaming]);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -311,15 +395,13 @@ export function DatasetSection() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    scannedCount,
     error: hfSearchError,
-  } = useHfDatasetSearch(pickerTab === "huggingface" ? debouncedQuery : "", {
+  } = useHubDatasetSearch(pickerTab === "huggingface" ? debouncedQuery : "", {
     modelType: effectiveModelType,
     accessToken: hfToken || undefined,
     enabled: pickerTab === "huggingface",
   });
-
-  const { error: tokenValidationError, isChecking: isCheckingToken } =
-    useHfTokenValidation(hfToken);
 
   const hfResultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
@@ -421,9 +503,15 @@ export function DatasetSection() {
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const evalFileInputRef = useRef<HTMLInputElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(
     fetchMore,
-    hfResults.length,
+    scannedCount,
+    {
+      enabled: pickerTab === "huggingface",
+      isFetching: isLoading || isLoadingMore,
+      resultCount: hfResults.length,
+      resetKey: debouncedQuery,
+    },
   );
 
   const [isUploading, setIsUploading] = useState(false);
@@ -447,9 +535,11 @@ export function DatasetSection() {
       setUploadLimitLabel(settings.maxUploadSizeLabel);
     };
     const unsubscribe = subscribeUploadLimitSettings(applyLimit);
-    void loadUploadLimitSettings().then((settings) => {
-      if (!cancelled) applyLimit(settings);
-    }).catch(() => {});
+    void loadUploadLimitSettings()
+      .then((settings) => {
+        if (!cancelled) applyLimit(settings);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
       unsubscribe();
@@ -496,7 +586,10 @@ export function DatasetSection() {
       toast.success(successMessage, { description: uploaded.filename });
     } catch (error) {
       toast.error(t("studio.dataset.uploadFailed"), {
-        description: error instanceof Error ? error.message : t("studio.dataset.unknownError"),
+        description:
+          error instanceof Error
+            ? error.message
+            : t("studio.dataset.unknownError"),
       });
     } finally {
       setIsUploading(false);
@@ -520,7 +613,11 @@ export function DatasetSection() {
       return;
     }
 
-    await handleFileUpload(file, selectLocalDataset, t("studio.dataset.datasetUploaded"));
+    await handleFileUpload(
+      file,
+      selectLocalDataset,
+      t("studio.dataset.datasetUploaded"),
+    );
   };
 
   const handleDatasetFileChange = async (
@@ -568,12 +665,20 @@ export function DatasetSection() {
     event.target.value = "";
     if (!file) return;
 
-    await handleFileUpload(file, setUploadedEvalFile, t("studio.dataset.evalDatasetUploaded"));
+    await handleFileUpload(
+      file,
+      setUploadedEvalFile,
+      t("studio.dataset.evalDatasetUploaded"),
+    );
   };
 
   const handleOpenLearningRecipes = useCallback(() => {
     sessionStorage.setItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY, "1");
     setDocumentRedirectOpen(false);
+    void navigate({ to: "/data-recipes" });
+  }, [navigate]);
+
+  const handleOpenDataRecipes = useCallback(() => {
     void navigate({ to: "/data-recipes" });
   }, [navigate]);
 
@@ -584,44 +689,31 @@ export function DatasetSection() {
         title={t("studio.dataset.title")}
         description={t("studio.dataset.description")}
         accent="indigo"
-        className={`dark:shadow-border ${
-          advancedOpen || (datasetSource === "upload" && uploadedFile)
-            ? "min-h-studio-config-column"
-            : "h-studio-config-column"
-        }`}
+        className="dark:shadow-border min-h-studio-config-column"
       >
         <div className="flex min-w-0 flex-col gap-4">
           {(() => {
             // Hub-style sliding-pill segmented control, matching the Hub tabs
             // via the shared .hub-tab-toggle / .hub-tab-toggle-pill classes.
+            // flex-auto buttons share leftover space equally so padding stays
+            // equal for all labels; the pill sits inside the active button so
+            // it always matches its bounds.
             const sourceTabs: {
               value: "huggingface" | "upload" | "s3";
               label: string;
             }[] = [
               { value: "huggingface", label: "Hugging Face" },
               { value: "upload", label: t("studio.dataset.localTab") },
-              ...(!isMultimodalModel
-                ? [{ value: "s3" as const, label: "Amazon S3" }]
-                : []),
+              ...(isMultimodalModel
+                ? []
+                : [{ value: "s3" as const, label: "Amazon S3" }]),
             ];
-            const activeIndex = Math.max(
-              0,
-              sourceTabs.findIndex((item) => item.value === datasetSource),
-            );
             return (
               <div
                 role="radiogroup"
                 aria-label="Dataset source"
-                className="hub-tab-toggle relative inline-flex h-9 w-full items-center rounded-full"
+                className="hub-tab-toggle relative flex h-9 w-full items-center rounded-full"
               >
-                <span
-                  aria-hidden="true"
-                  className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
-                  style={{
-                    width: `${100 / sourceTabs.length}%`,
-                    transform: `translateX(${activeIndex * 100}%)`,
-                  }}
-                />
                 {sourceTabs.map((item) => (
                   <button
                     key={item.value}
@@ -640,13 +732,30 @@ export function DatasetSection() {
                       }
                     }}
                     className={cn(
-                      "relative z-10 inline-flex h-9 flex-1 cursor-pointer items-center justify-center rounded-full px-3 text-[12.5px] font-medium transition-colors",
+                      "relative inline-flex h-9 flex-auto cursor-pointer items-center justify-center rounded-full px-3 text-ui-12p5 font-medium transition-colors",
                       datasetSource === item.value
                         ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
-                    {item.label}
+                    {datasetSource === item.value && (
+                      <motion.span
+                        aria-hidden="true"
+                        layoutId={sourcePillLayoutId}
+                        className="hub-tab-toggle-pill absolute inset-0 rounded-full"
+                        transition={
+                          reducedMotion
+                            ? { duration: 0 }
+                            : {
+                                type: "spring",
+                                stiffness: 500,
+                                damping: 35,
+                                mass: 0.5,
+                              }
+                        }
+                      />
+                    )}
+                    <span className="relative z-10">{item.label}</span>
                   </button>
                 ))}
               </div>
@@ -656,355 +765,369 @@ export function DatasetSection() {
           {datasetSource === "s3" && <S3ConfigForm />}
 
           {datasetSource !== "s3" && (
-          <div className="flex min-w-0 flex-col gap-2">
-            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              {t("studio.dataset.chooseDataset")}
-              <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-foreground/80">
-                {datasetSource === "upload" ? t("studio.dataset.localTab") : "Hugging Face"}
+            <div className="flex min-w-0 flex-col gap-2">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                {t("studio.dataset.chooseDataset")}
+                <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-ui-10 font-medium text-foreground/80">
+                  {datasetSource === "upload"
+                    ? t("studio.dataset.localTab")
+                    : "Hugging Face"}
+                </span>
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <button
+                      type="button"
+                      className="text-foreground/70 hover:text-foreground"
+                    >
+                      <HugeiconsIcon
+                        icon={InformationCircleIcon}
+                        className="size-3"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {t("studio.dataset.chooseDatasetTooltip")}{" "}
+                    <a
+                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      {t("studio.params.readMore")}
+                    </a>
+                  </TooltipContent>
+                </Tooltip>
               </span>
-              <Tooltip>
-                <TooltipTrigger asChild={true}>
-                  <button
-                    type="button"
-                    className="text-foreground/70 hover:text-foreground"
+              <div
+                ref={comboboxAnchorRef}
+                className="min-w-0"
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  if (!(event.target instanceof HTMLInputElement)) return;
+                  event.preventDefault();
+                  if (pickerTab === "huggingface") {
+                    if (hfResults.length > 0) {
+                      handleDatasetSelect(hfResults[0].id);
+                    } else {
+                      const text = event.target.value.trim();
+                      if (text) handleDatasetSelect(text);
+                    }
+                    return;
+                  }
+
+                  if (localResultIds.length > 0) {
+                    const selectedId = localResultIds[0];
+                    const path = localPathById.get(selectedId);
+                    if (path) {
+                      handleLocalDatasetSelect(path);
+                    }
+                  }
+                }}
+              >
+                <Combobox
+                  items={comboboxItems}
+                  filteredItems={comboboxItems}
+                  filter={null}
+                  value={comboboxValue}
+                  onOpenChange={(open) => {
+                    setSearchQuery("");
+                    if (
+                      open &&
+                      (pickerTab === "local" || activeSourceTab === "local")
+                    ) {
+                      void refreshLocalDatasets();
+                    }
+                    if (!open) {
+                      setPickerTab(
+                        pendingSourceTabRef.current ?? activeSourceTab,
+                      );
+                      pendingSourceTabRef.current = null;
+                    }
+                  }}
+                  onValueChange={(value) => {
+                    if (!value) {
+                      clearSelectionForTab(pickerTab);
+                      return;
+                    }
+                    if (pickerTab === "huggingface") {
+                      handleDatasetSelect(value);
+                      return;
+                    }
+                    const path = localPathById.get(value);
+                    if (path) {
+                      handleLocalDatasetSelect(path);
+                    }
+                  }}
+                  onInputValueChange={(value, eventDetails) =>
+                    handleInputChange(value, eventDetails)
+                  }
+                  itemToStringValue={(id) =>
+                    pickerTab === "local" ? (localLabelById.get(id) ?? id) : id
+                  }
+                  autoHighlight={true}
+                >
+                  <ComboboxInput
+                    placeholder={
+                      pickerTab === "huggingface"
+                        ? t("studio.dataset.searchHuggingFaceDatasets")
+                        : t("studio.dataset.searchLocalDatasets")
+                    }
+                    className="w-full min-w-0 overflow-hidden leading-5"
+                    showClear={true}
                   >
-                    <HugeiconsIcon
-                      icon={InformationCircleIcon}
-                      className="size-3"
-                    />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {t("studio.dataset.chooseDatasetTooltip")}{" "}
+                    <InputGroupAddon>
+                      <HugeiconsIcon icon={Search01Icon} className="size-4" />
+                    </InputGroupAddon>
+                  </ComboboxInput>
+                  <ComboboxContent anchor={comboboxAnchorRef}>
+                    <div className="px-2 pt-2 pb-2">
+                      <Tabs
+                        value={pickerTab}
+                        onValueChange={(value) => {
+                          setPickerTab(value as "huggingface" | "local");
+                          setSearchQuery("");
+                        }}
+                        className="w-full"
+                      >
+                        <TabsList className=" w-full">
+                          <TabsTrigger value="huggingface">
+                            Hugging Face
+                          </TabsTrigger>
+                          <TabsTrigger value="local">
+                            {t("studio.dataset.localTab")}
+                          </TabsTrigger>
+                        </TabsList>
+
+                        <TabsContent value="huggingface" className="m-0">
+                          {isLoading ? (
+                            <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                              <Spinner className="size-4" />{" "}
+                              {t("studio.dataset.searching")}
+                            </div>
+                          ) : (
+                            <ComboboxEmpty>
+                              {t("studio.dataset.noDatasetsFound")}
+                            </ComboboxEmpty>
+                          )}
+                          <div
+                            ref={scrollRef}
+                            className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+                          >
+                            <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                              {(id: string) => {
+                                return (
+                                  <ComboboxItem
+                                    key={id}
+                                    value={id}
+                                    className="gap-2"
+                                  >
+                                    <Tooltip>
+                                      <TooltipTrigger asChild={true}>
+                                        <span className="block min-w-0 flex-1 truncate">
+                                          {id}
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent
+                                        side="left"
+                                        className="max-w-xs break-all"
+                                      >
+                                        {id}
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  </ComboboxItem>
+                                );
+                              }}
+                            </ComboboxList>
+                            <div ref={sentinelRef} className="h-px" />
+                            {isLoadingMore && (
+                              <div className="flex items-center justify-center py-2">
+                                <Spinner className="size-3.5 text-muted-foreground" />
+                              </div>
+                            )}
+                          </div>
+                        </TabsContent>
+
+                        <TabsContent value="local" className="m-0">
+                          {localLoading ? (
+                            <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
+                              <Spinner className="size-4" />{" "}
+                              {t("studio.dataset.loadingLocalDatasets")}
+                            </div>
+                          ) : (
+                            <>
+                              {localError ? (
+                                <p className="px-2 py-2 text-xs text-destructive">
+                                  {localError}
+                                </p>
+                              ) : (
+                                <ComboboxEmpty className="px-2 py-3">
+                                  <div className="flex w-full flex-col items-center gap-2 text-center">
+                                    <p className="text-xs text-muted-foreground">
+                                      {localDatasets.length === 0
+                                        ? t("studio.dataset.noLocalDatasetsYet")
+                                        : t(
+                                            "studio.dataset.noLocalDatasetsMatchSearch",
+                                          )}
+                                    </p>
+                                    {localDatasets.length === 0 ? (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={handleOpenDataRecipes}
+                                      >
+                                        {t("studio.dataset.openDataRecipes")}
+                                      </Button>
+                                    ) : null}
+                                  </div>
+                                </ComboboxEmpty>
+                              )}
+                              <div className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+                                <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                  {(id: string) => {
+                                    const label = localLabelById.get(id) ?? id;
+                                    return (
+                                      <ComboboxItem
+                                        key={id}
+                                        value={id}
+                                        className="gap-2"
+                                      >
+                                        <Tooltip>
+                                          <TooltipTrigger asChild={true}>
+                                            <span className="block min-w-0 flex-1 truncate">
+                                              {label}
+                                            </span>
+                                          </TooltipTrigger>
+                                          <TooltipContent
+                                            side="left"
+                                            className="max-w-xs break-all"
+                                          >
+                                            {label}
+                                          </TooltipContent>
+                                        </Tooltip>
+                                      </ComboboxItem>
+                                    );
+                                  }}
+                                </ComboboxList>
+                              </div>
+                            </>
+                          )}
+                        </TabsContent>
+                      </Tabs>
+                    </div>
+                  </ComboboxContent>
+                </Combobox>
+              </div>
+              {hfSearchError && (
+                <p className="text-xs text-destructive">
+                  {hfSearchError}
+                  {" — "}
                   <a
-                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
+                    href="https://huggingface.co/settings/tokens"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-primary underline"
+                    className="underline"
                   >
-                    {t("studio.params.readMore")}
+                    {t("studio.dataset.getOrUpdateToken")}
                   </a>
-                </TooltipContent>
-              </Tooltip>
-            </span>
-            <div
-              ref={comboboxAnchorRef}
-              className="min-w-0"
-              onKeyDown={(event) => {
-                if (event.key !== "Enter") return;
-                if (!(event.target instanceof HTMLInputElement)) return;
-                event.preventDefault();
-                if (pickerTab === "huggingface") {
-                  if (hfResults.length > 0) {
-                    handleDatasetSelect(hfResults[0].id);
-                  } else {
-                    const text = event.target.value.trim();
-                    if (text) handleDatasetSelect(text);
-                  }
-                  return;
-                }
-
-                if (localResultIds.length > 0) {
-                  const selectedId = localResultIds[0];
-                  const path = localPathById.get(selectedId);
-                  if (path) {
-                    handleLocalDatasetSelect(path);
-                  }
-                }
-              }}
-            >
-              <Combobox
-                items={comboboxItems}
-                filteredItems={comboboxItems}
-                filter={null}
-                value={comboboxValue}
-                onOpenChange={(open) => {
-                  setSearchQuery("");
-                  if (
-                    open &&
-                    (pickerTab === "local" || activeSourceTab === "local")
-                  ) {
-                    void refreshLocalDatasets();
-                  }
-                  if (!open) {
-                    setPickerTab(
-                      pendingSourceTabRef.current ?? activeSourceTab,
-                    );
-                    pendingSourceTabRef.current = null;
-                  }
-                }}
-                onValueChange={(value) => {
-                  if (!value) {
-                    clearSelectionForTab(pickerTab);
-                    return;
-                  }
-                  if (pickerTab === "huggingface") {
-                    handleDatasetSelect(value);
-                    return;
-                  }
-                  const path = localPathById.get(value);
-                  if (path) {
-                    handleLocalDatasetSelect(path);
-                  }
-                }}
-                onInputValueChange={(value, eventDetails) =>
-                  handleInputChange(value, eventDetails)
-                }
-                itemToStringValue={(id) =>
-                  pickerTab === "local" ? (localLabelById.get(id) ?? id) : id
-                }
-                autoHighlight={true}
-              >
-                <ComboboxInput
-                  placeholder={
-                    pickerTab === "huggingface"
-                      ? t("studio.dataset.searchHuggingFaceDatasets")
-                      : t("studio.dataset.searchLocalDatasets")
-                  }
-                  className="w-full min-w-0 overflow-hidden leading-5"
-                  showClear={true}
-                >
-                  <InputGroupAddon>
-                    <HugeiconsIcon icon={Search01Icon} className="size-4" />
-                  </InputGroupAddon>
-                </ComboboxInput>
-                <ComboboxContent anchor={comboboxAnchorRef}>
-                  <div className="px-2 pt-2 pb-2">
-                    <Tabs
-                      value={pickerTab}
-                      onValueChange={(value) => {
-                        setPickerTab(value as "huggingface" | "local");
-                        setSearchQuery("");
-                      }}
-                      className="w-full"
-                    >
-                      <TabsList className=" w-full">
-                        <TabsTrigger value="huggingface">Hugging Face</TabsTrigger>
-                        <TabsTrigger value="local">{t("studio.dataset.localTab")}</TabsTrigger>
-                      </TabsList>
-
-                      <TabsContent value="huggingface" className="m-0">
-                        {isLoading ? (
-                          <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                            <Spinner className="size-4" /> {t("studio.dataset.searching")}
-                          </div>
-                        ) : (
-                          <ComboboxEmpty>{t("studio.dataset.noDatasetsFound")}</ComboboxEmpty>
-                        )}
-                        <div
-                          ref={scrollRef}
-                          className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
-                        >
-                          <ComboboxList className="p-1 !max-h-none !overflow-visible">
-                            {(id: string) => {
-                              return (
-                                <ComboboxItem
-                                  key={id}
-                                  value={id}
-                                  className="gap-2"
-                                >
-                                  <Tooltip>
-                                    <TooltipTrigger asChild={true}>
-                                      <span className="block min-w-0 flex-1 truncate">
-                                        {id}
-                                      </span>
-                                    </TooltipTrigger>
-                                    <TooltipContent
-                                      side="left"
-                                      className="max-w-xs break-all"
-                                    >
-                                      {id}
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </ComboboxItem>
-                              );
-                            }}
-                          </ComboboxList>
-                          <div ref={sentinelRef} className="h-px" />
-                          {isLoadingMore && (
-                            <div className="flex items-center justify-center py-2">
-                              <Spinner className="size-3.5 text-muted-foreground" />
-                            </div>
-                          )}
-                        </div>
-                      </TabsContent>
-
-                      <TabsContent value="local" className="m-0">
-                        {localLoading ? (
-                          <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                            <Spinner className="size-4" /> {t("studio.dataset.loadingLocalDatasets")}
-                          </div>
-                        ) : (
-                          <>
-                            {localError ? (
-                              <p className="px-2 py-2 text-xs text-destructive">
-                                {localError}
-                              </p>
-                            ) : (
-                              <ComboboxEmpty className="px-2 py-3">
-                                <div className="flex w-full flex-col items-center gap-2 text-center">
-                                  <p className="text-xs text-muted-foreground">
-                                    {localDatasets.length === 0
-                                      ? t("studio.dataset.noLocalDatasetsYet")
-                                      : t("studio.dataset.noLocalDatasetsMatchSearch")}
-                                  </p>
-                                  {localDatasets.length === 0 ? (
-                                    <Button asChild={true} size="sm" variant="outline">
-                                      <a href="/data-recipes">{t("studio.dataset.openDataRecipes")}</a>
-                                    </Button>
-                                  ) : null}
-                                </div>
-                              </ComboboxEmpty>
-                            )}
-                            <div className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
-                              <ComboboxList className="p-1 !max-h-none !overflow-visible">
-                                {(id: string) => {
-                                  const label = localLabelById.get(id) ?? id;
-                                  return (
-                                    <ComboboxItem
-                                      key={id}
-                                      value={id}
-                                      className="gap-2"
-                                    >
-                                      <Tooltip>
-                                        <TooltipTrigger asChild={true}>
-                                          <span className="block min-w-0 flex-1 truncate">
-                                            {label}
-                                          </span>
-                                        </TooltipTrigger>
-                                        <TooltipContent
-                                          side="left"
-                                          className="max-w-xs break-all"
-                                        >
-                                          {label}
-                                        </TooltipContent>
-                                      </Tooltip>
-                                    </ComboboxItem>
-                                  );
-                                }}
-                              </ComboboxList>
-                            </div>
-                          </>
-                        )}
-                      </TabsContent>
-                    </Tabs>
-                  </div>
-                </ComboboxContent>
-              </Combobox>
+                </p>
+              )}
+              {pickerTab !== activeSourceTab && (
+                <p className="text-ui-11 text-muted-foreground">
+                  {t("studio.dataset.browsingSource", {
+                    browsing:
+                      pickerTab === "local"
+                        ? t("studio.dataset.localDatasets")
+                        : "Hugging Face",
+                    current:
+                      datasetSource === "upload"
+                        ? t("studio.dataset.localTab")
+                        : "Hugging Face",
+                  })}
+                </p>
+              )}
             </div>
-            {(tokenValidationError ?? hfSearchError) && (
-              <p className="text-xs text-destructive">
-                {tokenValidationError ?? hfSearchError}
-                {" — "}
-                <a
-                  href="https://huggingface.co/settings/tokens"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline"
-                >
-                  {t("studio.dataset.getOrUpdateToken")}
-                </a>
-              </p>
-            )}
-            {isCheckingToken && (
-              <p className="text-xs text-muted-foreground">
-                {t("studio.dataset.checkingToken")}
-              </p>
-            )}
-            {pickerTab !== activeSourceTab && (
-              <p className="text-[11px] text-muted-foreground">
-                {t("studio.dataset.browsingSource", {
-                  browsing:
-                    pickerTab === "local"
-                      ? t("studio.dataset.localDatasets")
-                      : "Hugging Face",
-                  current:
-                    datasetSource === "upload"
-                      ? t("studio.dataset.localTab")
-                      : "Hugging Face",
-                })}
-              </p>
-            )}
-          </div>
           )}
 
           {datasetSource !== "s3" &&
             (isHfDatasetSelected ? (
-            <HfDatasetSubsetSplitSelectors
-              variant="studio"
-              enabled={true}
-              datasetName={dataset}
-              accessToken={hfToken || undefined}
-              datasetSubset={datasetSubset}
-              setDatasetSubset={setDatasetSubset}
-              datasetSplit={datasetSplit}
-              setDatasetSplit={setDatasetSplit}
-              datasetEvalSplit={datasetEvalSplit}
-              setDatasetEvalSplit={setDatasetEvalSplit}
-            />
-          ) : !selectedDatasetName ? (
-            <HfDatasetSubsetSplitSelectors
-              variant="studio"
-              enabled={false}
-              datasetName={null}
-              accessToken={hfToken || undefined}
-              datasetSubset={datasetSubset}
-              setDatasetSubset={setDatasetSubset}
-              datasetSplit={datasetSplit}
-              setDatasetSplit={setDatasetSplit}
-              datasetEvalSplit={datasetEvalSplit}
-              setDatasetEvalSplit={setDatasetEvalSplit}
-            />
-          ) : datasetSource === "upload" && selectedLocalDataset ? (
-            <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground">
-                    {t("studio.dataset.localDatasetMetadata")}
-                  </p>
-                  <p className="text-[10px] text-muted-foreground/80">
-                    {t("studio.dataset.dataRecipeOutput")}
-                  </p>
-                </div>
-              </div>
+              <HfDatasetSubsetSplitSelectors
+                variant="studio"
+                enabled={true}
+                datasetName={dataset}
+                accessToken={hfToken || undefined}
+                datasetSubset={datasetSubset}
+                setDatasetSubset={setDatasetSubset}
+                datasetSplit={datasetSplit}
+                setDatasetSplit={setDatasetSplit}
+                datasetEvalSplit={datasetEvalSplit}
+                setDatasetEvalSplit={setDatasetEvalSplit}
+              />
+            ) : selectedDatasetName ? (
+              datasetSource === "upload" && selectedLocalDataset ? (
+                <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground">
+                        {t("studio.dataset.localDatasetMetadata")}
+                      </p>
+                      <p className="text-ui-10 text-muted-foreground/80">
+                        {t("studio.dataset.dataRecipeOutput")}
+                      </p>
+                    </div>
+                  </div>
 
-              <div className="flex flex-col gap-3">
-                <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                  <MetadataRow
-                    label={t("studio.dataset.rows")}
-                    value={
-                      typeof selectedLocalRows === "number"
-                        ? selectedLocalRows.toLocaleString()
-                        : "--"
-                    }
-                  />
-                  <MetadataRow
-                    label={t("studio.dataset.columns")}
-                    value={
-                      selectedLocalColumns.length > 0
-                        ? String(selectedLocalColumns.length)
-                        : "--"
-                    }
-                  />
-                  <MetadataRow
-                    label={t("studio.dataset.batches")}
-                    value={
-                      typeof selectedLocalMetadata?.num_completed_batches ===
-                        "number" &&
-                      typeof selectedLocalMetadata?.total_num_batches ===
-                        "number"
-                        ? `${selectedLocalMetadata.num_completed_batches}/${selectedLocalMetadata.total_num_batches}`
-                        : "--"
-                    }
-                  />
-                  <MetadataRow
-                    label={t("studio.dataset.updated")}
-                    value={formatUpdatedDate(selectedLocalUpdatedAt)}
-                  />
+                  <div className="flex flex-col gap-3">
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                      <MetadataRow
+                        label={t("studio.dataset.rows")}
+                        value={
+                          typeof selectedLocalRows === "number"
+                            ? selectedLocalRows.toLocaleString()
+                            : "--"
+                        }
+                      />
+                      <MetadataRow
+                        label={t("studio.dataset.columns")}
+                        value={
+                          selectedLocalColumns.length > 0
+                            ? String(selectedLocalColumns.length)
+                            : "--"
+                        }
+                      />
+                      <MetadataRow
+                        label={t("studio.dataset.batches")}
+                        value={
+                          typeof selectedLocalMetadata?.num_completed_batches ===
+                            "number" &&
+                          typeof selectedLocalMetadata?.total_num_batches ===
+                            "number"
+                            ? `${selectedLocalMetadata.num_completed_batches}/${selectedLocalMetadata.total_num_batches}`
+                            : "--"
+                        }
+                      />
+                      <MetadataRow
+                        label={t("studio.dataset.updated")}
+                        value={formatUpdatedDate(selectedLocalUpdatedAt)}
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-          ) : null)}
+              ) : null
+            ) : (
+              <HfDatasetSubsetSplitSelectors
+                variant="studio"
+                enabled={false}
+                datasetName={null}
+                accessToken={hfToken || undefined}
+                datasetSubset={datasetSubset}
+                setDatasetSubset={setDatasetSubset}
+                datasetSplit={datasetSplit}
+                setDatasetSplit={setDatasetSplit}
+                datasetEvalSplit={datasetEvalSplit}
+                setDatasetEvalSplit={setDatasetEvalSplit}
+              />
+            ))}
 
           {datasetSource === "upload" && uploadedFile && (
             <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
@@ -1052,7 +1175,7 @@ export function DatasetSection() {
                       ? t("studio.dataset.uploading")
                       : t("studio.dataset.uploadEvalFile")}
                   </Button>
-                  <p className="text-[10px] text-muted-foreground/80">
+                  <p className="text-ui-10 text-muted-foreground/80">
                     {t("studio.dataset.evalDatasetDescription")}
                   </p>
                 </div>
@@ -1063,7 +1186,7 @@ export function DatasetSection() {
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
             <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
               <HugeiconsIcon
-                icon={ArrowDown01Icon}
+                icon={ChevronDownStandardIcon}
                 className={`size-3.5 transition-transform ${advancedOpen ? "rotate-180" : ""}`}
               />
               {t("studio.dataset.advanced")}
@@ -1108,13 +1231,67 @@ export function DatasetSection() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="auto">{t("studio.dataset.auto")}</SelectItem>
+                      <SelectItem value="auto">
+                        {t("studio.dataset.auto")}
+                      </SelectItem>
                       <SelectItem value="alpaca">Alpaca</SelectItem>
                       <SelectItem value="chatml">ChatML</SelectItem>
                       <SelectItem value="sharegpt">ShareGPT</SelectItem>
-                      <SelectItem value="raw">{t("studio.dataset.rawText")}</SelectItem>
+                      <SelectItem value="raw">
+                        {t("studio.dataset.rawText")}
+                      </SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="datasetStreaming"
+                    checked={datasetStreaming}
+                    disabled={!isStreamingSupported}
+                    onCheckedChange={(v) => setDatasetStreaming(!!v)}
+                  />
+                  <label
+                    htmlFor="datasetStreaming"
+                    className={`text-xs text-muted-foreground ${
+                      isStreamingSupported
+                        ? "cursor-pointer"
+                        : "cursor-not-allowed opacity-60"
+                    }`}
+                  >
+                    Enable streaming
+                  </label>
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {isStreamingSupported ? (
+                        <span>
+                          Stream Hugging Face text datasets instead of
+                          downloading them.
+                        </span>
+                      ) : (
+                        <div className="max-w-xs">
+                          <p className="font-medium">
+                            Streaming unavailable. To enable:
+                          </p>
+                          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                            {streamingBlockers.map((reason) => (
+                              <li key={reason}>{reason}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-1.5">
@@ -1205,7 +1382,7 @@ export function DatasetSection() {
                           deriveLocalDatasetName(selectedDatasetName))
                         : selectedDatasetName}
                     </p>
-                    <p className="text-[10px] text-muted-foreground">
+                    <p className="text-ui-10 text-muted-foreground">
                       {datasetSource === "upload" ? (
                         uploadedFile ? (
                           <>
@@ -1259,9 +1436,9 @@ export function DatasetSection() {
                     <span className="block text-xs font-medium text-foreground">
                       {t("studio.dataset.dropFileOrClick")}
                     </span>
-                    <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-                      {TRAINING_DATASET_UPLOAD_LABEL} · up to{" "}
-                      {uploadLimitLabel}; {DOCUMENT_REDIRECT_LABEL}
+                    <span className="mt-0.5 block truncate text-ui-10 text-muted-foreground">
+                      {TRAINING_DATASET_UPLOAD_LABEL} · up to {uploadLimitLabel}
+                      ; {DOCUMENT_REDIRECT_LABEL}
                     </span>
                   </span>
                 </button>
@@ -1278,7 +1455,10 @@ export function DatasetSection() {
                   {isUploading ? (
                     <Spinner className="size-3.5" />
                   ) : (
-                    <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                    <HugeiconsIcon
+                      icon={CloudUploadIcon}
+                      className="size-3.5"
+                    />
                   )}
                   {isUploading
                     ? t("studio.dataset.uploading")

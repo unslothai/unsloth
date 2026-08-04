@@ -73,6 +73,7 @@ export function buildTrainingStartPayload(
 
   return {
     model_name: config.selectedModel ?? "",
+    project_name: (config.projectName || "").trim() || null,
     training_type: toBackendTrainingType(config.trainingMethod),
     hf_token: config.hfToken.trim() || null,
     load_in_4bit: (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel),
@@ -87,6 +88,7 @@ export function buildTrainingStartPayload(
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
     eval_split: hfDataset ? config.datasetEvalSplit : null,
+    dataset_streaming: hfDataset ? config.datasetStreaming : false,
     dataset_slice_start: parseSliceValue(config.datasetSliceStart),
     dataset_slice_end: parseSliceValue(config.datasetSliceEnd),
     local_datasets: localDatasets,
@@ -123,8 +125,9 @@ export function buildTrainingStartPayload(
     lora_dropout: config.loraDropout,
     target_modules: adapterMethod ? config.targetModules : [],
     gradient_checkpointing: config.gradientCheckpointing,
-    use_rslora: config.loraVariant === "rslora",
-    use_loftq: config.loraVariant === "loftq",
+    use_rslora: adapterMethod && config.loraVariant === "rslora",
+    use_loftq: adapterMethod && config.loraVariant === "loftq",
+    use_dora: adapterMethod && config.loraVariant === "dora",
     // CPT always trains on full sequences (no chat format masking)
     train_on_completions: (isEmbedding || isCpt || isRawText) ? false : config.trainOnCompletions,
     finetune_vision_layers: config.finetuneVisionLayers,

@@ -10,13 +10,32 @@ Set by `unsloth run` at startup; consulted by the inference route gates.
   False -> CLI forced tools off for every request.
 """
 
-from typing import Optional
+import contextvars
+from contextlib import contextmanager
+from typing import Iterator, Optional
 
 _tool_policy: Optional[bool] = None
 
+# Per-request hard-off so public surfaces refuse tools even under a CLI `--enable-tools`.
+_force_disabled: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "tool_policy_force_disabled", default = False
+)
+
 
 def get_tool_policy() -> Optional[bool]:
+    if _force_disabled.get():
+        return False
     return _tool_policy
+
+
+@contextmanager
+def tools_force_disabled() -> Iterator[None]:
+    """Hard-disable server-side tools for the current async context."""
+    token = _force_disabled.set(True)
+    try:
+        yield
+    finally:
+        _force_disabled.reset(token)
 
 
 def set_tool_policy(value: Optional[bool]) -> None:

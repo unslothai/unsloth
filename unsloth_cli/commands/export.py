@@ -6,6 +6,8 @@ from typing import Optional
 
 import typer
 
+from unsloth_cli._studio_deps import studio_backend_imports
+
 
 EXPORT_FORMATS = ["merged-16bit", "merged-4bit", "gguf", "lora"]
 GGUF_QUANTS = ["q4_k_m", "q5_k_m", "q8_0", "f16"]
@@ -17,7 +19,8 @@ def list_checkpoints(
     ),
 ):
     """List checkpoints detected in the outputs directory."""
-    from studio.backend.core.export import ExportBackend
+    with studio_backend_imports("unsloth list-checkpoints"):
+        from studio.backend.core.export import ExportBackend
 
     backend = ExportBackend()
     checkpoints = backend.scan_checkpoints(outputs_dir = str(outputs_dir))
@@ -91,7 +94,8 @@ def export_checkpoint(
     max_seq_length: int = 2048,
     load_in_4bit: bool = True,
 ) -> Optional[str]:
-    from studio.backend.core.export import ExportBackend
+    with studio_backend_imports("unsloth export"):
+        from studio.backend.core.export import ExportBackend
 
     backend = ExportBackend()
 

@@ -83,26 +83,53 @@ def is_mmproj_filename(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# Separate-file drafter kinds. dspark and dflash are the same DeepSeek V4 Flash
+# drafter: the folder it ships in and the architecture it reports.
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+
+# Directories only: mtp/ and dspark/ are always a publisher's companion folder,
+# while dflash/ is a family name a user picks for real weights.
+_DRAFTER_DIR_KINDS = ("mtp", "dspark")
+
+
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file MTP drafter (speculative head), a companion to
-    the main model rather than a selectable quant.
+    """True for a separate-file drafter, a companion to the main model rather than
+    a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships
+    for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4)
+    and the ``dspark/`` drafters (DeepSeek V4 Flash). Repos that bake the head
+    into the main GGUF (Qwen) have no such file, so this is False for them. Must
+    be excluded from main-model selection everywhere mmproj is.
 
-    Covers the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for
-    llama.cpp ``-hf`` auto-discovery) and the ``MTP/`` subdir copies (Gemma 4).
-    Repos that bake the head into the main GGUF (Qwen) have no such file, so
-    this is False for them. Must be excluded from main-model selection
-    everywhere mmproj is.
+    Matched by basename prefix, or by an exact parent dir for
+    ``_DRAFTER_DIR_KINDS``; never a substring, since the kind names double as
+    family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and
+    ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model.
 
-    CANONICAL COPY. Layering keeps two mirrors that must change in lockstep:
-    utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import
-    hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core
-    avoids hub imports; bundles the mmproj check).
+    CANONICAL COPY. Two mirrors must change in lockstep:
+    utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub)
+    and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub
+    imports; bundles the mmproj check).
     """
-    p = path.lower()
+    p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
-    name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    parts = [segment for segment in p.split("/") if segment]
+    name, parents = parts[-1], parts[:-1]
+    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
+        kind in parents for kind in _DRAFTER_DIR_KINDS
+    )
+
+
+def is_mtp_only_drafter_path(path: str) -> bool:
+    """MTP drafters only, for the delete path rather than selection. Studio fetches
+    the root ``mtp-*.gguf`` with every variant, so a variant delete may reclaim it.
+    DSpark and DFlash are opt-in and in no variant plan, so sweeping them up would
+    destroy a file Studio never downloaded."""
+    p = path.replace("\\", "/").lower()
+    if not p.endswith(".gguf"):
+        return False
+    parts = [segment for segment in p.split("/") if segment]
+    return parts[-1].startswith("mtp-") or "mtp" in parts[:-1]
 
 
 def is_gguf_filename(filename: str) -> bool:
@@ -253,11 +280,20 @@ def _env_offline() -> bool:
     ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
 
 
-def iter_hf_cache_snapshots(repo_id: str):
-    from hub.utils.hf_cache_state import iter_repo_cache_dirs
+def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
+    from hub.utils.hf_cache_state import (
+        iter_active_repo_cache_dirs,
+        iter_repo_cache_dirs,
+        snapshot_selection_key,
+    )
 
     snapshots: list[Path] = []
-    for repo_dir in iter_repo_cache_dirs("model", repo_id):
+    repo_dirs = (
+        iter_active_repo_cache_dirs("model", repo_id, root = root)
+        if root is not None
+        else iter_repo_cache_dirs("model", repo_id)
+    )
+    for repo_dir in repo_dirs:
         snapshots_dir = repo_dir / "snapshots"
         if not snapshots_dir.is_dir():
             continue
@@ -266,26 +302,76 @@ def iter_hf_cache_snapshots(repo_id: str):
         except OSError:
             continue
 
-    def _mtime(path: Path) -> float:
-        try:
-            return path.stat().st_mtime
-        except OSError:
-            return 0.0
-
-    snapshots.sort(key = _mtime, reverse = True)
+    # Same key the inventory row selects with, so both name one snapshot.
+    snapshots.sort(key = snapshot_selection_key, reverse = True)
     yield from snapshots
 
 
-def list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
-    for snapshot in iter_hf_cache_snapshots(repo_id):
+def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> set[str]:
+    """Quant labels present only as an EMPTY snapshot ``<quant>/`` folder (an
+    interrupted split download); a quant with shards in any snapshot is excluded."""
+    empty: dict[str, str] = {}
+    nonempty: set[str] = set()
+    snapshots = (
+        iter_hf_cache_snapshots(repo_id, root = root)
+        if root is not None
+        else iter_hf_cache_snapshots(repo_id)
+    )
+    for snapshot in snapshots:
+        try:
+            entries = list(snapshot.iterdir())
+        except OSError:
+            continue
+        for sub in entries:
+            try:
+                if sub.is_symlink() or not sub.is_dir():
+                    continue
+                quant = extract_quant_token(sub.name)
+                if not quant:
+                    continue
+                has_child = any(sub.iterdir())
+            except OSError:
+                continue
+            if has_child:
+                nonempty.add(quant.lower())
+            else:
+                empty.setdefault(quant.lower(), quant)
+    return {label for key, label in empty.items() if key not in nonempty}
+
+
+def list_gguf_variants_from_hf_cache(
+    repo_id: str, root: Optional[Path] = None
+) -> Optional[tuple[list[GgufVariantInfo], bool, set]]:
+    """``(variants, has_vision, complete)`` for the snapshot a load would read.
+
+    Everything in that snapshot is listed, so a torn download stays visible to resume or delete;
+    *complete* is the subset whose shards are all present, so the caller marks the rest partial
+    rather than ready, as the snapshot-path form of this call does.
+    """
+    # Local import: inventory_scan imports this module.
+    from hub.utils.inventory_scan import complete_snapshot_variants
+
+    snapshots = (
+        iter_hf_cache_snapshots(repo_id, root = root)
+        if root is not None
+        else iter_hf_cache_snapshots(repo_id)
+    )
+    # Pick the snapshot the inventory row does: newest holding a whole quant, else first non-empty.
+    fallback: Optional[tuple[list[GgufVariantInfo], bool, set]] = None
+    for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
-        if variants or has_vision:
-            return variants, has_vision
-    return None
+        complete = complete_snapshot_variants(str(snapshot)) if variants else set()
+        if variants:
+            # Selection only: an unlabelled quant cannot be judged, so it counts as usable.
+            if any(not v.quant or v.quant in complete for v in variants):
+                return variants, has_vision, complete
+        if fallback is None and (variants or has_vision):
+            fallback = (variants, has_vision, complete)
+    return fallback
 
 
 def list_partial_gguf_variants_from_state(
-    repo_id: str,
+    repo_id: str, hub_cache: Optional[Path] = None
 ) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     """Reconstruct GGUF variants from download manifests/markers alone.
 
@@ -301,10 +387,26 @@ def list_partial_gguf_variants_from_state(
     # original-casing label over a lowercased cancel marker for the same variant.
     seen: set[str] = set()
     ordered: list[str] = []
-    for source in (
-        download_manifest.iter_variant_manifests("model", repo_id),
-        download_manifest.iter_variant_markers("model", repo_id),
-    ):
+    sources = (
+        (
+            download_manifest.iter_variant_manifests("model", repo_id),
+            download_manifest.iter_variant_markers("model", repo_id),
+        )
+        if hub_cache is None
+        else (
+            download_manifest.iter_variant_manifests(
+                "model",
+                repo_id,
+                hub_cache = hub_cache,
+            ),
+            download_manifest.iter_variant_markers(
+                "model",
+                repo_id,
+                hub_cache = hub_cache,
+            ),
+        )
+    )
+    for source in sources:
         for variant, _path in source:
             key = variant.lower()
             if key not in seen:
@@ -316,7 +418,16 @@ def list_partial_gguf_variants_from_state(
     variants: list[GgufVariantInfo] = []
     has_vision = False
     for variant in ordered:
-        manifest = download_manifest.read_manifest("model", repo_id, variant)
+        manifest = (
+            download_manifest.read_manifest("model", repo_id, variant)
+            if hub_cache is None
+            else download_manifest.read_manifest(
+                "model",
+                repo_id,
+                variant,
+                hub_cache = hub_cache,
+            )
+        )
         main_filename: Optional[str] = None
         size_bytes = 0
         companion_bytes = 0
@@ -353,11 +464,35 @@ def list_partial_gguf_variants_from_state(
     return variants, has_vision
 
 
+def iter_snapshots_preferring_whole(
+    repo_id: str,
+    gguf_variant: Optional[str],
+    root = None,
+):
+    """Cache snapshots newest first, but ones holding *gguf_variant* whole ahead of ones short a
+    shard. The lister and the load both take the whole copy, so mtime order alone would read
+    metadata out of a newer half download nothing will load.
+    """
+    ordered = list(iter_hf_cache_snapshots(repo_id, root = root))
+    if not gguf_variant or len(ordered) < 2:
+        return ordered
+    from hub.utils.inventory_scan import complete_snapshot_variants
+
+    whole, torn = [], []
+    for snapshot in ordered:
+        try:
+            is_whole = gguf_variant in complete_snapshot_variants(str(snapshot))
+        except Exception:
+            is_whole = True
+        (whole if is_whole else torn).append(snapshot)
+    return whole + torn
+
+
 def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Optional[str]:
     """Absolute path to the (shard-1) GGUF file for ``repo_id`` + ``gguf_variant``
     if it is already downloaded in the HF cache, else ``None``. Read-only — never
     triggers a download. Lets callers read header metadata before a load."""
-    for snapshot in iter_hf_cache_snapshots(repo_id):
+    for snapshot in iter_snapshots_preferring_whole(repo_id, gguf_variant):
         variants, _ = list_local_gguf_variants(str(snapshot))
         for variant in variants:
             if gguf_variant is None or variant.quant == gguf_variant:
@@ -365,6 +500,14 @@ def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Option
                 if candidate.is_file():
                     return str(candidate)
     return None
+
+
+def _ready_cached_variants(cached: tuple) -> tuple[list[GgufVariantInfo], bool, None]:
+    """Cache result for a caller with nowhere to put readiness: drop the quants short a shard, but
+    keep the whole list when none is complete so the folder still shows up to manage."""
+    variants, has_vision, complete = cached
+    whole = [v for v in variants if not v.quant or v.quant in complete]
+    return whole or variants, has_vision, None
 
 
 def list_gguf_variants(
@@ -375,7 +518,7 @@ def list_gguf_variants(
     if _env_offline():
         cached = list_gguf_variants_from_hf_cache(repo_id)
         if cached is not None:
-            return (*cached, None)
+            return _ready_cached_variants(cached)
 
     try:
         info = HfApi(token = hf_token).model_info(
@@ -398,7 +541,7 @@ def list_gguf_variants(
                 repo_id,
                 exc.__class__.__name__,
             )
-            return (*cached, None)
+            return _ready_cached_variants(cached)
         raise
 
     variants: list[GgufVariantInfo] = []
@@ -449,10 +592,22 @@ def _resolve_gguf_dir(path: Path) -> Optional[Path]:
     return None
 
 
-def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], bool]:
+def list_local_gguf_variants(
+    directory: str, model_root: Optional[str] = None
+) -> tuple[list[GgufVariantInfo], bool]:
     root = _resolve_gguf_dir(Path(directory))
     if root is None:
         return [], False
+    from utils.models.model_config import (
+        _is_local_mtp_drafter,
+        _registered_custom_model_root,
+    )
+
+    custom_root = (
+        Path(os.path.abspath(Path(model_root).expanduser()))
+        if model_root is not None
+        else _registered_custom_model_root(directory)
+    )
 
     quant_totals: dict[str, int] = {}
     quant_first_file: dict[str, str] = {}
@@ -460,14 +615,18 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
         if is_mmproj_filename(file.name):
-            has_vision = True
+            # A projector llama.cpp cannot open is not vision support.
+            try:
+                has_vision = has_vision or file.stat().st_size > 0
+            except OSError:
+                pass
             continue
         try:
             size = file.stat().st_size
         except OSError:
             size = 0
         rel = file.relative_to(root).as_posix()
-        if is_mtp_drafter_path(rel):
+        if _is_local_mtp_drafter(file, custom_root, rel):
             continue
         quant = extract_quant_label(rel)
         if is_big_endian_gguf_path(rel, quant):

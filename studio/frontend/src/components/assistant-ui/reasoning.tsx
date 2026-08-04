@@ -11,6 +11,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { resolveReasoningGroupDuration } from "@/features/chat";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -20,7 +21,8 @@ import {
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon, CopyIcon, LightbulbIcon } from "lucide-react";
+import { ChevronDownIcon, CopyIcon } from "lucide-react";
+import { BulbIcon } from "@/lib/bulb-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -128,7 +130,7 @@ function ReasoningTrigger({
       )}
       {...props}
     >
-      <LightbulbIcon className="aui-reasoning-trigger-icon size-4 shrink-0" />
+      <BulbIcon className="aui-reasoning-trigger-icon size-4 shrink-0" />
       <span
         data-slot="reasoning-trigger-label"
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
@@ -162,7 +164,7 @@ function ReasoningContent({
     <CollapsibleContent
       data-slot="reasoning-content"
       className={cn(
-        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-[13.5px] outline-none",
+        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-ui-13p5 outline-none",
         "group/collapsible-content ease-out",
         "data-[state=closed]:animate-collapsible-up",
         "data-[state=open]:animate-collapsible-down",
@@ -338,13 +340,16 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   });
 
   const persistedDuration = useAuiState(({ message }) => {
-    const d = (message.metadata?.custom as Record<string, unknown>)
-      ?.reasoningDuration;
-    return typeof d === "number" ? d : 0;
+    return resolveReasoningGroupDuration(
+      message.parts,
+      startIndex,
+      message.metadata?.custom as Record<string, unknown> | undefined,
+    );
   });
 
   const [manualOpen, setManualOpen] = useState(false);
   const [dismissedWhileStreaming, setDismissedWhileStreaming] = useState(false);
+  const [retainStreamingHeight, setRetainStreamingHeight] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
 
@@ -360,11 +365,24 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }, [isReasoningStreaming]);
 
-  // Reset dismissed flag on new stream.
+  // Reset per-round open state. manualOpen is sticky and regenerate reuses this
+  // instance, so a hand-opened block would stay pinned open and never collapse.
   useEffect(() => {
     if (isReasoningStreaming) {
       setDismissedWhileStreaming(false);
+      setManualOpen(false);
     }
+  }, [isReasoningStreaming]);
+
+  // Keep the streaming height cap until the automatic close finishes. Removing
+  // it on the completion frame expands long reasoning to its full height before
+  // the collapsible can close, which makes the entire chat jump.
+  useEffect(() => {
+    const timeout = window.setTimeout(
+      () => setRetainStreamingHeight(isReasoningStreaming),
+      isReasoningStreaming ? 0 : ANIMATION_DURATION,
+    );
+    return () => window.clearTimeout(timeout);
   }, [isReasoningStreaming]);
 
   // Open while streaming (unless dismissed), or once manually opened.
@@ -377,6 +395,9 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       if (isReasoningStreaming) {
         setDismissedWhileStreaming(!open);
       } else {
+        if (open) {
+          setRetainStreamingHeight(false);
+        }
         setManualOpen(open);
       }
     },
@@ -389,11 +410,12 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       onOpenChange={handleOpenChange}
       variant={variant}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <ReasoningTrigger
           className="min-w-0 flex-1"
           active={isReasoningStreaming}
-          duration={duration || persistedDuration}
+          // Prefer server timing when available.
+          duration={persistedDuration ?? duration}
         />
         <div className="flex w-16 shrink-0 justify-end">
           {isOpen && !isReasoningStreaming && (
@@ -405,7 +427,9 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         aria-busy={isReasoningStreaming}
         streaming={isReasoningStreaming}
       >
-        <ReasoningText streaming={isReasoningStreaming}>
+        <ReasoningText
+          streaming={isReasoningStreaming || retainStreamingHeight}
+        >
           {children}
         </ReasoningText>
       </ReasoningContent>

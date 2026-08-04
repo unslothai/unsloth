@@ -34,14 +34,53 @@ _amd_smi_consecutive_failures = 0
 _amd_smi_disabled = False
 
 
+def _path_inside_venv(path: str) -> bool:
+    """True if ``path`` is inside the active venv (sys.prefix).
+
+    The venv hipInfo.exe (AMD wheel, put on PATH by main.py/worker.py for
+    bitsandbytes) is NOT a HIP SDK (see _hip_sdk_present)."""
+    try:
+        # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
+        root = os.path.normcase(os.path.realpath(sys.prefix))
+        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on
+        # it. A venv is never at root, so treat that as outside.
+        if os.path.dirname(root) == root:
+            return False
+        return os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root
+    except (ValueError, OSError):
+        # Different drive / unresolvable -> treat as outside the venv.
+        return False
+
+
+def _external_hipinfo_on_path() -> bool:
+    """True if a hipinfo OUTSIDE the venv is on PATH.
+
+    shutil.which returns only the first hit, so the venv hipInfo could shadow a
+    real HIP SDK's; scan every PATH entry and skip the venv copy."""
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        directory = directory.strip('"')  # PATH entries can be quoted on Windows
+        if not directory:
+            continue
+        candidate = os.path.join(directory, "hipinfo.exe")
+        if os.path.isfile(candidate) and not _path_inside_venv(candidate):
+            return True
+    return False
+
+
 def _hip_sdk_present() -> bool:
     """True if a HIP SDK is detectable (hipinfo on PATH or under HIP_PATH/
-    ROCM_PATH), meaning amd-smi has a working runtime and runs un-elevated."""
-    if shutil.which("hipinfo"):
+    ROCM_PATH), so amd-smi has a runtime and runs un-elevated.
+
+    Ignores the venv hipInfo.exe (AMD wheel via the bnb fix): not a HIP SDK, and
+    doesn't stop amd-smi's DiskPart UAC."""
+    if _external_hipinfo_on_path():
         return True
     for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
         root = os.environ.get(var)
-        if root and os.path.exists(os.path.join(root, "bin", "hipinfo.exe")):
+        if not root:
+            continue
+        candidate = os.path.join(root, "bin", "hipinfo.exe")
+        if os.path.exists(candidate) and not _path_inside_venv(candidate):
             return True
     return False
 
@@ -86,7 +125,7 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
         # amd-smi does not exist on Windows (neither Adrenalin nor the HIP SDK
         # ship a CLI) and can be absent on minimal Linux installs. Disable the
         # poller in one step instead of burning the 3-strike circuit breaker
-        # on guaranteed FileNotFoundError spawns. Studio's VRAM display falls
+        # on guaranteed FileNotFoundError spawns. Unsloth's VRAM display falls
         # back to torch mem_get_info.
         if not _amd_smi_disabled:
             logger.info(
@@ -105,6 +144,8 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
             ["amd-smi", *args, "--json"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = timeout,
             env = _amd_env,
             **windows_hidden_subprocess_kwargs(),

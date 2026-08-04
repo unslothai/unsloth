@@ -7,7 +7,9 @@ Pydantic schemas for Training API
 
 import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from typing import Any, Optional, List, Dict, Literal
+from typing import Any, Optional, List, Dict, Literal, Union
+
+from utils.training_runs import normalize_project_name
 
 
 # ASCII integer, optional single sign. Rejects "++512" and Unicode digits
@@ -27,6 +29,10 @@ _MAX_LORA_ALPHA = 32_768
 _MIN_VISION_IMAGE_SIZE = 256
 # 2048 is the highest most llms stay stable at
 _MAX_VISION_IMAGE_SIZE = 2048
+# Upper bound for dataset slice indices. Caps `.skip(n)` on streaming datasets so
+# an absurd index can't make the loader iterate effectively forever (DoS guard).
+# 1e9 is far beyond any realistic fine-tuning dataset row count.
+_MAX_DATASET_SLICE_INDEX = 1_000_000_000
 
 
 class S3Config(BaseModel):
@@ -93,6 +99,11 @@ class TrainingStartRequest(BaseModel):
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
+    project_name: Optional[str] = Field(
+        None,
+        max_length = 80,
+        description = "Optional user-defined project name appended to run folders and shown in history",
+    )
     training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = Field(
         ...,
         description = "Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
@@ -125,12 +136,22 @@ class TrainingStartRequest(BaseModel):
     subset: Optional[str] = None
     train_split: Optional[str] = Field("train", description = "Training split name")
     eval_split: Optional[str] = Field(None, description = "Eval split name. None = auto-detect")
+    dataset_streaming: bool = Field(
+        False,
+        description = "Whether to load the Hugging Face dataset in streaming mode",
+    )
     eval_steps: float = Field(0.00, description = "Fraction of total steps between evals (0-1)")
     dataset_slice_start: Optional[int] = Field(
-        None, description = "Inclusive start row index for dataset slicing"
+        None,
+        ge = 0,
+        le = _MAX_DATASET_SLICE_INDEX,
+        description = "Inclusive start row index for dataset slicing",
     )
     dataset_slice_end: Optional[int] = Field(
-        None, description = "Inclusive end row index for dataset slicing"
+        None,
+        ge = 0,
+        le = _MAX_DATASET_SLICE_INDEX,
+        description = "Inclusive end row index for dataset slicing",
     )
 
     @model_validator(mode = "before")
@@ -140,6 +161,75 @@ class TrainingStartRequest(BaseModel):
         if isinstance(values, dict) and "split" in values:
             values.setdefault("train_split", values.pop("split"))
         return values
+
+    @field_validator("project_name")
+    @classmethod
+    def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_project_name(value)
+
+    # NOTE: pydantic runs all `mode="after"` validators in definition order. A
+    # second one, `_check_steps_or_epochs`, is defined lower in this class; keep
+    # these cross-field checks order-independent so the two stay decoupled.
+    @model_validator(mode = "after")
+    def _validate_dataset_slice(self) -> "TrainingStartRequest":
+        # Only the ordering is validated here. No upper bound is enforced on the
+        # indices: the trainer slices via datasets `.take()` / `.select()`, which
+        # clamp gracefully when the end index exceeds the dataset length.
+        # start == end is intentionally allowed (deliberate single-row slice,
+        # e.g. for debugging); the trainer logs a warning for that 1-row case.
+        if (
+            self.dataset_slice_start is not None
+            and self.dataset_slice_end is not None
+            and self.dataset_slice_end < self.dataset_slice_start
+        ):
+            raise ValueError(
+                "dataset_slice_end must be greater than or equal to dataset_slice_start"
+            )
+        return self
+
+    @field_validator("hf_dataset")
+    @classmethod
+    def _check_hf_dataset(cls, v: Optional[str]) -> Optional[str]:
+        # Constrain the HF dataset id to a safe charset + length to shrink the
+        # path-traversal / SSRF surface of `load_dataset(<id>, ...)`.
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > 256:
+            raise ValueError("hf_dataset is too long (max 256 chars)")
+        if ".." in v:
+            raise ValueError("hf_dataset must not contain '..'")
+        if not re.fullmatch(r"[A-Za-z0-9._\-/]+", v):
+            raise ValueError("hf_dataset may only contain letters, digits, '_', '-', '.', '/'")
+        return v
+
+    @field_validator("subset")
+    @classmethod
+    def _check_subset(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if len(v) > 128:
+            raise ValueError("subset is too long (max 128 chars)")
+        if not re.fullmatch(r"[A-Za-z0-9._\-]*", v):
+            raise ValueError("subset may only contain letters, digits, '_', '-', '.'")
+        return v
+
+    @field_validator("train_split", "eval_split")
+    @classmethod
+    def _check_split_name(cls, v: Optional[str]) -> Optional[str]:
+        # Split names feed HF slice syntax (e.g. "train[:80%]"), so allow that
+        # charset but cap length and block path-traversal / NUL bytes.
+        if v is None:
+            return v
+        if len(v) > 128:
+            raise ValueError("split name is too long (max 128 chars)")
+        if "\x00" in v or ".." in v or "/" in v or "\\" in v:
+            raise ValueError("split name contains invalid characters")
+        if not re.fullmatch(r"[A-Za-z0-9_\-\[\]:%.+ ]*", v):
+            raise ValueError("split name contains invalid characters")
+        return v
 
     @field_validator("learning_rate", mode = "before")
     @classmethod
@@ -356,7 +446,7 @@ class TrainingStartRequest(BaseModel):
     random_seed: int = Field(
         3407,
         description = (
-            "Random seed; matches the Studio backend / MLX worker default "
+            "Random seed; matches the Unsloth backend / MLX worker default "
             "and unsloth's historical recommended value."
         ),
     )
@@ -380,6 +470,7 @@ class TrainingStartRequest(BaseModel):
     gradient_checkpointing: str = Field("", description = "Gradient checkpointing setting")
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
+    use_dora: bool = Field(False, description = "Use DoRA")
     train_on_completions: bool = Field(False, description = "Train on completions only")
 
     # Vision-specific LoRA parameters
@@ -406,7 +497,15 @@ class TrainingStartRequest(BaseModel):
     # GPU selection
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
+        description = (
+            "Physical GPU indices to use, for example [0, 1]. Omit or pass "
+            "[] to use automatic selection. Explicit gpu_ids are unsupported "
+            "when the parent visibility mask uses non-numeric or subdevice "
+            "entries -- this includes CUDA_VISIBLE_DEVICES with UUID/MIG "
+            "entries on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens "
+            "(e.g. '0.0,0.1') or FLAT-hierarchy (default) tile handles on "
+            "Intel XPU."
+        ),
     )
 
     # S3 dataset source configuration
@@ -415,11 +514,67 @@ class TrainingStartRequest(BaseModel):
         description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
     )
 
+    @field_validator("target_modules", mode = "before")
+    @classmethod
+    def _normalize_target_modules(cls, value: Any) -> Any:
+        # Sanitized non-LoRA history stores the unused value as null; treat it as a
+        # fresh request's omitted/default empty list on resume.
+        return [] if value is None else value
+
+    @model_validator(mode = "after")
+    def _validate_streaming_splits(self) -> "TrainingStartRequest":
+        # Streaming load_dataset does not accept HF slice syntax (e.g. "train[:50%]"
+        # or "train[:20]"). Probe-confirmed: raises ValueError: Bad split. Reject
+        # early with a clear message so the user knows to use a plain split name.
+        if self.dataset_streaming:
+            for field_name, split_val in (
+                ("train_split", self.train_split),
+                ("eval_split", self.eval_split),
+            ):
+                if split_val is not None and "[" in split_val:
+                    raise ValueError(
+                        f"dataset_streaming does not support HF slice syntax in {field_name} "
+                        f"(got {split_val!r}); streaming load_dataset raises 'Bad split' on "
+                        "bracket expressions. Use a plain split name (e.g. 'train', 'validation')."
+                    )
+        return self
+
     @model_validator(mode = "after")
     def _check_steps_or_epochs(self) -> "TrainingStartRequest":
         # Each accepts 0 as "use the other"; both 0 means nothing to train.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
             raise ValueError("Either num_epochs or max_steps must be > 0; both cannot be 0.")
+        return self
+
+    @model_validator(mode = "after")
+    def _validate_lora_variant_flags(self) -> "TrainingStartRequest":
+        # The frontend only ever sends one of these and never under Full
+        # Finetuning, but a direct API/YAML/CLI caller can bypass that. Nothing
+        # downstream breaks (full finetune ignores them, MLX rejects use_dora/
+        # use_loftq outright), but reject early here for a clear error instead
+        # of a silently-ignored flag.
+        active = [
+            name
+            for name, enabled in (
+                ("use_rslora", self.use_rslora),
+                ("use_loftq", self.use_loftq),
+                ("use_dora", self.use_dora),
+            )
+            if enabled
+        ]
+        if len(active) > 1:
+            raise ValueError(
+                f"Only one LoRA variant may be enabled at a time; got {active}. "
+                "use_rslora, use_loftq, and use_dora are mutually exclusive."
+            )
+        # getattr, not self.training_type: model_construct() (used by tests that
+        # validate a single field in isolation) leaves required fields unset, and
+        # this is a mode="after" validator so it still runs on that partial instance.
+        if getattr(self, "training_type", None) == "Full Finetuning" and active:
+            raise ValueError(
+                f"{active[0]} requires an adapter method (LoRA/QLoRA or "
+                "Continued Pretraining); it has no effect under Full Finetuning."
+            )
         return self
 
 
@@ -492,6 +647,7 @@ class TrainingRunSummary(BaseModel):
     id: str
     status: Literal["running", "completed", "stopped", "error"]
     model_name: str
+    project_name: Optional[str] = None
     dataset_name: str
     display_name: Optional[str] = None
     started_at: str
@@ -505,6 +661,11 @@ class TrainingRunSummary(BaseModel):
     loss_sparkline: Optional[List[float]] = None
     can_resume: bool = False
     resumed_later: bool = False
+    has_preview_model: bool = False
+    preview_ref: Optional[str] = None
+    # HMAC capability token for the `/p/{preview_ref}` share link; None when not
+    # previewable. The frontend appends it as `?k=` so a guessed ref can't be used.
+    preview_sig: Optional[str] = None
 
 
 class TrainingRunUpdateRequest(BaseModel):
@@ -551,3 +712,355 @@ class TrainingRunDeleteResponse(BaseModel):
 
     status: str
     message: str
+
+
+class DiffusionTrainingStartRequest(BaseModel):
+    """Request to start a diffusion (SDXL) LoRA training job.
+
+    Field names mirror ``core.training.diffusion_lora_trainer.DiffusionLoraConfig`` so the
+    service can pass ``model_dump()`` straight through. Only the paths are required; the
+    rest carry the trainer's defaults.
+    """
+
+    model_config = ConfigDict(protected_namespaces = ())
+
+    base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
+    data_dir: str = Field(..., description = "Folder of training images (+ captions)")
+    output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
+    model_family: Optional[str] = Field(
+        None,
+        description = "Explicit trainer family (sdxl / flux.1 / ...); omitted = detect from base_model",
+    )
+    instance_prompt: Optional[str] = Field(
+        None, description = "Dreambooth caption applied to images without their own caption"
+    )
+    resolution: int = Field(
+        1024, ge = 64, le = 2048, description = "Square training resolution (multiple of 8)"
+    )
+    train_steps: int = Field(500, ge = 1, le = 100000)
+    num_epochs: int = Field(
+        0,
+        ge = 0,
+        le = 1000,
+        description = (
+            "0 = use train_steps; > 0 overrides train_steps with epochs x "
+            "ceil(N / (batch x grad_accum)) optimizer steps over the N-image dataset"
+        ),
+    )
+    # Upper bound as well as positive, matching the LLM schema: JSON accepts 1e309, which floats to inf and satisfies a
+    # gt-only constraint, so the route would evict residents and start AdamW at an infinite rate. Values >= 1.0 diverge.
+    learning_rate: float = Field(1e-4, gt = 0, lt = 1.0)
+    train_batch_size: int = Field(1, ge = 1, le = 64)
+    gradient_accumulation_steps: int = Field(1, ge = 1, le = 256)
+    lora_rank: int = Field(16, ge = 1, le = 320)
+    lora_alpha: Optional[int] = Field(None, ge = 1, le = 640, description = "Defaults to lora_rank")
+    # Strictly below 1: PEFT turns lora_dropout into nn.Dropout(p=...), so 1.0 zeroes the LoRA branch and the run saves an
+    # untrained adapter while reporting normal progress. Matches TrainingStartRequest's validator.
+    lora_dropout: float = Field(0.0, ge = 0.0, lt = 1.0)
+    # Mirror the remaining training-affecting knobs of DiffusionLoraConfig so a client that sets them is not silently trained with defaults. Defaults to the SDXL projections.
+    lora_target_modules: List[str] = Field(
+        default_factory = lambda: ["to_k", "to_q", "to_v", "to_out.0"],
+        description = "U-Net modules to attach LoRA to",
+    )
+    # Finite as well as non-negative: JSON accepts 1e309 (and FastAPI's parser the Infinity literal), which floats to inf and satisfies a ge-only
+    # constraint. clip_grad_norm_ then clamps its coefficient to 1.0, so the run trains completely unclipped while the config reports clipping.
+    max_grad_norm: float = Field(
+        1.0,
+        ge = 0,
+        allow_inf_nan = False,
+        description = "Gradient clipping max-norm; 0 disables clipping",
+    )
+    # Bounded to what torch.manual_seed unpacks (int64 low / uint64 high): an out-of-range value otherwise passes every
+    # preflight, evicts the resident models, spawns the trainer, and only then dies unpacking long long.
+    seed: int = Field(42, ge = -(2**63), le = 2**64 - 1)
+    mixed_precision: Literal["bf16", "fp16", "no"] = Field("bf16")
+    # Finite for the same reason as max_grad_norm: an inf gamma passes gt here and in normalized(), then collapses every
+    # min-SNR weight to 1.0, silently training on plain unweighted MSE. null is the documented disable.
+    snr_gamma: Optional[float] = Field(
+        5.0, gt = 0, allow_inf_nan = False, description = "Min-SNR loss weighting; null disables"
+    )
+    gradient_checkpointing: bool = Field(True)
+    lr_scheduler: Literal[
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "constant",
+        "constant_with_warmup",
+    ] = Field("constant")
+    lr_warmup_steps: int = Field(0, ge = 0)
+    center_crop: bool = Field(False)
+    random_flip: bool = Field(True)
+    caption_column: str = Field("text")
+    hf_token: Optional[str] = Field(None)
+    cache_latents: bool = Field(
+        True, description = "Precompute VAE latents once and free the VAE for the run"
+    )
+    cache_variants: int = Field(
+        4, ge = 1, le = 16, description = "Frozen crop/flip variants per image in the latent cache"
+    )
+    cond_cache_dir: Optional[str] = Field(
+        None,
+        description = (
+            "Directory for the PERSISTENT conditioning cache (latents + text embeddings), reused "
+            "across runs: a rerun whose images, captions and resolution are unchanged skips "
+            "loading the VAE and the multi-GB text encoders entirely. Studio-relative names are "
+            "resolved under the Studio outputs root and absolute paths must stay inside it. "
+            "null or blank keeps the in-memory cache, which is rebuilt every run."
+        ),
+    )
+    compile_transformer: Literal["off", "on", "auto"] = Field(
+        "auto", description = "Regional torch.compile of the transformer blocks"
+    )
+    enable_tf32: bool = Field(
+        True, description = "TF32 matmuls + cudnn autotuning (near-lossless speedup)"
+    )
+    base_precision: Literal["nf4", "bf16", "int8", "fp8", "mxfp8", "auto"] = Field(
+        "nf4",
+        description = (
+            "DiT base transformer precision: nf4 QLoRA (memory floor, default), bf16 dense, "
+            "int8 torchao weight-only, fp8 float8 training compute (Ada/Hopper/Blackwell), "
+            "mxfp8 block-scaled float8 compute (Blackwell, best at high resolution/batch), "
+            "or auto (pick by free VRAM + GPU class). Dense modes need a non-prequant base."
+        ),
+    )
+    # DiT-only levers the trainer implements. Undeclared, they were silently dropped by model_dump(); the defaults match DiffusionLoraConfig.
+    ema_decay: float = Field(
+        0.0, ge = 0.0, lt = 1.0, description = "EMA of the LoRA weights; 0 disables it"
+    )
+    cfg_dropout: float = Field(
+        0.0, ge = 0.0, le = 1.0, description = "Chance of dropping the caption to an empty prompt"
+    )
+    weighting_scheme: Literal["none", "bell"] = Field(
+        "none",
+        description = (
+            "Per-sample loss weighting over the drawn timestep: none (unweighted MSE) or bell "
+            "(Gaussian bell centered mid-schedule). Timesteps are always logit-normal sampled."
+        ),
+    )
+    flow_shift: Optional[Union[float, Literal["auto"]]] = Field(
+        None,
+        description = (
+            "Flow-matching timestep shift. null uses the family default "
+            "(auto for qwen-image, 1.0 otherwise)."
+        ),
+    )
+
+
+class DiffusionTrainingStopRequest(BaseModel):
+    """Optional body for stopping a diffusion training job. ``save`` mirrors the LLM
+    trainer's stop: True (default) exports the partial adapter, False cancels without
+    leaving one behind."""
+
+    save: bool = Field(True)
+
+
+class DiffusionTrainingStartResponse(BaseModel):
+    """Response for starting a diffusion training job."""
+
+    job_id: str
+    status: str
+
+
+class DiffusionMetricHistory(BaseModel):
+    """Paired step-indexed history arrays for the live training charts. ``lr`` and
+    ``grad_norm`` entries may be null so those sparse series still align with ``steps``
+    by index."""
+
+    steps: List[int] = Field(default_factory = list)
+    loss: List[float] = Field(default_factory = list)
+    lr: List[Optional[float]] = Field(default_factory = list)
+    grad_norm: List[Optional[float]] = Field(default_factory = list)
+
+
+class DiffusionTrainingStatusResponse(BaseModel):
+    """A snapshot of the current diffusion training job (or idle)."""
+
+    active: bool
+    job_id: Optional[str] = None
+    status: str
+    message: str = ""
+    step: int = 0
+    total_steps: int = 0
+    loss: Optional[float] = None
+    avg_loss: Optional[float] = None
+    learning_rate: Optional[float] = None
+    # Total pre-clip gradient norm from the last optimizer step (health signal the UI charts).
+    grad_norm: Optional[float] = None
+    num_images: Optional[int] = None
+    in_model_load: bool = False
+    output_dir: Optional[str] = None
+    lora_path: Optional[str] = None
+    # The second, EMA-averaged adapter written in the run's ema subdir when ema_decay was enabled.
+    ema_path: Optional[str] = None
+    # Where the adapter was mirrored into the Studio LoRA catalog, and what family / base it trained from, so the UI can deploy it.
+    catalog_path: Optional[str] = None
+    family: Optional[str] = None
+    base_model: Optional[str] = None
+    # Live throughput + peak VRAM (from the trainer's progress events).
+    samples_per_second: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
+    started_at: Optional[float] = None
+    updated_at: Optional[float] = None
+    # Bounded step/loss/lr history for the live loss + LR charts.
+    metric_history: Optional[DiffusionMetricHistory] = None
+
+
+class DiffusionTrainingRunSummary(BaseModel):
+    """One persisted diffusion training run (terminal), as listed in the Train tab's
+    previous-runs history. The heavy payload (config + metric logs) lives in the detail."""
+
+    job_id: str
+    status: str
+    message: str = ""
+    adapter: Optional[str] = None
+    family: Optional[str] = None
+    base_model: Optional[str] = None
+    step: int = 0
+    total_steps: int = 0
+    avg_loss: Optional[float] = None
+    # Whether this run left an adapter on disk (full completion or stop-and-save).
+    saved: bool = False
+    catalog_path: Optional[str] = None
+    instance_prompt: Optional[str] = None
+    started_at: Optional[float] = None
+    ended_at: Optional[float] = None
+
+
+class DiffusionTrainingRunDetail(DiffusionTrainingRunSummary):
+    """The full persisted record: summary + scrubbed start config + metric logs."""
+
+    loss: Optional[float] = None
+    samples_per_second: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
+    num_images: Optional[int] = None
+    lora_path: Optional[str] = None
+    ema_path: Optional[str] = None
+    config: Optional[dict] = None
+    metric_history: Optional[DiffusionMetricHistory] = None
+
+
+class DiffusionTrainingRunsResponse(BaseModel):
+    runs: List[DiffusionTrainingRunSummary] = Field(default_factory = list)
+
+
+class DiffusionDatasetSummary(BaseModel):
+    """One image-dataset folder under the Studio datasets root."""
+
+    name: str
+    path: str
+    image_count: int
+    caption_count: int
+
+
+class DiffusionTrainableFamily(BaseModel):
+    """A base-model family the diffusion trainer supports, with UI-facing metadata."""
+
+    name: str
+    label: str
+    default_base: str
+    base_repos: List[str] = Field(default_factory = list)
+    defaults: dict = Field(default_factory = dict)
+    vram_note: str = ""
+    # vram_note's facts as fields. Empty when this host cannot train the family.
+    params: str = ""
+    qlora_vram_gb: Optional[int] = None
+    gated: bool = False
+    note: str = ""
+    # base_precision modes this machine supports for the family (empty = no selector, e.g. SDXL), the recommended pick, and
+    # whether regional torch.compile applies. Defaults keep older backends' payloads valid.
+    precision_modes: List[str] = Field(default_factory = list)
+    recommended_precision: str = "nf4"
+    supports_compile: bool = False
+    # When set, a LoRA trained on this family previews on this repo instead of the training base (Krea trains on Raw, runs on Turbo).
+    deploy_base: Optional[str] = None
+
+
+class DiffusionTrainingInfoResponse(BaseModel):
+    """Where diffusion training reads/writes on this Studio, plus usable datasets and the
+    trainable model families (so the UI can offer a base picker with realistic guidance)."""
+
+    datasets_root: str
+    outputs_root: str
+    datasets: List[DiffusionDatasetSummary]
+    families: List[DiffusionTrainableFamily] = Field(default_factory = list)
+
+
+class DiffusionDatasetUploadResponse(BaseModel):
+    """Result of uploading images/captions into a named dataset folder. Counts are
+    for the whole folder after the upload, so repeat uploads show the running total."""
+
+    name: str
+    path: str
+    image_count: int
+    caption_count: int
+    uploaded: int
+
+
+class DiffusionDatasetImageRecord(BaseModel):
+    """One image in a training dataset folder, with its resolved caption. ``caption`` is
+    null when no caption exists from any source; ``caption_source`` records where the
+    shown caption came from (``metadata`` beats a per-image ``sidecar``; ``none`` when
+    uncaptioned) so the labeling UI can highlight images that still need a caption."""
+
+    filename: str
+    caption: Optional[str] = None
+    caption_source: Literal["sidecar", "metadata", "none"] = "none"
+    width: int
+    height: int
+    size_bytes: int
+
+
+class DiffusionDatasetImagesResponse(BaseModel):
+    """Every image in a dataset folder (including uncaptioned ones), for the labeling grid."""
+
+    name: str
+    path: str
+    images: List[DiffusionDatasetImageRecord]
+
+
+class DiffusionCaptionUpdateRequest(BaseModel):
+    """Write (or, when blank, clear) the per-image ``.txt`` caption sidecar."""
+
+    caption: str = ""
+
+
+class DiffusionDatasetExample(BaseModel):
+    """A curated, one-click-importable example image dataset. ``image_cap`` bounds how many
+    images are materialized; ``license`` is shown verbatim so users see the terms before
+    importing; ``suggested_trigger`` seeds the trigger prompt for uncaptioned subject sets."""
+
+    id: str
+    label: str
+    repo: str
+    description: str
+    license: str
+    image_cap: int
+    suggested_trigger: Optional[str] = None
+
+
+class DiffusionDatasetExamplesResponse(BaseModel):
+    """The curated example-dataset registry the Train tab offers for one-click import."""
+
+    examples: List[DiffusionDatasetExample]
+
+
+class DiffusionDatasetImportRequest(BaseModel):
+    """Import a curated example (``id``) into a dataset folder (``name``; defaults to the
+    example id)."""
+
+    id: str
+    name: Optional[str] = None
+
+
+class DiffusionDatasetImportResponse(BaseModel):
+    """Result of a one-click example import: folder counts plus provenance so the UI can
+    show what was fetched and under what license."""
+
+    name: str
+    path: str
+    image_count: int
+    caption_count: int
+    imported: int
+    license: str
+    source_repo: str

@@ -37,10 +37,10 @@ import { MODEL_TYPE_TO_HF_TASK, PRIORITY_TRAINING_MODELS, applyPriorityOrdering 
 import {
   useDebouncedValue,
   useGpuInfo,
-  useHfModelSearch,
   useHfTokenValidation,
-  useInfiniteScroll,
 } from "@/hooks";
+import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import { extractParamLabel } from "@/lib/model-size";
 import { formatCompact } from "@/lib/utils";
 import {
@@ -93,12 +93,16 @@ export function ModelSelectionStep() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    scannedCount,
     error: hfSearchError,
-  } = useHfModelSearch(debouncedQuery, {
+  } = useHubModelSearch(debouncedQuery, {
     task,
     accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
+    // Curated unsloth listing by default, but a typed query searches the whole
+    // Hub (unsloth floated first) so non-unsloth base models stay selectable.
+    ownerScope: debouncedQuery.trim() ? "all" : "unsloth",
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =
@@ -109,7 +113,7 @@ export function ModelSelectionStep() {
     return applyPriorityOrdering(ids);
   }, [hfResults]);
 
-  // Match Studio: only show exception signals (OOM/TIGHT) in training flows.
+  // Match Unsloth: only show exception signals (OOM/TIGHT) in training flows.
   const vramMap = useMemo(() => {
     const fitMap = buildModelVramMap(
       hfResults,
@@ -128,10 +132,11 @@ export function ModelSelectionStep() {
   }, [hfResults, gpu, trainingMethod]);
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
-    fetchMore,
-    hfResults.length,
-  );
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
+    isFetching: isLoading || isLoadingMore,
+    resultCount: hfResults.length,
+    resetKey: debouncedQuery,
+  });
 
   useEffect(() => {
     ensureModelDefaultsLoaded();
@@ -281,12 +286,12 @@ export function ModelSelectionStep() {
                         </Tooltip>
                         <span className="flex items-center gap-1.5 shrink-0">
                           {fitStatus === "exceeds" && (
-                            <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">
+                            <span className="text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">
                               OOM
                             </span>
                           )}
                           {fitStatus === "tight" && (
-                            <span className="text-[9px] font-medium !text-amber-400">
+                            <span className="text-ui-9 font-medium !text-amber-400">
                               TIGHT
                             </span>
                           )}

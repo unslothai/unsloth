@@ -210,7 +210,7 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
           <span className="text-xs text-foreground/90">{label}</span>
           {statusLabel ? (
             <span
-              className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${isComplete ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30" : "bg-muted text-muted-foreground"}`}
+              className={`rounded-full px-1.5 py-0.5 text-ui-10 font-medium ${isComplete ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30" : "bg-muted text-muted-foreground"}`}
             >
               {statusLabel}
             </span>
@@ -221,19 +221,19 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
         </span>
       </div>
       {sizeLabel ? (
-        <div className="text-[11px] tabular-nums text-muted-foreground">
+        <div className="text-ui-11 tabular-nums text-muted-foreground">
           {sizeLabel}
         </div>
       ) : null}
       {state.totalBytes > 0 ? (
         <Progress
           value={state.percent}
-          indicatorClassName="bg-[linear-gradient(90deg,oklch(0.66_0.142_166.6)_0%,oklch(0.705_0.132_166.6)_55%,oklch(0.75_0.122_166.6)_100%)]"
+          indicatorClassName="bg-[linear-gradient(90deg,var(--control-accent)_0%,color-mix(in_oklab,var(--control-accent)_72%,white)_100%)]"
         />
       ) : null}
       {state.cachePath ? (
         <div
-          className="truncate rounded bg-muted/50 px-2 py-1 text-[10px] text-muted-foreground/70"
+          className="truncate rounded bg-muted/50 px-2 py-1 text-ui-10 text-muted-foreground/70"
           title={state.cachePath}
         >
           {formatCachePath(state.cachePath)}
@@ -263,6 +263,10 @@ export function TrainingStartOverlay({
   const configuredModel = useTrainingConfigStore((s) => s.selectedModel);
   const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
   const dataset = useTrainingConfigStore((s) => s.dataset);
+  // Streaming runs never fully download the dataset (only small metadata lands
+  // in the HF cache), so the cache-watching download bar would sit near 0%
+  // forever and read as "stuck downloading". Show a streaming note instead.
+  const datasetStreaming = useTrainingConfigStore((s) => s.datasetStreaming);
   // Only HF datasets have a download phase to track; uploaded files are already
   // on disk by the time the overlay shows up.
   const hfDatasetName = datasetSource === "huggingface" ? dataset : null;
@@ -380,7 +384,11 @@ export function TrainingStartOverlay({
               step: currentStep,
             })}
           </AnimatedSpan>
-          {datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
+          {datasetStreaming ? (
+            <AnimatedSpan className="mt-3 text-muted-foreground">
+              {t("studio.trainingStart.datasetStreaming")}
+            </AnimatedSpan>
+          ) : datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
               <DownloadRow
                 label={t("studio.trainingStart.dataset")}

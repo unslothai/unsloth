@@ -24,6 +24,13 @@ export interface RagDocument {
   createdAt?: string | null;
 }
 
+/** RagDocument enriched for the global uploaded-files list (settings Data tab). */
+export interface UploadedDocument extends RagDocument {
+  sizeBytes?: number | null;
+  kbName?: string | null;
+  projectName?: string | null;
+}
+
 export interface DocumentUploadResult {
   documentId: string;
   jobId: string;
@@ -39,6 +46,7 @@ export interface IndexJob {
   stage?: string | null;
   progress?: number | null;
   error?: string | null;
+  numChunks?: number | null;
 }
 
 /** One SSE frame from /jobs/{jobId}/events. */
@@ -47,6 +55,7 @@ export interface JobEvent {
   stage?: string | null;
   progress?: number | null;
   error?: string | null;
+  num_chunks?: number | null;
 }
 
 /** Coords 0..1, top-left origin. */

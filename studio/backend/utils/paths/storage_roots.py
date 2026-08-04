@@ -36,7 +36,7 @@ def _infer_studio_home_from_venv() -> Path | None:
 
 
 def studio_root() -> Path:
-    """Studio install root.
+    """Unsloth install root.
 
     Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then sys.prefix
     inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins if
@@ -61,8 +61,13 @@ def cache_root() -> Path:
     return studio_root() / "cache"
 
 
+def llama_slot_cache_root() -> Path:
+    """Dir llama-server saves/restores slot KV state in across idle unloads."""
+    return cache_root() / "llama-slots"
+
+
 def studio_bin_root() -> Path:
-    """Dir for Studio-managed executables (the `unsloth` shim, downloaded tools like cloudflared)."""
+    """Dir for Unsloth-managed executables (the `unsloth` shim, downloaded tools like cloudflared)."""
     return studio_root() / "bin"
 
 
@@ -121,7 +126,7 @@ def _xdg_user_dir(key: str) -> Path | None:
     config = Path.home() / ".config" / "user-dirs.dirs"
     try:
         lines = config.read_text(encoding = "utf-8").splitlines()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     prefix = f"{key}="
     for line in lines:
@@ -207,7 +212,7 @@ def lmstudio_model_dirs() -> list[Path]:
     settings_path = Path.home() / ".lmstudio" / "settings.json"
     if settings_path.is_file():
         try:
-            with open(settings_path) as f:
+            with open(settings_path, encoding = "utf-8-sig") as f:
                 settings = json.load(f)
             downloads = settings.get("downloadsFolder", "")
             if downloads:
@@ -272,24 +277,27 @@ def well_known_model_dirs() -> list[Path]:
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
-    Respects the standard HF cache chain (explicit HF_HOME / HF_HUB_CACHE,
-    then XDG_CACHE_HOME, then ~/.cache/huggingface) and only sets vars the
-    user hasn't, so explicit overrides are honored.
+    Explicit Hugging Face environment variables take precedence over Studio's
+    stored location. Studio seeds import-time variables once, while each later
+    worker receives its own captured cache location.
     """
     root = cache_root()
-    xdg_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
-    hf_default = xdg_cache / "huggingface"
+    from utils.hf_cache_settings import initialize_hf_cache_environment
+
+    initialize_hf_cache_environment()
     defaults: dict[str, str] = {
-        "HF_HOME": str(hf_default),
-        "HF_HUB_CACHE": str(hf_default / "hub"),
-        "HF_XET_CACHE": str(hf_default / "xet"),
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
     }
     for key, value in defaults.items():
         if key not in os.environ:
             os.environ[key] = value
-            Path(value).mkdir(parents = True, exist_ok = True)
+            # Best-effort: a non-writable custom HF_HOME must not crash startup;
+            # HF surfaces a clear error at download time instead.
+            try:
+                Path(value).mkdir(parents = True, exist_ok = True)
+            except OSError:
+                pass
 
 
 def ensure_studio_directories() -> None:
@@ -428,7 +436,7 @@ def resolve_export_write_dir(path_value: str | None = None) -> Path:
 
     Unlike :func:`resolve_export_dir`, this function passes absolute
     paths through as-is so users can target a different drive when
-    their Studio install lives on a constrained system volume
+    their Unsloth install lives on a constrained system volume
     (see :gh-issue:`6082`). Used only by the export write path.
     """
     if not path_value or not str(path_value).strip():

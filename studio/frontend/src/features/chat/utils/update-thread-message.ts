@@ -9,7 +9,7 @@ type ThreadImportExport = {
 type ContentPart = { type: "text" | "reasoning" | "tool"; text: string };
 
 /**
- * Extracts only the editable text and reasoning from a message, 
+ * Extracts only the editable text and reasoning from a message,
  * ignoring structured parts like tool calls that cannot be edited as plain text.
  */
 export function extractTaggedText(content: any): string {
@@ -23,16 +23,16 @@ export function extractTaggedText(content: any): string {
     .map((part: any) => {
       if (typeof part === 'string') return part;
       if (!part) return "";
-      
+
       // Only extract text from 'text' or 'reasoning' parts.
-      // Tool calls/responses are ignored here so they aren't accidentally 
+      // Tool calls/responses are ignored here so they aren't accidentally
       // deleted or corrupted by the user in the textarea.
       const text = part.text || part.content || "";
       if (!text) return "";
-      
+
       switch (part.type) {
-        case 'reasoning': 
-          // Trim the text first so we don't accumulate newlines 
+        case 'reasoning':
+          // Trim the text first so we don't accumulate newlines
           // around the tags on every save.
           return `${open}THINK${close}\n${text.trim()}\n${open}/THINK${close}`;
         case 'text':
@@ -57,12 +57,12 @@ function parseTaggedTextToContent(text: string): ContentPart[] {
     const index = match.index;
 
     if (index > lastIndex) {
-      // Trim the extracted content to remove any leading/trailing 
+      // Trim the extracted content to remove any leading/trailing
       // newlines created by the tag wrapping process.
       const content = text.substring(lastIndex, index).trim();
       if (content) parts.push({ type: currentType, text: content });
     }
-    
+
     currentType = fullTag.startsWith("</") ? "text" : (tagName === "THINK" ? "reasoning" : "tool");
     lastIndex = index + fullTag.length;
   }
@@ -91,7 +91,7 @@ export async function updateThreadMessage(args: {
     throw new Error(`Message with ID ${messageId} not found in thread.`);
   }
 
-  const { parentId: originalParentId } = targetMessageEntry; 
+  const { parentId: originalParentId } = targetMessageEntry;
   const { createdAt: originalCreatedAt } = targetMessageEntry.message;
 
   const updatedMessages = currentExport.messages.map((m) => {
@@ -101,18 +101,18 @@ export async function updateThreadMessage(args: {
     let finalContent: any[] = [];
 
     if (Array.isArray(originalContent)) {
-      const firstEditableIndex = originalContent.findIndex((part: any) => 
+      const firstEditableIndex = originalContent.findIndex((part: any) =>
         part.type === 'text' || part.type === 'reasoning'
       );
 
       if (firstEditableIndex === -1) {
-        const nonEditableParts = originalContent.filter((part: any) => 
+        const nonEditableParts = originalContent.filter((part: any) =>
           part.type !== 'text' && part.type !== 'reasoning'
         );
         finalContent = [...parsedEditableContent, ...nonEditableParts];
       } else {
         const before = originalContent.slice(0, firstEditableIndex);
-        const after = originalContent.slice(firstEditableIndex + 1).filter((part: any) => 
+        const after = originalContent.slice(firstEditableIndex + 1).filter((part: any) =>
           part.type !== 'text' && part.type !== 'reasoning'
         );
         finalContent = [...before, ...parsedEditableContent, ...after];

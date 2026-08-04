@@ -5,6 +5,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
+import base64
 import ipaddress
 import os
 import shlex
@@ -30,6 +31,7 @@ from auth import storage, hashing
 from auth.authentication import (
     create_access_token,
     create_refresh_token,
+    get_current_credential,
     get_current_subject,
     get_current_subject_allow_password_change,
     refresh_access_token,
@@ -73,9 +75,81 @@ _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILS = 5
 _LOGIN_IP_MAX_FAILS = 30
 _LOGIN_LOCKOUT_SECONDS = 60
-# Bucket-dict cap. On overflow, prune stale entries; if still full the failure
-# folds into the per-IP aggregate only.
+# Bucket-dict cap. On overflow, reclaim expired buckets; a new IP that still can't
+# fit falls back to a sharded overflow rather than evicting a hot bucket.
 _LOGIN_MAX_BUCKETS = 4096
+# Last full stale-sweep time; rate-limits the O(n) sweep under a burst of new IPs.
+_LAST_IP_PRUNE = 0.0
+# Sharded overflow for per-IP failures that can't get their own bucket while the
+# dict is saturated. Each shard is a small fixed-capacity dict ``ip -> [count,
+# window_start]``: a per-IP count (so a source is throttled, and cleared on
+# success, by its own failures -- no cross-IP collateral) with hard-bounded
+# memory and O(1) lookups. When a shard is full a new IP evicts the lowest-count
+# entry (and starts clean, never inheriting its count) rather than growing without
+# bound, so a high-cardinality spray can't blow memory/CPU the way a per-failure
+# deque could; a persistent attacker keeps a high count and is never the one
+# evicted.
+_LOGIN_IP_OVERFLOW_SHARDS = 256
+_LOGIN_IP_OVERFLOW_MAX = 64  # distinct IPs tracked per shard
+_LOGIN_IP_OVERFLOW: list[dict] = [dict() for _ in range(_LOGIN_IP_OVERFLOW_SHARDS)]
+
+
+def _overflow_shard(ip: str) -> dict:
+    return _LOGIN_IP_OVERFLOW[hash(ip) % _LOGIN_IP_OVERFLOW_SHARDS]
+
+
+def _overflow_record(ip: str, now: float) -> int:
+    """Record an overflow failure for ``ip`` and return its windowed count."""
+    shard = _overflow_shard(ip)
+    entry = shard.get(ip)
+    if entry is not None:
+        if now - entry[1] > _LOGIN_WINDOW_SECONDS:
+            entry[0], entry[1] = 1, now
+        else:
+            # Only "at or above the per-IP threshold" matters for blocking, so cap
+            # the count there. This also keeps the migration into a per-IP bucket
+            # bounded -- without the cap a saturated source could accrue an
+            # unbounded count, then materialize one deque entry per failure
+            # (``[start] * carried``) on the next attempt, allocating an arbitrarily
+            # large deque while holding the login lock.
+            entry[0] = min(entry[0] + 1, _LOGIN_IP_MAX_FAILS)
+        return entry[0]
+    if len(shard) >= _LOGIN_IP_OVERFLOW_MAX:
+        # Make room by dropping the lowest-count entry, but the new source starts
+        # clean -- never inherit the evicted IP's failures, or an unrelated source
+        # could be 429'd after one attempt. Worst case under a saturated shard is
+        # that a heavy hitter briefly resets, not that a bystander is blocked.
+        del shard[min(shard, key = lambda k: shard[k][0])]
+    shard[ip] = [1, now]
+    return 1
+
+
+def _overflow_blocked(ip: str, now: float) -> int:
+    """Seconds this IP is throttled by its own overflow count, or 0."""
+    shard = _overflow_shard(ip)
+    entry = shard.get(ip)
+    if entry is None:
+        return 0
+    if now - entry[1] > _LOGIN_WINDOW_SECONDS:
+        del shard[ip]
+        return 0
+    if entry[0] >= _LOGIN_IP_MAX_FAILS:
+        return max(1, int(_LOGIN_WINDOW_SECONDS - (now - entry[1])))
+    return 0
+
+
+def _overflow_take(ip: str, now: float) -> tuple[int, float]:
+    """Pop ip's overflow entry, returning its ``(count, window_start)`` so the
+    count can migrate into a fresh per-IP bucket. ``(0, now)`` if none/expired."""
+    entry = _overflow_shard(ip).pop(ip, None)
+    if entry is None or now - entry[1] > _LOGIN_WINDOW_SECONDS:
+        return 0, now
+    # Cap the carried count so the bucket migration never allocates more than the
+    # per-IP threshold worth of deque entries (defensive; _overflow_record already
+    # clamps, but keep the bound at the consumption site too).
+    return min(entry[0], _LOGIN_IP_MAX_FAILS), entry[1]
+
+
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
 # into one slot so attacker cardinality can't blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
@@ -168,13 +242,50 @@ def _prune_stale_buckets(now: float) -> None:
         _LOGIN_BUCKETS.pop(key, None)
 
 
+def _prune_stale_ip_buckets(now: float) -> None:
+    """Drop empty / expired per-IP buckets to bound memory under spray.
+
+    The dict is otherwise reclaimed only on a successful login, so a failure-only
+    spray from many (or spoofed) IPs would grow it without bound.
+    """
+    stale: list[str] = []
+    for bucket_ip, bucket in _LOGIN_IP_BUCKETS.items():
+        _prune_bucket(bucket, now)
+        if not bucket:
+            stale.append(bucket_ip)
+    for bucket_ip in stale:
+        _LOGIN_IP_BUCKETS.pop(bucket_ip, None)
+
+
 def _record_login_failure(key: tuple[str, str]) -> int:
+    global _LAST_IP_PRUNE
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        ip_bucket = _LOGIN_IP_BUCKETS.setdefault(ip, deque())
-        _prune_bucket(ip_bucket, now)
-        ip_bucket.append(now)
+        # Keep the dict bounded without disabling throttling and without letting a
+        # spray reset a hot bucket: for a new IP at the cap, reclaim expired buckets
+        # (rate-limited) to make room.
+        ip_bucket = _LOGIN_IP_BUCKETS.get(ip)
+        if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
+            if now - _LAST_IP_PRUNE >= 1.0:
+                _prune_stale_ip_buckets(now)
+                _LAST_IP_PRUNE = now
+        if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
+            # Still full -- every bucket is hot. Count this failure in the IP's
+            # bounded overflow shard instead of evicting a live one, so the spray
+            # stays throttled but can't push out (and reset) any IP's own counter.
+            ip_fails = _overflow_record(ip, now)
+        else:
+            if ip_bucket is None:
+                ip_bucket = _LOGIN_IP_BUCKETS[ip] = deque()
+                # Carry over any overflow failures this IP accrued while the dict
+                # was saturated, so straddling the overflow -> bucket transition
+                # can't double the effective per-IP limit.
+                carried, start = _overflow_take(ip, now)
+                ip_bucket.extend([start] * carried)
+            _prune_bucket(ip_bucket, now)
+            ip_bucket.append(now)
+            ip_fails = len(ip_bucket)
 
         if key not in _LOGIN_BUCKETS and len(_LOGIN_BUCKETS) >= _LOGIN_MAX_BUCKETS:
             _prune_stale_buckets(now)
@@ -183,8 +294,8 @@ def _record_login_failure(key: tuple[str, str]) -> int:
             _prune_bucket(account_bucket, now)
             account_bucket.append(now)
             return len(account_bucket)
-        # Bucket dict at cap; per-IP cap still applies via ip_bucket.
-        return len(ip_bucket)
+        # Both dicts at cap (sustained spray): fall back to the per-IP count.
+        return ip_fails
 
 
 def _blocked_for(bucket: deque | None, now: float, max_fails: int) -> int:
@@ -201,10 +312,16 @@ def _login_blocked(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        return max(
-            _blocked_for(_LOGIN_BUCKETS.get(key), now, _LOGIN_MAX_FAILS),
+        # Honor the IP's overflow shard regardless of current dict capacity: a
+        # source counted there during saturation must stay throttled until those
+        # failures age out, even if a bucket later frees up -- otherwise a fresh
+        # bucket would reset it. Shards are empty outside saturation, so this is a
+        # no-op in the common case.
+        ip_blocked = max(
             _blocked_for(_LOGIN_IP_BUCKETS.get(ip), now, _LOGIN_IP_MAX_FAILS),
+            _overflow_blocked(ip, now),
         )
+        return max(_blocked_for(_LOGIN_BUCKETS.get(key), now, _LOGIN_MAX_FAILS), ip_blocked)
 
 
 def _clear_login_bucket(key: tuple[str, str]) -> None:
@@ -212,6 +329,38 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
     with _LOGIN_BUCKETS_LOCK:
         _LOGIN_BUCKETS.pop(key, None)
         _LOGIN_IP_BUCKETS.pop(ip, None)
+        # A successful login resets the IP's throttle, including any overflow it
+        # accumulated during saturation (drop only this IP's entry, so a
+        # shard-mate's throttle is untouched).
+        _overflow_shard(ip).pop(ip, None)
+
+
+# Sync def (not async): compute_identity_proof touches SQLite on the first call,
+# so FastAPI runs it in the threadpool rather than blocking the event loop.
+@router.get("/identity")
+def identity(nonce: str, request: Request) -> dict:
+    """Challenge-response proof this is the real local Unsloth: caller sends a nonce,
+    gets HMAC(install identity secret, nonce, connection address + port).
+    Unauthenticated and side-effect free; a process that can't read the same-user
+    secret can't forge a proof, and binding to the address/port the connection
+    landed on stops a squatter relaying a proof from the real Unsloth elsewhere."""
+    try:
+        raw = base64.urlsafe_b64decode(nonce)
+    except Exception:
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must be base64url"
+        )
+    if not 16 <= len(raw) <= 128:
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must decode to 16-128 bytes"
+        )
+    # The address + port the connection actually landed on, from the socket
+    # (request.scope is getsockname, so it is the real local address even when
+    # bound to 0.0.0.0), never the client-controlled Host header.
+    server = request.scope.get("server") or ("", 0)
+    host = server[0] or ""
+    port = server[1] if server[1] is not None else 0
+    return {"proof": storage.compute_identity_proof(raw, host, port)}
 
 
 @router.get("/status", response_model = AuthStatusResponse)
@@ -251,7 +400,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
-    salt, pwd_hash, _jwt_secret, must_change_password = record
+    salt, pwd_hash, jwt_secret, must_change_password = record
     if not hashing.verify_password(payload.password, salt, pwd_hash):
         _record_login_failure(key)
         raise HTTPException(
@@ -261,8 +410,10 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
-    access_token = create_access_token(subject = payload.username)
-    refresh_token = create_refresh_token(subject = payload.username)
+    # Issue against the credential version just verified, not whatever is in the DB
+    # now: a concurrent reset-password must not hand this login a post-reset session.
+    access_token = create_access_token(subject = payload.username, secret = jwt_secret)
+    refresh_token = create_refresh_token(subject = payload.username, secret = jwt_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,
@@ -290,16 +441,17 @@ async def logout(
 @router.post("/desktop-login", response_model = Token)
 async def desktop_login(payload: DesktopLoginRequest) -> Token:
     """Exchange a local desktop secret for normal admin-subject tokens."""
-    username = storage.validate_desktop_secret(payload.secret)
-    if username is None:
+    verified = storage.validate_desktop_secret_with_credential(payload.secret)
+    if verified is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Desktop authentication failed",
         )
+    username, jwt_secret = verified
 
     return Token(
-        access_token = create_access_token(subject = username, desktop = True),
-        refresh_token = create_refresh_token(subject = username, desktop = True),
+        access_token = create_access_token(subject = username, desktop = True, secret = jwt_secret),
+        refresh_token = create_refresh_token(subject = username, desktop = True, secret = jwt_secret),
         token_type = "bearer",
         must_change_password = False,
     )
@@ -314,9 +466,11 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired refresh token",
         )
-    username, is_desktop = consumed
-    new_access_token = create_access_token(subject = username, desktop = is_desktop)
-    new_refresh_token = create_refresh_token(subject = username, desktop = is_desktop)
+    username, is_desktop, jwt_secret = consumed
+    new_access_token = create_access_token(subject = username, desktop = is_desktop, secret = jwt_secret)
+    new_refresh_token = create_refresh_token(
+        subject = username, desktop = is_desktop, secret = jwt_secret
+    )
 
     return Token(
         access_token = new_access_token,
@@ -346,20 +500,38 @@ async def change_password(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Current password is incorrect",
         )
+    if any(ch.isspace() for ch in payload.new_password):
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "New password cannot contain spaces",
+        )
     if payload.current_password == payload.new_password:
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST,
             detail = "New password must be different from the current password",
         )
 
-    storage.update_password(current_subject, payload.new_password)
-    storage.revoke_user_refresh_tokens(current_subject)
+    # Single transaction: a separate refresh-token purge could fail after the
+    # password commit, leaving pre-change tokens able to mint access tokens.
+    # Conditional on the hash just verified: a reset-password that landed while
+    # this request was in flight must not be overwritten by it.
+    new_secret = storage.update_password(
+        current_subject,
+        payload.new_password,
+        revoke_refresh_tokens = True,
+        expect_password_hash = pwd_hash,
+    )
+    if new_secret is None:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "The password changed while this request was in flight. Sign in again.",
+        )
     try:
         request.app.state.bootstrap_password = None
     except AttributeError:
         pass
-    access_token = create_access_token(subject = current_subject)
-    refresh_token = create_refresh_token(subject = current_subject)
+    access_token = create_access_token(subject = current_subject, secret = new_secret)
+    refresh_token = create_refresh_token(subject = current_subject, secret = new_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,
@@ -387,20 +559,28 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
-    payload: CreateApiKeyRequest, current_subject: str = Depends(get_current_subject)
+    payload: CreateApiKeyRequest, credential: tuple = Depends(get_current_credential)
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
+    current_subject, generation = credential
     expires_at = None
     if payload.expires_in_days is not None:
         expires_at = (
             datetime.now(timezone.utc) + timedelta(days = payload.expires_in_days)
         ).isoformat()
 
-    raw_key, row = storage.create_api_key(
-        username = current_subject,
-        name = payload.name,
-        expires_at = expires_at,
-    )
+    try:
+        raw_key, row = storage.create_api_key(
+            username = current_subject,
+            name = payload.name,
+            expires_at = expires_at,
+            expect_gen = generation,
+        )
+    except storage.CredentialRotated:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
+        )
     return CreateApiKeyResponse(
         key = raw_key,
         api_key = _row_to_api_key_response(row),

@@ -1,4 +1,6 @@
 #!/usr/bin/env pwsh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit test for Resolve-CudaToolkit in studio/setup.ps1. No GPU required: the
 # detection helpers (nvidia-smi, nvcc, Find-Nvcc, ...) are stubbed so the real
 # function logic runs against spoofed Blackwell sm_120 driver/toolkit scenarios.
@@ -28,6 +30,16 @@ $mismatchFn = $ast.FindAll({ param($n)
 }, $true)
 if ($mismatchFn.Count -ne 1) { throw "expected exactly one Write-CudaDriverToolkitMismatch, found $($mismatchFn.Count)" }
 $mismatchText = $mismatchFn[0].Extent.Text
+
+# -RequireOrExit leaves through Exit-SetupFailure, so the child needs the real
+# one. Without it the call was an ignored command-not-found under
+# ErrorActionPreference=Continue, the child fell through and exited 0, and the
+# two "exits non-zero" checks failed on every run while CI stayed green.
+$exitFn = $ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Exit-SetupFailure"
+}, $true)
+if ($exitFn.Count -ne 1) { throw "expected exactly one Exit-SetupFailure, found $($exitFn.Count)" }
+$exitText = $exitFn[0].Extent.Text
 
 # --- Spoof executables for driver/toolkit compatibility scenarios ---
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("rct_" + [guid]::NewGuid().ToString("N"))
@@ -81,6 +93,8 @@ function Find-Nvcc {
 `$HasNvidiaSmi  = `$true
 `$script:CudaToolkitReady = `$false
 `$script:NvccPath = `$null; `$script:CudaToolkitRoot = `$null; `$script:CudaArch = `$null
+
+$exitText
 
 $mismatchText
 

@@ -36,6 +36,12 @@ fi
 #                             forces a source build, and causes HTTP 422 errors.
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
+#
+#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
+#                           "rocm". "cpu" forces the CPU-only prebuilt. "vulkan"
+#                           selects Vulkan even when CUDA or ROCm is detected.
+#                           "hip"/"rocm" keeps the detected HIP backend and opts
+#                           out of automatic Vulkan fallback.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -63,6 +69,27 @@ fi
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
+setup_fail() {
+    local exit_code=$1
+    shift
+    [ "$exit_code" -ne 0 ] || exit_code=1
+    local message
+    message=$(printf '%s' "$*" | tr '\r\n' '  ')
+    case "${UNSLOTH_TAURI_MODE:-0}" in
+        1|true) printf '[TAURI:ERROR] %s\n' "$message" ;;
+    esac
+    exit "$exit_code"
+}
+
+# ── Helper: can the controlling terminal actually be opened for reading? ──
+# `test -r` only checks permission bits, which look fine in containers and
+# systemd units where open() then fails with ENXIO. Probe with a real open.
+# Mirrors install.sh's _can_read_tty; defined here too because setup.sh runs
+# as its own process (install.sh invokes it, it does not source it).
+_can_read_tty() {
+    ( : </dev/tty ) >/dev/null 2>&1
+}
+
 _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
 }
@@ -71,6 +98,72 @@ verbose_substep() {
     if _is_verbose; then
         substep "$1"
     fi
+    return 0
+}
+
+_remove_agent_instruction_files() {
+    local _root
+    for _root in "$@"; do
+        [ -d "$_root" ] || continue
+        [ -L "$_root" ] && continue
+        find "$_root" \( -type f -o -type l \) \( -name 'AGENTS.md' -o -name 'CLAUDE.md' \) \
+            -exec rm -f {} + 2>/dev/null || true
+    done
+}
+
+# ── Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491) ──
+# studio/frontend/.npmrc pins registry=https://registry.npmjs.org/ as a supply-chain
+# lock. A project-level pin overrides a corporate user's ~/.npmrc proxy, so the install
+# hits npmjs.org directly and a firewall returns 403. UNSLOTH_NPM_REGISTRY is a
+# deliberate opt-in: when set we thread it as `--registry <url>` into every npm/bun
+# install. `--registry` is the highest-precedence override for BOTH tools and leaves
+# min-release-age / save-exact in force. Empty array (the default) expands to nothing
+# under `set -u`, so normal installs are unchanged.
+_NPM_REGISTRY_ARGS=()
+if [ -n "${UNSLOTH_NPM_REGISTRY:-}" ]; then
+    _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
+fi
+# Failure-path capture log consumed by _suggest_npm_registry. Set to a temp file
+# around the npm/bun installs; "" elsewhere so unrelated run_quiet calls don't capture.
+_CAPTURE_LOG=""
+
+# Print actionable guidance when a frontend/OXC npm/bun install fails and the registry
+# lock is the likely cause (corporate firewall/proxy). No-op once the user has opted in
+# via UNSLOTH_NPM_REGISTRY. We never switch registries automatically -- we only guide.
+# $1 = path to a captured install log (may be empty/missing).
+_suggest_npm_registry() {
+    [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
+    local _log="${1:-}"
+    # If we captured output and it does NOT look like a registry/network problem, stay
+    # quiet -- the raw error already shown is more useful than a misleading hint.
+    if [ -n "$_log" ] && [ -s "$_log" ] \
+        && ! grep -Eqi '40[13]|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ConnectionRefused|failed to resolve|registry\.npmjs\.org|getaddrinfo|tunneling socket|network|proxy|self.?signed|unable to (get|verify)' "$_log"; then
+        return 0
+    fi
+    # Best-effort: surface a mirror the user already configured (env or ~/.npmrc).
+    # Read npm config from / (a dir with no project .npmrc) so the frontend's pinned
+    # registry= does not mask the user's ~/.npmrc / global mirror -- the caller is
+    # still inside studio/frontend when this runs.
+    local _mirror="${NPM_CONFIG_REGISTRY:-${npm_config_registry:-}}"
+    if [ -z "$_mirror" ] && command -v npm >/dev/null 2>&1; then
+        _mirror="$( (cd / 2>/dev/null && npm config get registry) 2>/dev/null || true )"
+    fi
+    case "$_mirror" in
+        ""|undefined|null|https://registry.npmjs.org|https://registry.npmjs.org/) _mirror="" ;;
+    esac
+    printf '\n' >&2
+    step "frontend" "registry.npmjs.org looks blocked (corporate firewall/proxy?)" "$C_WARN" >&2
+    if [ -n "$_mirror" ]; then
+        substep "Unsloth pins the public npm registry; your mirror is being ignored." >&2
+        substep "Detected a registry in your npm config:" >&2
+        substep "  $_mirror" >&2
+        substep "Re-run pointing Unsloth at it:" >&2
+        substep "  UNSLOTH_NPM_REGISTRY=$_mirror ./install.sh --local" >&2
+    else
+        substep "If you use a private mirror/proxy, point Unsloth at it and re-run:" >&2
+        substep "  UNSLOTH_NPM_REGISTRY=https://your-mirror.example/api/npm/ ./install.sh --local" >&2
+    fi
+    substep "(min-release-age and save-exact stay enforced.)" >&2
     return 0
 }
 
@@ -94,7 +187,7 @@ _run_quiet() {
         exit_code=$?
         step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
         if [ "$on_fail" = "exit" ]; then
-            exit "$exit_code"
+            setup_fail "$exit_code" "$label failed (exit code $exit_code)"
         else
             return "$exit_code"
         fi
@@ -103,7 +196,10 @@ _run_quiet() {
     local tmplog
     tmplog=$(mktemp) || {
         step "error" "Failed to create temporary file" "$C_ERR" >&2
-        [ "$on_fail" = "exit" ] && exit 1 || return 1
+        if [ "$on_fail" = "exit" ]; then
+            setup_fail 1 "Failed to create temporary file for $label"
+        fi
+        return 1
     }
 
     if "$@" >"$tmplog" 2>&1; then
@@ -113,10 +209,11 @@ _run_quiet() {
         local exit_code=$?
         step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
         cat "$tmplog" >&2
+        if [ -n "${_CAPTURE_LOG:-}" ]; then cat "$tmplog" >> "$_CAPTURE_LOG" 2>/dev/null || true; fi
         rm -f "$tmplog"
 
         if [ "$on_fail" = "exit" ]; then
-            exit "$exit_code"
+            setup_fail "$exit_code" "$label failed (exit code $exit_code)"
         else
             return "$exit_code"
         fi
@@ -153,6 +250,63 @@ _nvcc_meets_llama_minimum() {
         echo "ok"
     fi
     echo "$_raw"
+}
+
+# Echo a ';'-separated CUDA arch list (e.g. "86;120"). Override ($2,
+# UNSLOTH_LLAMA_CUDA_ARCHS) wins verbatim; else parse+dedupe compute_cap text
+# ($1). Empty means "no arch detected", so the caller builds CPU instead of a
+# PTX-only binary that fails on an old driver (#5854).
+_resolve_cuda_archs() {
+    local _raw_caps=$1
+    local _arch_override=$2
+    if [ -n "$_arch_override" ]; then
+        printf '%s' "$_arch_override"
+        return 0
+    fi
+    local _archs="" _cap _arch
+    while IFS= read -r _cap; do
+        _cap=$(printf '%s' "$_cap" | tr -d '[:space:]')
+        if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+            _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+            case ";$_archs;" in
+                *";$_arch;"*) ;;
+                *) _archs="${_archs:+$_archs;}$_arch" ;;
+            esac
+        fi
+    done <<< "$_raw_caps"
+    printf '%s' "$_archs"
+}
+
+# Opt-in staged GPU smoke test after a source build (#5854 gap 2). Default off:
+# llama-server's first GPU forward pass JIT-compiles CUDA kernels and stalls
+# installs for minutes on Blackwell. Same env as install_llama_prebuilt.py.
+_staged_validation_enabled() {
+    local _raw="${UNSLOTH_LLAMA_STAGED_VALIDATION:-}"
+    # Match install_llama_prebuilt.py staged_validation_enabled(): strip + lowercase.
+    _raw="$(printf '%s' "$_raw" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+    case "$_raw" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Map the source-build GPU backend to install_llama_prebuilt --install-kind so
+# validate_server enables --n-gpu-layers for the right backends.
+_source_smoke_install_kind() {
+    if [ "${_TRY_METAL_CPU_FALLBACK:-false}" = true ]; then
+        printf '%s' "macos-arm64"
+        return 0
+    fi
+    case "${GPU_BACKEND:-}" in
+        cuda)
+            case "$(uname -m 2>/dev/null || true)" in
+                aarch64|arm64) printf '%s' "linux-arm64-cuda" ;;
+                *) printf '%s' "linux-cuda" ;;
+            esac
+            ;;
+        rocm) printf '%s' "linux-rocm" ;;
+        *) printf '%s' "" ;;
+    esac
 }
 
 # Run a GPU probe under a 10s timeout when `timeout` is available so a wedged
@@ -304,7 +458,7 @@ _print_cuda_driver_toolkit_mismatch() {
     local _driver_major=${_driver_version%%.*}
     substep "CUDA Toolkit $_toolkit_version is a major-version mismatch: toolkit major $_toolkit_major exceeds driver CUDA major $_driver_major ($_driver_version)." "$C_WARN"
     substep "Update the NVIDIA GPU driver to run CUDA Toolkit $_toolkit_version, or install a CUDA $_driver_major.x toolkit." "$C_WARN"
-    substep "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit." "$C_WARN"
+    substep "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit." "$C_WARN"
 }
 
 print_llama_error_log() {
@@ -412,10 +566,14 @@ if [ -n "$_studio_override" ]; then
     if [ ! -d "$_studio_override" ]; then
         echo "ERROR: $_studio_override_var=$_studio_override does not exist." >&2
         echo "       Run install.sh to create the install root before 'unsloth studio update'." >&2
-        exit 1
+        setup_fail 1 "$_studio_override_var=$_studio_override does not exist"
     fi
-    [ -w "$_studio_override" ] || { echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2; exit 1; }
-    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
+    if [ ! -w "$_studio_override" ]; then
+        echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2
+        setup_fail 1 "$_studio_override_var=$_studio_override is not writable"
+    fi
+    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" ||
+        setup_fail 1 "Could not resolve $_studio_override_var=$_studio_override"
 else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
@@ -439,16 +597,48 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
-# Directory-local evidence that Studio created "$1", used to adopt a custom-home
-# llama.cpp predating the .unsloth-studio-owned marker without weakening the guard.
-# Only UNSLOTH_PREBUILT_INFO.json counts (written exclusively by the prebuilt
-# installer). A top-level llama-quantize symlink is NOT trusted: a user may have
-# their own build with one, and this runs right before a destructive rm -rf, so we
-# match Windows and keep markerless source builds strict.
+# Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
+# counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
+# for Node, UNSLOTH_WHISPER_PREBUILT_INFO.json for whisper.cpp), all written only
+# by our installers. Mirrors the setup.ps1 Node guard. A markerless source build
+# stays strict since this runs right before an rm -rf.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
+    [ -f "$1/UNSLOTH_NODE_PREBUILT_INFO.json" ] && return 0
+    [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
+# Search (+x), not read (+r), is what the marker probes need: inside a directory
+# we cannot search every probe reports absent, so our own install reads as someone else's.
+_studio_dir_unsearchable() {
+    [ -d "$1" ] || return 1
+    ( cd "$1" ) 2>/dev/null && return 1
+    return 0
+}
+
+# Mirrors Exit-PathAccessDenied in setup.ps1. owner-unverified means the marker
+# was unreadable, so do not claim the tree is ours or advise deleting it.
+_path_access_denied() {
+    _pad_dir="$1"
+    _pad_label="$2"
+    _pad_mode="${3:-}"
+    step "permissions" "$_pad_label at $_pad_dir cannot be read: permission denied" "$C_ERR"
+    if [ "$_pad_mode" = "owner-unverified" ]; then
+        substep "Unsloth cannot confirm this folder is its own install while it is unreadable, so it will not tell you to remove it" "$C_WARN"
+        substep "Restore access, or move the folder aside, then re-run setup:" "$C_WARN"
+    else
+        substep "This folder lives outside the app, so reinstalling Unsloth Studio reuses it and fails the same way" "$C_WARN"
+        substep "Simplest fix: delete or rename $_pad_dir, then re-run setup (it is a managed cache and gets reinstalled)" "$C_WARN"
+        substep "If deleting is denied too, it belongs to another user; restore access with:" "$C_WARN"
+    fi
+    substep "ls -ld \"$_pad_dir\"" "$C_WARN"
+    substep "chmod -R u+rwX \"$_pad_dir\"" "$C_WARN"
+    if [ "$_pad_mode" = "owner-unverified" ]; then
+        setup_fail 1 "Permission denied reading $_pad_label at $_pad_dir. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access, or move it aside, then re-run setup."
+    fi
+    setup_fail 1 "Permission denied reading the existing $_pad_label at $_pad_dir. Delete or rename that folder (Unsloth reinstalls it) or restore access, then re-run setup. Reinstalling the app does not reset it."
+}
+
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
@@ -458,9 +648,14 @@ _assert_studio_owned_or_absent() {
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
         fi
-        echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
+        # An unsearchable tree hides its own marker and so looks like someone else's:
+        # report permissions, not ownership.
+        if _studio_dir_unsearchable "$_aso_dir"; then
+            _path_access_denied "$_aso_dir" "$_aso_label" owner-unverified
+        fi
+        echo "ERROR: $_aso_dir already exists and is not marked as an Unsloth-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
-        exit 1
+        setup_fail 1 "$_aso_label path is not an Unsloth-owned install: $_aso_dir"
     fi
 }
 
@@ -485,94 +680,151 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
 fi
 fi  # end SKIP_STUDIO_FRONTEND guard
 
-if [ "$_NEED_FRONTEND_BUILD" = false ]; then
+# OXC validator runtime (below) needs node/npm whenever its dir exists, regardless
+# of dist staleness; provision Node when the frontend builds OR the OXC dir exists.
+_OXC_DIR="$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
+if [ "$_NEED_FRONTEND_BUILD" = false ] && [ ! -d "$_OXC_DIR" ]; then
     step "frontend" "up to date"
     verbose_substep "frontend dist is newer than source inputs"
 else
 
-# ── Node ──
-NEED_NODE=true
-if command -v node &>/dev/null && command -v npm &>/dev/null; then
-    NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
-    NODE_MINOR=$(node -v | sed 's/v//' | cut -d. -f2)
-    NPM_MAJOR=$(npm -v | cut -d. -f1)
-    # Vite 8 requires Node ^20.19.0 || >=22.12.0
-    NODE_OK=false
-    if [ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -ge 19 ]; then NODE_OK=true; fi
-    if [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -ge 12 ]; then NODE_OK=true; fi
-    if [ "$NODE_MAJOR" -ge 23 ]; then NODE_OK=true; fi
-    if [ "$NODE_OK" = true ] && [ "$NPM_MAJOR" -ge 11 ]; then
-        NEED_NODE=false
-    else
-        if [ "$IS_COLAB" = true ] && [ "$NODE_OK" = true ]; then
-            # In Colab, just upgrade npm directly - nvm doesn't work well
-            if [ "$NPM_MAJOR" -lt 11 ]; then
-                substep "upgrading npm..."
-                run_maybe_quiet npm install -g npm@latest
-            fi
-            NEED_NODE=false
+# ── Node (isolated; never touches the system Node/npm) ──
+# Unsloth's frontend (Vite 8) needs Node ^20.19 || >=22.12 || >=23 and npm >= 11.
+# Three sources:
+#   system  -- system Node + npm already satisfy both; used read-only.
+#   bundled -- install a pinned isolated Node under $UNSLOTH_HOME/node, build-only.
+#   skip    -- UNSLOTH_SKIP_NODE_INSTALL=1 and system unsuitable; print manual fix.
+# decide_node_source(node_v, npm_v, skip_flag) -> system | bundled | skip
+# (pure; unit-tested in tests/sh/test_node_decision.sh).
+decide_node_source() {
+    _dns_node="${1#v}"
+    _dns_npm="$2"
+    _dns_skip="$3"
+    # Treat empty or non-numeric versions as "missing".
+    case "$_dns_node" in ''|*[!0-9.]*) _dns_node='' ;; esac
+    case "$_dns_npm"  in ''|*[!0-9.]*) _dns_npm=''  ;; esac
+    if [ -n "$_dns_node" ] && [ -n "$_dns_npm" ]; then
+        _dns_nmaj="${_dns_node%%.*}"
+        case "$_dns_node" in
+            *.*) _dns_rest="${_dns_node#*.}"; _dns_nmin="${_dns_rest%%.*}" ;;
+            *)   _dns_nmin=0 ;;
+        esac
+        case "$_dns_nmin" in ''|*[!0-9]*) _dns_nmin=0 ;; esac
+        _dns_pmaj="${_dns_npm%%.*}"
+        _dns_ok=false
+        if [ "$_dns_nmaj" -eq 20 ] && [ "$_dns_nmin" -ge 19 ]; then _dns_ok=true; fi
+        if [ "$_dns_nmaj" -eq 22 ] && [ "$_dns_nmin" -ge 12 ]; then _dns_ok=true; fi
+        if [ "$_dns_nmaj" -ge 23 ]; then _dns_ok=true; fi
+        if [ "$_dns_ok" = true ] && [ "$_dns_pmaj" -ge 11 ]; then
+            echo system
+            return 0
         fi
     fi
+    if [ "$_dns_skip" = "1" ]; then
+        echo skip
+        return 0
+    fi
+    echo bundled
+}
+
+# Mirror the llama.cpp UNSLOTH_HOME derivation; the frontend build runs first.
+if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+    _NODE_PARENT="$STUDIO_HOME"
+else
+    _NODE_PARENT="$HOME/.unsloth"
 fi
+NODE_DIR="$_NODE_PARENT/node"
 
-if [ "$NEED_NODE" = true ]; then
-    substep "installing nvm..."
-    export NODE_OPTIONS=--dns-result-order=ipv4first
-    if _is_verbose; then
-        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+_SYS_NODE_VER="$(node -v 2>/dev/null || true)"
+_SYS_NPM_VER="$(npm -v 2>/dev/null || true)"
+NODE_SOURCE="$(decide_node_source "$_SYS_NODE_VER" "$_SYS_NPM_VER" "${UNSLOTH_SKIP_NODE_INSTALL:-0}")"
+_FRONTEND_SKIP=false
+
+if [ "$NODE_SOURCE" = system ]; then
+    step "node" "$(node -v) | npm $(npm -v) (system)"
+elif [ "$NODE_SOURCE" = bundled ]; then
+    mkdir -p "$_NODE_PARENT"
+    # install_node_prebuilt.py uses os.replace(); guard a custom-home dir so we
+    # never displace a user-owned $UNSLOTH_STUDIO_HOME/node.
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$NODE_DIR" "Node install"
+    fi
+    substep "installing isolated Node (system Node/npm left untouched)..."
+    # Runs before the venv is activated, so bare `python` may be absent; resolve
+    # venv python, then python3, then python.
+    if [ -x "$VENV_DIR/bin/python" ]; then
+        _NODE_PY="$VENV_DIR/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        _NODE_PY="python3"
     else
-        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+        _NODE_PY="python"
     fi
-
-    export NVM_DIR="$HOME/.nvm"
-    set +u
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-
-    if [ -f "$HOME/.npmrc" ]; then
-        if grep -qE '^\s*(prefix|globalconfig)\s*=' "$HOME/.npmrc"; then
-            sed -i.bak '/^\s*\(prefix\|globalconfig\)\s*=/d' "$HOME/.npmrc"
-        fi
-    fi
-
-    substep "installing Node LTS..."
-    run_quiet "nvm install" nvm install --lts
+    _NODE_LOG="$(mktemp)"
+    set +e
     if _is_verbose; then
-        nvm use --lts
+        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee "$_NODE_LOG"
+        _NODE_STATUS=${PIPESTATUS[0]}
     else
-        nvm use --lts > /dev/null 2>&1
+        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >"$_NODE_LOG" 2>&1
+        _NODE_STATUS=$?
     fi
-    set -u
-
-    NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
-    NPM_MAJOR=$(npm -v | cut -d. -f1)
-
-    if [ "$NODE_MAJOR" -lt 20 ]; then
-        step "node" "FAILED -- version must be >= 20 (got $(node -v))" "$C_ERR"
-        exit 1
+    set -e
+    if [ "$_NODE_STATUS" -eq 3 ]; then
+        step "node" "install blocked by another active Unsloth install" "$C_ERR"
+        sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
+        substep "close other Unsloth installs and retry"
+        setup_fail 3 "Node install is blocked by another active Unsloth install"
+    elif [ "$_NODE_STATUS" -ne 0 ]; then
+        step "node" "isolated Node install failed" "$C_ERR"
+        sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
+        substep "install Node >= 20.19 (with npm >= 11) yourself and re-run, or check your network"
+        setup_fail 1 "Could not install an isolated Node runtime"
     fi
-    if [ "$NPM_MAJOR" -lt 11 ]; then
-        substep "upgrading npm..."
-        run_quiet "npm update" npm install -g npm@latest
+    grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
+    rm -f "$_NODE_LOG"
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$NODE_DIR" ]; then
+        : > "$NODE_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
+    # Prepend the isolated bin (this process only) so node/npm/bun resolve here.
+    export PATH="$NODE_DIR/bin:$PATH"
+    # Keep npm and module resolution inside the isolated Node.
+    export NPM_CONFIG_PREFIX="$NODE_DIR"
+    export npm_config_prefix="$NODE_DIR"
+    unset NODE_PATH
+    hash -r 2>/dev/null || true
+    step "node" "$(node -v) | npm $(npm -v) (isolated)"
+else
+    _FRONTEND_SKIP=true
+    step "frontend" "skipped (no suitable Node; system left untouched)" "$C_WARN"
+    substep "found Node='${_SYS_NODE_VER:-none}' npm='${_SYS_NPM_VER:-none}'; Unsloth needs Node >=20.19/22.12/23 and npm >= 11"
+    substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node"
 fi
+verbose_substep "node source: $NODE_SOURCE (sys node=${_SYS_NODE_VER:-none} npm=${_SYS_NPM_VER:-none}) dir=$NODE_DIR"
 
-step "node" "$(node -v) | npm $(npm -v)"
-verbose_substep "node check: NEED_NODE=$NEED_NODE NODE_OK=${NODE_OK:-unknown} NPM_MAJOR=${NPM_MAJOR:-unknown}"
+if [ "$_FRONTEND_SKIP" = true ]; then
+    : # no suitable Node (skip source): message already shown above; nothing to build
+elif [ "$_NEED_FRONTEND_BUILD" = false ]; then
+    # Node was provisioned only for the OXC runtime; the dist is already current.
+    step "frontend" "up to date"
+    verbose_substep "frontend dist is newer than source inputs"
+else
 
 # ── Install bun (optional, faster package installs) ──
-# Uses npm to install bun globally -- Node is already guaranteed above,
-# avoids platform-specific installers, PATH issues, and admin requirements.
-if ! command -v bun &>/dev/null; then
+# Install bun via npm only when we manage the isolated Node (npm -g lands in the
+# isolated prefix); on a system Node we install nothing global. Build falls back to npm.
+if command -v bun &>/dev/null; then
+    substep "bun already installed ($(bun --version))"
+elif [ "$NODE_SOURCE" = bundled ]; then
     substep "installing bun..."
     # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
     # postinstall fetches its binary; without it the install is a broken stub.
-    if run_maybe_quiet npm install -g bun --allow-scripts=bun && command -v bun &>/dev/null; then
+    if run_maybe_quiet npm install -g bun --allow-scripts=bun "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" && command -v bun &>/dev/null; then
         substep "bun installed ($(bun --version))"
     else
         substep "bun install skipped (npm will be used instead)"
     fi
 else
-    substep "bun already installed ($(bun --version))"
+    verbose_substep "skipping global bun install on system Node (npm will be used)"
 fi
 
 # ── Build frontend ──
@@ -609,7 +861,7 @@ trap _restore_gitignores EXIT
 _try_bun_install() {
     local _log _exit_code=0
     _log=$(mktemp)
-    bun install >"$_log" 2>&1 || _exit_code=$?
+    bun install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" >"$_log" 2>&1 || _exit_code=$?
 
     # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
     if [ "$_exit_code" -eq 0 ] \
@@ -626,11 +878,15 @@ _try_bun_install() {
         echo "   bun install exited 0 but critical binaries are missing:"
     fi
     sed 's/^/   | /' "$_log" >&2
+    if [ -n "${_CAPTURE_LOG:-}" ]; then cat "$_log" >> "$_CAPTURE_LOG" 2>/dev/null || true; fi
     rm -f "$_log"
     rm -rf node_modules
     return 1
 }
 
+# Capture install output (bun + npm fallback) so we can detect a registry block.
+_FRONTEND_INSTALL_LOG=$(mktemp)
+_CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
 _bun_install_ok=false
 if command -v bun &>/dev/null; then
     substep "using bun for package install (faster)"
@@ -647,12 +903,19 @@ if command -v bun &>/dev/null; then
     fi
 fi
 if [ "$_bun_install_ok" = false ]; then
-    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error
-    _npm_install_rc=$?
+    # `|| _npm_install_rc=$?` keeps this off `set -e`'s exit path (run_quiet_no_exit
+    # returns non-zero on failure) so the hint branch is reachable; it also captures
+    # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
+    _npm_install_rc=0
+    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
     if [ "$_npm_install_rc" -ne 0 ]; then
-        exit "$_npm_install_rc"
+        _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
+        rm -f "$_FRONTEND_INSTALL_LOG"
+        setup_fail "$_npm_install_rc" "Frontend dependency installation failed (exit code $_npm_install_rc)"
     fi
 fi
+_CAPTURE_LOG=""
+rm -f "$_FRONTEND_INSTALL_LOG"
 run_quiet "npm run build" npm run build
 
 _restore_gitignores
@@ -669,18 +932,38 @@ fi
 
 cd "$SCRIPT_DIR"
 
+fi  # end _FRONTEND_SKIP guard (Node available: system or isolated)
+
 fi  # end frontend build check
 
 # ── oxc-validator runtime ──
-if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
-    cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
-    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error
-    _oxc_install_rc=$?
+# Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
+# Node, so do not run npm install against an unsuitable/absent system Node.
+if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+    cd "$_OXC_DIR"
+    _OXC_INSTALL_LOG=$(mktemp)
+    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
+    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
+    # below is reachable; it also captures the exact exit code.
+    _oxc_install_rc=0
+    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    _CAPTURE_LOG=""
     if [ "$_oxc_install_rc" -ne 0 ]; then
-        exit "$_oxc_install_rc"
+        _suggest_npm_registry "$_OXC_INSTALL_LOG"
+        rm -f "$_OXC_INSTALL_LOG"
+        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
     fi
+    rm -f "$_OXC_INSTALL_LOG"
     cd "$SCRIPT_DIR"
+elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
+    # No npm on PATH: skip rather than abort; the backend Node resolver degrades
+    # the validator gracefully. Mirrors setup.ps1's elseif on this block.
+    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
 fi
+
+_remove_agent_instruction_files \
+    "$SCRIPT_DIR/frontend/node_modules" \
+    "$_OXC_DIR/node_modules"
 
 # ── Python venv + deps ──
 
@@ -694,11 +977,11 @@ fi
 _COLAB_NO_VENV=false
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     if [ "$IS_COLAB" = true ]; then
-        # On Colab there is no Studio venv -- install backend deps into system Python.
+        # On Colab there is no Unsloth venv -- install backend deps into system Python.
         # Strip all version constraints so pip keeps Colab's pre-installed
         # packages (huggingface-hub, datasets, transformers) and only pulls
         # in genuinely missing ones (structlog, fastapi, etc.).
-        substep "Colab detected, installing Studio backend dependencies..."
+        substep "Colab detected, installing Unsloth backend dependencies..."
         _COLAB_REQS_TMP="$(mktemp)"
         sed 's/[><=!~;].*//' "$SCRIPT_DIR/backend/requirements/studio.txt" \
             | grep -v '^#' | grep -v '^$' > "$_COLAB_REQS_TMP"
@@ -706,7 +989,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
             if ! run_quiet_no_exit "install Colab backend deps" pip install -q -r "$_COLAB_REQS_TMP"; then
                 rm -f "$_COLAB_REQS_TMP"
                 step "python" "Colab backend dependency install failed" "$C_ERR"
-                exit 1
+                setup_fail 1 "Colab backend dependency installation failed"
             fi
         else
             step "python" "no Colab backend dependencies resolved from requirements file" "$C_WARN"
@@ -717,7 +1000,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         step "python" "venv not found at $VENV_DIR" "$C_ERR"
         substep "Run install.sh first to create the environment:"
         substep "curl -fsSL https://unsloth.ai/install.sh | sh"
-        exit 1
+        setup_fail 1 "Virtual environment not found at $VENV_DIR"
     fi
 else
     source "$VENV_DIR/bin/activate"
@@ -727,14 +1010,47 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
+# ── HTTP GET to stdout (supports curl and wget) ──
+# install.sh takes either transport everywhere, so a wget-only box installs fine
+# and then stalled here, where curl was the only way to fetch anything.
+_setup_http_get() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$1"
+    else
+        return 1
+    fi
+}
+
+# Same, with a deadline, for the checks that must not hang the install.
+# wget has nothing like curl's total-transfer --max-time: --timeout is per
+# operation and it retries 20 times, so a stalled server took minutes and a slow
+# drip never ended. --tries=1 plus an outer `timeout` restores the 5s ceiling;
+# without timeout (base macOS, which ships curl anyway) the per-operation bound
+# stands rather than the check being dropped.
+_setup_http_get_timed() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 5 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 5 wget -qO- --timeout=5 --tries=1 "$1"
+        else
+            wget -qO- --timeout=5 --tries=1 "$1"
+        fi
+    else
+        return 1
+    fi
+}
+
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
 elif {
     if _is_verbose; then
-        curl -LsSf https://astral.sh/uv/install.sh | sh
+        _setup_http_get https://astral.sh/uv/install.sh | sh
     else
-        curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+        _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
     fi
 }; then
     export PATH="$HOME/.local/bin:$PATH"
@@ -775,13 +1091,132 @@ import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
 " "$_PKG_NAME" 2>/dev/null || echo "")
 
-    LATEST_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
+    LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
     if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
         step "python" "$_PKG_NAME $INSTALLED_VER is up to date"
         _SKIP_PYTHON_DEPS=true
+        # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
+        # $_PKG_NAME itself is current; the fast path above would otherwise
+        # never reach install_python_stack's anyio repair (#6797).
+        if "$VENV_DIR/bin/python" -c "
+import re, sys
+from importlib.metadata import version, PackageNotFoundError
+try:
+    parts = version('anyio').split('.')
+    major = int(parts[0])
+    minor = int(re.sub(r'[^0-9].*', '', parts[1])) if len(parts) > 1 else 0
+except (PackageNotFoundError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if (major, minor) >= (4, 14) else 1)
+" 2>/dev/null; then
+            substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+        # An interrupted install leaves $_PKG_NAME current while studio.txt
+        # never finished, so the compare above says "up to date" and update --
+        # plus the desktop Repair button -- no-ops on a venv that cannot boot.
+        if ! "$VENV_DIR/bin/python" -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
+sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
+" "$SCRIPT_DIR" 2>/dev/null; then
+            substep "studio install incomplete -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+        # An XPU pin the venv does not satisfy. Only the dependency pass acts on it
+        # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
+        # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever: the package
+        # version is current, so the fast path calls it up to date. Mirrors setup.ps1.
+        _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
+        # Strip query/fragment first: an authenticated mirror (…/whl/xpu?token=...) is a
+        # supported pin shape, and missing it reads as "no XPU pin" and skips the repair.
+        _setup_pin="${_setup_pin%%\#*}"
+        _setup_pin="${_setup_pin%%\?*}"
+        # ALL trailing slashes, like the shared leaf parsers: a single %/ leaves "…/xpu/" behind.
+        while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
+        # Exact, lowercased leaf, like every other leaf parser: a *xpu suffix match (…/private-xpu)
+        # would force a pass every update that _ensure_xpu_torch then declines to act on, and an
+        # uncased match would miss UNSLOTH_TORCH_INDEX_FAMILY=XPU that those parsers do accept.
+        _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
+        # Disk first, no interpreter: version.py carries the local label, so a wedged Intel
+        # driver cannot hang `studio update` inside `import torch`. Read unconditionally, not
+        # only under a pin: the pin is one-shot, so the installed wheel is the only durable
+        # signal -- the same one _ensure_xpu_triton keys on.
+        _setup_pin_ok=false
+        _setup_pin_is_xpu=false
+        for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+            [ -f "$_setup_pin_tv" ] || continue
+            _setup_pin_ver=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_setup_pin_tv" | head -1)
+            case "$_setup_pin_ver" in
+                *+xpu)
+                    _setup_pin_is_xpu=true
+                    _setup_pin_maj=${_setup_pin_ver%%.*}
+                    _setup_pin_rest=${_setup_pin_ver#*.}
+                    _setup_pin_min=${_setup_pin_rest%%.*}
+                    case "$_setup_pin_maj$_setup_pin_min" in
+                        *[!0-9]*) ;;
+                        *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -ge 6 ] && \
+                           [ "$_setup_pin_min" -lt 11 ] && _setup_pin_ok=true ;;
+                    esac
+                    ;;
+            esac
+            break
+        done
+        # Correct torch is not enough: the Triton swap also lives in install_python_stack, so a
+        # migrated +xpu venv with a leftover generic triton keeps the CUDA build shadowing the
+        # XPU one. The dist-info glob below matches only generic "triton-<ver>" -- the XPU builds
+        # are pytorch_triton_xpu-* / triton_xpu-*.
+        # Leaves the shared classifiers recognise as a non-XPU family. EXACT families, mirroring
+        # install.sh _is_pip_rocm_family_leaf and install_python_stack _is_cuda_family_leaf: a
+        # merely prefixed leaf (cu128-private) is a custom verbatim pin they never repair, so
+        # escaping on one would force a pass every update that changes nothing.
+        _setup_known_nonxpu_leaf() {
+            case "$1" in
+                cpu|gfx[0-9]*) return 0 ;;
+                cu[0-9]*) case "${1#cu}" in *[!0-9]*) return 1 ;; esac ;;
+                rocm[0-9]*)
+                    # Both parts non-empty all-digits: rocm7., rocm7.2.1 are custom pins.
+                    _setup_rocm_rest="${1#rocm}"
+                    case "$_setup_rocm_rest" in
+                        *.*.*) return 1 ;;
+                        *.*)
+                            case "${_setup_rocm_rest%%.*}" in *[!0-9]*) return 1 ;; esac
+                            case "${_setup_rocm_rest#*.}" in "" | *[!0-9]*) return 1 ;; esac
+                            ;;
+                        *[!0-9]*) return 1 ;;
+                    esac
+                    ;;
+                *) return 1 ;;
+            esac
+            return 0
+        }
+        _setup_pin_known_nonxpu=false
+        _setup_known_nonxpu_leaf "$_setup_pin_leaf" && _setup_pin_known_nonxpu=true
+        _setup_generic_triton=false
+        if [ "$_setup_pin_is_xpu" = true ] || [ "$_setup_pin_leaf" = "xpu" ]; then
+            for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
+                [ -d "$_setup_tri" ] && _setup_generic_triton=true && break
+            done
+        fi
+        if [ "$_setup_pin_leaf" = "xpu" ] && [ "$_setup_pin_ok" = false ]; then
+            substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_generic_triton" = true ]; then
+            substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_pin_known_nonxpu" = true ]; then
+            # Migrating AWAY from XPU: the pin is authoritative, but only install_python_stack
+            # acts on it, so an up-to-date install kept its +xpu wheel over the requested family.
+            substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
+            _SKIP_PYTHON_DEPS=false
+        fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
@@ -878,6 +1313,40 @@ _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
+# Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support is
+# an explicit index pin, not autodetection -- so the installed runtime IS the signal. The local
+# label is read off disk first so a CPU-only host never pays for an `import torch`.
+_setup_torch_is_xpu=false
+_setup_xpu_ready=false
+for _setup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+    [ -f "$_setup_tv" ] || continue
+    grep -q "^__version__ = '[^']*+xpu" "$_setup_tv" 2>/dev/null || continue
+    _setup_torch_is_xpu=true
+    # A +xpu wheel installs fine on a host whose driver never initialises, so only the runtime
+    # answer reaches the summary below. Bounded, because a stalled Intel driver wedges inside
+    # `import torch`: 60s rather than the smi probes' 10s, since a cold import is seconds on its
+    # own. The SIGALRM deadline lives inside the probe too, for hosts without `timeout` (base
+    # macOS, minimal Linux images). Either deadline expiring means "no XPU", as a failure does.
+    _setup_xpu_probe='import signal; signal.alarm(60); import torch,sys; sys.exit(0 if torch.xpu.is_available() else 1)'
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 60 "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1 && _setup_xpu_ready=true
+    elif "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1; then
+        _setup_xpu_ready=true
+    fi
+    break
+done
+
+# bitsandbytes carries XPU kernels (libbitsandbytes_xpu2025.so, _xpu2026.so) only from 0.50.0,
+# and unsloth's own floor is 0.45.5, so a pre-XPU wheel satisfies it forever. install.sh raises
+# the floor, but `unsloth studio update` runs THIS file, so an existing XPU user would keep a
+# kernel-less bitsandbytes and lose 4-bit QLoRA. Keyed on the wheel, not the runtime: a stalled
+# driver is no reason to skip the upgrade. --no-deps (torch and numpy are in), best effort.
+if [ "$_setup_torch_is_xpu" = true ]; then
+    # run_quiet_no_exit, NOT run_quiet: the latter exits via setup_fail, aborting an otherwise
+    # fine `studio update` over a best-effort step and leaving the warning below unreachable.
+    run_quiet_no_exit "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
+        substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable."
+fi
 # NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
 # a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
 # This also keeps a wedged rocminfo/amd-smi from hanging setup before the
@@ -901,8 +1370,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
         _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
             '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
     elif [ -e /dev/kfd ] && \
-         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
-              gpu && amd { found=1 } END{ exit !found }' \
+         awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
         # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
         # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
@@ -934,12 +1402,14 @@ elif [ "$_setup_amd_detected" = true ]; then
         # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
         # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_setup_mkt" in
-            *"9070 XT"*|*9080*)                                                                            _setup_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                                                 _setup_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
-            *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
-            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+            *9070*|*9080*)                                                                                 _setup_gfx="gfx1201" ;;  # RDNA 4 (Navi 48)
+            *9060*)                                                                                        _setup_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
+            *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
+            *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+            *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _setup_gfx="gfx1101" ;;  # RDNA 3 (Navi 32)
+            *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
             *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
             *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _setup_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
             *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _setup_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
@@ -968,6 +1438,21 @@ elif [ "$_setup_amd_detected" = true ]; then
     substep "ROCm: $_setup_rocm_root"
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
     [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
+elif [ "$_setup_xpu_ready" = true ]; then
+    # Ranks below NVIDIA and AMD, as in setup.ps1: those hosts get their own wheels.
+    step "gpu" "Intel GPU detected (XPU runtime)"
+    substep "PyTorch XPU (SYCL) provides training and GPU inference on this GPU."
+elif [ "$_setup_torch_is_xpu" = true ]; then
+    # +xpu wheel installed but torch.xpu.is_available() said no: the Intel compute driver is
+    # missing or too old. Falling through would call the hardware unsupported instead.
+    step "gpu" "Intel GPU (XPU runtime unavailable)" "$C_WARN"
+    substep "PyTorch has the XPU build but cannot initialise it -- update the Intel GPU compute driver."
+    # Not "runs on CPU": with neither CUDA nor XPU, unsloth/device_type.py raises at import.
+    # llama.cpp is unaffected, which is what chat and GGUF run on.
+    substep "Until then training and GPU inference are unavailable; chat and GGUF still work."
+elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ "$(uname -m 2>/dev/null)" = "arm64" ]; then
+    # Apple Silicon: llama.cpp builds with Metal over unified memory, so not a CPU-only host.
+    step "gpu" "Apple Silicon (Metal, unified memory)"
 else
     step "gpu" "none (chat-only / GGUF)" "$C_WARN"
     substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU."
@@ -986,68 +1471,39 @@ LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
+_LLAMA_CPP_NO_SPACE=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
-
-# Pick the release repo install_llama_prebuilt.py plans against.
-# The fork ships CUDA (Linux x64/arm64, Windows), ROCm (Linux/Windows) and
-# macOS bundles. Only the plain CPU/Vulkan bundles still come from ggml-org, so
-# CPU-only Linux (x86_64 and arm64) routes there; GPU Linux, Windows and macOS
-# use unslothai.
-_LINUX_HAS_GPU=false
-# Route to the fork only for a usable GPU. NVIDIA counts only when a device is
-# actually enumerated and not hidden via CUDA_VISIBLE_DEVICES=""/-1
-# (_setup_nvidia_usable, from _setup_has_usable_nvidia_gpu above) -- mirroring
-# install_llama_prebuilt.py's has_usable_nvidia. Mere nvidia-smi presence
-# (CPU-only CUDA-toolkit containers, broken drivers) or a hidden GPU therefore
-# takes the ggml-org CPU prebuilt instead of a slow source build. AMD is
-# deliberately left on tooling presence, not usability: an unusable NVIDIA host
-# has a good CPU prebuilt to fall back to, whereas tightening AMD would regress
-# ROCm hosts exposing only hipconfig/hipinfo into an unnecessary CPU build.
-if [ "$_setup_nvidia_usable" = true ]; then
-    _LINUX_HAS_GPU=true
-else
-    for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo; do
-        if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
-            _LINUX_HAS_GPU=true
-            break
-        fi
-    done
+_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+_source_legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
+_explicit_vulkan_source_build=false
+if [ "$_HOST_SYSTEM" != "Darwin" ]; then
+    case "$_source_backend_choice" in
+        vulkan) _explicit_vulkan_source_build=true ;;
+        cpu|hip|rocm) ;;
+        *)
+            case "$_source_legacy_force_vulkan" in
+                1|true|yes|on) _explicit_vulkan_source_build=true ;;
+            esac
+            ;;
+    esac
 fi
+
+# Pick the release repo install_llama_prebuilt.py plans against. Every host this
+# installer supports now pulls its llama.cpp prebuilt from the unslothai fork: it
+# ships the CUDA (Linux x64/arm64, Windows), ROCm (Linux/Windows) and macOS
+# bundles, plus the CPU bundles for Linux/Windows on both x86_64 and arm64.
+# ggml-org artifacts are no longer used by default.
+_HELPER_RELEASE_REPO="unslothai/llama.cpp"
 # UNSLOTH_ROCM_GFX_ARCH may be set on a host where no probe fired, so the override
 # nested in the AMD-detected branch above never ran and _setup_gfx is still empty.
-# Honour it here so the routing guard below and the --rocm-gfx forwarding both see
-# it (install_llama_prebuilt.py reads the same env var as the --rocm-gfx default).
-if [ "$_setup_nvidia_usable" != true ] && [ -z "${_setup_gfx:-}" ] && [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+# Honour it here so the --rocm-gfx forwarding below still sees it
+# (install_llama_prebuilt.py reads the same env var as the --rocm-gfx default).
+if [ "${_setup_nvidia_usable:-}" != true ] && [ -z "${_setup_gfx:-}" ] && [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
     _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
 fi
-# A resolved/forwarded gfx arch (UNSLOTH_ROCM_GFX_ARCH) means an AMD GPU even when
-# no ROCm tooling is on PATH; route it to the fork so the per-gfx prebuilt is
-# picked instead of ggml-org / a source build.
-if [ "$_LINUX_HAS_GPU" = false ] && [ -n "${_setup_gfx:-}" ]; then
-    _LINUX_HAS_GPU=true
-fi
-
-if [ "$_HOST_SYSTEM" = "Linux" ] \
-        && [ "$_HOST_MACHINE" = "x86_64" ] \
-        && [ "$_LINUX_HAS_GPU" = false ]; then
-    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
-elif [ "$_HOST_SYSTEM" = "Linux" ] \
-        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
-        && [ "$_LINUX_HAS_GPU" = false ]; then
-    # CPU-only Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub
-    # `ubuntu-24.04-arm`, CPU-only Jetson rescue mode, ...). The fork ships no
-    # arm64 CPU bundle, so without this branch the prebuilt resolver returns 0
-    # attempts and the installer falls back to a source build. ggml-org ships
-    # llama-bNNNN-bin-ubuntu-arm64.tar.gz from at least b9072 onward.
-    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
-else
-    # GPU Linux (x64 CUDA/ROCm, arm64 CUDA), Windows (CUDA/ROCm), and macOS.
-    _HELPER_RELEASE_REPO="unslothai/llama.cpp"
-fi
-unset _GPU_TOOL
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
 _SKIP_PREBUILT_INSTALL=false
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
@@ -1073,7 +1529,7 @@ fi
 if [ -n "$_LLAMA_PR" ]; then
     if ! [[ "$_LLAMA_PR" =~ ^[0-9]+$ ]] || [ "$_LLAMA_PR" -le 0 ]; then
         step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR is not a valid PR number" "$C_ERR"
-        exit 1
+        setup_fail 1 "UNSLOTH_LLAMA_PR=$_LLAMA_PR is not a valid PR number"
     fi
     step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR -- will build from PR head" "$C_WARN"
     _RESOLVED_LLAMA_TAG="pr-$_LLAMA_PR"
@@ -1086,7 +1542,101 @@ fi
 
 verbose_substep "requested llama.cpp tag: $_REQUESTED_LLAMA_TAG (repo: $_HELPER_RELEASE_REPO)"
 
-if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
+# GGUF export's check_llama_cpp() looks for a llama-quantize shim at the root of
+# the install dir, but a source build keeps the binary under build/bin/. Mirror
+# the source-build-reuse step and create the shim when the reused tree has one
+# but no root shim yet. Best-effort: the tree may be read-only (shared/CI cache),
+# and under `set -e` a failed ln would otherwise abort an good reuse.
+_link_local_llama_quantize_shim() {
+    if [ -x "$1/build/bin/llama-quantize" ] && [ ! -e "$1/llama-quantize" ]; then
+        ln -sf build/bin/llama-quantize "$1/llama-quantize" 2>/dev/null || \
+            substep "could not create llama-quantize shim in linked dir (read-only?); GGUF export may be unavailable"
+    fi
+}
+
+# Accept any layout LlamaCppBackend._layout_candidates() resolves so the flag
+# never rejects a tree Unsloth could actually run: a root-level llama-server (a
+# `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
+_has_local_llama_server() {
+    [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
+}
+
+_LOCAL_LLAMA_CPP_LINKED=false
+if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
+    if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
+        step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
+        setup_fail 1 "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR"
+    fi
+    _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd -P)"
+    # Canonicalize the install path the same way before comparing: _RESOLVED_LOCAL
+    # is fully resolved, but LLAMA_CPP_DIR is textual ($UNSLOTH_HOME/llama.cpp). If
+    # $HOME (or UNSLOTH_HOME) contains a symlink, the two never match even when the
+    # user pointed the flag at the canonical install itself -- and the rm -rf below
+    # would then wipe the very tree they asked to reuse. Resolve via the parent so
+    # this works whether or not the leaf currently exists.
+    _CANON_LLAMA_CPP_DIR="$LLAMA_CPP_DIR"
+    _LLAMA_CPP_PARENT="$(dirname "$LLAMA_CPP_DIR")"
+    if [ -d "$_LLAMA_CPP_PARENT" ]; then
+        _CANON_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" && pwd -P)/$(basename "$LLAMA_CPP_DIR")"
+    fi
+    if [ "$_RESOLVED_LOCAL" = "$_CANON_LLAMA_CPP_DIR" ]; then
+        # Points at the canonical install location itself: never delete-then-link
+        # it onto itself. If a usable build is already there, reuse it and skip
+        # both the prebuilt download and the source build -- the prebuilt installer
+        # uses os.replace() and would otherwise clobber an existing source build at
+        # this path. If nothing is built there yet, fall through to the normal
+        # install so it gets built in place exactly as it would without the flag.
+        if _has_local_llama_server "$LLAMA_CPP_DIR"; then
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it"
+            _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
+            _LOCAL_LLAMA_CPP_LINKED=true
+            _NEED_LLAMA_SOURCE_BUILD=false
+            _SKIP_PREBUILT_INSTALL=true
+        else
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location with nothing built there yet; running the normal install"
+        fi
+    else
+        # Reusing disables BOTH the prebuilt download and the source build, so the
+        # linked tree must already contain a runnable llama-server in one of the
+        # layouts the backend resolves (root-level or build/bin/). Fail clearly
+        # rather than link an unbuilt or wrong-platform checkout and leave Unsloth
+        # with no usable binary.
+        if ! _has_local_llama_server "$_RESOLVED_LOCAL"; then
+            step "llama.cpp" "no llama-server under $_RESOLVED_LOCAL (looked for ./llama-server and ./build/bin/llama-server) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "$C_ERR"
+            setup_fail 1 "No llama-server was found under $_RESOLVED_LOCAL"
+        fi
+        # A stale link from a previous --with-llama-cpp-dir run isn't Unsloth-owned
+        # content; drop it before the ownership check so re-runs stay idempotent
+        # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
+        # link into the user's dir and reject it as unowned).
+        [ -L "$LLAMA_CPP_DIR" ] && rm -f "$LLAMA_CPP_DIR"
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+        fi
+        rm -rf "$LLAMA_CPP_DIR" || true
+        if [ -e "$LLAMA_CPP_DIR" ]; then
+            if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
+            fi
+            step "llama.cpp" "the existing install could not be replaced with a link" "$C_ERR"
+            setup_fail 3 "$LLAMA_CPP_DIR could not be replaced with a link to $_RESOLVED_LOCAL."
+        fi
+        ln -sfn "$_RESOLVED_LOCAL" "$LLAMA_CPP_DIR"
+        _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
+        step "llama.cpp" "linked local directory: $_RESOLVED_LOCAL"
+        _LOCAL_LLAMA_CPP_LINKED=true
+        _NEED_LLAMA_SOURCE_BUILD=false
+        _SKIP_PREBUILT_INSTALL=true
+    fi
+fi
+
+if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
+    : # local directory linked above; skip prebuilt install
+elif [ "$_explicit_vulkan_source_build" = true ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "$C_ERR"
+    substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override"
+    setup_fail 1 "Vulkan was explicitly requested, but this installation requires a source build, which this installer does not support. Use the prebuilt Vulkan bundle or unset the Vulkan override."
+elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
 elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
@@ -1116,10 +1666,49 @@ else
     # name-inferred arch). Implies --has-rocm on the installer side.
     if [ -n "${_setup_gfx:-}" ]; then
         _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
-    elif [ "$_setup_amd_detected" = true ]; then
-        # AMD was detected but gfx resolution failed; tell the installer ROCm is
-        # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
+    elif [ "$_setup_amd_detected" = true ] && \
+         { command -v hipcc >/dev/null 2>&1 || [ -x /opt/rocm/bin/hipcc ] || \
+           ls /opt/rocm-*/bin/hipcc >/dev/null 2>&1; }; then
+        # AMD detected but gfx unknown (KFD-only host): forward --has-rocm only when
+        # hipcc can actually build llama.cpp (incl. a versioned /opt/rocm-*/bin, the
+        # same paths the source build uses). With no gfx the prebuilt resolver finds
+        # no ROCm bundle and the source build would fail, so without hipcc fall
+        # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
+    fi
+    # The normalized override affects llama.cpp only, not the training backend.
+    _llama_backend="$_source_backend_choice"
+    _legacy_force_vulkan="$_source_legacy_force_vulkan"
+    _explicit_vulkan_backend=false
+    case "$_llama_backend" in
+        cpu)
+            if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+                step "llama.cpp" "UNSLOTH_LLAMA_CPP_BACKEND=cpu has no effect on macOS (universal build; use -ngl 0 at runtime for CPU-only)" "$C_WARN" >&2
+            else
+                _PREBUILT_CMD+=(--force-cpu)
+            fi
+            ;;
+        vulkan)
+            if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+                step "llama.cpp" "Vulkan has no effect on macOS; the universal build uses Metal" "$C_WARN" >&2
+            else
+                _PREBUILT_CMD+=(--llama-backend vulkan)
+                _explicit_vulkan_backend=true
+                step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_OK"
+            fi
+            ;;
+        ""|auto|hip|rocm) ;;
+        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_llama_backend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
+    esac
+    if [ "$_HOST_SYSTEM" != "Darwin" ]; then
+        case "$_llama_backend" in
+            cpu|vulkan|hip|rocm) ;;
+            *)
+                case "$_legacy_force_vulkan" in
+                    1|true|yes|on) _explicit_vulkan_backend=true ;;
+                esac
+                ;;
+        esac
     fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
@@ -1151,17 +1740,46 @@ else
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "existing install was restored"
         fi
-        substep "close Studio or other llama.cpp users and retry"
-        exit 3
-    else
-        step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
+        substep "close Unsloth or other llama.cpp users and retry"
+        setup_fail 3 "llama.cpp install is blocked by an active llama.cpp process"
+    elif [ "$_PREBUILT_STATUS" -eq 4 ]; then
+        step "llama.cpp" "not enough disk space to install llama.cpp" "$C_WARN"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        substep "free up disk or move UNSLOTH_STUDIO_HOME/TMPDIR to a larger volume, then re-run"
+        _LLAMA_CPP_NO_SPACE=true
+        _has_local_llama_server "$LLAMA_CPP_DIR" || _LLAMA_CPP_DEGRADED=true
+        # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
+        # request, and it leaves _LLAMA_CPP_DEGRADED false, so without this the
+        # run reports success on the backend the user asked to replace.
+        if [ "$_explicit_vulkan_backend" = true ]; then
+            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
+            setup_fail 1 "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
+        fi
+    elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
+        step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
         rm -f "$_PREBUILT_LOG"
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
         fi
-        substep "falling back to source build"
-        _NEED_LLAMA_SOURCE_BUILD=true
+        if [ "$_explicit_vulkan_backend" = true ]; then
+            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build" "$C_ERR"
+            substep "check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG"
+            setup_fail 1 "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
+        else
+            substep "falling back to source build"
+            _NEED_LLAMA_SOURCE_BUILD=true
+        fi
+    else
+        step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "existing install was restored or left unchanged"
+        fi
+        substep "source build was not started because it cannot repair an unexpected helper or permissions error"
+        setup_fail 1 "llama.cpp prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS). Check the error above and retry setup."
     fi
 fi
 
@@ -1204,25 +1822,46 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
         step "gguf deps" "installed"
     elif command -v sudo >/dev/null 2>&1; then
         step "gguf deps" "sudo required for: $_STILL_MISSING" "$C_WARN"
-        printf "  %-15s" ""
-        printf "accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
+        if _can_read_tty; then
+            printf "  %-15s" ""
+            printf "accept? [Y/n] "
+            # The device opened, so a failed read is EOF, not consent: decline.
+            read -r REPLY </dev/tty || REPLY="n"
+            case "$REPLY" in
+                [nN]*)
+                    substep "skipped -- run manually:"
+                    substep "sudo apt-get install -y $_STILL_MISSING"
+                    _SKIP_GGUF_BUILD=true
+                    ;;
+                *)
+                    # Degrade like the no-sudo branch below rather than letting
+                    # set -e abort setup on a bare apt error: missing GGUF build
+                    # deps are recoverable, not fatal.
+                    if sudo apt-get update -y </dev/null &&
+                        sudo apt-get install -y $_STILL_MISSING </dev/null; then
+                        step "gguf deps" "installed"
+                    else
+                        step "gguf deps" "install failed -- run manually:" "$C_WARN"
+                        substep "sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                        _SKIP_GGUF_BUILD=true
+                    fi
+                    ;;
+            esac
         else
-            REPLY="y"
-        fi
-        case "$REPLY" in
-            [nN]*)
-                substep "skipped -- run manually:"
-                substep "sudo apt-get install -y $_STILL_MISSING"
+            # Nobody can answer a prompt or type a password here, so -n makes
+            # sudo refuse rather than prompt into a closed stdin, and -k ignores
+            # any cached timestamp so only a real NOPASSWD rule gets through.
+            # Same treatment as install.sh's _smart_apt_install. This is the WSL
+            # GGUF-export case noted above, where sudo does want a password.
+            if sudo -n -k apt-get update -y </dev/null &&
+                sudo -n -k apt-get install -y $_STILL_MISSING </dev/null; then
+                step "gguf deps" "installed (non-interactive sudo)"
+            else
+                step "gguf deps" "needs sudo, no terminal -- run manually:" "$C_WARN"
+                substep "sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
                 _SKIP_GGUF_BUILD=true
-                ;;
-            *)
-                sudo apt-get update -y
-                sudo apt-get install -y $_STILL_MISSING
-                step "gguf deps" "installed"
-                ;;
-        esac
+            fi
+        fi
     else
         step "gguf deps" "missing (no sudo) -- install manually:" "$C_WARN"
         substep "apt-get install -y $_STILL_MISSING"
@@ -1450,35 +2089,38 @@ else
                     fi
 
                     if [ "$_CUDA_TOOLKIT_ALLOWED" = true ]; then
-                        CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
-
-                        CUDA_ARCHS=""
-                        if command -v nvidia-smi &>/dev/null; then
-                            _raw_caps=$(_setup_run_smi nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
-                            while IFS= read -r _cap; do
-                                _cap=$(echo "$_cap" | tr -d '[:space:]')
-                                if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                                    _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                                    case ";$CUDA_ARCHS;" in
-                                        *";$_arch;"*) ;;
-                                        *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
-                                    esac
-                                fi
-                            done <<< "$_raw_caps"
+                        # Resolve the arch list before committing to a CUDA build;
+                        # an empty list means CPU instead of a PTX-only binary (#5854).
+                        _raw_caps=""
+                        # Resolve nvidia-smi as _setup_has_usable_nvidia_gpu does
+                        # (PATH, then /usr/bin); `command -v` alone would miss an
+                        # off-PATH binary and wrongly drop a CUDA host to CPU.
+                        _smi_bin=""
+                        if command -v nvidia-smi >/dev/null 2>&1; then
+                            _smi_bin="nvidia-smi"
+                        elif [ -x "/usr/bin/nvidia-smi" ]; then
+                            _smi_bin="/usr/bin/nvidia-smi"
                         fi
+                        if [ -n "$_smi_bin" ]; then
+                            _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                        fi
+                        CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
 
                         if [ -n "$CUDA_ARCHS" ]; then
-                            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                            CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
                             _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
+
+                            # Allow a host gcc/clang newer than nvcc's whitelist (else a fresh
+                            # toolkit aborts with "unsupported GNU version"); via env to avoid word-splitting.
+                            export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                         else
-                            _BUILD_DESC="building (CUDA)"
+                            # No detectable arch: build CPU (CMAKE_ARGS has no
+                            # -DGGML_CUDA=ON yet, so clearing GPU_BACKEND yields CPU).
+                            substep "could not detect a CUDA compute capability; building CPU llama.cpp instead of a PTX-only binary (set UNSLOTH_LLAMA_CUDA_ARCHS, e.g. \"120\", to force a CUDA build)." "$C_WARN"
+                            GPU_BACKEND=""
+                            _BUILD_DESC="building (CPU, CUDA arch undetectable)"
                         fi
-
-                        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
-
-                        # Allow a host gcc/clang newer than nvcc's whitelist (else a fresh
-                        # toolkit aborts with "unsupported GNU version"); via env to avoid word-splitting.
-                        export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                     fi
                 fi
             elif [ "$GPU_BACKEND" = "rocm" ]; then
@@ -1633,10 +2275,57 @@ else
             run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
         fi
 
+        # Opt-in post-build GPU smoke test (#5854 gap 2). Default off (Blackwell
+        # CUDA JIT stalls). On failure, reuse the CPU fallback path so the user
+        # still gets a working llama-server. Runs before the install swap.
+        if [ "$BUILD_OK" = true ] && _staged_validation_enabled; then
+            _FB_LABEL="$(_gpu_fallback_label)"
+            _SMOKE_KIND="$(_source_smoke_install_kind)"
+            if [ -n "$_FB_LABEL" ]; then
+                _SMOKE_CMD=(
+                    python "$SCRIPT_DIR/install_llama_prebuilt.py"
+                    --validate-install "$_BUILD_TMP"
+                )
+                [ -n "$_SMOKE_KIND" ] && _SMOKE_CMD+=(--install-kind "$_SMOKE_KIND")
+                _SMOKE_RC=0
+                run_quiet_no_exit "validate source llama.cpp" "${_SMOKE_CMD[@]}" || _SMOKE_RC=$?
+                # Exit 4 is a full disk, not a bad build: the CPU rebuild needs even
+                # more space, so keep what we already have.
+                if [ "$_SMOKE_RC" -eq 4 ]; then
+                    substep "not enough disk space to validate the $_FB_LABEL build; keeping it" "$C_WARN"
+                    _LLAMA_CPP_NO_SPACE=true
+                elif [ "$_SMOKE_RC" -ne 0 ]; then
+                    substep "$_FB_LABEL source build failed smoke test; retrying CPU build..." "$C_WARN"
+                    _TRY_METAL_CPU_FALLBACK=false
+                    rm -rf "$_BUILD_TMP/build"
+                    if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
+                        _BUILD_DESC="building (CPU fallback after $_FB_LABEL smoke failed)"
+                        GPU_BACKEND=""
+                        run_quiet_no_exit "build llama-server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+                        if [ "$BUILD_OK" = true ]; then
+                            run_quiet_no_exit "build llama-quantize (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+                            run_quiet_no_exit "build diffusion visual server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+                        fi
+                    else
+                        BUILD_OK=false
+                    fi
+                fi
+            fi
+        fi
+
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
-            rm -rf "$LLAMA_CPP_DIR"
+            # || true: without it a raw rm error aborts under errexit to a bare exit
+            # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
+            rm -rf "$LLAMA_CPP_DIR" || true
+            if [ -e "$LLAMA_CPP_DIR" ]; then
+                if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                    _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
+                fi
+                step "llama.cpp" "built, but the existing install could not be replaced" "$C_ERR"
+                setup_fail 3 "The llama.cpp build succeeded but $LLAMA_CPP_DIR could not be replaced. The new build is at $_BUILD_TMP."
+            fi
             mv "$_BUILD_TMP" "$LLAMA_CPP_DIR"
             : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             # Symlink to llama.cpp root -- check_llama_cpp() looks for the binary there
@@ -1645,7 +2334,7 @@ else
                 ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
             fi
             # DiffusionGemma visual server, if it was built (PR #24423): link next to
-            # llama-server so Studio serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
+            # llama-server so Unsloth serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
             if [ -f "$LLAMA_CPP_DIR/build/bin/llama-diffusion-gemma-visual-server" ]; then
                 ln -sf build/bin/llama-diffusion-gemma-visual-server "$LLAMA_CPP_DIR/llama-diffusion-gemma-visual-server"
             fi
@@ -1668,19 +2357,21 @@ else
 fi  # end _SKIP_GGUF_BUILD check
 
 # ── arm64 Linux GPU: CPU prebuilt as a last resort ──
-# arm64 Linux with a GPU has no CUDA prebuilt anywhere (the unslothai fork is
-# x64 only; ggml-org ships no Linux CUDA build), so it source-builds for the
-# GPU above. If that produced no binary, install ggml-org's arm64 CPU prebuilt
-# instead of leaving the host without llama.cpp.
+# An arm64 Linux GPU host source-builds for the GPU above. If that produced no
+# binary, install the fork's arm64 CPU prebuilt (app-<tag>-linux-arm64-cpu.tar.gz)
+# instead of leaving the host without llama.cpp. --cpu-fallback drops the GPU
+# attributes so the CPU bundle is selected rather than re-attempting CUDA. Skipped
+# on a full disk: the retry fails the same way and buries the hint.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
+        && [ "$_LLAMA_CPP_NO_SPACE" != true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
-    substep "GPU source build unavailable; trying ggml-org arm64 CPU prebuilt..."
+    substep "GPU source build unavailable; trying arm64 CPU prebuilt..."
     _ARM64_CPU_CMD=(
         python "$SCRIPT_DIR/install_llama_prebuilt.py"
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
-        --published-repo "ggml-org/llama.cpp"
+        --published-repo "unslothai/llama.cpp"
         --cpu-fallback
     )
     # Trust the installer's exit code: it validates the server before exiting 0,
@@ -1689,6 +2380,107 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         step "llama.cpp" "arm64 CPU prebuilt installed (GPU build unavailable)" "$C_WARN"
         _LLAMA_CPP_DEGRADED=false
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
+    fi
+fi
+
+if [ ! -L "$LLAMA_CPP_DIR" ] && {
+    [ "$_STUDIO_HOME_IS_CUSTOM" != true ] ||
+        [ -f "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" ] ||
+        _studio_owned_adoptable "$LLAMA_CPP_DIR"
+}; then
+    _remove_agent_instruction_files "$LLAMA_CPP_DIR"
+fi
+
+# ── whisper.cpp (local speech-to-text dictation engine) ──
+# Optional runtime for local dictation. Fail-open: any failure leaves the
+# Transformers STT engine and browser dictation working, so it never aborts
+# setup (unlike llama.cpp). Runs in 'unsloth studio update' too so the runtime
+# installs/refreshes without a compiler. Installs beside llama.cpp under the
+# same managed home the sidecar's _managed_whisper_cpp_dir() resolves.
+WHISPER_CPP_DIR="$UNSLOTH_HOME/whisper.cpp"
+if [ -n "${WHISPER_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_WHISPER_CPP_PATH:-}" ]; then
+    verbose_substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
+elif [ "${UNSLOTH_SKIP_WHISPER_INSTALL:-0}" = "1" ]; then
+    verbose_substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
+else
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install"
+    fi
+    _WHISPER_CMD=(python "$SCRIPT_DIR/install_whisper_prebuilt.py" --install-dir "$WHISPER_CPP_DIR")
+    if [ -n "${UNSLOTH_WHISPER_RELEASE_TAG:-}" ]; then
+        _WHISPER_CMD+=(--published-release-tag "$UNSLOTH_WHISPER_RELEASE_TAG")
+    fi
+    if [ -n "${_setup_gfx:-}" ]; then
+        _WHISPER_CMD+=(--rocm-gfx "$_setup_gfx")
+    elif [ "$_setup_amd_detected" = true ]; then
+        _WHISPER_CMD+=(--has-rocm)
+    fi
+    _WHISPER_LOG="$(mktemp)"
+    set +e
+    if _is_verbose; then
+        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG"
+        _WHISPER_STATUS=${PIPESTATUS[0]}
+    else
+        "${_WHISPER_CMD[@]}" >"$_WHISPER_LOG" 2>&1
+        _WHISPER_STATUS=$?
+    fi
+    set -e
+    if [ "$_WHISPER_STATUS" -eq 0 ]; then
+        if grep -Fq "already matches" "$_WHISPER_LOG"; then
+            step "whisper.cpp" "prebuilt up to date"
+        else
+            step "whisper.cpp" "prebuilt installed"
+        fi
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+            : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+        fi
+        rm -f "$_WHISPER_LOG"
+    elif [ "$_WHISPER_STATUS" -eq 3 ]; then
+        # A warm dictation server holds the binary; keep the old install.
+        step "whisper.cpp" "install busy; keeping existing runtime" "$C_WARN"
+        rm -f "$_WHISPER_LOG"
+    else
+        # A source build is opt-in. Keep the installer log until fallback has
+        # finished so setup can distinguish release skew from an operational
+        # installer failure and report the exact pairing when available.
+        _WHISPER_RECOVERED=false
+        _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
+        if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
+                && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+            substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
+            # The source build overwrites whisper-server in the managed dir but
+            # knows nothing about the prebuilt marker; a stale marker would make
+            # a later setup run report "already matches" and skip repairing the
+            # prebuilt over the source binary. Drop it before building.
+            rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
+            if run_quiet_no_exit "whisper.cpp source build" sh "$_WHISPER_BUILD"; then
+                _WHISPER_RECOVERED=true
+                step "whisper.cpp" "source build installed"
+                if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+                    : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+                fi
+            else
+                :
+            fi
+        fi
+        if [ "$_WHISPER_RECOVERED" != true ]; then
+            if [ "$_WHISPER_STATUS" -eq 2 ]; then
+                _WHISPER_REQUIRED_TAG="$(sed -n 's/.*slim bundle requires llama\.cpp \([^; ]*\).*/\1/p' "$_WHISPER_LOG" | tail -n 1)"
+                _WHISPER_INSTALLED_TAG="$(python - "$UNSLOTH_HOME/llama.cpp/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("release_tag", ""))
+except Exception:
+    pass
+PY
+)"
+                _WHISPER_PAIRING="installed llama.cpp ${_WHISPER_INSTALLED_TAG:-unknown}; whisper requires ${_WHISPER_REQUIRED_TAG:-unknown}"
+                step "whisper.cpp" "no compatible prebuilt ($_WHISPER_PAIRING); curated whisper.cpp dictation is unavailable; publish the paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "$C_WARN"
+            else
+                step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "$C_WARN"
+            fi
+        fi
+        rm -f "$_WHISPER_LOG"
     fi
 fi
 
@@ -1726,15 +2518,36 @@ else
     else
         printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     fi
-    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
 fi
 echo ""
 
 # When called from install.sh (SKIP_STUDIO_BASE=1), exit non-zero so the
 # installer can report the GGUF failure after finishing PATH/shortcut setup.
 # When called directly via 'unsloth studio update', keep the install
-# successful -- the footer above already reports the limitation and Studio
+# successful -- the footer above already reports the limitation and Unsloth
 # is still usable for non-GGUF workflows.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
-    exit 1
+    # In Tauri mode a non-zero exit is not "report", it is "abort": install.rs turns the
+    # error into "Installation failed", so one transient prebuilt download failure (a
+    # single HTTP 403 rate limit will do it) fails the whole first-launch install of an
+    # app whose own footer just said Installed. Everything except GGUF inference works,
+    # and whisper.cpp in this same script already degrades rather than failing for
+    # exactly this case. Match it, and say what is missing and how to get it back.
+    #
+    # PROGRESS, not STEP: install.rs maps [TAURI:STEP] to the install-step event, and
+    # use-tauri-backend.ts counts those against the seven-entry INSTALL_STEPS list that
+    # install.sh already emits in full, so an eighth marker renders "Step 8 of 7" and
+    # discards the payload. [TAURI:PROGRESS] becomes install-progress-detail, which
+    # InstallingContent renders verbatim, so the user actually reads the limitation.
+    case "${UNSLOTH_TAURI_MODE:-0}" in
+        1|true)
+            printf '[TAURI:PROGRESS] %s\n' \
+                "llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds"
+            ;;
+        *)
+            setup_fail 1 "llama.cpp setup did not produce a usable server"
+            ;;
+    esac
 fi

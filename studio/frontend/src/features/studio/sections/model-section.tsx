@@ -41,10 +41,10 @@ import {
 import {
   useDebouncedValue,
   useGpuInfo,
-  useHfModelSearch,
   useHfTokenValidation,
-  useInfiniteScroll,
 } from "@/hooks";
+import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import { extractParamLabel } from "@/lib/model-size";
 import { formatCompact } from "@/lib/utils";
 import {
@@ -168,12 +168,16 @@ export function ModelSection() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    scannedCount,
     error: hfSearchError,
-  } = useHfModelSearch(debouncedQuery, {
+  } = useHubModelSearch(debouncedQuery, {
     task,
     accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
+    // Curated unsloth listing by default, but a typed query searches the whole
+    // Hub (unsloth floated first) so non-unsloth base models stay selectable.
+    ownerScope: debouncedQuery.trim() ? "all" : "unsloth",
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =
@@ -255,10 +259,11 @@ export function ModelSection() {
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const localComboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
-    fetchMore,
-    hfResults.length,
-  );
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
+    isFetching: isLoading || isLoadingMore,
+    resultCount: hfResults.length,
+    resetKey: debouncedQuery,
+  });
 
   return (
     <div data-tour="studio-model" className="w-full min-w-0">
@@ -369,7 +374,7 @@ export function ModelSection() {
                               {model?.path ?? id}
                             </TooltipContent>
                           </Tooltip>
-                          <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                          <span className="ml-auto shrink-0 text-ui-10 text-muted-foreground">
                             {source}
                           </span>
                         </ComboboxItem>
@@ -380,13 +385,13 @@ export function ModelSection() {
               </Combobox>
             </div>
             {isLoadingLocalModels ? (
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-ui-10 text-muted-foreground">
                 {t("studio.model.scanningLocalModels")}
               </p>
             ) : localModelsError ? (
-              <p className="text-[10px] text-red-500">{localModelsError}</p>
+              <p className="text-ui-10 text-red-500">{localModelsError}</p>
             ) : (
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-ui-10 text-muted-foreground">
                 {trainableLocalModels.length > 0
                   ? t("studio.model.localModelsFound", {
                       count: trainableLocalModels.length,
@@ -502,7 +507,7 @@ export function ModelSection() {
                                 {vramEst != null &&
                                   vramEst > 0 &&
                                   gpu.available && (
-                                    <span className="block text-[10px] mt-1">
+                                    <span className="block text-ui-10 mt-1">
                                       {exceeds
                                         ? t("studio.model.needsVram", {
                                             vram: vramEst,
@@ -522,17 +527,17 @@ export function ModelSection() {
                             </Tooltip>
                             <span className="ml-auto flex items-center gap-1.5 shrink-0">
                               {fitStatus === "exceeds" && (
-                                <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">
+                                <span className="text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">
                                   OOM
                                 </span>
                               )}
                               {fitStatus === "tight" && (
-                                <span className="text-[9px] font-medium !text-amber-400">
+                                <span className="text-ui-9 font-medium !text-amber-400">
                                   TIGHT
                                 </span>
                               )}
                               {detail && (
-                                <span className="text-[10px] text-muted-foreground">
+                                <span className="text-ui-10 text-muted-foreground">
                                   {detail}
                                 </span>
                               )}

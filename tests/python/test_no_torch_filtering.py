@@ -138,7 +138,6 @@ class TestFilterRequirements:
         req = self._write_req(
             tmp_path,
             """\
-            open_spiel
             triton_kernels
             torch-stoi
             timm
@@ -222,8 +221,8 @@ class TestRealRequirementsFiltering:
         filtered = self._non_blank_non_comment(Path(result))
         original = self._non_blank_non_comment(EXTRAS_TXT)
 
-        # These must be gone.
-        for pkg in ["torch-stoi", "timm", "openai-whisper", "transformers-cfg"]:
+        # Every NO_TORCH skip package present in extras.txt must be gone.
+        for pkg in ips.NO_TORCH_SKIP_PACKAGES:
             assert not any(
                 l.lower().startswith(pkg) for l in filtered
             ), f"{pkg} should be removed from extras.txt"
@@ -281,8 +280,21 @@ class TestRealRequirementsFiltering:
 class TestNoTorchConstant:
     """Verify NO_TORCH is derived correctly from UNSLOTH_NO_TORCH env var."""
 
+    @staticmethod
+    def _no_manifest():
+        """Pin the manifest tier to "unknown".
+
+        Without this the env-unset cases below read the manifest of whatever venv
+        pytest happens to run in, so the result would depend on the developer's
+        machine rather than on the code under test.
+        """
+        return mock.patch.object(
+            ips.install_manifest, "recorded_no_torch", lambda *args, **kwargs: None
+        )
+
     def _reimport_no_torch(self) -> bool:
-        return os.environ.get("UNSLOTH_NO_TORCH", "false").lower() in ("1", "true")
+        with self._no_manifest():
+            return ips._infer_no_torch()
 
     def test_true_lowercase(self):
         with mock.patch.dict(os.environ, {"UNSLOTH_NO_TORCH": "true"}):
@@ -316,6 +328,7 @@ class TestNoTorchConstant:
         env.pop("UNSLOTH_NO_TORCH", None)
         with (
             mock.patch.dict(os.environ, env, clear = True),
+            self._no_manifest(),
             mock.patch.object(ips, "IS_MAC_INTEL", True),
         ):
             assert ips._infer_no_torch() is True
@@ -334,9 +347,51 @@ class TestNoTorchConstant:
         env.pop("UNSLOTH_NO_TORCH", None)
         with (
             mock.patch.dict(os.environ, env, clear = True),
+            self._no_manifest(),
             mock.patch.object(ips, "IS_MAC_INTEL", False),
         ):
             assert ips._infer_no_torch() is False
+
+    @pytest.mark.parametrize("value", ("1", "true", "TRUE", "yes", "YES", "on", "ON", " true "))
+    def test_infer_no_torch_accepts_every_installer_spelling(self, value: str):
+        """install.ps1 / install.sh accept 1|true|yes|on; this must agree."""
+        with mock.patch.dict(os.environ, {"UNSLOTH_NO_TORCH": value}):
+            assert ips._infer_no_torch() is True
+
+    @pytest.mark.parametrize("recorded", (True, False))
+    def test_infer_no_torch_reads_the_manifest_when_env_is_unset(self, recorded: bool):
+        """`unsloth studio update` injects no env var, so the venv must remember.
+
+        Without this an update reinstalls torch into a GGUF-only venv, and on
+        Windows reads the missing torch as a stale venv it then fails to delete.
+        """
+        env = os.environ.copy()
+        env.pop("UNSLOTH_NO_TORCH", None)
+        with (
+            mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.install_manifest, "recorded_no_torch", lambda *a, **k: recorded),
+            mock.patch.object(ips, "IS_MAC_INTEL", False),
+        ):
+            assert ips._infer_no_torch() is recorded
+
+    @pytest.mark.parametrize("value", ("true", "false"))
+    def test_infer_no_torch_env_var_beats_the_manifest(self, value: str):
+        """An explicit value wins in both directions, so migrating either way works."""
+        with (
+            mock.patch.dict(os.environ, {"UNSLOTH_NO_TORCH": value}),
+            mock.patch.object(
+                ips.install_manifest, "recorded_no_torch", lambda *a, **k: value != "true"
+            ),
+        ):
+            assert ips._infer_no_torch() is (value == "true")
+
+    def test_infer_no_torch_treats_empty_as_unset(self):
+        """PowerShell deletes a variable assigned "", so it cannot mean "explicit"."""
+        with (
+            mock.patch.dict(os.environ, {"UNSLOTH_NO_TORCH": ""}),
+            mock.patch.object(ips.install_manifest, "recorded_no_torch", lambda *a, **k: True),
+        ):
+            assert ips._infer_no_torch() is True
 
 
 # ── IS_MACOS constant tests ──────────────────────────────────────────

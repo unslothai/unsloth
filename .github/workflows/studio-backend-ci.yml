@@ -30,6 +30,13 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - 'tests/**'
+      # The root installers: tests/sh/*.sh and tests/studio/install/* assert
+      # against these two files, so a change here must run the suite that
+      # covers it. Without them an install-only edit (the shape most AMD/ROCm
+      # routing fixes take) skipped Backend CI entirely.
+      - 'install.sh'
+      - 'install.ps1'
+      - 'scripts/**'
       - 'pyproject.toml'
       - '.github/workflows/studio-backend-ci.yml'
   push:
@@ -64,19 +71,20 @@ jobs:
       - name: Install backend test dependencies (CPU only)
         run: |
           python -m pip install --upgrade pip
-          # Studio's declared backend deps:
+          # Unsloth's declared backend deps:
           pip install -r studio/backend/requirements/studio.txt
           # Extras that studio.txt does not list but the import chain needs
           # (python-multipart for FastAPI form/file uploads, sqlalchemy/cryptography
-          #  for the auth DB, yaml/jinja2 for utils.models.model_config, etc.):
+          #  for the auth DB, yaml/jinja2 for utils.models.model_config, psutil for
+          #  the orphan-cleanup process scan, etc.):
           pip install \
-            python-multipart aiofiles sqlalchemy cryptography \
+            python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
             'numpy<3' pytest pytest-asyncio httpx
           # Torch CPU + transformers are required by a chunk of the backend test
           # suite (gpu_selection, kv_cache_estimation, utils). CPU-only torch
           # keeps the install ~250 MB / ~1 min on a clean runner.
-          pip install --index-url https://download.pytorch.org/whl/cpu 'torch>=2.4,<2.11'
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
           pip install 'transformers>=4.51,<5.5'
 
       - name: Backend tests
@@ -133,11 +141,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r studio/backend/requirements/studio.txt
           pip install \
-            python-multipart aiofiles sqlalchemy cryptography \
+            python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
             'numpy<3' pytest pytest-asyncio httpx
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26'
           pip install 'transformers>=4.51,<5.5'
           # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
@@ -192,6 +200,7 @@ jobs:
             --ignore=tests/sh \
             --ignore=tests/studio/test_hardware_dispatch_matrix.py \
             --ignore=tests/studio/test_is_mlx_dispatch_gate.py \
+            --ignore=tests/studio/test_xpu_spoof_pipeline.py \
             --ignore=tests/vllm_compat \
             --ignore=tests/version_compat \
             -m 'not server and not e2e' \
@@ -204,30 +213,50 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
-        # These two files mutate hardware.py module globals at runtime
-        # via the spoof fixtures, which leaks state into any other test
-        # that imports hardware. Run them in their own pytest invocation
-        # so the leak does not cross file boundaries.
+        # These files mutate hardware.py module globals at runtime via the
+        # spoof fixtures (CUDA/ROCm/XPU/MLX/CPU), which leaks state into any
+        # other test that imports hardware. Run them in their own pytest
+        # invocation so the leak does not cross file boundaries.
         run: |
           python -m pytest -q --tb=short \
             tests/studio/test_hardware_dispatch_matrix.py \
-            tests/studio/test_is_mlx_dispatch_gate.py
+            tests/studio/test_is_mlx_dispatch_gate.py \
+            tests/studio/test_xpu_spoof_pipeline.py
+
+      - name: CLI tests (unsloth_cli)
+        # unsloth_cli/tests had no CI at all: `unsloth_cli/**` was only a paths
+        # trigger and a ruff target, so 673 tests covering the studio launcher,
+        # the pre-exposure gate and the auth secret writers ran nowhere, and
+        # four of them had been failing on main unnoticed.
+        # Own step, not folded into the tests/ discovery above: pyproject's
+        # testpaths is tests/, and this suite needs no PYTHONPATH or CUDA spoof
+        # (it self-bootstraps sys.path and imports neither unsloth nor torch).
+        run: python -m pytest unsloth_cli/tests -q --tb=short
 
       - name: Shell installer tests
-        # Subset that does not depend on a writable / pristine install.sh
-        # tree; test_install_host_defaults.sh checks install.ps1 layout
-        # which has drifted (separate followup).
+        # Auto-discovered rather than allowlisted. The old hardcoded list had
+        # silently fallen seven files behind tests/run_all.sh, including
+        # test_strixhalo_wsl_reroute.sh -- the only shell coverage of the ROCm
+        # WSL reroute -- so that suite never ran on a PR. Skips are explicit,
+        # each with a reason, and tests/studio/test_ci_shell_suite_coverage.py
+        # fails if this step stops discovering the directory or the skip list
+        # grows without one.
+        #
+        # Skipped:
+        #   test_install_rollback_lifecycle.sh: covered by cross-platform-parity-ci.yml.
         run: |
           set -e
-          for s in \
-              tests/sh/test_get_torch_index_url.sh \
-              tests/sh/test_mac_intel_compat.sh \
-              tests/sh/test_nvcc_meets_llama_minimum.sh \
-              tests/sh/test_tauri_install_exit_order.sh \
-              tests/sh/test_torch_constraint.sh \
-              tests/sh/test_torch_flavor.sh; do
+          skip="test_install_rollback_lifecycle.sh"
+          found=0
+          for s in tests/sh/test_*.sh; do
+              case " $skip " in
+                  *" $(basename "$s") "*) echo "skipping $s (see workflow comment)"; continue ;;
+              esac
+              found=$((found + 1))
               echo "::group::$s"
               bash "$s"
               echo "::endgroup::"
           done
+          [ "$found" -gt 0 ] || { echo "::error::no shell tests discovered under tests/sh"; exit 1; }
+          echo "ran $found shell installer test files"
 

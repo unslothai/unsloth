@@ -204,6 +204,7 @@ function liveDownloadInventoryRows(
           size_bytes: job.displayBytes,
           partial: true,
           partial_transport: null,
+          optimistic: true,
         },
         modelFormat,
       ),

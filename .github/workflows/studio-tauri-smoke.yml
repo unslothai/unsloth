@@ -12,7 +12,7 @@
 # stay in release-desktop.yml (manual `workflow_dispatch`) because they need
 # code-signing secrets and ~30 min of runner time each.
 
-name: Studio Tauri CI
+name: Unsloth Tauri CI
 
 on:
   pull_request:
@@ -47,7 +47,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            libwebkit2gtk-4.1-dev libappindicator3-dev \
             librsvg2-dev libxdo-dev libssl-dev patchelf
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
@@ -90,6 +90,16 @@ jobs:
           npm ci --no-fund --no-audit
           npm run build
           test -f dist/index.html
+
+      # The crate carries ~100 unit tests (native_file_dialogs, preflight,
+      # install, desktop_auth, ...) that nothing ran until now: this workflow
+      # only ever built. Run them here, where the toolchain and the WebKit dev
+      # packages are already installed, so a broken assertion fails the PR
+      # instead of sitting unnoticed. `--no-fail-fast` reports every failing
+      # test in one run rather than stopping at the first.
+      - name: Rust unit tests (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo test --no-fail-fast
 
       - name: Tauri debug build (Linux, no bundle, no codesign)
         # `--debug` + `--no-bundle` keeps this lean: compiles the Rust crate,

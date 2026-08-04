@@ -39,7 +39,10 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
     const modelLoaded = !!checkpoint && !state.modelLoading;
     let unavailableReason: string | null = null;
     if (!modelLoaded) {
-      unavailableReason = "Load a model before adding audio files.";
+      // Mirror the image gate: flag a failed load vs "no model picked".
+      unavailableReason = state.lastModelLoadError
+        ? "The last model failed to load. Check the server logs, then load a model before adding audio files."
+        : "Load a model before adding audio files.";
     } else if (!activeModel?.hasAudioInput) {
       const label = activeModel?.name || checkpoint || "Current model";
       unavailableReason = `${label} cannot accept audio. Load an audio-input model before attaching audio files.`;

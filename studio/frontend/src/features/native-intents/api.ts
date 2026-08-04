@@ -23,8 +23,17 @@ export async function pickNativeModel(): Promise<NativeIntent | null> {
   return invokeNative<NativeIntent | null>("pick_native_model");
 }
 
+export async function pickHuggingFaceCacheDir(): Promise<string | null> {
+  if (!isTauri) return null;
+  return invokeNative<string | null>("pick_hugging_face_cache_dir");
+}
+
 export async function registerNativeModelPath(path: string): Promise<NativeIntent> {
   return invokeNative<NativeIntent>("register_native_model_path", { path });
+}
+
+export async function registerNativeAttachmentPath(path: string): Promise<NativeIntent> {
+  return invokeNative<NativeIntent>("register_native_attachment_path", { path });
 }
 
 export async function consumeNativePathToken(
@@ -43,4 +52,10 @@ export async function revealPathToken(token: string): Promise<void> {
 
 export async function openPathToken(token: string): Promise<void> {
   return invokeNative<void>("open_path_token", { token });
+}
+
+// Open a backend-resolved directory (e.g. the models/HF cache folder) in the
+// OS file manager. The Tauri command validates the path is a real directory.
+export async function openModelsDir(path: string): Promise<void> {
+  return invokeNative<void>("open_models_dir", { path });
 }

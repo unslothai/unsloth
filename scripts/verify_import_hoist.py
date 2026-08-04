@@ -564,6 +564,12 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     for n, tids in b["module_import_targets"].items():
         if tids & after_used:
             continue  # resolved -> fine
+        # `from __future__ import ...` is a compiler directive, not a runtime
+        # binding: the name (`annotations`, ...) is never loaded, so it can never
+        # "resolve" to a use. Skip it so a legitimately-added future import
+        # (e.g. `annotations` for lazy PEP 604 `X | None` on py3.9) is not flagged.
+        if all(t.startswith("from:__future__:") for t in tids):
+            continue
         newly_added = bool(tids - before_module_targets)
         was_used_before = bool(tids & before_used)
         if newly_added or was_used_before:
@@ -581,9 +587,30 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
             )
 
     # 3. TARGET-CHANGED (same scope+name resolves to a different import target)
+    #    Only a *swap* is dangerous: a BEFORE target that is no longer reachable in
+    #    AFTER means a reference was silently re-pointed. A pure superset growth
+    #    (tbefore <= tafter) is the benign `import pkg.subA` + `import pkg.subB`
+    #    case: both statements bind the same top-level name `pkg` to the same
+    #    package object and only *add* submodule attributes (e.g. adding
+    #    `import urllib.error` next to `import urllib.request`). Nothing the name
+    #    resolved to before is lost, so no reference is re-pointed -- skip it.
+    #
+    #    A deliberate *relocation* is also benign and must not block: when a name
+    #    keeps its spelling but its import source is moved A -> B in THIS diff (the
+    #    old `from A import x` is removed at module level and a new `from B import x`
+    #    is added), the swap is intentional, not a silent re-point to a pre-existing
+    #    different object. This mirrors the relocation tolerance already applied to
+    #    TARGET-MISSING. The dangerous case -- the name now resolving to a target
+    #    that already existed before (shadow/clash) -- is NOT exempted.
+    removed_module_targets = before_module_targets - after_module_targets
     for key, tafter in b["target_by_use"].items():
         tbefore = a["target_by_use"].get(key)
-        if tbefore and tbefore != tafter:
+        if tbefore and tbefore != tafter and (tbefore - tafter):
+            lost = tbefore - tafter
+            gained = tafter - tbefore
+            relocated = lost <= removed_module_targets and gained <= added_module_targets
+            if relocated:
+                continue
             findings.append(
                 (
                     "BLOCKER",

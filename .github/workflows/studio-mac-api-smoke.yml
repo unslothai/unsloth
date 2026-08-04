@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   api-smoke:
-    name: Studio API & Auth Tests
+    name: Unsloth API & Auth Tests
     runs-on: macos-14
     timeout-minutes: 25
     env:
@@ -68,7 +68,8 @@ jobs:
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
@@ -82,10 +83,11 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -97,9 +99,10 @@ jobs:
       - name: Install pyjwt for the JWT-expiry forge test
         run: pip install 'pyjwt>=2.6'
 
-      - name: Reset auth + boot Studio (API-only)
+      - name: Reset auth + boot Unsloth (API-only)
         run: |
-          unsloth studio reset-password
+          # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
+          rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
             > logs/studio.log 2>&1 &
@@ -127,13 +130,13 @@ jobs:
           echo "STUDIO_NEW_PW=$NEW"  >> "$GITHUB_ENV"
           echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
 
-      - name: Run Studio API & Auth tests
+      - name: Run Unsloth API & Auth tests
         env:
           BASE_URL: http://127.0.0.1:18895
           STUDIO_AUTH_DIR: /Users/runner/.unsloth/studio/auth
         run: python tests/studio/studio_api_smoke.py
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true

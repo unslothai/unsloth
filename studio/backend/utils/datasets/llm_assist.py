@@ -58,6 +58,7 @@ def precache_helper_gguf():
     try:
         from huggingface_hub import HfApi, hf_hub_download
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+        from utils.hf_cache_settings import active_hf_hub_cache
 
         disable_progress_bars()
         logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
@@ -76,7 +77,11 @@ def precache_helper_gguf():
                 + (f" (+{len(matching) - 1} shards)" if len(matching) > 1 else "")
             )
             for target in matching:
-                hf_hub_download(repo_id = repo, filename = target)
+                hf_hub_download(
+                    repo_id = repo,
+                    filename = target,
+                    cache_dir = active_hf_hub_cache(),
+                )
             logger.info(f"Helper GGUF cached: {len(matching)} file(s)")
         else:
             logger.warning(f"No GGUF matching variant '{variant}' in {repo}")
@@ -99,19 +104,18 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
 
     backend = None
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
         backend = LlamaCppBackend()
         logger.info(f"Loading helper model: {repo} ({variant})")
 
-        ok = backend.load_model(
+        intent = GgufLoadIntent(
+            model_identifier = f"helper:{repo}:{variant}",
             hf_repo = repo,
             hf_variant = variant,
-            model_identifier = f"helper:{repo}:{variant}",
-            is_vision = False,
             n_ctx = 2048,
-            n_gpu_layers = -1,
         )
+        ok = backend.load_model(intent)
         if not ok:
             logger.warning("Helper model failed to start")
             return None
@@ -439,20 +443,19 @@ def _run_multi_pass_advisor(
 
     backend = None
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
         backend = LlamaCppBackend()
         logger.info(f"Loading advisor model: {repo} ({variant})")
         t0 = time.monotonic()
 
-        ok = backend.load_model(
+        intent = GgufLoadIntent(
+            model_identifier = f"advisor:{repo}:{variant}",
             hf_repo = repo,
             hf_variant = variant,
-            model_identifier = f"advisor:{repo}:{variant}",
-            is_vision = False,
             n_ctx = 2048,
-            n_gpu_layers = -1,
         )
+        ok = backend.load_model(intent)
         if not ok:
             logger.warning("Advisor model failed to start")
             return None

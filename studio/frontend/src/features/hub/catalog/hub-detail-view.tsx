@@ -18,8 +18,8 @@ export function HubDetailView({
   const [scrolled, setScrolled] = useState(false);
   // Split pane is narrower than the full-page overlay; tighter measure reads better.
   const measure = compact
-    ? "mx-auto w-full max-w-[860px] px-5 sm:px-5"
-    : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
+    ? "mx-auto w-full max-w-[var(--hub-measure-compact)] px-5 sm:px-5"
+    : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -45,8 +45,16 @@ export function HubDetailView({
       <div
         ref={scrollRef}
         data-hub-scroll="true"
-        // Right margin nudges the scrollbar in from the pane's edge.
-        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto [overflow-anchor:none] mr-2 [scrollbar-gutter:stable] [scrollbar-width:thin]"
+        // Mirror the catalog's gutter strategy so the centered column lines up
+        // with the top bar: the full overlay reserves an equal both-edges gutter
+        // to stay symmetric; split pins a narrow pane so it nudges the scrollbar
+        // in from the edge with a right gutter only.
+        className={cn(
+          "min-h-0 flex-1 overflow-x-hidden overflow-y-auto [overflow-anchor:none] [scrollbar-width:thin]",
+          compact
+            ? "mr-2 [scrollbar-gutter:stable]"
+            : "[scrollbar-gutter:stable_both-edges]",
+        )}
       >
         <div
           className={cn(
@@ -61,7 +69,7 @@ export function HubDetailView({
             <button
               type="button"
               onClick={onBack}
-              className="-ml-1.5 inline-flex h-8 cursor-pointer select-none items-center gap-1.5 rounded-full pl-1.5 pr-2.5 text-[12.5px] font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground dark:hover:bg-white/[0.06]"
+              className="-ml-1.5 inline-flex h-8 cursor-pointer select-none items-center gap-1.5 rounded-full pl-1.5 pr-2.5 text-ui-12p5 font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground dark:hover:bg-white/[0.06]"
             >
               <HugeiconsIcon
                 icon={ArrowLeft01Icon}

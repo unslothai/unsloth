@@ -172,6 +172,22 @@ class TestMlaTargetCtxReserve:
         ctx = 131072
         assert mla._estimate_mtp_overhead_bytes(ctx) > non._estimate_mtp_overhead_bytes(ctx)
 
+    def test_separate_drafter_mode_drops_target_copy(self):
+        # The duplicated target context is MTP-only. draft-simple / draft-eagle3
+        # load a small separate drafter with its own KV (counted in the draft KV)
+        # and keep no target copy, so even on an MLA model the reserve must drop
+        # the f16 copy when mtp_keeps_target_ctx=False -- which is what the loader
+        # threads for those modes. The default (True) keeps the MTP copy.
+        b = _make_mla_backend()
+        ctx = 262144
+        mtp = b._estimate_mtp_overhead_bytes(ctx)  # default True == MTP draft
+        separate = b._estimate_mtp_overhead_bytes(ctx, mtp_keeps_target_ctx = False)
+        # Separate-drafter overhead is exactly the draft KV (no target copy)...
+        assert separate == b._mtp_draft_kv_bytes(ctx)
+        # ...and the MTP reserve is that plus the full f16 target copy.
+        assert mtp == separate + b._estimate_kv_cache_bytes(ctx, "f16")
+        assert mtp > separate
+
 
 class TestMlaFitPreventsOom:
     """The corrected reserve must actually lower the auto-fit context so the
@@ -200,7 +216,7 @@ class TestMlaFitPreventsOom:
             self.MODEL_BYTES,
             mtp_engaged = True,
             total_mib = self.TOTAL_MIB,
-            mtp_overhead_fn = lambda c: (b._mtp_draft_kv_bytes(c) or 0),
+            mtp_overhead_fn = lambda c: b._mtp_draft_kv_bytes(c) or 0,
         )
         assert draft_only == self.REQ_CTX  # reproduces the over-advertised context
         assert with_copy < self.REQ_CTX  # corrected reserve backs the context off

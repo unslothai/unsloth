@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # End-to-end sandbox tests for Mac Intel compatibility and UNSLOTH_NO_TORCH propagation.
 # Tests version_ge, arch detection (existing), plus E2E venv creation, torch skip
 # via a mock uv shim, and UNSLOTH_NO_TORCH env propagation in install.sh.
@@ -310,7 +312,7 @@ if [ "$SKIP_TORCH" = true ]; then
 else
     echo "==> Installing PyTorch ($TORCH_INDEX_URL)..."
     uv pip install --python "$_VENV_PY" "torch>=2.4,<2.11.0" torchvision torchaudio \
-        --index-url "$TORCH_INDEX_URL"
+        --default-index "$TORCH_INDEX_URL"
 fi
 TORCH_EOF
 

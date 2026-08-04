@@ -3,12 +3,14 @@
 
 import { CPT_TARGET_MODULES, DEFAULT_HYPERPARAMS, LR_DEFAULT_CPT, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS, TARGET_MODULES } from "@/config/training";
 import { authFetch } from "@/features/auth";
+import { getHfToken, mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
 import { isAdapterMethod } from "@/types/training";
 import type { DatasetFormat } from "@/types/training";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
+import { toast } from "sonner";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { checkDatasetFormat } from "../api/datasets-api";
+import { checkDatasetFormat, DatasetFormatError } from "../api/datasets-api";
 import { checkVisionModel, getModelConfig } from "../api/models-api";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
@@ -57,6 +59,7 @@ const initialState: TrainingConfigState = {
   currentStep: MIN_STEP,
   modelType: null,
   selectedModel: null,
+  projectName: "",
   trainingMethod: "qlora",
   hfToken: "",
   datasetSource: "huggingface",
@@ -65,6 +68,7 @@ const initialState: TrainingConfigState = {
   datasetSubset: null,
   datasetSplit: null,
   datasetEvalSplit: null,
+  datasetStreaming: false,
   datasetManualMapping: emptyManualMapping(),
   datasetSystemPrompt: "",
   datasetUserTemplate: "",
@@ -112,11 +116,13 @@ let _yamlLearningRate: number | undefined = undefined;
 let _datasetFormatBeforeCpt: DatasetFormat | null = null;
 let _datasetFormatAutoForcedByCpt = false;
 
+// modelType / isVisionModel / isAudioModel persist so multimodal-only UI
+// paints right on reload; the model-config fetch still re-derives them.
+// hfToken mirrors the shared hf-token-store and is persisted there instead.
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
-  "modelType",
+  "hfToken",
   "isCheckingVision",
   "isEmbeddingModel",
-  "isAudioModel",
   "isLoadingModelDefaults",
   "modelDefaultsError",
   "modelDefaultsAppliedFor",
@@ -162,6 +168,68 @@ function canProceedForStep(state: TrainingConfigState): boolean {
       return true;
     default:
       return false;
+  }
+}
+
+// Single source of truth for the "streaming + eval needs a distinct split"
+// rule. Shared between the store's compatibility patch and the UI gate
+// (DatasetSection) so the two never drift apart.
+export function hasSeparateStreamingEvalSplit(
+  state: Pick<
+    TrainingConfigState,
+    "evalSteps" | "datasetSplit" | "datasetEvalSplit"
+  >,
+): boolean {
+  if (state.evalSteps <= 0) return true;
+  const trainSplit = state.datasetSplit || "train";
+  return !!state.datasetEvalSplit && state.datasetEvalSplit !== trainSplit;
+}
+
+function streamingCompatiblePatch(
+  state: TrainingConfigState,
+): Partial<TrainingConfigState> {
+  const patch: Partial<TrainingConfigState> = {};
+
+  if (state.datasetStreaming && state.maxSteps <= 0) {
+    patch.datasetStreaming = false;
+  }
+
+  // Evaluate the remaining streaming constraints against the *post-patch*
+  // streaming value. If streaming is being turned off in this same patch
+  // (e.g. maxSteps dropped to 0), its other constraints are moot and we must
+  // NOT clobber unrelated user preferences like trainOnCompletions/evalSteps.
+  const willStream =
+    patch.datasetStreaming !== undefined
+      ? patch.datasetStreaming
+      : state.datasetStreaming;
+
+  if (willStream && state.trainOnCompletions) {
+    patch.trainOnCompletions = false;
+  }
+
+  if (willStream && !hasSeparateStreamingEvalSplit(state)) {
+    patch.evalSteps = 0;
+  }
+
+  return patch;
+}
+
+// streamingCompatiblePatch can silently flip streaming-coupled fields. Surface a
+// toast when it does, so the indirect setters (split / eval-split / max-steps /
+// eval-steps) match setDatasetStreaming's "tell the user what changed" behavior.
+function notifyStreamingCompat(patch: Partial<TrainingConfigState>): void {
+  if (patch.datasetStreaming === false) {
+    toast.info("Streaming turned off: streaming needs a fixed Max Steps > 0.");
+    return;
+  }
+  const disabled = [
+    patch.trainOnCompletions === false && "assistant-completions-only",
+    patch.evalSteps === 0 && "evaluation (needs a separate eval split)",
+  ].filter(Boolean);
+  if (disabled.length > 0) {
+    toast.info(
+      `Adjusted for streaming. Disabled incompatible options: ${disabled.join(", ")}.`,
+    );
   }
 }
 
@@ -448,8 +516,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
             set(updates);
           })
-          .catch(() => {
+          .catch((error: unknown) => {
             if (controller.signal.aborted) return;
+            // Otherwise a deleted dataset stays selected and re-fails every visit.
+            if (error instanceof DatasetFormatError && error.status === 404) {
+              clearDeletedDataset(datasetName);
+              toast.error(error.message);
+            }
             set({ isDatasetImage: null, isCheckingDataset: false });
           });
       };
@@ -504,6 +577,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             visionImageSize?: number | null;
             trustRemoteCode?: boolean;
             approvedRemoteCodeFingerprint?: string | null;
+            isVisionModel?: boolean;
+            isAudioModel?: boolean;
+            isEmbeddingModel?: boolean;
           } = {
             selectedModel,
             modelDefaultsError: null,
@@ -515,6 +591,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             // re-applied below, and a custom-code model re-opens the dialog before start.
             patch.trustRemoteCode = false;
             patch.approvedRemoteCodeFingerprint = null;
+            // Reset capability flags so a mid-fetch reload can't persist the
+            // previous model's vision/audio flags against the new model.
+            patch.isVisionModel = false;
+            patch.isAudioModel = false;
+            patch.isEmbeddingModel = false;
           }
           set(patch);
 
@@ -548,6 +629,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (state.modelDefaultsAppliedFor === state.selectedModel) return;
           void loadAndApplyModelDefaults(state.selectedModel);
         },
+        setProjectName: (projectName) => set({ projectName }),
         setTrainingMethod: (trainingMethod) => {
           const state = get();
           set(
@@ -558,8 +640,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ),
           );
         },
-        setHfToken: (hfToken) =>
-          set({ hfToken: hfToken.trim().replace(/^["']+|["']+$/g, "") }),
+        setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
         setDatasetSource: (datasetSource) => set({ datasetSource }),
         selectHfDataset: (dataset) => {
           _datasetCheckController?.abort();
@@ -649,15 +730,19 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
         },
         setDatasetSplit: (datasetSplit) => {
+          const state = get();
+          const nextState = { ...state, datasetSplit };
+          const streamingPatch = streamingCompatiblePatch(nextState);
           set({
             datasetSplit,
             datasetManualMapping: emptyManualMapping(),
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
+            ...streamingPatch,
           });
+          notifyStreamingCompat(streamingPatch);
 
-          const state = get();
           const datasetName =
             state.datasetSource === "huggingface"
               ? state.dataset
@@ -681,10 +766,53 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           runDatasetCheck(datasetName, split);
         },
         setDatasetEvalSplit: (datasetEvalSplit) => {
+          const state = get();
+          const evalSteps = datasetEvalSplit ? 0.1 : 0;
+          const streamingPatch = streamingCompatiblePatch({
+            ...state,
+            datasetEvalSplit,
+            evalSteps,
+          });
           set({
             datasetEvalSplit,
-            evalSteps: datasetEvalSplit ? 0.1 : 0,
+            evalSteps,
+            ...streamingPatch,
           });
+          notifyStreamingCompat(streamingPatch);
+        },
+        setDatasetStreaming: (datasetStreaming) => {
+          if (!datasetStreaming) {
+            set({ datasetStreaming: false });
+            return;
+          }
+
+          const state = get();
+          if (state.maxSteps <= 0) {
+            set({ datasetStreaming: false });
+            toast.warning(
+              "Streaming needs a fixed Max Steps (streaming datasets have no known length). Set Max Steps > 0 first.",
+            );
+            return;
+          }
+
+          const dropsTrainOnCompletions = state.trainOnCompletions;
+          const dropsEval = !hasSeparateStreamingEvalSplit(state);
+
+          set({
+            datasetStreaming: true,
+            trainOnCompletions: false,
+            evalSteps: dropsEval ? 0 : state.evalSteps,
+          });
+
+          if (dropsTrainOnCompletions || dropsEval) {
+            const disabled = [
+              dropsTrainOnCompletions && "assistant-completions-only",
+              dropsEval && "evaluation (needs a separate eval split)",
+            ].filter(Boolean);
+            toast.info(
+              `Streaming enabled. Disabled incompatible options: ${disabled.join(", ")}.`,
+            );
+          }
         },
         setDatasetManualMapping: (datasetManualMapping) =>
           set({ datasetManualMapping }),
@@ -748,13 +876,34 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({ gradientAccumulation }),
         setWeightDecay: (weightDecay) => set({ weightDecay }),
         setWarmupSteps: (warmupSteps) => set({ warmupSteps }),
-        setMaxSteps: (maxSteps) => set({ maxSteps }),
+        setMaxSteps: (maxSteps) => {
+          const state = get();
+          // streamingCompatiblePatch already turns streaming off when maxSteps<=0,
+          // so no separate datasetStreaming reset is needed here.
+          const streamingPatch = streamingCompatiblePatch({ ...state, maxSteps });
+          set({
+            maxSteps,
+            ...streamingPatch,
+          });
+          notifyStreamingCompat(streamingPatch);
+        },
         setSaveSteps: (saveSteps) => set({ saveSteps }),
-        setEvalSteps: (evalSteps) => set({ evalSteps }),
+        setEvalSteps: (evalSteps) => {
+          const state = get();
+          const streamingPatch = streamingCompatiblePatch({ ...state, evalSteps });
+          set({
+            evalSteps,
+            ...streamingPatch,
+          });
+          notifyStreamingCompat(streamingPatch);
+        },
         setPacking: (packing) => set({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
-          set({ trainOnCompletions });
+          set({
+            trainOnCompletions,
+            ...(trainOnCompletions ? { datasetStreaming: false } : {}),
+          });
         },
         setGradientCheckpointing: (gradientCheckpointing) =>
           set({ gradientCheckpointing }),
@@ -781,7 +930,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _learningRateManuallySet = false;
           _yamlLearningRate = undefined;
           clearCptDatasetFormatTracking();
-          set(initialState);
+          set({ ...initialState, hfToken: getHfToken() });
         },
         resetToModelDefaults: () => {
           const { selectedModel } = get();
@@ -805,7 +954,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 10,
+      version: 12,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -852,9 +1001,63 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             s.learningRate = LR_DEFAULT_CPT;
           }
         }
+        if (version < 11) {
+          // Standalone bump: users already on main's v10 (CPT) skipped the
+          // streaming backfill when it was nested under v<10, so give it its
+          // own version guard.
+          s.datasetStreaming ??= false;
+        }
+        if (version < 12) {
+          // hfToken moved to the shared hf-token-store; seed it once so an
+          // existing Unsloth-only token isn't lost.
+          const legacyToken = typeof s.hfToken === "string" ? s.hfToken.trim() : "";
+          if (legacyToken && !getHfToken()) {
+            useHfTokenStore.getState().setToken(legacyToken);
+          }
+          delete s.hfToken;
+        }
         return s as unknown as TrainingConfigStore;
       },
       partialize: partializePersistedState,
+      onRehydrateStorage: () => (state) => {
+        // datasetStreaming is persisted, but constraint-coupled fields like
+        // trainOnCompletions / maxSteps / evalSteps are NON_PERSISTED and
+        // rehydrate to defaults. That can resurrect an invalid combo (e.g.
+        // streaming=true with a default trainOnCompletions) that the backend
+        // rejects with 422. Reconcile immediately on load instead of relying
+        // on a post-mount effect.
+        if (!state) return;
+        const patch = streamingCompatiblePatch(state);
+        if (Object.keys(patch).length > 0) {
+          // Sync localStorage hydration runs inside create(), before
+          // useTrainingConfigStore is assigned (TDZ). Defer to a microtask so the
+          // store exists when we reconcile the persisted streaming combo.
+          queueMicrotask(() => useTrainingConfigStore.setState(patch));
+        }
+      },
     },
   ),
 );
+
+const unsubscribeHfTokenMirror = mirrorHfTokenInto(useTrainingConfigStore);
+if (import.meta.hot) {
+  import.meta.hot.dispose(unsubscribeHfTokenMirror);
+}
+
+/** POSIX, Windows drive, UNC or extended-length path. A Hub repo id is never one. */
+function isLocalDatasetPath(datasetName: string): boolean {
+  return /^([/\\]|[A-Za-z]:[\\/])/.test(datasetName.trim());
+}
+
+/** Drop a selection whose file the backend reports as gone (404). */
+export function clearDeletedDataset(datasetName: string): void {
+  // Only a local file can be deleted, so an unrelated 404 cannot wipe a good pick.
+  if (!isLocalDatasetPath(datasetName)) return;
+  const { dataset, uploadedFile, setDataset, selectLocalDataset } =
+    useTrainingConfigStore.getState();
+  if (uploadedFile === datasetName) {
+    selectLocalDataset(null);
+  } else if (dataset === datasetName) {
+    setDataset(null);
+  }
+}

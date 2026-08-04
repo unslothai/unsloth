@@ -402,7 +402,7 @@ class TestWorkersWireTheGate:
         ],
     )
     def test_worker_invokes_gate(self, rel):
-        src = (Path(__file__).resolve().parent.parent / rel).read_text()
+        src = (Path(__file__).resolve().parent.parent / rel).read_text(encoding = "utf-8")
         assert "evaluate_remote_code_consent" in src
         assert "remote_code_blocked" in src
         assert ".blocked" in src
@@ -410,15 +410,15 @@ class TestWorkersWireTheGate:
     def test_mlx_training_path_gates_before_load(self):
         # The Apple-Silicon path returns before run_training_process's gate, so it must
         # scan before FastMLXModel.from_pretrained runs repo code.
-        src = (_BACKEND / "core/training/worker.py").read_text()
+        src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
         head = src[: src.index("FastMLXModel.from_pretrained(")]
         assert "evaluate_remote_code_consent" in head
 
     def test_lora_base_model_is_gated(self):
         # Inference + export expand the consent scan to the LoRA base model's code.
         for rel in ("core/inference/worker.py", "core/export/worker.py"):
-            src = (_BACKEND / rel).read_text()
-            assert "consent_targets" in src
+            src = (_BACKEND / rel).read_text(encoding = "utf-8")
+            assert "evaluate_remote_code_consent" in src
             assert "get_base_model_from_lora" in src or "mc.base_model" in src
 
     def test_remote_lora_base_is_resolved_in_gate_paths(self):
@@ -431,12 +431,12 @@ class TestWorkersWireTheGate:
             "core/training/worker.py",
             "core/export/worker.py",
         ):
-            src = (_BACKEND / rel).read_text()
+            src = (_BACKEND / rel).read_text(encoding = "utf-8")
             assert "get_base_model_from_lora_identifier" in src, rel
 
     def test_embedding_training_path_gates_before_load(self):
         # The embedding pipeline must run the malware + consent gates before loading, like the other paths.
-        src = (_BACKEND / "core/training/worker.py").read_text()
+        src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
         start = src.index("def _run_embedding_training(")
         end = src.index("FastSentenceTransformer.from_pretrained(", start)
         region = src[start:end]
@@ -505,7 +505,9 @@ class TestStructuredFindingsForDialog:
         assert d.findings and d.fingerprint  # structured findings for the UI
 
     def test_scan_route_uses_preflight(self):
-        src = (Path(__file__).resolve().parent.parent / "routes/models.py").read_text()
+        src = (Path(__file__).resolve().parent.parent / "routes/models.py").read_text(
+            encoding = "utf-8"
+        )
         assert "remote-code-scan" in src
         # The scan route pins one combined fingerprint over adapter + base, so adapter code is reviewed and approvable too.
         assert "preflight_remote_code_consent_for_targets" in src
@@ -603,6 +605,8 @@ class TestStructuredFindingsForDialog:
             "preflight_remote_code_consent_for_targets",
             lambda *_a, **_k: SimpleNamespace(
                 has_remote_code = True,
+                blocked = False,
+                reason = "allowed: no high-risk patterns",
                 response_payload = lambda: {"has_remote_code": True, "approvable": True},
             ),
         )
@@ -634,8 +638,10 @@ class TestStructuredFindingsForDialog:
         ],
     )
     def test_fingerprint_threaded_to_worker(self, rel):
-        src = (Path(__file__).resolve().parent.parent / rel).read_text()
+        src = (Path(__file__).resolve().parent.parent / rel).read_text(encoding = "utf-8")
         assert "approved_remote_code_fingerprint" in src
+        # The per-user approval cache rides the same path as the fingerprint.
+        assert "subject" in src
 
 
 # Trusted-org auto-enable: is_trusted_org_repo decides whether a repo may auto-enable
@@ -734,7 +740,7 @@ class TestNemotronGateUsesTrustCheck:
         ],
     )
     def test_worker_nemotron_block_calls_trust_check(self, rel):
-        src = (_BACKEND / rel).read_text()
+        src = (_BACKEND / rel).read_text(encoding = "utf-8")
         assert "_NEMOTRON_TRUST_SUBSTRINGS" in src
         assert "is_trusted_org_repo(" in src
 
@@ -815,6 +821,39 @@ class TestRemoteCodeScan:
         assert not scan_remote_code_files({"modeling_x.py": _SCAN_MALICIOUS}).clean
 
 
+class TestConsentProvider:
+    """_consent_provider attributes the dialog's `from "<provider>"` tag only when safe."""
+
+    @staticmethod
+    def _fn():
+        from routes.models import _consent_provider
+        return _consent_provider
+
+    def test_single_hub_id_returns_owner(self):
+        assert self._fn()("NVIDIA/Nemotron", ["NVIDIA/Nemotron"]) == "NVIDIA"
+        assert self._fn()("NVIDIA/Nemotron", ["NVIDIA/Nemotron"], []) == "NVIDIA"
+
+    def test_multi_target_lora_returns_none(self):
+        # A LoRA scans adapter + base; attributing to one would mislead.
+        assert self._fn()("user/adapter", ["user/adapter", "NVIDIA/base"]) is None
+
+    def test_external_auto_map_ref_returns_none(self):
+        # A single repo whose auto_map pulls code from another repo: don't attribute it.
+        assert self._fn()("owner/repo", ["owner/repo"], ["evilorg/evilrepo"]) is None
+
+    def test_local_path_returns_none(self, tmp_path):
+        d = tmp_path / "org" / "model"
+        d.mkdir(parents = True)
+        assert self._fn()(str(d), [str(d)]) is None
+        assert self._fn()("/home/me/model", ["/home/me/model"]) is None
+
+    def test_non_canonical_id_returns_none(self):
+        fn = self._fn()
+        assert fn("a/b/c", ["a/b/c"]) is None
+        assert fn("/repo", ["/repo"]) is None
+        assert fn("plainname", ["plainname"]) is None
+
+
 class TestScannerCoversAllExecutableCode:
     """repo_remote_code_files must collect every .py the loader could execute, so the fingerprint can't certify unscanned code."""
 
@@ -836,6 +875,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             if fn == "config.json":
                 import json
@@ -862,6 +902,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -895,6 +936,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -935,6 +977,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -971,6 +1014,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -1000,6 +1044,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -1042,6 +1087,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -1083,6 +1129,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -1145,6 +1192,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -1224,9 +1272,9 @@ class TestScannerCoversAllExecutableCode:
             configs = consent._load_remote_code_configs("some/gated-repo")
         assert configs is None
 
-    def test_gguf_repo_auto_map_is_ignored(self):
-        # A GGUF repo with a vestigial auto_map loads via llama.cpp, which never runs it,
-        # so _config_has_auto_map must return False and skip the consent flow.
+    def test_gguf_repo_auto_map_is_scanned_for_non_file_load_paths(self, tmp_path):
+        # A GGUF-only repo id still hits export paths that run auto_map; only a direct
+        # .gguf file is inert.
         def _dl(
             repo_id = None,
             filename = None,
@@ -1234,10 +1282,8 @@ class TestScannerCoversAllExecutableCode:
             **kw,
         ):
             import json
-            import tempfile
-
             if filename == "config.json":
-                p = Path(tempfile.mkdtemp()) / "config.json"
+                p = tmp_path / "config.json"
                 p.write_text(
                     json.dumps({"auto_map": {"AutoModelForCausalLM": "modeling_decilm.X"}})
                 )
@@ -1251,7 +1297,79 @@ class TestScannerCoversAllExecutableCode:
                 return_value = ["config.json", "model-00001-of-00097.gguf"],
             ),
         ):
-            assert consent._config_has_auto_map("unsloth/Some-Model-GGUF") is False
+            assert consent._config_has_auto_map("unsloth/Some-Model-GGUF") is True
+
+    def test_gguf_only_repo_with_python_is_scanned_and_blocked(self, tmp_path):
+        # Regression: the GGUF-only short-circuit must not skip auto_map Python for export loaders.
+        def _dl(
+            repo_id = None,
+            filename = None,
+            token = None,
+            **kw,
+        ):
+            import json
+
+            p = tmp_path / filename
+            if filename == "config.json":
+                p.write_text(json.dumps({"auto_map": {"AutoModel": "modeling_evil.X"}}))
+                return str(p)
+            if filename == "modeling_evil.py":
+                p.write_text("import subprocess\nsubprocess.Popen(['id'])\n")
+                return str(p)
+            raise EntryNotFoundError(filename)
+
+        with (
+            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch(
+                "huggingface_hub.list_repo_files",
+                return_value = ["config.json", "modeling_evil.py", "model.Q4_K_M.gguf"],
+            ),
+        ):
+            d = evaluate_remote_code_consent_for_targets(
+                ["evil/GGUF-Only"],
+                trust_remote_code = True,
+            )
+
+        assert d.has_remote_code is True
+        assert d.blocked is True
+        assert d.max_severity == HIGH
+        assert d.fingerprint
+
+    def test_transformers_style_repo_auto_map_is_scanned_and_blocked(self, tmp_path):
+        # A non-GGUF repo (safetensors/MLX) with auto_map is still scanned and blocked.
+        def _dl(
+            repo_id = None,
+            filename = None,
+            token = None,
+            **kw,
+        ):
+            import json
+
+            p = tmp_path / filename
+            if filename == "config.json":
+                p.write_text(json.dumps({"auto_map": {"AutoModel": "modeling_evil.X"}}))
+                return str(p)
+            if filename == "modeling_evil.py":
+                p.write_text("import subprocess\nsubprocess.Popen(['id'])\n")
+                return str(p)
+            raise EntryNotFoundError(filename)
+
+        for weights in (["model.safetensors"], ["weights.npz"]):
+            with (
+                patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+                patch(
+                    "huggingface_hub.list_repo_files",
+                    return_value = ["config.json", "modeling_evil.py", *weights],
+                ),
+            ):
+                d = evaluate_remote_code_consent_for_targets(
+                    ["org/Transformers-Style"],
+                    trust_remote_code = True,
+                )
+            assert d.has_remote_code is True, weights
+            assert d.blocked is True, weights
+            assert d.max_severity == HIGH, weights
+            assert d.fingerprint, weights
 
     def test_direct_gguf_file_reference_has_no_auto_map(self):
         # A direct .gguf file reference (repo id + filename, >=3 segments) is a GGUF load: no remote code, no Hub call.
@@ -1409,6 +1527,6 @@ class TestDiscardRemoteCodeDownload:
         assert res == {"deleted": False, "reason": "not_cached"}
 
     def test_route_source_reports_created_by_scan(self):
-        src = (_BACKEND / "routes/models.py").read_text()
+        src = (_BACKEND / "routes/models.py").read_text(encoding = "utf-8")
         assert "created_by_scan" in src
         assert "discard-remote-code" in src
