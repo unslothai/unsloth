@@ -379,7 +379,7 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     navbar = NAVBAR.read_text(encoding = "utf-8")
 
     assert "collapseToZero={isTauri}" in app_sidebar
-    assert 'collapseToZero = false' in primitive
+    assert "collapseToZero = false" in primitive
     assert 'collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"' in primitive
     assert "usesNativeMacTitlebar && !pinned" in navbar
     assert "<DesktopTitlebarNavigation" in navbar
