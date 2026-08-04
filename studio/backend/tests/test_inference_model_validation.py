@@ -7,7 +7,7 @@ import sys
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
-from models.inference import LoadRequest
+from models.inference import DiffusionGenerateRequest, LoadRequest
 
 
 def _base_load_request(**overrides):
@@ -247,3 +247,20 @@ def test_attention_backend_none_preserved():
 def test_attention_backend_unknown_still_rejected():
     with pytest.raises(ValidationError):
         _diff_load(attention_backend = "bogus")
+
+
+def test_load_rejects_a_duplicate_lora_id_like_generate_does():
+    """The load path bakes adapters into the quantized build, so it needs generate's guard too.
+
+    _resolve_lora_set suffixes colliding adapter names, so a repeated id resolves the SAME adapter
+    twice and set_adapters stacks both copies past the per-adapter weight bound. On the generation
+    path that is one bad image; baked into a quantized build it rides every image until a reload.
+    """
+    dup = [{"id": "me/adapter", "weight": 0.8}, {"id": "me/adapter", "weight": 0.8}]
+    with pytest.raises(ValidationError, match = "duplicate LoRA id"):
+        _diff_load(loras = dup)
+    with pytest.raises(ValidationError, match = "duplicate LoRA id"):
+        DiffusionGenerateRequest(prompt = "a cat", loras = dup)
+    # Distinct ids are untouched.
+    assert len(_diff_load(loras = [{"id": "me/a", "weight": 0.8},
+                                   {"id": "me/b", "weight": 0.5}]).loras) == 2

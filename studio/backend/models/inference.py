@@ -2368,6 +2368,24 @@ class DiffusionLoadRequest(BaseModel):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
         return value.strip().lower() if isinstance(value, str) else value
 
+    @field_validator("loras")
+    @classmethod
+    def _unique_lora_ids(cls, value: Optional[list["LoraSpec"]]) -> Optional[list["LoraSpec"]]:
+        # Same guard DiffusionGenerateRequest carries, and it matters more here: _resolve_lora_set
+        # suffixes colliding adapter names, so a repeated id resolves the SAME adapter twice and
+        # set_adapters stacks both copies past the per-adapter weight bound. On the generation path
+        # that is one bad image; on this path the adapters are baked into the quantized build
+        # before compilation, so the unintended combination rides every image until a reload.
+        if value:
+            seen: set[str] = set()
+            for spec in value:
+                if spec.id in seen:
+                    raise ValueError(
+                        f"duplicate LoRA id '{spec.id}'; list each adapter at most once"
+                    )
+                seen.add(spec.id)
+        return value
+
 
 class LoraSpec(BaseModel):
     """One LoRA adapter to apply for a generation, referenced by its discovery id.
