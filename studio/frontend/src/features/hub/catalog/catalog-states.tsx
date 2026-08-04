@@ -12,25 +12,79 @@ import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import { useLayoutEffect, useRef, useState } from "react";
+import type { HubFailure } from "@/features/hub/lib/network";
+
+// Only a browser reporting itself offline earns "You're offline". Calling a DNS
+// filter, antivirus or extension block "offline" is what made this
+// class of bug undiagnosable.
+function describeFailure(
+  failure: HubFailure | null | undefined,
+  online: boolean,
+  resourceLabel: "models" | "datasets",
+): { title: string; body: string; offlineLike: boolean } {
+  switch (failure?.kind) {
+    case "browser-offline":
+      return {
+        title: "You're offline",
+        body: `Reconnect to the internet to browse ${resourceLabel} from Hugging Face.`,
+        offlineLike: true,
+      };
+    case "csp-blocked":
+      return {
+        title: "Blocked by security policy",
+        body: failure.message,
+        offlineLike: false,
+      };
+    case "timeout":
+      return {
+        title: "Hugging Face timed out",
+        body: failure.message,
+        offlineLike: false,
+      };
+    case "network-opaque":
+    case "unknown":
+      return {
+        title: "Can't reach Hugging Face",
+        body: failure.message,
+        offlineLike: false,
+      };
+    default:
+      break;
+  }
+  return online
+    ? {
+        title: "Couldn't reach Hugging Face",
+        body: "The discovery feed couldn't load. Check your connection or try again.",
+        offlineLike: false,
+      }
+    : {
+        title: "Can't reach Hugging Face",
+        body: `Studio couldn't load ${resourceLabel} from Hugging Face.`,
+        offlineLike: false,
+      };
+}
 
 export function NetworkErrorState({
   online,
   message,
+  failure,
   onRetry,
   onSwitchDevice,
   resourceLabel = "models",
 }: {
   online: boolean;
   message: string;
+  failure?: HubFailure | null;
   onRetry: () => void;
   onSwitchDevice?: () => void;
   resourceLabel?: "models" | "datasets";
 }) {
-  const title = online ? "Couldn't reach Hugging Face" : "You're offline";
-  const body = online
-    ? "The discovery feed couldn't load. Check your connection or try again."
-    : `Reconnect to the internet to browse ${resourceLabel} from Hugging Face.`;
-  const icon = online ? CloudOffIcon : WifiDisconnected02Icon;
+  const { title, body, offlineLike } = describeFailure(
+    failure,
+    online,
+    resourceLabel,
+  );
+  const icon = offlineLike ? WifiDisconnected02Icon : CloudOffIcon;
 
   return (
     <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 px-6 text-center">

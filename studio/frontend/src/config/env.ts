@@ -18,6 +18,8 @@ export const env = {
 
 // Platform / device type
 
+export const DEFAULT_HUB_ENDPOINT = "https://huggingface.co";
+
 export type DeviceType = "mac" | "windows" | "linux" | string;
 
 interface PlatformState {
@@ -32,6 +34,9 @@ interface PlatformState {
   cloudflareUrl: string | null;
   serverUrl: string | null;
   secure: boolean;
+  // Effective HF endpoint from /api/health (authed). A non-official value means
+  // a mirror, which the browser cannot reach directly (CSP + CORS).
+  hubEndpoint: string;
   fetched: boolean;
   // Last verdict came from a deferred reply (torch-warm kill switch): nothing settles
   // until a first-use operation detects, so the sidebar polls on this.
@@ -58,6 +63,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
+  hubEndpoint: DEFAULT_HUB_ENDPOINT,
   fetched: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
@@ -138,6 +144,7 @@ export async function fetchDeviceType(options?: {
         cloudflare_url?: string | null;
         server_url?: string | null;
         secure?: boolean;
+        hub_endpoint?: string;
       };
       // Once the store holds an authoritative (server-reported) platform, a
       // non-forced response must not overwrite it. It may be an unauthenticated
@@ -167,6 +174,8 @@ export async function fetchDeviceType(options?: {
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
+        // Absent on an older backend: keep the default so it still works.
+        hubEndpoint: data.hub_endpoint ?? previous.hubEndpoint,
         fetched: data.device_type !== undefined || keepPlatform,
         detectionDeferred: isDetectionDeferred(data),
       });

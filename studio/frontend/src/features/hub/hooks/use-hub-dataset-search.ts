@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { fetchWithTimeout } from "../lib/network";
+import { createHubTransport } from "../lib/hub-transport";
+import { hubProxyFirst } from "../lib/hub-endpoint";
 import type { HubModelType } from "../types";
 import { listDatasets } from "@huggingface/hub";
 import { useCallback, useMemo } from "react";
@@ -126,6 +128,12 @@ function makeDatasetSortFetch(
   direction: DatasetSortDirection,
   signal?: AbortSignal,
 ): typeof fetch {
+  // Per-instance so pagination affinity follows this iterator.
+  const transport = createHubTransport("datasets", {
+    direct: (input, init) =>
+      fetchWithTimeout(input, init, HF_DATASET_SEARCH_TIMEOUT_MS),
+    proxyFirst: hubProxyFirst,
+  });
   return (input, init) => {
     const rawUrl =
       typeof input === "string"
@@ -133,6 +141,10 @@ function makeDatasetSortFetch(
         : input instanceof URL
           ? input.toString()
           : input.url;
+    // A relative next-page link means the transport is already proxying.
+    if (rawUrl.startsWith("/")) {
+      return transport(rawUrl, signal ? { ...init, signal } : init);
+    }
     const url = new URL(rawUrl);
 
     if (!url.searchParams.has("sort")) {
@@ -147,11 +159,7 @@ function makeDatasetSortFetch(
         : direction;
     url.searchParams.set("direction", effectiveDir === "asc" ? "1" : "-1");
 
-    return fetchWithTimeout(
-      url,
-      signal ? { ...init, signal } : init,
-      HF_DATASET_SEARCH_TIMEOUT_MS,
-    );
+    return transport(url, signal ? { ...init, signal } : init);
   };
 }
 

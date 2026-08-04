@@ -157,13 +157,16 @@ export function useHubPaginatedSearch<T>(
         busyRef.current = false;
         busyKindRef.current = null;
       }
+      // `error` is deliberately preserved. Disabling the feed (a tab switch, or
+      // the Hub becoming unavailable) must not erase why the last attempt
+      // failed, otherwise the catalog has nothing to show but a generic
+      // "you're offline" panel regardless of the real cause.
       setState((prev) =>
-        prev.isLoading || prev.isLoadingMore || prev.error
+        prev.isLoading || prev.isLoadingMore
           ? {
               ...prev,
               isLoading: false,
               isLoadingMore: false,
-              error: null,
             }
           : prev,
       );

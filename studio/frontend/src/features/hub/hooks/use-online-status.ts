@@ -3,6 +3,10 @@
 
 import {
   getBrowserOfflineRetryDelayMs,
+  getHubPhase,
+  getLastHubFailure,
+  type HubFailure,
+  type HubPhase,
   isHuggingFaceOffline,
   subscribeNetworkStatus,
 } from "@/features/hub/lib/network";
@@ -44,10 +48,54 @@ function subscribeOnlineStatus(onStoreChange: () => void): () => void {
   };
 }
 
+/**
+ * Legacy boolean view, for callers that only need a request-suppression switch.
+ * Prefer useHubAvailability() in UI: this collapses "backing off" and "proven
+ * reachable" into one bit, which made every failure look identical on screen.
+ */
 export function useOnlineStatus(): boolean {
   return useSyncExternalStore(
     subscribeOnlineStatus,
     getOnlineSnapshot,
     getServerOnlineSnapshot,
   );
+}
+
+export interface HubAvailability {
+  phase: HubPhase;
+  failure: HubFailure | null;
+}
+
+function getPhaseSnapshot(): HubPhase {
+  return getHubPhase();
+}
+
+function getServerPhaseSnapshot(): HubPhase {
+  return "available";
+}
+
+function getFailureSnapshot(): HubFailure | null {
+  return getLastHubFailure();
+}
+
+function getServerFailureSnapshot(): HubFailure | null {
+  return null;
+}
+
+/**
+ * Availability plus the reason for the last failure. The failure outlives the
+ * backoff and clears only on success, so the UI keeps naming the real cause.
+ */
+export function useHubAvailability(): HubAvailability {
+  const phase = useSyncExternalStore(
+    subscribeOnlineStatus,
+    getPhaseSnapshot,
+    getServerPhaseSnapshot,
+  );
+  const failure = useSyncExternalStore(
+    subscribeOnlineStatus,
+    getFailureSnapshot,
+    getServerFailureSnapshot,
+  );
+  return { phase, failure };
 }

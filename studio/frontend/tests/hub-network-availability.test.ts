@@ -1,0 +1,231 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  classifyFetchFailure,
+  clearRemoteBackoff,
+  fetchWithTimeout,
+  getHubPhase,
+  getLastHubFailure,
+  isHubFetchError,
+  markRemoteNetworkOffline,
+  markRemoteNetworkOnline,
+} from "../src/features/hub/lib/network.ts";
+
+const HF = "https://huggingface.co";
+
+// network.ts guards every DOM touch, but installing a window exercises the same
+// event path the app uses instead of the no-op branch.
+function installWindow() {
+  const listeners = new Map<string, Set<() => void>>();
+  (globalThis as Record<string, unknown>).window = {
+    addEventListener(type: string, fn: () => void) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type)?.add(fn);
+    },
+    removeEventListener(type: string, fn: () => void) {
+      listeners.get(type)?.delete(fn);
+    },
+    dispatchEvent(event: { type: string }) {
+      for (const fn of listeners.get(event.type) ?? []) fn();
+      return true;
+    },
+    location: { href: "http://127.0.0.1:8888/hub" },
+  };
+  return listeners;
+}
+
+function reset() {
+  installWindow();
+  markRemoteNetworkOnline();
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test("a lapsed backoff window means probing, never proven-available", async () => {
+  reset();
+  markRemoteNetworkOffline(HF, 10, {
+    kind: "network-opaque",
+    message: "blocked",
+    origin: HF,
+    retryable: true,
+  });
+  assert.equal(getHubPhase(HF), "unavailable");
+
+  await sleep(30);
+
+  // The old code flipped straight back to "online" here, fired a "Back online"
+  // toast, retried, failed, and looped. Only a successful request may promote.
+  assert.equal(
+    getHubPhase(HF),
+    "probing",
+    "TTL expiry must not be mistaken for a successful probe",
+  );
+});
+
+test("only a success clears the recorded failure", async () => {
+  reset();
+  markRemoteNetworkOffline(HF, 10, {
+    kind: "csp-blocked",
+    message: "blocked by CSP",
+    origin: HF,
+    retryable: false,
+  });
+  await sleep(30);
+
+  assert.equal(
+    getLastHubFailure(HF)?.kind,
+    "csp-blocked",
+    "the cause must outlive the backoff window or the panel goes generic",
+  );
+
+  markRemoteNetworkOnline(HF);
+  assert.equal(getLastHubFailure(HF), null);
+  assert.equal(getHubPhase(HF), "available");
+});
+
+test("Retry clears the backoff but keeps the diagnosis on screen", () => {
+  reset();
+  markRemoteNetworkOffline(HF, 60_000, {
+    kind: "network-opaque",
+    message: "could not reach",
+    origin: HF,
+    retryable: true,
+  });
+  assert.equal(getHubPhase(HF), "unavailable");
+
+  clearRemoteBackoff(HF);
+
+  assert.equal(
+    getHubPhase(HF),
+    "probing",
+    "Retry must be able to re-probe immediately, not wait out the timer",
+  );
+  assert.equal(getLastHubFailure(HF)?.kind, "network-opaque");
+});
+
+test("classification separates timeout, abort, offline and opaque failures", () => {
+  reset();
+  assert.equal(
+    classifyFetchFailure(new Error("x"), HF, { timedOut: true }).kind,
+    "timeout",
+  );
+
+  const abort = new DOMException("aborted", "AbortError");
+  assert.equal(classifyFetchFailure(abort, HF).kind, "aborted");
+
+  // No navigator.onLine === false in Node, so a bare TypeError stays opaque
+  // rather than being reported as a confirmed loss of connectivity.
+  const opaque = classifyFetchFailure(new TypeError("Failed to fetch"), HF);
+  assert.equal(opaque.kind, "network-opaque");
+  assert.match(opaque.message, /huggingface\.co/);
+  assert.match(opaque.message, /extension|antivirus|filter/i);
+});
+
+test("a browser reporting itself offline is named as such", () => {
+  reset();
+  const original = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    value: { onLine: false },
+    configurable: true,
+  });
+  try {
+    assert.equal(
+      classifyFetchFailure(new TypeError("Failed to fetch"), HF).kind,
+      "browser-offline",
+    );
+  } finally {
+    if (original) Object.defineProperty(globalThis, "navigator", original);
+    else delete (globalThis as Record<string, unknown>).navigator;
+  }
+});
+
+test("the failure never leaks the request URL or its query", async () => {
+  reset();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new TypeError("Failed to fetch");
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      fetchWithTimeout(
+        `${HF}/api/models?search=my-private-project&author=acme`,
+        {},
+        1_000,
+      ),
+      (err: unknown) => {
+        assert.ok(isHubFetchError(err), "should throw a classified HubFetchError");
+        const { message, origin } = err.failure;
+        assert.ok(
+          !message.includes("my-private-project"),
+          "the search query must never reach a rendered message",
+        );
+        assert.ok(!message.includes("/api/models"), "no request path in message");
+        assert.equal(origin, HF, "only the origin is retained");
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a caller-driven abort does not blacklist the origin", async () => {
+  reset();
+  const original = globalThis.fetch;
+  const controller = new AbortController();
+  globalThis.fetch = (async () => {
+    controller.abort();
+    throw new DOMException("aborted", "AbortError");
+  }) as unknown as typeof fetch;
+  try {
+    await assert.rejects(
+      fetchWithTimeout(`${HF}/api/models`, { signal: controller.signal }, 1_000),
+    );
+    assert.equal(
+      getHubPhase(HF),
+      "available",
+      "superseding a query must not mark the Hub unreachable",
+    );
+    assert.equal(getLastHubFailure(HF), null);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a successful response clears a prior failure", async () => {
+  reset();
+  markRemoteNetworkOffline(HF, 60_000, {
+    kind: "network-opaque",
+    message: "could not reach",
+    origin: HF,
+    retryable: true,
+  });
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+  try {
+    await fetchWithTimeout(`${HF}/api/models`, {}, 1_000);
+    assert.equal(getHubPhase(HF), "available");
+    assert.equal(getLastHubFailure(HF), null);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("an unrelated origin failing does not take the Hub down", () => {
+  reset();
+  markRemoteNetworkOffline("https://datasets-server.huggingface.co", 60_000, {
+    kind: "network-opaque",
+    message: "dataset viewer down",
+    origin: "https://datasets-server.huggingface.co",
+    retryable: true,
+  });
+  assert.equal(
+    getHubPhase(HF),
+    "available",
+    "a datasets-server outage must not make the model hub look offline",
+  );
+});

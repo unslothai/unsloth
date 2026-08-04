@@ -750,6 +750,7 @@ export function ModelsPage() {
     hasMore,
     fetchMore,
     searchError,
+    searchFailure,
     handleRetrySearch,
   } = useDiscoverSearch({
     debouncedQuery,
@@ -1669,6 +1670,7 @@ export function ModelsPage() {
       activeCheckpoint,
       activeGgufVariant,
       searchError,
+      searchFailure,
       online,
       isDataset: isDatasetMode,
       inventoryTokens,
@@ -1698,6 +1700,7 @@ export function ModelsPage() {
     activeCheckpoint,
     activeGgufVariant,
     searchError,
+    searchFailure,
     online,
     isDatasetMode,
     inventoryTokens,

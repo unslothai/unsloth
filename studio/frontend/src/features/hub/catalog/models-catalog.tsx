@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
+import type { HubFailure } from "@/features/hub/lib/network";
 import { cn } from "@/lib/utils";
 import {
   type ReactNode,
@@ -47,6 +48,7 @@ export interface ModelsCatalogState {
   activeCheckpoint: string | null;
   activeGgufVariant: string | null;
   searchError: string | null;
+  searchFailure?: HubFailure | null;
   online: boolean;
   isDataset: boolean;
   inventoryTokens: readonly string[];
@@ -113,6 +115,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     activeCheckpoint,
     activeGgufVariant,
     searchError,
+    searchFailure,
     online,
     isDataset,
     inventoryTokens,
@@ -427,6 +430,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 suppressEmptyState={suppressEmptyState}
                 sentinelRef={sentinelRef}
                 searchError={searchError}
+                searchFailure={searchFailure}
                 online={online}
                 isDataset={isDataset}
                 deviceType={deviceType}

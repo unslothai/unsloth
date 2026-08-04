@@ -15,6 +15,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { RefObject } from "react";
+import type { HubFailure } from "@/features/hub/lib/network";
 import { useLayoutEffect, useMemo, useState } from "react";
 import {
   inventoryRowMatches,
@@ -96,6 +97,7 @@ export function DiscoverList({
   suppressEmptyState = false,
   sentinelRef,
   searchError,
+  searchFailure,
   online,
   isDataset,
   deviceType,
@@ -120,6 +122,7 @@ export function DiscoverList({
   suppressEmptyState?: boolean;
   sentinelRef: RefObject<HTMLDivElement | null>;
   searchError: string | null;
+  searchFailure?: HubFailure | null;
   online: boolean;
   isDataset: boolean;
   deviceType: string | null;
@@ -151,7 +154,9 @@ export function DiscoverList({
 
   return (
     <>
-      {online ? (
+      {/* Results already fetched stay on screen when the Hub becomes
+          unreachable, instead of being replaced by an error panel. */}
+      {online || discoverRows.length > 0 ? (
         discoverRows.length > 0 ? (
           <>
             <VirtualRows
@@ -200,6 +205,7 @@ export function DiscoverList({
           <NetworkErrorState
             online={online}
             message={searchError}
+            failure={searchFailure}
             onRetry={onRetry}
             resourceLabel={isDataset ? "datasets" : "models"}
           />
@@ -231,7 +237,10 @@ export function DiscoverList({
       ) : suppressEmptyState ? null : (
         <NetworkErrorState
           online={online}
-          message="Discovery is unavailable while offline."
+          // The classified failure supplies the wording. Falling back to a
+          // hardcoded "offline" line here is exactly what hid the real cause.
+          message={searchError ?? ""}
+          failure={searchFailure}
           onRetry={onRetry}
           onSwitchDevice={onSwitchDevice}
           resourceLabel={isDataset ? "datasets" : "models"}

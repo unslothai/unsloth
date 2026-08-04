@@ -320,6 +320,7 @@ from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
     token_router as hub_token_router,
+    discovery_router as hub_discovery_router,
 )
 from picker.routes import templates_router as picker_templates_router
 from hub.schemas.downloads import TransportCapabilities
@@ -820,6 +821,15 @@ _IS_COLAB = os.path.isdir("/content") and (
 )
 
 
+def _hub_endpoint() -> str:
+    """Effective Hub endpoint, read per call so HF_ENDPOINT stays live."""
+    try:
+        from utils.utils import hf_endpoint_url
+        return hf_endpoint_url()
+    except Exception:
+        return "https://huggingface.co"
+
+
 def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
@@ -1180,6 +1190,7 @@ app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
+app.include_router(hub_discovery_router, prefix = "/api/hub", tags = ["hub"])
 
 # Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
 # error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.
@@ -1347,6 +1358,9 @@ async def health_check(request: Request):
         "cloudflare_url": getattr(request.app.state, "cloudflare_url", None),
         "server_url": getattr(request.app.state, "server_url", None),
         "secure": bool(getattr(request.app.state, "secure", False)),
+        # HF_ENDPOINT-aware; the frontend hardcodes huggingface.co otherwise, so
+        # a mirror looks permanently offline. Read per request to stay live.
+        "hub_endpoint": _hub_endpoint(),
     }
     if snapshot is not None:
         # Why chat_only is set; fingerprints the host, so keep it authed. All three
