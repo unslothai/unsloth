@@ -25,6 +25,7 @@ import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   Outlet,
   createRootRoute,
@@ -246,7 +247,7 @@ function RootLayout() {
         chatRuntime.setIncognito(false);
         void navigate({
           to: "/chat",
-          search: { new: crypto.randomUUID() },
+          search: { new: createNavigationNonce() },
         });
       }
     };
