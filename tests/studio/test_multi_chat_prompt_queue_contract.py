@@ -604,6 +604,35 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert SHARED_COMPOSER.index("requestLocalPromptQueueStop(") < SHARED_COMPOSER.index(
         "const resp = await loadModel("
     )
+    apply_compare_stop = _between(
+        send_flow,
+        "const applyCompareStopDecision = () => {",
+        "// Helper: load a model and update store checkpoint",
+    )
+    assert "cancelPreStreamRunReservations(" in apply_compare_stop
+    assert "compareStopDecision?.preStreamRunTokens ?? []" in apply_compare_stop
+    assert "requestLocalPromptQueueStop(" in apply_compare_stop
+    assert "compareStopDecision?.promptQueueThreadIds" in apply_compare_stop
+    ensure_compare_model = _between(
+        send_flow,
+        "async function ensureModelLoaded(",
+        "// Side 1: load",
+    )
+    already_active = _between(
+        ensure_compare_model,
+        "if (isAlreadyActive && !config && !loadedFromConfig) {",
+        "}",
+    )
+    assert already_active.index("applyCompareStopDecision();") < already_active.index(
+        'return "ready";'
+    )
+    assert ensure_compare_model.count("applyCompareStopDecision();") == 2
+    validated_load_stop = ensure_compare_model.rindex("applyCompareStopDecision();")
+    assert (
+        ensure_compare_model.index("const validation = await validateModel(")
+        < validated_load_stop
+        < ensure_compare_model.index("const resp = await loadModel(")
+    )
     assert "force_cancel_active:" in SHARED_COMPOSER
     assert (
         "resolvedThreadId ===\n              useChatRuntimeStore.getState().activeThreadId"

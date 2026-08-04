@@ -1188,6 +1188,12 @@ export function SharedComposer({
             (sel.ggufVariant ?? null);
         return !isAlreadyActive || sel.config != null || loadedFromConfig;
       };
+      const applyCompareStopDecision = () => {
+        cancelPreStreamRunReservations(
+          compareStopDecision?.preStreamRunTokens ?? [],
+        );
+        requestLocalPromptQueueStop(compareStopDecision?.promptQueueThreadIds);
+      };
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
@@ -1208,6 +1214,7 @@ export function SharedComposer({
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
         if (isAlreadyActive && !config && !loadedFromConfig) {
+          applyCompareStopDecision();
           return "ready";
         }
         const targetIsGguf =
@@ -1385,12 +1392,7 @@ export function SharedComposer({
             );
           }
         }
-        cancelPreStreamRunReservations(
-          compareStopDecision?.preStreamRunTokens ?? [],
-        );
-        requestLocalPromptQueueStop(
-          compareStopDecision?.promptQueueThreadIds,
-        );
+        applyCompareStopDecision();
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
