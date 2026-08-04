@@ -1503,3 +1503,98 @@ def test_eval_rejects_unmatched_wildcard_patterns(fake_eval_env, tmp_path):
     )
     assert result.exit_code == 2, result.output
     assert "no tasks match pattern" in result.output
+
+
+def test_resolve_tasks_rejects_group_child_defined_only_in_yml(tmp_path):
+    # lm-eval indexes **/*.yaml only, so a child defined in a .yml file never
+    # registers and the group blows up while loading
+    (tmp_path / "suite.yaml").write_text(yaml.safe_dump({"group": "s", "task": ["qa"]}))
+    (tmp_path / "qa.yml").write_text(yaml.safe_dump({"task": "qa", "dataset_path": "json"}))
+
+    with pytest.raises(ValueError, match = "qa.yml"):
+        evalmod.resolve_tasks(str(tmp_path / "suite.yaml"), "question", "answer", tmp_path / "gen")
+
+    # the same child defined by a .yaml sibling registers normally
+    (tmp_path / "qa.yaml").write_text(yaml.safe_dump({"task": "qa", "dataset_path": "json"}))
+    names, _ = evalmod.resolve_tasks(
+        str(tmp_path / "suite.yaml"), "question", "answer", tmp_path / "gen"
+    )
+    assert names == ["s"]
+
+
+def test_resolve_tasks_rejects_alias_shadowing_registered_task(tmp_path):
+    # include paths are indexed after the defaults and overwrite them, so a
+    # tag named after a built-in replaces it and --tasks gsm8k runs this file
+    (tmp_path / "custom.yaml").write_text(
+        yaml.safe_dump({"task": "my_task", "tag": "gsm8k", "dataset_path": "json"})
+    )
+
+    with pytest.raises(ValueError, match = "silently shadow"):
+        evalmod.resolve_tasks(
+            str(tmp_path / "custom.yaml"),
+            "question",
+            "answer",
+            tmp_path / "gen",
+            reserved = frozenset({"gsm8k"}),
+        )
+
+
+def test_eval_forwards_unsafe_code_opt_in(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--confirm-run-unsafe-code",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["simple_evaluate_kwargs"]["confirm_run_unsafe_code"] is True
+
+
+def test_eval_defaults_unsafe_code_opt_in_to_false(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", "gsm8k", "--output-dir", str(tmp_path / "out")],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["simple_evaluate_kwargs"]["confirm_run_unsafe_code"] is False
+
+
+def test_eval_skips_unsafe_code_kwarg_on_older_lm_eval(fake_eval_env, tmp_path, monkeypatch):
+    seen = {}
+
+    def _old_simple_evaluate(
+        model = None,
+        tasks = None,
+        num_fewshot = None,
+        limit = None,
+        task_manager = None,
+        log_samples = True,
+    ):
+        seen["tasks"] = tasks
+        return {"results": {}, "configs": {}}
+
+    monkeypatch.setattr(sys.modules["lm_eval"], "simple_evaluate", _old_simple_evaluate)
+
+    result = CliRunner().invoke(
+        _eval_app(),
+        [
+            "fake/model",
+            "--tasks",
+            "gsm8k",
+            "--confirm-run-unsafe-code",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    # an unknown kwarg would be a TypeError on older lm-eval releases
+    assert result.exit_code == 0, result.output
+    assert seen["tasks"] == ["gsm8k"]
+    assert "has no effect" in result.output

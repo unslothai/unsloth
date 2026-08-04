@@ -114,6 +114,17 @@ def _lm_eval_version() -> tuple:
     return (999,)
 
 
+def _accepts_kwarg(func, name: str) -> bool:
+    import inspect
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
 # HFLM's device_list gained f"xpu:{i}" in 0.4.10 and f"hpu:{i}" only in
 # 0.4.12; npu has been listed since 0.4.4. A kind missing from that list is
 # not an error in HFLM — it drops through to the default-device fallback
@@ -261,10 +272,15 @@ def _load_task_spec(
     return merged
 
 
-def _sibling_defines_task(directory: Path, group_file: Path, child: str) -> bool:
+def _sibling_task_file(
+    directory: Path,
+    group_file: Path,
+    child: str,
+    pattern: str,
+) -> Optional[Path]:
     # rglob: lm-eval indexes include paths recursively, so a child yaml in a
     # subdirectory shadows just the same
-    for sibling in sorted(directory.rglob("*.yaml")):
+    for sibling in sorted(directory.rglob(pattern)):
         if sibling == group_file:
             continue
         try:
@@ -272,8 +288,12 @@ def _sibling_defines_task(directory: Path, group_file: Path, child: str) -> bool
         except (OSError, yaml.YAMLError):
             continue
         if isinstance(spec, dict) and isinstance(spec.get("task"), str) and spec["task"] == child:
-            return True
-    return False
+            return sibling
+    return None
+
+
+def _sibling_defines_task(directory: Path, group_file: Path, child: str) -> bool:
+    return _sibling_task_file(directory, group_file, child, "*.yaml") is not None
 
 
 def _doc_column(key: str) -> str:
@@ -402,6 +422,8 @@ def resolve_tasks(
                 # a group file (group: suite, task: [a, b]) is registered
                 # under its group name; its child task names are taken too,
                 # so later dataset entries must not generate a clashing task
+                group_path = path.resolve()
+                group_dir = group_path.parent
                 for child in name:
                     child_name = None
                     if isinstance(child, str):
@@ -411,13 +433,27 @@ def resolve_tasks(
                     if not child_name:
                         continue
                     sibling_names.add(child_name)
+                    # lm-eval indexes only .yaml, so a child defined solely by a
+                    # .yml file never registers: the group then loads that child
+                    # as an empty inline task (or silently runs a same-named
+                    # registered task instead)
+                    yml_child = _sibling_task_file(group_dir, group_path, child_name, "*.yml")
+                    if yml_child is not None and not _sibling_defines_task(
+                        group_dir, group_path, child_name
+                    ):
+                        raise ValueError(
+                            f"Custom task file '{entry}' lists child task '{child_name}', "
+                            f"which is only defined by '{yml_child.relative_to(group_dir)}' — "
+                            "lm-eval only indexes .yaml files, so that child would never "
+                            "register. Rename it to .yaml."
+                        )
                     # a string child that names a registered task AND a sibling
                     # yaml is ambiguous: which one runs depends on the lm-eval
                     # version's registry precedence
                     if (
                         isinstance(child, str)
                         and child_name in reserved
-                        and _sibling_defines_task(path.resolve().parent, path.resolve(), child_name)
+                        and _sibling_defines_task(group_dir, group_path, child_name)
                     ):
                         raise ValueError(
                             f"Custom task file '{entry}' lists child task '{child_name}', "
@@ -461,6 +497,16 @@ def resolve_tasks(
                     "skipped. Rename one of them."
                 )
             for alias in aliases:
+                # include paths are indexed after the defaults and overwrite
+                # them, so a tag named after a registered task replaces it in
+                # the registry — requesting that task would run this file instead
+                if alias in reserved:
+                    raise ValueError(
+                        f"Custom task file '{entry}' declares '{alias}' as a "
+                        "'tag:'/'group:' alias, which is already a registered lm-eval "
+                        "task — the alias would silently shadow it. Rename the alias "
+                        "in the YAML."
+                    )
                 if alias in yaml_names:
                     raise ValueError(
                         f"Custom task file '{entry}' declares '{alias}' as a "
@@ -643,6 +689,12 @@ def evaluate(
     ),
     output_dir: Path = typer.Option(
         Path("./eval_results"), "--output-dir", "-o", help = "Directory for results.json."
+    ),
+    confirm_run_unsafe_code: bool = typer.Option(
+        False,
+        "--confirm-run-unsafe-code",
+        help = "Allow tasks that lm-eval marks unsafe (e.g. humaneval): they execute "
+        "model-generated code on this machine. Off by default.",
     ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token if needed."
@@ -828,6 +880,16 @@ def evaluate(
             task_manager = task_manager,
             log_samples = False,
         )
+
+        # lm-eval refuses tasks marked unsafe unless this is confirmed, but the
+        # kwarg only exists on newer releases — passing it blindly would raise
+        if _accepts_kwarg(lm_eval.simple_evaluate, "confirm_run_unsafe_code"):
+            eval_kwargs["confirm_run_unsafe_code"] = confirm_run_unsafe_code
+        elif confirm_run_unsafe_code:
+            typer.echo(
+                "Note: this lm-eval version has no unsafe-code confirmation — "
+                "--confirm-run-unsafe-code has no effect."
+            )
 
         if backend == "hf":
             if device is None:
