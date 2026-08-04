@@ -3219,6 +3219,57 @@ def test_a_denoiser_missing_half_its_shards_is_not_a_present_denoiser(tmp_path):
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
 
 
+def _dual_format_shard_index(fmt: str) -> bytes:
+    return json.dumps(
+        {
+            "weight_map": {
+                "a": f"diffusion_pytorch_model-00001-of-00002{fmt}",
+                "b": f"diffusion_pytorch_model-00002-of-00002{fmt}",
+            }
+        }
+    ).encode()
+
+
+def test_an_unused_alternate_format_index_does_not_tear_a_whole_snapshot(tmp_path):
+    """A repo publishing both formats lands its safetensors shards plus BOTH indexes.
+
+    The download plan drops a ``.bin`` whose directory also has a picked ``.safetensors``, and that
+    filter matches on the ``.bin`` suffix, so ``.bin.index.json`` survives while the shards it
+    names never arrive. Charging those absent shards to the complete safetensors set would advertise
+    a fully successful download as partial, so each index is judged on its own shard set."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": _dual_format_shard_index(
+                ".safetensors"
+            ),
+            "transformer/diffusion_pytorch_model.bin.index.json": _dual_format_shard_index(".bin"),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00002-of-00002.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_neither_format_being_whole_is_still_torn(tmp_path):
+    """The other direction, which is why this is any-index-satisfied rather than any-index-present:
+    with both formats half landed there is nothing the loader could read."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": _dual_format_shard_index(
+                ".safetensors"
+            ),
+            "transformer/diffusion_pytorch_model.bin.index.json": _dual_format_shard_index(".bin"),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00001-of-00002.bin": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
 def test_an_unsharded_denoiser_still_passes_on_presence_alone(tmp_path):
     """No index, so there is nothing to be incomplete against and the plain presence test stands."""
     snapshot = _pipeline_snapshot(

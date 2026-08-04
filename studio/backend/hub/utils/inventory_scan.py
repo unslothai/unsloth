@@ -1549,21 +1549,34 @@ def _component_weights_complete(component: Path) -> bool:
     Presence of ONE weight file is not enough. A sharded denoiser is described by an
     ``*.index.json`` whose ``weight_map`` names every shard, and an interrupted or pattern-filtered
     fetch that landed ``...-00001-of-00002.safetensors`` alone satisfies a first-match test while
-    failing at load. When an index is present, every shard it names must be on disk.
+    failing at load.
+
+    Each index is judged on its OWN shard set rather than on the union of all of them, because one
+    satisfied index is all the loader needs. A repo publishing both formats lands its safetensors
+    shards plus BOTH indexes: the download plan drops a ``.bin`` whose directory also has a picked
+    ``.safetensors``, and that filter matches on the ``.bin`` suffix, so ``.bin.index.json``
+    survives while the shards it names never arrive. Unioning would charge those absent shards to a
+    complete safetensors set. The same reasoning covers unfetched ``fp16`` and other variants.
     """
-    shards: set[str] = set()
+    saw_index = False
     for index in component.glob("*.index.json"):
         try:
             with index.open("r", encoding = "utf-8") as fh:
                 weight_map = json.load(fh).get("weight_map")
         except (OSError, ValueError, AttributeError):
-            # An unreadable index cannot prove incompleteness, so fall back to the presence test.
+            # An unreadable index cannot prove incompleteness, so it does not count against the set.
             continue
-        if isinstance(weight_map, dict):
-            shards.update(str(v) for v in weight_map.values() if v)
-    if shards:
+        if not isinstance(weight_map, dict):
+            continue
+        shards = {str(v) for v in weight_map.values() if v}
+        if not shards:
+            continue
+        saw_index = True
         # is_file() follows the snapshot symlink, so a dangling blob is correctly absent.
-        return all((component / shard).is_file() for shard in shards)
+        if all((component / shard).is_file() for shard in shards):
+            return True
+    if saw_index:
+        return False
     for entry in component.rglob("*"):
         if entry.is_file() and entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES):
             return True
