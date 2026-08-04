@@ -5805,7 +5805,9 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
     log(f"existing install reused; recorded llama_backend={llama_backend!r} from this run")
 
 
-def recorded_ggml_tree(approved_checksums: ApprovedReleaseChecksums, choice: AssetChoice) -> str | None:
+def recorded_ggml_tree(
+    approved_checksums: ApprovedReleaseChecksums, choice: AssetChoice
+) -> str | None:
     """The ggml tree to record for an install, or None when it does not describe it.
 
     The tree comes from the fork release's own source checkout, so it only
