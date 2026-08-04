@@ -33,7 +33,11 @@ def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None
 def _external_resume_checkpoint(path: Path) -> "str | None":
     from studio.backend.core.training.resume import is_resume_checkpoint_valid
 
-    if path.name.startswith("checkpoint-") and path.is_dir() and is_resume_checkpoint_valid(path):
+    if (
+        path.name.startswith("checkpoint-")
+        and path.is_dir()
+        and is_resume_checkpoint_valid(path, backend = "mlx")
+    ):
         return str(path)
     best_step, best = -1, None
     if path.is_dir():
@@ -42,7 +46,7 @@ def _external_resume_checkpoint(path: Path) -> "str | None":
                 step = int(child.name.rsplit("-", 1)[1])
             except ValueError:
                 continue
-            if step > best_step and is_resume_checkpoint_valid(child, step):
+            if step > best_step and is_resume_checkpoint_valid(child, step, backend = "mlx"):
                 best_step, best = step, str(child)
     return best
 
@@ -138,7 +142,10 @@ def train(
         except ValueError as e:
             root_error = e
 
-        resume_checkpoint = get_resume_checkpoint_path(resume_dir) if resume_dir else None
+        cli_backend = "mlx" if _should_use_mlx_backend_for_cli() else "pt"
+        resume_checkpoint = (
+            get_resume_checkpoint_path(resume_dir, backend = cli_backend) if resume_dir else None
+        )
         if not resume_checkpoint:
             # The MLX CLI adapter writes to a cwd-absolutized output_dir
             # (allow_external_output_dir), which the outputs-root helpers cannot

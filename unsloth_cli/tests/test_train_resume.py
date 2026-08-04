@@ -48,6 +48,14 @@ def _write_checkpoint(out: Path, step: int) -> Path:
     return checkpoint
 
 
+@pytest.fixture(autouse = True)
+def _pytorch_backend(monkeypatch):
+    # Host-independent default: the MLX-specific tests override explicitly.
+    from unsloth_cli.commands import train as train_cmd
+
+    monkeypatch.setattr(train_cmd, "_should_use_mlx_backend_for_cli", lambda: False)
+
+
 @pytest.fixture
 def outputs_home(tmp_path, monkeypatch):
     # UNSLOTH_STUDIO_HOME with a fake resumable checkpoint under outputs/.
@@ -114,7 +122,14 @@ def test_resume_from_external_mlx_output_dir(outputs_home, tmp_path_factory, mon
 
     monkeypatch.setattr(train_cmd, "_should_use_mlx_backend_for_cli", lambda: True)
     external = tmp_path_factory.mktemp("mlx_run")
-    _write_checkpoint(external, 25)
+    import numpy as np
+    from safetensors.numpy import save_file
+
+    ckpt = external / "checkpoint-25"
+    ckpt.mkdir(parents = True)
+    (ckpt / "trainer_state.json").write_text(json.dumps({"global_step": 25}))
+    save_file({"weight": np.ones(1, dtype = np.float32)}, ckpt / "adapters.safetensors")
+    save_file({"state": np.ones(1, dtype = np.float32)}, ckpt / "optimizer_state.safetensors")
     result = CliRunner().invoke(
         _app(),
         ["--dry-run", "--resume-from-checkpoint", str(external)],
@@ -137,3 +152,25 @@ def test_external_fallback_is_mlx_only(outputs_home, tmp_path_factory, monkeypat
     )
     assert result.exit_code == 2, result.output
     assert "write checkpoints under" in result.output
+
+
+def test_pytorch_resume_rejects_mlx_only_checkpoints(outputs_home, monkeypatch):
+    # An MLX bundle under the outputs root must not pass a PyTorch dry run
+    # that would fail only after model loading.
+    import json as _json
+    from unsloth_cli.commands import train as train_cmd
+
+    monkeypatch.setattr(train_cmd, "_should_use_mlx_backend_for_cli", lambda: False)
+    mlx_ckpt = outputs_home / "outputs" / "checkpoint-40"
+    mlx_ckpt.mkdir(parents = True)
+    import numpy as np
+    from safetensors.numpy import save_file
+
+    (mlx_ckpt / "trainer_state.json").write_text(_json.dumps({"global_step": 40}))
+    save_file({"weight": np.ones(1, dtype = np.float32)}, mlx_ckpt / "adapters.safetensors")
+    save_file({"state": np.ones(1, dtype = np.float32)}, mlx_ckpt / "optimizer_state.safetensors")
+    result = CliRunner().invoke(
+        _app(),
+        ["--dry-run", "--resume-from-checkpoint", "outputs/checkpoint-40"],
+    )
+    assert result.exit_code == 2, result.output

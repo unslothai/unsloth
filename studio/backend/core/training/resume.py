@@ -169,12 +169,12 @@ def is_resume_checkpoint_valid(
 
 
 def get_resume_checkpoint_path(
-    path_value: str, expected_step: Optional[int] = None
+    path_value: str, expected_step: Optional[int] = None, backend: Optional[str] = None
 ) -> Optional[str]:
     path = resolve_output_dir(path_value)
     if not _is_under_outputs(path) or not path.is_dir():
         return None
-    if is_resume_checkpoint_valid(path, expected_step):
+    if is_resume_checkpoint_valid(path, expected_step, backend):
         return str(path)
 
     checkpoints = sorted(path.glob("checkpoint-*"), key = _checkpoint_step, reverse = True)
@@ -183,7 +183,7 @@ def get_resume_checkpoint_path(
             str(checkpoint)
             for checkpoint in checkpoints
             if _checkpoint_step(checkpoint) >= 0
-            and is_resume_checkpoint_valid(checkpoint, expected_step)
+            and is_resume_checkpoint_valid(checkpoint, expected_step, backend)
         ),
         None,
     )
