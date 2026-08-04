@@ -1212,7 +1212,7 @@ export function AppSidebar() {
         className={cn(
           "relative",
           usesDesktopTitlebar
-            ? "shrink-0 p-0 pt-[var(--studio-desktop-titlebar-height,34px)]"
+            ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+6px)]"
             : "pl-3 pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0",
         )}
       >
