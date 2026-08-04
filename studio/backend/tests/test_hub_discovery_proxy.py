@@ -451,3 +451,29 @@ class TestHealthHubEndpoint:
         import main
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         assert main._hub_endpoint() == expected
+
+    def test_the_socket_timeout_is_bounded_by_the_window(self, monkeypatch):
+        # requests\' timeout is per read, so handing it the whole budget lets
+        # headers spend one window and a stalled body another.
+        seen = {}
+
+        class _Resp:
+            status_code = 200
+            headers = {}
+
+            def iter_content(self, chunk_size = 0):
+                yield b"[]"
+
+            def close(self):
+                pass
+
+        class _Session:
+            def get(self, url, **kw):
+                seen["timeout"] = kw.get("timeout")
+                return _Resp()
+
+        monkeypatch.setattr(
+            "huggingface_hub.utils.get_session", lambda: _Session()
+        )
+        discovery._fetch_upstream("https://huggingface.co/api/models", None)
+        assert seen["timeout"] <= discovery._REQUEST_TIMEOUT_SECONDS / 2

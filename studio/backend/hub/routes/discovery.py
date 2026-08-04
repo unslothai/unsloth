@@ -250,10 +250,11 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
     """
     from huggingface_hub.utils import get_session
 
-    # Started before the request: requests' timeout bounds inactivity, so a
-    # mirror that drips header bytes would otherwise get its own full window
-    # before the body window even begins.
+    # Split the window so the whole call is bounded by it. requests' timeout is
+    # per-read, so handing it the full budget lets headers use one window and a
+    # stalled body another; half each keeps the worst case at one.
     deadline = time.monotonic() + _REQUEST_TIMEOUT_SECONDS
+    read_timeout = _REQUEST_TIMEOUT_SECONDS / 2
     headers = {"Accept": "application/json"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
@@ -261,7 +262,7 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
     response = get_session().get(
         url,
         headers = headers,
-        timeout = _REQUEST_TIMEOUT_SECONDS,
+        timeout = read_timeout,
         # A redirect could walk onto an internal address, so refuse the hop.
         allow_redirects = False,
         stream = True,
@@ -272,6 +273,8 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
             return response.status_code, b"", ""
         body = bytearray()
         for chunk in response.iter_content(chunk_size = 65536):
+            # Checked per chunk; the halved socket timeout is what bounds how
+            # long a single stalled read can sit here before we get to look.
             if time.monotonic() > deadline:
                 raise HTTPException(
                     status_code = 504,

@@ -3,6 +3,7 @@
 
 import { LruMap } from "./lru-map";
 import { fetchWithTimeout } from "./network";
+import { hubProxyFirst } from "./hub-endpoint";
 import { fingerprintToken } from "./token-fingerprint";
 
 export interface DatasetSizeInfo {
@@ -209,6 +210,9 @@ export function fetchDatasetSize(
   tokenOrSignal?: string | AbortSignal,
   signal?: AbortSignal,
 ): Promise<DatasetSizeInfo | null> {
+  // These services are hardcoded public endpoints, so a mirror user's token and
+  // repo name would go to the wrong host. Same guard as the README fetch.
+  if (hubProxyFirst()) return Promise.resolve(null);
   const resolvedToken =
     typeof tokenOrSignal === "string" ? tokenOrSignal : undefined;
   const resolvedSignal =
@@ -311,6 +315,7 @@ export function fetchModelSize(
   token?: string,
   signal?: AbortSignal,
 ): Promise<ModelSizeInfo | null> {
+  if (hubProxyFirst()) return Promise.resolve(null);
   const cacheKey = `${repoId}::${fingerprintToken(token)}`;
   return fetchCachedSize<ModelSizeInfo>(
     cacheKey,
