@@ -818,12 +818,10 @@ jobs:
           args: -v ${{ matrix.args }}
 
       # ── Windows: scan the signed bundles with Defender before publishing ──
-      # 0.1.512-beta shipped and users hit "Trojan:Win32/Wacatac.B!ml" on first
-      # download. That build was clean, but nothing here looked, so it took two
-      # days to say so. Three things this has to get right: the runner image
-      # disables Defender and excludes both drive roots, so restore it and check
-      # the restore took; "!ml" is a cloud verdict, so MAPS must be on; and
-      # MpCmdRun exit codes are ambiguous, so read the output text.
+      # 0.1.512-beta shipped a "Trojan:Win32/Wacatac.B!ml" false positive nothing
+      # here caught. The runner disables Defender and excludes both drive roots,
+      # so restore it and verify the restore took; "!ml" is a cloud verdict, so
+      # MAPS must be on; MpCmdRun exit codes are ambiguous, so read the output.
       - name: Scan Windows bundles with Defender
         if: matrix.platform == 'windows-latest'
         # A custom MpCmdRun scan defaults to a one-day timeout.
@@ -868,11 +866,10 @@ jobs:
           if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
           if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
 
-          # Positive control, or "clean" and "scanner broken" look identical.
-          # Assembled from fragments so this file is not itself a sample.
+          # Positive control: clean and broken-scanner look identical. Split into
+          # fragments so this file is not itself a sample.
           $eicarPath = Join-Path $env:RUNNER_TEMP 'defender-selftest.com'
-          # Real-time protection may block the write or quarantine the file before
-          # the scan runs. That is the control passing, so treat it as a pass.
+          # Real-time protection may block the write; that is the control passing.
           $controlPassed = $false
           try {
             [System.IO.File]::WriteAllText(
@@ -893,8 +890,7 @@ jobs:
             Write-Host "::warning::Defender is degraded on this runner ($($degraded -join '; ')). Scanning anyway, but a clean result below is not authoritative."
           }
 
-          # Fatal, not a warning: an earlier draft exited 0 here and a self-test
-          # caught it passing a release it had never scanned.
+          # Fatal, not a warning: exiting 0 here would pass an unscanned release.
           if ([string]::IsNullOrWhiteSpace($env:ARTIFACT_PATHS)) {
             Write-Host '::error::tauri-action produced no artifactPaths output; refusing to publish unscanned bundles'
             exit 1
@@ -917,10 +913,9 @@ jobs:
           }
           Write-Host "scanning $($paths.Count) Windows bundle(s)"
 
-          # Scan copies. Real-time protection is live now, so a detection would
-          # otherwise delete the release artifact itself. The copies double as the
-          # false-positive submission material: signing is timestamped, so a
-          # rebuild has a different hash and clearance is per hash.
+          # Scan copies: real-time protection is live, so a detection would delete
+          # the release artifact itself. Copies double as submission material,
+          # since clearance is per hash and a rebuild hashes differently.
           $work = Join-Path $env:RUNNER_TEMP 'defender-scan'
           Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $work | Out-Null
@@ -932,8 +927,8 @@ jobs:
             $copy = Join-Path $work $leaf
             Copy-Item $f $copy -Force
 
-            # Block-at-first-sight only consults the cloud for internet-zone
-            # files, so stamp mark-of-the-web or this is not the user path.
+            # Block-at-first-sight only consults the cloud for internet-zone files,
+            # so stamp mark-of-the-web or this is not the user path.
             "[ZoneTransfer]`nZoneId=3" | Set-Content -Path $copy -Stream Zone.Identifier -Encoding Ascii -ErrorAction SilentlyContinue
 
             $out = & $mp -Scan -ScanType 3 -File $copy -DisableRemediation 2>&1
@@ -941,8 +936,8 @@ jobs:
             $text = ($out | Out-String)
             $out | ForEach-Object { Write-Host "  $_" }
 
-            # 2 means a detection or a scan error, so read the output text too.
-            # 0 is the only documented clean code; nothing else counts as clean.
+            # Exit 2 is a detection or a scan error, and 0 is the only documented
+            # clean code, so read the output text too.
             if ($text -match 'found\s+\d+\s+threat') {
               $names = @([regex]::Matches($text, '((?:Trojan|Virus|Worm|Backdoor|Ransom|HackTool|PUA|Behavior|Program|Misleading)[:\w\./!\-]+)') |
                          ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
@@ -968,8 +963,8 @@ jobs:
           Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
           Write-Host "All $($paths.Count) Windows bundle(s) scanned clean."
 
-      # The scan step exits nonzero on a detection, and every later step carries
-      # an implicit success(), so the flagged file would leave with the runner.
+      # Later steps carry an implicit success(), so on a detection the flagged
+      # bundle would be discarded with the runner.
       - name: Preserve flagged Windows bundles
         if: failure() && matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -981,9 +976,8 @@ jobs:
           retention-days: 7
 
       # ── Windows: assemble a Microsoft false-positive submission packet ──
-      # There is no submission API; the WDSI portal is a web form. This cannot be
-      # automated, but it can remove the lookup work so pre-submitting a build
-      # before announcing it takes seconds.
+      # The WDSI portal is a web form with no API, so this cannot be automated,
+      # but pre-filling the lookups makes submitting a build take seconds.
       - name: Prepare Microsoft submission packet
         if: (success() || failure()) && matrix.platform == 'windows-latest' && steps.build_windows.outcome == 'success'
         shell: pwsh
