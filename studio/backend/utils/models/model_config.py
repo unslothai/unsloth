@@ -1424,7 +1424,9 @@ def _snapshot_listing(directory: Path) -> list[str]:
             if index > _MAX_SNAPSHOT_LISTING_ENTRIES:
                 break
             try:
-                if entry.is_file():
+                # A dangling symlink is a GC'd blob, not an absent file. Dropping
+                # it would hide the repo's main weight and reprieve the drafter.
+                if entry.is_file() or entry.is_symlink():
                     out.append(entry.relative_to(directory).as_posix())
             except OSError:
                 continue
@@ -2206,7 +2208,8 @@ def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufV
     """
     any_vision = False
     for snap in _iter_hf_cache_snapshots(repo_id):
-        variants, has_vision = list_local_gguf_variants(str(snap))
+        # whole_repo: a snapshot is one repo's full listing, as the remote path sees it.
+        variants, has_vision = list_local_gguf_variants(str(snap), whole_repo = True)
         any_vision = any_vision or has_vision
         if variants:
             return variants, any_vision
@@ -2263,6 +2266,11 @@ def list_gguf_variants(
     quant_totals: dict[str, int] = {}  # quant -> total bytes
     quant_first_file: dict[str, str] = {}  # quant -> first filename (display)
 
+    # Whole-repo listing, so the drafter reprieve applies exactly as it does in
+    # detect_gguf_model_remote: otherwise a repo whose real quants all carry the
+    # family prefix lists nothing and the load falls back to a hard-coded quant.
+    drafters = _drafter_paths_in(s.rfilename for s in info.siblings)
+
     for sibling in info.siblings:
         fname = sibling.rfilename
         if not fname.lower().endswith(".gguf"):
@@ -2273,8 +2281,8 @@ def list_gguf_variants(
         if "mmproj" in fname.lower():
             has_vision = True
             continue
-        # MTP drafters are speculative-decoding companions, not quants.
-        if _is_mtp_drafter(fname):
+        # Drafters are speculative-decoding companions, not quants.
+        if fname in drafters:
             continue
 
         quant = _extract_quant_label(fname)
@@ -2322,12 +2330,19 @@ def _resolve_gguf_dir(p: Path) -> Optional[Path]:
 
 
 def list_local_gguf_variants(
-    directory: str, model_root: Optional[str] = None
+    directory: str,
+    model_root: Optional[str] = None,
+    *,
+    whole_repo: bool = False,
 ) -> tuple[list[GgufVariantInfo], bool]:
     """List GGUF quant variants in a local directory.
 
     Like :func:`list_gguf_variants` but reads the filesystem. Aggregates shard
     sizes by quant label so split GGUFs appear as one variant.
+
+    *whole_repo* marks *directory* as one repo's full contents (an HF cache
+    snapshot), the only local case where the drafter reprieve applies. Mirrors
+    hub.utils.gguf.list_local_gguf_variants.
 
     Returns:
         (variants, has_vision): non-mmproj GGUF variants + vision flag.
@@ -2349,7 +2364,16 @@ def list_local_gguf_variants(
     # some HF GGUF repos for the largest quants) are picked up. Result
     # filenames keep the relative subpath so ``_find_local_gguf_by_variant``
     # can locate the file again.
-    for f in sorted(_iter_gguf_files(p, recursive = True)):
+    scanned = [
+        (f, f.relative_to(p).as_posix()) for f in sorted(_iter_gguf_files(p, recursive = True))
+    ]
+    drafters = {rel for f, rel in scanned if _is_local_mtp_drafter(f, root, rel)}
+    if whole_repo and drafters:
+        # The FULL listing, not just the GGUFs: a weight in another format beside
+        # the drafter is something to accompany, so nothing is reprieved.
+        drafters &= _drafter_paths_in(_snapshot_listing(p))
+
+    for f, rel in scanned:
         if _is_mmproj(f.name):
             has_vision = True
             continue
@@ -2359,8 +2383,7 @@ def list_local_gguf_variants(
             size = 0
         # Use the relative path so ``BF16/foo.gguf`` and ``Q4_K_M/foo.gguf``
         # get distinct quant labels instead of collapsing on basename.
-        rel = f.relative_to(p).as_posix()
-        if _is_local_mtp_drafter(f, root, rel):
+        if rel in drafters:
             continue
         quant = _extract_quant_label(rel)
         if _is_big_endian_gguf_path(rel, quant):

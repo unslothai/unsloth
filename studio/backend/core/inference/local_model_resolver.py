@@ -118,7 +118,9 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
         load_dir = _resolve_load_dir(p)
-        variants, _ = list_local_gguf_variants(str(load_dir))
+        # It only descends for an HF cache repo, so a changed path IS one repo's
+        # whole snapshot listing and gets the drafter reprieve; a plain folder does not.
+        variants, _ = list_local_gguf_variants(str(load_dir), whole_repo = load_dir != p)
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None

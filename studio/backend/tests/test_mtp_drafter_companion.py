@@ -1381,3 +1381,159 @@ def test_launch_keeps_a_genuine_separate_drafter(tmp_path):
     assert backend._resolve_launch_mtp_path(
         mtp_draft_path = str(drafter), model_path = str(model)
     ) == str(drafter)
+
+
+# 7. The runtime listers and the cached resolvers are whole-repo consumers too.
+def test_runtime_remote_lister_reprieves_a_drafter_named_repo(monkeypatch):
+    """list_gguf_variants feeds the load path. Filtering per sibling left a
+    drafter-named repo with no variants, so the load fell back to a hard-coded
+    Q4_K_M that such repos need not publish."""
+    from utils.models import model_config
+
+    siblings = [_sib(name, 1_000, name) for name in MRADERMACHER]
+    monkeypatch.setattr(
+        model_config,
+        "hf_model_info",
+        lambda *_a, **_k: SimpleNamespace(siblings = siblings),
+        raising = False,
+    )
+    monkeypatch.setattr("huggingface_hub.model_info", lambda *_a, **_k: SimpleNamespace(
+        siblings = siblings
+    ))
+
+    variants, _has_vision = model_config.list_gguf_variants("mradermacher/DFlash-GGUF")
+    assert sorted(v.quant for v in variants) == ["Q4_K_M", "Q8_0"]
+
+
+def test_runtime_local_lister_reprieves_only_a_whole_snapshot(tmp_path):
+    """The cache fallback serves snapshots, which are whole-repo listings; an
+    arbitrary folder keeps the stricter per-path rule."""
+    from utils.models.model_config import list_local_gguf_variants
+
+    for name in MRADERMACHER:
+        (tmp_path / name).write_bytes(b"x" * 16)
+
+    whole = list_local_gguf_variants(str(tmp_path), whole_repo = True)[0]
+    assert sorted(v.quant for v in whole) == ["Q4_K_M", "Q8_0"]
+    assert list_local_gguf_variants(str(tmp_path))[0] == []
+
+
+def test_runtime_local_lister_sees_non_gguf_weights(tmp_path):
+    """A safetensors weight is something to accompany, so nothing is reprieved."""
+    from utils.models.model_config import list_local_gguf_variants
+
+    (tmp_path / "model.safetensors").write_bytes(b"x" * 4096)
+    (tmp_path / "dflash-model-Q8_0.gguf").write_bytes(b"x" * 64)
+
+    assert list_local_gguf_variants(str(tmp_path), whole_repo = True)[0] == []
+
+
+def test_cached_variant_label_uses_the_listing(tmp_path):
+    """_resolve_quant_gguf and _resolve_cached_model_path back the KV-cache
+    estimate and the cached-path/reveal endpoints. Per-path they skipped every
+    variant of a reprieved repo, so those returned null and 404."""
+    from hub.services.models.common import _snapshot_main_gguf_names
+    from routes.models import _main_variant_gguf_label
+
+    main_names = _snapshot_main_gguf_names(MRADERMACHER)
+    assert _main_variant_gguf_label(MRADERMACHER[0], main_names) == "Q4_K_M"
+    # Without the listing the same file is read as a companion.
+    assert _main_variant_gguf_label(MRADERMACHER[0]) is None
+    # A genuine companion stays skipped either way.
+    assert _main_variant_gguf_label(
+        "dspark/dspark-model-Q8_0.gguf", _snapshot_main_gguf_names(
+            ["dspark/dspark-model-Q8_0.gguf", "model-Q4_K_M.gguf"]
+        )
+    ) is None
+
+
+# 8. Deleting one quant of a reprieved repo must not reclaim the others.
+def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
+    """A realistic HF cache repo: snapshot symlinks pointing at blobs."""
+    repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
+    snap = repo_dir / "snapshots" / "rev1"
+    blobs = repo_dir / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    files = []
+    for index, name in enumerate(names):
+        blob = blobs / f"sha{index}"
+        blob.write_bytes(b"x" * 64)
+        link = snap / name
+        link.parent.mkdir(parents = True, exist_ok = True)
+        link.symlink_to(blob)
+        files.append(
+            SimpleNamespace(
+                file_name = name,
+                file_path = str(link),
+                blob_path = str(blob),
+                size_on_disk = 64,
+            )
+        )
+    return SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_dir,
+        revisions = [SimpleNamespace(files = files, snapshot_path = str(snap))],
+    ), snap
+
+
+def test_deleting_one_quant_of_a_reprieved_repo_keeps_the_others(tmp_path):
+    """Every quant carries the family prefix, so the per-path predicate called
+    them all drafters: the delete matched nothing, and making it match without
+    also fixing the companion sweep would have deleted the user's other quants.
+    """
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(tmp_path, "mradermacher/DFlash-GGUF", MRADERMACHER)
+    result = _delete_gguf_variant_from_repos(
+        "mradermacher/DFlash-GGUF", "Q4_K_M", [repo], None, root = tmp_path
+    )
+
+    assert result["status"] == "deleted"
+    assert not (snap / MRADERMACHER[0]).is_symlink()
+    # The other quant is a main weight, not a companion to sweep up.
+    assert (snap / MRADERMACHER[1]).is_symlink()
+
+
+def test_deleting_the_last_quant_still_reclaims_real_companions(tmp_path):
+    """Positive control: a genuine drafter beside a real quant is still swept."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path, "org/Model-GGUF", ["model-Q4_K_M.gguf", "mtp-model.gguf", "mmproj-F16.gguf"]
+    )
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert not (snap / "mtp-model.gguf").is_symlink()
+    assert not (snap / "mmproj-F16.gguf").is_symlink()
+
+
+def test_snapshot_listing_keeps_dangling_symlinks(tmp_path):
+    """A GC'd blob leaves a dangling link. Dropping it hides the repo's main
+    weight, which reprieves the drafter and makes IT the model."""
+    import os
+
+    from hub.utils.gguf import drafter_paths_in, repo_listing_in
+    from utils.models.model_config import _drafter_paths_in, _snapshot_listing
+
+    (tmp_path / "dflash-Qwen3.6-27B-BF16.gguf").write_bytes(b"x")
+    os.symlink(tmp_path / "gone", tmp_path / "Qwen3.6-27B-BF16.gguf")
+
+    assert sorted(_snapshot_listing(tmp_path)) == sorted(repo_listing_in(tmp_path))
+    for listing in (_snapshot_listing(tmp_path), repo_listing_in(tmp_path)):
+        assert drafter_paths_in(listing) == {"dflash-Qwen3.6-27B-BF16.gguf"}
+        assert _drafter_paths_in(listing) == {"dflash-Qwen3.6-27B-BF16.gguf"}
+
+
+def test_a_subdir_mmproj_is_not_something_to_accompany():
+    """The loader mirror tested mmproj on the basename while the canonical test
+    uses the full path, so an mmproj/ subdir copy counted as a main weight."""
+    from core.inference.llama_cpp import _drafter_paths_in as core_drafter_paths_in
+    from core.inference.llama_cpp import _gguf_files_for_variant
+    from hub.utils.gguf import drafter_paths_in
+
+    listing = ["dflash-Model-Q4_K_M.gguf", "mmproj/vision-F16.gguf"]
+    assert core_drafter_paths_in(listing) == drafter_paths_in(listing) == frozenset()
+    assert _gguf_files_for_variant(listing, "Q4_K_M") == ["dflash-Model-Q4_K_M.gguf"]

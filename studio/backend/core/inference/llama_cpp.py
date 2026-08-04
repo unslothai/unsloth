@@ -1179,12 +1179,15 @@ def _drafter_paths_in(paths) -> frozenset:
     drafters = {p for p in listing if _drafter_path_kind(p) is not None}
 
     def _is_weight(path: str) -> bool:
-        name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        p = path.replace("\\", "/").lower()
+        name = p.rsplit("/", 1)[-1]
         if name.endswith(".safetensors"):
             return True
         if name.endswith(".bin"):
             return name.startswith(_NON_GGUF_WEIGHT_BIN_PREFIXES)
-        return name.endswith(".gguf") and path not in drafters and "mmproj" not in name
+        # Full path, as the canonical mmproj test does: an mmproj/ subdir copy is
+        # not a weight, or it would look like something for a drafter to accompany.
+        return name.endswith(".gguf") and path not in drafters and "mmproj" not in p
 
     if any(_is_weight(p) for p in listing):
         return frozenset(drafters)
@@ -1262,11 +1265,15 @@ def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
     return False
 
 
-def _gguf_snapshot_files(snapshot: Path) -> list[str]:
+def _snapshot_listing_files(snapshot: Path) -> list[str]:
+    """A snapshot's FULL listing, not just its GGUFs: every consumer below feeds
+    this to ``_drafter_paths_in``, whose reprieve has to see weights in other
+    formats too. A dangling symlink is a GC'd blob, so it still counts as
+    present. Each caller does its own .gguf filtering."""
     return [
         p.relative_to(snapshot).as_posix()
         for p in snapshot.rglob("*")
-        if p.is_file() and p.name.lower().endswith(".gguf")
+        if p.is_file() or p.is_symlink()
     ]
 
 
@@ -1410,7 +1417,7 @@ def _cached_variant_candidates(
     try:
         from utils.models.model_config import _iter_hf_cache_snapshots
         for snap in _iter_hf_cache_snapshots(repo_id):
-            cached_files = _gguf_snapshot_files(snap)
+            cached_files = _snapshot_listing_files(snap)
             matches = _gguf_files_for_variant(cached_files, hf_variant)
             if not matches:
                 continue
@@ -1572,7 +1579,7 @@ def _companion_snapshot_sibling(
     if snap is None:
         return None
     try:
-        sibling = pick(_gguf_snapshot_files(snap))
+        sibling = pick(_snapshot_listing_files(snap))
     except Exception:
         return None
     if not sibling:
@@ -7192,7 +7199,7 @@ class LlamaCppBackend:
             try:
                 from utils.models.model_config import _iter_hf_cache_snapshots
                 for snap in _iter_hf_cache_snapshots(hf_repo, companion_cache_dir):
-                    rel_files = _gguf_snapshot_files(snap)
+                    rel_files = _snapshot_listing_files(snap)
                     target = pick(rel_files)
                     if target is not None:
                         logger.info("Resolved %s %s from local HF cache", label, target)
@@ -7278,7 +7285,7 @@ class LlamaCppBackend:
                 else _iter_hf_cache_snapshots(hf_repo, cache_dir)
             )
             for snap in snapshots:  # newest first
-                snapshot_files = _gguf_snapshot_files(snap)
+                snapshot_files = _snapshot_listing_files(snap)
                 # A snapshot is a whole listing, so a reprieved main is not a drafter.
                 drafters = _drafter_paths_in(snapshot_files)
                 for f in sorted(snapshot_files):
@@ -7314,8 +7321,8 @@ class LlamaCppBackend:
         def _pick_mtp(candidates: list[str]) -> Optional[str]:
             # Root-level only: MTP/ subdir copies now share the mtp- prefix but
             # are explicit-selection, not auto-fetch (they'd sort ahead of root).
-            # Listing-aware: a reprieved mtp-*.gguf is the repo's main weight, so
-            # taking it here would emit -m X --model-draft X.
+            # The drafters check is defence in depth: mtp is not reprievable, so
+            # an mtp-*.gguf never leaves the set and can never draft itself.
             drafters = _drafter_paths_in(candidates)
             mtp_files = sorted(
                 f

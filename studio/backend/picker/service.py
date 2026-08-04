@@ -14,7 +14,12 @@ from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
 )
-from hub.utils.gguf import extract_quant_label, iter_snapshots_preferring_whole
+from hub.utils.gguf import (
+    drafter_paths_in,
+    extract_quant_label,
+    iter_snapshots_preferring_whole,
+    repo_listing_in,
+)
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
     _extract_quant_label,
@@ -218,11 +223,16 @@ def _chat_template_from_tokenizer_dir(
 _GGUF_SCAN_MAX_DEPTH = 2
 
 
-def _iter_ggufs(dir_path: Path) -> list[Path]:
+def _iter_ggufs(dir_path: Path, whole_repo: bool = False) -> list[Path]:
+    """*whole_repo* marks *dir_path* as one repo's full contents (a cache
+    snapshot), the only case where a drafter-named file can be a real weight."""
     if dir_path == dir_path.parent:
         return []
     root = str(dir_path)
     found: list[Path] = []
+    drafters = (
+        drafter_paths_in(repo_listing_in(dir_path)) if whole_repo else None
+    )
     for current, dirs, files in os.walk(root, followlinks = False):
         rel = os.path.relpath(current, root)
         depth = 0 if rel == os.curdir else rel.count(os.sep) + 1
@@ -237,7 +247,8 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
             except ValueError:
                 rel = name
             quant = _extract_quant_label(rel)
-            if _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
+            is_drafter = rel in drafters if drafters is not None else _is_mtp_drafter(rel)
+            if is_drafter or _is_big_endian_gguf_path(rel, quant):
                 continue
             found.append(path)
     return found
@@ -267,9 +278,11 @@ def _is_nonfirst_gguf_split(path: Path) -> bool:
     return match is not None and int(match.group(1)) != 1
 
 
-def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[Path]:
+def _find_gguf_in_dir(
+    dir_path: Path, gguf_variant: Optional[str], whole_repo: bool = False
+) -> Optional[Path]:
     try:
-        ggufs = sorted(_iter_ggufs(dir_path))
+        ggufs = sorted(_iter_ggufs(dir_path, whole_repo))
     except OSError:
         return None
     if not ggufs:
@@ -295,9 +308,10 @@ def _chat_template_from_dir(
     dir_path: Path,
     gguf_variant: Optional[str] = None,
     allow_roots: Optional[list[Path]] = None,
+    whole_repo: bool = False,
 ) -> Optional[str]:
     def from_gguf() -> Optional[str]:
-        gguf = _find_gguf_in_dir(dir_path, gguf_variant)
+        gguf = _find_gguf_in_dir(dir_path, gguf_variant, whole_repo)
         if gguf is None or not _leaf_inside_allowlist(gguf, allow_roots):
             return None
         return read_gguf_chat_template(str(gguf))
@@ -347,7 +361,8 @@ def read_default_chat_template(
         # supersedes its own embedded GGUF copy, but must not override a newer
         # revision, so precedence stays per-snapshot rather than global.
         for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
-            template = _chat_template_from_dir(snapshot, gguf_variant)
+            # A cache snapshot is one repo's whole listing.
+            template = _chat_template_from_dir(snapshot, gguf_variant, whole_repo = True)
             if template:
                 return template
     except Exception as exc:
