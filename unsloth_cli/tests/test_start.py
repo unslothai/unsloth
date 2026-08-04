@@ -5891,7 +5891,14 @@ def test_codex_preflight_defers_to_running_server(monkeypatch):
 def _fake_variants(monkeypatch, responses):
     urls = []
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         urls.append(url)
         if isinstance(responses, Exception):
             raise responses
@@ -5964,7 +5971,14 @@ def test_codex_gguf_failure_skips_hint_probe_for_non_hub_ids(monkeypatch, capsys
 def test_codex_attach_rejects_before_load(fake_studio, monkeypatch):
     inner = start._http_json
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if "/api/models/gguf-variants" in url:
             return {"variants": []}
         if url.endswith("/api/inference/load"):
