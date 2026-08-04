@@ -1696,7 +1696,12 @@ def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
     _fail(message)
 
 
-def _preflight_codex_gguf(model: Optional[str], *, serve: bool = True, launch: bool = True) -> None:
+def _preflight_codex_gguf(
+    model: Optional[str],
+    *,
+    serve: bool = True,
+    launch: bool = True,
+) -> None:
     # Hub-listing preflight for the auto-start path only. With a server
     # running, identifiers are resolved against its cwd/cache/token, which this
     # process cannot mirror; _attach_gguf_check_for_codex asks the server

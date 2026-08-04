@@ -6022,7 +6022,14 @@ def test_codex_attach_check_normalizes_shorthand_after_raw_probe(monkeypatch, ca
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     urls = []
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         urls.append(url)
         if "repo_id=Qwen3-0.6B" in url and "unsloth" not in url:
             raise urllib.error.HTTPError(url, 400, "invalid repo_id", None, None)
@@ -6039,7 +6046,14 @@ def test_codex_attach_check_normalizes_shorthand_after_raw_probe(monkeypatch, ca
 def test_codex_attach_check_trusts_raw_server_dir_answer(monkeypatch):
     urls = []
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         urls.append(url)
         return {"variants": [{"quant": "Q4_K_M"}]}
 
@@ -6049,7 +6063,14 @@ def test_codex_attach_check_trusts_raw_server_dir_answer(monkeypatch):
 
 
 def test_codex_attach_check_defers_shorthand_when_canonical_probe_errors(monkeypatch):
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         raise urllib.error.HTTPError(url, 404, "nope", None, None)
 
     monkeypatch.setattr(start, "_http_json", http_json)
