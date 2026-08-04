@@ -343,8 +343,8 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = TITLEBAR.read_text(encoding = "utf-8")
 
     assert 'showSidebarSurface && !pinned ? "7rem" : sidebarWidth' in source
-    assert 'style={{ width: titlebarNavigationWidth }}' in source
-    assert 'left: titlebarNavigationWidth' in source
+    assert "style={{ width: titlebarNavigationWidth }}" in source
+    assert "left: titlebarNavigationWidth" in source
     assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
@@ -375,7 +375,6 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
 
 
-
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
     titlebar = TITLEBAR.read_text(encoding = "utf-8")
     chat_page = CHAT_PAGE.read_text(encoding = "utf-8")
@@ -397,7 +396,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert '"pl-3"' in titlebar
     assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
 
-    assert 'pl-[max(0.75rem,calc(var(--studio-mac-traffic-light-inset,0px)+0.375rem))]' in chat_page
+    assert "pl-[max(0.75rem,calc(var(--studio-mac-traffic-light-inset,0px)+0.375rem))]" in chat_page
     assert 'className="!size-8 rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
