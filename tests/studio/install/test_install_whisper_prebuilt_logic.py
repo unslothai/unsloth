@@ -842,17 +842,13 @@ TREE_B = "e96ffb0e063f66952b0c54796a74755b6041c867"
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, TREE_B, False),
         # Different suffixes, same ggml: ABI-identical, so it pairs.
         ("b10241-mix-89aa77b", "b10225-mix-345e1e3", TREE_A, TREE_A, True),
-        # An artifact that declares a tree is paired on that key alone: an install
-        # with no recorded tree cannot be vouched for, so it refuses rather than
-        # falling back to the suffix.
-        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, None, TREE_B, False),
-        # ... and a matching tag does not override it, since a fork release can
-        # install an upstream archive whose ggml is not the fork's.
-        (SUFFIX_SHARED_A, SUFFIX_SHARED_A, TREE_A, TREE_B, False),
-        (SUFFIX_SHARED_A, SUFFIX_SHARED_A, TREE_A, TREE_A, True),
-        # Only when the artifact declares no tree does the suffix still decide.
+        # A missing tree on either side falls back to the suffix: an install made
+        # before ggml_tree existed must keep working, not be stranded.
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, None, TREE_B, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, None, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, "", "", True),
+        # An exact tag pairs before trees are consulted.
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_A, TREE_A, TREE_B, True),
     ],
 )
 def test_llama_runtime_pairs_prefers_ggml_tree(

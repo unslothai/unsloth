@@ -535,16 +535,6 @@ _LLAMA_PHASE_WEIGHT = 0.7
 _WHISPER_PHASE_WEIGHT = 0.3
 
 
-def _marker_needs_ggml_tree(marker: dict | None) -> bool:
-    """True when the install predates ggml_tree and must be refreshed to record it.
-
-    install_whisper_prebuilt refuses a slim bundle whose required tree cannot be
-    checked, so reporting "up to date" here would strand that install: the llama
-    installer, which backfills the marker on its reuse path, would never run.
-    """
-    return isinstance(marker, dict) and not marker.get("ggml_tree")
-
-
 def _plan_llama_phase() -> dict:
     """Decide how the llama phase of a combined update runs. Returns {"spec"}
     when llama should install, else {"skip_reason", "refusal"}: skip_reason
@@ -583,7 +573,7 @@ def _plan_llama_phase() -> dict:
         # start an install when the latest is not actually newer (force a fresh
         # check so a stale 24h cache can't wrongly block a real update either).
         status = _llama_only_status(force_refresh = True)
-        if not status.get("update_available") and not _marker_needs_ggml_tree(marker):
+        if not status.get("update_available"):
             return {
                 "skip_reason": "up_to_date",
                 "refusal": {
@@ -624,7 +614,7 @@ def _plan_llama_phase() -> dict:
                     ),
                 },
             }
-        if not src.get("update_available") and not _marker_needs_ggml_tree(marker):
+        if not src.get("update_available"):
             return {
                 "skip_reason": "up_to_date",
                 "refusal": {

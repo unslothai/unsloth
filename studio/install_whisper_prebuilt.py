@@ -363,15 +363,18 @@ def llama_runtime_pairs(
     requires_ggml_sonames stays the per-file ABI gate."""
     if not isinstance(required_tag, str):
         return False
-    # An artifact that states its ABI key is only ever paired on that key. Falling
-    # back to the tag here would accept a runtime we cannot vouch for: matching
-    # tags do not imply matching ggml (a fork release can install an upstream
-    # archive), and the "-mix-" suffix does not track ggml at all. Refusing costs
-    # a Transformers fallback; guessing loads an incompatible libggml.
-    if isinstance(required_ggml_tree, str) and required_ggml_tree:
-        return required_ggml_tree == installed_ggml_tree
     if installed_tag == required_tag:
         return True
+    # Both trees present is the only case we can decide on the ABI key. Refusing
+    # when the install predates ggml_tree would strand it: nothing in the update
+    # path can backfill a marker without a llama release to install.
+    if (
+        isinstance(installed_ggml_tree, str)
+        and installed_ggml_tree
+        and isinstance(required_ggml_tree, str)
+        and required_ggml_tree
+    ):
+        return installed_ggml_tree == required_ggml_tree
     commit = _llama_ggml_commit(installed_tag)
     return commit is not None and commit == _llama_ggml_commit(required_tag)
 
