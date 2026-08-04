@@ -1174,9 +1174,7 @@ def _drafter_paths_in(paths) -> frozenset:
             return True
         if name.endswith(".bin"):
             return name.startswith(_NON_GGUF_WEIGHT_BIN_PREFIXES)
-        return (
-            name.endswith(".gguf") and path not in drafters and "mmproj" not in name
-        )
+        return name.endswith(".gguf") and path not in drafters and "mmproj" not in name
 
     if any(_is_weight(p) for p in listing):
         return frozenset(drafters)

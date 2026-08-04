@@ -640,7 +640,10 @@ def _resolve_gguf_dir(path: Path) -> Optional[Path]:
 
 
 def list_local_gguf_variants(
-    directory: str, model_root: Optional[str] = None, *, whole_repo: bool = False
+    directory: str,
+    model_root: Optional[str] = None,
+    *,
+    whole_repo: bool = False,
 ) -> tuple[list[GgufVariantInfo], bool]:
     """*whole_repo* marks *directory* as one repo's full contents (an HF cache
     snapshot), which is the only local case where the drafter reprieve applies."""
