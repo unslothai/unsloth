@@ -294,7 +294,12 @@ class TestPaginationLink:
 
 
 class TestInfoRoute:
-    def _info(self, repo = "unsloth/gemma-3-4b-it", revision = "HEAD", items = ()):
+    def _info(
+        self,
+        repo = "unsloth/gemma-3-4b-it",
+        revision = "HEAD",
+        items = (),
+    ):
         return asyncio.run(
             discovery.discovery_info(
                 "models",
@@ -349,7 +354,6 @@ class TestStreamDeadline:
 
             def iter_content(self, chunk_size = 0):
                 import time as _t
-
                 while True:
                     _t.sleep(0.02)
                     yield b"x"
@@ -361,9 +365,7 @@ class TestStreamDeadline:
             def get(self, url, **kw):
                 return _Resp()
 
-        monkeypatch.setattr(
-            "huggingface_hub.utils.get_session", lambda: _Session()
-        )
+        monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: _Session())
         with pytest.raises(HTTPException) as excinfo:
             discovery._fetch_upstream("https://huggingface.co/api/models", None)
         assert excinfo.value.status_code == 504
