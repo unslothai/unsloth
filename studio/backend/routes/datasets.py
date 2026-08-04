@@ -505,9 +505,7 @@ async def get_dataset_download_progress(
     )
 
 
-_MISSING_DATASET_DETAIL = (
-    "This dataset is no longer on disk. Add it again or pick another dataset."
-)
+_MISSING_DATASET_DETAIL = "This dataset is no longer on disk. Add it again or pick another dataset."
 
 
 def _is_local_dataset_ref(dataset_name: str) -> bool:
