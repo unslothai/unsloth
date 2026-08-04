@@ -2055,6 +2055,8 @@ def test_sse_event_reports_errors_with_monitoring_disabled():
     # still needs the error verdict or a failed stream claims the preview slot.
     from routes import inference as inf
 
-    assert inf._monitor_openai_sse_event(None, b'data: {"error": {"message": "boom"}}\n\n') == "error"
+    assert (
+        inf._monitor_openai_sse_event(None, b'data: {"error": {"message": "boom"}}\n\n') == "error"
+    )
     assert inf._monitor_openai_sse_event("", b"data: [DONE]\n\n") == "done"
     assert inf._monitor_openai_sse_event(None, b'data: {"choices": []}\n\n') is None
