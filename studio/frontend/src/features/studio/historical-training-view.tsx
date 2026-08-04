@@ -179,27 +179,6 @@ export function HistoricalTrainingView({
 
   return (
     <div className="flex flex-col gap-6">
-      {detail.run.can_resume && (
-        <div className="flex justify-end">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            disabled={isStarting || resuming || isTrainingRunning}
-            onClick={() => void handleResume()}
-          >
-            {resuming ? (
-              <Spinner className="size-3.5" />
-            ) : (
-              <HugeiconsIcon icon={PlayIcon} className="size-3.5" />
-            )}
-            {resuming
-              ? t("studio.history.resuming")
-              : t("studio.history.resumeTraining")}
-          </Button>
-        </div>
-      )}
       <ProgressSection
         data={viewData}
         isHistorical

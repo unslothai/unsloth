@@ -105,3 +105,16 @@ def test_resume_from_explicit_checkpoint_path(outputs_home):
     )
     assert result.exit_code == 0, result.output
     assert "checkpoint-10" in result.output
+
+
+def test_resume_from_external_mlx_output_dir(outputs_home, tmp_path_factory):
+    # The MLX CLI adapter writes checkpoints under a cwd-absolutized dir the
+    # outputs-root helpers cannot see; a valid checkpoint there must resume.
+    external = tmp_path_factory.mktemp("mlx_run")
+    _write_checkpoint(external, 25)
+    result = CliRunner().invoke(
+        _app(),
+        ["--dry-run", "--resume-from-checkpoint", str(external)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "checkpoint-25" in result.output

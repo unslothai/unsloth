@@ -30,6 +30,25 @@ def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None
         typer.echo(f"Warning: failed to activate Transformers sidecar: {exc}", err = True)
 
 
+
+
+def _external_resume_checkpoint(path: Path) -> "str | None":
+    from studio.backend.core.training.resume import is_resume_checkpoint_valid
+
+    if path.name.startswith("checkpoint-") and path.is_dir() and is_resume_checkpoint_valid(path):
+        return str(path)
+    best_step, best = -1, None
+    if path.is_dir():
+        for child in path.glob("checkpoint-*"):
+            try:
+                step = int(child.name.rsplit("-", 1)[1])
+            except ValueError:
+                continue
+            if step > best_step and is_resume_checkpoint_valid(child, step):
+                best_step, best = step, str(child)
+    return best
+
+
 def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
     if _should_use_mlx_backend_for_cli():
         _activate_mlx_transformers(model_name, hf_token)
@@ -114,25 +133,36 @@ def train(
         )
         from utils.paths import outputs_root
 
+        resume_dir = None
+        root_error = None
         try:
             resume_dir = normalize_resume_output_dir(resume_target)
         except ValueError as e:
-            # The trainer only writes inside the outputs root, so checkpoints
-            # can only exist (and resume) there.
-            typer.echo(
-                f"Error: {e} Training runs write checkpoints under "
-                f"'{outputs_root()}'; pass a directory beneath it.",
-                err = True,
-            )
-            raise typer.Exit(code = 2)
+            root_error = e
 
-        resume_checkpoint = get_resume_checkpoint_path(resume_dir)
+        resume_checkpoint = get_resume_checkpoint_path(resume_dir) if resume_dir else None
         if not resume_checkpoint:
-            typer.echo(
-                f"Error: no resumable checkpoint (with trainer_state.json) found under "
-                f"'{resume_dir}'.",
-                err = True,
-            )
+            # The MLX CLI adapter writes to a cwd-absolutized output_dir
+            # (allow_external_output_dir), which the outputs-root helpers cannot
+            # see; accept such a dir directly when it holds a valid checkpoint.
+            external = Path(resume_target).expanduser()
+            if not external.is_absolute():
+                external = Path.cwd() / external
+            resume_checkpoint = _external_resume_checkpoint(external)
+        if not resume_checkpoint:
+            if root_error is not None:
+                typer.echo(
+                    f"Error: {root_error} Training runs write checkpoints under "
+                    f"'{outputs_root()}'; pass a directory beneath it, or a "
+                    f"directory that holds a resumable checkpoint.",
+                    err = True,
+                )
+            else:
+                typer.echo(
+                    f"Error: no resumable checkpoint (with trainer_state.json) found under "
+                    f"'{resume_dir}'.",
+                    err = True,
+                )
             raise typer.Exit(code = 2)
 
         # New checkpoints continue in the run dir, not inside checkpoint-N/.
