@@ -21,7 +21,7 @@ import re
 
 __all__ = ["get_layer_index", "make_layerwise_lr_param_groups", "check_layerwise_lr_compat"]
 
-_LAYER_INDEX_RE = re.compile(r"(?:^|\.)layers\.(\d+)\.")
+_LAYER_INDEX_RE = re.compile(r"(?:^|\.)(?:layers|blocks)\.(\d+)\.")
 
 
 def get_layer_index(name):
