@@ -279,9 +279,19 @@ _FAMILY_LABELS = {
 _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
     "sdxl": {"params": "", "qlora_vram_gb": 12, "gated": False, "note": "The lightest option."},
     "flux.1": {"params": "12B", "qlora_vram_gb": 16, "gated": True, "note": ""},
-    "qwen-image": {"params": "20B", "qlora_vram_gb": 24, "gated": False, "note": "The heaviest option."},
+    "qwen-image": {
+        "params": "20B",
+        "qlora_vram_gb": 24,
+        "gated": False,
+        "note": "The heaviest option.",
+    },
     "z-image": {"params": "6B", "qlora_vram_gb": 12, "gated": False, "note": ""},
-    "krea-2": {"params": "12B", "qlora_vram_gb": 18, "gated": False, "note": "Trains on Krea-2-Raw, runs on Turbo."},
+    "krea-2": {
+        "params": "12B",
+        "qlora_vram_gb": 18,
+        "gated": False,
+        "note": "Trains on Krea-2-Raw, runs on Turbo.",
+    },
     "flux.2-klein": {"params": "4B", "qlora_vram_gb": 10, "gated": False, "note": ""},
     "flux.2-dev": {"params": "32B", "qlora_vram_gb": 28, "gated": True, "note": ""},
 }
@@ -297,6 +307,7 @@ def _family_vram_note(name: str) -> str:
     head = f"{spec['params']}, QLoRA by default (~{gb} GB+)." if spec["params"] else f"~{gb} GB+."
     tail = [t for t in (_GATED_NOTE if spec["gated"] else "", spec["note"]) if t]
     return " ".join([head, *tail])
+
 
 # The flow-matching DiT families (run by diffusion_dit_trainer): they expose base_precision / compile and need bf16 on CUDA. SDXL is absent (own mixed_precision path).
 _DIT_TRAIN_FAMILIES = frozenset(
