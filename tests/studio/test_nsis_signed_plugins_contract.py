@@ -48,7 +48,10 @@ def _line_of(template: str, needle: str) -> int:
 def _signed_dir_lines(template: str) -> dict[str, int]:
     # Each form is checked on its own. Only one resolves per bundler version, so
     # taking the earliest would let the other drift below an include unnoticed.
-    return {"env var": _line_of(template, ENV_FORM), "template var": _line_of(template, TEMPLATE_FORM)}
+    return {
+        "env var": _line_of(template, ENV_FORM),
+        "template var": _line_of(template, TEMPLATE_FORM),
+    }
 
 
 @pytest.mark.parametrize("form", ["env var", "template var"])
