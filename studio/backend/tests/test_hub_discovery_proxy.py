@@ -369,3 +369,25 @@ class TestStreamDeadline:
         with pytest.raises(HTTPException) as excinfo:
             discovery._fetch_upstream("https://huggingface.co/api/models", None)
         assert excinfo.value.status_code == 504
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://HF-Mirror.example",
+            "https://hf-mirror.example:443",
+            "https://HF-MIRROR.EXAMPLE:443",
+        ],
+    )
+    def test_equivalent_authorities_still_paginate(self, monkeypatch, endpoint):
+        # Case and an explicit default port are equivalent; a textual netloc
+        # check would drop the mirror's canonical link and stop pagination.
+        monkeypatch.setenv("HF_ENDPOINT", endpoint)
+        rewritten = discovery.rewrite_next_link(
+            "models",
+            discovery.parse_next_link(
+                '<https://hf-mirror.example/api/models?cursor=abc123>; rel="next"'
+            ),
+            "http://127.0.0.1:8888/",
+        )
+        assert rewritten is not None, endpoint
+        assert "cursor=abc123" in rewritten
