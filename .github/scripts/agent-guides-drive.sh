@@ -171,13 +171,23 @@ run_timed() {  # $1=outfile, rest=command
   timeout --kill-after=30 "$TIMEOUT" "$@" > "$out" 2>&1
   local rc=$?
   local elapsed=$(( SECONDS - t0 ))
+  # Neither status proves expiry on its own. 137 is also an unrelated SIGKILL,
+  # and 124 is also whatever the CLI itself chose to exit with -- timeout(1)
+  # otherwise returns "the exit status of COMMAND", and an agent that hit its
+  # own internal request timeout can exit 124 early, after leaving hello.py or
+  # ran.txt behind. So both statuses have to agree with the clock. SECONDS is
+  # truncated to whole seconds at both ends, so allow one second of slack;
+  # a CLI-originated 124 returns nowhere near the cap.
   local expired=0
-  [ "$rc" -eq 124 ] && expired=1
-  # Only compare against a bare-seconds cap; a timeout(1) duration suffix
-  # (600s / 10m) is left to the 124 path rather than parsed here.
   case "$TIMEOUT" in
-    *[!0-9]*) ;;
-    *) [ "$rc" -eq 137 ] && [ "$elapsed" -ge "$TIMEOUT" ] && expired=1 ;;
+    # A timeout(1) duration suffix (600s / 10m) is not a number we can compare,
+    # so fall back to trusting 124 alone rather than parsing it.
+    *[!0-9]*) [ "$rc" -eq 124 ] && expired=1 ;;
+    *)
+      if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+        [ "$elapsed" -ge $(( TIMEOUT - 1 )) ] && expired=1
+      fi
+      ;;
   esac
   if [ "$expired" -eq 1 ]; then
     redact "$out"  # guide_fail may exit below, so scrub the transcript here too

@@ -144,6 +144,16 @@ assert_eq "rc 137"                      "$(field "$OUT" RC)" 137
 assert_eq "counted as a timeout"        "$(field "$OUT" TIMED_OUT)" 1
 assert_eq "warned, not guide drift"     "$(count "$OUT" '::warning::')" 1
 
+echo "3d. a CLI that exits 124 on its own is not an expiry"
+# timeout(1) otherwise returns "the exit status of COMMAND", so 124 can come
+# from the agent's own internal request timeout. Landing far short of the cap
+# means it is a real failure, and must not reach the file-edit waiver.
+OUT="$(run_case 30 bash -c 'echo partial work; exit 124')"
+assert_eq "rc 124 preserved"            "$(field "$OUT" RC)" 124
+assert_eq "not treated as a timeout"    "$(field "$OUT" TIMED_OUT)" 0
+assert_eq "no warning"                  "$(count "$OUT" '::warning::')" 0
+assert_eq "no guide_fail"               "$(count "$OUT" 'GUIDE_FAIL')" 0
+
 echo "4. a clean run is untouched"
 OUT="$(run_case 5 bash -c 'echo hi')"
 assert_eq "rc 0"                        "$(field "$OUT" RC)" 0
@@ -200,12 +210,16 @@ assert_eq "no transcript-only fallback survives" \
     "$(grep -c "hello.py's output on a line of its own" "$DRIVE_SH" || true)" 0
 
 echo "8. the cap keeps a finite kill fallback, but expiry comes from the clock"
-assert_eq "kill-after restored"      "$(grep -c 'kill-after=30' "$WORK/run_timed.sh")" 1
-assert_eq "expiry is wall-clock"     "$(grep -c 'elapsed" -ge "$TIMEOUT"' "$WORK/run_timed.sh")" 1
-assert_eq "137 alone is not enough"  "$(grep -c 'rc" -eq 137 \] && \[ "$elapsed' "$WORK/run_timed.sh")" 1
-# A SIGKILL well before the deadline is a crash, not an expiry (case 3b covers
-# the runtime behaviour; this pins that the guard is clock-based, not status-based).
-assert_eq "124 still stands alone"   "$(grep -c 'rc" -eq 124 \] && expired=1' "$WORK/run_timed.sh")" 1
+# Cases 3b/3c/3d prove the behaviour; these pin the shape, so a refactor cannot
+# quietly go back to trusting an exit status.
+assert_eq "kill-after restored" \
+    "$(grep -c 'kill-after=30' "$WORK/run_timed.sh")" 1
+assert_eq "neither status alone decides" \
+    "$(grep -c 'rc" -eq 124 \] || \[ "$rc" -eq 137 \]' "$WORK/run_timed.sh")" 1
+assert_eq "the clock decides, with 1s of slack for truncation" \
+    "$(grep -c 'elapsed" -ge \$(( TIMEOUT - 1 ))' "$WORK/run_timed.sh")" 1
+assert_eq "a suffixed cap falls back to 124 alone" \
+    "$(grep -c '\*\[!0-9\]\*) \[ "$rc" -eq 124 \] && expired=1' "$WORK/run_timed.sh")" 1
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

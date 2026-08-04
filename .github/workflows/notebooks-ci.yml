@@ -228,10 +228,17 @@ jobs:
           python unsloth/scripts/notebook_validator.py colab-diff \
               --snapshot-dir unsloth/scripts/data --strict
       - name: Refresh Colab oracle
+        # `if: always()` so a strict-drift failure above does not skip this and
+        # the lint below. A Colab rotation is exactly when the live-metadata
+        # pass is worth having, and skipping it there would mean the job only
+        # ever lints on the days nothing changed. The strict step still decides
+        # the job's verdict.
+        if: always()
         run: |
           python unsloth/scripts/notebook_validator.py refresh-colab \
               --out unsloth/scripts/data/colab_pip_freeze.gpu.txt
       - name: Lint with live PyPI metadata
+        if: always()
         # Same backlog, same disposition as the PR-time `Lint` step above:
         # these are pre-existing findings on unslothai/notebooks@main, not a
         # regression this repo can fix, and dropping the resolver's --no-pypi

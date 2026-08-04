@@ -23,6 +23,7 @@ import argparse
 import io
 import re
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -158,4 +159,70 @@ def test_workflow_diffs_before_it_refreshes():
         assert diff_at < refresh_at, (
             f"{job} refreshes the snapshot before diffing it, which makes the "
             "pip leg of colab-diff structurally unable to report drift"
+        )
+
+
+def test_refresh_all_is_atomic(oracle, tmp_path, monkeypatch):
+    """A transient failure on the second or third fetch must not leave a
+    mixed-generation directory. pip is fetched first and is the only oracle
+    --strict reads, so a partial write would silence the tripwire on a refresh
+    that actually failed."""
+    upstream, snapshot_dir = oracle
+    for key in upstream:
+        upstream[key] = "REFRESHED\n"
+
+    def flaky(url, timeout = None):
+        name = url.rsplit("/", 1)[-1]
+        if name != nv.COLAB_STRICT_ORACLE:
+            raise urllib.error.URLError("network down")
+        return io.BytesIO(upstream[name].encode("utf-8"))
+
+    monkeypatch.setattr(nv.urllib.request, "urlopen", flaky)
+    rc = nv.cmd_refresh_colab(
+        argparse.Namespace(all = True, snapshot_dir = str(snapshot_dir), out = None)
+    )
+    assert rc == 2
+    for upstream_name, snapshot_name in nv.COLAB_ORACLE_FILES.items():
+        assert (snapshot_dir / snapshot_name).read_text(encoding = "utf-8") == UPSTREAM[upstream_name], (
+            f"{snapshot_name} was overwritten even though the refresh failed"
+        )
+
+
+def test_refresh_all_writes_nothing_into_a_fresh_dir_on_failure(oracle, tmp_path, monkeypatch):
+    """Same guarantee when the destination did not exist yet: no half-populated
+    directory is left behind for a later --strict to read as clean."""
+    upstream, _ = oracle
+
+    def dead(url, timeout = None):
+        raise urllib.error.URLError("network down")
+
+    monkeypatch.setattr(nv.urllib.request, "urlopen", dead)
+    dest = tmp_path / "never_created"
+    assert nv.cmd_refresh_colab(
+        argparse.Namespace(all = True, snapshot_dir = str(dest), out = None)
+    ) == 2
+    assert not dest.exists()
+
+
+def test_cron_lint_survives_a_strict_drift_failure():
+    """The strict step exits 1 on a Colab rotation, which is exactly when the
+    live-PyPI pass is worth having. Without `if: always()` on the steps after
+    it, the job would only ever lint on the days nothing drifted."""
+    wf = (REPO_ROOT / ".github/workflows/notebooks-ci.yml").read_text(encoding = "utf-8")
+    rest = wf.split("\n  static-with-pypi:", 1)[1]
+    nxt = re.search(r"^  [A-Za-z0-9_-]+:$", rest, re.M)
+    body = rest[: nxt.start()] if nxt else rest
+    strict_at = body.index("--strict")
+    for step in ("Refresh Colab oracle", "Lint with live PyPI metadata"):
+        at = body.index(f"- name: {step}")
+        assert at > strict_at, f"{step} must stay after the strict gate"
+        # the step's own block, up to the next `- name:`
+        blk = body[at:]
+        end = blk.find("\n      - name:", 1)
+        blk = blk[:end] if end != -1 else blk
+        # Match the directive on a line of its own: the step's own comment
+        # explains `if: always()` in prose, and a substring test would happily
+        # pass on that after the directive itself had been deleted.
+        assert re.search(r"^\s*if: always\(\)\s*$", blk, re.M), (
+            f"{step} would be skipped when strict drift fires"
         )
