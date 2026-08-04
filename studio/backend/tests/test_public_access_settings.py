@@ -92,6 +92,43 @@ def test_workers_and_stops_are_scoped_to_backend_lifecycle(monkeypatch):
     assert cloudflare_tunnel.get_studio_tunnel_status()["state"] == "off"
 
 
+@pytest.mark.parametrize("trigger", ["manual", "auto"])
+def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigger):
+    monkeypatch.setattr(public_access, "_start_worker", None)
+    monkeypatch.setattr(public_access, "_start_worker_admission", None)
+    ready = threading.Event()
+    messages = []
+    status = {
+        "state": "off",
+        "managed_by": None,
+        "can_start": True,
+        "block_reason": None,
+    }
+
+    def _start(*_args, **_kwargs):
+        ready.set()
+        return "https://example.trycloudflare.com"
+
+    monkeypatch.setattr(public_access, "get_public_access_auto_start", lambda: True)
+    monkeypatch.setattr(public_access, "public_access_status", lambda _: status)
+    monkeypatch.setattr(cloudflare_tunnel, "capture_studio_tunnel_start_admission", lambda: (1, 1))
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 1))
+    monkeypatch.setattr(cloudflare_tunnel, "start_studio_tunnel", _start)
+    monkeypatch.setattr(
+        public_access.logger,
+        "info",
+        lambda message, url: messages.append(message % url),
+    )
+
+    if trigger == "auto":
+        assert public_access.maybe_auto_start_public_access(_state())
+    else:
+        public_access.start_public_access(_state())
+    assert ready.wait(1)
+    public_access._start_worker.join(1)
+    assert messages == ["Secure link access via Cloudflare: https://example.trycloudflare.com"]
+
+
 @pytest.mark.parametrize("operation", ["start", "stop"])
 def test_request_cannot_adopt_reopened_lifecycle(monkeypatch, operation):
     status = (

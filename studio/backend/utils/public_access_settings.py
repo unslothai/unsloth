@@ -9,6 +9,10 @@ import threading
 import time
 from typing import Any, Callable
 
+from loggers import get_logger
+
+logger = get_logger(__name__)
+
 PUBLIC_ACCESS_AUTO_START_KEY = "public_access_auto_start"
 DEFAULT_PUBLIC_ACCESS_AUTO_START = False
 
@@ -247,7 +251,9 @@ def start_public_access(app_state) -> dict:
 
     def _start() -> None:
         from cloudflare_tunnel import start_studio_tunnel
-        start_studio_tunnel(port, managed_by = "settings", admission = admission)
+        url = start_studio_tunnel(port, managed_by = "settings", admission = admission)
+        if url:
+            logger.info("Secure link access via Cloudflare: %s", url)
 
     _open_public_access_stop_response_admission()
     with _worker_lock:
