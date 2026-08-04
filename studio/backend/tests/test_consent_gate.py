@@ -8,7 +8,9 @@ refuses CRITICAL/HIGH code unless the user pinned this exact version. The scanne
 and fingerprint run for real; only the config/file fetch is stubbed.
 """
 
+import importlib.util
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -37,6 +39,16 @@ from utils.security.remote_code_scan import (
 from utils.security.trusted_org import clear_cache
 
 _BACKEND = Path(__file__).resolve().parent.parent
+
+
+def _load_models_route(monkeypatch):
+    path = _BACKEND / "routes" / "models.py"
+    spec = importlib.util.spec_from_file_location("consent_models_route", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture(autouse = True)
@@ -630,7 +642,7 @@ class TestStructuredFindingsForDialog:
         import asyncio
 
         import core.training.training as training_core
-        import routes.models as models_route
+        models_route = _load_models_route(monkeypatch)
         import utils.models.model_config as model_config
         import utils.security as security
         import utils.security.remote_code_scan as remote_code_scan
@@ -712,7 +724,7 @@ class TestStructuredFindingsForDialog:
     def test_scan_route_preserves_exact_snapshot_intent(self, monkeypatch):
         import asyncio
 
-        import routes.models as models_route
+        models_route = _load_models_route(monkeypatch)
         import utils.models.model_config as model_config
         import utils.security as security
         import utils.security.remote_code_scan as remote_code_scan
@@ -782,7 +794,7 @@ class TestStructuredFindingsForDialog:
     def test_scan_route_canonicalizes_local_adapter_target(self, monkeypatch, tmp_path):
         import asyncio
 
-        import routes.models as models_route
+        models_route = _load_models_route(monkeypatch)
         import utils.models.model_config as model_config
         import utils.security as security
         import utils.security.remote_code_scan as remote_code_scan

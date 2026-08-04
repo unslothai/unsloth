@@ -21,6 +21,7 @@ import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 import type { CheckFormatResponse } from "../types/datasets";
 import { cacheLocalPathMatchesSelection } from "./cache-reference";
+import { shouldUseVisionDatasetCheck } from "./fresh-dataset-check";
 import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
 import { isRawTextDatasetFormat } from "./training-methods";
 import { normalizeTrainingStartError } from "./training-start-errors";
@@ -333,8 +334,7 @@ async function prepareSelectedDataset(
     return true;
   }
 
-  let isVlm =
-    attempt.config.isVisionModel && attempt.config.isDatasetImage === true;
+  const isVlm = shouldUseVisionDatasetCheck(attempt.config);
   const check = await checkSelectedDataset(
     attempt,
     datasetName,
@@ -347,18 +347,17 @@ async function prepareSelectedDataset(
 
   const isAudio = check.is_audio === true;
   const isImage = check.is_image === true;
+  const recheckDetectedVisionDataset =
+    !isVlm && shouldUseVisionDatasetCheck(attempt.config, isImage);
   const recheckCachedDataset =
     attempt.config.datasetStreaming &&
     (isImage || isAudio) &&
     attempt.config.datasetSource === "huggingface" &&
     attempt.config.datasetKnownCached;
-  if (isImage && attempt.config.isVisionModel) {
-    isVlm = true;
-  }
   if (!applyDetectedDatasetModality(attempt, isImage, isAudio)) {
     return false;
   }
-  if (recheckCachedDataset) {
+  if (recheckCachedDataset || recheckDetectedVisionDataset) {
     return prepareSelectedDataset(attempt, hfToken);
   }
   if (hasIncompatibleTrainingModalities(attempt.config)) {
@@ -381,6 +380,7 @@ function applyDetectedDatasetModality(
         datasetStreaming: false,
         isDatasetImage: isImage,
         isDatasetAudio: isAudio,
+        datasetCheckFailed: false,
       })
     ) {
       return false;
@@ -394,13 +394,15 @@ function applyDetectedDatasetModality(
   }
   if (
     isImage === attempt.config.isDatasetImage &&
-    isAudio === attempt.config.isDatasetAudio
+    isAudio === attempt.config.isDatasetAudio &&
+    !attempt.config.datasetCheckFailed
   ) {
     return true;
   }
   return attempt.updateConfig({
     isDatasetImage: isImage,
     isDatasetAudio: isAudio,
+    datasetCheckFailed: false,
   });
 }
 

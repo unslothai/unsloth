@@ -120,6 +120,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_pkg.paths = utils_paths
     utils_paths.storage_roots = storage_roots
     utils_paths.is_local_path = lambda value: Path(str(value)).is_absolute()
+    utils_paths.normalize_path = lambda value: value
     utils_paths.outputs_root = lambda: Path("outputs")
     utils_paths.exports_root = storage_roots.exports_root
     utils_paths.resolve_cached_repo_id_case = lambda value: value
@@ -132,6 +133,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_utils.log_and_http_error = lambda *args, **kwargs: (_ for _ in ()).throw(
         _HTTPException(kwargs.get("status_code", 500), kwargs.get("detail"))
     )
+    utils_utils.canonical_model_repo_id = lambda value: value
     utils_utils.safe_error_detail = lambda value: str(value)
     monkeypatch.setitem(sys.modules, "utils.utils", utils_utils)
 

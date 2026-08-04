@@ -25,6 +25,7 @@ import {
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY } from "@/lib/navigation-intents";
 import { toast } from "@/lib/toast";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -56,9 +57,6 @@ const TRAINING_DATASET_UPLOAD_LABEL = TRAINING_DATASET_UPLOAD_EXTENSIONS.map(
 const DOCUMENT_REDIRECT_EXTENSIONS = new Set<string>(
   TRAINING_DOCUMENT_REDIRECT_EXTENSIONS,
 );
-const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
-  "data-recipes:open-learning-recipes";
-
 export function useDatasetUploads() {
   const t = useT();
   const navigate = useNavigate();
