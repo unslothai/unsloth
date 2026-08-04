@@ -1719,7 +1719,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                     }
                   }}
                   onError={() => remintSrc(selected)}
-                  className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
+                  className="max-h-full max-w-full object-contain shadow-sm"
                 />
                 {selected.has_audio && (
                   <div className="absolute left-4 top-4 flex items-center gap-1 rounded-lg bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
@@ -1858,7 +1858,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                   </span>
                   {/* Selection marker on a non-focusable overlay. */}
                   {video.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border-2 border-primary" />
+                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
                   )}
                 </button>
                 </TooltipTrigger>
