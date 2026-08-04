@@ -102,6 +102,20 @@ def test_an_explicit_tokenizer_is_not_shadowed_by_kwargs(i):
 
 # ---- behavioural check with a stand-in ------------------------------------
 
+def _extract_helper(name):
+    """Pull a module-level helper out by source, so nothing imports unsloth."""
+    src = ST_PY.read_text(encoding = "utf-8")
+    node = [n for n in ast.parse(src).body
+            if isinstance(n, ast.FunctionDef) and n.name == name]
+    assert node, f"{name} not found in sentence_transformer.py"
+    ns = {}
+    exec(ast.get_source_segment(src, node[0]), ns)
+    return ns[name]
+
+
+_normalize_save_method = _extract_helper("_normalize_save_method")
+
+
 def _extract(i):
     """Exec one closure body standalone so it can actually be called."""
     src = ST_PY.read_text(encoding = "utf-8")
@@ -111,6 +125,7 @@ def _extract(i):
     ns = {
         "os": __import__("os"),
         "print": lambda *a, **k: None,
+        "_normalize_save_method": _normalize_save_method,
         "FastSentenceTransformer": type(
             "F", (), {"_add_unsloth_branding":
                       staticmethod(lambda d: branding.append(d))}),
@@ -132,13 +147,17 @@ class _Inner:
     def __init__(self):
         self.merged = False
         self.saved = []
+        self.forwarded = None
 
     def merge_and_unload(self):
         self.merged = True
         return self
 
-    def save_pretrained(self, d):
+    def save_pretrained(self, d, **kwargs):
         self.saved.append(d)
+
+    def save_pretrained_merged(self, d, **kwargs):
+        self.forwarded = kwargs
 
 
 class _Module:
@@ -149,10 +168,11 @@ class _Module:
 class _FakeST:
     """A SentenceTransformer stand-in: a sequence of modules, module 0 of
     which wraps the transformer."""
-    def __init__(self):
+    def __init__(self, no_modules = False):
         self.tokenizer = _Tok()
         self.saved = []
         self.inner = _Inner()
+        self.no_modules = no_modules
         self._modules_list = [_Module(self.inner)]
 
     def __getitem__(self, i):
@@ -208,6 +228,60 @@ def test_unsupported_save_method_raises_not_implemented(tmp_path):
         fn(st, str(tmp_path), None, "lora")
     assert not st.inner.merged, "must refuse BEFORE merging anything away"
     assert st.saved == [], "and before writing a half-finished directory"
+
+
+# ---- the no_modules fallback honours save_method too -----------------------
+
+def test_no_modules_fallback_refuses_an_unsupported_method(tmp_path):
+    """That branch drops save_method and merges unconditionally, so "lora"
+    would return full weights for a request to write adapters."""
+    fn, _ = _extract(1)
+    st = _FakeST(no_modules = True)
+    with pytest.raises(NotImplementedError, match = "merged_16bit"):
+        fn(st, str(tmp_path), None, "lora")
+    assert not st.inner.merged, "must refuse BEFORE merging the adapters away"
+    assert st.saved == [], "and before writing a half-finished directory"
+
+
+def test_no_modules_fallback_still_does_a_16bit_merge(tmp_path):
+    fn, _ = _extract(1)
+    st = _FakeST(no_modules = True)
+    fn(st, str(tmp_path), None, "merged_16bit")
+    assert st.inner.merged
+
+
+def test_the_forwarding_path_still_accepts_lora(tmp_path):
+    """With modules.json present the merge understands every method, so the
+    refusal above must not leak into this branch."""
+    fn, _ = _extract(1)
+    st = _FakeST(no_modules = False)
+    fn(st, str(tmp_path), None, "lora")
+    assert st.inner.forwarded["save_method"] == "lora"
+    assert not st.inner.merged
+
+
+# ---- spellings mean the same thing as in unsloth_save_model ----------------
+
+def test_the_reference_normalizes_before_validating():
+    """Guards the premise: save.py lowercases and strips spaces first."""
+    body = ast.get_source_segment(
+        SAVE_PY.read_text(encoding = "utf-8"),
+        _defs("unsloth_save_model", SAVE_PY)[0])
+    assert 'save_method.lower().replace(" ", "_")' in body
+
+
+@pytest.mark.parametrize("method", ["MERGED_16BIT", "merged 16bit", "Merged_16bit"])
+@pytest.mark.parametrize("i", [0, 1])
+def test_case_and_space_variants_are_accepted(method, i, tmp_path):
+    """These keyword calls worked before the signature change."""
+    fn, _ = _extract(i)
+    st = _FakeST(no_modules = True)
+    fn(st, str(tmp_path), None, method)
+    assert st.inner.merged
+
+
+def test_normalization_leaves_non_strings_alone():
+    assert _normalize_save_method(None) is None
 
 
 if __name__ == "__main__":

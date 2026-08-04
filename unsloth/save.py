@@ -2026,7 +2026,13 @@ def save_to_gguf(
     # Check conversion success
     for file in initial_files:
         if not os.path.exists(file):
-            if IS_KAGGLE_ENVIRONMENT:
+            # Gated like the outer handler: the disk advice is only right when
+            # the disk is actually the problem, and a converter that has no
+            # llama.cpp support fails here with plenty of space free.
+            if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
+                RuntimeError(f"Conversion produced no output at {file}"),
+                os.path.dirname(file) or None,
+            ):
                 raise RuntimeError(
                     f"Unsloth: Conversion failed for {file}\n"
                     "You are in a Kaggle environment with limited disk space (20GB).\n"
@@ -2100,7 +2106,12 @@ def save_to_gguf(
                         quant_kwargs["n_threads"] = n_threads
                     return quantize_gguf(**quant_kwargs)
             except Exception as e:
-                if IS_KAGGLE_ENVIRONMENT:
+                # Same gate as above: a broken quantizer with 19GB free is not
+                # a disk problem, and the outer handler cannot undo an
+                # explanation already baked into this message.
+                if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
+                    e, gguf_directory
+                ):
                     raise RuntimeError(
                         f"Unsloth: Quantization failed for {output_location}\n"
                         "You are in a Kaggle environment, which might be the reason this is failing.\n"
@@ -2111,7 +2122,7 @@ def save_to_gguf(
                         "You can try saving it to the `/tmp` directory for larger disk space.\n"
                         "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"
                         f"Error: {e}"
-                    )
+                    ) from e
                 else:
                     if IS_WINDOWS:
                         build_instructions = (

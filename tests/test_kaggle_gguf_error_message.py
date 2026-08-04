@@ -165,3 +165,38 @@ def test_it_chains_the_original():
     src = inspect.getsource(_s.unsloth_save_pretrained_gguf)
     i = src.index("_gguf_child_was_oom_killed(e)")
     assert "from e" in src[i:i + 900]
+
+
+# ---- the inner conversion/quantize branches are gated too ------------------
+
+def test_no_kaggle_disk_message_is_left_ungated():
+    """The outer gate cannot undo a disk explanation already baked into the
+    inner RuntimeError's message, so save_to_gguf's own missing-output and
+    quantize handlers have to make the same check. unslothai/unsloth#835."""
+    import ast
+    src = Path(save.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    ungated = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+        if "IS_KAGGLE_ENVIRONMENT" not in names:
+            continue
+        if "20GB" not in (ast.get_source_segment(src, node) or ""):
+            continue
+        if "_gguf_failure_looks_like_disk" not in names:
+            ungated.append(node.lineno)
+    assert not ungated, f"20GB disk message still ungated at lines {ungated}"
+
+
+def test_a_broken_quantizer_is_not_a_disk_problem():
+    """The failure the inner quantize handler used to blame on disk."""
+    exc = RuntimeError("llama-quantize: unknown quantization type")
+    assert _looks_like_disk(exc, os.getcwd()) is False
+
+
+def test_the_inner_quantize_branch_chains_the_original():
+    src = Path(save.__file__).read_text(encoding="utf-8")
+    i = src.index("Unsloth: Quantization failed for {output_location}")
+    assert "from e" in src[i:i + 900]
