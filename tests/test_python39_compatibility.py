@@ -201,8 +201,17 @@ def evaluated_values(tree):
     those only execute when called.
     """
     out = []
-    scoped = (ast.If, ast.Try, ast.With, ast.AsyncWith, ast.For, ast.AsyncFor,
-              ast.While, ast.ExceptHandler, ast.ClassDef)
+    scoped = (
+        ast.If,
+        ast.Try,
+        ast.With,
+        ast.AsyncWith,
+        ast.For,
+        ast.AsyncFor,
+        ast.While,
+        ast.ExceptHandler,
+        ast.ClassDef,
+    )
 
     def walk(node):
         for child in ast.iter_child_nodes(node):
@@ -210,7 +219,7 @@ def evaluated_values(tree):
                 out.extend(child.decorator_list)
                 out.extend(d for d in child.args.defaults if d is not None)
                 out.extend(d for d in child.args.kw_defaults if d is not None)
-                continue   # the body only runs when called
+                continue  # the body only runs when called
             if isinstance(child, ast.ClassDef):
                 out.extend(child.decorator_list)
             if isinstance(child, (ast.Assign, ast.AnnAssign)) and child.value is not None:
@@ -263,8 +272,7 @@ def test_every_packaged_module_compiles():
     for root in packaged_roots():
         for path in package_files(root, minimum = 1):
             try:
-                compile(path.read_text(encoding = "utf-8"), str(path), "exec",
-                        dont_inherit = True)
+                compile(path.read_text(encoding = "utf-8"), str(path), "exec", dont_inherit = True)
             except SyntaxError as error:
                 broken.append(f"{path.relative_to(REPO_ROOT)}:{error.lineno}: {error.msg}")
     assert not broken, "these modules do not compile:\n  " + "\n  ".join(broken)
