@@ -162,6 +162,37 @@ def usable_prequant_source(
     return src
 
 
+def prequant_checkpoint_cached(source: Any, *, cache_dir: Optional[str] = None) -> bool:
+    """True when a hosted (``kind == "repo"``) checkpoint is ALREADY in the local Hub cache.
+
+    A pure cache lookup -- a refs read plus a stat, no network -- so memory planning can ask it on
+    every pick. Both names ``_resolve_checkpoint_path`` would fetch count, and both cache roots are
+    searched: the loader pins the LIVE cache setting while ``hf_hub_download`` falls back to
+    huggingface_hub's import-time constant, so the file can legitimately sit under either.
+
+    Never raises: an answer it cannot give is False, i.e. "this would have to download"."""
+    if source is None or getattr(source, "kind", None) != "repo":
+        return False
+    try:
+        import os
+
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # noqa: BLE001 — no cache API to ask: treat as not cached
+        return False
+    for root in ((cache_dir, None) if cache_dir else (None,)):
+        for name in (source.filename, source.fallback_filename):
+            if not name:
+                continue
+            try:
+                hit = try_to_load_from_cache(source.location, name, cache_dir = root)
+            except Exception:  # noqa: BLE001 — a malformed cache entry is not a hit
+                continue
+            # A str is the cached path; a miss is None and a known-absent file is a sentinel object.
+            if isinstance(hit, str) and os.path.isfile(hit):
+                return True
+    return False
+
+
 def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
     """Force every loaded fp8 weight onto the plain-torch kernel, matching the local path.
 

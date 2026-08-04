@@ -108,6 +108,7 @@ from .diffusion_precision import normalize_te_quant, quantize_text_encoders
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
 from .diffusion_prequant import (
     load_prequantized_transformer,
+    prequant_checkpoint_cached,
     resolve_prequant_source,
     usable_prequant_source,
 )
@@ -429,6 +430,72 @@ def _assert_local_base_is_pipeline(base_repo: str) -> None:
         )
 
 
+def _repo_access_message(repo: str, *, gated: bool) -> str:
+    """The actionable text for a repo this pick cannot read: the repo id AND its licence page.
+
+    The download worker's own failure carries neither -- the frontend turns any 401/403 into one
+    generic "couldn't access this Hugging Face repo with the token used for this download", which
+    does not say WHICH repo (the companion base is resolved from a card tag, so the user never
+    named it) or that a licence has to be accepted before any token can work."""
+    url = f"https://huggingface.co/{repo}"
+    if gated:
+        return (
+            f"'{repo}' is gated on Hugging Face and this model cannot be downloaded without it. "
+            f"Accept its licence at {url}, then add a Hugging Face token that has access in "
+            "Studio settings and try again."
+        )
+    return (
+        f"'{repo}' could not be read from Hugging Face (private, renamed or removed) and this "
+        f"model cannot be downloaded without it. Check {url}, then add a Hugging Face token that "
+        "has access in Studio settings and try again."
+    )
+
+
+def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> None:
+    """A gated companion base reads fine as METADATA but 401s on the first byte, so a plan built
+    from ``model_info`` lists 18 files and a confident byte total, then dies mid-download with a
+    bare token error. Probe the smallest real file up front and fail with the licence URL.
+
+    The Hub enforces gating on the BYTE endpoint only: ``model_info`` answers anonymously for
+    every gated FLUX / Krea / Ideogram repo, so nothing earlier in the pick sees a problem. The
+    probe is the pipeline manifest the load fetches anyway, and runs ONLY when ``gated`` is set
+    ("auto"/"manual", a truthy STRING, never True), so an open repo costs one metadata call.
+
+    Fail-open on any non-access error: offline/transient must not block a load."""
+    repo = (base_repo or "").strip()
+    # Only a remote 'org/name' repo can be gated; a local base is already on disk.
+    if not repo or repo.count("/") != 1:
+        return
+    try:
+        if Path(repo).expanduser().exists():
+            return
+    except OSError:  # invalid path characters -> a remote id, not a local path
+        pass
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+    except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
+        return
+    try:
+        gated = getattr(HfApi().model_info(repo, token = hf_token), "gated", None)
+    except GatedRepoError:  # a gated repo can also withhold its metadata
+        raise ValueError(_repo_access_message(repo, gated = True)) from None
+    except RepositoryNotFoundError:
+        # 401/404 on the metadata itself. The size estimate swallows this and plans zero bytes, so
+        # without a raise here the pick downloads nothing and fails later with no explanation.
+        raise ValueError(_repo_access_message(repo, gated = False)) from None
+    except Exception:  # noqa: BLE001 — offline / transient: the download surfaces any real error
+        return
+    if not gated:
+        return
+    try:
+        hf_hub_download(repo, "model_index.json", token = hf_token, cache_dir = hub_cache_dir())
+    except GatedRepoError:
+        raise ValueError(_repo_access_message(repo, gated = True)) from None
+    except Exception:  # noqa: BLE001 — no manifest / offline / transient is not an access verdict
+        return
+
+
 @dataclass(frozen = True)
 class _LoadState:
     """Everything about the currently-loaded pipeline, swapped as one unit."""
@@ -564,6 +631,46 @@ def _install_gguf_prefix_strip(transformer_cls: Any, logger: Any) -> None:
         logger.warning("diffusion.gguf: prefix-strip shim not installed: %s", exc)
 
 
+def _uncached_prequant_repo(
+    fam: Optional[DiffusionFamily],
+    target: Any,
+    requested: Optional[str],
+    *,
+    base_repo: Optional[str],
+    prequant_path: Optional[str],
+) -> Optional[str]:
+    """The hosted pre-quant repo an AUTO-derived quant would have to DOWNLOAD for this pick, or
+    None when the shortcut costs no extra bytes (no hosted source, a local override, or the
+    checkpoint already sits in the cache).
+
+    On a GGUF pick the dense-quant fast path is taken because dense+torchao beats per-matmul
+    dequant, and the hosted checkpoint made it nearly free -- while those repos were unpublished.
+    Now that they resolve, an auto pick of ``unsloth/Z-Image-GGUF`` fetches the GGUF and then a
+    second 6.29 GB denoiser it uses instead, which is not what "auto" may spend on the user's
+    behalf. Shared by ``load_pipeline`` and ``_dense_quant_prefetch_needed`` so the load and the
+    download plan decline together.
+
+    Cheap (one refs read + stat) and never raises: an unanswerable probe returns None, keeping
+    today's behaviour."""
+    try:
+        scheme = select_transformer_quant_scheme(
+            target, requested, family = getattr(fam, "name", None)
+        )
+        if scheme is None:
+            return None
+        source = usable_prequant_source(
+            fam, scheme, path_override = prequant_path, base_repo = base_repo
+        )
+        # A local path override is the operator's own file, so it never downloads.
+        if source is None or source.kind != "repo":
+            return None
+        if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+            return None
+        return source.location
+    except Exception:  # noqa: BLE001 — a probe that cannot answer keeps the prequant shortcut
+        return None
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -637,10 +744,14 @@ class DiffusionBackend:
         "finalizing", after the previous pipeline was already evicted, where
         unload/cancellation cannot preempt the download. Mirrors the dense-path
         gates in ``load_pipeline``: quant requested and supported for this device,
-        and no pre-quantized checkpoint that would shortcut the dense build."""
+        and no pre-quantized checkpoint that would shortcut the dense build.
+
+        Callers only ask this for a ``kind == "gguf"`` pick, so the auto-quant rule below (an
+        uncached hosted pre-quant is declined) applies as written."""
         raw = kwargs.get("transformer_quant")
         # Unset defaults to the hardware ladder (mirrors load_pipeline's tri-state).
-        if raw is None or str(raw).strip().lower() in ("", "auto"):
+        auto = raw is None or str(raw).strip().lower() in ("", "auto")
+        if auto:
             mode = TQ_AUTO
         else:
             mode = normalize_transformer_quant(raw)
@@ -658,6 +769,22 @@ class DiffusionBackend:
             if mm is None and kwargs.get("cpu_offload"):
                 return False
             target = self._resolve_device_target(fam)
+            # The same decline load_pipeline makes: an auto quant whose hosted pre-quant is not
+            # cached keeps the GGUF, so the plan must not stage the transformer/ shards either --
+            # the load and the download have to agree on which denoiser this pick runs.
+            if (
+                auto
+                and not kwargs.get("loras")
+                and _uncached_prequant_repo(
+                    fam,
+                    target,
+                    mode,
+                    base_repo = kwargs.get("base_repo"),
+                    prequant_path = kwargs.get("transformer_prequant_path"),
+                )
+                is not None
+            ):
+                return False
             # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
             candidate = resolve_dense_quant_candidate(
                 fam = fam,
@@ -926,6 +1053,9 @@ class DiffusionBackend:
                 base = _resolve_base_repo(
                     kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
                 )
+            # Same preflight the plan runs: a gated base 401s on the first BYTE only, so catch it
+            # here rather than 15 GiB into the prefetch with a bare token error.
+            _assert_base_repo_accessible(base, kwargs.get("hf_token"))
             kwargs["base_repo"] = base
             # The pre-cast encoder replaces these weights, so skip their dense shards. Same resolver as the injection.
             te_prequant_files = self._te_prequant_plan_files(
@@ -1169,6 +1299,9 @@ class DiffusionBackend:
             base = repo_id  # the full pipeline IS the repo
         else:
             base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+        # A gated base answers model_info anonymously, so without this the plan below is confident
+        # and the 401 only lands once the manager is mid-download. The route maps ValueError -> 400.
+        _assert_base_repo_accessible(base, hf_token)
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
         te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
         sizes: dict[str, int] = {}
@@ -1179,8 +1312,11 @@ class DiffusionBackend:
             hf_token,
             kind = kind,
             single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
+            # With the RESOLVED base, as the load path passes it: a variant base picks its own
+            # pre-quant repo and size entry, so the caller's raw (often absent) one would have the
+            # plan answering a different question than the loader.
             include_transformer = kind == "gguf"
-            and self._dense_quant_prefetch_needed(fam, load_kwargs),
+            and self._dense_quant_prefetch_needed(fam, {**load_kwargs, "base_repo": base}),
             sizes_out = sizes,
             skip_te_components = tuple(te_files),
         )
@@ -1443,10 +1579,10 @@ class DiffusionBackend:
                 )
 
                 # Dtype tri-state: unset/"auto" -> hardware ladder; "none"/"off" pins GGUF-as-is; an explicit scheme pins it.
-                if transformer_quant is None or str(transformer_quant).strip().lower() in (
-                    "",
-                    "auto",
-                ):
+                transformer_quant_auto = transformer_quant is None or str(
+                    transformer_quant
+                ).strip().lower() in ("", "auto")
+                if transformer_quant_auto:
                     # An explicit Speed="off" stays GGUF-as-is: auto-quant would break the bit-exact request.
                     speed_off = (
                         speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
@@ -1457,17 +1593,39 @@ class DiffusionBackend:
                 pipe = None
                 transformer_quant_engaged = None
                 quant_plan = None
-                # The GGUF-size plan can mis-budget the fast path, so preflight the real footprint pre-eviction.
+                # The GGUF-size plan can mis-budget the fast path, so preflight the real footprint pre-eviction. Also set below when an auto quant refuses to download a hosted pre-quant.
                 dense_declined = False
                 # False when the plan only holds a PREQUANT-sized build: a failed prequant load must raise, not materialise the
                 # unbudgeted dense bf16 transformer. Also false when the prefetch skipped the base repo's transformer/ shards, since
                 # the fallback would pull them HERE, inside the load lock, after eviction, where unload cannot preempt it and
                 # progress already reported 100%.
                 dense_fallback_allowed = bool(_transformer_prefetched)
+                # The user picked a GGUF and left the scheme to us, so the hosted pre-quant is a free
+                # win only while its checkpoint is already cached: fetching it means downloading a
+                # SECOND multi-GB denoiser and never using the GGUF. Decline it and run what was
+                # picked. An explicit fp8/int8 request, a LoRA bake (dense by construction) and every
+                # non-GGUF kind keep today's behaviour, where the prequant IS the point.
+                if kind == "gguf" and transformer_quant_auto and not loras:
+                    uncached_prequant = _uncached_prequant_repo(
+                        fam,
+                        target,
+                        transformer_quant,
+                        base_repo = base,
+                        prequant_path = transformer_prequant_path,
+                    )
+                    if uncached_prequant is not None:
+                        logger.info(
+                            "diffusion.transformer_quant_declined: pre-quant checkpoint in %s is "
+                            "not cached (an auto quant never downloads a second transformer for a "
+                            "GGUF pick); loading the GGUF",
+                            uncached_prequant,
+                        )
+                        dense_declined = True
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
                     and dense_transformer_supported(target)
+                    and not dense_declined
                 ):
                     if plan.offload_policy != OFFLOAD_NONE:
                         # The GGUF plan picked offload but the quantised artifact is smaller, so re-plan: a resident quant build wins.

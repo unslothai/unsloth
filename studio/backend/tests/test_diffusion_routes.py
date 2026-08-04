@@ -1062,6 +1062,39 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert len(seen["loras"] or []) == 1
 
 
+def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
+    # A gated companion base answers model_info anonymously and only 401s on the first byte, so the planner
+    # raises ValueError for it. That has to reach the UI intact: the repo id and licence URL are the whole fix.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+    detail = (
+        "'black-forest-labs/FLUX.1-dev' is gated on Hugging Face and this model cannot be "
+        "downloaded without it. Accept its licence at "
+        "https://huggingface.co/black-forest-labs/FLUX.1-dev, then add a Hugging Face token "
+        "that has access in Studio settings and try again."
+    )
+
+    def _plan(model_path, **kwargs):
+        raise ValueError(detail)
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == detail
+
+
 def test_download_plan_uses_the_engine_the_load_will_pick(client, monkeypatch):
     # On a host with no usable GPU a GGUF pick routes to native sd.cpp, which reads single-file assets and never opens the base
     # repo's sharded components. Planning with diffusers there staged GB the load discards and pulled the rest inline.

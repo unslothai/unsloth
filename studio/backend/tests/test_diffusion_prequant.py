@@ -15,6 +15,8 @@ import contextlib
 import sys
 import types
 
+import pytest
+
 import core.inference.diffusion_prequant as pq
 from core.inference.diffusion_families import DiffusionFamily
 from core.inference.diffusion_prequant import (
@@ -716,3 +718,57 @@ def test_pin_kernel_preference_no_torchao(monkeypatch):
     sd = {"a.weight": _FakeFp8Weight(_FakeKernelPreference.AUTO)}
     assert pq._pin_kernel_preference(sd, logger = None) == 0
     assert sd["a.weight"].kernel_preference == _FakeKernelPreference.AUTO
+
+
+# ── local cache lookup (no network) ──────────────────────────────────────────────
+def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
+    # The loader asks this during memory planning, so it must be a pure lookup: no Hub call, no raise.
+    from core.inference.diffusion_prequant import prequant_checkpoint_cached
+
+    ckpt = tmp_path / "Z-Image-Turbo-FP8.pt"
+    ckpt.write_bytes(b"weights")
+    legacy = tmp_path / "transformer_fp8.pt"
+    legacy.write_bytes(b"weights")
+    source = PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+    asked: list = []
+
+    def _cache(repo_id, filename, cache_dir = None):
+        asked.append((repo_id, filename, cache_dir))
+        return str(tmp_path / filename) if (tmp_path / filename).is_file() else None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        lambda *a, **k: pytest.fail("the cache probe must never download"),
+    )
+
+    assert prequant_checkpoint_cached(source, cache_dir = "/models/hub") is True
+    # The live cache root is asked first; the model-name file resolves, so the legacy name is not needed.
+    assert asked == [("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt", "/models/hub")]
+
+    # Only the legacy name on disk still counts: _resolve_checkpoint_path falls back to it.
+    ckpt.unlink()
+    assert prequant_checkpoint_cached(source) is True
+    # Neither name cached -> this pick would have to download.
+    legacy.unlink()
+    assert prequant_checkpoint_cached(source) is False
+
+
+def test_prequant_checkpoint_cached_never_raises(monkeypatch):
+    # An unanswerable probe is "not cached", never an exception into the memory planner.
+    from core.inference.diffusion_prequant import prequant_checkpoint_cached
+
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("unreadable cache")),
+    )
+    source = PrequantSource(kind = "repo", location = "org/hosted-fp8", filename = "hosted-FP8.pt")
+    assert prequant_checkpoint_cached(source) is False
+    # A local path override is the operator's own file and never downloads, so it is not a cache question.
+    assert prequant_checkpoint_cached(PrequantSource(kind = "path", location = "/tmp/x.pt")) is False
+    assert prequant_checkpoint_cached(None) is False

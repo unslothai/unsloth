@@ -3322,6 +3322,139 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
 
 
+# ── an auto quant never buys a second denoiser for a GGUF pick ────────────────
+
+
+_HOSTED_PREQUANT = types.SimpleNamespace(
+    kind = "repo",
+    location = "unsloth/Z-Image-Turbo-FP8",
+    filename = "Z-Image-Turbo-FP8.pt",
+    fallback_filename = "transformer_fp8.pt",
+)
+
+
+def _stub_hosted_prequant(monkeypatch, *, cached: bool):
+    """Resolve the family's hosted fp8 checkpoint, present or absent from the local cache."""
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: _HOSTED_PREQUANT)
+    monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: cached)
+
+
+def _spy_dense_quant(monkeypatch):
+    """Record every dense/prequant fast-path build and keep it from running."""
+    calls: list = []
+
+    def _record(self, *a, **k):
+        calls.append(k.get("prequant_path"))
+        return None, None
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", _record)
+    return calls
+
+
+def test_auto_quant_declines_an_uncached_hosted_prequant(fake_runtime, tmp_path, monkeypatch):
+    # The reported bug: picking unsloth/Z-Image-GGUF downloaded the GGUF and THEN a 6.29 GB hosted fp8
+    # checkpoint that became the denoiser, so the GGUF was never used. Publishing those repos flipped a
+    # path that used to raise and fall back. Unasked-for, so an auto quant keeps the GGUF instead.
+    _stub_hosted_prequant(monkeypatch, cached = False)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+
+    assert calls == []  # the fast path never ran, so nothing fetched a second transformer
+    assert status["loaded"] is True
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"]  # the GGUF the user picked
+
+
+def test_auto_quant_takes_a_hosted_prequant_that_is_already_cached(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Where the shortcut is free it is still taken: dense+torchao beats per-matmul dequant, and a cached checkpoint costs no bytes.
+    _stub_hosted_prequant(monkeypatch, cached = True)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
+
+    assert len(calls) == 1
+
+
+def test_an_explicit_quant_request_still_downloads_the_hosted_prequant(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Only the AUTO-derived case is restricted: a user who asked for fp8 asked for the artifact that serves it.
+    _stub_hosted_prequant(monkeypatch, cached = False)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+
+    assert len(calls) == 1
+
+
+def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp_path, monkeypatch):
+    # A LoRA bake needs the DENSE transformer (adapters attach before quantize_), so it never took the prequant shortcut and must not be declined here -- the GGUF fallback cannot carry the adapters.
+    _stub_hosted_prequant(monkeypatch, cached = False)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    with pytest.raises(RuntimeError, match = "LoRA"):
+        backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            loras = [("adapter", 1.0)],
+        )
+
+    assert len(calls) == 1
+
+
+def test_dense_quant_prefetch_declines_with_the_load(fake_runtime, monkeypatch):
+    # The plan has to make the SAME call as the loader: a declined prequant means the GGUF runs, so the
+    # prefetch must not widen to the base transformer/ shards the dense build would have needed.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    fam = detect_family("unsloth/Z-Image-GGUF")
+    consulted: list = []
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: consulted.append(kw) or types.SimpleNamespace(prequant = True),
+    )
+
+    _stub_hosted_prequant(monkeypatch, cached = False)
+    assert backend._dense_quant_prefetch_needed(fam, {}) is False
+    # Declined on the cache verdict alone, BEFORE any candidate sizing: the plan cannot drift from the load.
+    assert consulted == []
+    # Cached, or an explicit request: the candidate decides as before (a prequant build needs no shards either).
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
+    _stub_hosted_prequant(monkeypatch, cached = True)
+    assert backend._dense_quant_prefetch_needed(fam, {}) is False
+    assert len(consulted) == 2
+
+
 def test_diffusion_status_response_carries_resolved():
     # The backend records per-control auto-policy provenance on state.resolved, so the response model must declare the field or Pydantic drops it.
     from models.inference import DiffusionStatusResponse
@@ -3958,6 +4091,56 @@ def test_download_plan_keeps_the_dense_encoder_when_the_precast_repo_is_unavaila
     base = next(e for e in plan["entries"] if e["repo_id"] == "black-forest-labs/FLUX.1-dev")
     assert "text_encoder/model.safetensors" in base["files"]
     assert not any(e["repo_id"] == "unsloth/does-not-exist" for e in plan["entries"])
+
+
+_ZIMAGE_BASE_SIBLINGS = [
+    _FakeSibling("model_index.json", 1000),
+    _FakeSibling("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 12 * GB),
+    _FakeSibling("text_encoder/model.safetensors", 8 * GB),
+    _FakeSibling("vae/diffusion_pytorch_model.safetensors", 300),
+]
+
+
+def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkeypatch):
+    # The plan drives the download manager, so it must agree with the load: a declined prequant means the
+    # GGUF is the denoiser, so neither its .pt nor the base transformer/ shards the dense build wanted are staged.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
+            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+    _stub_hosted_prequant(monkeypatch, cached = False)
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf"
+    )
+
+    assert [e["repo_id"] for e in plan["entries"]] == [
+        "unsloth/Z-Image-GGUF",
+        "Tongyi-MAI/Z-Image-Turbo",
+    ]
+    checkpoint, base = plan["entries"]
+    assert checkpoint["files"] == ["Z-Image-Turbo-Q4_K_M.gguf"]
+    # No hosted checkpoint and no dense shards: the companions are all the base repo owes this pick.
+    assert not any(f.endswith(".pt") for e in plan["entries"] for f in e["files"])
+    assert not any(f.startswith("transformer/") for f in base["files"])
+    assert "text_encoder/model.safetensors" in base["files"]
+    assert plan["total_bytes"] == 4 * GB + base["bytes"] < 17 * GB
+
+
+def test_download_plan_for_a_pipeline_kind_ignores_the_prequant_cache(monkeypatch):
+    # Only a GGUF pick is restricted: a full-pipeline load has no second denoiser to confuse: its transformer IS the repo's.
+    _fake_hf_api(monkeypatch, {"unsloth/some-pipeline": _ZIMAGE_BASE_SIBLINGS})
+    _stub_hosted_prequant(monkeypatch, cached = False)
+
+    plan = DiffusionBackend().download_plan("unsloth/some-pipeline", model_kind = "pipeline")
+
+    assert any(f.startswith("transformer/") for f in plan["entries"][0]["files"])
 
 
 # ── teardown fence ────────────────────────────────────────────────────────────
