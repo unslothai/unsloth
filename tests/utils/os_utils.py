@@ -119,6 +119,17 @@ def require_python_package(
         pip_name = package_name
 
     if importlib.util.find_spec(import_name) is None:
+        # Every caller is a test module calling this at import time, so under
+        # pytest sys.exit(1) does not skip one module -- SystemExit escapes
+        # collection and ends the whole session with no report. Outside pytest
+        # the exit is unchanged, since standalone scripts use these helpers too.
+        _pytest = sys.modules.get("pytest")
+        if _pytest is not None:
+            _pytest.skip(
+                f"requires the '{package_name}' package "
+                f"(pip install {pip_name})",
+                allow_module_level = True,
+            )
         print(f"❌ Error: Python package '{package_name}' is not installed")
         print(f"\nPlease install {package_name} using pip:")
         print(f"  pip install {pip_name}")

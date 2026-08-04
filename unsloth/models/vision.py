@@ -1054,6 +1054,10 @@ class FastBaseModel:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
+        # Record whether float32 was ASKED for, as opposed to arrived at by upcasting.
+        # Only an explicit request may suppress the float16 autocast that full
+        # finetuning relies on for V100/T4 (see rl.py, issue #4082).
+        os.environ["UNSLOTH_USER_FLOAT32"] = "1" if dtype == torch.float32 else "0"
 
         bnb_compute_dtype = dtype
         do_forced_float32 = False
@@ -1230,6 +1234,10 @@ class FastBaseModel:
                         "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
                     )
                     os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
+            elif dtype == torch.float32:
+                print(
+                    "Unsloth: Using float32 full finetuning."
+                )
             else:
                 print(
                     "Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32."

@@ -1233,6 +1233,10 @@ class FastModel(FastBaseModel):
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
+        # Record whether float32 was ASKED for, as opposed to arrived at by upcasting.
+        # Only an explicit request may suppress the float16 autocast that full
+        # finetuning relies on for V100/T4 (see rl.py, issue #4082).
+        os.environ["UNSLOTH_USER_FLOAT32"] = "1" if dtype == torch.float32 else "0"
         assert load_in_fp8 in (True, False, "block")
 
         patch_compiled_autograd()

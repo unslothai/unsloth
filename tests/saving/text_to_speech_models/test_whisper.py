@@ -141,7 +141,15 @@ try:
         f.write(response.content)
     print("✅ Audio file downloaded successfully!")
 except Exception as e:
-    assert False, f"Failed to download audio file: {e}"
+    # This runs at module import, so `assert False` is a collection error and
+    # the whole file reports no results. Wikimedia rate-limits and this URL has
+    # answered 429 in a batch run; a fixture we could not fetch says nothing
+    # about unsloth, so skip rather than fail.
+    import pytest as _pytest
+    _pytest.skip(
+        f"could not download the test audio fixture from {audio_url}: {e}",
+        allow_module_level = True,
+    )
 
 print(f"\n{'='*80}")
 print("🔍 SECTION 7: Running Inference")
