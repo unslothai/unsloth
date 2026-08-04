@@ -55,6 +55,13 @@ _QUIET_POLL_PATHS = {
     "/api/models/download-progress",
     "/api/models/gguf-download-progress",
     "/api/datasets/download-progress",
+    # Image/video generation is fire-and-forget: the POST returns at once and the terminal
+    # outcome only reaches the UI through these polls, so keep a "still generating" pulse
+    # instead of dropping them. The Image/Video tabs poll every 300ms while a job runs.
+    "/api/inference/images/generate-progress",
+    "/api/inference/video/generate-progress",
+    # Diffusion training status, polled every 1.5s while the train panel or dialog is open.
+    "/api/train/diffusion/status",
 }
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
@@ -81,6 +88,10 @@ _EXCLUDED_SUFFIXES = (
 # events; the legacy /api/models and /api/datasets ones heartbeat via _QUIET_POLL_PATHS.
 _QUIET_SUCCESS_PATHS = {
     "/api/inference/load-progress",
+    # Same poll as above for the image/video engines; the load phases are already logged
+    # by diffusion.loaded / video.loaded.
+    "/api/inference/images/load-progress",
+    "/api/inference/video/load-progress",
     "/api/llama/update-status",
     "/api/export/logs",
     "/api/export/status",

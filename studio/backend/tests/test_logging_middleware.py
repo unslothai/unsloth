@@ -357,3 +357,61 @@ def test_legacy_download_progress_heartbeats_not_suppressed(logs, monkeypatch):
     for _ in range(3):
         _run(mw(_http_scope("/api/models/download-progress"), _noop_receive, _drop))
     assert _paths_logged(logs) == ["/api/models/download-progress"]
+
+
+def test_generation_progress_polls_heartbeat(logs, monkeypatch):
+    # The Image/Video tabs poll generate-progress every 300ms, which outran the base
+    # dedup window, so a single clip filled the log. They heartbeat like the legacy
+    # download polls: first hit logs, the rest of the burst collapses.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+    for path in (
+        "/api/inference/images/generate-progress",
+        "/api/inference/video/generate-progress",
+        "/api/train/diffusion/status",
+    ):
+        mw = LoggingMiddleware(_status_app(200))
+        for _ in range(5):
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+        assert _paths_logged(logs) == [path]
+        logs.events.clear()
+
+
+def test_generation_progress_errors_still_log(logs, monkeypatch):
+    # A failing poll must stay visible: heartbeat dedup is GET/2xx only.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+    mw = LoggingMiddleware(_status_app(500))
+    for _ in range(3):
+        _run(mw(_http_scope("/api/inference/images/generate-progress"), _noop_receive, _drop))
+    assert _paths_logged(logs) == ["/api/inference/images/generate-progress"] * 3
+
+
+def test_image_video_load_progress_suppressed_errors_logged(logs):
+    # The per-engine load polls mirror /api/inference/load-progress: the 2xx is dropped
+    # (diffusion.loaded / video.loaded carry the phases), the failure is not.
+    for path in ("/api/inference/images/load-progress", "/api/inference/video/load-progress"):
+        _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
+    assert logs.events == []
+    _run(
+        LoggingMiddleware(_status_app(503))(
+            _http_scope("/api/inference/images/load-progress"), _noop_receive, _drop
+        )
+    )
+    assert _paths_logged(logs) == ["/api/inference/images/load-progress"]
+
+
+def test_unrelated_image_routes_still_log(logs, monkeypatch):
+    # Only the timer-polled paths are quieted; the tabs' event-driven reads are untouched.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    for path in (
+        "/api/inference/images/status",
+        "/api/inference/images/info",
+        "/api/inference/video/status",
+    ):
+        _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
+    assert _paths_logged(logs) == [
+        "/api/inference/images/status",
+        "/api/inference/images/info",
+        "/api/inference/video/status",
+    ]
