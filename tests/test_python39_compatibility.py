@@ -111,27 +111,70 @@ def evaluated_annotations(tree):
                 out.append(child.annotation)
             elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 out.extend(signature_annotations(child))
-            nested = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
-            walk(child, in_function or nested)
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                walk(child, True)
+            elif isinstance(child, ast.ClassDef):
+                walk(child, False)   # a class body is class scope wherever it sits
+            else:
+                walk(child, in_function)
 
     walk(tree, False)
     return out
 
 
-def looks_like_a_type(node):
-    """Conservative: enough for ``str | Path``, not enough for ``re.A | re.M``.
+# A `|` between these is a union, not arithmetic: builtin types, `None`, and whatever the
+# module pulled in from typing.
+TYPE_ANCHORS = frozenset({
+    "str", "int", "float", "bool", "bytes", "bytearray", "complex", "object", "type",
+    "list", "dict", "tuple", "set", "frozenset",
+})
+TYPING_MODULES = frozenset({"typing", "typing_extensions", "collections.abc"})
 
-    Flag constants are ALL_CAPS by convention, so requiring a non-caps name keeps bitwise
-    arithmetic (``re.DOTALL | re.MULTILINE``, ``os.W_OK | os.X_OK``) out.
-    """
-    if isinstance(node, ast.Constant):
-        return node.value is None
-    if isinstance(node, ast.Subscript):
-        return looks_like_a_type(node.value)
+
+def typing_names(tree):
+    """Names this module bound with ``from typing import X`` and friends."""
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module in TYPING_MODULES
+        for alias in node.names
+    }
+
+
+def union_operands(node):
+    """Operands of an ``A | B | C`` chain, or None if any part is not name-shaped."""
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return looks_like_a_type(node.left) and looks_like_a_type(node.right)
-    name = getattr(node, "id", None) or getattr(node, "attr", None)
-    return bool(name) and not name.isupper()
+        left, right = union_operands(node.left), union_operands(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.Subscript):
+        return union_operands(node.value)
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        return [node]
+    if isinstance(node, ast.Constant) and (node.value is None or isinstance(node.value, str)):
+        return [node]
+    return None
+
+
+def looks_like_a_type_alias(node, known_typing_names):
+    """``PathLike = str | Path`` yes; ``defaults | extra`` and ``re.A | re.M`` no.
+
+    Every operand must be name-shaped and at least one must be a recognisable type.
+    Without that anchor a ``|`` between plain names is far more likely to be a dict merge
+    (PEP 584, valid on 3.9), a set union or flag arithmetic, and failing the gate on those
+    would block code that runs perfectly well on the floor.
+    """
+    operands = union_operands(node)
+    if not operands:
+        return False
+    for operand in operands:
+        if isinstance(operand, ast.Constant):
+            if operand.value is None:
+                return True
+            continue  # a bare string is a forward reference, never an anchor alone
+        name = operand.id if isinstance(operand, ast.Name) else operand.attr
+        if name in TYPE_ANCHORS or name in known_typing_names:
+            return True
+    return False
 
 
 def evaluated_values(tree):
@@ -211,6 +254,7 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
     for path in package_files():
         tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
         where = path.relative_to(REPO_ROOT)
+        known_typing_names = typing_names(tree)
         # The future import defers annotations only; an assigned value still runs.
         deferred = has_future_annotations(tree)
         for expression in [] if deferred else evaluated_annotations(tree):
@@ -222,7 +266,7 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
                 if (
                     isinstance(inner, ast.BinOp)
                     and isinstance(inner.op, ast.BitOr)
-                    and looks_like_a_type(inner)
+                    and looks_like_a_type_alias(inner, known_typing_names)
                 ):
                     offenders.append(f"{where}:{inner.lineno}: {ast.unparse(inner)} (type alias)")
     assert not offenders, (
