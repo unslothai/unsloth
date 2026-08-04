@@ -3286,7 +3286,7 @@ export function ChatPage({
                 <HugeiconsIcon
                   icon={PencilEdit02Icon}
                   strokeWidth={1.75}
-                  className="mb-1 size-icon"
+                  className="size-icon"
                 />
               </Button>
             )}
