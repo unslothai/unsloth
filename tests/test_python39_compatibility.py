@@ -25,7 +25,7 @@ PACKAGE_ROOT = REPO_ROOT / "unsloth"
 
 def declared_floor():
     """The ``>=X.Y`` in requires-python, as a tuple for ast.parse(feature_version=)."""
-    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8")
     match = re.search(r"^requires-python\s*=\s*[\"']([^\"']+)[\"']", text, re.M)
     assert match, "no requires-python in pyproject.toml"
     floor = re.search(r">=\s*(\d+)\.(\d+)", match.group(1))
@@ -46,18 +46,23 @@ def annotations_of(node):
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return []
     args = node.args
-    out = [a.annotation for a in
-           [*args.args, *args.kwonlyargs, *args.posonlyargs, args.vararg, args.kwarg]
-           if a is not None and a.annotation is not None]
+    out = [
+        a.annotation
+        for a in [*args.args, *args.kwonlyargs, *args.posonlyargs, args.vararg, args.kwarg]
+        if a is not None and a.annotation is not None
+    ]
     if node.returns:
         out.append(node.returns)
     return out
 
 
 def has_future_annotations(tree):
-    return any(isinstance(n, ast.ImportFrom) and n.module == "__future__"
-               and any(alias.name == "annotations" for alias in n.names)
-               for n in tree.body)
+    return any(
+        isinstance(n, ast.ImportFrom)
+        and n.module == "__future__"
+        and any(alias.name == "annotations" for alias in n.names)
+        for n in tree.body
+    )
 
 
 def test_every_module_parses_on_the_declared_floor():
@@ -65,8 +70,7 @@ def test_every_module_parses_on_the_declared_floor():
     broken = []
     for path in package_files():
         try:
-            ast.parse(path.read_text(encoding="utf-8"), filename=str(path),
-                      feature_version=floor)
+            ast.parse(path.read_text(encoding = "utf-8"), filename = str(path), feature_version = floor)
         except SyntaxError as error:
             broken.append(f"{path.relative_to(REPO_ROOT)}:{error.lineno}: {error.msg}")
     assert not broken, (
@@ -82,7 +86,7 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
         pytest.skip("floor is 3.10+, PEP 604 evaluates fine")
     offenders = []
     for path in package_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
         if has_future_annotations(tree):
             continue
         for node in ast.walk(tree):
