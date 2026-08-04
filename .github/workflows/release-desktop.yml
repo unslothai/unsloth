@@ -814,6 +814,26 @@ jobs:
             "$dmg_path"
 
       # ── Windows: build + sign ──
+      # install.ps1 is a bundle resource the bundler never signs, yet the app
+      # runs it first. Sign before the build packs it in; the signature is an
+      # appended comment block, so the repo copy for `irm ... | iex` is unaffected.
+      - name: Sign the bundled install script
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+        run: |
+          $script = (Resolve-Path 'install.ps1').Path
+          studio/src-tauri/windows/sign-with-trusted-signing.ps1 -Path $script
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not sign install.ps1 (exit $LASTEXITCODE)"; exit 1 }
+          $sig = Get-AuthenticodeSignature $script
+          Write-Host "install.ps1 -> $($sig.Status) $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { Write-Host "::error::install.ps1 is $($sig.Status) after signing"; exit 1 }
+
       - name: Build Windows app
         id: build_windows
         if: matrix.platform == 'windows-latest'
@@ -1028,6 +1048,19 @@ jobs:
           if-no-files-found: ignore
           compression-level: 0
           retention-days: 7
+
+      # ── Windows: every executable in the bundle must be signed ──
+      # NSIS runs its plugin DLLs from $PLUGINSDIR; signing the installer misses them.
+      - name: Verify every executable in the Windows bundles is signed
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
+        run: |
+          $paths = @($env:ARTIFACT_PATHS | ConvertFrom-Json) |
+                   Where-Object { $_ -like '*-setup.exe' }
+          if (-not $paths) { Write-Host '::error::no Windows installer to verify'; exit 1 }
+          .github/scripts/assert-bundle-signed.ps1 -Path $paths
 
       # ── Windows: assemble a Microsoft false-positive submission packet ──
       # The WDSI portal is a web form with no API, so this cannot be automated,

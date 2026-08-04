@@ -23,6 +23,12 @@ ManifestDPIAwareness PerMonitorV2
   SetCompressor /SOLID "{{compression}}"
 !endif
 
+; Signed NSIS plugins. tauri-bundler signs a copy and exports NSISPLUGINS, but no
+; template consumes it, so only nsis_tauri_utils.dll ships signed and the rest
+; (NSISdl/System/StartMenu/nsDialogs) run unsigned from $PLUGINSDIR, tripping AV.
+; Must precede any plugin use; a missing directory is a silent no-op.
+!addplugindir "$%NSISPLUGINS%\x86-unicode"
+
 !include MUI2.nsh
 !include FileFunc.nsh
 !include x64.nsh
@@ -94,6 +100,11 @@ InstallDir "${PLACEHOLDER_INSTALL_DIR}"
 VIProductVersion "${VERSIONWITHBUILD}"
 VIAddVersionKey "ProductName" "${PRODUCTNAME}"
 VIAddVersionKey "FileDescription" "${PRODUCTNAME}"
+; Not in upstream's template. ${MANUFACTURER} is bundle.publisher, already written
+; as the Add/Remove Programs Publisher, so these cannot be empty or disagree with
+; it. An installer with no CompanyName reads as unattributed to reputation checks.
+VIAddVersionKey "CompanyName" "${MANUFACTURER}"
+VIAddVersionKey "InternalName" "${INSTALLIDENTITY}"
 VIAddVersionKey "LegalCopyright" "${COPYRIGHT}"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
