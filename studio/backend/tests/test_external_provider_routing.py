@@ -109,8 +109,7 @@ def test_saved_provider_owns_routing_and_keeps_unrelated_hosted_tools(monkeypatc
         "api_key": "",
     }
     assert captured["loop"]["tools"] == [TOOL_SCHEMA]
-    assert captured["loop"]["provider_enabled_tools"] == [
-        "web_fetch",
-        "image_generation",
-    ]
-    assert any("[DONE]" in (chunk.decode() if isinstance(chunk, bytes) else chunk) for chunk in chunks)
+    assert captured["loop"]["provider_enabled_tools"] == ["web_fetch", "image_generation"]
+    assert any(
+        "[DONE]" in (chunk.decode() if isinstance(chunk, bytes) else chunk) for chunk in chunks
+    )

@@ -97,9 +97,7 @@ def _merge_tool_call_delta(
 
 
 def _collect_round_delta(
-    payload: object,
-    tool_calls: dict[int, dict[str, Any]],
-    assistant_text: list[str],
+    payload: object, tool_calls: dict[int, dict[str, Any]], assistant_text: list[str]
 ) -> None:
     if not isinstance(payload, Mapping):
         return
@@ -319,16 +317,12 @@ async def stream_external_chat_with_tools(
                 continue
 
             needs_confirm = (
-                bool(confirm_tool_calls)
-                and not bypass_permissions
-                and permission_mode != "off"
+                bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
             )
             if needs_confirm and permission_mode == "auto":
                 needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
             approval_id = new_approval_id() if needs_confirm else ""
-            decision_slot = (
-                begin_tool_decision(session_id, approval_id) if needs_confirm else None
-            )
+            decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm
@@ -402,9 +396,7 @@ async def stream_external_chat_with_tools(
             )
             try:
                 while True:
-                    next_task = asyncio.create_task(
-                        asyncio.to_thread(_next_sync, tool_stream)
-                    )
+                    next_task = asyncio.create_task(asyncio.to_thread(_next_sync, tool_stream))
                     try:
                         finished, event_or_result = await asyncio.shield(next_task)
                     except asyncio.CancelledError:
@@ -443,4 +435,3 @@ async def stream_external_chat_with_tools(
             tool_controller = ToolLoopController(tools = [])
             final_pass = True
         next_tool_choice = "auto"
-

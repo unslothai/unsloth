@@ -8978,8 +8978,7 @@ async def _proxy_to_external_provider(
     _external_tools_on = payload.enable_tools is True and _external_tool_policy is not False
     _external_mcp_allowed = bool(payload.mcp_enabled) and _external_tool_policy is not False
     _external_tool_choice_disabled = (
-        isinstance(payload.tool_choice, str)
-        and payload.tool_choice.strip().lower() == "none"
+        isinstance(payload.tool_choice, str) and payload.tool_choice.strip().lower() == "none"
     )
     _external_studio_tool_intent = (
         studio_tool_execution

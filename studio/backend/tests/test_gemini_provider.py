@@ -5068,8 +5068,7 @@ def test_anthropic_stream_translates_parallel_client_tool_uses(monkeypatch):
         (0, "tu_a", {"name": "first", "arguments": '{"a":1}'}),
     ]
     assert any(
-        payload.get("choices")
-        and payload["choices"][0].get("finish_reason") == "tool_calls"
+        payload.get("choices") and payload["choices"][0].get("finish_reason") == "tool_calls"
         for payload in payloads
     )
     assert lines[-1] == "data: [DONE]"

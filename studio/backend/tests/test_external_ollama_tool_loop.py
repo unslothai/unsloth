@@ -27,7 +27,12 @@ TOOL_SCHEMA = {
 }
 
 
-def _chunk(*, delta=None, finish_reason=None, usage=None):
+def _chunk(
+    *,
+    delta = None,
+    finish_reason = None,
+    usage = None,
+):
     payload = {
         "id": "chatcmpl-ollama",
         "object": "chat.completion.chunk",
@@ -39,11 +44,11 @@ def _chunk(*, delta=None, finish_reason=None, usage=None):
     return "data: " + json.dumps(payload)
 
 
-def _tool_round(arguments='{"query":"Cairo weather"}'):
+def _tool_round(arguments = '{"query":"Cairo weather"}'):
     split = max(1, len(arguments) // 2)
     return [
         _chunk(
-            delta={
+            delta = {
                 "tool_calls": [
                     {
                         "index": 0,
@@ -58,7 +63,7 @@ def _tool_round(arguments='{"query":"Cairo weather"}'):
             }
         ),
         _chunk(
-            delta={
+            delta = {
                 "tool_calls": [
                     {
                         "index": 0,
@@ -67,8 +72,8 @@ def _tool_round(arguments='{"query":"Cairo weather"}'):
                 ]
             }
         ),
-        _chunk(delta={}, finish_reason="tool_calls"),
-        _chunk(usage={"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}),
+        _chunk(delta = {}, finish_reason = "tool_calls"),
+        _chunk(usage = {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}),
         "data: [DONE]",
     ]
 
@@ -108,8 +113,8 @@ def test_ollama_tool_call_executes_and_continues(monkeypatch):
         [
             _tool_round(),
             [
-                _chunk(delta={"content": "It is 24 C and sunny."}),
-                _chunk(delta={}, finish_reason="stop"),
+                _chunk(delta = {"content": "It is 24 C and sunny."}),
+                _chunk(delta = {}, finish_reason = "stop"),
                 "data: [DONE]",
             ],
         ]
@@ -145,7 +150,7 @@ def test_tool_failure_becomes_a_tool_result_and_does_not_break_stream(monkeypatc
     client = _FakeClient(
         [
             _tool_round(),
-            [_chunk(delta={"content": "I could not run the search."}), "data: [DONE]"],
+            [_chunk(delta = {"content": "I could not run the search."}), "data: [DONE]"],
         ]
     )
 
@@ -161,7 +166,7 @@ def test_budget_final_pass_cannot_loop_on_nonconforming_provider(monkeypatch):
     monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
     client = _FakeClient([_tool_round(), _tool_round('{"query":"again"}')])
 
-    output = asyncio.run(_collect(client, max_tool_iterations=1))
+    output = asyncio.run(_collect(client, max_tool_iterations = 1))
 
     assert len(client.calls) == 2
     assert client.calls[1]["tools"] is None
@@ -226,4 +231,3 @@ def test_cancel_interrupts_a_silent_provider_stream():
         await stream.aclose()
 
     asyncio.run(run())
-

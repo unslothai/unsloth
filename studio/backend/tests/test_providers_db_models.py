@@ -75,9 +75,7 @@ def test_update_provider_models(isolated_providers_db: Path):
     assert row["studio_tool_execution"] == 0
 
 
-def test_schema_migration_disables_tools_for_existing_connections(
-    isolated_providers_db: Path,
-):
+def test_schema_migration_disables_tools_for_existing_connections(isolated_providers_db: Path):
     conn = sqlite3.connect(str(isolated_providers_db))
     conn.execute(
         """
