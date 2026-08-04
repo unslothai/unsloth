@@ -236,6 +236,17 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     checkpoint_path = cmd["checkpoint_path"]
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
+    # Latest-sidecar checkpoints load 16-bit here too: bnb 4-bit feeds quantized
+    # expert weights into unvalidated paths (same flip as the chat worker).
+    if load_in_4bit:
+        from utils.transformers_version import latest_tier_active_for
+        if latest_tier_active_for(checkpoint_path, cmd.get("hf_token")):
+            load_in_4bit = False
+            logger.info(
+                "Latest-transformers sidecar active for %s - forcing a 16-bit "
+                "export load (4-bit is disabled for brand-new architectures)",
+                checkpoint_path,
+            )
     trust_remote_code = cmd.get("trust_remote_code", False)
 
     # Auto-enable trust_remote_code for NemotronH/Nano models.
@@ -387,6 +398,19 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
     # orchestrator spawns a fresh subprocess per checkpoint load, resetting it.
     _log_forward_gate.set()
 
+    # Phase milestone so the heavy export step shows in the server log; the
+    # merge/save/convert itself only forwards stdout to the live panel.
+    _phase = {
+        "merged": f"Exporting merged model ({cmd.get('format_type', '16-bit (FP16)')})...",
+        "gguf": f"Exporting GGUF ({cmd.get('quantization_method', 'Q4_K_M')})...",
+        "lora": "Exporting LoRA adapter...",
+        "base": "Exporting base model...",
+    }.get(export_type, f"Exporting ({export_type})...")
+    _send_response(
+        resp_queue,
+        {"type": "status", "message": _phase, "ts": time.time()},
+    )
+
     output_path: Any = None
     try:
         if export_type == "merged":
@@ -397,6 +421,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
+                compressed_method = cmd.get("compressed_method"),
             )
         elif export_type == "base":
             success, message, output_path = backend.export_base_model(
@@ -423,6 +448,8 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
+                gguf = cmd.get("gguf", False),
+                gguf_outtype = cmd.get("gguf_outtype", "q8_0"),
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"

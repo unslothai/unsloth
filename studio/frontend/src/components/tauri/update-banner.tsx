@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
 import type {
   DesktopUpdatePolicyMode,
   RetainedUpdateFailure,
@@ -22,6 +23,8 @@ interface UpdateBannerProps {
   isExternalServer?: boolean;
   updatePolicyMode: DesktopUpdatePolicyMode;
   manualReleaseUrl: string | null;
+  // Release page for this version, preferred over the generic changelog.
+  releasePageUrl?: string | null;
   // false fills a shared overlay stack; true self-anchors.
   positioned?: boolean;
   onInstall: () => void;
@@ -30,6 +33,7 @@ interface UpdateBannerProps {
 }
 
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
+const LEADING_V = /^v/;
 
 function formatVersion(version: string | null | undefined): string {
   if (!version) return "";
@@ -44,6 +48,7 @@ export function UpdateBanner({
   isExternalServer = false,
   updatePolicyMode,
   manualReleaseUrl,
+  releasePageUrl = null,
   positioned = true,
   onInstall,
   onDismiss,
@@ -52,6 +57,8 @@ export function UpdateBanner({
   const [copying, setCopying] = useState(false);
   const [manualReport, setManualReport] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState<string | null>(null);
+  // Version whose notes are expanded; a new offer collapses the panel.
+  const [notesVersion, setNotesVersion] = useState<string | null>(null);
   const showFailure = Boolean(lastFailure) && !dismissed;
   const showAvailable = status === "available" && !dismissed && !showFailure;
   const show = showFailure || (showAvailable && Boolean(info));
@@ -62,6 +69,11 @@ export function UpdateBanner({
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
   const Icon = showFailure ? CircleAlert : Download;
+  // Keyed by the backend release, not the app's SemVer; headings drop the v.
+  const notesTargetVersion =
+    (info?.pypiVersion ?? info?.version)?.replace(LEADING_V, "") ?? null;
+  const notesOpen =
+    notesTargetVersion !== null && notesVersion === notesTargetVersion;
 
   async function handleCopyDiagnostics() {
     setCopying(true);
@@ -94,13 +106,14 @@ export function UpdateBanner({
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
+            // Wider than the other overlays: notes preview plus three buttons.
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[400px]"
-              : "pointer-events-auto w-full",
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
+              : "pointer-events-auto flex min-h-0 w-[calc(100vw-2rem)] max-w-[448px] flex-col",
           )}
           data-testid="tauri-update-banner"
         >
-          <div className="relative overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             <button
               type="button"
               onClick={onDismiss}
@@ -142,7 +155,7 @@ export function UpdateBanner({
                     </span>
                   </p>
                 )}
-                <p className="mt-1 text-[11px] text-muted-foreground/70">
+                <p className="mt-1 text-ui-11 text-muted-foreground/70">
                   {showFailure
                     ? "Backend recovered. Diagnostics are still available."
                     : isManualLinuxPackage
@@ -160,13 +173,46 @@ export function UpdateBanner({
               </p>
             )}
 
-            <div className="mt-4 flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
+            {!showFailure && notesTargetVersion ? (
+              <ReleaseNotesPanel
+                version={notesTargetVersion}
+                open={notesOpen}
+                // Used only if CHANGELOG.md has no section for this version.
+                fallbackMarkdown={info?.body ?? null}
+                className="min-h-0 flex-1"
+                releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}
+              />
+            ) : null}
+
+            <div
+              className={cn(
+                "mt-4 flex flex-wrap items-center gap-x-1 gap-y-2",
+                !showFailure && notesTargetVersion
+                  ? "justify-between"
+                  : "justify-end",
+              )}
+            >
+              {!showFailure && notesTargetVersion ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  // same type size as the action buttons
+                  className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                  onClick={() =>
+                    setNotesVersion(notesOpen ? null : notesTargetVersion)
+                  }
+                  aria-expanded={notesOpen}
+                  data-testid="tauri-update-release-notes-toggle"
+                >
+                  {notesOpen ? "Hide release notes" : "Show release notes"}
+                </Button>
+              ) : null}
               {showFailure ? (
                 <>
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                    className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={() => {
                       handleCopyDiagnostics().catch(console.error);
                     }}
@@ -176,39 +222,42 @@ export function UpdateBanner({
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                    className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
                     Later
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                   >
-                    {isManualLinuxPackage ? "Open release page" : "Retry update"}
+                    {isManualLinuxPackage
+                      ? "Open release page"
+                      : "Retry update"}
                   </Button>
                 </>
               ) : (
-                <>
+                // wrap + right-align so the action pair stays together
+                <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                    className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
                     Remind me later
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+                    className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                   >
                     {isManualLinuxPackage ? "Open release page" : "Update"}
                   </Button>
-                </>
+                </div>
               )}
             </div>
             {manualMessage && (
@@ -219,7 +268,7 @@ export function UpdateBanner({
                 readOnly={true}
                 value={manualReport}
                 onFocus={(event) => event.currentTarget.select()}
-                className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground"
+                className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
               />
             )}
           </div>

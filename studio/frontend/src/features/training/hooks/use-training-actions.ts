@@ -2,10 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { useCallback } from "react";
 import { toast } from "@/lib/toast";
-import { checkDatasetFormat } from "../api/datasets-api";
+import { checkDatasetFormat, DatasetFormatError } from "../api/datasets-api";
 import { emitTrainingRunsChanged } from "../events";
 import { getTrainingRun } from "../api/history-api";
 import { buildTrainingStartPayload } from "../api/mappers";
@@ -14,7 +15,7 @@ import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
-import { useTrainingConfigStore } from "../stores/training-config-store";
+import { clearDeletedDataset, useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
@@ -43,7 +44,7 @@ export function useTrainingActions() {
   const startError = useTrainingRuntimeStore((state) => state.startError);
 
   const startTrainingRun = useCallback(async (): Promise<boolean> => {
-    const config = useTrainingConfigStore.getState();
+    let config = useTrainingConfigStore.getState();
     const runtimeStore = useTrainingRuntimeStore.getState();
     const dialogStore = useDatasetPreviewDialogStore.getState();
 
@@ -52,6 +53,13 @@ export function useTrainingActions() {
     if (!validation.ok) {
       runtimeStore.setStartError(validation.message);
       return false;
+    }
+
+    const preparedToken = await prepareHfTokenForUse(config.hfToken);
+    if (!preparedToken.proceed) return false;
+    if ((preparedToken.token ?? "") !== config.hfToken) {
+      config.setHfToken(preparedToken.token ?? "");
+      config = useTrainingConfigStore.getState();
     }
 
     primeNativeNotificationPermission().catch(() => undefined);
@@ -174,6 +182,10 @@ export function useTrainingActions() {
       await syncTrainingRuntimeFromBackend();
       return true;
     } catch (error) {
+      // A dataset deleted since the last check must not stay startable.
+      if (error instanceof DatasetFormatError && error.status === 404) {
+        clearDeletedDataset(getDatasetName(config) ?? "");
+      }
       const rawMessage =
         error instanceof Error ? error.message : "Failed to start training";
       const safeMessage = normalizeTrainingStartError(rawMessage);
@@ -209,7 +221,7 @@ export function useTrainingActions() {
       const detail = await getTrainingRun(runId);
       const outputDir = detail.run.output_dir;
       if (!detail.run.can_resume || !outputDir) {
-        throw new Error("Only stopped runs with a saved checkpoint can be resumed.");
+        throw new Error("Only stopped or errored runs with a saved checkpoint can be resumed.");
       }
 
       primeNativeNotificationPermission().catch(() => undefined);
@@ -225,6 +237,13 @@ export function useTrainingActions() {
         wandb_token: null,
         resume_from_checkpoint: outputDir,
       } as TrainingStartRequest;
+
+      const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+      if (!preparedToken.proceed) {
+        runtimeStore.setStarting(false);
+        return false;
+      }
+      payload.hf_token = preparedToken.token;
 
       runtimeStore.setStartResources(
         payload.model_name,

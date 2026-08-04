@@ -157,14 +157,27 @@ async def download_dataset_response(
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
 
-    use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
+    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
+    # makes that outlast its 3s budget while every other Studio request waits behind it.
+    use_xet, transport_reason = await asyncio.to_thread(
+        download_lifecycle.resolve_requested_use_xet,
+        getattr(body, "transport_mode", None),
+        body.use_xet,
+    )
     transport = download_lifecycle.resolve_transport(use_xet)
+    logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    cache_paths = get_hf_cache_paths()
+    cache_env = cache_paths.child_env({})
 
     claimed, claim_state = _registry.claim(
         key,
         transport,
         repo_type = "dataset",
         repo_id = repo_id,
+        hub_cache = str(cache_paths.hub_cache),
+        xet_cache = str(cache_paths.xet_cache),
     )
     generation = _registry.current_generation(key)
     if not claimed:
@@ -176,7 +189,12 @@ async def download_dataset_response(
             "accepted": _registry.adoptable(key),
             "generation": generation,
         }
-    download_manifest.clear_cancel_marker("dataset", repo_id, None)
+    download_manifest.clear_cancel_marker(
+        "dataset",
+        repo_id,
+        None,
+        hub_cache = cache_paths.hub_cache,
+    )
 
     state = download_lifecycle.launch_worker(
         _registry,
@@ -185,6 +203,7 @@ async def download_dataset_response(
             ["--repo-id", repo_id, "--dataset"],
             hf_token,
             use_xet = use_xet,
+            cache_env = cache_env,
         ),
         hf_token = hf_token,
         label = repo_id,

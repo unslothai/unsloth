@@ -22,9 +22,19 @@ export interface HardwareInfo {
     torch: string | null;
     cuda: string | null;
     rocm: string | null;
+    // Intel XPU (SYCL). The backend always emitted this; without it the About tab shows no
+    // runtime row at all on an Arc host, where cuda and rocm are both null.
+    xpu: string | null;
     transformers: string | null;
     unsloth: string | null;
     llamaCpp: string | null;
+    // Whether export can run here (true only on a supported accelerator), with a torch-aware
+    // reason. `null` until the authoritative response lands, so callers don't briefly enable
+    // export; `loaded` flips true once a real (non-error) response arrives.
+    exportSupported: boolean | null;
+    exportUnsupportedReason: string | null;
+    exportUnsupportedMessage: string | null;
+    loaded: boolean;
 }
 
 const DEFAULT: HardwareInfo = {
@@ -35,9 +45,14 @@ const DEFAULT: HardwareInfo = {
     torch: null,
     cuda: null,
     rocm: null,
+    xpu: null,
     transformers: null,
     unsloth: null,
     llamaCpp: null,
+    exportSupported: null,
+    exportUnsupportedReason: null,
+    exportUnsupportedMessage: null,
+    loaded: false,
 };
 
 // Module-level cache so multiple components share one fetch.
@@ -84,9 +99,14 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 torch: data?.versions?.torch ?? null,
                 cuda: data?.versions?.cuda ?? null,
                 rocm: data?.versions?.rocm ?? null,
+                xpu: data?.versions?.xpu ?? null,
                 transformers: data?.versions?.transformers ?? null,
                 unsloth: data?.versions?.unsloth ?? null,
                 llamaCpp: data?.llama_cpp ?? null,
+                exportSupported: data?.export_supported ?? null,
+                exportUnsupportedReason: data?.export_unsupported_reason ?? null,
+                exportUnsupportedMessage: data?.export_unsupported_message ?? null,
+                loaded: true,
             };
             if (generation === cacheGeneration) {
                 cached = info;

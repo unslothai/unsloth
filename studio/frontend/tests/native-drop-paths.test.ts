@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+import {
+  dequeueNativeAttachments,
+  enqueueNativeAttachments,
+} from "../src/features/native-intents/attachment-queue.ts";
+import { classifyDropPaths } from "../src/features/native-intents/drop-paths.ts";
+import type { NativeIntent } from "../src/features/native-intents/types.ts";
+import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
+
+const BACKEND_UPLOAD_EXTS_RE = /UPLOAD_EXTS\s*=\s*\{([^}]+)\}/s;
+const RUST_ATTACHMENT_EXTS_RE = /ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const DOTTED_EXTENSION_RE = /"(\.[^"]+)"/g;
+const RUST_EXTENSION_RE = /"([^"]+)"/g;
+
+function attachmentIntent(id: string): NativeIntent {
+  return {
+    id,
+    kind: "attachment",
+    sourceKind: "drop",
+    displayLabel: `${id}.txt`,
+    path: {
+      token: `token-${id}`,
+      kind: "attachment",
+      displayLabel: `${id}.txt`,
+      allowedOperations: ["attach", "reveal"],
+      expiresAtMs: Date.now() + 60_000,
+    },
+  };
+}
+
+test("a lone gguf is a model drop", () => {
+  assert.deepEqual(classifyDropPaths(["C:/models/qwen.gguf"]), {
+    kind: "model",
+    path: "C:/models/qwen.gguf",
+  });
+  // Extension casing comes from the filesystem, not from us.
+  assert.equal(classifyDropPaths(["/models/Qwen.GGUF"]).kind, "model");
+});
+
+test("documents are an attachment drop, one or many", () => {
+  const dropped = classifyDropPaths([
+    "/docs/a.pdf",
+    "/docs/b.MD",
+    "/docs/c.docx",
+  ]);
+  assert.equal(dropped.kind, "docs");
+  assert.equal(dropped.kind === "docs" ? dropped.paths.length : 0, 3);
+});
+
+test("a mixed or unsupported drop is rejected", () => {
+  // The regression in #7661: these used to be reported as "GGUF models only".
+  assert.equal(
+    classifyDropPaths(["/docs/a.pdf", "/models/q.gguf"]).kind,
+    "unsupported",
+  );
+  assert.equal(
+    classifyDropPaths(["/models/a.gguf", "/models/b.gguf"]).kind,
+    "unsupported",
+  );
+  assert.equal(
+    classifyDropPaths(["/docs/a.pdf", "/docs/b.zip"]).kind,
+    "unsupported",
+  );
+  assert.equal(classifyDropPaths(["/docs/notes.zip"]).kind, "unsupported");
+});
+
+test("an empty payload is not a drop target", () => {
+  assert.equal(classifyDropPaths([]).kind, "none");
+});
+
+test("attachment batches stay bound to the chat that received the drop", () => {
+  const queued = enqueueNativeAttachments({}, "single:thread-a", [
+    attachmentIntent("doc"),
+  ]);
+
+  const [wrongThread, afterWrongThread] = dequeueNativeAttachments(
+    queued,
+    "single:thread-b",
+  );
+  assert.deepEqual(wrongThread, []);
+  assert.equal(afterWrongThread, queued);
+
+  const [rightThread, remaining] = dequeueNativeAttachments(
+    afterWrongThread,
+    "single:thread-a",
+  );
+  assert.deepEqual(
+    rightThread.map((intent) => intent.id),
+    ["doc"],
+  );
+  assert.deepEqual(remaining, {});
+});
+
+test("frontend, backend, and Rust accept the same document extensions", () => {
+  const frontend = RAG_UPLOAD_ACCEPT.split(",").sort();
+  const backendSource = readFileSync(
+    new URL("../../backend/core/rag/config.py", import.meta.url),
+    "utf8",
+  );
+  const rustSource = readFileSync(
+    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
+    "utf8",
+  );
+  const backend = [
+    ...(backendSource
+      .match(BACKEND_UPLOAD_EXTS_RE)?.[1]
+      .matchAll(DOTTED_EXTENSION_RE) ?? []),
+  ]
+    .map((match) => match[1])
+    .sort();
+  const rust = [
+    ...(rustSource
+      .match(RUST_ATTACHMENT_EXTS_RE)?.[1]
+      .matchAll(RUST_EXTENSION_RE) ?? []),
+  ]
+    .map((match) => `.${match[1]}`)
+    .sort();
+
+  assert.deepEqual(backend, frontend);
+  assert.deepEqual(rust, frontend);
+});

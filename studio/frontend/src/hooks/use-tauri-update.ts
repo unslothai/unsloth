@@ -7,6 +7,7 @@ import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
 } from "@/lib/tauri-diagnostics";
+import { checkDesktopUpdate } from "@/lib/tauri-updater";
 import { toast } from "@/lib/toast";
 
 export type UpdateStatus =
@@ -21,6 +22,8 @@ export type UpdateStatus =
 export interface UpdateInfo {
   version: string;
   currentVersion: string;
+  // Backend release this build pins; CHANGELOG.md is keyed by it, not the SemVer.
+  pypiVersion?: string;
   body?: string;
   date?: string;
 }
@@ -42,8 +45,15 @@ interface DesktopUpdatePolicy {
 interface ManualUpdateInfo {
   version: string;
   currentVersion: string;
+  pypiVersion?: string | null;
   body?: string;
   date?: string;
+}
+
+/** `pypi_version` from latest.json, which the updater passes through raw. */
+function rawPypiVersion(raw: Record<string, unknown>): string | undefined {
+  const value = raw.pypi_version;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export interface RetainedUpdateFailure {
@@ -79,6 +89,9 @@ function manualReleasePageUrl(
 export function useTauriUpdate(isExternalServer = false) {
   const [status, setStatus] = useState<UpdateStatus>("idle");
   const [info, setInfo] = useState<UpdateInfo | null>(null);
+  const infoRef = useRef<UpdateInfo | null>(null);
+  const [hasChecked, setHasChecked] = useState(false);
+  const [checkError, setCheckError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const progressRef = useRef(0);
   const [logs, setLogs] = useState<string[]>([]);
@@ -89,11 +102,28 @@ export function useTauriUpdate(isExternalServer = false) {
   const [error, setError] = useState<string | null>(null);
   const [lastFailure, setLastFailure] = useState<RetainedUpdateFailure | null>(null);
   const [updatePolicy, setUpdatePolicy] = useState<DesktopUpdatePolicy>(DEFAULT_UPDATE_POLICY);
-  const updateRef = useRef<Awaited<
-    ReturnType<typeof import("@tauri-apps/plugin-updater").check>
-  > | null>(null);
+  const updateRef = useRef<Awaited<ReturnType<typeof checkDesktopUpdate>>>(null);
   const checkedRef = useRef(false);
+  const startupScheduledRef = useRef(false);
+  const checkingRef = useRef(false);
   const updatingRef = useRef(false);
+
+  function replaceInfo(nextInfo: UpdateInfo | null) {
+    infoRef.current = nextInfo;
+    setInfo(nextInfo);
+  }
+
+  function offerUpdate(nextInfo: UpdateInfo) {
+    const isNewOffer = infoRef.current?.version !== nextInfo.version;
+    replaceInfo(nextInfo);
+    if (isNewOffer) {
+      // Only a version the user has not seen may reopen the banner.
+      setLastFailure(null);
+      setError(null);
+      setDismissed(false);
+    }
+    setStatus("available");
+  }
 
   function replaceLogs(nextLogs: string[]) {
     logsRef.current = nextLogs;
@@ -132,13 +162,17 @@ export function useTauriUpdate(isExternalServer = false) {
     return failure;
   }
 
-  async function resolveUpdatePolicy(): Promise<DesktopUpdatePolicy> {
-    if (!isTauri) return DEFAULT_UPDATE_POLICY;
+  /** `resolved` is false when the policy is a fail-safe guess, not the real answer. */
+  async function resolveUpdatePolicy(): Promise<{
+    policy: DesktopUpdatePolicy;
+    resolved: boolean;
+  }> {
+    if (!isTauri) return { policy: DEFAULT_UPDATE_POLICY, resolved: true };
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const policy = await invoke<DesktopUpdatePolicy>("desktop_update_policy");
       setUpdatePolicy(policy);
-      return policy;
+      return { policy, resolved: true };
     } catch (e) {
       console.warn("Desktop update policy check failed:", e);
       const failSafePolicy: DesktopUpdatePolicy = {
@@ -146,31 +180,26 @@ export function useTauriUpdate(isExternalServer = false) {
         mode: "manual_linux_package",
       };
       setUpdatePolicy(failSafePolicy);
-      return failSafePolicy;
+      return { policy: failSafePolicy, resolved: false };
     }
   }
 
-  async function checkManualUpdateFallback(policy: DesktopUpdatePolicy) {
+  async function checkManualUpdate(policy: DesktopUpdatePolicy) {
     if (policy.mode !== "manual_linux_package") return false;
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const manualUpdate = await invoke<ManualUpdateInfo | null>(
-        "check_desktop_manual_update",
-      );
-      if (!manualUpdate) return false;
-      updateRef.current = null;
-      setInfo({
-        version: manualUpdate.version,
-        currentVersion: manualUpdate.currentVersion,
-        body: manualUpdate.body,
-        date: manualUpdate.date,
-      });
-      setStatus("available");
-      return true;
-    } catch (e) {
-      console.error("Manual update metadata check failed:", e);
-      return false;
-    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    const manualUpdate = await invoke<ManualUpdateInfo | null>(
+      "check_desktop_manual_update",
+    );
+    if (!manualUpdate) return false;
+    updateRef.current = null;
+    offerUpdate({
+      version: manualUpdate.version,
+      currentVersion: manualUpdate.currentVersion,
+      pypiVersion: manualUpdate.pypiVersion ?? undefined,
+      body: manualUpdate.body,
+      date: manualUpdate.date,
+    });
+    return true;
   }
 
   async function openManualUpdatePage(policy: DesktopUpdatePolicy, version: string) {
@@ -182,37 +211,68 @@ export function useTauriUpdate(isExternalServer = false) {
     await openUrl(url);
   }
 
-  useEffect(() => {
-    if (!isTauri || checkedRef.current) return;
+  async function checkForUpdate() {
+    if (checkingRef.current || updatingRef.current) return;
+    // A manual check covers startup, so the delayed timer must not repeat it.
     checkedRef.current = true;
+    checkingRef.current = true;
+    setCheckError(null);
+    setStatus("checking");
 
-    async function checkForUpdate() {
-      setStatus("checking");
-      const policy = await resolveUpdatePolicy();
-      try {
-        const { check } = await import("@tauri-apps/plugin-updater");
-        const update = await check();
-        if (update) {
-          updateRef.current = update;
-          setInfo({
-            version: update.version,
-            currentVersion: update.currentVersion,
-            body: update.body,
-            date: update.date,
-          });
-          setStatus("available");
-        } else if (!(await checkManualUpdateFallback(policy))) {
+    try {
+      const { policy, resolved } = await resolveUpdatePolicy();
+
+      if (policy.mode === "manual_linux_package") {
+        // Self-gates on the real target_os, so it is authoritative even if policy is a guess.
+        if (await checkManualUpdate(policy)) return;
+        if (resolved) {
+          // latest.json has no deb/rpm key, so the in-app updater would offer an
+          // AppImage this install cannot apply. Stop instead.
+          updateRef.current = null;
+          replaceInfo(null);
           setStatus("idle");
+          return;
         }
-      } catch (e) {
-        console.error("Update check failed:", e);
-        if (!(await checkManualUpdateFallback(policy))) {
-          setStatus("idle");
-        }
+        // Guessed policy, no manual offer: macOS, Windows and AppImage land here
+        // and do have an in-app path. Fall through to it.
       }
-    }
 
-    const timer = setTimeout(checkForUpdate, 5000);
+      const update = await checkDesktopUpdate();
+      if (update) {
+        updateRef.current = update;
+        offerUpdate({
+          version: update.version,
+          currentVersion: update.currentVersion,
+          pypiVersion: rawPypiVersion(update.rawJson),
+          body: update.body,
+          date: update.date,
+        });
+      } else {
+        updateRef.current = null;
+        replaceInfo(null);
+        setStatus("idle");
+      }
+    } catch (e) {
+      console.error("Update check failed:", e);
+      setCheckError(String(e));
+      setStatus(infoRef.current ? "available" : "idle");
+    } finally {
+      checkingRef.current = false;
+      setHasChecked(true);
+    }
+  }
+  // Startup owns one delayed check; this ref keeps a per-render function out of
+  // the empty dep list. The closure reads only refs/setState, so it cannot stale.
+  const initialCheckRef = useRef(checkForUpdate);
+
+  useEffect(() => {
+    if (!isTauri || startupScheduledRef.current) return;
+    startupScheduledRef.current = true;
+
+    const timer = setTimeout(() => {
+      if (checkedRef.current) return;
+      void initialCheckRef.current();
+    }, 5000);
     return () => clearTimeout(timer);
   }, []);
 
@@ -223,7 +283,7 @@ export function useTauriUpdate(isExternalServer = false) {
     const cleanups: (() => void)[] = [];
 
     try {
-      const policy = await resolveUpdatePolicy();
+      const { policy } = await resolveUpdatePolicy();
       if (policy.mode === "manual_linux_package") {
         const version = info?.version ?? updateRef.current?.version;
         if (!version) return;
@@ -247,6 +307,7 @@ export function useTauriUpdate(isExternalServer = false) {
       replaceLogs([]);
       setUpdateProgress(0);
       setError(null);
+      setCheckError(null);
       setLastFailure(null);
       setDismissed(false);
 
@@ -311,7 +372,7 @@ export function useTauriUpdate(isExternalServer = false) {
       console.error("Update failed:", e);
       const msg = String(e);
 
-      // Shell update failed — restart backend on updated code
+      // Shell update failed, so restart the backend on the updated code.
       if (phaseRef.current === "shell_download" || phaseRef.current === "shell_install") {
         try {
           const { invoke } = await import("@tauri-apps/api/core");
@@ -384,14 +445,19 @@ export function useTauriUpdate(isExternalServer = false) {
     });
   }
 
+  // Install target for Linux packages that cannot self-update.
   const manualReleaseUrl =
     updatePolicy.mode === "manual_linux_package" && info
       ? manualReleasePageUrl(updatePolicy, info.version)
       : null;
+  // Release page for the offered version, on every platform, for the notes link.
+  const releasePageUrl = info ? manualReleasePageUrl(updatePolicy, info.version) : null;
 
   return {
     status,
     info,
+    hasChecked,
+    checkError,
     progress,
     logs,
     dismissed,
@@ -401,6 +467,8 @@ export function useTauriUpdate(isExternalServer = false) {
     isExternalServer,
     updatePolicyMode: updatePolicy.mode,
     manualReleaseUrl,
+    releasePageUrl,
+    checkForUpdate,
     installUpdate,
     retryUpdate,
     skipAndRestart,
@@ -408,6 +476,8 @@ export function useTauriUpdate(isExternalServer = false) {
     copyDiagnostics,
   };
 }
+
+export type TauriUpdateController = ReturnType<typeof useTauriUpdate>;
 
 function cleanup(fns: (() => void)[]) {
   for (const fn of fns) {

@@ -8,6 +8,8 @@ regressions that pure AST checks cannot (e.g. wrong scheme/suffix/outtype passed
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 import unsloth.save as save_mod
@@ -124,6 +126,80 @@ def test_gguf_lora_push_to_hub_is_rejected(tmp_path):
             save_method = "lora",
             push_to_hub = True,
         )
+
+
+# The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path
+# has to work; it is only ever exercised here.
+
+
+def test_push_to_hub_gguf_lora_dispatches(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        save_mod,
+        "_unsloth_save_lora_gguf",
+        lambda model, tok, sd, **kw: seen.update(kw),
+    )
+    save_mod.unsloth_push_to_hub_gguf(
+        _FakeModel(),
+        "repo/id",
+        tokenizer = object(),
+        save_method = "lora",
+        quantization_method = "q8_0",
+    )
+    assert seen.get("outtype") == "q8_0"
+    assert seen.get("push_to_hub") is True
+
+
+def test_push_to_hub_gguf_lora_skips_non_main_process(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        save_mod,
+        "_unsloth_save_lora_gguf",
+        lambda *a, **kw: calls.append(kw),
+    )
+    result = save_mod.unsloth_push_to_hub_gguf(
+        _FakeModel(),
+        "repo/id",
+        tokenizer = object(),
+        save_method = "lora",
+        is_main_process = False,
+    )
+    assert result is None
+    assert calls == []
+
+
+def test_push_to_hub_gguf_skips_non_main_process_before_merged_conversion(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        save_mod,
+        "unsloth_save_pretrained_gguf",
+        lambda **kw: calls.append(kw),
+    )
+    result = save_mod.unsloth_push_to_hub_gguf(
+        _FakeModel(),
+        "repo/id",
+        tokenizer = object(),
+        is_main_process = False,
+    )
+    assert result is None
+    assert calls == []
+
+
+def test_push_to_hub_gguf_preserves_positional_max_shard_size():
+    bound = inspect.signature(save_mod.unsloth_push_to_hub_gguf).bind(
+        _FakeModel(),
+        "repo/id",
+        object(),
+        "q4_k_m",
+        None,
+        None,
+        None,
+        None,
+        "token",
+        "50GB",
+    )
+    assert bound.arguments["max_shard_size"] == "50GB"
+    assert "is_main_process" not in bound.arguments
 
 
 # -- torchao PTQ / QAT dispatch ------------------------------------------------------------

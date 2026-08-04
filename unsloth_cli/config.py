@@ -41,6 +41,7 @@ class LoraConfig(BaseModel):
     vision_all_linear: bool = False
     use_rslora: bool = False
     use_loftq: bool = False
+    use_dora: bool = False
     finetune_vision_layers: bool = True
     finetune_language_layers: bool = True
     finetune_attention_modules: bool = True
@@ -100,6 +101,7 @@ class Config(BaseModel):
             "use_gradient_checkpointing": self.training.gradient_checkpointing,
             "use_rslora": self.lora.use_rslora,
             "use_loftq": self.lora.use_loftq,
+            "use_dora": self.lora.use_dora,
         }
 
     def training_kwargs(self) -> dict:

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface HfPaginatedState<T> {
   results: T[];
@@ -10,6 +10,10 @@ interface HfPaginatedState<T> {
   isLoadingMore: boolean;
   hasMore: boolean;
   error: string | null;
+}
+
+interface InternalPaginatedState<T> extends HfPaginatedState<T> {
+  queryKey: object | null;
 }
 
 const INITIAL: HfPaginatedState<never> = {
@@ -74,10 +78,15 @@ export function useHubPaginatedSearch<T>(
   options?: { enabled?: boolean },
 ): HfPaginatedState<T> & { fetchMore: () => boolean; retry: () => void } {
   const enabled = options?.enabled ?? true;
-  const [state, setState] = useState<HfPaginatedState<T>>(
-    INITIAL as HfPaginatedState<T>,
-  );
   const [retryNonce, setRetryNonce] = useState(0);
+  const queryKey = useMemo(
+    () => ({ createIter, mapItem, retryNonce }),
+    [createIter, mapItem, retryNonce],
+  );
+  const [state, setState] = useState<InternalPaginatedState<T>>({
+    ...(INITIAL as HfPaginatedState<T>),
+    queryKey: null,
+  });
   const stateRef = useRef(state);
   useEffect(() => {
     stateRef.current = state;
@@ -187,6 +196,7 @@ export function useHubPaginatedSearch<T>(
     setState({
       ...(INITIAL as HfPaginatedState<T>),
       isLoading: true,
+      queryKey,
     });
 
     const iter = createIter(controller.signal);
@@ -203,6 +213,7 @@ export function useHubPaginatedSearch<T>(
           isLoadingMore: false,
           hasMore: !done,
           error: null,
+          queryKey,
         });
       })
       .catch((err) => {
@@ -214,6 +225,7 @@ export function useHubPaginatedSearch<T>(
           isLoadingMore: false,
           hasMore: false,
           error: err instanceof Error ? err.message : "Search failed",
+          queryKey,
         });
       })
       .finally(() => {
@@ -226,7 +238,14 @@ export function useHubPaginatedSearch<T>(
     return () => {
       clearDeferredFetch();
     };
-  }, [createIter, mapItem, enabled, retryNonce, clearDeferredFetch]);
+  }, [
+    createIter,
+    mapItem,
+    enabled,
+    retryNonce,
+    queryKey,
+    clearDeferredFetch,
+  ]);
 
   const retry = useCallback(() => {
     setRetryNonce((n) => n + 1);
@@ -358,5 +377,22 @@ export function useHubPaginatedSearch<T>(
     };
   }, [enabled, fetchMore]);
 
-  return { ...state, fetchMore, retry };
+  const visibleState: InternalPaginatedState<T> =
+    state.queryKey === queryKey
+      ? state
+      : {
+          ...(INITIAL as HfPaginatedState<T>),
+          isLoading: enabled,
+          queryKey,
+        };
+  return {
+    results: visibleState.results,
+    scannedCount: visibleState.scannedCount,
+    isLoading: visibleState.isLoading,
+    isLoadingMore: visibleState.isLoadingMore,
+    hasMore: visibleState.hasMore,
+    error: visibleState.error,
+    fetchMore,
+    retry,
+  };
 }

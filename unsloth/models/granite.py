@@ -23,6 +23,7 @@ from ..utils.attention_dispatch import (
     AttentionContext,
     run_attention,
     select_attention_backend,
+    resolve_prefix_seg_info,
     SDPA,
 )
 from .llama import (
@@ -30,8 +31,20 @@ from .llama import (
     LlamaLinearScalingRotaryEmbedding,
 )
 from .mistral import *
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+
+# Without bnb, peft stops exporting its 4bit LoRA layer too. Both names only feed
+# isinstance checks, so placeholders nothing can match are exact stand-ins.
+try:
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+except Exception:
+
+    class Bnb_Linear4bit:
+        pass
+
+    class Peft_Linear4bit:
+        pass
+
 
 try:
     from transformers.models.granite.modeling_granite import (
@@ -50,7 +63,7 @@ except:
             f"to obtain the latest transformers build, then restart this session."
         )
 
-from transformers.modeling_attn_mask_utils import (
+from unsloth.models._attn_mask_compat import (
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 
@@ -159,6 +172,9 @@ def GraniteAttention_fast_forward(
         },
     )
 
+    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse
+    # (KV cache / padding mask) raises. None => byte-identical default.
+    _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
         q_len = q_len,
@@ -169,6 +185,7 @@ def GraniteAttention_fast_forward(
         seq_info = seq_info,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
+        prefix_seg_info = _pg_seg,
     )
 
     A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
@@ -594,5 +611,5 @@ class FastGraniteModel(FastLlamaModel):
 
         for _ in range(3):
             gc.collect()
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
         return model, tokenizer
