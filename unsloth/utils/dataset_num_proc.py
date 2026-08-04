@@ -1,17 +1,16 @@
-# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Single source of truth for the ``dataset_num_proc`` used by ``Dataset.map()``.
 
@@ -201,8 +200,23 @@ def _serial(serial_as_none: bool) -> Optional[int]:
     because a config ``None`` is read downstream as "auto-size me" -- writing
     ``None`` there would inflate a serial request back up to the auto worker
     count. The call site then turns that ``1`` into ``None``.
+
+    That reasoning only holds while forking is available, so the config sentinel
+    is conditioned on it. Under spawn/forkserver nothing can inflate a config
+    ``None``: every auto-sizer that reads it vetoes on a non-fork start method
+    too (this module at step 2 below, and ``unsloth_zoo.sft_prepare_dataset``'s
+    own copy). Meanwhile ``1`` is actively unsafe there, because only the SFT
+    map site is rewritten by ``rl_replacements.py`` -- TRL's DPO, KTO, CPO,
+    ORPO, Reward and PRM trainers hand ``args.dataset_num_proc`` straight to
+    ``Dataset.map``, where ``datasets`` >= 4.1 turns ``1`` into a ``Pool(1)``
+    and each spawned child re-imports the user's ``__main__`` (the Windows
+    spawn loops in unsloth #3211 / #3397). ``None`` is what those configs
+    carried before this module existed, and it is the only value that builds no
+    pool at all.
     """
-    return None if serial_as_none else 1
+    if serial_as_none:
+        return None
+    return 1 if multiprocessing_start_method() == "fork" else None
 
 
 def _from_environment() -> "tuple[bool, Optional[int]]":
@@ -291,7 +305,7 @@ def get_dataset_num_proc(
         return _serial(serial_as_none)
 
     # 3. Normalise the "no multiprocessing" requests. `1` in particular is a
-    #    trap: callers pass it meaning "serial", and datasets >= 4.0 hands them
+    #    trap: callers pass it meaning "serial", and datasets >= 4.1 hands them
     #    a Pool(1) instead. Nothing to clamp here, so return straight away.
     if isinstance(desired, int) and not isinstance(desired, bool) and desired <= 1:
         return _serial(serial_as_none)
@@ -347,11 +361,15 @@ def map_failure_diagnostics(num_proc: Optional[int]) -> "Iterator[None]":
 
 
 def _largest_split_rows(trainer) -> Optional[int]:
-    """Rows in the biggest split ``train_on_responses_only`` will map over.
+    """Rows in the biggest *sized* split ``train_on_responses_only`` will map over.
 
-    Returns None when any split's size is unknown, matching the Zoo, which
-    treats an unsized dataset (an ``IterableDataset``) as "do not parallelize".
-    ``eval_dataset`` may be a dict of named splits, so unpack that too.
+    Returns None only when no split has a readable length at all. An unsized
+    split is skipped rather than abandoning the whole measurement: the Zoo picks
+    a worker count per split, and an unsized one can never use workers whatever
+    it is handed (its ``IterableDataset`` branch passes no ``num_proc``, and
+    ``_effective_num_proc`` returns None when ``len()`` raises). Letting one hide
+    a large sized sibling is what left that sibling on the Zoo's uncapped auto
+    count. ``eval_dataset`` may be a dict of named splits, so unpack that too.
     """
     if trainer is None:
         return None
@@ -369,9 +387,10 @@ def _largest_split_rows(trainer) -> Optional[int]:
             try:
                 rows = len(split)
             except Exception:
-                # Unsized, or a length that raises. Either way the Zoo would not
-                # have parallelized it, so say so rather than guessing.
-                return None
+                # Unsized, or a length that raises. The Zoo cannot parallelize
+                # this split either way, so skip it -- do not let it mask a
+                # sized sibling that the Zoo *would* parallelize.
+                continue
             measured = True
             largest = max(largest, rows)
     return largest if measured else None
@@ -393,7 +412,7 @@ def resolve_responses_only_num_proc(trainer, num_proc):
       me", so handing it the ``None`` that means serial elsewhere in this module
       would *inflate* the count to the auto value instead of removing it. ``1``
       is the closest expressible request. It still builds a ``Pool(1)`` on
-      ``datasets`` >= 4.0, which cannot be fixed without changing the Zoo, but
+      ``datasets`` >= 4.1, which cannot be fixed without changing the Zoo, but
       one worker is not the out-of-memory failure this guards against.
     * **An explicit count disables the Zoo's small-split guard**, which it
       applies per split. A trainer with a large train split and a small eval
@@ -415,9 +434,16 @@ def resolve_responses_only_num_proc(trainer, num_proc):
 
     rows = _largest_split_rows(trainer)
     if rows is None or rows < ZOO_MIN_ROWS_FOR_MULTIPROC:
-        # The Zoo would have gone in-process anyway. Leave the value untouched
-        # so its guard keeps deciding, rather than substituting a count that
-        # would switch multiprocessing back on for a small split.
+        # An explicit escape hatch has to win here too, or the count the user
+        # asked for is dropped on the floor by a shortcut they cannot see.
+        env_set, env_value = _from_environment()
+        if env_set and env_value is not None:
+            return env_value
+        # Otherwise the Zoo would have gone in-process anyway (that is also what
+        # UNSLOTH_DATASET_NUM_PROC=0 asks for, and its guard yields None, which
+        # is more in-process than the 1 this function can express). Leave the
+        # value untouched so its guard keeps deciding, rather than substituting
+        # a count that would switch multiprocessing back on for a small split.
         return num_proc
 
     bounded = get_dataset_num_proc(None)

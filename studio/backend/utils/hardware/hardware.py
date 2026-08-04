@@ -3320,7 +3320,7 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
     Return a safe ``num_proc`` for ``Dataset.map()`` and ``Dataset.filter()``.
 
     Returns ``None`` on spawn platforms (Windows, macOS). ``None`` -- not ``1``
-    -- is the disable sentinel: on ``datasets`` >= 4.0 (Studio pins 4.3.0)
+    -- is the disable sentinel: on ``datasets`` >= 4.1 (Studio pins 4.3.0)
     ``map()`` takes the pool branch for any ``num_proc >= 1``, so ``num_proc=1``
     still builds a ``Pool(1)``. Older ``datasets`` (the 3.x range the library
     extra still allows) does run ``num_proc=1`` in-process, but only ``None``

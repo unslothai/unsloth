@@ -1,17 +1,16 @@
-# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """The worker-count bound applied to unsloth_zoo's train_on_responses_only.
 
@@ -177,9 +176,27 @@ def test_auto_unsized_split_passes_none_through():
     assert dnp.resolve_responses_only_num_proc(trainer, None) is None
 
 
-def test_auto_unsized_eval_split_is_conservative():
-    trainer = _Trainer(train_dataset = _Split(BIG), eval_dataset = _Unsized())
-    assert dnp.resolve_responses_only_num_proc(trainer, None) is None
+@pytest.mark.parametrize(
+    "trainer",
+    [
+        _Trainer(train_dataset = _Split(BIG), eval_dataset = _Unsized()),
+        _Trainer(train_dataset = _Unsized(), eval_dataset = _Split(BIG)),
+        _Trainer(train_dataset = _Split(BIG), eval_dataset = {"a": _Unsized()}),
+    ],
+    ids = ["unsized-eval", "unsized-train", "unsized-eval-dict"],
+)
+def test_an_unsized_split_does_not_hide_a_large_sized_one(trainer):
+    """Regression: one unsized split disabled the bound for every other split.
+
+    An unsized split used to abandon the whole measurement, so this returned
+    None -- and the zoo reads None as "auto", not as "in-process". It then sized
+    the *sized* split with its own uncapped min(max(cpu_count + 4, 2), 64): on a
+    192-core host that is 64 forked workers, the exact failure this wrapper
+    exists to bound. The unsized split itself can never use workers (the zoo's
+    IterableDataset branch passes no num_proc), so it must be skipped, not
+    treated as a veto.
+    """
+    assert dnp.resolve_responses_only_num_proc(trainer, None) == dnp.AUTO_NUM_PROC_CAP
 
 
 def test_auto_dict_eval_dataset_is_unpacked():
@@ -204,3 +221,36 @@ def test_env_override_still_wins_for_explicit_values(monkeypatch):
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "16")
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 2)
     assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(BIG)), 4) == 16
+
+
+@pytest.mark.parametrize(
+    "trainer",
+    [
+        _Trainer(train_dataset = _Split(SMALL)),
+        _Trainer(train_dataset = _Unsized()),
+        _Trainer(),
+    ],
+    ids = ["small-split", "unsized-split", "no-splits"],
+)
+def test_env_override_wins_on_the_split_size_shortcut(monkeypatch, trainer):
+    """The escape hatch must win everywhere, including the early return.
+
+    The shortcut for splits the zoo would not have parallelized used to return
+    before UNSLOTH_DATASET_NUM_PROC was read, so an explicit count set by a user
+    who had just been told to set it was dropped.
+    """
+    monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "3")
+    assert dnp.resolve_responses_only_num_proc(trainer, None) == 3
+
+
+@pytest.mark.parametrize("raw", ["0", "none", "false"])
+def test_env_forced_in_process_leaves_the_zoo_guard_in_charge(monkeypatch, raw):
+    """UNSLOTH_DATASET_NUM_PROC=0 must not turn into a Pool(1) on a small split.
+
+    The zoo's own guard already yields None for a split under its threshold, and
+    None -- not the 1 this function can express -- is the only value datasets
+    runs in-process on every release. So the hatch is honoured by leaving the
+    value alone here, not by substituting a count.
+    """
+    monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, raw)
+    assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(SMALL)), None) is None

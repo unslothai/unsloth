@@ -1433,7 +1433,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # this heuristic had drifted into four copies and two of them were wrong: they
     # asked stdlib `multiprocessing` about the start method when `datasets` uses
     # `multiprocess`, and they used `1` as the "no multiprocessing" sentinel when
-    # only `None` is in-process on datasets >= 4.0 (`1` still builds a Pool(1)).
+    # only `None` is in-process on datasets >= 4.1 (`1` still builds a Pool(1)).
     #
     # serial_as_none = False: this writes back to the *config*, and
     # unsloth_zoo.sft_prepare_dataset reads a config `None` as "auto-size me".

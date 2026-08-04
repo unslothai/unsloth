@@ -557,7 +557,7 @@ def sft_trainer_prepare_dataset(function_name, function):
             # it asks stdlib `multiprocessing` for the start method while datasets
             # uses `multiprocess` (independent default contexts), and its
             # low-memory branch yields 1, which still builds a Pool(1) on
-            # datasets >= 4.0. Route it through the one shared helper instead, so
+            # datasets >= 4.1. Route it through the one shared helper instead, so
             # a config value of None auto-sizes with the same capped policy rather
             # than the Zoo's uncapped `cpu_count + 4 -> 64`.
             function = _require_replace(

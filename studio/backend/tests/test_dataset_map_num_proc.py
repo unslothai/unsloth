@@ -3,7 +3,7 @@
 
 """Tests for ``dataset_map_num_proc()``.
 
-``None``, not ``1``, is the disable sentinel: on ``datasets`` >= 4.0 (Studio pins
+``None``, not ``1``, is the disable sentinel: on ``datasets`` >= 4.1 (Studio pins
 4.3.0) ``map()`` takes the pool branch for any ``num_proc >= 1``, so ``1`` still
 builds a ``Pool(1)``. ``datasets`` 3.x runs ``1`` in-process, so the version
 split is asserted per installed release rather than hard-coded.
@@ -97,7 +97,7 @@ def test_dataset_map_num_proc_parallel_before_xpu_init(monkeypatch):
 
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
 def test_dataset_map_num_proc_none_on_spawn_platforms(monkeypatch, platform):
-    # Must be None and never 1: datasets >= 4.0 builds a Pool(1) for num_proc=1.
+    # Must be None and never 1: datasets >= 4.1 builds a Pool(1) for num_proc=1.
     monkeypatch.setattr(sys, "platform", platform)
     assert hw.dataset_map_num_proc(4) is None
 
@@ -175,7 +175,7 @@ def test_num_proc_one_is_not_a_disable_sentinel():
     finally:
         datasets.arrow_dataset.Pool = original
 
-    if Version(datasets.__version__) >= Version("4.0.0"):
+    if Version(datasets.__version__) >= Version("4.1.0"):
         assert built_for_one == 1, (
             f"datasets {datasets.__version__} was expected to build a Pool(1); "
             "if that changed, dataset_map_num_proc's docstring needs updating"

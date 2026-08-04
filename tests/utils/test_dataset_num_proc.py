@@ -1,17 +1,16 @@
-# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 #
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Tests for unsloth.utils.dataset_num_proc.
 
@@ -118,18 +117,14 @@ def test_serial_as_none_false_preserves_an_explicit_one(monkeypatch, dnp):
     assert dnp.get_dataset_num_proc(-4, serial_as_none = False) == 1
 
 
-def test_config_layer_never_returns_none(monkeypatch, dnp):
-    """No path may write None back to a config, whatever the reason for it.
+def test_config_layer_never_returns_none_while_forking_is_available(monkeypatch, dnp):
+    """On a fork host no path may write None back to a config.
 
-    None means "auto-size me" downstream, so any route to it -- start-method
-    veto, memory clamp, explicit serial -- would silently re-inflate.
+    None means "auto-size me" downstream, so any route to it -- memory clamp,
+    explicit serial -- would silently re-inflate.
     """
     psutil = pytest.importorskip("psutil")
     monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 64)
-
-    # start-method veto
-    _force_start_method(monkeypatch, dnp, "spawn")
-    assert dnp.get_dataset_num_proc(16, serial_as_none = False) == 1
 
     # memory clamp all the way down to serial
     _force_start_method(monkeypatch, dnp, "fork")
@@ -138,6 +133,33 @@ def test_config_layer_never_returns_none(monkeypatch, dnp):
     )
     assert dnp.get_dataset_num_proc(16, serial_as_none = False) == 1
     assert dnp.get_dataset_num_proc(None, serial_as_none = False) == 1
+
+
+@pytest.mark.parametrize("method", ["spawn", "forkserver", None])
+@pytest.mark.parametrize("desired", [None, 1, 16])
+def test_config_layer_is_none_not_one_on_a_non_fork_start_method(monkeypatch, dnp, method, desired):
+    """Regression: the config sentinel 1 reached unpatched TRL map() call sites.
+
+    Only SFT gets its map site rewritten (rl_replacements.py). DPO, KTO, CPO,
+    ORPO, Reward and PRM pass ``args.dataset_num_proc`` straight into
+    ``Dataset.map``, and on ``datasets`` >= 4.0 a ``1`` there builds a
+    ``Pool(1)`` whose spawned child re-imports the user's ``__main__`` -- the
+    Windows spawn loop (#3211 / #3397) this veto exists to prevent. Before this
+    module those configs carried ``None`` on spawn hosts; they must still.
+
+    Writing None back is safe here precisely because forking is unavailable:
+    every auto-sizer that reads the config vetoes on a non-fork start method
+    too, so there is nothing left to inflate it.
+    """
+    _force_start_method(monkeypatch, dnp, method)
+    assert dnp.get_dataset_num_proc(desired, serial_as_none = False) is None
+
+
+def test_config_layer_env_forced_serial_is_none_on_a_non_fork_start_method(monkeypatch, dnp):
+    """UNSLOTH_DATASET_NUM_PROC=0 must not build a Pool(1) either."""
+    _force_start_method(monkeypatch, dnp, "spawn")
+    monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "0")
+    assert dnp.get_dataset_num_proc(None, serial_as_none = False) is None
 
 
 def test_layering_config_then_map_site_is_correct(monkeypatch, dnp):
