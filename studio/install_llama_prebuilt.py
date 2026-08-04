@@ -434,7 +434,7 @@ class ApprovedReleaseChecksums:
     source_commit: str | None = None
     source_commit_short: str | None = None
     # git tree id of ggml/ in the built source: changes exactly when ggml does,
-    # so it is the real ABI key for slim whisper bundles.
+    # so it is the ABI key for slim whisper bundles.
     ggml_tree: str | None = None
     artifacts: dict[str, ApprovedArtifactHash] = field(default_factory = dict)
 
@@ -5808,13 +5808,11 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
 def recorded_ggml_tree(
     approved_checksums: ApprovedReleaseChecksums, choice: AssetChoice
 ) -> str | None:
-    """The ggml tree to record for an install, or None when it does not describe it.
+    """The ggml tree to record, or None when it does not describe this install.
 
-    The tree comes from the fork release's own source checkout, so it only
-    describes binaries built from that release. A fork plan can install an
-    approved ggml-org archive instead (choice.repo differs), whose ggml is
-    upstream's; recording the fork tree there would let a slim whisper bundle
-    pair with a runtime a pinned PR may have changed under ggml/.
+    The tree comes from the fork release's own checkout. A fork plan can install
+    an approved ggml-org archive instead (choice.repo differs), built from
+    upstream ggml, so the fork tree must not be recorded for it.
     """
     tree = approved_checksums.ggml_tree
     if not isinstance(tree, str) or not tree:
@@ -5825,11 +5823,10 @@ def recorded_ggml_tree(
 def sync_marker_ggml_tree(install_dir: Path, ggml_tree: str | None) -> None:
     """Backfill the ggml tree id when the bundle is reused unchanged.
 
-    write_prebuilt_metadata only runs on a real install, and the fingerprint does
-    not hash ggml_tree, so an already-current install would keep a tree-less
-    marker forever and install_whisper_prebuilt would stay on the "-mix-" suffix
-    this key exists to replace. Unlike llama_backend, a None tree is "the release
-    did not declare one" (upstream ggml-org tags), not "clear it".
+    write_prebuilt_metadata only runs on a real install, so without this an
+    already-current install would keep a tree-less marker forever. Unlike
+    llama_backend, None means "the release declared none" (upstream ggml-org
+    tags), not "clear it".
     """
     if not isinstance(ggml_tree, str) or not ggml_tree:
         return
@@ -5948,7 +5945,7 @@ def installed_llama_runtime(install_dir: Path | None = None) -> tuple[Path, str,
 
 def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
     """ggml tree id of the managed llama.cpp install; None for installs predating
-    it. Separate from installed_llama_runtime() to keep that tuple's shape."""
+    it. Kept out of installed_llama_runtime() to keep that tuple's shape."""
     root = install_dir if install_dir is not None else default_managed_llama_dir()
     metadata = load_prebuilt_metadata(root)
     if metadata is None:
@@ -7000,8 +6997,8 @@ def install_prebuilt(
                             llama_backend = persist_llama_backend,
                         )
                     except ExistingInstallSatisfied as satisfied:
-                        # Third reuse path: validate_prebuilt_attempts skipped the
-                        # reinstall, so write_prebuilt_metadata never runs here either.
+                        # Third reuse path: the reinstall was skipped, so
+                        # write_prebuilt_metadata does not run here either.
                         sync_marker_ggml_tree(
                             install_dir,
                             recorded_ggml_tree(plan.approved_checksums, satisfied.choice),

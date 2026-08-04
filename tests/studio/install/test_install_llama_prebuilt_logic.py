@@ -3922,8 +3922,7 @@ def test_recorded_ggml_tree_only_for_binaries_from_that_release():
     """The fork's tree describes the fork's own bundles, not a ggml-org archive.
 
     A fork plan can install an approved upstream archive instead; recording the
-    fork tree there would pair a slim whisper bundle against upstream ggml even
-    when a pinned PR changed ggml/.
+    fork tree there would pair a slim whisper bundle against upstream ggml.
     """
 
     def choice(repo):
@@ -3950,9 +3949,9 @@ def test_recorded_ggml_tree_only_for_binaries_from_that_release():
 def test_reused_install_backfills_the_ggml_tree(tmp_path):
     """An install made before ggml_tree existed must gain it on reuse.
 
-    write_prebuilt_metadata only runs on a real install and the fingerprint does
-    not hash ggml_tree, so without this the marker stays tree-less forever and
-    slim whisper pairing silently falls back to the "-mix-" suffix.
+    write_prebuilt_metadata only runs on a real install, so without this the
+    marker stays tree-less forever and slim whisper pairing silently falls back
+    to the "-mix-" suffix.
     """
     install_dir = tmp_path / "llama.cpp"
     (install_dir / "build" / "bin").mkdir(parents = True)

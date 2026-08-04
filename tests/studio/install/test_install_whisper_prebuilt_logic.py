@@ -824,7 +824,7 @@ NEWER_LLAMA_TAG = "b10079-mix-fb3d4ca"
     ],
 )
 def test_llama_runtime_pairs_falls_back_to_mix_suffix(installed, required, pairs):
-    # No tree ids on either side, so the legacy suffix comparison still applies.
+    # No tree ids either side, so the legacy suffix comparison applies.
     assert M.llama_runtime_pairs(installed, required) is pairs
 
 
@@ -840,10 +840,10 @@ TREE_B = "e96ffb0e063f66952b0c54796a74755b6041c867"
     [
         # The bug this fixes: a shared suffix is not a shared ggml.
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, TREE_B, False),
-        # Different suffixes, same ggml: ABI-identical, so it pairs.
+        # Different suffixes, same ggml: ABI-identical.
         ("b10241-mix-89aa77b", "b10225-mix-345e1e3", TREE_A, TREE_A, True),
-        # A missing tree on either side falls back to the suffix: an install made
-        # before ggml_tree existed must keep working, not be stranded.
+        # A missing tree either side falls back to the suffix, so installs
+        # predating ggml_tree are not stranded.
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, None, TREE_B, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, None, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, "", "", True),

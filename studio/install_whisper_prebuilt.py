@@ -339,10 +339,10 @@ def artifacts_for_host(
 def _llama_ggml_commit(tag: str) -> str | None:
     """The "-mix-" suffix of a fork tag "b<upstream_build>-mix-<suffix>".
 
-    Despite the name this is NOT a ggml commit: it hashes the pinned PR set, so
-    it stays constant while the base tag, and ggml with it, moves (one value
-    covered b9909..b10001, whose ggml trees differ). Fallback only, for releases
-    predating ggml_tree."""
+    Despite the name this is NOT a ggml commit: it hashes the pinned PR set and
+    stays constant while the base tag, and ggml with it, moves (one value covered
+    b9909..b10001, whose ggml trees differ). Fallback for releases predating
+    ggml_tree."""
     marker = "-mix-"
     idx = tag.rfind(marker)
     end = idx + len(marker)
@@ -357,17 +357,17 @@ def llama_runtime_pairs(
     required_ggml_tree: Any = None,
 ) -> bool:
     """Whether an installed llama tag can back a slim bundle needing required_tag.
-    An exact tag always pairs. Otherwise prefer the ggml tree ids, which change
-    exactly when ggml does; the "-mix-" suffix does not track ggml at all (see
-    _llama_ggml_commit), so it is only used when either tree is missing.
+    An exact tag always pairs; otherwise the ggml tree ids decide, since they
+    change exactly when ggml does. The "-mix-" suffix does not track ggml at all
+    (see _llama_ggml_commit) and is only used when either tree is missing.
     requires_ggml_sonames stays the per-file ABI gate."""
     if not isinstance(required_tag, str):
         return False
     if installed_tag == required_tag:
         return True
-    # Both trees present is the only case we can decide on the ABI key. Refusing
-    # when the install predates ggml_tree would strand it: nothing in the update
-    # path can backfill a marker without a llama release to install.
+    # Only decidable with both trees. Refusing when the install predates
+    # ggml_tree would strand it: nothing can backfill a tree-less marker
+    # without a llama release to install.
     if (
         isinstance(installed_ggml_tree, str)
         and installed_ggml_tree
@@ -511,8 +511,8 @@ def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> s
         return None
     installed_tag = runtime[1]
     installed_tree = installed_llama_ggml_tree()
-    # Normalise the tree here: llama_runtime_pairs treats a non-string as absent,
-    # and an unhashable one (list/dict) would blow up the set instead.
+    # Normalise the tree: llama_runtime_pairs treats a non-string as absent, but
+    # an unhashable one (list/dict) would blow up the set first.
     required_pairs = {
         (
             artifact.get("requires_llama_tag"),
