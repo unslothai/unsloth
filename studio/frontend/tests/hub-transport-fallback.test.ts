@@ -281,9 +281,8 @@ test("a model-info request is never retargeted at the listing proxy", async () =
 
   await transport(MODEL_INFO_URL, {});
 
-  // In mirror mode it goes to the path-preserving info route. What it must
-  // never reach is the listing route, which drops the pathname: modelInfo would
-  // parse a listing array as one repo and cache a model with no id or name.
+  // Never the listing route, which drops the pathname: modelInfo would parse
+  // a listing array as one repo and cache a model with no id.
   for (const call of backend.calls) {
     assert.ok(
       !call.url.startsWith("/api/hub/discovery/"),
@@ -335,8 +334,7 @@ test("an absolute next-page link back into the proxy goes to the backend", async
 test("a stuck-false navigator.onLine does not veto the fallback", async () => {
   const backend = captureBackend();
   // navigator.onLine reads false on WSL2 and some Tauri/WebKitGTK webviews, so
-  // treating it as authoritative would strand exactly the users the fallback
-  // exists for.
+  // trusting it would strand exactly the users the fallback exists for.
   const transport = createHubTransport("models", {
     direct: failWith("browser-offline"),
     backend: backend.backend,

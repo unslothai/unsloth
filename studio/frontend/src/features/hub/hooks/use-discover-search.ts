@@ -149,9 +149,8 @@ export function useDiscoverSearch({
   // Surfaced regardless of availability: the failure IS the thing worth showing.
   const searchError = isDiscoverTab ? rawSearchError : null;
   const searchFailure = isDiscoverTab ? failure : null;
-  // Allowed while probing: with results preserved on screen this is the only
-  // request the view can make, so gating it on `online` left Load more a
-  // permanent no-op. The backoff still blocks the `unavailable` window.
+  // Allowed while probing: gating on `online` left Load more a permanent no-op.
+  // The backoff still blocks the `unavailable` window.
   const canProbe = online || phase === "probing";
   const fetchMore = useCallback(() => {
     if (!canProbe || !hasMore) return false;
@@ -194,9 +193,8 @@ export function useDiscoverSearch({
   const wasUnavailableRef = useRef(phase !== "available");
   const lastReconnectAtRef = useRef(0);
   useEffect(() => {
-    // Not on proxy-served availability: the iterator already has its page, and
-    // retrySearch would build a fresh transport with no affinity and re-attempt
-    // the blocked direct request.
+    // Not on proxy-served availability: retrySearch would build a fresh
+    // transport with no affinity and re-attempt the blocked direct request.
     if (online && !proxyServing && wasUnavailableRef.current && isDiscoverTab) {
       const now = Date.now();
       if (now - lastReconnectAtRef.current > RECONNECT_RETRY_COOLDOWN_MS) {

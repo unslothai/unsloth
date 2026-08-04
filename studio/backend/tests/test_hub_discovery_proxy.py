@@ -105,8 +105,7 @@ class TestDestinationIsServerControlled:
 
     def test_no_request_parameter_can_redirect_the_destination(self, monkeypatch):
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
-        # Every field a caller controls is either rejected outright or lands in
-        # the query string; none of them may change the host.
+        # Caller input is rejected or lands in the query string, never in the host.
         pairs = discovery.build_discovery_query(
             _Params([("search", "https://evil.example"), ("author", "..")])
         )
@@ -182,8 +181,7 @@ class TestTokenHandling:
 
 class TestRouteWiring:
     def test_route_requires_authentication(self):
-        # The dependency is what makes the route non-public; a missing default
-        # here means anyone reaching the port can drive it.
+        # Without this dependency, anyone reaching the port can drive the route.
         import inspect
 
         from auth.authentication import get_current_subject
@@ -239,9 +237,8 @@ class TestPaginationLink:
         assert link is not None and "/api/hub/discovery/models" in link
 
     def test_next_link_is_absolute_so_the_hub_sdk_can_parse_it(self, monkeypatch):
-        # @huggingface/hub's parseLinkHeader matches /<(https?:[/][/][^>]+)>;\s+rel="..."/
-        # only, so a relative target yields no next URL and pagination stops
-        # after the first upstream page.
+        # @huggingface/hub's parseLinkHeader only matches an <http(s)://...> target,
+        # so a relative one stops pagination after the first upstream page.
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
         monkeypatch.setattr(
             discovery,
@@ -270,8 +267,7 @@ class TestPaginationLink:
         assert (response.headers.get("link") or response.headers.get("Link")) is None
 
     def test_relative_next_link_from_a_mirror_is_accepted(self, monkeypatch):
-        # RFC 8288 permits a relative target; a mirror emitting one must still
-        # paginate instead of silently stopping after the first page.
+        # RFC 8288 permits a relative target; a mirror emitting one must still paginate.
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.example")
         rewritten = discovery.rewrite_next_link(
             "models",
@@ -344,8 +340,8 @@ class TestInfoRoute:
 
 class TestStreamDeadline:
     def test_a_slow_drip_is_cut_off(self, monkeypatch):
-        # requests' timeout bounds inactivity, not total duration, so without an
-        # overall deadline this loop would hold the worker thread forever.
+        # requests' timeout bounds inactivity, not total time, so without a deadline
+        # this drip would hold the worker thread forever.
         monkeypatch.setattr(discovery, "_REQUEST_TIMEOUT_SECONDS", 0.05)
 
         class _Resp:
@@ -379,8 +375,8 @@ class TestStreamDeadline:
         ],
     )
     def test_equivalent_authorities_still_paginate(self, monkeypatch, endpoint):
-        # Case and an explicit default port are equivalent; a textual netloc
-        # check would drop the mirror's canonical link and stop pagination.
+        # A textual netloc check would drop the mirror's canonical link and stop
+        # pagination, since case and a default port are equivalent.
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         rewritten = discovery.rewrite_next_link(
             "models",
@@ -401,8 +397,7 @@ class TestStreamDeadline:
         ],
     )
     def test_a_malformed_link_is_dropped_not_raised(self, monkeypatch, target):
-        # The next-page header is optional; a bad one must not turn a good first
-        # page into a 500.
+        # The next-page header is optional; a bad one must not 500 a good first page.
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
         assert (
             discovery.rewrite_next_link(
@@ -453,8 +448,7 @@ class TestHealthHubEndpoint:
         assert main._hub_endpoint() == expected
 
     def test_the_socket_timeout_is_bounded_by_the_window(self, monkeypatch):
-        # requests\' timeout is per read, so handing it the whole budget lets
-        # headers spend one window and a stalled body another.
+        # The timeout is per read, so the whole budget could be spent twice.
         seen = {}
 
         class _Resp:

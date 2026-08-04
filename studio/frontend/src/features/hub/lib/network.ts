@@ -57,9 +57,8 @@ export function isHubFetchError(error: unknown): error is HubFetchError {
 
 const remoteOfflineUntilByOrigin = new Map<string, number>();
 // Set when the backend serves Hub content this browser could not fetch. Kept
-// apart from the origin state on purpose: clearing that would tell the direct
-// clients (README, owner avatars) the origin is reachable, and their immediate
-// failure would re-mark it, which is the flapping this whole change removes.
+// apart from the origin state: clearing that would tell the direct clients
+// (README, avatars) the origin is reachable, and their failure would re-mark it.
 let hubProxyServing = false;
 // The TTL controls when we retry; this controls what we tell the user. Cleared
 // only by a success, so the cause outlives the backoff window.
@@ -119,8 +118,7 @@ export function isHuggingFaceOffline(): boolean {
 
 /**
  * Availability of a Hub origin. A lapsed backoff means "probing", not
- * "available": we learned nothing new. Only a success promotes an origin, which
- * is what stops the offline/online flapping.
+ * "available": only a success promotes an origin, which stops the flapping.
  */
 export type HubPhase = "available" | "probing" | "unavailable";
 
@@ -408,8 +406,7 @@ export async function fetchWithTimeout(
   init: Parameters<typeof fetch>[1] = {},
   timeoutMs = 15_000,
   // The Hub transport defers this: marking the origin offline here re-renders
-  // consumers, which disables their feed and aborts the very fallback about to
-  // run. It records the failure itself once that fallback has also failed.
+  // consumers, which aborts the very fallback about to run.
   options: { recordFailure?: boolean } = {},
 ): Promise<Response> {
   const parentSignal = init.signal;

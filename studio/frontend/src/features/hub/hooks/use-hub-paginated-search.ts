@@ -69,9 +69,8 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
-// Sanitized here, at the one point every consumer reads: the SDK appends the
-// request URL to its message, and for a proxied request that URL carries the
-// user's search query. The training and dataset pickers render this raw.
+// The SDK appends the request URL to its message, and for a proxied request
+// that URL carries the user's search query, which some pickers render raw.
 function hubErrorText(err: unknown, fallback: string): string {
   return err instanceof Error
     ? sanitizeHubErrorMessage(err.message)
@@ -167,10 +166,8 @@ export function useHubPaginatedSearch<T>(
         busyRef.current = false;
         busyKindRef.current = null;
       }
-      // `error` is deliberately preserved. Disabling the feed (a tab switch, or
-      // the Hub becoming unavailable) must not erase why the last attempt
-      // failed, otherwise the catalog has nothing to show but a generic
-      // "you're offline" panel regardless of the real cause.
+      // `error` is deliberately preserved: disabling the feed must not erase why
+      // the last attempt failed, leaving only a generic "you're offline" panel.
       setState((prev) =>
         prev.isLoading || prev.isLoadingMore
           ? {

@@ -49,9 +49,8 @@ async function fetchReadmeOnce(
 ): Promise<FetchedReadme | null> {
   const prefix = readmePrefix(kind);
   const headers: HeadersInit = {};
-  // Never send the token to the public Hub when a mirror is configured: this
-  // URL is hardcoded, so a private mirror repo would disclose its credentials
-  // and name to huggingface.co. The card is simply unavailable there for now.
+  // Hardcoded public URL: with a mirror configured this would disclose a private
+  // repo name and its token to huggingface.co. No card is better than that.
   if (hubProxyFirst()) return null;
   if (token) headers.Authorization = `Bearer ${token}`;
   let transient = false;

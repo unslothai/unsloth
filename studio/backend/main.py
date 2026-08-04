@@ -1371,8 +1371,8 @@ async def health_check(request: Request):
         "cloudflare_url": getattr(request.app.state, "cloudflare_url", None),
         "server_url": getattr(request.app.state, "server_url", None),
         "secure": bool(getattr(request.app.state, "secure", False)),
-        # HF_ENDPOINT-aware; the frontend hardcodes huggingface.co otherwise, so
-        # a mirror looks permanently offline. Read per request to stay live.
+        # Without this the frontend assumes huggingface.co, so a mirror looks
+        # permanently offline.
         "hub_endpoint": _hub_endpoint(),
     }
     if snapshot is not None:

@@ -50,9 +50,9 @@ function subscribeOnlineStatus(onStoreChange: () => void): () => void {
 }
 
 /**
- * Legacy boolean view, for callers that only need a request-suppression switch.
- * Prefer useHubAvailability() in UI: this collapses "backing off" and "proven
- * reachable" into one bit, which made every failure look identical on screen.
+ * Legacy boolean view. Prefer useHubAvailability() in UI: this collapses
+ * "backing off" and "proven reachable" into one bit, so every failure looked
+ * identical on screen.
  */
 export function useOnlineStatus(): boolean {
   return useSyncExternalStore(

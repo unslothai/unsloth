@@ -34,8 +34,8 @@ interface PlatformState {
   cloudflareUrl: string | null;
   serverUrl: string | null;
   secure: boolean;
-  // Effective HF endpoint from /api/health (authed). A non-official value means
-  // a mirror, which the browser cannot reach directly (CSP + CORS).
+  // A non-official value means a mirror, which the browser cannot reach
+  // directly (CSP + CORS).
   hubEndpoint: string;
   fetched: boolean;
   // Last verdict came from a deferred reply (torch-warm kill switch): nothing settles
@@ -174,7 +174,7 @@ export async function fetchDeviceType(options?: {
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
-        // Absent on an older backend: keep the default so it still works.
+        // Absent on an older backend, so keep whatever we already had.
         hubEndpoint: data.hub_endpoint ?? previous.hubEndpoint,
         fetched: data.device_type !== undefined || keepPlatform,
         detectionDeferred: isDetectionDeferred(data),

@@ -43,8 +43,8 @@ _MAX_LIMIT = 500
 _MAX_STRING_LENGTH = 256
 _MAX_REPEATED_VALUES = 24
 
-# Forwardable parameters. Anything else is rejected, not ignored, so `endpoint`,
-# `url` or an absolute pagination target cannot slip through unnoticed.
+# Forwardable parameters. Anything else is rejected, not ignored, so no
+# `endpoint`, `url` or absolute pagination target slips through.
 _SCALAR_PARAMS = frozenset(
     {
         "search",
@@ -80,9 +80,8 @@ _ALLOWED_SORTS = frozenset(
 _ALLOWED_DIRECTIONS = frozenset({"-1", "1"})
 _BOOLEAN_VALUES = frozenset({"true", "false"})
 
-# Never echo an upstream auth failure as our own 401/403: authFetch reads a 401
-# from this backend as an expired Studio session and clears the tokens, logging
-# the user out. 424 says the dependency failed, not that the caller did.
+# Never echo an upstream auth failure as our own 401/403: authFetch would read it
+# as an expired Studio session and log the user out. 424 blames the dependency.
 _UPSTREAM_AUTH_STATUS = 424
 
 
@@ -212,14 +211,12 @@ def rewrite_next_link(
 
     endpoint = hf_endpoint_url()
     base = urlsplit(endpoint)
-    # RFC 8288 targets may be relative; resolve first so a mirror emitting
-    # `</api/models?cursor=...>` is not mistaken for an off-endpoint link.
+    # Resolve first: a relative RFC 8288 target is not an off-endpoint link.
     try:
         parsed = urlsplit(urljoin(endpoint, next_url))
     except ValueError:
         return None
-    # Compare normalised authority, not raw netloc: case and an explicit default
-    # port are equivalent, and a textual check would drop a valid link.
+    # Normalised authority, not raw netloc: case and a default port compare equal.
     target, expected = _authority(parsed), _authority(base)
     if target is None or target != expected:
         return None
@@ -250,9 +247,8 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
     """
     from huggingface_hub.utils import get_session
 
-    # Split the window so the whole call is bounded by it. requests' timeout is
-    # per-read, so handing it the full budget lets headers use one window and a
-    # stalled body another; half each keeps the worst case at one.
+    # requests' timeout is per-read, so the full budget could be spent twice
+    # (headers, then a stalled body); half each bounds the whole call by it.
     deadline = time.monotonic() + _REQUEST_TIMEOUT_SECONDS
     read_timeout = _REQUEST_TIMEOUT_SECONDS / 2
     headers = {"Accept": "application/json"}
@@ -273,8 +269,7 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
             return response.status_code, b"", ""
         body = bytearray()
         for chunk in response.iter_content(chunk_size = 65536):
-            # Checked per chunk; the halved socket timeout is what bounds how
-            # long a single stalled read can sit here before we get to look.
+            # Per chunk only; the halved socket timeout bounds one stalled read.
             if time.monotonic() > deadline:
                 raise HTTPException(
                     status_code = 504,
@@ -336,8 +331,7 @@ async def _proxy_get(url: str, hf_token: Optional[str]) -> tuple:
         )
 
 
-# Only `expand` is meaningful on a single-repo lookup; the listing filters are
-# rejected so this cannot be turned into a second listing route.
+# Listing filters are rejected so this cannot become a second listing route.
 _INFO_PARAMS = frozenset({"expand"})
 _REVISION_RE = re.compile(r"^[A-Za-z0-9._\-/]{1,128}$")
 
@@ -410,16 +404,14 @@ async def discovery_search(
 
     headers = {}
     # Absolute, not relative: the Hub client's link parser only recognises an
-    # http(s) target. The browser never fetches this URL -- the Hub transport
-    # takes its query and re-issues it same-origin -- so only the path has to be
-    # right, which is why deriving the host from the request is safe here.
+    # http(s) target. The browser never fetches it (the transport re-issues the
+    # query same-origin), so deriving the host from the request is safe.
     next_link = rewrite_next_link(
         resource,
         parse_next_link(link),
         str(request.base_url),
     )
     if next_link:
-        # The Hub client paginates off this header; without it the proxy stops
-        # after page one.
+        # The Hub client paginates off this header; without it, page one is the end.
         headers["Link"] = f'<{next_link}>; rel="next"'
     return JSONResponse(content = payload, headers = headers)

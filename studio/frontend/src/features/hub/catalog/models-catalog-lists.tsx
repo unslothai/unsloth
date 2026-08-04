@@ -154,8 +154,7 @@ export function DiscoverList({
 
   return (
     <>
-      {/* Results already fetched stay on screen when the Hub becomes
-          unreachable, instead of being replaced by an error panel. */}
+      {/* Keep fetched results on screen when the Hub becomes unreachable. */}
       {online || discoverRows.length > 0 ? (
         discoverRows.length > 0 ? (
           <>
@@ -237,8 +236,8 @@ export function DiscoverList({
       ) : suppressEmptyState ? null : (
         <NetworkErrorState
           online={online}
-          // The classified failure supplies the wording. The raw SDK error is
-          // not echoed: it appends the request URL, which carries the query.
+          // The classified failure supplies the wording; the raw SDK error
+          // appends the request URL, which carries the query.
           message={searchFailure ? "" : (searchError ?? "")}
           failure={searchFailure}
           onRetry={onRetry}

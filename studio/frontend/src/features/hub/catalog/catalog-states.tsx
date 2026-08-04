@@ -15,8 +15,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { HubFailure } from "@/features/hub/lib/network";
 
 // Only a browser reporting itself offline earns "You're offline". Calling a DNS
-// filter, antivirus or extension block "offline" is what made this
-// class of bug undiagnosable.
+// filter or extension block "offline" is what made these bugs undiagnosable.
 function describeFailure(
   failure: HubFailure | null | undefined,
   online: boolean,

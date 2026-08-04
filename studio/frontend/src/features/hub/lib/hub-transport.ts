@@ -16,12 +16,10 @@ export const PROXY_PREFIX = "/api/hub/discovery/";
 const INFO_PREFIX = "/api/hub/discovery-info/";
 export const DEFAULT_HUB_ENDPOINT = "https://huggingface.co";
 
-// Only transport failures justify a retry. A real HTTP status proves the direct
-// request reached the Hub, so re-sending it would just double the traffic;
-// those never reach here, since fetchWithTimeout resolves with the Response.
-// browser-offline is included because navigator.onLine is advisory and reads
-// false on WSL2 and some Tauri/WebKitGTK webviews (see network.ts); letting it
-// veto the fallback would make the one untrusted signal authoritative.
+// Only transport failures justify a retry: a real HTTP status proves the request
+// reached the Hub (and resolves as a Response anyway). browser-offline counts
+// because navigator.onLine is advisory and reads false on WSL2 and some
+// Tauri/WebKitGTK webviews (see network.ts); it must not veto the fallback.
 const FALLBACK_KINDS = new Set([
   "network-opaque",
   "csp-blocked",
@@ -82,19 +80,17 @@ function hubUrlOf(raw: string): URL | null {
 }
 
 /**
- * The backend's next-page link is absolute, because @huggingface/hub's
- * parseLinkHeader only matches an http(s) target, so match on the path rather
- * than the whole string.
+ * Match on the path: the backend's next-page link is absolute because
+ * @huggingface/hub's parseLinkHeader only matches an http(s) target.
  */
 export function isProxyUrl(raw: string): boolean {
   return hubUrlOf(raw)?.pathname.startsWith(PROXY_PREFIX) ?? false;
 }
 
 /**
- * The proxy serves the listing endpoints and carries no path of its own, so a
- * request that means something by its path (modelInfo's
- * /api/models/{repo}/revision/HEAD) must never be retargeted at it: the SDK
- * would parse a listing array as one repo and cache a model with no id.
+ * The proxy serves listings and carries no path of its own, so a path-bearing
+ * request must never be retargeted at it: the SDK would parse a listing array
+ * as one repo and cache a model with no id.
  */
 function isListingUrl(raw: string, resource: HubResource): boolean {
   return hubUrlOf(raw)?.pathname === `/api/${resource}`;
@@ -182,10 +178,8 @@ export function setHubProxyFirst(fn: () => boolean): void {
 
 /**
  * A fetch for the Hub SDK: direct first, falling back to the same-origin backend
- * when the browser cannot make the request but the server can.
- *
- * Affinity is per-instance, so a fallen-back iterator keeps its later pages on
- * the proxy instead of re-failing the direct route every page.
+ * when the browser cannot make the request but the server can. Affinity is
+ * per-instance, so a fallen-back iterator keeps later pages on the proxy.
  */
 export function createHubTransport(
   resource: HubResource,
@@ -203,10 +197,9 @@ export function createHubTransport(
   let savedDirectFailure: HubFailure | undefined;
 
   // A page the backend served proves the Hub's content is reachable even though
-  // this browser could not fetch it. fetchWithTimeout has already recorded the
-  // direct failure, and nothing else clears it, so without this the catalog
-  // keeps calling the Hub unavailable while fallback results are on screen: it
-  // refuses to paginate and renders an empty result set as a connection error.
+  // this browser could not fetch it. Nothing else clears the recorded direct
+  // failure, so without this the catalog keeps calling the Hub unavailable while
+  // fallback results are on screen, and refuses to paginate.
   const viaBackend = async (
     raw: string,
     init: Parameters<typeof fetch>[1],
@@ -277,10 +270,9 @@ export function createHubTransport(
       try {
         return await viaBackend(raw, init, error.failure);
       } catch (proxyError) {
-        // Both routes are gone, so now it is true. Recording it earlier would
-        // have aborted the attempt above. An abort is not a failure of the
-        // proxy though, so a superseded query must not start a backoff that
-        // would then disable its own replacement.
+        // Both routes are gone, so now it is true; recording it earlier would
+        // have aborted the attempt above. An abort is not a proxy failure, and
+        // a superseded query must not back off its own replacement.
         const origin = hubUrlOf(raw)?.origin;
         if (origin && !wasAborted(init, proxyError)) {
           markRemoteNetworkOffline(origin, undefined, error.failure);

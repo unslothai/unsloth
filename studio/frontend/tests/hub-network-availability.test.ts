@@ -18,8 +18,8 @@ import {
 
 const HF = "https://huggingface.co";
 
-// network.ts guards every DOM touch, but installing a window exercises the same
-// event path the app uses instead of the no-op branch.
+// Installing a window exercises the same event path the app uses, not the
+// no-op branch network.ts falls back to.
 function installWindow() {
   const listeners = new Map<string, Set<() => void>>();
   (globalThis as Record<string, unknown>).window = {

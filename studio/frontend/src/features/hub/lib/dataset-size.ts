@@ -210,8 +210,8 @@ export function fetchDatasetSize(
   tokenOrSignal?: string | AbortSignal,
   signal?: AbortSignal,
 ): Promise<DatasetSizeInfo | null> {
-  // These services are hardcoded public endpoints, so a mirror user's token and
-  // repo name would go to the wrong host. Same guard as the README fetch.
+  // Hardcoded public endpoints: with a mirror, the token and repo name would go
+  // to the wrong host.
   if (hubProxyFirst()) return Promise.resolve(null);
   const resolvedToken =
     typeof tokenOrSignal === "string" ? tokenOrSignal : undefined;
