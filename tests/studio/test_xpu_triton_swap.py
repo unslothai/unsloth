@@ -464,6 +464,37 @@ def test_the_swap_is_wired_in_at_both_repair_points():
     assert src.count("        _ensure_xpu_triton()") == 2
 
 
+def test_the_swap_runs_after_every_torch_migration():
+    """Order, not just presence.
+
+    The swap keys off the INSTALLED +xpu label. Run between two migrations, an explicit CPU pin
+    over an XPU venv gets XPU triton installed and then torch replaced with the CPU build under
+    it: a CPU environment whose top-level triton package is the XPU implementation, with its
+    declared generic triton gone. Asserted on the AST so a reflow cannot fake it.
+    """
+    import ast as _ast
+
+    blocks = []
+    for node in _ast.walk(_ast.parse(STACK.read_text(encoding = "utf-8"))):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):
+            continue  # Lambda / IfExp carry a single expression here, not a statement list
+        calls = [
+            s.value.func.id
+            for s in body
+            if isinstance(s, _ast.Expr) and isinstance(s.value, _ast.Call)
+            and isinstance(s.value.func, _ast.Name) and s.value.func.id.startswith("_ensure_")
+        ]
+        if "_ensure_xpu_triton" in calls:
+            blocks.append(calls)
+    assert len(blocks) == 2, f"expected 2 repair blocks, found {len(blocks)}: {blocks}"
+    for calls in blocks:
+        assert calls[-1] == "_ensure_xpu_triton", calls
+        for migration in ("_ensure_cuda_torch", "_ensure_rocm_torch",
+                          "_ensure_xpu_torch", "_ensure_cpu_torch"):
+            assert calls.index(migration) < calls.index("_ensure_xpu_triton"), (migration, calls)
+
+
 def test_install_sh_does_not_carry_a_second_copy():
     # It used to. install.sh runs setup.sh, which runs this module, so a copy there is redundant
     # and a place for the two to drift apart.

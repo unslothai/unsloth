@@ -3513,8 +3513,11 @@ def install_python_stack() -> int:
         _ensure_cuda_torch()
         _ensure_rocm_torch()
         _ensure_xpu_torch()
-        _ensure_xpu_triton()
         _ensure_cpu_torch()
+        # After every torch migration, never between two of them: the swap keys off the
+        # installed +xpu label, and an explicit CPU pin over an XPU venv would otherwise get
+        # XPU triton installed and then have torch replaced with the CPU build under it.
+        _ensure_xpu_triton()
 
     # Windows + AMD GPU: warn if ROCm torch was not installed (wrong Python
     # version or unknown ROCm version).
@@ -3711,8 +3714,11 @@ def install_python_stack() -> int:
         _ensure_cuda_torch()
         _ensure_rocm_torch()
         _ensure_xpu_torch()
-        _ensure_xpu_triton()
         _ensure_cpu_torch()
+        # After every torch migration, never between two of them: the swap keys off the
+        # installed +xpu label, and an explicit CPU pin over an XPU venv would otherwise get
+        # XPU triton installed and then have torch replaced with the CPU build under it.
+        _ensure_xpu_triton()
 
     # 14. Final check (silent; third-party conflicts are expected)
     subprocess.run(
