@@ -34,6 +34,24 @@ rename the heading at release time.
 
 ## Unreleased
 
+## 2026.8.2
+
+### What's Changed
+
+- More efficient downloading. Auto XET to HTTP fallback after XET stalling.
+- UI designing and alignment improvements.
+- Chat UI and many other bug fixes.
+- A continued update from the 2026.7.6 Kimi K3 + DeepSeek-V4 0731 release
+
+## 2026.8.1
+
+### What's Changed
+
+- DeepSeek-V4 0731 Support
+- Many fixes for Windows
+- Many bug fixes for all models and systems
+- A continued update from the 2026.7.6 Kimi K3 release
+
 ## 2026.7.6
 
 ### What's Changed

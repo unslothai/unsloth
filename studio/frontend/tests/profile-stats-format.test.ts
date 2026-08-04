@@ -6,8 +6,10 @@ import test from "node:test";
 
 import {
   formatCompactNumber,
+  formatDayCount,
   formatDuration,
   formatMilliseconds,
+  formatProfileCount,
   heatLevel,
   parseDayKey,
   seriesForMode,
@@ -46,6 +48,46 @@ test("durations read the way the header does", () => {
   assert.equal(formatMilliseconds(420), "420ms");
   assert.equal(formatMilliseconds(2500), "2.5s");
   assert.equal(formatMilliseconds(0), "—");
+});
+
+test("day counts follow each locale's plural rules", () => {
+  assert.equal(formatDayCount(1, "en"), "1 day");
+  assert.equal(formatDayCount(2, "en"), "2 days");
+  assert.equal(formatDayCount(1, "it"), "1 giorno");
+  assert.equal(formatDayCount(2, "it"), "2 giorni");
+  assert.equal(formatDayCount(1, "ar"), "يوم");
+  assert.equal(formatDayCount(2, "ar"), "يومان");
+  assert.equal(formatDayCount(3, "ar"), "3 أيام");
+  assert.equal(formatDayCount(11, "ar"), "11 يومًا");
+  assert.equal(formatDayCount(100, "ar"), "100 يوم");
+});
+
+test("profile counts follow the selected locale's plural rules", () => {
+  assert.equal(formatProfileCount(1, "step", "en"), "1 step");
+  assert.equal(formatProfileCount(2, "step", "en"), "2 steps");
+  assert.equal(formatProfileCount(1, "week", "es"), "1 semana");
+  assert.equal(formatProfileCount(2, "week", "es"), "2 semanas");
+
+  assert.equal(formatProfileCount(1, "week", "it"), "1 settimana");
+  assert.equal(formatProfileCount(2, "week", "it"), "2 settimane");
+  assert.equal(formatProfileCount(1, "message", "it"), "1 messaggio");
+  assert.equal(formatProfileCount(2, "message", "it"), "2 messaggi");
+  assert.equal(formatProfileCount(2, "token", "it"), "2 token");
+  assert.equal(formatProfileCount(2, "step", "it"), "2 step");
+  assert.equal(formatProfileCount(5, "token", "en", "$&"), "$& tokens");
+  assert.equal(formatProfileCount(5, "token", "en", "$'"), "$' tokens");
+
+  assert.equal(formatProfileCount(1, "step", "ru"), "1 шаг");
+  assert.equal(formatProfileCount(2, "step", "ru"), "2 шага");
+  assert.equal(formatProfileCount(5, "step", "ru"), "5 шагов");
+  assert.equal(formatProfileCount(21, "step", "ru"), "21 шаг");
+
+  assert.equal(formatProfileCount(1, "message", "ar"), "رسالة واحدة");
+  assert.equal(formatProfileCount(2, "message", "ar"), "رسالتان");
+  assert.equal(formatProfileCount(3, "message", "ar"), "3 رسائل");
+  assert.equal(formatProfileCount(11, "message", "ar"), "11 رسالة");
+  assert.equal(formatProfileCount(100, "message", "ar"), "100 رسالة");
+  assert.equal(formatProfileCount(1200, "token", "ar", "1.2K"), "1.2K توكن");
 });
 
 test("heat levels are relative to the busiest day", () => {

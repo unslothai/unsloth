@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import logging
 import os
 import psutil
@@ -86,12 +87,12 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         if formatting_func is None:
             return super().__call__(examples)
 
-        # why: base __call__ would reapply formatting_func; applied above.
-        self.formatting_func = None
-        try:
-            return super().__call__(examples)
-        finally:
-            self.formatting_func = formatting_func
+        # why: base __call__ would reapply formatting_func; applied above. A
+        # per-call shallow view shares every other attribute by reference, so a
+        # concurrent caller can never observe formatting_func blanked on self.
+        view = copy.copy(self)
+        view.formatting_func = None
+        return super(UnslothVisionDataCollator, view).__call__(examples)
 
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(

@@ -25,7 +25,7 @@ export const ja = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "{name} のアカウントメニュー",
     updateAvailable: "アップデートが利用可能です",
     resize: {
@@ -51,6 +51,7 @@ export const ja = {
       compare: "比較",
       search: "検索",
       hub: "モデルハブ",
+      projects: "プロジェクト",
       train: "トレーニング",
       recipes: "レシピ",
       export: "エクスポート",
@@ -115,6 +116,141 @@ export const ja = {
       apiKeys: "API",
       about: "情報",
       voice: "音声",
+      data: "データ",
+      agents: "エージェント",
+    },
+    voice: {
+      title: "音声",
+      description: "マイク、音声入力、音声認識、読み上げ",
+      dictation: {
+        sectionTitle: "音声入力",
+        engineLabel: "音声入力エンジン",
+        engineBrowser: "ブラウザー",
+        engineBrowserDescription:
+          "ブラウザーの音声サービスで文字起こしします。STT モデルを使うには「ローカル文字起こし」を選択してください。",
+        engineModel: "ローカル文字起こし",
+        engineModelDescription:
+          "音声認識 (STT) モデルをローカルで実行し、オフラインでも動作します。ダウンロードして読み込むと、一定時間使わなければアンロードされます。",
+        sttModelLabel: "音声認識モデル",
+        sttModelDescription:
+          "ローカルで実行する STT モデルを選択または検索します。",
+        sttModelSearchPlaceholder: "モデルを検索",
+        sttModelSearching: "Hugging Face を検索中…",
+        sttModelValidating: "Whisper との互換性を確認中…",
+        sttModelNoResults: "Whisper モデルが見つかりません",
+        sttModelInvalid: "このリポジトリは音声入力には使用できません",
+        sttModelFailed: "STT モデルを読み込めませんでした",
+        sttModelUnsupported: "このブラウザーは録音に対応していません",
+        sttChecking: "確認中…",
+        sttOnDemand: "ダウンロード済み",
+        sttLoadingModel: "モデルを読み込み中…",
+        sttReady: "{device} に読み込み済み",
+        sttLoaded: "読み込み済み",
+        sttUnavailable:
+          "このサーバーにはインストールされていません。ローカルの音声入力を有効にするには `unsloth studio update` を実行してください。",
+        sttRetry: "再試行",
+        sttDownloadChecking: "ダウンロード状況を確認中…",
+        sttNotDownloaded: "未ダウンロード",
+        sttDownloadStatusFailed: "ダウンロード状況を確認できませんでした",
+        sttDownload: "ダウンロード",
+        sttDownloading: "ダウンロード中… {progress}%",
+        sttCancelDownload: "キャンセル",
+        sttCancellingDownload: "キャンセル中…",
+        sttDownloadComplete: "音声認識モデルをダウンロードしました",
+        sttDownloadFailed: "音声認識モデルをダウンロードできませんでした",
+        sttLoad: "読み込み",
+        sttUnload: "アンロード",
+        sttUnloading: "アンロード中…",
+        microphoneLabel: "マイク",
+        microphoneDescription: "音声入力に使用します",
+        microphoneFallbackHint:
+          "音声入力に使用します。ブラウザーの音声エンジンがこのデバイスを使用できない場合は、システムのデフォルトに切り替わります",
+        microphoneGrantDescription:
+          "デバイス名を表示するにはマイクへのアクセスを許可してください",
+        allowMicrophone: "マイクを許可",
+        micAccessBlocked:
+          "マイクへのアクセスがブロックされました。この Unsloth のページでマイクへのアクセスを許可してから、もう一度お試しください。",
+        micAccessUnsupported:
+          "このブラウザーまたはコンテキストではマイクへのアクセスに対応していません。",
+        systemDefault: "システムのデフォルト",
+        savedMicDisconnected: "保存済みのマイク (未接続)",
+        languageLabel: "音声入力の言語",
+        languageDescription: "認識する言語",
+        languageAuto: "自動 (ブラウザーの言語)",
+      },
+      dictionary: {
+        sectionTitle: "音声入力辞書",
+        sectionDescription: "音声入力が特定の語句をどう表記するかを設定します",
+        manageLabel: "カスタム表記",
+        manage: "管理",
+        backToVoice: "音声に戻る",
+        addEntry: "項目を追加",
+      },
+      recents: {
+        sectionTitle: "音声入力の履歴",
+        sectionDescription:
+          "音声入力はすべてここに保存され、テキストを復元できます",
+        manageLabel: "音声入力の履歴",
+        manage: "管理",
+        pageDescription:
+          "音声入力はすべて保存されます。表示、コピー、削除できるほか、その音声入力を使ったチャットを開くこともできます。",
+        searchPlaceholder: "音声入力を検索",
+        sortLabel: "音声入力を並べ替え",
+        sortNewest: "新しい順",
+        sortOldest: "古い順",
+        sortAlpha: "A → Z",
+        noMatches: "検索に一致する音声入力はありません",
+        detailTitle: "保存された音声入力",
+        backToVoice: "音声に戻る",
+        backToRecents: "最近の音声入力に戻る",
+        view: "音声入力の全文を表示",
+        empty: "音声入力はまだありません",
+        dictationColumn: "音声入力",
+        dateColumn: "作成日",
+        copy: "音声入力をコピー",
+        copied: "クリップボードにコピーしました",
+        copyFailed: "クリップボードにコピーできませんでした",
+        delete: "音声入力を削除",
+        deleteTitle: "音声入力を削除",
+        deleteDescription:
+          "この保存された音声入力を削除しますか？元に戻せません。",
+        deleteLinkedDescription:
+          "この保存された音声入力を削除しますか？使用したチャットも合わせて削除できます。元に戻せません。",
+        deleteWithChat: "チャットと音声入力を削除",
+        deleteWithChatFailed: "チャットを削除できませんでした",
+        clear: "履歴を消去",
+        clearTitle: "音声入力の履歴を消去",
+        clearDescription:
+          "保存された音声入力をすべて削除しますか？元に戻せません。",
+        clearConfirm: "すべて消去",
+        showMore: "さらに表示 ({count})",
+        openChat: "チャットを開く",
+      },
+      readAloud: {
+        sectionTitle: "読み上げ",
+        buttonLabel: "読み上げボタン",
+        buttonDescription: "アシスタントの応答に表示します",
+        engineLabel: "TTS エンジン",
+        engineSystemDescription: "デバイス内蔵の音声",
+        engineStudioDescription:
+          "読み込み済みの音声モデルを使用します (例: Orpheus)",
+        engineSystem: "システムの音声",
+        engineStudio: "TTS モデルを読み込む",
+        modelLabel: "TTS モデル",
+        modelDescription:
+          "モデルセレクターから音声モデルを読み込んでください (例: Orpheus TTS)",
+        voiceLabel: "音声",
+        voiceDescription: "このデバイスで最適な音声",
+        speedLabel: "速度",
+        pitchLabel: "ピッチ",
+        volumeLabel: "音量",
+        previewLabel: "音声を試聴",
+        previewDescription: "短いサンプルを再生します",
+        previewAction: "試聴",
+        stopAction: "停止",
+        ttsLabel: "音声合成",
+        notSupported: "このブラウザーでは対応していません",
+      },
     },
     general: {
       title: "一般",
@@ -142,6 +278,7 @@ export const ja = {
         updating: "更新中...",
         updated: "パスワードを更新しました。",
         updateFailed: "パスワードの更新に失敗しました。",
+        newHasSpaces: "新しいパスワードにスペースは使用できません。",
       },
       chatDefaults: "チャットのデフォルト設定",
       autoTitleNewChats: "新規チャットのタイトル自動生成",
@@ -165,6 +302,12 @@ export const ja = {
         loadError: "モデル自動切り替え設定の読み込みに失敗しました。",
         saveError: "モデル自動切り替え設定の保存に失敗しました。",
         idleError: "モデルを読み込んだままにするには 0 を、それ以外は 60 秒以上を入力してください。",
+        autoDownload: "不足しているモデルをダウンロード",
+        autoDownloadDescription:
+          "API リクエストで指定された未ダウンロードの GGUF を取得します。API キーを持つ人なら誰でもディスクと帯域を消費できるようになります。",
+        keepKv: "アイドル時の自動アンロードをまたいでチャットのコンテキストを保持",
+        keepKvDescription:
+          "アイドル時の自動アンロードの前に KV キャッシュを保存し、再開したチャットが履歴を読み直さずに済むようにします。ディスク使用量は最大 10 GB です。",
       },
       previewSharing: {
         sectionTitle: "プレビュー共有",
@@ -227,6 +370,12 @@ export const ja = {
         confirmDescription: "ローカル限定の設定を消去し、Unsloth を再読み込みします。チャット、APIアクセス、DBに保存された設定は保持されます。",
         confirmAction: "リセットして再読み込み",
       },
+      permissions: {
+        sectionTitle: "権限",
+        bypassLabel: "ツールの権限",
+        bypassDescription:
+          "チャットのツール呼び出し (ターミナル、python、ウェブ、MCP) を実行する前に、Unsloth がどのように承認するかを決めます。「Full access」にすると承認とコードサンドボックスが無効になります。",
+      },
     },
     profile: {
       title: "プロフィール",
@@ -252,10 +401,69 @@ export const ja = {
       photoPersistErrorDescription: "写真はこのセッション用に更新されましたが、再読み込み後に保持されない可能性があります。",
       photoUpdateErrorTitle: "プロフィール写真を更新できませんでした",
       imageUseError: "この画像は使用できませんでした。",
+      uploadPhoto: "写真をアップロード",
+      removePhoto: "削除",
+      pictureOptions: "プロフィール写真のオプション",
+      stats: {
+        title: "あなたの統計",
+        subtitle:
+          "以下はすべてご自身の履歴から集計しています。収集も Unsloth への送信も行いません。",
+        retry: "再試行",
+        privacyNote:
+          "統計は、お使いの Unsloth が保持しているチャットとトレーニングの履歴から計算されます。データの収集は行わず、Unsloth や第三者への送信も行いません。",
+        emptyChats:
+          "チャットがまだありません。会話を始めると、ここに統計が表示されます。",
+        lifetimeTokens: "累計トークン",
+        peakTokens: "トークン最多の日",
+        longestChat: "最長のチャット",
+        currentStreak: "現在の連続日数",
+        longestStreak: "最長の連続日数",
+        activityTitle: "トークンの推移",
+        activityDescription: "直近{weeks}で{total}",
+        mode: {
+          daily: "日次",
+          weekly: "週次",
+          cumulative: "累計",
+        },
+        cellTooltip: "{date} · {tokens}、{messages}",
+        weekTooltip: "{date} の週 · {tokens}",
+        less: "少ない",
+        more: "多い",
+        insightsTitle: "アクティビティの分析",
+        totalChats: "チャット総数",
+        totalMessages: "メッセージ総数",
+        tokensIn: "送信トークン",
+        tokensOut: "生成トークン",
+        cachedTokens: "キャッシュされたトークン",
+        cachedValue: "{tokens} (入力の {percent}%)",
+        avgTokensPerChat: "チャットあたりの平均トークン",
+        timeInChat: "チャット時間",
+        activeDays: "アクティブな日数",
+        toolCalls: "ツール呼び出し",
+        attachments: "添付ファイル",
+        avgSpeed: "平均速度",
+        bestSpeed: "最速の応答",
+        firstToken: "最初のトークンまでの平均時間",
+        tokensPerSecond: "{value} tok/s",
+        topModelsTitle: "よく使うモデル",
+        topModelsDescription: "やり取りしたトークン数順",
+        modelSummary: "{tokens} · {messages}",
+        noModels: "モデルの利用実績はまだありません。",
+        trainingTitle: "トレーニング",
+        trainingDescription: "このワークスペースのファインチューニング実行",
+        trainingRuns: "実行回数",
+        trainingCompleted: "完了",
+        trainingSteps: "ステップ",
+        trainingTokens: "学習したトークン",
+        trainingTime: "トレーニング時間",
+        bestLoss: "最良の Loss",
+        runSteps: "{steps}",
+        runLoss: "Loss {loss}",
+      },
     },
     appearance: {
       title: "外観",
-      description: "このデバイスでの Unsloth Studio の見た目。",
+      description: "このデバイスでの Unsloth の見た目。",
       theme: {
         title: "テーマ",
         label: "カラー構成",
@@ -409,6 +617,16 @@ export const ja = {
         copied: "パスをコピーしました",
         openError: "フォルダを開けませんでした",
         copyError: "パスをコピーできませんでした",
+        futureDownloads: "新規ダウンロードのみ",
+        environmentManaged: "環境変数 {variable} で管理されています。",
+        locationFree: "{free} 空き",
+        changeAction: "変更",
+        resetAction: "既定を使用",
+        chooseTitle: "モデルのダウンロード先を選択",
+        chooseAction: "今後のダウンロードに使用",
+        cacheSaved: "モデルのダウンロード先を更新しました",
+        cacheSaveError: "モデルのダウンロード先を更新できませんでした",
+        cachePickerError: "フォルダの選択画面を開けませんでした",
       },
       environment: {
         title: "環境",
@@ -420,6 +638,107 @@ export const ja = {
         processMemory: "プロセスメモリ",
         notInstalled: "未インストール",
         unknown: "不明",
+      },
+    },
+    agents: {
+      title: "エージェント",
+      description:
+        "unsloth start で Claude Code や Codex などのコーディングエージェントをローカルモデルに接続します。",
+      intro:
+        "は Claude Code、Codex、Hermes、OpenClaw、OpenCode などのエージェントを、Unsloth がローカルで提供するモデルに完全オフラインで接続します。OpenAI 互換サーバーを起動し、エージェントの設定ファイルには一切手を加えません。",
+      readDocs: "ドキュメントを読む",
+      copy: "コピー",
+      copied: "コピーしました",
+      commandBuilder: "コマンドビルダー",
+      agent: "コーディングエージェント",
+      model: "モデル",
+      searchModels: "GGUF モデルを検索...",
+      noModels: "一致する GGUF モデルはありません。",
+      showingModels:
+        "{total} 件中 {shown} 件を表示しています。入力を続けると絞り込めます。",
+      quantization: "量子化",
+      loadingQuantizations: "量子化を読み込み中...",
+      noQuantizations: "個別の量子化なし",
+      recommended: "推奨",
+      downloaded: "ダウンロード済み",
+      quantizationLoadError:
+        "すべての量子化を読み込めませんでした。コマンドには取得できたモデル名を使用します。",
+      generatedCommand: "生成されたコマンド",
+      docs: "ドキュメント",
+      agentDocs: "{agent} のセットアップドキュメントを開く",
+      copyGeneratedCommand: "生成されたコマンドをコピー",
+      modelNote:
+        "Codex には llama-server が提供する GGUF モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
+      subagent: {
+        title: "ローカルモデルをサブエージェントとして使う",
+        description:
+          "{agent} は現在のモデルのまま、選んだタスクだけをこのローカルの Unsloth モデルに委任します。",
+        setupCommand: "セットアップコマンド",
+        copySetupCommand: "サブエージェントのセットアップコマンドをコピー",
+        usagePrompt: "続いて {agent} で次のように入力します:",
+        copyUsagePrompt: "サブエージェントの利用プロンプトをコピー",
+        defaultPrompt:
+          "ローカルエージェントを起動して、この関数を実装してください。",
+        opencodePrompt: "@unsloth このテスト失敗の原因を調べて",
+      },
+      quickstart: {
+        title: "コマンドを組み立てる",
+        description:
+          "Studio に読み込み済みのモデルでエージェントを起動します。先にモデルを読み込み、claude を下記の対応エージェントに置き換えてください。",
+        noneDetected:
+          "対応するエージェントの CLI が PATH 上に見つかりませんでした。",
+        installed: "インストール済み",
+      },
+      supportedAgents: {
+        title: "対応エージェント",
+        description: "各エージェントはそれぞれのコマンドで起動します:",
+        requiresGguf: "GGUF モデルが必要",
+      },
+      models: {
+        title: "モデルの選び方",
+        description:
+          "--model でモデルと量子化を指定し、--context-length でコンテキスト長を設定します。量子化サフィックスか、明示的な --gguf-variant フラグを使用してください。",
+        suffixLabel: "量子化サフィックスを使う場合",
+        variantLabel: "明示的なバリアントフラグを使う場合",
+      },
+      options: {
+        title: "主なオプション",
+        description:
+          "Unsloth のフラグが先に解釈され、認識されなかったものはそのままエージェントへ渡されます。",
+        model:
+          "モデルを選択します。--model がない場合、unsloth start は Studio に読み込み済みのモデルを使用し、未読み込みならエラーになります。",
+        contextLength:
+          "要求するコンテキスト長を設定します (エイリアス: --max-seq-length)。",
+        ggufVariant: "GGUF の量子化バリアントを選択します。",
+        loadIn4bit:
+          "Hugging Face モデルの 4bit 読み込みを切り替えます。",
+        tensorParallel: "複数 GPU でのテンソル並列を切り替えます。",
+        serve: "自動ローカルサーバーの有効・無効を切り替えます。",
+        launch:
+          "エージェントを起動するか、コマンドと環境変数の表示だけを行います。",
+        persist:
+          "Unsloth が管理するエージェントのストレージを実行間で保持します。",
+        asSubagent:
+          "親エージェントを現在のモデルのままにし、Unsloth をローカルのサブエージェントとして登録します (Claude Code、Codex、OpenCode)。",
+        apiKey:
+          "Unsloth の API キーを指定します (または UNSLOTH_API_KEY を設定)。",
+        yolo:
+          "承認の確認をスキップします。信頼できる環境でのみ使用してください。",
+      },
+      remote: {
+        title: "リモートの Studio に接続する",
+        description:
+          "起動前に次を設定すると、unsloth start を別の場所で動作している Studio に向けられます (--api-key を直接渡すことも可能です):",
+      },
+      passthrough: {
+        title: "エージェントへの引数の受け渡し",
+        description:
+          "Unsloth のフラグより後ろの引数はエージェント自身へ転送されるため、resume のようなネイティブコマンドもそのまま使えます:",
+      },
+      dryRun: {
+        title: "起動せずに内容を確認する",
+        description:
+          "--no-launch を付けると、エージェントを起動する代わりに環境変数とコマンドを表示します。--model を指定している場合、モデルの解決と読み込みは行われることがあります。",
       },
     },
     chat: {
@@ -480,6 +799,56 @@ export const ja = {
       storageClearFailed: "ストレージの消去に失敗しました。{count} 件のチャットが残っている可能性があります。もう一度お試しください。",
       failedToClearChats: "チャットの消去に失敗しました",
     },
+    data: {
+      title: "データ",
+      description:
+        "このデバイスに保存されているチャット履歴とアップロード済みファイルを管理します。",
+      archivedChats: "アーカイブ済みチャット",
+      archivedChatsDescription: "アーカイブしたチャットを表示・管理します。",
+      manageAction: "管理",
+      exportArchivedChats: "エクスポート",
+      exportingArchivedChats: "エクスポート中...",
+      exportedOneArchivedChat: "アーカイブ済みチャット 1 件をエクスポートしました",
+      exportedArchivedChatCount:
+        "アーカイブ済みチャット {count} 件をエクスポートしました",
+      noArchivedChatsToExport: "エクスポートできるアーカイブ済みチャットはありません。",
+      failedToExportArchivedChats:
+        "アーカイブ済みチャットをエクスポートできませんでした",
+      archiveAllChats: "すべてのチャットをアーカイブ",
+      archiveAllChatsDescription:
+        "履歴とプロジェクトにあるすべてのチャットをアーカイブに移動します。",
+      noChatsToArchive: "アーカイブできるチャットはありません。",
+      archiveAllAction: "すべてアーカイブ",
+      archivingAction: "アーカイブ中...",
+      archiveAllChatsTitle: "すべてのチャットをアーカイブしますか？",
+      archiveAllChatsConfirmDescription:
+        "このデバイスのすべてのチャットをアーカイブに移動します。アーカイブ済みのチャットは引き続き利用でき、いつでもアーカイブから戻せます。",
+      archivedAllChats: "すべてのチャットをアーカイブしました",
+      archivedOneChat: "チャット 1 件をアーカイブしました",
+      archivedChatCount: "チャット {count} 件をアーカイブしました",
+      failedToArchiveChats: "チャットをアーカイブできませんでした",
+      confirmBeforeDeleting: "削除前に確認する",
+      confirmBeforeDeletingDescription:
+        "チャットを削除する前に確認を求めます。オフにすると即座に削除します。",
+      filesSection: "ファイル",
+      uploadedFiles: "アップロード済みファイル",
+      uploadedFilesDescription:
+        "チャット、プロジェクト、ナレッジベースにアップロードしたファイルを表示・管理します。",
+      fineTuneExport: "チャットを学習データとして使う",
+      fineTuneExportDescription:
+        "チャットからファインチューニング用の JSONL データセットを作成します。トレーニングで読み込む、レシピで調整する、そのままエクスポートする、のいずれも可能です。",
+      fineTuneExportAction: "JSONL をエクスポート",
+      fineTuneRunAction: "実行",
+      fineTuneExportingAction: "エクスポート中...",
+      fineTuneOpenRecipesAction: "レシピで開く",
+      fineTuneOpeningRecipesAction: "レシピを開いています...",
+      fineTuneTrainAction: "トレーニングタブに読み込む",
+      fineTuneTrainingAction: "読み込み中...",
+      fineTuneExportFailed: "学習データをエクスポートできませんでした",
+      fineTuneRecipeFailed: "チャットをレシピで開けませんでした",
+      fineTuneTrainFailed:
+        "トレーニングタブにデータセットを読み込めませんでした",
+    },
     connections: {
       title: "接続",
       description: "プロバイダーと外部接続を管理します。",
@@ -513,7 +882,7 @@ export const ja = {
       osUnix: "Linux / macOS / WSL",
       osWindows: "Windows",
       secureHttps: "セキュア HTTPS",
-      secureHttpsHint: "0.0.0.0 ポートは依然としてグローバルにアクセス可能です。完全なセキュリティを確保するには、Unsloth Studio を --secure 付きで起動し、この HTTPS リンクのみを公開してください。",
+      secureHttpsHint: "0.0.0.0 ポートは依然としてグローバルにアクセス可能です。完全なセキュリティを確保するには、Unsloth を --secure 付きで起動し、この HTTPS リンクのみを公開してください。",
       copyTunnelUrl: "トンネル URL をコピー",
       copySnippet: "スニペットをコピー",
       copy: "コピー",
@@ -543,6 +912,8 @@ export const ja = {
       revokeDescription: "このトークンを使用しているアプリはすぐにアクセスできなくなります。この操作は取り消せません。",
       revokeAction: '"{name}" を失効',
       revoking: "失効中...",
+      usageNoModel:
+        "モデルを読み込むかダウンロードすると、実行できる例が表示されます。このサーバーにはまだ指定できるモデルがありません。",
     },
     about: {
       title: "情報",
@@ -563,7 +934,7 @@ export const ja = {
       reportIssue: "問題を報告",
       license: {
         sectionTitle: "ライセンス",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "GNU AGPL v3.0 の下でオープンソース化されています。",
         libraryLabel: "Unsloth Core",
@@ -571,11 +942,11 @@ export const ja = {
         libraryDescription: "Apache 2.0 ライセンスの下で提供されています。",
       },
       dangerZone: "危険ゾーン",
-      shutDownStudio: "Unsloth Studio をシャットダウン",
+      shutDownStudio: "Unsloth をシャットダウン",
       shutDownStudioDescription: "Unsloth サーバーを停止し、セッションを終了します。",
       shutDown: "シャットダウン",
       update: {
-        title: "Unsloth Studio のアップデート",
+        title: "Unsloth のアップデート",
         commandText: "{label} テキスト",
         copied: "コピーしました",
         copyCommand: "コマンドをコピー",
@@ -837,6 +1208,8 @@ export const ja = {
       enablePacking: "パッキングを有効化",
       assistantCompletionsOnly: "アシスタントの応答のみ学習",
       readMore: "詳細を読む",
+      optimizerTooltipMlx:
+        "最適化アルゴリズム。既定は AdamW です。Lion はメモリ使用量が少ない一方、通常はより低い学習率が必要です。",
     },
     training: {
       title: "トレーニング",

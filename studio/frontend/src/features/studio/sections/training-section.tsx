@@ -29,6 +29,7 @@ import { useRef } from "react";
 import { toast } from "@/lib/toast";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import { useT } from "@/i18n";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 const placeholderData = [
   { step: 0, loss: 2.5 },
@@ -97,19 +98,18 @@ export function TrainingSection() {
       includeVisionFields,
       includeVisionFields && !isDeepseekOcr,
     );
-    const blob = new Blob([yamlStr], { type: "text/yaml" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-
     const model = (store.selectedModel ?? "model").split("/").pop();
     const method = store.trainingMethod ?? "qlora";
     const dataset = (store.dataset ?? "dataset").split("/").pop();
     const timestamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
-    a.download = `${model}_${method}_${dataset}_${timestamp}.yaml`;
-
-    a.click();
-    URL.revokeObjectURL(url);
+    const filename = `${model}_${method}_${dataset}_${timestamp}.yaml`;
+    void downloadFile(yamlStr, filename, "text/yaml;charset=utf-8").catch(
+      (error) => {
+        if (!isDownloadCancelled(error)) {
+          toast.error("Failed to save training config.");
+        }
+      },
+    );
   };
 
   const handleResetConfig = () => {

@@ -24,7 +24,7 @@ export const ptBR = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "Menu de conta {name}",
     updateAvailable: "Atualização disponível",
     resize: {
@@ -50,6 +50,7 @@ export const ptBR = {
       compare: "Comparar",
       search: "Buscar",
       hub: "Hub de modelos",
+      projects: "Projetos",
       train: "Treinar",
       recipes: "Receitas",
       export: "Exportar",
@@ -114,6 +115,143 @@ export const ptBR = {
       apiKeys: "API",
       about: "Sobre",
       voice: "Voz",
+      data: "Dados",
+      agents: "Agentes",
+    },
+    voice: {
+      title: "Voz",
+      description: "Microfone, ditado, conversão de fala em texto e leitura em voz alta",
+      dictation: {
+        sectionTitle: "Ditado",
+        engineLabel: "Mecanismo de ditado",
+        engineBrowser: "Navegador",
+        engineBrowserDescription:
+          "Transcreve o áudio usando o serviço de fala do seu navegador. Selecione 'Transcrição local' para usar um modelo STT.",
+        engineModel: "Transcrição local",
+        engineModelDescription:
+          "Executa um modelo de conversão de fala em texto (STT) localmente e funciona offline. Baixe e carregue o modelo; ele é descarregado após um período sem uso.",
+        sttModelLabel: "Modelo de reconhecimento de fala",
+        sttModelDescription:
+          "Escolha ou busque um modelo STT para executar localmente.",
+        sttModelSearchPlaceholder: "Buscar modelo",
+        sttModelSearching: "Buscando no Hugging Face…",
+        sttModelValidating: "Verificando a compatibilidade com o Whisper…",
+        sttModelNoResults: "Nenhum modelo Whisper encontrado",
+        sttModelInvalid: "Este repositório não pode ser usado para ditado",
+        sttModelFailed: "Não foi possível carregar o modelo STT",
+        sttModelUnsupported: "A gravação não é suportada neste navegador",
+        sttChecking: "Verificando…",
+        sttOnDemand: "Baixado",
+        sttLoadingModel: "Carregando o modelo…",
+        sttReady: "Carregado em {device}",
+        sttLoaded: "Carregado",
+        sttUnavailable:
+          "Não instalado neste servidor. Execute `unsloth studio update` para habilitar o ditado local.",
+        sttRetry: "Tentar novamente",
+        sttDownloadChecking: "Verificando o status do download…",
+        sttNotDownloaded: "Não baixado",
+        sttDownloadStatusFailed: "Não foi possível verificar o status do download",
+        sttDownload: "Baixar",
+        sttDownloading: "Baixando… {progress}%",
+        sttCancelDownload: "Cancelar",
+        sttCancellingDownload: "Cancelando…",
+        sttDownloadComplete: "Modelo de reconhecimento de fala baixado",
+        sttDownloadFailed:
+          "Não foi possível baixar o modelo de reconhecimento de fala",
+        sttLoad: "Carregar",
+        sttUnload: "Descarregar",
+        sttUnloading: "Descarregando…",
+        microphoneLabel: "Microfone",
+        microphoneDescription: "Usado para ditado",
+        microphoneFallbackHint:
+          "Usado para ditado. Volta para o padrão do sistema se o mecanismo de fala do navegador não conseguir usar este dispositivo",
+        microphoneGrantDescription:
+          "Permita o acesso ao microfone para ver os nomes dos dispositivos",
+        allowMicrophone: "Permitir microfone",
+        micAccessBlocked:
+          "O acesso ao microfone foi bloqueado. Permita o acesso ao microfone nesta página do Unsloth e tente novamente.",
+        micAccessUnsupported:
+          "O acesso ao microfone não é suportado neste navegador ou contexto.",
+        systemDefault: "Padrão do sistema",
+        savedMicDisconnected: "Microfone salvo (não conectado)",
+        languageLabel: "Idioma do ditado",
+        languageDescription: "Idioma a ser reconhecido",
+        languageAuto: "Automático (idioma do navegador)",
+      },
+      dictionary: {
+        sectionTitle: "Dicionário de ditado",
+        sectionDescription:
+          "Defina como o ditado escreve palavras ou frases específicas",
+        manageLabel: "Grafias personalizadas",
+        manage: "Gerenciar",
+        backToVoice: "Voltar para Voz",
+        addEntry: "Adicionar entrada",
+      },
+      recents: {
+        sectionTitle: "Histórico de ditados",
+        sectionDescription:
+          "Todo ditado é salvo aqui para você recuperar o texto",
+        manageLabel: "Histórico de ditados",
+        manage: "Gerenciar",
+        pageDescription:
+          "Todo ditado é salvo. Veja, copie ou exclua os ditados, ou abra o chat em que um deles foi usado.",
+        searchPlaceholder: "Buscar ditados",
+        sortLabel: "Ordenar ditados",
+        sortNewest: "Mais recentes",
+        sortOldest: "Mais antigos",
+        sortAlpha: "De A a Z",
+        noMatches: "Nenhum ditado corresponde à sua busca",
+        detailTitle: "Ditado salvo",
+        backToVoice: "Voltar para Voz",
+        backToRecents: "Voltar para os ditados recentes",
+        view: "Ver o ditado completo",
+        empty: "Nenhum ditado ainda",
+        dictationColumn: "Ditado",
+        dateColumn: "Data de criação",
+        copy: "Copiar ditado",
+        copied: "Copiado para a área de transferência",
+        copyFailed: "Não foi possível copiar para a área de transferência",
+        delete: "Excluir ditado",
+        deleteTitle: "Excluir ditado",
+        deleteDescription:
+          "Excluir este ditado salvo? Esta ação não pode ser desfeita.",
+        deleteLinkedDescription:
+          "Excluir este ditado salvo? Você também pode excluir o chat em que ele foi usado. Esta ação não pode ser desfeita.",
+        deleteWithChat: "Excluir chat e ditado",
+        deleteWithChatFailed: "Não foi possível excluir o chat",
+        clear: "Limpar histórico",
+        clearTitle: "Limpar histórico de ditados",
+        clearDescription:
+          "Excluir todos os ditados salvos? Esta ação não pode ser desfeita.",
+        clearConfirm: "Limpar tudo",
+        showMore: "Mostrar mais ({count})",
+        openChat: "Abrir chat",
+      },
+      readAloud: {
+        sectionTitle: "Leitura em voz alta",
+        buttonLabel: "Botão de leitura em voz alta",
+        buttonDescription: "Exibe o botão nas respostas do assistente",
+        engineLabel: "Mecanismo de TTS",
+        engineSystemDescription: "Vozes nativas do dispositivo",
+        engineStudioDescription:
+          "Usa o modelo de áudio carregado (por exemplo, Orpheus)",
+        engineSystem: "Vozes do sistema",
+        engineStudio: "Carregar modelo de TTS",
+        modelLabel: "Modelo de TTS",
+        modelDescription:
+          "Carregue um modelo de áudio pelo seletor de modelos (por exemplo, Orpheus TTS)",
+        voiceLabel: "Voz",
+        voiceDescription: "As melhores vozes deste dispositivo",
+        speedLabel: "Velocidade",
+        pitchLabel: "Tom",
+        volumeLabel: "Volume",
+        previewLabel: "Ouvir a voz",
+        previewDescription: "Reproduz uma amostra curta",
+        previewAction: "Ouvir",
+        stopAction: "Parar",
+        ttsLabel: "Conversão de texto em fala",
+        notSupported: "Não suportado neste navegador",
+      },
     },
     general: {
       title: "Geral",
@@ -145,6 +283,7 @@ export const ptBR = {
         updating: "Atualizando...",
         updated: "Senha atualizada.",
         updateFailed: "Falha ao atualizar a senha.",
+        newHasSpaces: "A nova senha não pode conter espaços.",
       },
       chatDefaults: "Padrões do chat",
       autoTitleNewChats: "Gerar título automático para novos chats",
@@ -175,6 +314,12 @@ export const ptBR = {
         loadError: "Falha ao carregar as configurações de troca automática de modelo.",
         saveError: "Falha ao salvar as configurações de troca automática de modelo.",
         idleError: "Insira 0 para manter o modelo carregado, ou pelo menos 60 segundos.",
+        autoDownload: "Baixar modelos ausentes",
+        autoDownloadDescription:
+          "Busca um GGUF indicado em uma requisição da API que ainda não foi baixado. Com isso, qualquer pessoa com uma chave de API pode consumir disco e largura de banda.",
+        keepKv: "Manter o contexto do chat ao descarregar por inatividade",
+        keepKvDescription:
+          "Salva o cache KV antes de um descarregamento por inatividade, para que chats retomados não releiam o histórico. Até 10 GB em disco.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",
@@ -248,6 +393,12 @@ export const ptBR = {
           "Limpa as preferências locais e recarrega o Unsloth. Chats, acesso à API e configurações salvas no banco de dados são mantidos.",
         confirmAction: "Redefinir e recarregar",
       },
+      permissions: {
+        sectionTitle: "Permissões",
+        bypassLabel: "Permissões de ferramentas",
+        bypassDescription:
+          "Como o Unsloth aprova as chamadas de ferramentas do chat (terminal, python, web, MCP) antes de executá-las. O modo “Full access” desativa as aprovações e o sandbox de código.",
+      },
     },
     profile: {
       title: "Perfil",
@@ -275,10 +426,69 @@ export const ptBR = {
         "Foto atualizada para esta sessão, mas pode não persistir após recarregar.",
       photoUpdateErrorTitle: "Não foi possível atualizar a foto de perfil",
       imageUseError: "Não foi possível usar esta imagem.",
+      uploadPhoto: "Enviar foto",
+      removePhoto: "Remover",
+      pictureOptions: "Opções da foto de perfil",
+      stats: {
+        title: "Suas estatísticas",
+        subtitle:
+          "Tudo abaixo é calculado a partir do seu próprio histórico. Nada é coletado nem enviado ao Unsloth.",
+        retry: "Tentar novamente",
+        privacyNote:
+          "As estatísticas são calculadas a partir do histórico de chats e de treinos guardado pela sua instalação do Unsloth. Nada é coletado e nada é enviado ao Unsloth ou a terceiros.",
+        emptyChats:
+          "Nenhum chat ainda. Comece uma conversa e suas estatísticas aparecerão aqui.",
+        lifetimeTokens: "Tokens acumulados",
+        peakTokens: "Dia de pico",
+        longestChat: "Chat mais longo",
+        currentStreak: "Sequência atual",
+        longestStreak: "Maior sequência",
+        activityTitle: "Atividade de tokens",
+        activityDescription: "Período: {weeks} · {total}",
+        mode: {
+          daily: "Diária",
+          weekly: "Semanal",
+          cumulative: "Acumulada",
+        },
+        cellTooltip: "{date} · {tokens}, {messages}",
+        weekTooltip: "Semana de {date} · {tokens}",
+        less: "Menos",
+        more: "Mais",
+        insightsTitle: "Análise de atividade",
+        totalChats: "Total de chats",
+        totalMessages: "Total de mensagens",
+        tokensIn: "Tokens enviados",
+        tokensOut: "Tokens gerados",
+        cachedTokens: "Tokens em cache",
+        cachedValue: "{tokens} ({percent}% da entrada)",
+        avgTokensPerChat: "Média de tokens por chat",
+        timeInChat: "Tempo em chats",
+        activeDays: "Dias ativos",
+        toolCalls: "Chamadas de ferramentas",
+        attachments: "Arquivos anexados",
+        avgSpeed: "Velocidade média",
+        bestSpeed: "Resposta mais rápida",
+        firstToken: "Tempo médio até o primeiro token",
+        tokensPerSecond: "{value} tok/s",
+        topModelsTitle: "Modelos mais usados",
+        topModelsDescription: "Classificados por tokens trocados",
+        modelSummary: "{tokens} · {messages}",
+        noModels: "Nenhum uso de modelo registrado ainda.",
+        trainingTitle: "Treino",
+        trainingDescription: "Execuções de fine-tuning deste espaço de trabalho",
+        trainingRuns: "Execuções",
+        trainingCompleted: "Concluídas",
+        trainingSteps: "Passos",
+        trainingTokens: "Tokens treinados",
+        trainingTime: "Tempo de treino",
+        bestLoss: "Melhor loss",
+        runSteps: "{steps}",
+        runLoss: "loss {loss}",
+      },
     },
     appearance: {
       title: "Aparência",
-      description: "Como o Unsloth Studio se parece neste dispositivo.",
+      description: "Como o Unsloth se parece neste dispositivo.",
       theme: {
         title: "Tema",
         label: "Esquema de cores",
@@ -433,6 +643,17 @@ export const ptBR = {
         copied: "Caminho copiado",
         openError: "Não foi possível abrir a pasta",
         copyError: "Não foi possível copiar o caminho",
+        futureDownloads: "Apenas novos downloads",
+        environmentManaged: "Gerenciado pela variável de ambiente {variable}.",
+        locationFree: "{free} livres",
+        changeAction: "Alterar",
+        resetAction: "Usar o padrão",
+        chooseTitle: "Escolher o local de download dos modelos",
+        chooseAction: "Usar para downloads futuros",
+        cacheSaved: "Local de download dos modelos atualizado",
+        cacheSaveError:
+          "Não foi possível atualizar o local de download dos modelos",
+        cachePickerError: "Não foi possível abrir o seletor de pastas",
       },
       environment: {
         title: "Ambiente",
@@ -444,6 +665,105 @@ export const ptBR = {
         processMemory: "Memória do processo",
         notInstalled: "Não instalado",
         unknown: "Desconhecido",
+      },
+    },
+    agents: {
+      title: "Agentes",
+      description:
+        "Conecte agentes de código como Claude Code e Codex a um modelo local com unsloth start.",
+      intro:
+        "conecta Claude Code, Codex, Hermes, OpenClaw, OpenCode e outros agentes a um modelo servido localmente pelo Unsloth, totalmente offline. Ele executa um servidor compatível com a API da OpenAI e nunca altera os arquivos de configuração do seu agente.",
+      readDocs: "Ler a documentação",
+      copy: "Copiar",
+      copied: "Copiado",
+      commandBuilder: "Construtor de comandos",
+      agent: "Agente de código",
+      model: "Modelo",
+      searchModels: "Buscar modelos GGUF...",
+      noModels: "Nenhum modelo GGUF correspondente.",
+      showingModels:
+        "Mostrando {shown} de {total} resultados. Continue digitando para refinar a lista.",
+      quantization: "Quantização",
+      loadingQuantizations: "Carregando quantizações...",
+      noQuantizations: "Sem quantização separada",
+      recommended: "Recomendado",
+      downloaded: "Baixado",
+      quantizationLoadError:
+        "Não foi possível carregar todas as quantizações. O comando usará o valor de modelo disponível.",
+      generatedCommand: "Comando gerado",
+      docs: "Documentação",
+      agentDocs: "Abrir a documentação de configuração do {agent}",
+      copyGeneratedCommand: "Copiar comando gerado",
+      modelNote:
+        "O Codex exige um modelo GGUF servido pelo llama-server. Outros agentes também podem usar modelos baseados em transformers; remova --model para usar o modelo já carregado no Unsloth.",
+      subagent: {
+        title: "Usar um modelo local como subagente",
+        description:
+          "Mantenha o {agent} no modelo atual e delegue tarefas selecionadas a este modelo local do Unsloth.",
+        setupCommand: "Comando de configuração",
+        copySetupCommand: "Copiar comando de configuração do subagente",
+        usagePrompt: "Depois, no {agent}, digite:",
+        copyUsagePrompt: "Copiar prompt de uso do subagente",
+        defaultPrompt: "Crie um agente local para implementar esta função.",
+        opencodePrompt: "@unsloth encontre a causa desta falha de teste",
+      },
+      quickstart: {
+        title: "Montar um comando",
+        description:
+          "Inicie um agente com o modelo carregado no Studio. Carregue um modelo primeiro e depois troque claude por qualquer agente compatível abaixo.",
+        noneDetected:
+          "Nenhuma CLI de agente compatível foi encontrada no seu PATH.",
+        installed: "Instalado",
+      },
+      supportedAgents: {
+        title: "Agentes compatíveis",
+        description: "Cada agente é iniciado com o próprio comando:",
+        requiresGguf: "Precisa de um modelo GGUF",
+      },
+      models: {
+        title: "Escolher um modelo",
+        description:
+          "Use --model para escolher um modelo e a quantização, e --context-length para definir a janela. Use um sufixo de quantização ou a flag explícita --gguf-variant.",
+        suffixLabel: "Com sufixo de quantização",
+        variantLabel: "Com a flag explícita de variante",
+      },
+      options: {
+        title: "Opções comuns",
+        description:
+          "As flags do Unsloth são interpretadas primeiro; tudo o que ele não reconhecer é repassado direto ao agente.",
+        model:
+          "Seleciona um modelo. Sem --model, o unsloth start usa o modelo carregado no Studio e retorna erro se não houver nenhum.",
+        contextLength:
+          "Define o tamanho de contexto solicitado (alias: --max-seq-length).",
+        ggufVariant: "Escolhe a variante de quantização GGUF.",
+        loadIn4bit:
+          "Ativa ou desativa o carregamento em 4 bits para modelos do Hugging Face.",
+        tensorParallel:
+          "Ativa ou desativa o paralelismo de tensores entre várias GPUs.",
+        serve: "Ativa ou desativa o servidor local automático.",
+        launch: "Inicia o agente ou apenas exibe o comando e o ambiente.",
+        persist:
+          "Mantém entre execuções os dados de agente gerenciados pelo Unsloth.",
+        asSubagent:
+          "Mantém o agente principal no modelo atual e registra o Unsloth como subagente local (Claude Code, Codex e OpenCode).",
+        apiKey:
+          "Informa sua chave de API do Unsloth (ou defina UNSLOTH_API_KEY).",
+        yolo: "Pula os pedidos de aprovação. Use apenas em ambientes confiáveis.",
+      },
+      remote: {
+        title: "Conectar a um Studio remoto",
+        description:
+          "Aponte o unsloth start para um Studio em execução em outro lugar, definindo estas variáveis antes de iniciar (ou passe --api-key diretamente):",
+      },
+      passthrough: {
+        title: "Repassar argumentos ao agente",
+        description:
+          "Os argumentos após as flags do Unsloth são encaminhados ao próprio agente, então comandos nativos como resume continuam funcionando:",
+      },
+      dryRun: {
+        title: "Visualizar sem iniciar",
+        description:
+          "Adicione --no-launch para exibir o ambiente e o comando em vez de iniciar o agente. Se --model estiver definido, o modelo ainda pode ser resolvido e carregado.",
       },
     },
     chat: {
@@ -518,6 +838,53 @@ export const ptBR = {
         "Falha ao limpar o armazenamento; {count} chats podem ter restado. Por favor, tente novamente.",
       failedToClearChats: "Falha ao limpar os chats",
     },
+    data: {
+      title: "Dados",
+      description:
+        "Gerencie o histórico de chats e os arquivos enviados que ficam armazenados neste dispositivo.",
+      archivedChats: "Chats arquivados",
+      archivedChatsDescription: "Veja e gerencie os chats que você arquivou.",
+      manageAction: "Gerenciar",
+      exportArchivedChats: "Exportar",
+      exportingArchivedChats: "Exportando...",
+      exportedOneArchivedChat: "1 chat arquivado exportado",
+      exportedArchivedChatCount: "{count} chats arquivados exportados",
+      noArchivedChatsToExport: "Nenhum chat arquivado para exportar.",
+      failedToExportArchivedChats: "Falha ao exportar os chats arquivados",
+      archiveAllChats: "Arquivar todos os chats",
+      archiveAllChatsDescription:
+        "Move para o arquivo todos os chats em Recentes e Projetos.",
+      noChatsToArchive: "Nenhum chat para arquivar.",
+      archiveAllAction: "Arquivar todos",
+      archivingAction: "Arquivando...",
+      archiveAllChatsTitle: "Arquivar todos os chats?",
+      archiveAllChatsConfirmDescription:
+        "Move para o arquivo todos os chats deste dispositivo. Os chats arquivados continuam disponíveis e podem ser desarquivados a qualquer momento.",
+      archivedAllChats: "Todos os chats foram arquivados",
+      archivedOneChat: "1 chat arquivado",
+      archivedChatCount: "{count} chats arquivados",
+      failedToArchiveChats: "Falha ao arquivar os chats",
+      confirmBeforeDeleting: "Confirmar antes de excluir",
+      confirmBeforeDeletingDescription:
+        "Pede confirmação antes de excluir um chat. Desative para excluir imediatamente.",
+      filesSection: "Arquivos",
+      uploadedFiles: "Arquivos enviados",
+      uploadedFilesDescription:
+        "Veja e gerencie os arquivos enviados a chats, projetos e bases de conhecimento.",
+      fineTuneExport: "Usar chats como dados de treino",
+      fineTuneExportDescription:
+        "Crie um dataset JSONL de fine-tuning a partir dos seus chats. Carregue-o em Treinar, refine-o em Receitas ou exporte-o.",
+      fineTuneExportAction: "Exportar JSONL",
+      fineTuneRunAction: "Executar",
+      fineTuneExportingAction: "Exportando...",
+      fineTuneOpenRecipesAction: "Abrir em Receitas",
+      fineTuneOpeningRecipesAction: "Abrindo...",
+      fineTuneTrainAction: "Carregar na aba Treinar",
+      fineTuneTrainingAction: "Carregando...",
+      fineTuneExportFailed: "Falha ao exportar os dados de treino",
+      fineTuneRecipeFailed: "Falha ao abrir os chats em Receitas",
+      fineTuneTrainFailed: "Falha ao carregar o dataset na aba Treinar",
+    },
     connections: {
       title: "Conexões",
       description: "Gerencie provedores e conexões externas.",
@@ -553,7 +920,7 @@ export const ptBR = {
       osWindows: "Windows",
       secureHttps: "HTTPS Seguro",
       secureHttpsHint:
-        "A porta 0.0.0.0 ainda está acessível globalmente. Para segurança total, inicie o Unsloth Studio com --secure para expor apenas este link HTTPS.",
+        "A porta 0.0.0.0 ainda está acessível globalmente. Para segurança total, inicie o Unsloth com --secure para expor apenas este link HTTPS.",
       copyTunnelUrl: "Copiar URL do túnel",
       copySnippet: "Copiar trecho de código",
       copy: "Copiar",
@@ -585,6 +952,8 @@ export const ptBR = {
         "Aplicativos que usam este token perderão o acesso imediatamente. Esta ação não pode ser desfeita.",
       revokeAction: 'Revogar "{name}"',
       revoking: "Revogando...",
+      usageNoModel:
+        "Carregue ou baixe um modelo para ver exemplos executáveis. Este servidor ainda não tem nenhum modelo para indicar.",
     },
     about: {
       title: "Sobre",
@@ -606,7 +975,7 @@ export const ptBR = {
       reportIssue: "Reportar um problema",
       license: {
         sectionTitle: "Licença",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription:
           "Código aberto sob a licença GNU AGPL v3.0.",
@@ -615,12 +984,12 @@ export const ptBR = {
         libraryDescription: "Licenciado sob Apache 2.0.",
       },
       dangerZone: "Zona de perigo",
-      shutDownStudio: "Desligar Unsloth Studio",
+      shutDownStudio: "Desligar Unsloth",
       shutDownStudioDescription:
         "Interrompe o servidor Unsloth e encerra sua sessão.",
       shutDown: "Desligar",
       update: {
-        title: "Atualizar Unsloth Studio",
+        title: "Atualizar Unsloth",
         commandText: "Texto de {label}",
         copied: "Copiado",
         copyCommand: "Copiar comando",
@@ -911,6 +1280,8 @@ export const ptBR = {
       enablePacking: "Ativar empacotamento (packing)",
       assistantCompletionsOnly: "Apenas respostas do assistente",
       readMore: "Leia mais",
+      optimizerTooltipMlx:
+        "Algoritmo de otimização. O AdamW é o padrão. O Lion usa menos memória, mas normalmente precisa de uma taxa de aprendizado menor.",
     },
     training: {
       title: "Treinamento",

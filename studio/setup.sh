@@ -608,6 +608,37 @@ _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
+# Search (+x), not read (+r), is what the marker probes need: inside a directory
+# we cannot search every probe reports absent, so our own install reads as someone else's.
+_studio_dir_unsearchable() {
+    [ -d "$1" ] || return 1
+    ( cd "$1" ) 2>/dev/null && return 1
+    return 0
+}
+
+# Mirrors Exit-PathAccessDenied in setup.ps1. owner-unverified means the marker
+# was unreadable, so do not claim the tree is ours or advise deleting it.
+_path_access_denied() {
+    _pad_dir="$1"
+    _pad_label="$2"
+    _pad_mode="${3:-}"
+    step "permissions" "$_pad_label at $_pad_dir cannot be read: permission denied" "$C_ERR"
+    if [ "$_pad_mode" = "owner-unverified" ]; then
+        substep "Unsloth cannot confirm this folder is its own install while it is unreadable, so it will not tell you to remove it" "$C_WARN"
+        substep "Restore access, or move the folder aside, then re-run setup:" "$C_WARN"
+    else
+        substep "This folder lives outside the app, so reinstalling Unsloth Studio reuses it and fails the same way" "$C_WARN"
+        substep "Simplest fix: delete or rename $_pad_dir, then re-run setup (it is a managed cache and gets reinstalled)" "$C_WARN"
+        substep "If deleting is denied too, it belongs to another user; restore access with:" "$C_WARN"
+    fi
+    substep "ls -ld \"$_pad_dir\"" "$C_WARN"
+    substep "chmod -R u+rwX \"$_pad_dir\"" "$C_WARN"
+    if [ "$_pad_mode" = "owner-unverified" ]; then
+        setup_fail 1 "Permission denied reading $_pad_label at $_pad_dir. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access, or move it aside, then re-run setup."
+    fi
+    setup_fail 1 "Permission denied reading the existing $_pad_label at $_pad_dir. Delete or rename that folder (Unsloth reinstalls it) or restore access, then re-run setup. Reinstalling the app does not reset it."
+}
+
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
@@ -616,6 +647,11 @@ _assert_studio_owned_or_absent() {
         if _studio_owned_adoptable "$_aso_dir"; then
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
+        fi
+        # An unsearchable tree hides its own marker and so looks like someone else's:
+        # report permissions, not ownership.
+        if _studio_dir_unsearchable "$_aso_dir"; then
+            _path_access_denied "$_aso_dir" "$_aso_label" owner-unverified
         fi
         echo "ERROR: $_aso_dir already exists and is not marked as an Unsloth-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
@@ -1444,7 +1480,14 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
         fi
-        rm -rf "$LLAMA_CPP_DIR"
+        rm -rf "$LLAMA_CPP_DIR" || true
+        if [ -e "$LLAMA_CPP_DIR" ]; then
+            if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
+            fi
+            step "llama.cpp" "the existing install could not be replaced with a link" "$C_ERR"
+            setup_fail 3 "$LLAMA_CPP_DIR could not be replaced with a link to $_RESOLVED_LOCAL."
+        fi
         ln -sfn "$_RESOLVED_LOCAL" "$LLAMA_CPP_DIR"
         _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
         step "llama.cpp" "linked local directory: $_RESOLVED_LOCAL"
@@ -1580,7 +1623,7 @@ else
             step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
             setup_fail 1 "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
         fi
-    else
+    elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
         rm -f "$_PREBUILT_LOG"
@@ -1595,6 +1638,15 @@ else
             substep "falling back to source build"
             _NEED_LLAMA_SOURCE_BUILD=true
         fi
+    else
+        step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "existing install was restored or left unchanged"
+        fi
+        substep "source build was not started because it cannot repair an unexpected helper or permissions error"
+        setup_fail 1 "llama.cpp prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS). Check the error above and retry setup."
     fi
 fi
 
@@ -2131,7 +2183,16 @@ else
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
-            rm -rf "$LLAMA_CPP_DIR"
+            # || true: without it a raw rm error aborts under errexit to a bare exit
+            # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
+            rm -rf "$LLAMA_CPP_DIR" || true
+            if [ -e "$LLAMA_CPP_DIR" ]; then
+                if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                    _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
+                fi
+                step "llama.cpp" "built, but the existing install could not be replaced" "$C_ERR"
+                setup_fail 3 "The llama.cpp build succeeded but $LLAMA_CPP_DIR could not be replaced. The new build is at $_BUILD_TMP."
+            fi
             mv "$_BUILD_TMP" "$LLAMA_CPP_DIR"
             : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             # Symlink to llama.cpp root -- check_llama_cpp() looks for the binary there
@@ -2335,5 +2396,25 @@ echo ""
 # successful -- the footer above already reports the limitation and Unsloth
 # is still usable for non-GGUF workflows.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
-    setup_fail 1 "llama.cpp setup did not produce a usable server"
+    # In Tauri mode a non-zero exit is not "report", it is "abort": install.rs turns the
+    # error into "Installation failed", so one transient prebuilt download failure (a
+    # single HTTP 403 rate limit will do it) fails the whole first-launch install of an
+    # app whose own footer just said Installed. Everything except GGUF inference works,
+    # and whisper.cpp in this same script already degrades rather than failing for
+    # exactly this case. Match it, and say what is missing and how to get it back.
+    #
+    # PROGRESS, not STEP: install.rs maps [TAURI:STEP] to the install-step event, and
+    # use-tauri-backend.ts counts those against the seven-entry INSTALL_STEPS list that
+    # install.sh already emits in full, so an eighth marker renders "Step 8 of 7" and
+    # discards the payload. [TAURI:PROGRESS] becomes install-progress-detail, which
+    # InstallingContent renders verbatim, so the user actually reads the limitation.
+    case "${UNSLOTH_TAURI_MODE:-0}" in
+        1|true)
+            printf '[TAURI:PROGRESS] %s\n' \
+                "llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds"
+            ;;
+        *)
+            setup_fail 1 "llama.cpp setup did not produce a usable server"
+            ;;
+    esac
 fi

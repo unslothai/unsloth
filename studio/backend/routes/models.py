@@ -10,7 +10,10 @@ import os
 import re
 import shutil
 import sys
+import threading
+import time
 import uuid
+import weakref
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
@@ -281,6 +284,25 @@ def _has_non_gguf_weights(path: Path) -> bool:
         if any(path.glob("*.safetensors")):
             return True
         return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
+    except OSError:
+        return False
+
+
+def _is_gguf_companion_only_dir(path: Path) -> bool:
+    """True for a folder whose entire content is GGUF companions -- a lone mmproj adapter, an
+    MTP drafter, or both -- with nothing servable beside them.
+
+    The scanners report ``model_format = None`` for such a folder, because neither companion is a
+    primary weight, and that is also what a plain checkpoint reports. The custom-folder scan below
+    validates GGUF rows through ``detect_gguf_model`` and waves the rest through, so without this
+    the folder is published as a model that no loader can start.
+    """
+    try:
+        if not path.is_dir():
+            return False
+        if (path / "config.json").exists() or (path / "adapter_config.json").exists():
+            return False
+        return any(path.glob("*.gguf")) and not _has_non_gguf_weights(path)
     except OSError:
         return False
 
@@ -812,6 +834,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
     must already be validated/trusted by the caller.
     """
     from storage.studio_db import list_scan_folders
+    from utils.models.model_config import detect_gguf_model
     from utils.paths import (
         hf_default_cache_dir,
         legacy_hf_cache_dir,
@@ -871,7 +894,30 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
                 )
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
             ]
-            custom_models = _generic
+            custom_models = []
+            for model in _generic:
+                path = Path(model.path)
+                is_gguf_row = model.model_format == "gguf" or _is_gguf_companion_only_dir(path)
+                if not is_gguf_row or model.partial:
+                    custom_models.append(model)
+                    continue
+                if path.is_dir():
+                    patterns = ("*", "*/*") if model.source == "hf_cache" else ("*",)
+                    if any(
+                        detect_gguf_model(str(file), model_root = str(folder_path)) is not None
+                        for pattern in patterns
+                        for file in path.glob(pattern)
+                        if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
+                    ):
+                        custom_models.append(model)
+                elif (
+                    detect_gguf_model(
+                        model.path,
+                        model_root = str(folder_path),
+                    )
+                    is not None
+                ):
+                    custom_models.append(model)
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                 custom_models += _scan_ollama_dir(
                     folder_path,
@@ -1743,7 +1789,9 @@ def _looks_like_mlx_repo(model_id: str) -> bool:
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
     try:
-        inference_backend = get_inference_backend()
+        # Off-loop: building the singleton calls get_device(), and the frontend
+        # fetches this on load, so inline it would freeze the whole torch import.
+        inference_backend = await asyncio.to_thread(get_inference_backend)
 
         default_models = inference_backend.default_models
 
@@ -2114,8 +2162,11 @@ async def discard_remote_code_download(
     except Exception:
         pass
     try:
-        inference_backend = get_inference_backend()
-        if inference_backend.active_model_name:
+        # Peek, not construct: no orchestrator means no active model to protect, and
+        # building one here would reach get_device() and wait on the torch import.
+        from core.inference.orchestrator import peek_inference_backend
+        inference_backend = peek_inference_backend()
+        if inference_backend is not None and inference_backend.active_model_name:
             if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
                 return {"deleted": False, "reason": "loaded"}
     except Exception:
@@ -2454,25 +2505,29 @@ async def delete_finetuned_model(
         ) from e
 
     try:
-        inference_backend = get_inference_backend()
-        loading_models = getattr(inference_backend, "loading_models", set())
-        if any(
-            _loading_model_matches_deleted_path(loading_model, target_path)
-            for loading_model in loading_models
-        ):
-            raise HTTPException(
-                status_code = 409,
-                detail = "Cannot delete a model while it is loading",
-            )
-        if inference_backend.active_model_name:
-            if _loaded_model_matches_deleted_path(
-                inference_backend.active_model_name,
-                target_path,
+        # Peek: no orchestrator means nothing below can block this delete, and building one
+        # to learn that reaches get_device() -- a torch import for a metadata-only op.
+        from core.inference.orchestrator import peek_inference_backend
+        inference_backend = peek_inference_backend()
+        if inference_backend is not None:
+            loading_models = getattr(inference_backend, "loading_models", set())
+            if any(
+                _loading_model_matches_deleted_path(loading_model, target_path)
+                for loading_model in loading_models
             ):
                 raise HTTPException(
-                    status_code = 400,
-                    detail = "Unload the model before deleting",
+                    status_code = 409,
+                    detail = "Cannot delete a model while it is loading",
                 )
+            if inference_backend.active_model_name:
+                if _loaded_model_matches_deleted_path(
+                    inference_backend.active_model_name,
+                    target_path,
+                ):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Unload the model before deleting",
+                    )
     except HTTPException:
         raise
     except Exception as e:
@@ -2600,7 +2655,8 @@ async def check_vision_model(
         # A local path resolves from disk, so it skips the probe.
         from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
-        # Off the loop: the guard's probes are blocking and stall unrelated requests.
+        # Off-loop: the probes block, and is_vision_model()'s lazy sets make the first
+        # call import transformers or wait on _DETECTION_SETS_LOCK behind the warm.
         def _check():
             with _hf_offline_if_unreachable_for(model_name):
                 return is_vision_model(model_name, hf_token = hf_token)
@@ -2664,14 +2720,102 @@ async def check_embedding_model(
         )
 
 
+# Budget for the walk below: a slow volume or a large tree can far outlast the
+# listing it is attached to.
+_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS = 5.0
+# Backstop for the case the walk's own budget cannot cover: a single syscall that
+# never returns, which no in-loop check can interrupt. Longer than the walk budget,
+# so a responding filesystem always ends the walk itself and this never fires.
+_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS = 8.0
+# Reads running at once. A read stranded on a hung mount holds its slot, so retries wait
+# for one instead of starting a thread apiece.
+_NATIVE_CONTEXT_MAX_CONCURRENT_READS = 4
+_NATIVE_CONTEXT_SLOTS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _native_context_slots() -> asyncio.Semaphore:
+    """Per running loop, since an asyncio primitive cannot be shared across loops."""
+    loop = asyncio.get_running_loop()
+    slots = _NATIVE_CONTEXT_SLOTS.get(loop)
+    if slots is None:
+        slots = asyncio.Semaphore(_NATIVE_CONTEXT_MAX_CONCURRENT_READS)
+        _NATIVE_CONTEXT_SLOTS[loop] = slots
+    return slots
+
+
+def _settle_native_context(
+    slots: asyncio.Semaphore, future: "asyncio.Future", value: Optional[int]
+) -> None:
+    slots.release()
+    if not future.done():
+        future.set_result(value)
+
+
+async def _read_native_context_length_bounded(model: str, is_local: bool) -> Optional[int]:
+    """``_read_native_context_length`` off the event loop, with a hard bound.
+
+    Reporting None costs a pre-filled context field; waiting costs the whole variant
+    listing, which is what left the picker on "Loading variants…". Runs on a daemon
+    thread, not a pool: a stranded read must not join at interpreter exit, which would
+    hang shutdown for as long as the mount stays hung. Waiting for a slot is awaited
+    rather than skipped, so ordinary concurrent reads queue instead of losing their
+    length; the wait and the read share one budget.
+    """
+    slots = _native_context_slots()
+    began = time.monotonic()
+    try:
+        await asyncio.wait_for(slots.acquire(), timeout = _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.debug("native context read for '%s' waited out its slot; reporting none", model)
+        return None
+
+    remaining = _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS - (time.monotonic() - began)
+    loop = asyncio.get_running_loop()
+    future: "asyncio.Future" = loop.create_future()
+
+    def worker() -> None:
+        try:
+            value = _read_native_context_length(model, is_local = is_local)
+        except Exception:
+            value = None
+        try:
+            loop.call_soon_threadsafe(_settle_native_context, slots, future, value)
+        except RuntimeError:
+            pass  # loop already closed; nothing is waiting on this
+
+    if remaining <= 0:
+        slots.release()
+        return None
+    try:
+        threading.Thread(target = worker, name = "native-ctx", daemon = True).start()
+    except RuntimeError:
+        slots.release()  # thread never ran, so it will never release
+        return None
+
+    try:
+        return await asyncio.wait_for(future, timeout = remaining)
+    except asyncio.TimeoutError:
+        logger.debug("native context read for '%s' did not return; reporting none", model)
+        return None
+
+
 def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     """Native max context from a downloaded GGUF for this repo, or None.
 
     The value is identical across quants, so reading one non-mmproj shard's
     header is enough. Only resolves once a file is on disk. Never raises.
+
+    Bounded by ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a
+    context field on an already selectable row, so a dragging walk reports None
+    rather than holding the variant listing open. Checked between files, and
+    files already read stay cached, so a later request resumes.
     """
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
+
+        # Before cache discovery, which touches the filesystem too: started after, a slow
+        # enumeration would hand the walk a full fresh budget on top of its own cost.
+        deadline = time.monotonic() + _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS
         if is_local:
             roots = [Path(repo_id)]
         else:
@@ -2681,7 +2825,13 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
             roots = list(iter_repo_cache_dirs("model", repo_id))
 
         for root in roots:
-            for f in _iter_gguf_paths(root):
+            if time.monotonic() >= deadline:
+                logger.debug("native context read for '%s' out of budget", repo_id)
+                return None
+            for f in _iter_gguf_paths(root, deadline):
+                if time.monotonic() >= deadline:
+                    logger.debug("native context read for '%s' out of budget", repo_id)
+                    return None
                 if _is_mmproj_filename(f.name):
                     continue
                 n = read_gguf_context_length(str(f))
@@ -2819,6 +2969,7 @@ async def get_gguf_variants(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
     prefer_local_cache: bool = False,
+    offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
     hf_token_header: Optional[str] = Depends(get_hf_token),
@@ -2829,16 +2980,20 @@ async def get_gguf_variants(
         hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants
 
-        response = await hub_gguf_variants.get_gguf_variants_response(
+        answer = await hub_gguf_variants.get_gguf_variants_answer(
             repo_id,
             prefer_local_cache = prefer_local_cache,
+            offline = offline,
             local_path = local_path,
             hf_token = hf_token,
         )
+        response = answer.response
+        # The copy the listing answered from, else the pin naming the copy that will load.
+        # Both beat a repo-wide walk, which can read another revision's length.
         context_model = (
-            local_path
-            if prefer_local_cache and local_path and is_local_path(local_path)
-            else repo_id
+            answer.context_source
+            or hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path)
+            or repo_id
         )
         local = is_local_path(context_model)
 
@@ -2860,11 +3015,7 @@ async def get_gguf_variants(
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
-            # The header walk reads tokenizer arrays on dense models (tens of
-            # ms per uncached file); keep it off the event loop.
-            context_length = await asyncio.to_thread(
-                _read_native_context_length, context_model, is_local = local
-            ),
+            context_length = await _read_native_context_length_bounded(context_model, local),
         )
     except HTTPException:
         raise
@@ -2895,22 +3046,14 @@ async def get_gguf_download_progress(
 
 
 def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
-    """Pick the most useful on-disk path for a HF cache repo.
+    """Most useful on-disk path for a HF cache repo.
 
-    Prefers the most-recent snapshot dir (what ``from_pretrained`` uses),
-    falling back to the cache repo root. Returns the resolved realpath so
-    snapshot symlinks follow back to blobs/.
+    Delegates to the Hub scanner's function of the same name so this route and
+    ``/api/hub/local-models`` name one directory: the newest snapshot dir, ties broken by
+    ``snapshot_selection_key``.
     """
-    try:
-        snapshots_dir = repo_dir / "snapshots"
-        if snapshots_dir.is_dir():
-            snaps = [s for s in snapshots_dir.iterdir() if s.is_dir()]
-            if snaps:
-                latest = max(snaps, key = lambda s: s.stat().st_mtime)
-                return str(latest.resolve())
-        return str(repo_dir.resolve())
-    except Exception:
-        return None
+    from hub.utils import inventory_scan as hf_cache_scan
+    return hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
 
 
 @router.get("/download-progress")
@@ -2979,9 +3122,57 @@ def _is_mmproj_filename(name: str) -> bool:
 
 
 def _is_main_gguf_filename(name: str) -> bool:
-    """A GGUF file that is a primary weight, not an mmproj vision
-    adapter."""
-    return _is_gguf_filename(name) and not _is_mmproj_filename(name)
+    """A primary GGUF weight, not an mmproj vision adapter or an MTP drafter. Same rule as
+    ``hub.services.models.common``; pass a snapshot-relative path to catch ``MTP/`` copies too."""
+    return _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter(name)
+
+
+def _recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
+    """See hub.utils.inventory_scan; False for anything upstream already returns."""
+    from hub.utils.inventory_scan import recovered_repo_is_unusable_by_repo_id as impl
+    return impl(repo_info)
+
+
+def _repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
+    """See hub.utils.inventory_scan; True only in the dangling refs/main window."""
+    from hub.utils.inventory_scan import repo_id_will_not_resolve as impl
+    return impl(repo_cache_dir)
+
+
+def _default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
+    """See hub.utils.inventory_scan; True when refs/main resolves onto a torn quant."""
+    from hub.utils.inventory_scan import default_ref_offers_no_whole_quant as impl
+    return impl(repo_cache_dir)
+
+
+def _gguf_copy_is_usable(repo_info, load_id: Optional[str]) -> bool:
+    """Whether this copy of the repo holds a quant a load can reach.
+
+    A pinned copy names a complete snapshot. An unpinned one is usable when its id resolves onto a
+    whole quant, which is exactly what withheld the pin.
+    """
+    if load_id:
+        return True
+    try:
+        repo_path = Path(repo_info.repo_path)
+        return not _repo_id_will_not_resolve(repo_path) and not _default_ref_offers_no_whole_quant(
+            repo_path
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _snapshot_has_gguf_projector(snapshot: str) -> bool:
+    """See hub.utils.inventory_scan; reads the same walk the variant lister reports from."""
+    from hub.utils.inventory_scan import snapshot_has_gguf_projector as impl
+    return impl(Path(snapshot))
+
+
+def _cached_repo_file_name(file_obj) -> str:
+    """Snapshot-relative name for a cached file: huggingface_hub records the bare ``file_name``,
+    which cannot tell an ``MTP/`` drafter from a quant."""
+    from hub.services.models.cache_inventory import _cached_repo_file_name as impl
+    return impl(file_obj)
 
 
 def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
@@ -3008,8 +3199,41 @@ def _repo_has_mmproj(repo_info) -> bool:
     )
 
 
-def _iter_gguf_paths(root: Path):
+def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
+    """Whether the copy this row loads ships a projector.
+
+    The loader opens the projector out of the snapshot it loads from, so one in a revision the
+    load never reaches is not vision support. A pinned row is judged on its snapshot, an unpinned
+    one on the first snapshot the load's own ordering finds a quant in. Judged per snapshot, not
+    per file: a split quant can sit in a subdirectory while the projector sits at the root.
+    """
+    if load_id:
+        return _snapshot_has_gguf_projector(load_id)
+    # No projector in any revision means none to reach, and saves a cache walk.
+    if not _repo_has_mmproj(repo_info):
+        return False
+    try:
+        from hub.utils.gguf import iter_snapshots_preferring_whole, list_local_gguf_variants
+
+        # The row describes this copy; a duplicate in another root is one the load never reaches.
+        root = Path(repo_info.repo_path).parent
+        for snapshot in iter_snapshots_preferring_whole(repo_info.repo_id, None, root = root):
+            variants, has_vision = list_local_gguf_variants(str(snapshot))
+            if variants:
+                return bool(has_vision)
+    except Exception:
+        pass
+    # Nothing on disk to load, so the row describes the repo rather than a copy of it.
+    return True
+
+
+def _iter_gguf_paths(root: Path, deadline: Optional[float] = None):
+    """GGUF files under ``root``. With a ``deadline`` (time.monotonic), gives up mid-walk:
+    only .gguf files are yielded, so a large tree can walk for a long time yielding nothing,
+    and a caller checking its budget per yield would never get to check it."""
     for path in root.rglob("*"):
+        if deadline is not None and time.monotonic() >= deadline:
+            return
         if path.is_file() and _is_gguf_filename(path.name):
             yield path
 
@@ -3030,13 +3254,15 @@ def _repo_gguf_size_bytes(repo_info) -> int:
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
         for f in revision.files:
-            if _is_main_gguf_filename(f.file_name):
+            # Snapshot-relative: only the directory tells an MTP/ drafter from a primary quant.
+            name = _cached_repo_file_name(f)
+            if _is_main_gguf_filename(name):
                 blob_path = getattr(f, "blob_path", None)
                 size = f.size_on_disk or 0
                 if blob_path:
                     unique_blobs[str(blob_path)] = size
                 else:
-                    unique_blobs[f"{rev_id}:{f.file_name}"] = size
+                    unique_blobs[f"{rev_id}:{name}"] = size
     return sum(unique_blobs.values())
 
 
@@ -3074,32 +3300,21 @@ def _repo_gguf_last_modified(repo_info) -> float:
     latest = 0.0
     for revision in repo_info.revisions:
         for f in revision.files:
-            if _is_main_gguf_filename(f.file_name):
+            if _is_main_gguf_filename(_cached_repo_file_name(f)):
                 latest = max(latest, _blob_mtime(f))
     return latest
 
 
 def snapshot_variants_all_complete(snapshot: str) -> bool:
-    """True when every quant the variant lister would advertise from *snapshot* is
-    fully on disk.
-
-    One complete quant is not enough: the picker enumerates the whole directory, so a
-    half-downloaded split quant sitting beside a good one still gets offered and the
-    generated command asks llama-server for shards that are absent. Both sides derive
-    their labels from ``extract_quant_label`` over paths relative to the snapshot, so
-    the sets are directly comparable.
-    """
+    """Re-export; the predicate lives beside the completed-variant walk it uses."""
     from hub.utils import inventory_scan
-    from hub.utils.gguf import list_local_gguf_variants
+    return inventory_scan.snapshot_variants_all_complete(snapshot)
 
-    try:
-        variants, _ = list_local_gguf_variants(snapshot)
-        offered = {v.quant for v in variants if getattr(v, "quant", None)}
-        if not offered:
-            return False
-        return offered <= inventory_scan._completed_gguf_variants(Path(snapshot))
-    except Exception:
-        return False
+
+def snapshot_has_complete_variants(snapshot: str) -> bool:
+    """Re-export of the predicate every load-id pin shares; see above."""
+    from hub.utils import inventory_scan
+    return inventory_scan.snapshot_has_complete_variants(snapshot)
 
 
 def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
@@ -3107,41 +3322,56 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     hub cache that does not resolve by id. ``None`` when the id works or no
     snapshot is recorded, since the repo dir itself is not loadable.
     """
+    from hub.utils.hf_cache_state import snapshot_selection_key
+
     repo_path = getattr(repo_info, "repo_path", None)
     if repo_path is None or active_root is None:
         return None
     try:
-        if repo_path.parent.resolve(strict = False) == active_root:
+        # A recovered repo's refs/main names nothing, so its id resolves nowhere and needs a pin.
+        if (
+            repo_path.parent.resolve(strict = False) == active_root
+            and not _repo_id_will_not_resolve(repo_path)
+            and not _default_ref_offers_no_whole_quant(repo_path)
+        ):
             return None
     except (OSError, RuntimeError, ValueError):
         pass
-    # Order by snapshot directory mtime, matching hub.utils.gguf.iter_hf_cache_snapshots,
-    # which is what variant discovery reads. Blob mtimes would disagree with it whenever
-    # Hugging Face reuses an older blob in a newer snapshot, and the command would then
-    # name a snapshot that does not hold the quant the picker offered.
-    candidates: List[tuple[float, str]] = []
-    for revision in repo_info.revisions:
-        snapshot = getattr(revision, "snapshot_path", None)
-        if snapshot is None:
-            continue
-        if not any(_is_main_gguf_filename(f.file_name) for f in revision.files):
-            continue
-        try:
-            mtime = Path(snapshot).stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        candidates.append((mtime, str(snapshot)))
-    candidates.sort(key = lambda c: c[0], reverse = True)
-    # Newest first, but skip one holding only part of a split quant: an interrupted
-    # download would otherwise beat an older snapshot that can still load. Scanning
-    # stops at the first usable snapshot, so the usual case walks one directory.
-    for _, snapshot in candidates:
-        if snapshot_variants_all_complete(snapshot):
-            return snapshot
+    # Shared selection key, so this route and the /gguf-variants lister name one snapshot.
+    candidates = [
+        Path(snapshot)
+        for revision in repo_info.revisions
+        if (snapshot := getattr(revision, "snapshot_path", None)) is not None
+        and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
+    ]
+    candidates.sort(key = snapshot_selection_key, reverse = True)
+    # Newest first, skipping any holding no whole quant, else a torn download beats a loadable one.
+    for snapshot in candidates:
+        if snapshot_has_complete_variants(str(snapshot)):
+            return str(snapshot)
     # Nothing complete anywhere: publishing a half-downloaded snapshot would put that
     # path in the copied command and fail on load. Drop the id so the repo id is used,
     # which fetches the missing shards instead.
     return None
+
+
+def _preferred_gguf_copy(
+    rows: dict, ranks: dict, key: str, candidate: tuple[bool, bool], size: int
+) -> bool:
+    """Whether this copy should replace the one already kept for *key*.
+
+    Same order the Hub inventory deduplicates by: a copy that cannot load loses to one that can,
+    whichever cache holds it, then the active cache wins, then the larger download.
+    """
+    existing = rows.get(key)
+    if existing is None:
+        return True
+    kept = ranks.get(key, (True, True))
+    if candidate[0] != kept[0]:
+        return candidate[0]
+    if candidate[1] != kept[1]:
+        return candidate[1]
+    return size > int(existing.get("size_bytes") or 0)
 
 
 @router.get("/cached-gguf")
@@ -3155,6 +3385,8 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
             active_root = None
 
         seen_lower: dict[str, dict] = {}
+        # How each kept row's copy ranks, since the compatibility schema carries neither field.
+        seen_rank: dict[str, tuple[bool, bool]] = {}
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
                 try:
@@ -3171,14 +3403,19 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
                     last_modified = _repo_gguf_last_modified(repo_info)
-                    if existing is None or total_size > existing["size_bytes"]:
+                    load_id = _repo_gguf_load_id(repo_info, active_root)
+                    rank = (
+                        _gguf_copy_is_usable(repo_info, load_id),
+                        active_root is not None
+                        and Path(repo_info.repo_path).parent.resolve(strict = False) == active_root,
+                    )
+                    if _preferred_gguf_copy(seen_lower, seen_rank, key, rank, total_size):
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
-                            "has_vision": _repo_has_mmproj(repo_info),
+                            "has_vision": _cached_gguf_row_has_vision(repo_info, load_id),
                         }
-                        load_id = _repo_gguf_load_id(repo_info, active_root)
                         if load_id:
                             row["load_id"] = load_id
                         # Keep the newest timestamp across duplicate caches;
@@ -3187,6 +3424,7 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                         if lm > 0:
                             row["last_modified"] = lm
                         seen_lower[key] = row
+                        seen_rank[key] = rank
                     elif last_modified > existing.get("last_modified", 0.0):
                         existing["last_modified"] = last_modified
                 except Exception as e:
@@ -3215,8 +3453,14 @@ async def list_cached_models(
 
     try:
         cache_scans = _all_hf_cache_scans()
+        try:
+            active_root = _resolve_hf_cache_dir().resolve(strict = False)
+        except Exception:
+            active_root = None
 
         seen_lower: dict[str, dict] = {}
+        # Repos whose active-cache copy cannot be loaded by id; this schema carries no path.
+        unusable_active: set[str] = set()
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
                 try:
@@ -3226,6 +3470,18 @@ async def list_cached_models(
                     # Pass the snapshot path too so the config check also hides
                     # custom Whisper checkpoints, not just curated repo ids.
                     if _is_hidden_model(repo_id, str(repo_info.repo_path)):
+                        continue
+                    # No partial or load id here, so a snapshot-path-only repo would read as ready.
+                    if _recovered_repo_is_unusable_by_repo_id(repo_info):
+                        try:
+                            if (
+                                active_root is not None
+                                and Path(repo_info.repo_path).parent.resolve(strict = False)
+                                == active_root
+                            ):
+                                unusable_active.add(repo_id.lower())
+                        except (OSError, RuntimeError, ValueError):
+                            pass
                         continue
                     if _repo_has_gguf_files(repo_info):
                         continue
@@ -3266,7 +3522,7 @@ async def list_cached_models(
                     logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                     continue
 
-        rows = list(seen_lower.values())
+        rows = [row for key, row in seen_lower.items() if key not in unusable_active]
         # Local-only list path: update checks are GGUF-only and happen lazily
         # when a repo's variants are viewed.
         cached = sorted(

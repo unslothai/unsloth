@@ -75,8 +75,8 @@ def test_autoload_records_backend_loaded_model_identity():
     autoload = autoload.split("\n  try {", 1)[0]
     assert "const loadedModelId = loadResp.model || modelPath" in autoload
     assert "setCheckpoint(loadedModelId," in autoload
-    assert "id: loadedModelId" in autoload
-    assert "m.id === loadedModelId" in autoload
+    # syncModelCapabilities upserts the summary, matching on the id it is handed.
+    assert "syncModelCapabilities(loadedModelId," in autoload
 
 
 def test_chat_autoload_toast_is_persistent_and_dismissible():
@@ -269,8 +269,16 @@ def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
 
 def test_compare_load_uses_each_models_gpu_config():
     src = _read("features/chat/shared-composer.tsx")
-    assert "ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode" in src
-    assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
+    # The mode/layer rule now lives in lib/gpu-placement.ts (behaviour covered by
+    # studio/frontend/tests/gpu-placement.test.ts): assert the delegation here.
+    assert "} = resolveComparePlacement(" in src
+    assert "shouldPinDiffusionPlacement(" in src
+    placement = " ".join(_read("features/chat/lib/gpu-placement.ts").split())
+    assert 'own.gpuMemoryMode ?? (treatAsDiffusion ? "auto" : shared.gpuMemoryMode)' in placement
+    assert "own.gpuLayers ?? (treatAsDiffusion ? GPU_LAYERS_AUTO : shared.gpuLayers)" in placement
+    # An unclassified GGUF is pinned like a confirmed one: /load may still find a
+    # diffusion header after the download.
+    assert "return isDiffusion === true || diffusionUnknown" in placement
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
     assert "ownConfig.selectedGpuIndexKind," in src
@@ -368,6 +376,81 @@ def test_local_picker_rows_require_chat_capability():
     memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows\]", src, re.S)
     assert memo, "localModels memo not found"
     assert "row.capabilities.canChat" in memo.group(0)
+
+
+def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
+    """The cached listing pins a snapshot when the repo's default ref reaches no copy
+    that loads, and it is the load that has to follow the pin. The id stays the repo
+    id everywhere it is shown, deduped or stored, so only model_path changes."""
+    inventory = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
+    for mapper in ("toCachedGgufRepo", "toCachedModelRepo"):
+        body = re.search(rf"function {mapper}\(.*?\n}}", inventory, re.S)
+        assert body, f"{mapper} not found"
+        assert "load_id: row.loadId" in body.group(0), f"{mapper} drops the pinned id"
+        # Delete sends this to remove the copy on screen, not the active cache's.
+        assert "cache_path: row.cachePath" in body.group(0), f"{mapper} drops the cache path"
+
+    meta = _read("features/model-picker/components/model-selector/types.ts")
+    assert "loadId?: string | null;" in meta
+
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert "loadId={c.load_id}" in picker, "the quant list cannot pass on a pin it never gets"
+    # Every row that can start a load, and every gear beside one, reloads through
+    # the same meta and so has to carry the pin. Counted rather than matched
+    # loosely, so a new row that forgets it is a failure here rather than a load
+    # that silently follows the default ref. #7736 added the third: the collapsed
+    # single-quant GGUF row, which is a load site like the other two.
+    assert picker.count("loadId: c.load_id") == 3, (
+        "a row or gear that can start a load is missing the pin, or a new one was "
+        "added and this count needs to follow it"
+    )
+    block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
+    assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
+    # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
+    block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
+    assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
+    # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants.
+    assert (
+        "listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)"
+        in picker
+    )
+    assert "cachePath={c.cache_path}" in picker
+
+    # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.
+    page = _read("features/chat/chat-page.tsx")
+    assert "loadId: activeLoadId," in page
+    assert "activeLoadId: string | null;" in _read("features/chat/stores/chat-runtime-store.ts")
+
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "activeLoadId: loadPath === modelId ? null : loadPath," in runtime
+    # A failed swap already unloaded the pinned model: reload it from the same place, pin and all.
+    assert "model_path: previousActiveLoadId || previousCheckpoint," in runtime
+    assert "activeLoadId: previousActiveLoadId ?? null," in runtime
+    # A model loaded outside this tab replaces the resident one, and the pin belonged to the old.
+    assert "useChatRuntimeStore.setState({ activeLoadId: null });" in runtime
+
+    # Auto-load keys identity off the backend, so the pin is recorded beside it, not in place of it.
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    assert "activeLoadId: modelPath === candidate.id ? null : modelPath," in adapter
+    assert (
+        '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
+    ), "loadPath must fall back to the id, so an unpinned pick is unchanged"
+    # Staged metadata, validate and load: all three read the copy that loads.
+    assert runtime.count("model_path: loadPath,") == 3
+    assert "model_path: modelId," not in runtime
+    # A rollback reads the approval under the snapshot path, so store it under both keys.
+    assert "rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);" in runtime
+    assert "approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null," in runtime
+
+
+def test_a_local_quant_short_a_shard_is_not_selectable():
+    """The variants endpoint now reports a local folder's torn quant as partial. A folder has no
+    download to resume, so the row has to say so and refuse the pick rather than send validate and
+    load at files that are not on disk."""
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert "const unusableLocal = isLocalPath && v.partial === true;" in picker
+    assert "disabled={unusableLocal}" in picker
+    assert "incomplete" in picker
 
 
 def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
@@ -831,7 +914,10 @@ def test_chat_autoload_prepares_hf_token_before_gguf_metadata_preflight():
     metadata = autoload.index("fetchGgufStagedMetadata({", prepare)
     assert prepare < metadata
     assert "hf_token: preparedToken.token" in autoload
-    assert 'throw new Error("Model load cancelled.")' in autoload
+    # The throw carries the cancellation marker, so the sweep stops rather than reopen the dialog.
+    assert 'new Error("Model load cancelled.")' in autoload
+    assert "unslothUserCancelled: true" in autoload
+    assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
 
 
 def test_cpu_only_llama_build_hides_gpu_picker():
@@ -1201,6 +1287,74 @@ def test_vulkan_inference_devices_are_the_pickable_set():
     assert 'diffusionPinnable: diffusionBackend && d.index_kind === "physical",' in src
 
 
+def test_chat_autoload_records_every_validation_failure():
+    """canAutoLoad runs validateModel, which prepares the token, so a dismissed dialog, a dead
+    backend or a model-specific rejection throws there rather than from loadModel. The sweep's
+    catches are bare, so an unrecorded one reads as an empty device and fetches the Hub default.
+    Only a declined dialog ends the sweep."""
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    recorder = adapter.split("function recordCandidateFailure", 1)[1]
+    recorder = recorder.split("async function canAutoLoadRecordingFailures", 1)[0]
+    # Unconditional: no tag is consulted before recording, so a plain rejection counts too.
+    assert recorder.count("noteLoadFailure(label, error)") == 1
+    assert recorder.index("noteLoadFailure(label, error)") < recorder.index(
+        "unslothUserCancelled === true"
+    ), "recording must not sit behind a marker test"
+    # A declined dialog halts the sweep (retrying reopens it); nothing else does.
+    assert "unslothUserCancelled === true" in recorder
+    assert recorder.count("autoLoadCancelled = true;") == 1
+    assert recorder.index("unslothUserCancelled === true") < recorder.index(
+        "autoLoadCancelled = true;"
+    ), "the halt belongs to the cancellation branch alone"
+    # Rethrown by the wrapper, so the candidate still fails and control flow is unchanged.
+    wrapper = adapter.split("async function canAutoLoadRecordingFailures", 1)[1]
+    wrapper = wrapper.split("async function loadAutoLoadCandidate", 1)[0]
+    assert "recordCandidateFailure(label, error)" in wrapper
+    assert "throw error;" in wrapper
+    autoload = adapter.split("async function loadAutoLoadCandidate", 1)[1]
+    autoload = autoload.split("async function autoLoadSmallestModel", 1)[0]
+    # The preflight and the GGUF metadata probe both record, and a cancelled sweep skips the rest.
+    assert "canAutoLoadRecordingFailures(failureLabel, {" in autoload
+    assert "recordCandidateFailure(failureLabel, error)" in autoload
+    # The preflight's own cancellation goes through the helper too, or it records without halting.
+    assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
+    assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
+    assert "if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS)" in autoload
+
+
+def test_auth_retries_tag_transport_failures_like_the_first_attempt():
+    """noteLoadFailure keys on the tag, so an untagged TypeError from a retry reads as a
+    rejection: retries reissue through retryWithCurrentToken, so it tags like the first attempt."""
+    src = (WORKDIR / "studio" / "frontend" / "src" / "features" / "auth" / "api.ts").read_text(
+        encoding = "utf-8"
+    )
+    assert src.count("unslothTransportFailure: true") == 2, "one tag per message, in one helper"
+    tagger = src.split("function asTransportFailure", 1)[1].split("\n}\n", 1)[0]
+    assert "err instanceof TypeError" in tagger
+    assert "navigator.onLine === false" in tagger
+    retry = src.split("async function retryWithCurrentToken", 1)[1]
+    retry = retry.split("\n}\n", 1)[0]
+    assert "fetchWithTauriNetworkRetry" in retry
+    assert "throw asTransportFailure(err);" in retry
+    first = src.split("export async function authFetch", 1)[1]
+    assert "throw asTransportFailure(err);" in first
+
+
+def test_external_readoption_drops_a_pin_taken_for_another_model():
+    """Status polling skips its own pin clearing while an external provider is selected, so the
+    re-adoption branch can adopt a resident the pin was never taken for and Apply would reload the
+    old model. The branch has to clear it itself."""
+    src = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    branch = src.split("if (!forceReload && isExternalModelId(selectedCheckpoint))", 1)[1]
+    branch = branch.split("const stopDecision = await confirmStopRunningChatsIfNeeded", 1)[0]
+    assert "activeLoadId !== modelId" in branch
+    assert "setState({ activeLoadId: null })" in branch
+    # Clearing must land before the checkpoint moves, so nothing reads the pair half updated.
+    assert branch.index("activeLoadId: null") < branch.index(
+        ".setCheckpoint(modelId, residentStatus.gguf_variant)"
+    ), "the pin must be cleared before the checkpoint is adopted"
+
+
 def test_only_gguf_configs_are_mirrored_to_the_server():
     """The server override map is read by the OpenAI-compatible auto-switch, and its
     resolver indexes GGUFs only."""
@@ -1232,8 +1386,9 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     assert "const NATIVE_FILE_LABEL_RE = /^[^/\\\\]+\\.gguf$/i;" in identity
 
     inference = _read_backend("routes/inference.py")
+    # /api/inference/status and the checkpoint helper share _llama_status_model_ids.
     assert (
-        "model_identifier = None if _native_grant_backed else _model_id" in inference
+        "return display_model_id, (None if native_grant_backed else model_id)" in inference
     ), "why the checkpoint is only a display name"
     models = _read_backend("routes/models.py")
     assert "display_name = gguf_file.stem," in models, "why the name is never an index key"
@@ -1828,3 +1983,118 @@ def test_clearing_the_log_keeps_a_request_that_is_still_running():
     zero and the finish or fail that follows has no entry left to land on."""
     monitor = " ".join(_read_backend("core/inference/api_monitor.py").split())
     assert 'if entry.shared or entry.subject != subject or entry.status == "running"' in monitor
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test hooks the Playwright driver depends on.
+#
+# tests/studio/playwright_model_config.py drives the picker through these exact
+# attributes and accessible names. Renaming one is a source-only edit that type
+# checks, lints and passes every unit test, and then fails a 25-minute browser job
+# with "selector not found" -- which is how the collapsed-row regression (#7736)
+# sat on main. Pin them here so that break costs two seconds instead.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_picker_rows_keep_their_automation_attributes():
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    # On the row button itself, not a wrapper: the driver scopes row text to it.
+    assert '"data-model-picker-option": true;' in pickers
+    assert '"data-model-picker-option": true,' in pickers
+    assert "data-model-picker-search-input" in pickers
+    assert "data-model-picker-list" in pickers
+    # And that ModelRow still spreads them onto the button. Without this the two
+    # above only prove the props are declared and returned: ModelRow reads
+    # optionProps?.onKeyDown separately, so the prop stays used and type checks
+    # while data-model-picker-option leaves the DOM and every row lookup in the
+    # driver fails.
+    row_button = re.search(r"const content = \(\s*<button\b(.*?)>", pickers, re.S)
+    assert row_button, "ModelRow no longer renders its content as a <button>"
+    assert "{...optionProps}" in row_button.group(
+        1
+    ), "ModelRow stopped spreading optionProps onto the row button"
+
+
+def test_picker_popover_and_trigger_keep_their_tour_hooks():
+    """Both props by name. The trigger's value is a prefix of the popover's, so any
+    assertion that falls back to the bare substring is satisfied by the popover alone
+    and would pass with the trigger hook deleted -- while the driver's very first
+    click, page.locator(TRIGGER), would be the thing that fails."""
+    chat = _read("features/chat/chat-page.tsx")
+    assert 'triggerDataTour="chat-model-selector"' in chat
+    assert 'contentDataTour="chat-model-selector-popover"' in chat
+
+
+def test_run_settings_gear_label_names_its_model():
+    """The driver cannot reach the gear through the row -- it is a sibling at 2 of its
+    render sites and an uncle at the rest -- so it matches on this label, and the model
+    name in it is what keeps it off another row's gear."""
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    # The expander's own label, not any of them: pickers.tsx interpolates this
+    # string at five sites, so a file-wide match stays green while the one the
+    # driver depends on drops its repo or its quant. That is the only label with
+    # both, and naming the quant is how the driver tells one variant from another.
+    assert (
+        "ariaLabel={`Inference settings for ${repoId} ${v.quant}`}" in pickers
+    ), "the variant gear label no longer names both the repo and the quant"
+    action = _read("features/model-picker/components/model-selector/model-load-settings-action.tsx")
+    assert "aria-label={ariaLabel}" in action
+
+
+def test_a_multi_quant_parent_row_still_has_no_gear():
+    """The driver reads the absence of a gear as "this row expands rather than loads".
+    Give the parent row a gear and that inference silently inverts."""
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    # Inside the parent row, not anywhere in the file. Adding a gear to the parent
+    # while leaving the spacer in place satisfies a file-wide search, and that is
+    # exactly the change that would invert the driver's inference.
+    start = pickers.index("const renderDownloadedGgufRow")
+    parent = pickers[start : pickers.index("const renderDownloadedModelRow", start)]
+    parent_row = parent[: parent.index("{expanderOpen && (")]
+    # The gutter by reference, not by width. Pinning "w-[42px]" pinned two things
+    # the driver does not care about: the exact pixel width, and the fact that it
+    # was spelled inline. main has since moved to w-[38px] behind ROW_ACTIONS_CLASS,
+    # which is the same spacer doing the same job, and this assertion would have
+    # failed the moment the two met -- reporting a lost spacer that is still there.
+    gutter = "ROW_ACTIONS_CLASS" in parent_row or re.search(r"w-\[\d+px\]", parent_row)
+    assert (
+        'aria-hidden="true"' in parent_row and gutter
+    ), "the multi-quant parent row lost the spacer that stands in for a gear"
+    assert "ModelLoadSettingsAction" not in parent_row, (
+        "the multi-quant parent row grew a gear, so the driver's 'no gear means "
+        "this row expands rather than loads' inference is now wrong"
+    )
+
+
+def test_run_settings_page_keeps_its_identifying_controls():
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # How the driver knows run-settings actually opened.
+    assert 'aria-label="Back to model list"' in page
+    assert 'ariaLabel="Context Length"' in page
+    assert 'aria-label="Context Length"' in page
+    # The button, not the word: "Reset" also appears in this file's own comments, so a
+    # raw source search passes with the control deleted and the Playwright reset gate
+    # only finds out 25 minutes later.
+    assert re.search(
+        r"onClick=\{\(\) => setConfig\(\{ \.\.\.DEFAULT_PER_MODEL_CONFIG \}\)\}\s*>\s*Reset\s*</Button>",
+        page,
+    ), "the Reset button's JSX is gone or no longer named Reset"
+
+
+def test_the_primary_action_keeps_its_four_labels():
+    """The driver sweeps these names to find the one button the panel shows."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    for label in ('"Save settings"', '"Forget settings"', '"Reload model"', '"Load model"'):
+        assert label in page, label
+    # And that the label is rendered by a button the driver can press. The four
+    # literals above live in the primaryActionLabel calculation, so they survive
+    # the button being deleted or turned into a non-button, and get_by_role finds
+    # nothing while this stays green.
+    # Whole elements, then the one that is both: other props on the opening tag
+    # contain braces of their own, so a pattern that tries to reach onClick
+    # through a negated class stops at the first `disabled={...}`.
+    primary = any(
+        "onClick={handleRun}" in el.group(0) and "{primaryActionLabel}" in el.group(0)
+        for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
+    )
+    assert primary, "primaryActionLabel is no longer rendered inside the handleRun Button"

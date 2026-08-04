@@ -16,6 +16,18 @@
 @custom-variant dark (&:is(.dark *));
 
 @layer components {
+	/* The surface the sidebar panel actually paints. The collapsed icon rail
+	   repaints it, so gradients fading into the panel must read this rather
+	   than --sidebar, or they render as a block instead of a fade. */
+	[data-sidebar="sidebar"] {
+		--sidebar-surface: var(--sidebar);
+	}
+	[data-collapsible="icon"] [data-sidebar="sidebar"] {
+		--sidebar-surface: #ffffff;
+	}
+	.dark [data-collapsible="icon"] [data-sidebar="sidebar"] {
+		--sidebar-surface: var(--background);
+	}
 	/* Sidebar scroll area (Gemini-style). The BOTTOM edge always fades so the
 	   last rows dissolve into the profile footer (no divider line). Once
 	   scrolled, the TOP edge also fades so rows dissolve as they pass under the
@@ -47,8 +59,8 @@
 		   black), which shows a grey midtone in Safari 27 Liquid Glass. */
 		background: linear-gradient(
 			to top,
-			var(--sidebar),
-			rgb(from var(--sidebar) r g b / 0)
+			var(--sidebar-surface),
+			rgb(from var(--sidebar-surface) r g b / 0)
 		);
 	}
 	/* Model picker list: once scrolled, the top edge fades so rows dissolve as
@@ -279,13 +291,17 @@
 	   the signal never changes with the theme. */
 	--verified: #17b88b;
 
+	/* The authored typography tokens use a 16px CSS base; the product default
+	   is 15px. An explicit user preference overrides this inline. */
+	--ui-font-scale: 0.9375;
+
 	/* Standard interactive-icon size for nav, menus, action bars, and
 	   in-message code-block actions. Sized one step above body text so
 	   icons read as minimally larger than adjacent labels (~14px text).
-	   Follows the UI font size preference; 18px at the default.
+	   Follows the UI font size preference; 15px at the app default.
 	   Theme-independent — declared once in :root. */
 	/* Standard icon size follows the UI font size itself: matches it below
-	   the 16px default, grows at half the change above it (setting 20 ->
+	   the 16px CSS scale base, grows at half the change above it (setting 20 ->
 	   18px), so icons read slightly smaller than enlarged text. */
 	--ui-icon-size: min(calc(1rem * var(--ui-font-scale, 1)), calc(0.5rem + 0.5rem * var(--ui-font-scale, 1)));
 	--icon-size: var(--ui-icon-size);
@@ -705,8 +721,9 @@ html[data-chat-font] .aui-root {
 
 @theme inline {
 	/* UI typography scale (Settings > Appearance). Every token multiplies
-	   its default size by --ui-font-scale, so text follows the preference
-	   while rem-based layout stays put. Identity at the 16px default. */
+	   its CSS base size by --ui-font-scale, so text follows the preference
+	   while rem-based layout stays put. The CSS base is 16px; the app default
+	   of 15px applies a 15/16 scale. */
 	--text-xs: calc(0.75rem * var(--ui-font-scale, 1));
 	--text-sm: calc(0.875rem * var(--ui-font-scale, 1));
 	--text-base: calc(1rem * var(--ui-font-scale, 1));
@@ -738,6 +755,7 @@ html[data-chat-font] .aui-root {
 	--text-ui-25: calc(1.5625rem * var(--ui-font-scale, 1));
 	--text-ui-30: calc(1.875rem * var(--ui-font-scale, 1));
 	--text-ui-34: calc(2.125rem * var(--ui-font-scale, 1));
+	--text-ui-50: calc(3.125rem * var(--ui-font-scale, 1));
 	/* Exact line-heights paired with the sizes above. */
 	--leading-ui-14: calc(0.875rem * var(--ui-font-scale, 1));
 	--leading-ui-15: calc(0.9375rem * var(--ui-font-scale, 1));
@@ -1671,8 +1689,10 @@ html[data-chat-font] .aui-root {
 		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-2 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
+	/* Same 12px corner gap as the single composer, over this surface's px-1
+	   and no pb. */
 	.composer-action-wrapper {
-		@apply relative mx-2 mb-2 flex items-center justify-between;
+		@apply relative mx-2 mb-3 flex items-center justify-between;
 	}
 
 	.composer-footer-note {
@@ -1680,7 +1700,9 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 	}
 
-	/* Pill composer; own classes so compare-mode keeps its stacked layout. */
+	/* Pill composer; own classes so compare-mode keeps its stacked layout. py
+	   12px matches the send circle's gap to the right edge, so it sits evenly
+	   inside the 32px corner. */
 	.unsloth-composer-surface {
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
 		container-type: inline-size;
@@ -1736,8 +1758,8 @@ html[data-chat-font] .aui-root {
 	.unsloth-composer-line .aui-composer-action-wrapper {
 		order: 3;
 		margin-left: auto;
-		/* Inset the send circle from the edge, Gemini-style. */
-		margin-right: -0.125rem;
+		/* 12px surface + 4px line padding minus this = 12px edge gap. */
+		margin-right: -0.25rem;
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
@@ -2351,45 +2373,55 @@ html[data-chat-font] .aui-root {
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
 	padding: 12px 18px !important;
+	align-items: start !important;
+	gap: 10px !important;
 	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 }
 
-[data-sonner-toast][data-styled='true']:has([data-close-button]):not(:has([data-cancel])) {
+[data-sonner-toast][data-styled='true'] [data-icon] {
+	margin: 2px 0 0 !important;
+}
+
+[data-sonner-toast][data-styled='true'] [data-content] {
+	min-width: 0;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]) {
+	display: grid !important;
+	grid-template-columns: 16px minmax(0, 1fr);
+	align-items: start !important;
+	column-gap: 10px !important;
+	row-gap: 10px !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]) [data-icon] {
+	grid-column: 1;
+	grid-row: 1;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]) [data-content] {
+	grid-column: 2;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]) [data-button] {
+	grid-column: 2;
+	justify-self: start;
+	margin: 0 !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-close-button]) {
 	padding-right: 48px !important;
 }
 
-[data-sonner-toast][data-styled='true']:has([data-cancel]):has([data-close-button]) {
-	padding-right: 88px !important;
-}
-
-[data-sonner-toast][data-styled='true'].chat-model-load-toast,
-[data-sonner-toast][data-styled='true'].chat-model-loaded-toast {
+/* Loading toast keeps its own vertical padding from #7683. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast {
 	padding-top: 14px !important;
 	padding-bottom: 14px !important;
 }
 
-/* Downloading state shows a progress bar as the last row; give it a little
-   extra breathing room below the bar. */
+/* Progress bar is the last row; give it room below. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
 	padding-bottom: 18px !important;
-}
-
-[data-sonner-toast][data-styled='true'].chat-model-loaded-toast [data-close-button] {
-	top: calc(50% - 0.25px) !important;
-	transform: translateY(-50%) !important;
-}
-
-[data-sonner-toast][data-styled='true'].chat-model-load-toast:not(:has([data-cancel])) [data-close-button] {
-	top: calc(50% - 0.25px) !important;
-	transform: translateY(-50%) !important;
-}
-
-[data-sonner-toast][data-styled="true"]:has([data-cancel]) [data-cancel] {
-	position: absolute !important;
-	right: 36px !important;
-	top: 50% !important;
-	transform: translateY(-50%) !important;
-	margin: 0 !important;
 }
 
 /* Dark toasts share the chatbox surface color (.chat-composer-surface
@@ -2774,7 +2806,7 @@ html[data-chat-font] .aui-root {
 }
 
 /* Third-party UI text follows the typography scale. Values equal the
-   library defaults at the 16px setting. KaTeX's internal font-size:1px
+   library defaults at the 16px CSS scale base. KaTeX's internal font-size:1px
    sizing trick is layout, not text, and stays untouched. */
 .before\:text-\[13px\]::before {
 	/* streamdown citation chip utility (class scanned from node_modules). */
@@ -2855,6 +2887,23 @@ html[data-chat-font] .aui-root {
 	& svg.size-\[20px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-\[21px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-\[22px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	/* Mic and send arrow sit above the shared glyph size: both fill their
+	   viewBox, so they read smaller than the stroked icons beside them. Keep
+	   after the size-[NN] rules they override. */
+	& svg.unsloth-dictate-icon {
+		width: calc(var(--ui-icon-size) * 1.2);
+		height: calc(var(--ui-icon-size) * 1.2);
+	}
+	& svg.unsloth-send-icon {
+		width: calc(var(--ui-icon-size) * 1.15);
+		height: calc(var(--ui-icon-size) * 1.15);
+	}
+	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
+	   curve a 22px glyph would follow), so only its scaling changed. */
+	& .unsloth-composer-plus svg {
+		width: calc(var(--ui-icon-size) * 1.375);
+		height: calc(var(--ui-icon-size) * 1.375);
+	}
 	& svg.size-\[36px\] { width: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); height: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); }
 	& svg.w-3 { width: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
 	& svg.h-3 { height: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }

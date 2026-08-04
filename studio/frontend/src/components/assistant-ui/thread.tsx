@@ -103,12 +103,18 @@ import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boun
 import {
   PLUS_MENU_ORDER,
   composerDraftKey,
+  dictationFailed,
+  dictationProducedTranscript,
   readComposerDraft,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import {
+  dictationSendBlocked,
+  shouldSubmitDictation,
+} from "@/features/chat/utils/dictation-send";
 import { listThreadDocuments } from "@/features/rag/api/rag-api";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -1365,7 +1371,8 @@ const ThreadWelcome: FC<{
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
-            {showGreetingSloth && (
+            {/* Temporary chat keeps the title on its own, no mascot. */}
+            {showGreetingSloth && !incognito && (
               <MascotImg
                 src={currentEmojiSrc}
                 className="size-[44px] -translate-y-[2px]"
@@ -1835,6 +1842,94 @@ const Composer: FC<{
     [],
   );
 
+  // Recording bar's send: stop dictating, then submit once the transcript
+  // lands. Going through the form keeps queueing, indexing holds and draft
+  // clearing identical to a typed send.
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const sendAfterDictationRef = useRef(false);
+  const dictationBaseTextRef = useRef("");
+  const dictationComposerRef = useRef("");
+  // Thread switches reuse this composer, so the send has to know where it
+  // started to avoid submitting the destination thread's draft. The list item
+  // id, not referenceThreadId: that one moves from null to the remote id when
+  // a new chat first persists, which is the same composer.
+  const composerIdentity = threadListItemId ?? "";
+  const sendAfterDictation = useCallback(() => {
+    sendAfterDictationRef.current = true;
+    dictationComposerRef.current = composerIdentity;
+    aui.composer().stopDictation();
+  }, [aui, composerIdentity]);
+
+  // One gate for the recording bar's send: it greys the button out, and holds
+  // a pending send when the composer changes under it after the press.
+  const dictationBlocked = dictationSendBlocked({
+    composerDisabled: Boolean(disabled),
+    uploading: hasPendingAttachments,
+    researchActive: isResearchActive,
+    runActive: threadIsRunning || promptQueueActive,
+    queueDisabled: Boolean(disableQueue),
+    hasOverlay: Boolean(overlay),
+    hasAttachments,
+    hasPendingAudio,
+  });
+  const wasDictatingRef = useRef(false);
+  // Composer text while a send waits on dictationBlocked, so an edit can drop it.
+  const heldTextRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isDictating) {
+      if (wasDictatingRef.current) return;
+      wasDictatingRef.current = true;
+      // A new recording supersedes a send still held for an upload.
+      sendAfterDictationRef.current = false;
+      heldTextRef.current = null;
+      // Text at session start is the dictation base. Anchor on it, not on the
+      // text when send was pressed: the browser engine streams interim results
+      // into the composer, so a final matching its interim would look unchanged.
+      dictationBaseTextRef.current = aui.composer().getState().text;
+      return;
+    }
+    wasDictatingRef.current = false;
+    if (!sendAfterDictationRef.current) return;
+    // A partial transcript (a failed chunk, or an engine error after one
+    // landed) belongs in the composer, but must not send half a message.
+    // Silence, a thread switch mid-transcription, or a plus-menu insertion
+    // with no speech: keep the draft, submit nothing. Settled before the hold
+    // below, so nothing to send never leaves an intent pending.
+    const text = composerText;
+    const sendable =
+      !dictationFailed() &&
+      shouldSubmitDictation({
+        originComposer: dictationComposerRef.current,
+        currentComposer: composerIdentity,
+        producedTranscript: dictationProducedTranscript(),
+        baseText: dictationBaseTextRef.current,
+        text,
+      });
+    if (!sendable) {
+      sendAfterDictationRef.current = false;
+      heldTextRef.current = null;
+      return;
+    }
+    // The plus stays live while transcribing, so an upload or an attachment
+    // can appear after the press. Keep the intent until the composer accepts
+    // a submit again, rather than spending it on one that would bounce.
+    if (dictationBlocked) {
+      // The bar is gone by now, so the hold is invisible. It lasts only as
+      // long as the transcript it was pressed for: editing hands control
+      // back, rather than sending that edit when the block clears.
+      if (heldTextRef.current === null) {
+        heldTextRef.current = text;
+      } else if (heldTextRef.current !== text) {
+        sendAfterDictationRef.current = false;
+        heldTextRef.current = null;
+      }
+      return;
+    }
+    sendAfterDictationRef.current = false;
+    heldTextRef.current = null;
+    formRef.current?.requestSubmit();
+  }, [isDictating, aui, composerIdentity, dictationBlocked, composerText]);
+
   const handleSubmit = useCallback(
     (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
       if (isResearchActive) {
@@ -2024,7 +2119,13 @@ const Composer: FC<{
         {isDictating ? (
           // The recording UI replaces the input and send controls; only the
           // left plus stays visible alongside it.
-          <ChatDictationBar />
+          <ChatDictationBar
+            onSend={sendAfterDictation}
+            // Every state handleSubmit rejects, since it would reject after
+            // transcription with the send intent already spent. Text presence
+            // is left out: the transcript supplies it.
+            sendDisabled={dictationBlocked}
+          />
         ) : (
           <>
             <ComposerPrimitive.Input
@@ -2086,6 +2187,7 @@ const Composer: FC<{
   return (
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
+      ref={formRef}
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
@@ -3645,7 +3747,7 @@ const ComposerRightControls: FC<{
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
       {/* Starts dictation; the recording bar then covers the input row and owns
-          the stop and discard actions. */}
+          the stop and send actions. */}
       <ComposerPrimitive.If dictation={false}>
         <TooltipIconButton
           tooltip="Dictate"
@@ -3655,7 +3757,8 @@ const ComposerRightControls: FC<{
           className="size-8 rounded-full text-foreground"
           onClick={startDictation}
         >
-          <MicIcon className="size-5" />
+          {/* size-[22px] is the fallback; unsloth-dictate-icon sets the size. */}
+          <MicIcon className="unsloth-dictate-icon size-[22px]" />
         </TooltipIconButton>
       </ComposerPrimitive.If>
       <AuiIf
@@ -3674,13 +3777,13 @@ const ComposerRightControls: FC<{
             // disabled only once a send is parked.
             disabled={disabled || pendingSend}
             onClick={(event) => onSendClick?.(event)}
-            className="aui-composer-send ml-1.5 size-8 rounded-full"
+            className="aui-composer-send ml-1.5 size-9 rounded-full"
             aria-label="Send message"
           >
             {pendingSend ? (
               <Spinner className="size-[18px]" />
             ) : (
-              <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             )}
           </TooltipIconButton>
         </ComposerPrimitive.Send>
@@ -3695,10 +3798,10 @@ const ComposerRightControls: FC<{
             size="icon"
             disabled={disabled || queueDisabled}
             onClick={onQueueClick}
-            className="aui-composer-send ml-1.5 size-8 rounded-full"
+            className="aui-composer-send ml-1.5 size-9 rounded-full"
             aria-label="Queue message"
           >
-            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+            <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
           </TooltipIconButton>
         </AuiIf>
       ) : null}
@@ -3707,7 +3810,7 @@ const ComposerRightControls: FC<{
           type="button"
           variant="default"
           size="icon"
-          className="aui-composer-cancel ml-1.5 size-8 rounded-full"
+          className="aui-composer-cancel ml-1.5 size-9 rounded-full"
           aria-label={researchStopping ? "Stopping research" : "Stop research"}
           disabled={researchStopping}
           onClick={stop}
@@ -3727,7 +3830,7 @@ const ComposerRightControls: FC<{
                 type="button"
                 variant="default"
                 size="icon"
-                className="aui-composer-cancel size-8 rounded-full"
+                className="aui-composer-cancel size-9 rounded-full"
                 aria-label="Stop generating"
                 onClick={stop}
               >
@@ -3743,10 +3846,10 @@ const ComposerRightControls: FC<{
               size="icon"
               disabled={queueDisabled}
               onClick={onQueueClick}
-              className="aui-composer-send size-8 rounded-full"
+              className="aui-composer-send size-9 rounded-full"
               aria-label="Queue message"
             >
-              <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
             )}
           </div>
