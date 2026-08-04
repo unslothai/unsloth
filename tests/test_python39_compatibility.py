@@ -114,7 +114,7 @@ def evaluated_annotations(tree):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 walk(child, True)
             elif isinstance(child, ast.ClassDef):
-                walk(child, False)   # a class body is class scope wherever it sits
+                walk(child, False)  # a class body is class scope wherever it sits
             else:
                 walk(child, in_function)
 
@@ -124,10 +124,24 @@ def evaluated_annotations(tree):
 
 # A `|` between these is a union, not arithmetic: builtin types, `None`, and whatever the
 # module pulled in from typing.
-TYPE_ANCHORS = frozenset({
-    "str", "int", "float", "bool", "bytes", "bytearray", "complex", "object", "type",
-    "list", "dict", "tuple", "set", "frozenset",
-})
+TYPE_ANCHORS = frozenset(
+    {
+        "str",
+        "int",
+        "float",
+        "bool",
+        "bytes",
+        "bytearray",
+        "complex",
+        "object",
+        "type",
+        "list",
+        "dict",
+        "tuple",
+        "set",
+        "frozenset",
+    }
+)
 TYPING_MODULES = frozenset({"typing", "typing_extensions", "collections.abc"})
 
 
