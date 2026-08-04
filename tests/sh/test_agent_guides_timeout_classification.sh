@@ -18,6 +18,13 @@
 # still fatal, a timeout that printed a transcript warns and defers to the
 # caller's own assertions, and neither disposition touches the non-timeout
 # exit paths.
+#
+# Two call sites deliberately do NOT get the waiver. `connection` has no
+# assertion that can tell a completed reply from a startup banner (assert_reply
+# checks for non-empty text without the connection/auth error strings, not for
+# the requested "pong"), and `resume` reads a session-store delta that a partial
+# turn would corrupt. And only exit 124 counts as an expiry: 137 is what an
+# external SIGKILL produces too, so it must never waive a crash.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -83,10 +90,22 @@ assert_eq "does not blame the recipe"   "$(count "$OUT" 'headless-TTY hang')" 0
 assert_eq "rc is still the timeout"     "$(field "$OUT" RC)" 124
 assert_eq "TIMED_OUT set for callers"   "$(field "$OUT" TIMED_OUT)" 1
 
-echo "3. a command that ignores SIGTERM is killed, then classified the same way"
-OUT="$(run_case 1 bash -c 'trap "" TERM; echo still here; sleep 40')"
+echo "3. a command that ignores SIGTERM still reports the expiry as 124"
+OUT="$(run_case 1 bash -c 'trap "" TERM; echo still here; sleep 4')"
 assert_eq "no guide_fail"               "$(count "$OUT" 'GUIDE_FAIL')" 0
+assert_eq "rc is the timeout, not 137"  "$(field "$OUT" RC)" 124
 assert_eq "TIMED_OUT set"               "$(field "$OUT" TIMED_OUT)" 1
+
+echo "3b. an external SIGKILL is a crash, never an expiry"
+# 137 is 128+9 whether --kill-after fired or the OOM killer struck, so it must
+# not reach the waiver -- otherwise a killed run whose side effects happen to
+# look right would pass.
+OUT="$(run_case 30 bash -c 'echo partial work; kill -9 $$')"
+assert_eq "rc 137 preserved"            "$(field "$OUT" RC)" 137
+assert_eq "not treated as a timeout"    "$(field "$OUT" TIMED_OUT)" 0
+assert_eq "no warning"                  "$(count "$OUT" '::warning::')" 0
+assert_eq "no guide_fail"               "$(count "$OUT" 'GUIDE_FAIL')" 0
+assert_eq "no --kill-after in run_timed" "$(grep -c 'kill-after' "$WORK/run_timed.sh")" 0
 
 echo "4. a clean run is untouched"
 OUT="$(run_case 5 bash -c 'echo hi')"
@@ -100,14 +119,21 @@ assert_eq "rc preserved"                "$(field "$OUT" RC)" 3
 assert_eq "TIMED_OUT cleared"           "$(field "$OUT" TIMED_OUT)" 0
 assert_eq "no guide_fail"               "$(count "$OUT" 'GUIDE_FAIL')" 0
 
-echo "6. the callers that can rescue a soft timeout check TIMED_OUT, resume does not"
-# connection + both file-edit turns judge the turn on their own assertions;
-# resume computes RESULT from a session-store delta, which a partial turn would
-# corrupt, so it must stay fatal.
+echo "6. only the file-edit turns rescue a soft timeout"
+# Both file-edit turns judge the turn on real side effects (hello.py exists,
+# contains Hello, and the run output contains Hello). connection and resume have
+# no such assertion, so a cap stays fatal for them.
 RESCUERS="$(grep -c 'TIMED_OUT:-0}" = 1 \] \\$' "$DRIVE_SH" || true)"
-assert_eq "connection + 2 file-edit turns exempt" "$RESCUERS" 3
+assert_eq "exactly the 2 file-edit turns"  "$RESCUERS" 2
 assert_eq "resume keeps a hang fatal" \
     "$(grep -c 'a resume pass cannot be judged from a partial turn' "$DRIVE_SH" || true)" 1
+# The connection guard must stay a bare rc test: assert_reply cannot tell a
+# completed reply from a startup banner, so it cannot adjudicate a cap.
+assert_eq "connection guard has no TIMED_OUT escape" \
+    "$(grep -c 'documented launch command exited non-zero (rc=$rc) -- see the transcript above' "$DRIVE_SH" || true)" 1
+CONN_LINE="$(grep -n 'documented launch command exited non-zero' "$DRIVE_SH" | cut -d: -f1)"
+assert_eq "and no TIMED_OUT on the line above it" \
+    "$(sed -n "$((CONN_LINE - 1))p" "$DRIVE_SH" | grep -c 'TIMED_OUT' || true)" 0
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

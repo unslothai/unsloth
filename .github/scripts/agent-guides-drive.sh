@@ -151,15 +151,19 @@ assert_reply() {
 #     there for the remaining 18 min with llama-server serving nothing, having
 #     completed the same two turns in 635s a week earlier.
 # Blaming start.py for the second is wrong, so flag it and let the caller judge
-# the turn on its assertions. TIMED_OUT is global: callers that cannot be judged
-# from a partial turn (resume) still treat it as fatal.
+# the turn on its assertions. TIMED_OUT is global: callers with no assertion that
+# can rescue a partial turn (connection, resume) still treat it as fatal.
+#
+# Only 124 counts. Do NOT add --kill-after here: it makes a TERM-ignoring child
+# exit 137, and 137 is also what an external SIGKILL (the OOM killer) produces,
+# so the two become indistinguishable and a real crash would be waived. Plain
+# timeout(1) reports 124 for an expiry either way, TERM-ignoring or not.
 run_timed() {  # $1=outfile, rest=command
   local out="$1"; shift
   TIMED_OUT=0
-  timeout --kill-after=30 "$TIMEOUT" "$@" > "$out" 2>&1
+  timeout "$TIMEOUT" "$@" > "$out" 2>&1
   local rc=$?
-  # 124 = timed out; 137 = ignored the TERM and needed the KILL 30s later.
-  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+  if [ "$rc" -eq 124 ]; then
     redact "$out"  # guide_fail may exit below, so scrub the transcript here too
     echo "[$AGENT] last 40 lines before timeout:"; tail -40 "$out" 2>/dev/null || true
     [ -s "$out" ] || guide_fail "invoke timed out after ${TIMEOUT}s having printed nothing (headless-TTY hang -- the recipe likely needs a non-interactive/print flag)"
@@ -414,11 +418,13 @@ case "$MODE" in
     # A non-zero exit from the documented launch command is drift even if it
     # printed something: a benign-looking "command not found" / usage dump would
     # otherwise slip past assert_reply (which only flags empty/error-keyword text).
-    # The one exception is a timeout that produced a transcript -- assert_reply
-    # can judge that on its own, so it is not automatically drift.
+    # A timeout is no exception here. assert_reply cannot tell a completed reply
+    # from a startup banner (it checks for non-empty text without the connection
+    # /auth error strings, not for the requested "pong"), so waiving a cap would
+    # report "connection OK" for a recipe that printed a banner and then blocked
+    # on a headless prompt -- the exact failure this job exists to catch.
     rc=$?
-    [ "$rc" -eq 0 ] || [ "${TIMED_OUT:-0}" = 1 ] \
-      || guide_fail "the documented launch command exited non-zero (rc=$rc) -- see the transcript above"
+    [ "$rc" -eq 0 ] || guide_fail "the documented launch command exited non-zero (rc=$rc) -- see the transcript above"
     assert_reply "$OUT"
     echo "[$AGENT] connection OK"
     ;;
