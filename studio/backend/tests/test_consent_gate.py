@@ -642,6 +642,7 @@ class TestStructuredFindingsForDialog:
         import asyncio
 
         import core.training.training as training_core
+
         models_route = _load_models_route(monkeypatch)
         import utils.models.model_config as model_config
         import utils.security as security
