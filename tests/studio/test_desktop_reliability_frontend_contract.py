@@ -397,7 +397,9 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
 
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in chat_page
-    assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(encoding = "utf-8")
+    assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(
+        encoding = "utf-8"
+    )
     assert 'className="!size-8 rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
@@ -419,8 +421,8 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "z-40 h-[48px]" in navbar
 
     assert "!windowFocused" in navbar
-    assert 'bg-[#b8b8b8]' in navbar
-    assert 'translate-y-[0.5px]' in TITLEBAR.read_text(encoding = "utf-8")
+    assert "bg-[#b8b8b8]" in navbar
+    assert "translate-y-[0.5px]" in TITLEBAR.read_text(encoding = "utf-8")
     assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
     assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
 
