@@ -102,16 +102,24 @@ function parseErrorText(status: number, body: unknown): string {
  * request out, which commits the status before the work finishes: a failure found
  * after that can only arrive in-band, under a 200, as `_deferred_error`.
  */
-function deferredError(body: unknown): { status: number; message: string } | null {
+function deferredError(
+  body: unknown,
+): { status: number; message: string } | null {
   const deferred =
     body && typeof body === "object"
-      ? (body as { _deferred_error?: { status_code?: unknown; detail?: unknown } })
-          ._deferred_error
+      ? (
+          body as {
+            _deferred_error?: { status_code?: unknown; detail?: unknown };
+          }
+        )._deferred_error
       : undefined;
   if (!deferred || typeof deferred !== "object") return null;
   const status =
     typeof deferred.status_code === "number" ? deferred.status_code : 500;
-  return { status, message: parseErrorText(status, { detail: deferred.detail }) };
+  return {
+    status,
+    message: parseErrorText(status, { detail: deferred.detail }),
+  };
 }
 
 /**
@@ -1094,23 +1102,38 @@ export interface KvCacheEstimate {
   kv_bytes: number | null;
   weights_bytes: number | null;
   native_context: number | null;
+  /** Extra MTP draft reserve; null for ngram or a model with no MTP head. */
+  spec_bytes: number | null;
+  /** Context the estimate was computed at, which is the native length when the
+   *  request omitted one. */
+  n_ctx: number | null;
 }
 
-/** Estimate KV cache + weight bytes for a downloaded quant at a context length,
- * for the load dialog's memory warning. */
+export interface KvCacheEstimateOptions {
+  cacheTypeKv?: string | null;
+  /** --parallel slots; scales per-slot KV stream padding. */
+  nParallel?: number | null;
+  /** Speculative mode, so an MTP draft reserve is priced into the estimate. */
+  speculativeType?: string | null;
+  signal?: AbortSignal;
+}
+
+/** Estimate KV cache + weight + speculative bytes for a downloaded quant, for
+ * the load dialog's memory warning and the picker's memory bar. Omit `nCtx` to
+ * size against the model's own context length; the response says which was
+ * used. */
 export async function estimateKvCache(
   repoId: string,
   quant: string,
-  nCtx: number,
-  cacheTypeKv?: string | null,
-  signal?: AbortSignal,
+  nCtx?: number,
+  options: KvCacheEstimateOptions = {},
 ): Promise<KvCacheEstimate> {
-  const params = new URLSearchParams({
-    repo_id: repoId,
-    quant,
-    n_ctx: String(nCtx),
-  });
+  const { cacheTypeKv, nParallel, speculativeType, signal } = options;
+  const params = new URLSearchParams({ repo_id: repoId, quant });
+  if (nCtx && nCtx > 0) params.set("n_ctx", String(nCtx));
   if (cacheTypeKv) params.set("cache_type_kv", cacheTypeKv);
+  if (nParallel && nParallel > 1) params.set("n_parallel", String(nParallel));
+  if (speculativeType) params.set("speculative_type", speculativeType);
   const response = await authFetch(
     `/api/models/kv-cache-estimate?${params}`,
     signal ? { signal } : undefined,

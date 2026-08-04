@@ -3080,24 +3080,91 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
     return None, 0
 
 
+# Drafter discovery runs on the request path, so its walk gets a bound like the
+# other GGUF scans here.
+_DRAFTER_SCAN_TIMEOUT_SECONDS = 2.0
+
+
+def _resolve_mtp_drafter(main_gguf_path: str) -> tuple[Optional[str], int]:
+    """Sibling MTP drafter GGUF for a resolved main quant, or (None, 0).
+
+    Some repos ship the drafter as its own file beside the weights (Gemma 4's
+    ``mtp-*.gguf``). The main GGUF has no ``nextn_predict_layers`` in that case,
+    so the estimator's embedded-head path returns None and the reserve reads as
+    zero unless we hand it the drafter.
+
+    Scoped to the directory holding the weights, the same way ``_resolve_quant_gguf``
+    scopes itself. One level up is the snapshot root, which spans every revision
+    and quant of the repo -- and for a local path is a directory the user never
+    pointed Studio at. Candidates are sorted so two hosts agree on the answer,
+    and the walk is bounded because this runs on the request path. Never raises:
+    a drafter we cannot find just costs a segment.
+    """
+    try:
+        from core.inference.llama_cpp import _is_mtp_only_drafter_path
+
+        main = Path(main_gguf_path)
+        root = main.parent
+        if not root.is_dir():
+            return None, 0
+
+        deadline = time.monotonic() + _DRAFTER_SCAN_TIMEOUT_SECONDS
+        drafters = sorted(
+            f
+            for f in _iter_gguf_paths(root, deadline)
+            if f != main and _is_mtp_only_drafter_path(str(f))
+        )
+        for f in drafters:
+            try:
+                return str(f), f.stat().st_size
+            except OSError:
+                continue  # unreadable; try the next rather than report 0 bytes
+    except Exception:
+        pass
+    return None, 0
+
+
 @router.get("/kv-cache-estimate")
 async def get_kv_cache_estimate(
     repo_id: str = Query(..., description = "HF repo ID or local path"),
     quant: str = Query(..., description = "Quantization label (e.g. Q4_K_M)"),
-    n_ctx: int = Query(..., ge = 1, description = "Context length to size the KV cache for"),
+    n_ctx: Optional[int] = Query(
+        None,
+        ge = 1,
+        description = "Context length to size the KV cache for; omit for the model's native length",
+    ),
     cache_type_kv: Optional[str] = Query(
         None,
         description = "KV cache dtype (e.g. q8_0, q4_0, q5_0, iq4_nl, f32)",
     ),
+    n_parallel: int = Query(
+        1,
+        ge = 1,
+        description = "--parallel slots; scales the per-slot KV stream padding",
+    ),
+    speculative_type: Optional[str] = Query(
+        None,
+        description = "Speculative decoding mode (mtp, ngram, mtp+ngram, auto)",
+    ),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Estimate KV cache + weight bytes for a downloaded GGUF at n_ctx.
+    """KV cache, weight and speculative-decoding bytes for a downloaded GGUF.
 
-    Powers the load dialog's "exceeds memory" warning using the same
-    architecture-aware estimator as load. Best-effort: returns nulls when the
-    metadata is unavailable so the UI simply shows no warning.
+    Backs the load dialog's "exceeds memory" warning and the picker's memory
+    bar, using the same architecture-aware estimator as load. Best-effort: on
+    missing metadata it returns nulls and the UI simply shows nothing.
+
+    ``spec_bytes`` is what an MTP draft mode costs on top of ``kv_bytes``. It is
+    null for ngram, which drafts from the generated text and costs no VRAM, and
+    for models with no drafter -- the caller draws no segment either way.
     """
-    null = {"kv_bytes": None, "weights_bytes": None, "native_context": None}
+    null = {
+        "kv_bytes": None,
+        "weights_bytes": None,
+        "native_context": None,
+        "spec_bytes": None,
+        "n_ctx": None,
+    }
     try:
         from utils.models.model_config import is_local_path
 
@@ -3133,11 +3200,41 @@ async def get_kv_cache_estimate(
         be._model_identifier = "kv-estimate"
         be._read_gguf_metadata(path)
 
-        kv = be._estimate_kv_cache_bytes(n_ctx, cache_type_kv)
+        # With no pinned context a GGUF loads at its own native length, which
+        # only the metadata we just read knows. Defaulting here saves the caller
+        # a round trip spent discovering the number it then asks about.
+        n_ctx = n_ctx or be._context_length
+        if not n_ctx or n_ctx < 1:
+            return null
+
+        kv = be._estimate_kv_cache_bytes(n_ctx, cache_type_kv, n_parallel = n_parallel)
+
+        # Only the MTP modes reserve memory; ngram is free. "auto" may or may
+        # not resolve to MTP, and the estimator returns None when it doesn't.
+        # Guarded separately: the MTP path reads more metadata than the KV path,
+        # and a model it can't size should still get its KV bar rather than
+        # dropping the whole response to nulls.
+        spec = None
+        if (speculative_type or "").lower() in ("mtp", "mtp+ngram", "auto"):
+            try:
+                drafter_path, drafter_bytes = _resolve_mtp_drafter(path)
+                spec = be._estimate_mtp_overhead_bytes(
+                    n_ctx,
+                    draft_cache_type_k = cache_type_kv,
+                    draft_cache_type_v = cache_type_kv,
+                    drafter_path = drafter_path,
+                    draft_weights_bytes = drafter_bytes,
+                    n_parallel = n_parallel,
+                )
+            except Exception as e:
+                logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
+
         return {
             "kv_bytes": int(kv) if kv else None,
             "weights_bytes": weights_bytes or None,
             "native_context": be._context_length,
+            "spec_bytes": int(spec) if spec else None,
+            "n_ctx": int(n_ctx),
         }
     except Exception as e:
         logger.debug(f"kv-cache-estimate failed for '{repo_id}' {quant}: {e}")
