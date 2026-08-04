@@ -64,6 +64,7 @@ async function fetchReadmeOnce(
           headers,
         },
         README_FETCH_TIMEOUT_MS,
+        { service: "other" },
       );
       if (res.ok) {
         return { markdown: await res.text(), branch };

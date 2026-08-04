@@ -232,6 +232,7 @@ export function fetchDatasetSize(
             : undefined,
         },
         FETCH_TIMEOUT_MS,
+        { service: "other" },
       );
       if (!res.ok) {
         // datasets-server 404 often means "not processed yet", not "never".
@@ -330,6 +331,7 @@ export function fetchModelSize(
           headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         },
         FETCH_TIMEOUT_MS,
+        { service: "other" },
       );
       if (!res.ok) {
         return { miss: res.status === 404 ? "permanent" : "transient" };

@@ -297,7 +297,9 @@ test("an avatar success does not erase the discovery diagnosis", async () => {
   globalThis.fetch = (async () =>
     new Response("", { status: 404 })) as typeof fetch;
   try {
-    await fetchWithTimeout(`${HF}/api/organizations/acme/overview`, {}, 1_000);
+    await fetchWithTimeout(`${HF}/api/organizations/acme/overview`, {}, 1_000, {
+      service: "other",
+    });
   } finally {
     globalThis.fetch = original;
   }
@@ -332,4 +334,36 @@ test("a discovery success does clear the discovery diagnosis", async () => {
   }
   assert.equal(getLastHubFailure(HF), null);
   assert.equal(getHubPhase(HF), "available");
+});
+
+test("a blocked avatar path never pins the catalog at probing", async () => {
+  reset();
+  // An auxiliary endpoint fails on its own; discovery has never failed.
+  markRemoteNetworkOffline(
+    HF,
+    30_000,
+    { kind: "timeout", message: "slow", origin: HF, retryable: true },
+    "other",
+  );
+  assert.equal(
+    getHubPhase(HF),
+    "available",
+    "an avatar outage must not make the model list claim the Hub is down",
+  );
+
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("[]", { status: 200 })) as typeof fetch;
+  try {
+    await fetchWithTimeout(`${HF}/api/models`, {}, 1_000, {
+      service: "discovery",
+    });
+  } finally {
+    globalThis.fetch = original;
+  }
+  assert.equal(
+    getHubPhase(HF),
+    "available",
+    "a successful empty search must render the empty state, not a stale error",
+  );
+  assert.equal(getLastHubFailure(HF), null);
 });

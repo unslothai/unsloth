@@ -62,17 +62,18 @@ const remoteOfflineUntilByOrigin = new Map<string, number>();
 let hubProxyServing = false;
 // The TTL controls when we retry; this controls what we tell the user. Cleared
 // only by a success, so the cause outlives the backoff window.
-const lastFailureByOrigin = new Map<
-  string,
-  { failure: HubFailure; service: HubService }
->();
+const lastFailureByKey = new Map<string, HubFailure>();
 
 /**
- * Which feed a request belongs to. A block can be per-path, so an avatar or
- * README success must not clear the discovery diagnosis and revert the panel to
- * the generic message.
+ * Which feed a request belongs to. A block can be per-path, so the catalog panel
+ * reads discovery's own history: an avatar success must not retire the cause on
+ * screen, and an avatar failure must not keep the catalog from recovering.
  */
 export type HubService = "discovery" | "other";
+
+function failureKey(origin: string, service: HubService): string {
+  return `${service}|${origin}`;
+}
 
 function isNavigatorOffline(): boolean {
   return typeof navigator !== "undefined" && navigator.onLine === false;
@@ -134,11 +135,12 @@ export type HubPhase = "available" | "probing" | "unavailable";
 
 export function getHubPhase(
   origin: string = HUGGING_FACE_ORIGIN,
+  service: HubService = "discovery",
 ): HubPhase {
   if (hubProxyServing && origin === HUGGING_FACE_ORIGIN) {
     return "available";
   }
-  if (!lastFailureByOrigin.has(origin)) {
+  if (!lastFailureByKey.has(failureKey(origin, service))) {
     return "available";
   }
   return isRemoteNetworkOffline(origin) ? "unavailable" : "probing";
@@ -159,33 +161,32 @@ export function setHubProxyServing(serving: boolean): void {
 
 export function getLastHubFailure(
   origin: string = HUGGING_FACE_ORIGIN,
+  service: HubService = "discovery",
 ): HubFailure | null {
   if (hubProxyServing && origin === HUGGING_FACE_ORIGIN) {
     return null;
   }
-  return lastFailureByOrigin.get(origin)?.failure ?? null;
+  return lastFailureByKey.get(failureKey(origin, service)) ?? null;
 }
 
 export function markRemoteNetworkOnline(
   origin?: string,
-  service: HubService = "other",
+  service: HubService = "discovery",
 ): void {
   if (origin === undefined) {
-    if (remoteOfflineUntilByOrigin.size === 0 && lastFailureByOrigin.size === 0) {
+    if (remoteOfflineUntilByOrigin.size === 0 && lastFailureByKey.size === 0) {
       return;
     }
     remoteOfflineUntilByOrigin.clear();
-    lastFailureByOrigin.clear();
+    lastFailureByKey.clear();
     hubProxyServing = false;
     emitNetworkStatusChange();
     return;
   }
+  // Reachability is origin-wide; the cause on screen is not, so a success
+  // retires only its own feed's diagnosis.
   const hadWindow = remoteOfflineUntilByOrigin.delete(origin);
-  // Reachability is origin-wide, but the cause on screen belongs to the feed
-  // that recorded it, so only that feed may retire it.
-  const hadFailure =
-    lastFailureByOrigin.get(origin)?.service === service &&
-    lastFailureByOrigin.delete(origin);
+  const hadFailure = lastFailureByKey.delete(failureKey(origin, service));
   if (!hadWindow && !hadFailure) {
     return;
   }
@@ -196,7 +197,7 @@ export function markRemoteNetworkOffline(
   originOrTtl: string | number = HUGGING_FACE_ORIGIN,
   ttlMs = REMOTE_OFFLINE_TTL_MS,
   failure?: HubFailure,
-  service: HubService = "other",
+  service: HubService = "discovery",
 ): void {
   const origin =
     typeof originOrTtl === "string"
@@ -207,11 +208,11 @@ export function markRemoteNetworkOffline(
   const previousUntil = remoteOfflineUntilByOrigin.get(origin) ?? 0;
   // Always record the newest cause even when the existing backoff window is
   // longer, otherwise the panel keeps describing a stale first failure.
+  const key = failureKey(origin, service);
   const failureChanged =
-    failure !== undefined &&
-    lastFailureByOrigin.get(origin)?.failure.kind !== failure.kind;
+    failure !== undefined && lastFailureByKey.get(key)?.kind !== failure.kind;
   if (failure !== undefined) {
-    lastFailureByOrigin.set(origin, { failure, service });
+    lastFailureByKey.set(key, failure);
   }
   if (nextUntil <= previousUntil) {
     if (failureChanged) {
@@ -283,7 +284,7 @@ function hostLabel(origin: string | null): string {
   try {
     return new URL(origin).host;
   } catch {
-    return origin;
+    return `${service}|${origin}`;
   }
 }
 
@@ -427,7 +428,9 @@ export async function fetchWithTimeout(
   // re-renders consumers, which aborts the very fallback about to run.
   options: { recordFailure?: boolean; service?: HubService } = {},
 ): Promise<Response> {
-  const service = options.service ?? "other";
+  // Defaults to the feed with a panel: a caller that does not opt out is one
+  // whose failure the user should see. Auxiliary clients pass "other".
+  const service = options.service ?? "discovery";
   const parentSignal = init.signal;
   const controller = new AbortController();
   let timedOut = false;

@@ -106,6 +106,7 @@ async function fetchAvatarUrl(
           credentials: "omit",
         },
         AVATAR_FETCH_TIMEOUT_MS,
+        { service: "other" },
       );
       if (res.ok) {
         const data = (await res.json()) as { avatarUrl?: string };
