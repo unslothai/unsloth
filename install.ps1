@@ -1491,103 +1491,6 @@ exit 0
         return (Find-CompatiblePython -X64Only)
     }
 
-    # ── Install Python if no compatible version (3.11-3.13) found ──
-    # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
-    Write-TauriLog "STEP" "Installing Python"
-    $DetectedPython = Find-CompatiblePython
-
-    if ($DetectedPython) {
-        step "python" "Python $($DetectedPython.Version) already installed"
-    }
-    if (-not $DetectedPython) {
-        substep "installing Python ${PythonVersion}..."
-        $pythonPackageId = "Python.Python.$PythonVersion"
-        $wingetExit = $null
-
-        if ($script:WingetAvailable) {
-            # --source winget avoids the msstore source, which can fail with
-            # cert-pinning error 0x8a15005e and abort the whole `winget install`
-            # (winget then demands --source). Python and uv both live in the
-            # winget source, so pinning it is correct and faster.
-            #
-            # Lower ErrorActionPreference so winget stderr (progress/warnings) is
-            # not a terminating error on PS 5.1 (native stderr is ErrorRecord).
-            $prevEAP = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            try {
-                winget install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements
-                $wingetExit = $LASTEXITCODE
-            } catch { $wingetExit = 1 }
-            $ErrorActionPreference = $prevEAP
-            Refresh-SessionPath
-
-            # Re-detect after install (PATH may have changed)
-            $DetectedPython = Find-CompatiblePython
-
-            if (-not $DetectedPython) {
-                # Python still not functional after winget -- force reinstall.
-                # This handles both real failures AND "already installed" codes where
-                # winget thinks Python is present but it's not actually on PATH
-                # (e.g. user partially uninstalled, or installed via a different method).
-                substep "Python not found on PATH after winget. Retrying with --force..." "Yellow"
-                $ErrorActionPreference = "Continue"
-                try {
-                    winget install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements --force
-                    $wingetExit = $LASTEXITCODE
-                } catch { $wingetExit = 1 }
-                $ErrorActionPreference = $prevEAP
-                Refresh-SessionPath
-                $DetectedPython = Find-CompatiblePython
-            }
-        }
-
-        # Fall back to python.org if winget is unavailable OR couldn't install a
-        # working Python (missing/broken winget, msstore cert errors --source
-        # winget can't fix). Keeps the install automatic instead of failing out.
-        if (-not $DetectedPython) {
-            if ($script:WingetAvailable) {
-                substep "winget could not install Python -- falling back to python.org..." "Yellow"
-            } else {
-                substep "winget is unavailable -- installing Python from python.org..." "Yellow"
-            }
-            $DetectedPython = Install-PythonFromPythonOrg
-        }
-
-        if (-not $DetectedPython) {
-            $exitNote = if ($null -ne $wingetExit) { " (winget exit code $wingetExit)" } else { "" }
-            Write-Host "[ERROR] Python installation failed$exitNote" -ForegroundColor Red
-            Write-Host "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
-            Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
-            Write-Host "        Then re-run this installer." -ForegroundColor Yellow
-            return (Exit-InstallFailure "Python installation failed")
-        }
-    }
-    # ── Windows on ARM: swap a native ARM64 interpreter for x64 ──
-    # pyarrow and hf-transfer publish no win_arm64 wheel, so an ARM64 Python source-builds
-    # both and fails deep into the run. Warn up front if x64 is unobtainable.
-    if ($DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
-        substep "windows on arm: only a native ARM64 Python $($DetectedPython.Version) was found." "Yellow"
-        substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
-        $X64Python = Install-X64Python
-        if ($X64Python) {
-            $DetectedPython = $X64Python
-            step "python" "using x64 Python $($DetectedPython.Version) under emulation"
-        } else {
-            Write-Host "[WARN] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Yellow
-            Write-Host "       Continuing with ARM64 Python $($DetectedPython.Version), but the install is likely to fail:" -ForegroundColor Yellow
-            Write-Host "       pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels and will be" -ForegroundColor Yellow
-            Write-Host "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
-            Write-Host "       Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
-            Write-Host "       (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
-        }
-    }
-
-    $DiagPythonVersion = $PythonVersion
-    if ($DetectedPython) { $DiagPythonVersion = $DetectedPython.Version }
-    $InitialGpuBranch = "unknown"
-    if ($SkipTorch) { $InitialGpuBranch = "no_torch" }
-    Write-TauriDiag -GpuBranch $InitialGpuBranch -TorchIndexFamily "none" -PythonVersionForDiag $DiagPythonVersion
-
     # ── Install uv ──
     Write-TauriLog "STEP" "Installing uv package manager"
     $UvMinVersion = "0.8.16"
@@ -1755,6 +1658,120 @@ exit 0
         substep "Install it from https://docs.astral.sh/uv/" "Yellow"
         return (Exit-InstallFailure "uv could not be installed")
     }
+
+    function New-UvManagedPythonRequest {
+        return @{
+            Version = $PythonVersion
+            Path = $PythonVersion
+            Arch = "x86_64"
+            ManagedByUv = $true
+            RequireManagedPython = $true
+        }
+    }
+
+    # ── Resolve Python for the venv ──
+    # Prefer an existing standalone CPython 3.11-3.13. On normal Windows hosts, fall back
+    # to a uv-managed Python instead of mutating the user's global Python installation.
+    # Windows on ARM is the exception: keep the explicit x64 bootstrap because pyarrow and
+    # hf-transfer still need x64 wheels there.
+    Write-TauriLog "STEP" "Resolving Python"
+    $DetectedPython = Find-CompatiblePython
+
+    if ($DetectedPython) {
+        step "python" "Python $($DetectedPython.Version) already installed"
+    } elseif ((Get-HostMachineArch) -ne "arm64") {
+        $DetectedPython = New-UvManagedPythonRequest
+        step "python" "using uv-managed Python $($DetectedPython.Version)"
+        substep "no compatible system Python found; uv will download and manage it for this environment"
+    } else {
+        substep "installing x64 Python ${PythonVersion} for Windows on ARM..."
+        $pythonPackageId = "Python.Python.$PythonVersion"
+        $wingetExit = $null
+
+        if ($script:WingetAvailable) {
+            # --source winget avoids the msstore source, which can fail with
+            # cert-pinning error 0x8a15005e and abort the whole `winget install`
+            # (winget then demands --source). Python and uv both live in the
+            # winget source, so pinning it is correct and faster.
+            #
+            # Lower ErrorActionPreference so winget stderr (progress/warnings) is
+            # not a terminating error on PS 5.1 (native stderr is ErrorRecord).
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                winget install -e --id $pythonPackageId --source winget --architecture x64 --accept-package-agreements --accept-source-agreements
+                $wingetExit = $LASTEXITCODE
+            } catch { $wingetExit = 1 }
+            $ErrorActionPreference = $prevEAP
+            Refresh-SessionPath
+
+            # Re-detect after install (PATH may have changed)
+            $DetectedPython = Find-CompatiblePython
+
+            if (-not $DetectedPython) {
+                # Python still not functional after winget -- force reinstall.
+                # This handles both real failures AND "already installed" codes where
+                # winget thinks Python is present but it's not actually on PATH
+                # (e.g. user partially uninstalled, or installed via a different method).
+                substep "Python not found on PATH after winget. Retrying with --force..." "Yellow"
+                $ErrorActionPreference = "Continue"
+                try {
+                    winget install -e --id $pythonPackageId --source winget --architecture x64 --accept-package-agreements --accept-source-agreements --force
+                    $wingetExit = $LASTEXITCODE
+                } catch { $wingetExit = 1 }
+                $ErrorActionPreference = $prevEAP
+                Refresh-SessionPath
+                $DetectedPython = Find-CompatiblePython
+            }
+        }
+
+        # Fall back to python.org if winget is unavailable OR couldn't install a
+        # working x64 Python (missing/broken winget, msstore cert errors --source
+        # winget can't fix). ARM64 keeps this explicit bootstrap because the wheel
+        # set still materially differs by architecture.
+        if (-not $DetectedPython) {
+            if ($script:WingetAvailable) {
+                substep "winget could not install x64 Python -- falling back to python.org..." "Yellow"
+            } else {
+                substep "winget is unavailable -- installing x64 Python from python.org..." "Yellow"
+            }
+            $DetectedPython = Install-PythonFromPythonOrg -Arch "x86_64"
+        }
+
+        if (-not $DetectedPython) {
+            $exitNote = if ($null -ne $wingetExit) { " (winget exit code $wingetExit)" } else { "" }
+            Write-Host "[ERROR] Python installation failed$exitNote" -ForegroundColor Red
+            Write-Host "        Please install x64 Python $PythonVersion manually from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
+            Write-Host "        Choose 'Windows installer (64-bit)', not ARM64, and check 'Add Python to PATH'." -ForegroundColor Yellow
+            Write-Host "        Then re-run this installer." -ForegroundColor Yellow
+            return (Exit-InstallFailure "Python installation failed")
+        }
+    }
+    # ── Windows on ARM: swap a native ARM64 interpreter for x64 ──
+    # pyarrow and hf-transfer publish no win_arm64 wheel, so an ARM64 Python source-builds
+    # both and fails deep into the run. Warn up front if x64 is unobtainable.
+    if ($DetectedPython -and -not $DetectedPython.ManagedByUv -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
+        substep "windows on arm: only a native ARM64 Python $($DetectedPython.Version) was found." "Yellow"
+        substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
+        $X64Python = Install-X64Python
+        if ($X64Python) {
+            $DetectedPython = $X64Python
+            step "python" "using x64 Python $($DetectedPython.Version) under emulation"
+        } else {
+            Write-Host "[WARN] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Yellow
+            Write-Host "       Continuing with ARM64 Python $($DetectedPython.Version), but the install is likely to fail:" -ForegroundColor Yellow
+            Write-Host "       pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels and will be" -ForegroundColor Yellow
+            Write-Host "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
+            Write-Host "       Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
+            Write-Host "       (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
+        }
+    }
+
+    $DiagPythonVersion = $PythonVersion
+    if ($DetectedPython) { $DiagPythonVersion = $DetectedPython.Version }
+    $InitialGpuBranch = "unknown"
+    if ($SkipTorch) { $InitialGpuBranch = "no_torch" }
+    Write-TauriDiag -GpuBranch $InitialGpuBranch -TorchIndexFamily "none" -PythonVersionForDiag $DiagPythonVersion
 
     # When bytecode compilation is enabled, large installs can exceed uv's 60s
     # default on slow machines. Default to 180s, preserving overrides ("0" disables).
@@ -2016,7 +2033,11 @@ exit 0
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
-        $venvExit = Invoke-InstallCommand -Label "create virtual environment" { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+        if ($DetectedPython.RequireManagedPython) {
+            $venvExit = Invoke-InstallCommand -Label "create virtual environment" { uv venv $VenvDir --managed-python --python "$($DetectedPython.Path)" }
+        } else {
+            $venvExit = Invoke-InstallCommand -Label "create virtual environment" { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+        }
         if ($venvExit -ne 0) {
             Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
