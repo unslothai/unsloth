@@ -15,7 +15,7 @@ import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 import httpx
 
@@ -147,6 +147,11 @@ _MODEL_WAIT_POLL_SECONDS = 2.0
 # otherwise re-send forever, so cap how many times one call may wait.
 _MAX_MODEL_WAITS = 3
 _NO_MODEL_LOADED_DETAIL = "No model loaded"
+# Transport keepalives prevent HTTP read timeouts without proving that the model is progressing.
+# Give prompt processing more time than a mid-response pause, while the run's absolute model
+# timeout remains the final upper bound for either stage.
+_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS = 300.0
+_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
 
 
 def _auto_scrape_default() -> int:
@@ -568,7 +573,25 @@ class LeaseLost(Exception):
     pass
 
 
+class ModelFirstOutputTimeout(httpx.ReadTimeout):
+    pass
+
+
+class ModelOutputIdleTimeout(httpx.ReadTimeout):
+    pass
+
+
+class ModelWallClockTimeout(httpx.ReadTimeout):
+    pass
+
+
 def _safe_error(exc: BaseException) -> str:
+    if isinstance(exc, ModelFirstOutputTimeout):
+        return "Local model did not produce output before its first-output timeout"
+    if isinstance(exc, ModelOutputIdleTimeout):
+        return "Local model stopped producing output before completion"
+    if isinstance(exc, ModelWallClockTimeout):
+        return "Local model request exhausted its total time budget"
     if isinstance(exc, httpx.TimeoutException):
         return "Local model request timed out"
     if isinstance(exc, httpx.HTTPStatusError):
@@ -1607,13 +1630,31 @@ class ResearchSupervisor:
                     "research.api_key_cleanup_failed run_id=%s", run["id"], exc_info = True
                 )
 
-    async def _iter_stream_lines(self, run_id: str, response: httpx.Response) -> AsyncIterator[str]:
+    async def _iter_stream_lines(
+        self,
+        run_id: str,
+        response: httpx.Response,
+        semantic_deadline: Callable[[], tuple[float, bool]] | None = None,
+    ) -> AsyncIterator[str]:
         iterator = response.aiter_lines().__aiter__()
+
+        def wait_timeout() -> float:
+            if semantic_deadline is None:
+                return 0.2
+            deadline, has_output = semantic_deadline()
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining > 0:
+                return min(0.2, remaining)
+            if has_output:
+                raise ModelOutputIdleTimeout("Local model stopped producing semantic output")
+            raise ModelFirstOutputTimeout("Local model did not produce semantic output")
+
         while True:
+            timeout = wait_timeout()
             line_task = asyncio.create_task(anext(iterator))
             try:
                 while not line_task.done():
-                    await asyncio.wait({line_task}, timeout = 0.2)
+                    await asyncio.wait({line_task}, timeout = timeout)
                     if self._cancel_event(run_id).is_set():
                         line_task.cancel()
                         try:
@@ -1621,6 +1662,7 @@ class ResearchSupervisor:
                         except asyncio.CancelledError:
                             pass
                         await self._check_active(run_id)
+                    timeout = wait_timeout()
                 try:
                     line = line_task.result()
                 except StopAsyncIteration:
@@ -1686,6 +1728,7 @@ class ResearchSupervisor:
         pending_reasoning_offset = 0
         last_progress_flush = asyncio.get_running_loop().time()
         finish_reason: str | None = None
+        semantic_output_at: float | None = None
 
         async def flush_progress() -> None:
             nonlocal pending_report, pending_reasoning, pending_reasoning_offset
@@ -1747,6 +1790,17 @@ class ResearchSupervisor:
         try:
             model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
             timeout = httpx.Timeout(model_timeout)
+            loop = asyncio.get_running_loop()
+            request_started_at = loop.time()
+
+            def semantic_deadline() -> tuple[float, bool]:
+                if semantic_output_at is None:
+                    return (
+                        request_started_at + _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS,
+                        False,
+                    )
+                return semantic_output_at + _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS, True
+
             async with (
                 _wall_clock_timeout(model_timeout),
                 httpx.AsyncClient(timeout = timeout, trust_env = False) as client,
@@ -1757,6 +1811,8 @@ class ResearchSupervisor:
                 attempt = 0
                 try:
                     while True:
+                        # A model-unloaded wait or transport retry starts a fresh upstream attempt.
+                        request_started_at = loop.time()
                         request = client.build_request(
                             "POST",
                             self._endpoint(),
@@ -1774,9 +1830,23 @@ class ResearchSupervisor:
                                     except asyncio.CancelledError:
                                         pass
                                     await self._check_active(run["id"])
+                                if (
+                                    loop.time() - request_started_at
+                                    >= _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
+                                ):
+                                    send_task.cancel()
+                                    try:
+                                        await send_task
+                                    except asyncio.CancelledError:
+                                        pass
+                                    raise ModelFirstOutputTimeout(
+                                        "Local model did not produce response headers"
+                                    )
                             response = await send_task
                             response.raise_for_status()
                             break
+                        except ModelFirstOutputTimeout:
+                            raise
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                             # Only reachable before a body byte is touched (the stream is consumed
                             # after this loop), so a re-send cannot duplicate report text.
@@ -1808,7 +1878,9 @@ class ResearchSupervisor:
                                 await asyncio.sleep(2**attempt)
                                 attempt += 1
                                 await self._check_active(run["id"])
-                    async for line in self._iter_stream_lines(run["id"], response):
+                    async for line in self._iter_stream_lines(
+                        run["id"], response, semantic_deadline
+                    ):
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
@@ -1829,11 +1901,15 @@ class ResearchSupervisor:
                             continue
                         thought = delta.get("reasoning_content")
                         if isinstance(thought, str) and thought:
+                            if thought.strip():
+                                semantic_output_at = loop.time()
                             if not pending_reasoning:
                                 pending_reasoning_offset = len(reasoning)
                             reasoning += thought
                             pending_reasoning += thought
                         if isinstance(text, str) and text:
+                            if text.strip():
+                                semantic_output_at = loop.time()
                             report += text
                             pending_report += text
                         pending_chars = len(pending_reasoning) + len(pending_report)
@@ -1865,7 +1941,9 @@ class ResearchSupervisor:
             await flush_progress()
             return report, reasoning, finish_reason
         except (TimeoutError, asyncio.TimeoutError) as exc:
-            raise httpx.ReadTimeout("Local model request exceeded its wall-clock timeout") from exc
+            raise ModelWallClockTimeout(
+                "Local model request exceeded its wall-clock timeout"
+            ) from exc
         finally:
             try:
                 await asyncio.to_thread(auth_storage.revoke_internal_api_key, int(key["id"]))
