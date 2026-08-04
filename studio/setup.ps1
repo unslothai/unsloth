@@ -563,6 +563,54 @@ function Get-NvccMaxArch {
     return $null
 }
 
+# Classify the physical NVIDIA inventory for a cu126 fallback:
+# "cu126" when it covers every GPU, "uncovered" for an incompatible mix,
+# and empty when no fallback is needed or the inventory is unreadable.
+# CUDA_VISIBLE_DEVICES is ignored because the wheel must support the host.
+# Mirrors _nvidia_cu126_verdict in install.sh.
+function Get-NvidiaCu126Verdict {
+    param([string]$SmiExe)
+    if (-not $SmiExe) { return '' }
+    $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
+    if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+    $legacy = $false
+    $outsideCu126 = $false
+    $seen = $false
+    foreach ($line in ($raw -split "`n")) {
+        $value = $line.Trim()
+        if (-not $value) { continue }
+        if ($value -notmatch '^(\d+)\.(\d+)$') { return '' }
+        $sm = ([int]$Matches[1] * 10) + [int]$Matches[2]
+        if ($sm -lt 75) { $legacy = $true }
+        if ($sm -lt 50 -or $sm -gt 90) { $outsideCu126 = $true }
+        $seen = $true
+    }
+    if (-not $seen -or -not $legacy) { return '' }
+    if ($outsideCu126) { return 'uncovered' }
+    return 'cu126'
+}
+
+function Get-CudaFamilyCappedForPreTuring {
+    param([string]$Family, [string]$SmiExe)
+    if ($Family -notin @('cu128', 'cu130')) { return $Family }
+    $verdict = Get-NvidiaCu126Verdict $SmiExe
+    if (-not $verdict) { return $Family }
+    # This runs twice per setup; announce once without polluting pipeline output.
+    $announce = -not $script:PreTuringCapAnnounced
+    $script:PreTuringCapAnnounced = $true
+    if ($verdict -eq 'cu126') {
+        if ($announce) {
+            substep "pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $Family wheels start at sm_75" "Yellow"
+        }
+        return 'cu126'
+    }
+    if ($announce) {
+        substep "this host mixes pre-Turing NVIDIA GPUs with GPUs that cu126 cannot serve; no PyTorch 2.11 CUDA family covers both" "Yellow"
+        substep "keeping $Family, so the pre-Turing GPUs will be unusable; set UNSLOTH_TORCH_INDEX_FAMILY=cu126 to choose the other way" "Yellow"
+    }
+    return $Family
+}
+
 # Detect driver's max CUDA version from nvidia-smi and return the highest
 # compatible PyTorch CUDA index tag (e.g. "cu128").
 # PyTorch on Windows ships CPU-only by default from PyPI; CUDA wheels live at
@@ -587,12 +635,13 @@ function Get-PytorchCudaTag {
             $major = [int]$Matches[1]
             $minor = [int]$Matches[2]
             # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
-            if ($major -ge 13) { return "cu130" }
-            if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
-            if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
-            if ($major -ge 12) { return "cu124" }
-            if ($major -ge 11) { return "cu118" }
-            return "cpu"
+            if ($major -ge 13)                        { $family = "cu130" }
+            elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
+            elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
+            elseif ($major -ge 12) { $family = "cu124" }
+            elseif ($major -ge 11) { $family = "cu118" }
+            else { return "cpu" }
+            return (Get-CudaFamilyCappedForPreTuring $family $smiExe)
         }
     } catch { }
 
@@ -1392,7 +1441,10 @@ function Invoke-NvidiaSmiBounded {
     param(
         [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
         [Parameter(Position = 1)][string[]]$SmiArgs = @(),
-        [int]$TimeoutSec = 10
+        [int]$TimeoutSec = 10,
+        # Machine-readable --query-gpu output must not be polluted by driver
+        # warnings; the default merge is kept for the human-readable probes.
+        [switch]$StdoutOnly
     )
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -1411,6 +1463,7 @@ function Invoke-NvidiaSmiBounded {
             return ""
         }
         $global:LASTEXITCODE = $proc.ExitCode
+        if ($StdoutOnly) { return $outTask.Result }
         return ($outTask.Result + "`n" + $errTask.Result)
     } catch {
         $global:LASTEXITCODE = 1

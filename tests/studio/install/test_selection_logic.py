@@ -61,6 +61,13 @@ resolve_simple_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_simple_ins
 
 
 @pytest.fixture(autouse = True)
+def _reset_uncovered_cuda_warnings(monkeypatch):
+    # The warning dedupe is module-level state, so without this a test's verdict
+    # would depend on which earlier test happened to log the same reason first.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_UNCOVERED_CUDA_HOST_WARNINGS", set())
+
+
+@pytest.fixture(autouse = True)
 def _disable_download_host_fast_path(monkeypatch):
     # This module exercises the GitHub API enumeration and asset selection against
     # mocked releases; keep the download-host fast path (real CDN) out of the way.
@@ -1176,6 +1183,122 @@ class TestLinuxCudaChoiceFromRelease:
         result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
         assert result is not None
         assert result.primary.runtime_line == "cuda13"
+
+    def test_volta_host_needs_the_cuda12_line(self, monkeypatch, capsys):
+        # Issue #7765: CUDA 13 dropped sm_70, so a V100 whose only runtime line is
+        # cuda13 (torch installed from the cu130 index) gets no bundle at all and
+        # GGUF inference silently moves to the CPU. The reason has to reach the
+        # user, because the selection log is only printed when an attempt survives.
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["70"])
+        art12 = make_artifact(
+            "bundle-cuda12-older.tar.gz",
+            runtime_line = "cuda12",
+            supported_sms = ["70", "75", "80", "86", "89"],
+            min_sm = 70,
+            max_sm = 89,
+        )
+        art13 = make_artifact("bundle-cuda13-older.tar.gz", runtime_line = "cuda13")
+        release = make_release([art12, art13])
+
+        assert linux_cuda_choice_from_release(host, release) is None
+        warning = capsys.readouterr().err
+        assert "sm_70" in warning
+        # The pin, not a promise about what a re-run would pick: these GPUs are the
+        # masked view, while the installer weighs every physical GPU.
+        assert "UNSLOTH_TORCH_INDEX_FAMILY=cu126" in warning
+
+        # The same host with a CUDA 12 runtime in the venv reaches its bundle.
+        mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
+        result = linux_cuda_choice_from_release(host, release)
+        assert result is not None
+        assert result.primary.name == "bundle-cuda12-older.tar.gz"
+
+    def test_cu126_advice_reaches_a_mixed_host_cu126_can_serve(self, monkeypatch, capsys):
+        # A Volta beside an Ampere is exactly the case cu126 exists for, and the
+        # cuda12 portable bundle covers both. Withholding the remedy here would
+        # contradict what the installer does for the same host.
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["70", "86"])
+        release = make_release([
+            make_artifact(
+                "bundle-cuda12-portable.tar.gz",
+                runtime_line = "cuda12",
+                supported_sms = ["70", "75", "80", "86", "89", "90"],
+                min_sm = 70,
+                max_sm = 90,
+            ),
+            make_artifact("bundle-cuda13-older.tar.gz", runtime_line = "cuda13"),
+        ])
+
+        assert linux_cuda_choice_from_release(host, release) is None
+        assert "UNSLOTH_TORCH_INDEX_FAMILY=cu126" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "case,driver,caps,artifacts",
+        [
+            # Kepler: no published bundle covers sm_37 at any runtime line.
+            ("kepler", (13, 0), ["37"], [("cuda12", ["50", "61"], 50, 61)]),
+            # Blackwell beside a Volta is past cu126's sm_90 ceiling.
+            (
+                "blackwell",
+                (13, 0),
+                ["70", "120"],
+                [("cuda12", ["70", "86", "120"], 70, 120)],
+            ),
+            # Driver too old to run a CUDA 12 runtime at all.
+            ("old_driver", (11, 4), ["70"], [("cuda12", ["70", "75"], 70, 89)]),
+            # arm64 publishes no cuda12 bundle, and no aarch64 CUDA wheel goes below sm_80.
+            ("arm64", (13, 0), ["72"], [("cuda13", ["90", "121"], 90, 121)]),
+        ],
+    )
+    def test_cu126_advice_is_withheld_when_it_cannot_help(
+        self, monkeypatch, capsys, case, driver, caps, artifacts
+    ):
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(
+            driver_cuda_version = driver,
+            compute_caps = caps,
+            machine = "aarch64" if case == "arm64" else "x86_64",
+        )
+        kind = "linux-arm64-cuda" if case == "arm64" else "linux-cuda"
+        release = make_release([
+            make_artifact(
+                f"bundle-{line}.tar.gz",
+                install_kind = kind,
+                runtime_line = line,
+                supported_sms = sms,
+                min_sm = lo,
+                max_sm = hi,
+            )
+            for line, sms, lo, hi in artifacts
+        ])
+
+        assert linux_cuda_choice_from_release(host, release) is None
+        warning = capsys.readouterr().err
+        assert "no published CUDA bundle covers this host" in warning
+        assert "cu126" not in warning
+
+    def test_uncovered_host_warning_is_not_repeated(self, monkeypatch, capsys):
+        # The release walk-back re-runs the selection per release.
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["70"])
+        release = make_release([make_artifact("bundle-cuda13.tar.gz", runtime_line = "cuda13")])
+
+        for _ in range(3):
+            assert linux_cuda_choice_from_release(host, release) is None
+        assert capsys.readouterr().err.count("no published CUDA bundle covers this host") == 1
+
+    def test_uncovered_modern_host_gets_no_cu126_hint(self, monkeypatch, capsys):
+        # cu126 only helps a pre-Turing host; never suggest it to anyone else.
+        mock_linux_runtime(monkeypatch, ["cuda13"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["120"])
+        release = make_release([make_artifact("bundle-cuda13.tar.gz", runtime_line = "cuda13")])
+
+        assert linux_cuda_choice_from_release(host, release) is None
+        warning = capsys.readouterr().err
+        assert "sm_120" in warning
+        assert "cu126" not in warning
 
     def test_blackwell_prefers_cuda14_over_lower_majors(self, monkeypatch):
         # The highest sm_120-capable CUDA major wins.

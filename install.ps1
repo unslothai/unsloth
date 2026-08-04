@@ -1999,7 +1999,10 @@ exit 0
         param(
             [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
             [Parameter(Position = 1)][string[]]$SmiArgs = @(),
-            [int]$TimeoutSec = 10
+            [int]$TimeoutSec = 10,
+            # Machine-readable --query-gpu output must not be polluted by driver
+            # warnings; the default merge is kept for the human-readable probes.
+            [switch]$StdoutOnly
         )
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -2018,6 +2021,7 @@ exit 0
                 return ""
             }
             $global:LASTEXITCODE = $proc.ExitCode
+            if ($StdoutOnly) { return $outTask.Result }
             return ($outTask.Result + "`n" + $errTask.Result)
         } catch {
             $global:LASTEXITCODE = 1
@@ -2391,6 +2395,49 @@ exit 0
         return $value.Substring(0, $idx).TrimEnd('/') + $value.Substring($idx)
     }
 
+    # Classify the physical NVIDIA inventory for a cu126 fallback:
+    # "cu126" when it covers every GPU, "uncovered" for an incompatible mix,
+    # and empty when no fallback is needed or the inventory is unreadable.
+    # CUDA_VISIBLE_DEVICES is ignored because the wheel must support the host.
+    # Mirrors _nvidia_cu126_verdict in install.sh.
+    function Get-NvidiaCu126Verdict {
+        param([string]$SmiExe)
+        if (-not $SmiExe) { return '' }
+        $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
+        if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+        $legacy = $false
+        $outsideCu126 = $false
+        $seen = $false
+        foreach ($line in ($raw -split "`n")) {
+            $value = $line.Trim()
+            if (-not $value) { continue }
+            if ($value -notmatch '^(\d+)\.(\d+)$') { return '' }
+            $sm = ([int]$Matches[1] * 10) + [int]$Matches[2]
+            if ($sm -lt 75) { $legacy = $true }
+            if ($sm -lt 50 -or $sm -gt 90) { $outsideCu126 = $true }
+            $seen = $true
+        }
+        if (-not $seen -or -not $legacy) { return '' }
+        if ($outsideCu126) { return 'uncovered' }
+        return 'cu126'
+    }
+
+    function Get-CudaFamilyCappedForPreTuring {
+        param([string]$Family, [string]$SmiExe)
+        if ($Family -notin @('cu128', 'cu130')) { return $Family }
+        switch (Get-NvidiaCu126Verdict $SmiExe) {
+            'cu126' {
+                substep "pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $Family wheels start at sm_75" "Yellow"
+                return 'cu126'
+            }
+            'uncovered' {
+                substep "this host mixes pre-Turing NVIDIA GPUs with GPUs that cu126 cannot serve; no PyTorch 2.11 CUDA family covers both" "Yellow"
+                substep "keeping $Family, so the pre-Turing GPUs will be unusable; set UNSLOTH_TORCH_INDEX_FAMILY=cu126 to choose the other way" "Yellow"
+            }
+        }
+        return $Family
+    }
+
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
@@ -2412,12 +2459,13 @@ exit 0
             # Accept both spellings so we don't fall through to the cu126 default.
             if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                 $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-                if ($major -ge 13)                    { return "$baseUrl/cu130" }
-                if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
-                if ($major -eq 12 -and $minor -ge 6)  { return "$baseUrl/cu126" }
-                if ($major -ge 12) { return "$baseUrl/cu124" }
-                if ($major -ge 11) { return "$baseUrl/cu118" }
-                return "$baseUrl/cpu"
+                if ($major -ge 13)                        { $family = "cu130" }
+                elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
+                elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
+                elseif ($major -ge 12) { $family = "cu124" }
+                elseif ($major -ge 11) { $family = "cu118" }
+                else { return "$baseUrl/cpu" }
+                return "$baseUrl/$(Get-CudaFamilyCappedForPreTuring $family $NvidiaSmiExe)"
             }
         } catch {}
         substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
