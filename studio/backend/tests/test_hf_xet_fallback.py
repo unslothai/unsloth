@@ -582,3 +582,48 @@ def test_start_watchdog_passes_everything_to_a_zoo_that_accepts_it(monkeypatch):
 
     shim.start_watchdog(repo_ids = ["a/b"], on_stall = lambda _m: None, connect_timeout = 600.0)
     assert seen["connect_timeout"] == 600.0, "a newer zoo lost the kwarg it supports"
+
+
+def test_apply_xet_env_delegates_to_the_zoo(monkeypatch):
+    """One rule, in one place: Studio asks the zoo to size the worker rather than sizing it too."""
+    import types
+
+    import utils.hf_xet_fallback as shim
+
+    seen = {}
+
+    def _apply(env, **kwargs):
+        seen["env"] = env
+        seen["kwargs"] = kwargs
+        env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"] = "123"
+        return {"HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE": "123"}
+
+    monkeypatch.setattr(shim, "_load_optional",
+                        lambda _name: types.SimpleNamespace(apply_xet_env = _apply))
+    env = {"HF_HUB_DISABLE_XET": "0"}
+    assert shim.apply_xet_env(env) == {"HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE": "123"}
+    assert env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"] == "123"
+    assert seen["env"] is env, "the worker's own env has to be the one that gets sized"
+    # Short Xet timeouts suit a child our ladder supervises; process-wide they would not.
+    assert seen["kwargs"]["fail_fast"] is True
+
+
+def test_apply_xet_env_returns_none_when_the_zoo_cannot_size(monkeypatch):
+    """None, not {}: an empty write is a legitimate result, so the caller needs the two apart to
+    know whether to fall back to clearing the high-performance flag itself."""
+    import types
+
+    import utils.hf_xet_fallback as shim
+
+    monkeypatch.setattr(shim, "_load_optional", lambda _name: None)
+    assert shim.apply_xet_env({}) is None
+
+    monkeypatch.setattr(shim, "_load_optional", lambda _name: types.SimpleNamespace())
+    assert shim.apply_xet_env({}) is None, "an older zoo without apply_xet_env must read as absent"
+
+    def _boom(env, **kwargs):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(shim, "_load_optional",
+                        lambda _name: types.SimpleNamespace(apply_xet_env = _boom))
+    assert shim.apply_xet_env({}) is None, "a raising zoo must degrade, not crash the download"

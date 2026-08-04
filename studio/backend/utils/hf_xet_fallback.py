@@ -215,6 +215,23 @@ def xet_env_overrides() -> "dict[str, str]":
         return {}
 
 
+def apply_xet_env(env: dict) -> "Optional[dict[str, str]]":
+    """Let unsloth_zoo size a download worker's ``HF_XET_*`` in *env*, in place.
+
+    Returns what it wrote, or ``None`` when the installed zoo has no opinion, which is the caller's
+    signal to fall back. ``fail_fast`` suits a supervised child: our Xet -> HTTP ladder acts on the
+    failure, so short Xet timeouts are right here and wrong process-wide."""
+    module = _load_optional("unsloth_zoo.hf_xet_tuning")
+    if module is None or not hasattr(module, "apply_xet_env"):
+        return None
+    try:
+        return dict(module.apply_xet_env(env, fail_fast = True))
+    except Exception as exc:  # noqa: BLE001
+        import logging as _logging
+        _logging.getLogger(__name__).debug("apply_xet_env failed: %s", exc)
+        return None
+
+
 def child_should_disable_xet(config: dict) -> bool:
     """Single source of truth for the per-worker Xet env flip (mirrors
     ``unsloth_zoo.hf_xet_fallback.child_should_disable_xet``). Deliberately lightweight: importing or
@@ -450,6 +467,7 @@ __all__ = [
     "record_xet_outcome",
     "start_watchdog",
     "xet_env_overrides",
+    "apply_xet_env",
     "xet_health",
     "hf_hub_download_with_xet_fallback",
     "snapshot_download_with_xet_fallback",

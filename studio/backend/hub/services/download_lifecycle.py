@@ -82,6 +82,13 @@ def resolve_auto_use_xet() -> tuple[bool, str]:
     return (bool(health.use_xet), str(health.reason))
 
 
+def _allow_high_performance() -> bool:
+    """Legacy opt-in, still honoured for installs whose unsloth_zoo cannot size the worker itself."""
+    return os.environ.get("UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def resolve_transport(use_xet: bool) -> str:
     transport = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
     unavailable_reason = download_registry.download_transport_unavailable_reason(transport)
@@ -122,33 +129,20 @@ def spawn_worker(
     env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     env["HF_HUB_DISABLE_XET"] = "0" if use_xet else "1"
     if use_xet:
-        # hf_xet sizes its reconstruction buffers from constants (up to 8GB stock, 64GB under
-        # high-performance mode), not from the machine. Cap them from this host's RAM and cores
-        # BEFORE the worker starts: hf_xet reads its config natively at import, so setting them
-        # inside the worker is too late. Anything already in `env` was set by the caller, so leave.
-        from utils.hf_xet_fallback import xet_env_overrides
+        # hf_xet sizes its buffers from constants, not from the machine, and reads its config
+        # natively at import, so the worker's env has to be sized here. unsloth_zoo decides, so
+        # there is one rule and not two: it sizes from RAM/cores/disk and honours a user-set
+        # high-performance flag (standing its own sizing down, since xet-core voids it anyway).
+        # UNSLOTH_XET_FORCE_CAPS=1 bounds the machine regardless. Studio hand-rolled this, and the
+        # copies drifted: on a 2TB host the worker got a 24GB laptop's buffer and ran 3.4x slower.
+        from utils import hf_xet_fallback
 
-        allow_high_perf = os.environ.get(
-            "UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", ""
-        ).strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-        if not allow_high_perf:
-            # Unconditional, and deliberately not routed through xet_env_overrides(): an older
-            # unsloth_zoo has no tuning module (overrides come back empty) and is also the one that
-            # sets HF_XET_HIGH_PERFORMANCE=1 at import. `env` is seeded from the parent environment,
-            # so that inherited "1" would raise the buffer ceiling to 64GB and void every cap below
-            # (xet-core applies the preset AFTER reading the environment). Overwrite, not setdefault.
+        if hf_xet_fallback.apply_xet_env(env) is None and not _allow_high_performance():
+            # No tuning module: that unsloth_zoo is also the one setting HF_XET_HIGH_PERFORMANCE=1
+            # at import, and `env` is seeded from the parent, so that inherited "1" would hand the
+            # worker a 64GB ceiling (xet-core applies the preset AFTER reading the environment).
             for key in ("HF_XET_HIGH_PERFORMANCE", "HF_XET_HP"):
                 env[key] = "0"
-        for key, value in xet_env_overrides().items():
-            if key in ("HF_XET_HIGH_PERFORMANCE", "HF_XET_HP") and not allow_high_perf:
-                env[key] = value
-            else:
-                env.setdefault(key, value)
     # No token in Unsloth settings: fall back to the backend's own HF_TOKEN so
     # private repos stay downloadable (needed while inkling repos are private).
     # Not for a repo an API caller named: that would lend them the owner's identity.
