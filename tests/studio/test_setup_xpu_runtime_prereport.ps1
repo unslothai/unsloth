@@ -3,10 +3,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # The hardware report must not say "none (chat-only / GGUF)" on a working XPU environment.
 #
-# The WMI scan and the registry fallback can both miss a real Arc host. setup.ps1 re-checks with
-# torch.xpu.is_available(), but that runs AFTER the report, so the user was told no
-# training-capable GPU exists and then watched setup keep the XPU venv. These two helpers let
-# the scan reach the same answer before it prints.
+# The WMI scan and the registry fallback can both miss a real Arc host, and setup.ps1's
+# torch.xpu.is_available() re-check runs AFTER the report. These two helpers let the scan reach
+# the same answer before it prints.
 #
 # Test-VenvTorchIsXpu is FREE by design: a CPU-only host must not pay for an `import torch` on
 # every update. So the tests check both the answer and that the cheap gate is what decides.
@@ -135,9 +134,8 @@ Check "unreadable file"         (-not (Invoke-IsXpu "C:\v" $XPU -Throws))
 Check "no venv path"            (-not (Invoke-IsXpu "" $XPU))
 
 # --- Test-VenvTorchIsXpuSupported ------------------------------------------------------------
-# The fast path asks this one, and it must answer about the WHEEL only: a supported +xpu wheel
-# on a wedged driver fails torch.xpu.is_available(), and no dependency pass repairs a driver --
-# keying the escape on readiness re-ran a full resolution every update and installed nothing.
+# The fast path asks this one, and it must answer about the WHEEL only: no dependency pass
+# repairs a driver, so keying the escape on readiness re-resolved everything every update.
 $isXpuSupFn = Get-FunctionText $setup "Test-VenvTorchIsXpuSupported"
 Check "extraction kept the range" ($isXpuSupFn -match '11')
 function Invoke-IsXpuSupported {
@@ -185,9 +183,8 @@ Check "unreadable file"      (-not (Invoke-IsXpuSupported "C:\v" $XPU -Throws))
 Check "no venv path"         (-not (Invoke-IsXpuSupported "" $XPU))
 
 # --- wiring ---------------------------------------------------------------------------------
-# Normalised to LF: a Windows checkout returns CRLF, and any pattern anchored on a literal \n
-# then matches nothing -- silently, since the region comes back empty and every -not check in it
-# passes vacuously. Fixed once here rather than per pattern.
+# Normalised to LF once, rather than per pattern: on a CRLF checkout every \n-anchored pattern
+# below matches nothing, and the -not checks over an empty region pass vacuously.
 $setupText = (Get-Content -Raw $setup) -replace "`r`n", "`n"
 Write-Host "the scan asks before the report, and only when it has to"
 # The promotion must sit inside the Intel scan (which the report reads), not after it.
@@ -204,15 +201,13 @@ Check "promotion precedes the hardware report" ($_scanLine -and $_reportLine -an
 
 Write-Host "the fast-path escape judges the wheel, never the driver"
 # Anchored on the escape's own if-chain, so an edit inside cannot move the window off the code.
-# A driver-only failure must leave the fast path intact: the pass ahead force-reinstalls nothing
-# when the flavour matches, so clearing it costs a full resolution every update and only reaches
-# the warning Assert-XpuRuntimeReady prints anyway.
+# A driver-only failure must leave the fast path intact: clearing it costs a full resolution
+# every update and only reaches the warning Assert-XpuRuntimeReady prints anyway.
 $_fastPat = '(?s)(if \(\$script:IsIntelXpu -and \$SkipPythonDeps -and \$_xpuIsReachable\) \{.*?\n        \}\n)'
 $_fast = if ($setupText -match $_fastPat) { $Matches[1] } else { "" }
 Check "the escape was found"           ($_fast -ne "")
-# The raw CRLF form is what a Windows checkout returns, so the normalisation above -- not luck --
-# must be what makes this match. Without it the region came back empty on windows-latest while
-# the -not checks below still reported PASS.
+# The normalisation above, not luck, is what makes this match: without it the region came back
+# empty on windows-latest while the -not checks below still reported PASS.
 Check "CRLF is normalised, not tolerated" (-not (($setupText -replace "`n", "`r`n") -match $_fastPat))
 Check "it reads the installed wheel"   ($_fast -match 'Test-VenvTorchIsXpuSupported -VenvPath \$VenvDir')
 Check "it clears the fast path"        ($_fast -match '\$SkipPythonDeps = \$false')
@@ -224,10 +219,9 @@ Check "it launches no interpreter"     (-not ($_fast -match 'Invoke-BoundedPytho
 Check "the driver warning is elsewhere" ($setupText -match '(?s)function Assert-XpuRuntimeReady \{.*?Test-TorchXpuAvailable')
 
 Write-Host "a timed-out probe must not destroy a working XPU venv"
-# Bounding the flavour probe turned a hang into "rebuild", and the host most likely to time out
-# inside `import torch` is an Arc box with a stalled driver -- where version.py still names a
-# good +xpu wheel, and the stale path would DELETE $VenvDir and exit. The rescue is bounded by
-# the surrounding if-chain rather than a line offset.
+# Bounding the flavour probe turned a hang into "rebuild", and the host most likely to hang in
+# `import torch` is an Arc box with a stalled driver, whose version.py still names a good +xpu
+# wheel. Bounded by the surrounding if-chain rather than a line offset.
 $_rescue = if ($setupText -match '(?s)(\$_verProbe = Invoke-BoundedPythonProbe.*?# Missing python\.exe means)') { $Matches[1] } else { "" }
 Check "the probe chain was found"      ($_rescue -ne "")
 Check "an unreadable flavour is rescued off disk" ($_rescue -match 'elseif \(Test-VenvTorchIsXpu -VenvPath \$VenvDir\)')
@@ -235,8 +229,7 @@ Check "the rescue classifies it as xpu" ($_rescue -match '(?s)elseif \(Test-Venv
 # It must NOT set the rebuild flag, or the whole point is lost.
 Check "the rescue never sets shouldRebuild" ($_rescue -match '(?s)elseif \(Test-VenvTorchIsXpu.*?\} else \{\s*\$shouldRebuild = \$true' -and
     -not ($_rescue -match '(?s)elseif \(Test-VenvTorchIsXpu[^}]*\$shouldRebuild = \$true'))
-# A silent rescue would leave an Arc owner with a venv that trains on nothing and no clue why.
-# Match the substep ARGUMENT, not the region: the comment above the branch says "compute
+# Matched on the substep ARGUMENT, not the region: the comment above the branch says "compute
 # driver" too, so a loose match stayed green with the message itself deleted.
 Check "the rescue names the driver fix" ($_rescue -match 'substep "[^"]*compute driver')
 # Non-Intel families must still rebuild on an unreadable flavour, exactly as before.
@@ -246,9 +239,8 @@ Check "the rescue launches no interpreter" (-not ($_rescue -match '(?s)elseif \(
 
 Write-Host "a direct update never deletes an XPU venv"
 # The pin is one-shot, and on a hybrid NVIDIA+Arc box the promotion above is gated on
-# -not $HasNvidiaSmi, so a later pinless update expects a cu* tag, calls the working Arc venv
-# stale and wipes it -- then exits, because only install.ps1 makes venvs. Anchored between the
-# pin-repair escape and the rebuild block.
+# -not $HasNvidiaSmi, so a later pinless update expects a cu* tag and wipes the working Arc
+# venv, then exits, because only install.ps1 makes venvs.
 $_keep = if ($setupText -match '(?s)(\$script:PinChangedForceReinstall = \$true.*?if \(\$shouldRebuild\) \{)') { $Matches[1] } else { "" }
 Check "the rebuild decision was found"  ($_keep -ne "")
 Check "an xpu venv is spared the wipe"  ($_keep -match '\$installedTorchTag -eq "xpu"')
@@ -257,9 +249,9 @@ Check "the escape clears shouldRebuild" ($_keep -match '(?s)\$installedTorchTag 
 Check "installer-managed runs still rebuild" ($_keep -match '-not \$InstallerManagedSetup')
 # Silently keeping a venv the host does not want is its own trap; say how to change it.
 Check "the escape says how to replace it" ($_keep -match 'substep "[^"]*install\.ps1')
-# Keeping the venv is only half the job. The CUDA arm does not --reinstall-package torch, so uv
-# leaves the +xpu wheel satisfied while installing triton-windows over torch's XPU triton, with
-# $XpuIndexUrl null and nothing to swap it back. The whole pass has to stay on the xpu index.
+# Keeping the venv is only half the job: the CUDA arm leaves the +xpu wheel satisfied while
+# installing triton-windows over torch's XPU triton, with $XpuIndexUrl null and nothing to swap
+# it back. The whole pass has to stay on the xpu index.
 Check "the escape steers the install too" ($_keep -match '\$script:PreservedXpuVenv = \$true')
 Check "the flag is declared up front"     ($setupText -match '(?m)^\$script:PreservedXpuVenv = \$false')
 $_tagChain = if ($setupText -match '(?s)(\$PinnedTorchIndexUrl\) \{\s*\$CuTag = Get-TorchIndexLeaf.*?\$CuTag = "cpu")') { $Matches[1] } else { "" }

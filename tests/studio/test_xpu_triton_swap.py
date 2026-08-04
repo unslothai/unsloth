@@ -282,9 +282,8 @@ class TestFailedSwapIsNotSurvivable:
         assert "INSTALL" not in log
 
     def test_a_failed_install_propagates(self, monkeypatch, tmp_path):
-        # The uninstall already took the shared files, so a warning would let the caller write a
-        # completion manifest over a venv whose torch.compile is broken, which the next update
-        # then fast-paths past (no generic distribution is left to trigger on).
+        # The uninstall already took the shared files, so a warning would commit a venv with a
+        # broken torch.compile that the next update fast-paths past (nothing left to trigger on).
         with pytest.raises(SystemExit):
             _run(
                 monkeypatch,

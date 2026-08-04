@@ -606,12 +606,11 @@ function Get-RocmPinStaleTags {
     }
 }
 
-# Bounded "ask python a question" probe, shared by every torch probe below. A wedged torch import
-# or a hanging Intel driver init -- what the XPU probes exist to detect -- would block a bare
-# `& python -c ...` forever. ProcessStartInfo, not &, so stderr cannot trip
-# $ErrorActionPreference; BOTH streams drain async so a noisy import cannot deadlock on a full
-# pipe; WaitForExit bounds the wait and kills the child. Every failure (timeout, crash,
-# exception) reads as .Ok = $false. Mirrors install.ps1's copy.
+# Bounded "ask python a question" probe, shared by every torch probe below: a wedged torch import
+# or a hanging Intel driver init would block a bare `& python -c ...` forever. ProcessStartInfo,
+# not &, so stderr cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import
+# cannot deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
+# reads as .Ok = $false. Mirrors install.ps1's copy.
 function Invoke-BoundedPythonProbe {
     param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
     $result = [pscustomobject]@{ Ok = $false; Output = "" }
@@ -1857,10 +1856,9 @@ if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
     } catch {}
     # Neither WMI nor the registry recognised an adapter, so ask the environment: an installed
     # +xpu wheel whose runtime initialises proves the host better than a marketing name. The same
-    # check runs ~1300 lines below to protect the venv, but that is AFTER the report just below,
-    # so without this an Arc user on a wedged WMI is told no training GPU exists and then watches
-    # setup keep the XPU environment. Own try, because it must still run when the scan above
-    # threw, and a junk UNSLOTH_STUDIO_HOME makes Join-Path throw and would abort setup.
+    # check runs ~1300 lines below, but AFTER the report just below, so without this an Arc user
+    # on a wedged WMI is told no training GPU exists and then watches setup keep the XPU
+    # environment. Own try, so a throwing scan or a junk UNSLOTH_STUDIO_HOME cannot abort setup.
     if (-not $script:IsIntelXpu) {
         try {
             $_probeVenv = Get-ProbableStudioVenvDir
@@ -3481,13 +3479,12 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
                 $SkipPythonDeps = $false
             }
         }
-        # ...and the same for an Intel Arc / Data Center GPU: without this the fast path never
-        # reaches the XPU install below, so an up-to-date package on a CPU wheel stays on CPU
-        # torch forever. $SkipPythonDeps is re-tested so an escape already taken above does not
-        # read twice. Both escapes below exist to reach the XPU install and its two remediations,
-        # all three gated on $XpuIndexUrl (set only when the resolved leaf is xpu). Where a pin
-        # sends this host elsewhere, or no-torch mode skips the torch pass entirely, clearing the
-        # fast path would install nothing and re-fire forever. An unpinned host is unaffected.
+        # ...and the same for an Intel Arc / Data Center GPU, or an up-to-date package on a CPU
+        # wheel stays on CPU torch forever. $SkipPythonDeps is re-tested so an escape taken above
+        # does not read twice. Both escapes below exist to reach the XPU install and its two
+        # remediations, all three gated on $XpuIndexUrl (set only when the resolved leaf is xpu),
+        # so $_xpuIsReachable holds them back where a pin or no-torch mode sends this host
+        # elsewhere and clearing the fast path would install nothing and re-fire forever.
         $_pinLeafNow = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
         $_xpuIsReachable = (-not $NoTorchMode) -and ((-not $_pinLeafNow) -or ($_pinLeafNow -eq "xpu"))
         if ($script:IsIntelXpu -and $SkipPythonDeps -and $_xpuIsReachable) {
@@ -3974,12 +3971,11 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
 
 # ── Intel XPU: triton-windows must not shadow torch's XPU triton ──
 # triton-windows and torch's XPU triton BOTH own the top-level `triton` package (80 to 160 shared
-# paths, always including __init__.py and _C/libtriton.pyd), so an in-place cu*-to-xpu pin repair
-# leaves the CUDA build shadowing the XPU one. Runs AFTER the stack because unsloth declares
-# triton-windows a win32 core dep, so base.txt reinstalls anything removed earlier. Uninstall
-# paired with a reinstall, never alone: removing one drops the shared paths the other overwrote.
-# The spec is read from the installed torch, whose name for it changed from pytorch-triton-xpu to
-# triton-xpu in torch 2.10.
+# paths, __init__.py and _C/libtriton.pyd among them), so a cu*-to-xpu pin repair leaves the CUDA
+# build shadowing the XPU one. AFTER the stack, since unsloth declares triton-windows a win32
+# core dep and base.txt reinstalls anything removed earlier. Uninstall always paired with a
+# reinstall: removing one drops the shared paths the other overwrote. The spec is read from the
+# installed torch (renamed pytorch-triton-xpu -> triton-xpu in torch 2.10).
 if ($stackExit -eq 0 -and $XpuIndexUrl) {
     # One -c line, so no double quotes (Invoke-BoundedPythonProbe wraps $Code in them).
     $_tritonCode = "import importlib.metadata as m; " +

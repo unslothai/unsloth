@@ -2,13 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # The POSIX hardware summary must recognise a working Intel XPU runtime, and `studio update`
-# must raise the bitsandbytes floor for it.
-#
-# Two gaps. The summary only tested NVIDIA, AMD and Apple Silicon, so a Linux host on the +xpu
-# wheel install.sh had just installed was told "none (chat-only / GGUF)". And `studio update`
-# runs setup.sh, never install.sh, so the XPU bitsandbytes floor was unreachable on the one
-# route an existing XPU user takes -- unsloth's own floor, 0.45.5, is satisfied forever by a
-# pre-XPU wheel.
+# must raise the bitsandbytes floor for it. The summary only tested NVIDIA / AMD / Apple, and
+# `studio update` runs setup.sh, never install.sh, where the XPU bnb floor used to live.
 #
 # Unlike the Windows half this runs for real: the venv tree, torch/version.py and the
 # interpreter are built here, so the disk read and the runtime probe are executed, not mocked.
@@ -106,10 +101,9 @@ check "ranked after AMD"         "$([ -n "$_arm" ] && [ -n "$_amd" ] && [ "$_arm
 check "ranked before the CPU arm" "$([ -n "$_arm" ] && [ -n "$_none" ] && [ "$_arm" -lt "$_none" ] && echo yes || echo no)" "yes"
 # The unavailable-runtime arm must not promise CPU training: with neither CUDA nor XPU,
 # unsloth/device_type.py raises NotImplementedError, so importing unsloth fails outright.
-# Anchored on the ELIF at column 0 and skipping that line, then stopping at the next arm: a
-# plain awk range on the flag name matches the bitsandbytes `if` block instead, whose own
-# "4-bit QLoRA may be unavailable" warning would make these pass on any wording. Comment lines
-# are dropped, since the arm quotes the wording it must NOT use.
+# Anchored on the ELIF at column 0 and stopped at the next arm: a plain awk range on the flag
+# name matches the bitsandbytes `if` block, whose own "unavailable" warning would pass on any
+# wording. Comment lines are dropped, since the arm quotes the wording it must NOT use.
 _warn_arm=$(awk '/^elif \[ "\$_setup_torch_is_xpu" = true \]; then$/{on=1;next} on && /^elif|^else/{exit} on' "$SETUP_SH" | grep -v '^[[:space:]]*#')
 check "warn arm was extracted" "$(printf '%s' "$_warn_arm" | grep -ci 'XPU runtime unavailable')" "1"
 check "no CPU-training promise" "$(printf '%s' "$_warn_arm" | grep -ci 'run on CPU\|runs on CPU')" "0"
@@ -137,36 +131,31 @@ check "no second probe literal" \
     "$(grep -v '^ *#' "$SETUP_SH" | grep -c "torch.xpu.is_available()")" "1"
 check "fallback arm reuses the probe" \
     "$(grep -q 'elif "\$VENV_DIR/bin/python" -c "\$_setup_xpu_probe"' "$SETUP_SH" && echo yes || echo no)" "yes"
-# Execute it. Python installs no SIGALRM handler, so the default action kills the process even
-# while a stalled driver blocks inside C. Asserted against a torch that never returns, with the
-# constant shortened so the test costs seconds.
+# Execute it against a torch that never returns, alarm shortened: python installs no SIGALRM
+# handler, so the default action kills the process even while a stalled driver blocks in C.
 if command -v python3 >/dev/null 2>&1; then
     mkdir -p "$WORK/fakemod"
     printf 'import ctypes\nctypes.CDLL(None).sleep(60)\n' > "$WORK/fakemod/torch.py"
     _fast_probe=$(printf '%s' "$_probe" | sed 's/signal\.alarm([0-9]*)/signal.alarm(2)/')
-    # Bounded WITHOUT GNU timeout: macOS ships none (Homebrew coreutils names it gtimeout), and
-    # a missing one exits 127 the instant it is called -- which reads as "the probe was killed"
-    # and passed both checks below on every macOS run without python ever starting. Own
-    # watchdog, so this asserts the same thing on every platform.
+    # Own watchdog, not GNU timeout: macOS ships none, and a missing one exits 127 instantly,
+    # which reads as "the probe was killed" and passed both checks below without python running.
     _t0=$(date +%s)
     ( cd "$WORK/fakemod" && PYTHONPATH="$WORK/fakemod" python3 -c "$_fast_probe" ) >/dev/null 2>&1 &
     _probe_pid=$!
     ( sleep 30; kill -9 "$_probe_pid" ) >/dev/null 2>&1 &
     _watchdog_pid=$!
-    # Own stderr: the shell reports a job killed by a signal ("Alarm clock") on this line.
+    # Silenced: the shell reports "Alarm clock" for a signal-killed job here.
     { wait "$_probe_pid"; _rc=$?; } 2>/dev/null
     kill "$_watchdog_pid" >/dev/null 2>&1
     _elapsed=$(( $(date +%s) - _t0 ))
     check "a wedged driver is killed, not waited on" "$([ "$_rc" -ne 0 ] && echo yes || echo no)" "yes"
-    # Lower bound as well as upper: the alarm is 2s, so a run that returns instantly did not
-    # execute the probe at all, which is exactly how the missing-timeout case looked.
+    # Lower bound too: the alarm is 2s, so an instant return means the probe never ran.
     check "killed at the deadline, not after" \
         "$([ "$_elapsed" -ge 1 ] && [ "$_elapsed" -lt 10 ] && echo yes || echo no)" "yes"
 fi
 
-# The fast path skips install_python_stack when the package version is current, and that pass
-# is the ONLY thing that acts on an XPU pin, so a CPU install switched to the xpu family would
-# keep its CPU wheel forever.
+# The dependency pass is the ONLY thing that acts on an XPU pin, so a CPU install switched to
+# the xpu family would keep its CPU wheel forever once the fast path skips that pass.
 _esc=$(grep -n 'XPU index pinned but torch does not match' "$SETUP_SH" | head -1 | cut -d: -f1)
 _gate=$(grep -n '^if \[ "\$_SKIP_PYTHON_DEPS" = false \]; then' "$SETUP_SH" | head -1 | cut -d: -f1)
 check "fast path has an XPU escape" "$([ -n "$_esc" ] && echo yes || echo no)" "yes"
@@ -182,10 +171,9 @@ check "pin match strips the query" \
     "$(grep -q '_setup_pin="\${_setup_pin%%\\?\*}"' "$SETUP_SH" && echo yes || echo no)" "yes"
 check "pin match strips the fragment" \
     "$(grep -q '_setup_pin="\${_setup_pin%%\\#\*}"' "$SETUP_SH" && echo yes || echo no)" "yes"
-# The escape must not launch an interpreter: a wedged Intel driver hangs inside `import torch`,
-# and this runs before the bounded probes. Bounded by the acting chain rather than a line
-# offset, so adding a check inside cannot move the window off the code under test. What the
-# escape DECIDES is covered by test_setup_xpu_fastpath_escape.sh.
+# The escape must not launch an interpreter: a wedged driver hangs inside `import torch`, and
+# this runs before the bounded probes. Bounded by the acting chain, not a line offset, so a new
+# check inside cannot move the window. What it DECIDES is test_setup_xpu_fastpath_escape.sh.
 _blk=$(awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on{print} on && /_SKIP_PYTHON_DEPS=false$/{n++} n==2{exit}' "$SETUP_SH")
 check "escape block was found" "$([ -n "$_blk" ] && echo yes || echo no)" "yes"
 check "escape reads the flavour off disk" \
@@ -197,18 +185,16 @@ check "pin match strips every trailing slash" \
     "$(printf '%s' "$_blk" | grep -q 'while \[ "\${_setup_pin%/}" != "\$_setup_pin" \]' && echo yes || echo no)" "yes"
 
 echo "an installed +xpu wheel whose runtime is dead gets its own arm"
-# torch.xpu.is_available() false on a real +xpu install means the Intel compute DRIVER is
-# missing or too old. Falling through to "none (chat-only / GGUF)" would call the hardware
-# unsupported and hide the one action that fixes it.
+# is_available() false on a real +xpu install means the compute DRIVER is missing or too old;
+# falling through to "none (chat-only / GGUF)" hides the one action that fixes it.
 _dead=$(grep -n '^elif \[ "\$_setup_torch_is_xpu" = true \]; then' "$SETUP_SH" | head -1 | cut -d: -f1)
 check "dead-runtime arm exists" "$([ -n "$_dead" ] && echo yes || echo no)" "yes"
 check "ranked after the ready arm" \
     "$([ -n "$_dead" ] && [ -n "$_arm" ] && [ "$_dead" -gt "$_arm" ] && echo yes || echo no)" "yes"
 check "ranked before the CPU arm" \
     "$([ -n "$_dead" ] && [ -n "$_none" ] && [ "$_dead" -lt "$_none" ] && echo yes || echo no)" "yes"
-# It has to name the driver, or it is a differently worded dead end. Match the substep
-# ARGUMENT, not any line in the window: the comment above the arm says "compute driver" too,
-# so a looser match stayed green with the message itself gutted.
+# Matched on the substep ARGUMENT, not any line in the window: the comment above the arm says
+# "compute driver" too, so a looser match stayed green with the message itself gutted.
 check "arm names the driver fix" \
     "$(awk -v a="$_dead" 'NR>a && NR<a+8 && /substep "[^"]*compute driver/{f=1} END{print (f?"yes":"no")}' "$SETUP_SH")" "yes"
 
