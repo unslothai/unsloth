@@ -113,7 +113,8 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   hub: true,
   projects: true,
   images: true,
-  video: true,
+  // Under "More" until a user pins it.
+  video: false,
   train: true,
   recipes: false,
   export: false,
@@ -121,7 +122,8 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
 };
 
 /** Every previously shipped layout, so a migration can tell an untouched install from one the
- *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects. */
+ *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
+ *  v5 put Video back under "More". */
 const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
   [
     { id: "projects", pinned: true },
@@ -135,6 +137,15 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
   [
     { id: "projects", pinned: true },
     { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
     { id: "images", pinned: true },
     { id: "video", pinned: true },
     { id: "train", pinned: true },
@@ -441,17 +452,19 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 4,
+      version: 5,
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
         const customization = sanitizeCustomization(state.customization);
         // Adopt the new layout only where the stored one is still a shipped
         // default, so a user's own arrangement survives.
-        if (version < 4) {
+        if (version < 5) {
           const stored = JSON.stringify(customization.sidebarNav);
+          // Sanitize each layout too: the stored one has since gained any ids
+          // added after it was written, so a raw compare would never match.
           const untouched = SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
-            (layout) => JSON.stringify(layout) === stored,
+            (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
           );
           if (untouched) {
             customization.sidebarNav = [...DEFAULT_CUSTOMIZATION.sidebarNav];
