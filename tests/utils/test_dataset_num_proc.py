@@ -1363,7 +1363,9 @@ def test_the_unaided_reader_handles_cgroup_v1(monkeypatch, dnp, tmp_path):
 
     monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path))
     monkeypatch.setattr(
-        dnp, "_proc_self_cgroup", lambda: ["7:memory,blkio:/slurm/job_1"],
+        dnp,
+        "_proc_self_cgroup",
+        lambda: ["7:memory,blkio:/slurm/job_1"],
     )
     assert dnp._cgroup_free_bytes() == 1024**3
 

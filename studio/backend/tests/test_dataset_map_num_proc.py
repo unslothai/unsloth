@@ -379,9 +379,9 @@ def test_the_trainer_config_asks_for_the_config_sentinel():
     import ast
     from pathlib import Path
 
-    source = (
-        Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py"
-    ).read_text(encoding = "utf-8")
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py").read_text(
+        encoding = "utf-8"
+    )
     tree = ast.parse(source)
 
     config_calls = [

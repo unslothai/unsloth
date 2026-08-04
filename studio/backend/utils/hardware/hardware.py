@@ -3403,9 +3403,7 @@ def dataset_map_num_proc(
     return _bounded_by_the_shared_policy(safe_num_proc(desired), serial_as_none)
 
 
-def _bounded_by_the_shared_policy(
-    num_proc: int, serial_as_none: bool = True
-) -> Optional[int]:
+def _bounded_by_the_shared_policy(num_proc: int, serial_as_none: bool = True) -> Optional[int]:
     """Apply the training-side num_proc policy to a Studio-computed count.
 
     ``format_conversion.py`` and ``chat_templates.py`` hand this straight to
