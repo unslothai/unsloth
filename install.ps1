@@ -1737,10 +1737,24 @@ exit 0
             Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
         } catch {
             # A collision or ordinary rename failure leaves the original in place.
-            # Keep state active only when the rename happened before interruption.
-            if (Test-Path -LiteralPath $ExistingDir) {
+            # On Windows an open handle inside the tree fails the rename *partway*
+            # instead: entries walked before the locked one land at $candidate while
+            # the rest stay at $ExistingDir. Reading only $ExistingDir scores that
+            # split tree as "the rename never happened" and drops the sole reference
+            # to where the other half went, so the caller can neither restore nor
+            # report it. Clear the state only when the destination is genuinely
+            # absent; when both paths exist keep it active so Restore-StudioVenvRollback
+            # can reverse the partial move, and name both locations either way.
+            $candidateExists = Test-Path -LiteralPath $candidate
+            if ((Test-Path -LiteralPath $ExistingDir) -and (-not $candidateExists)) {
                 $script:StudioVenvRollbackActive = $false
                 $script:StudioVenvRollbackDir = $null
+            } elseif ($candidateExists -and (Test-Path -LiteralPath $ExistingDir)) {
+                Write-Host "[WARN] Moving the existing environment aside stopped partway -- files are in both places." -ForegroundColor Yellow
+                Write-Host "       still in place: $ExistingDir" -ForegroundColor Yellow
+                Write-Host "       moved aside:    $candidate" -ForegroundColor Yellow
+                Write-Host "       A running 'unsloth studio' process usually holds a file open here." -ForegroundColor Yellow
+                Write-Host "       Close Unsloth Studio and re-run the installer to reverse the move." -ForegroundColor Yellow
             }
             throw
         }

@@ -124,6 +124,62 @@ Write-Output (Get-VenvBaseHome -VenvRoot $env:TEST_VENV_ROOT)
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("case", ["partial", "clean"])
+def test_rollback_keeps_state_when_the_move_stops_partway(tmp_path: Path, shell: str, case: str):
+    """A half-finished rename must not be read as "the rename never happened".
+
+    On Windows an open handle inside the tree fails Move-Item after it has already
+    walked part of it, so entries exist at both paths. Testing only the source then
+    clears StudioVenvRollbackDir -- the sole record of where the other half went --
+    and the environment is stranded with no way to restore or even name it.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    rollback = _extract(r"    function Start-StudioVenvRollback \{.*?\n    \}\n", source)
+    existing = tmp_path / "unsloth_studio"
+    (existing / "Scripts").mkdir(parents = True)
+    (existing / "Scripts" / "unsloth.exe").write_text("locked", encoding = "utf-8")
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+$StudioHome = $env:TEST_STUDIO_HOME
+function substep {{ param([string]$Text, [string]$Color) }}
+function Move-Item {{
+    param([string]$LiteralPath, [string]$Destination, [string]$ErrorAction, [switch]$Force)
+    if ($env:TEST_ROLLBACK_CASE -eq "partial") {{
+        # The entries walked before the locked one are already at the destination.
+        [System.IO.Directory]::CreateDirectory((Join-Path $Destination "Lib")) | Out-Null
+    }}
+    throw "The process cannot access the file because it is being used by another process."
+}}
+{rollback}
+try {{ Start-StudioVenvRollback -ExistingDir $env:TEST_EXISTING_DIR }} catch {{ }}
+Write-Output ("active=" + $script:StudioVenvRollbackActive)
+Write-Output ("dir=" + [string]$script:StudioVenvRollbackDir)
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(tmp_path)
+    env["TEST_EXISTING_DIR"] = str(existing)
+    env["TEST_ROLLBACK_CASE"] = case
+    out = _run_powershell(shell, script, env)
+    state = dict(
+        line.split("=", 1) for line in out.splitlines() if line.startswith(("active=", "dir="))
+    )
+
+    if case == "clean":
+        # Nothing moved, so the original is intact and there is nothing to restore.
+        assert state["active"] == "False", out
+        assert state["dir"] == "", out
+        return
+
+    assert state["active"] == "True", out
+    assert state["dir"].startswith(os.path.join(str(tmp_path), "unsloth_studio.rollback.")), out
+    assert Path(state["dir"]).is_dir(), out
+    # Both halves are named, so the user is not left hunting for the moved tree.
+    assert str(existing) in out and state["dir"] in out, out
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("case", ["missing", "unlaunchable", "working"])
 def test_managed_python_readiness_probe(tmp_path: Path, shell: str, case: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
