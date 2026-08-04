@@ -517,6 +517,10 @@ export interface DiffusionTrainableFamily {
   } | null;
   vram_note?: string | null;
   gated?: boolean | null;
+  // vram_note's facts as fields. Absent on an older backend.
+  params?: string | null;
+  qlora_vram_gb?: number | null;
+  note?: string | null;
   // Quantised base precisions this family can train in; empty for sdxl, which uses mixed_precision.
   precision_modes?: string[];
   // The precision the backend recommends for this family (marked "(recommended)").

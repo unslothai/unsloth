@@ -56,6 +56,7 @@ export const zhCN = {
       video: "视频",
       projects: "项目",
       more: "更多",
+      customizeSidebar: "自定义侧边栏",
       newBadge: "新",
       export: "导出",
       recents: "最近",

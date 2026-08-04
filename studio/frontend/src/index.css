@@ -1207,6 +1207,14 @@ html[data-chat-font] .aui-root {
 			color-mix(in srgb, var(--panel-slider-fg) 22%, transparent) !important;
 	}
 
+	/* Images (Create + Train) and Video: a lighter control border than the palette
+	   default. Light mode only, since dark mode draws these controls borderless.
+	   Overrides the token, so every derived shade stays in step. */
+	html:not(.dark) .diffusion-surface {
+		--border: #e9e9e9;
+		--input: #e9e9e9;
+	}
+
 	/* Inline numeric input — used for slider values and Context Length.
 	   Designed to read as *editable text* rather than a pill button so
 	   it doesn't mirror the Select/dropdown components on the panel.

@@ -962,6 +962,11 @@ class DiffusionTrainableFamily(BaseModel):
     base_repos: List[str] = Field(default_factory = list)
     defaults: dict = Field(default_factory = dict)
     vram_note: str = ""
+    # vram_note's facts as fields. Empty when this host cannot train the family.
+    params: str = ""
+    qlora_vram_gb: Optional[int] = None
+    gated: bool = False
+    note: str = ""
     # base_precision modes this machine supports for the family (empty = no selector, e.g. SDXL), the recommended pick, and
     # whether regional torch.compile applies. Defaults keep older backends' payloads valid.
     precision_modes: List[str] = Field(default_factory = list)

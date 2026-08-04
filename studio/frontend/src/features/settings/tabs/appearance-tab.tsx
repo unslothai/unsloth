@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useEffect, useRef } from "react";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT } from "@/i18n";
@@ -27,12 +28,30 @@ import {
   SettingsSection,
 } from "../components/settings-section";
 import { ThemeSegmented } from "../components/theme-segmented";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { useTheme } from "../stores/theme-store";
 
 export function AppearanceTab() {
   const t = useT();
   const { resolved } = useTheme();
   const { pinned, setPinned } = useSidebarPin();
+  // The sidebar's "Customize sidebar" entry lands mid-page, so scroll its section into view.
+  const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore(
+    (s) => s.consumeScrollTarget,
+  );
+  useEffect(() => {
+    if (scrollTarget !== "appearance-sidebar-nav") return;
+    const frame = window.requestAnimationFrame(() => {
+      sidebarNavSectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+      consumeScrollTarget("appearance-sidebar-nav");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
@@ -153,14 +172,16 @@ export function AppearanceTab() {
       </SettingsSection>
 
       {/* Nav shape first, then the profile menu inside it. */}
-      <SettingsSection
-        title={t("settings.appearance.sidebarNav.title")}
-        description={t("settings.appearance.sidebarNav.description")}
-      >
-        <div className="pt-3">
-          <SidebarNavCustomizer />
-        </div>
-      </SettingsSection>
+      <div ref={sidebarNavSectionRef} className="scroll-mt-4">
+        <SettingsSection
+          title={t("settings.appearance.sidebarNav.title")}
+          description={t("settings.appearance.sidebarNav.description")}
+        >
+          <div className="pt-3">
+            <SidebarNavCustomizer />
+          </div>
+        </SettingsSection>
+      </div>
 
       <SettingsSection
         title={t("settings.appearance.sidebarMenu.title")}

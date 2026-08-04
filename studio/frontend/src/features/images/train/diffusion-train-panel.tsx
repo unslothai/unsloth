@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import {
   AlertDialog,
@@ -16,7 +17,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -67,6 +70,10 @@ type FamilyPreset = {
   defaults: { rank: number; lr: number; resolution: number };
   vram_note: string;
   gated?: boolean;
+  // The note's facts, one per chip. Absent on an older backend, which falls back to vram_note prose.
+  params?: string;
+  qlora_vram_gb?: number | null;
+  note?: string;
 };
 
 const FAMILY_PRESETS: FamilyPreset[] = [
@@ -77,6 +84,8 @@ const FAMILY_PRESETS: FamilyPreset[] = [
     defaults: { rank: 16, lr: 0.0001, resolution: 512 },
     vram_note: "Gated: needs its license and your HF token.",
     gated: true,
+    params: "12B",
+    qlora_vram_gb: 16,
   },
   {
     name: "qwen-image",
@@ -84,6 +93,9 @@ const FAMILY_PRESETS: FamilyPreset[] = [
     base_repos: ["unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"],
     defaults: { rank: 16, lr: 0.00005, resolution: 512 },
     vram_note: "The biggest: needs a large GPU. Start at 512px.",
+    params: "20B",
+    qlora_vram_gb: 24,
+    note: "The heaviest option. Start at 512px.",
   },
   {
     name: "z-image",
@@ -91,6 +103,9 @@ const FAMILY_PRESETS: FamilyPreset[] = [
     base_repos: ["unsloth/Z-Image-Turbo-unsloth-bnb-4bit", "Tongyi-MAI/Z-Image-Turbo"],
     defaults: { rank: 16, lr: 0.0001, resolution: 768 },
     vram_note: "The smallest and fastest. A good first pick.",
+    params: "6B",
+    qlora_vram_gb: 12,
+    note: "The smallest and fastest. A good first pick.",
   },
   {
     name: "sdxl",
@@ -98,6 +113,8 @@ const FAMILY_PRESETS: FamilyPreset[] = [
     base_repos: ["stabilityai/stable-diffusion-xl-base-1.0", "stabilityai/sdxl-turbo"],
     defaults: { rank: 16, lr: 0.0001, resolution: 1024 },
     vram_note: "The classic. Fine at 1024px.",
+    qlora_vram_gb: 12,
+    note: "The classic. Fine at 1024px.",
   },
 ];
 
@@ -124,6 +141,71 @@ const selectClass =
 // Every settings cell is a grid item, so it needs min-w-0 to be allowed to shrink.
 const fieldClass = "grid min-w-0 gap-2";
 
+/** A field's label with its guidance behind an "i" tooltip, keeping the grid scannable.
+ *  Only facts a user must act on stay on the page as text. */
+function FieldLabel({
+  hint,
+  children,
+}: {
+  hint?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-1">
+      <Label className="min-w-0 truncate text-xs">{children}</Label>
+      {hint ? <InfoHint>{hint}</InfoHint> : null}
+    </div>
+  );
+}
+
+/** The family's training facts as chips: size, QLoRA VRAM floor, access. What a chip cannot
+ *  carry stays as a line below, as does the prose from a backend too old to send the fields. */
+function FamilyFacts({ family }: { family?: FamilyPreset }) {
+  if (!family) return null;
+  const hasChips = Boolean(
+    family.params || family.qlora_vram_gb || family.gated,
+  );
+  if (!hasChips) {
+    return family.vram_note ? (
+      <p className="text-ui-11 leading-snug text-muted-foreground">
+        {family.vram_note}
+      </p>
+    ) : null;
+  }
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {family.params ? (
+          <Badge variant="secondary" className="font-normal">
+            {family.params}
+          </Badge>
+        ) : null}
+        {family.qlora_vram_gb != null ? (
+          <Badge variant="secondary" className="font-normal">
+            QLoRA {family.qlora_vram_gb}GB+ VRAM
+          </Badge>
+        ) : null}
+        {/* Access, not a spec: a neutral fill sets it apart from the capability chips. */}
+        {family.gated ? (
+          <Badge
+            variant="secondary"
+            className="bg-muted font-normal text-muted-foreground"
+          >
+            Gated
+          </Badge>
+        ) : null}
+      </div>
+      {(family.gated || family.note) && (
+        <p className="text-ui-11 leading-snug text-muted-foreground">
+          {family.gated ? "Needs its license and your HF token." : null}
+          {family.gated && family.note ? " " : null}
+          {family.note}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // Merge the backend-reported families over the presets, keeping the preset ordering and filling anything the backend omits.
 function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
   if (!reported || reported.length === 0) return FAMILY_PRESETS;
@@ -143,6 +225,15 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
       },
       vram_note: r.vram_note || p.vram_note,
       gated: r.gated ?? p.gated,
+      // The chips travel together: a backend reporting any of them owns the whole set, so a
+      // preset value cannot sit beside a live one describing a different build.
+      ...(r.params != null || r.qlora_vram_gb != null || r.note != null
+        ? {
+            params: r.params ?? "",
+            qlora_vram_gb: r.qlora_vram_gb ?? null,
+            note: r.note ?? "",
+          }
+        : { params: p.params, qlora_vram_gb: p.qlora_vram_gb, note: p.note }),
     };
   });
   // Any backend family not in the presets goes last, so a newly added trainer still shows.
@@ -158,6 +249,9 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
       },
       vram_note: r.vram_note ?? "",
       gated: r.gated ?? false,
+      params: r.params ?? "",
+      qlora_vram_gb: r.qlora_vram_gb ?? null,
+      note: r.note ?? "",
     });
   }
   return merged;
@@ -761,10 +855,10 @@ export function DiffusionTrainPanel({
     value: number,
     set: (n: number) => void,
     fallback: number,
-    extra?: { min?: number; step?: number },
+    extra?: { min?: number; step?: number; hint?: ReactNode },
   ) => (
     <div className={fieldClass}>
-      <Label className="text-xs">{label}</Label>
+      <FieldLabel hint={extra?.hint}>{label}</FieldLabel>
       <Input
         type="number"
         min={extra?.min ?? 1}
@@ -784,7 +878,16 @@ export function DiffusionTrainPanel({
   // Run length: a number paired with a compact unit select. Epochs mode trains that many full passes; the backend resolves it to steps.
   const durationField = (
     <div className={fieldClass}>
-      <Label className="text-xs">{durationUnit === "epochs" ? "Epochs" : "Steps"}</Label>
+      <FieldLabel
+        hint={
+          <>
+            How long the run trains. Steps count optimizer updates; epochs count full
+            passes over your images. 500&ndash;1500 steps suits most small sets.
+          </>
+        }
+      >
+        {durationUnit === "epochs" ? "Epochs" : "Steps"}
+      </FieldLabel>
       <div className="flex gap-1.5">
         <Input
           type="number"
@@ -833,20 +936,36 @@ export function DiffusionTrainPanel({
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-2 gap-x-6 gap-y-5 lg:grid-cols-3">
         {durationField}
-        {numberField("LoRA rank", rank, setRank, 1)}
-        {numberField("Resolution", resolution, setResolution, 512, { min: 64, step: 64 })}
-        {numberField("Batch", batchSize, setBatchSize, 1)}
-        {numberField("Grad accumulation", gradAccum, setGradAccum, 1)}
-        {numberField("Seed", seed, setSeed, 42, { min: 0 })}
+        {numberField("LoRA rank", rank, setRank, 1, {
+          hint: "How much the adapter can learn. Higher captures more detail and makes a bigger file; 16 suits most styles, 32+ for complex subjects.",
+        })}
+        {numberField("Resolution", resolution, setResolution, 512, {
+          min: 64,
+          step: 64,
+          hint: "The pixel size images train at, in multiples of 64. Higher is sharper and costs noticeably more VRAM.",
+        })}
+        {numberField("Batch", batchSize, setBatchSize, 1, {
+          hint: "Images trained on per step. Higher is faster per image and needs more VRAM.",
+        })}
+        {numberField("Grad accumulation", gradAccum, setGradAccum, 1, {
+          hint: "Collects this many batches before each update, for the effect of a larger batch without the VRAM. Effective batch = Batch x Grad accumulation.",
+        })}
+        {numberField("Seed", seed, setSeed, 42, {
+          min: 0,
+          hint: "Fixes the run's randomness, so the same settings and images reproduce the same LoRA.",
+        })}
       </div>
 
       <div className="grid grid-cols-2 items-start gap-x-6 gap-y-5 lg:grid-cols-3">
         {numberField("Learning rate", learningRate, setLearningRate, 0.0001, {
           min: 0,
           step: 0.00001,
+          hint: "How big each update is. Too high burns the style in and adds artifacts; too low barely learns. 0.0001 is a safe start.",
         })}
         <div className={fieldClass}>
-          <Label className="text-xs">LR schedule</Label>
+          <FieldLabel hint="How the learning rate moves over the run. Constant is fine for most runs; a decay can help a long one settle.">
+            LR schedule
+          </FieldLabel>
           <Select
             value={lrScheduler}
             onValueChange={(v) => setLrScheduler(v as typeof lrScheduler)}
@@ -861,17 +980,19 @@ export function DiffusionTrainPanel({
               <SelectItem value="linear">Linear decay</SelectItem>
             </SelectContent>
           </Select>
-          <p className="text-ui-11 leading-snug text-muted-foreground">
-            Constant is fine for most runs.
-          </p>
         </div>
         {lrScheduler !== "constant" &&
-          numberField("Warmup steps", lrWarmupSteps, setLrWarmupSteps, 0, { min: 0 })}
+          numberField("Warmup steps", lrWarmupSteps, setLrWarmupSteps, 0, {
+            min: 0,
+            hint: "Ramps the learning rate up over the first steps instead of starting at full size.",
+          })}
       </div>
 
       <div className="grid grid-cols-2 items-start gap-x-6 gap-y-5 lg:grid-cols-3">
         <div className={fieldClass}>
-          <Label className="text-xs">Gradient checkpointing</Label>
+          <FieldLabel hint="Recomputes activations instead of holding them in memory: less VRAM, slightly slower steps.">
+            Gradient checkpointing
+          </FieldLabel>
           <Select
             value={gradCheckpoint ? "on" : "off"}
             onValueChange={(v) => setGradCheckpoint(v === "on")}
@@ -884,14 +1005,13 @@ export function DiffusionTrainPanel({
               <SelectItem value="off">Off (faster steps)</SelectItem>
             </SelectContent>
           </Select>
-          <p className="text-ui-11 leading-snug text-muted-foreground">
-            Less VRAM, slightly slower steps.
-          </p>
         </div>
 
         {isDiT ? (
           <div className={fieldClass}>
-            <Label className="text-xs">Base precision</Label>
+            <FieldLabel hint="How the frozen base is quantised while the LoRA trains. Auto picks the best fit for your GPU; nf4 uses the least VRAM.">
+              Base precision
+            </FieldLabel>
             <Select
               value={basePrecision}
               onValueChange={(v) => {
@@ -915,23 +1035,22 @@ export function DiffusionTrainPanel({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-ui-11 leading-snug text-muted-foreground">
-              {familyUntrainable ? (
-                // The reason itself (the backend bf16-preflight text) already shows in the family picker vram_note line above.
-                <>This GPU cannot train this model family.</>
-              ) : (
-                <>
-                  Auto picks the best fit for your GPU.
-                  {basePrequantized && (
-                    <> This base is already 4-bit, so only nf4/auto apply.</>
-                  )}
-                </>
-              )}
-            </p>
+            {/* Only state stays on the page: both lines say why the control is limited right
+                now. The general guidance is in the label's tooltip. */}
+            {(familyUntrainable || basePrequantized) && (
+              <p className="text-ui-11 leading-snug text-muted-foreground">
+                {familyUntrainable
+                  ? // The reason itself already shows in the family picker note above.
+                    "This GPU cannot train this model family."
+                  : "This base is already 4-bit, so only nf4/auto apply."}
+              </p>
+            )}
           </div>
         ) : (
           <div className={fieldClass}>
-            <Label className="text-xs">Precision</Label>
+            <FieldLabel hint="The mixed-precision mode for training math. bf16 is right for modern GPUs; fp16 is for older ones that lack it.">
+              Precision
+            </FieldLabel>
             <Select
               value={precision}
               onValueChange={(v) => setPrecision(v as "bf16" | "fp16" | "no")}
@@ -945,14 +1064,13 @@ export function DiffusionTrainPanel({
                 <SelectItem value="no">fp32 (no mixed)</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-ui-11 leading-snug text-muted-foreground">
-              bf16 is right for modern GPUs.
-            </p>
           </div>
         )}
         {supportsCompile && (
           <div className={fieldClass}>
-            <Label className="text-xs">Compile transformer</Label>
+            <FieldLabel hint="torch.compile the transformer. The first step is slower while it compiles, every step after is faster.">
+              Compile transformer
+            </FieldLabel>
             <Select
               value={compileTransformer}
               onValueChange={(v) =>
@@ -968,9 +1086,6 @@ export function DiffusionTrainPanel({
                 <SelectItem value="off">Off</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-ui-11 leading-snug text-muted-foreground">
-              Slower first step, faster after.
-            </p>
           </div>
         )}
       </div>
@@ -981,10 +1096,15 @@ export function DiffusionTrainPanel({
     <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
       {/* Left: configure. No cards: both panes sit on the page background, split by a full-height rule. */}
       <div className="flex w-[392px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60">
-        {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
-        <div className="hover-scrollbar flex min-h-0 flex-col gap-5 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-7">
+        {/* pl-0.5 keeps focus rings off the scroll container's edge. pt-1.5
+            matches the right pane's p-1.5, so both headings start on the same line. */}
+        <div className="hover-scrollbar flex min-h-0 flex-col gap-5 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-7 pt-1.5">
           <div>
-            <h2 className="text-base font-semibold">Train a LoRA</h2>
+            {/* Matches "Training settings" across the rule, so the two headings read as one row. */}
+            <h2 className="font-heading flex items-center gap-1.5 text-base font-medium">
+              <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-4" />
+              Train a LoRA
+            </h2>
             <p className="mt-1 text-ui-11 leading-snug text-muted-foreground">
               Teach a model a style or subject from your own images.
             </p>
@@ -992,7 +1112,9 @@ export function DiffusionTrainPanel({
 
           {/* Family + base */}
           <div className={fieldClass}>
-            <Label className="text-xs">Model family</Label>
+            <FieldLabel hint="The architecture you are training. Each family brings its own bases, starting hyperparameters and VRAM floor.">
+              Model family
+            </FieldLabel>
             <Select value={familyName} onValueChange={setFamilyName}>
               <SelectTrigger className={selectClass} aria-label="Model family">
                 <SelectValue />
@@ -1005,13 +1127,13 @@ export function DiffusionTrainPanel({
                 ))}
               </SelectContent>
             </Select>
-            {family?.vram_note && (
-              <p className="text-ui-11 leading-snug text-muted-foreground">{family.vram_note}</p>
-            )}
+            <FamilyFacts family={family} />
           </div>
 
           <div className={fieldClass}>
-            <Label className="text-xs">Base model</Label>
+            <FieldLabel hint="The exact checkpoint the LoRA trains against. A 4-bit (bnb) base needs the least VRAM; the dense one needs the most.">
+              Base model
+            </FieldLabel>
             <Select
               value={effectiveBase}
               onValueChange={(v) => {
@@ -1044,7 +1166,9 @@ export function DiffusionTrainPanel({
 
           {/* Dataset */}
           <div className={fieldClass}>
-            <Label className="text-xs">Training images</Label>
+            <FieldLabel hint="The set the LoRA learns from. 10-50 images is plenty, and captions are optional.">
+              Training images
+            </FieldLabel>
             <Select
               value={dataset}
               onValueChange={(v) => {
@@ -1140,9 +1264,6 @@ export function DiffusionTrainPanel({
                     </>
                   )}
                 </div>
-                <p className="text-ui-11 leading-snug text-muted-foreground">
-                  10-50 images is plenty. Captions are optional.
-                </p>
               </div>
             ) : (
               selectedDataset && (
@@ -1191,20 +1312,21 @@ export function DiffusionTrainPanel({
             </p>
           ) : (
             <div className={fieldClass}>
-              <Label className="text-xs">Trigger prompt</Label>
+              <FieldLabel hint="The words you will use later to get this style back. Pick something the base model would not already know.">
+                Trigger prompt
+              </FieldLabel>
               <Input
                 value={instancePrompt}
                 placeholder="a photo in mystyle"
                 onChange={(e) => setInstancePrompt(e.target.value)}
                 className="h-8 text-xs"
               />
-              <p className="text-ui-11 leading-snug text-muted-foreground">
-                The words you will use later to get this style back.
-              </p>
             </div>
           )}
           <div className={fieldClass}>
-            <Label className="text-xs">Adapter name</Label>
+            <FieldLabel hint="What the finished LoRA is called in the Create tab's picker.">
+              Adapter name
+            </FieldLabel>
             <Input
               value={outputDir}
               placeholder="my-style"
@@ -1212,9 +1334,6 @@ export function DiffusionTrainPanel({
               onChange={(e) => setOutputDir(e.target.value)}
               className="h-8 text-xs"
             />
-            <p className="text-ui-11 leading-snug text-muted-foreground">
-              Its name in the Create tab&apos;s picker.
-            </p>
           </div>
 
           {/* Start lives here; Stop lives in the run card next to the live stats. */}

@@ -91,8 +91,9 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "projects",
   "hub",
   "images",
-  "train",
+  // Video sits directly under Images: the two media tabs read as one pair.
   "video",
+  "train",
   "recipes",
   "export",
 ] as const;
@@ -110,11 +111,23 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   projects: true,
   hub: true,
   images: true,
+  video: true,
   train: true,
-  video: false,
   recipes: false,
   export: false,
 };
+
+/** The pre-v3 shipped layout, so the migration can tell an untouched install from
+ *  one the user arranged themselves. */
+const SIDEBAR_NAV_V2_DEFAULT: SidebarNavItemPref[] = [
+  { id: "projects", pinned: true },
+  { id: "hub", pinned: true },
+  { id: "images", pinned: true },
+  { id: "train", pinned: true },
+  { id: "video", pinned: false },
+  { id: "recipes", pinned: false },
+  { id: "export", pinned: false },
+];
 
 export const MAX_IMPORTED_FONTS = 3;
 /** Imported-font family name cap; must match the backend name max_length (100). */
@@ -413,13 +426,21 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => guardedLocalStorage),
-      migrate: (persisted) => {
+      migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
-        return {
-          customization: sanitizeCustomization(state.customization),
-        } as AppearanceCustomState;
+        const customization = sanitizeCustomization(state.customization);
+        // v3 pinned Video under Images. Only adopt it where the stored layout is
+        // still the old default, so a user's own arrangement survives.
+        if (
+          version < 3 &&
+          JSON.stringify(customization.sidebarNav) ===
+            JSON.stringify(SIDEBAR_NAV_V2_DEFAULT)
+        ) {
+          customization.sidebarNav = [...DEFAULT_CUSTOMIZATION.sidebarNav];
+        }
+        return { customization } as AppearanceCustomState;
       },
       // Sanitize on EVERY rehydrate, not just version bumps: a same-version
       // payload written by an older bundle (e.g. before importedFonts existed)

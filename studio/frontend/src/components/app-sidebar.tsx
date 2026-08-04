@@ -1756,6 +1756,23 @@ export function AppSidebar() {
                           />
                         );
                       })}
+                      {/* Way out of the flyout: jump straight to the control that
+                          decides what lives here vs. on the sidebar itself. */}
+                      <DropdownMenuSeparator className="mx-1! my-1.5! h-0! border-t border-border/70 bg-transparent!" />
+                      <DropdownMenuItem
+                        onSelect={() =>
+                          useSettingsDialogStore
+                            .getState()
+                            .openDialog("appearance", {
+                              scrollTarget: "appearance-sidebar-nav",
+                            })
+                        }
+                      >
+                        <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+                        <span className="min-w-0 flex-1 truncate">
+                          {t("shell.navigation.customizeSidebar")}
+                        </span>
+                      </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </SidebarMenuItem>

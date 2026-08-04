@@ -108,8 +108,8 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
   if (type !== "number") {
     return field;
   }
-  // Number fields swap the native spinner (hidden globally in index.css) for
-  // a shared grey stepper.
+  // Number fields swap the native spinner (hidden globally in index.css) for a shared
+  // grey stepper, shown on hover or focus. Disabled stays hidden: :has() beats :hover.
   return (
     <span
       data-slot="number-input"
@@ -134,7 +134,7 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
       {field}
       <span
         aria-hidden="true"
-        className="absolute top-1/2 right-2.5 flex h-[21px] w-4 -translate-y-1/2 flex-col overflow-hidden rounded-[5px] bg-black/[0.07] group-has-[input:disabled]/number:pointer-events-none group-has-[input:disabled]/number:opacity-40 dark:bg-white/[0.12]"
+        className="absolute top-1/2 right-2.5 flex h-[21px] w-4 -translate-y-1/2 flex-col overflow-hidden rounded-[5px] bg-black/[0.07] opacity-0 transition-opacity group-hover/number:opacity-100 group-focus-within/number:opacity-100 group-has-[input:disabled]/number:pointer-events-none group-has-[input:disabled]/number:opacity-0 dark:bg-white/[0.12]"
       >
         <StepperButton direction={1} />
         <StepperButton direction={-1} />

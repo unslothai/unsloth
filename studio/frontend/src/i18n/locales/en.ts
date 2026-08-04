@@ -53,6 +53,8 @@ export const en = {
       images: "Images",
       video: "Video",
       more: "More",
+      // Last entry of the More flyout; opens Settings -> Appearance.
+      customizeSidebar: "Customize sidebar",
       // Rendered uppercase in a pill beside a recently shipped tab.
       newBadge: "New",
       export: "Export",

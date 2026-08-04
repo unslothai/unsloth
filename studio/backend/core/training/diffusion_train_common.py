@@ -274,15 +274,29 @@ _FAMILY_LABELS = {
     "flux.2-klein": "FLUX.2 Klein",
     "flux.2-dev": "FLUX.2-dev",
 }
-_FAMILY_VRAM_NOTES = {
-    "sdxl": "~12 GB+. The lightest option.",
-    "flux.1": "12B, QLoRA by default (~16 GB+). Gated: needs its license and your HF token.",
-    "qwen-image": "20B, QLoRA by default (~24 GB+). The heaviest option.",
-    "z-image": "6B, QLoRA by default (~12 GB+).",
-    "krea-2": "12B, QLoRA by default (~18 GB+). Trains on Krea-2-Raw, runs on Turbo.",
-    "flux.2-klein": "4B, QLoRA by default (~10 GB+).",
-    "flux.2-dev": "32B, QLoRA by default (~28 GB+). Gated: needs its license and your HF token.",
+# Per-family training facts as fields, so the UI can chip them instead of parsing prose.
+# ``params`` is the transformer size (SDXL is not quoted that way), ``note`` is the rest.
+_FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
+    "sdxl": {"params": "", "qlora_vram_gb": 12, "gated": False, "note": "The lightest option."},
+    "flux.1": {"params": "12B", "qlora_vram_gb": 16, "gated": True, "note": ""},
+    "qwen-image": {"params": "20B", "qlora_vram_gb": 24, "gated": False, "note": "The heaviest option."},
+    "z-image": {"params": "6B", "qlora_vram_gb": 12, "gated": False, "note": ""},
+    "krea-2": {"params": "12B", "qlora_vram_gb": 18, "gated": False, "note": "Trains on Krea-2-Raw, runs on Turbo."},
+    "flux.2-klein": {"params": "4B", "qlora_vram_gb": 10, "gated": False, "note": ""},
+    "flux.2-dev": {"params": "32B", "qlora_vram_gb": 28, "gated": True, "note": ""},
 }
+_GATED_NOTE = "Gated: needs its license and your HF token."
+
+
+def _family_vram_note(name: str) -> str:
+    """The one-line note, rebuilt from the spec for clients that predate the chip fields."""
+    spec = _FAMILY_TRAIN_SPECS.get(name)
+    if not spec:
+        return ""
+    gb = spec["qlora_vram_gb"]
+    head = f"{spec['params']}, QLoRA by default (~{gb} GB+)." if spec["params"] else f"~{gb} GB+."
+    tail = [t for t in (_GATED_NOTE if spec["gated"] else "", spec["note"]) if t]
+    return " ".join([head, *tail])
 
 # The flow-matching DiT families (run by diffusion_dit_trainer): they expose base_precision / compile and need bf16 on CUDA. SDXL is absent (own mixed_precision path).
 _DIT_TRAIN_FAMILIES = frozenset(
@@ -446,6 +460,7 @@ def family_train_infos() -> list[dict[str, Any]]:
             fam_modes: list[str] = []
         else:
             fam_modes = [m for m in dit_modes if not _family_denied(name, m)]
+        spec = _FAMILY_TRAIN_SPECS.get(name, {})
         infos.append(
             {
                 "name": name,
@@ -453,7 +468,12 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "default_base": repos[0],
                 "base_repos": repos,
                 "defaults": train_defaults(name),
-                "vram_note": dit_block or _FAMILY_VRAM_NOTES.get(name, ""),
+                "vram_note": dit_block or _family_vram_note(name),
+                # Chip fields. Dropped on a dit_block, since vram_note then carries the reason.
+                "params": "" if dit_block else spec.get("params", ""),
+                "qlora_vram_gb": None if dit_block else spec.get("qlora_vram_gb"),
+                "gated": False if dit_block else bool(spec.get("gated", False)),
+                "note": "" if dit_block else spec.get("note", ""),
                 "precision_modes": fam_modes,
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
                 # compile is offered everywhere (SDXL regional U-Net + DiT), except a DiT family the GPU cannot train in bf16.

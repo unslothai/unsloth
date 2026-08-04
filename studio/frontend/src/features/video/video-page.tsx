@@ -5,14 +5,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   Delete02Icon,
   Download01Icon,
+  FlimSlateIcon,
+  Image03Icon,
   InformationCircleIcon,
   LayoutAlignRightIcon,
-  FlimSlateIcon,
   Settings02Icon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
+import { MediaPageLink } from "@/components/media-page-link";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -1486,7 +1488,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   );
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {/* Top: the model selector, kept at the chat tab's exact position so the shared element matches. Load progress shows in a toast. */}
       <div className="flex h-[48px] shrink-0 items-start justify-between pl-2 pr-2 pt-[11px]">
         <div className="flex items-center gap-3">
@@ -1537,6 +1539,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             </TooltipTrigger>
             <TooltipContent>Advanced options</TooltipContent>
           </Tooltip>
+          {/* Images is a separate page, so it sits out here, not in this page's controls. */}
+          <MediaPageLink to="/images" label="Images" icon={Image03Icon} />
         </div>
       </div>
 

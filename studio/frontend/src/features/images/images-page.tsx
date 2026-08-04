@@ -3,14 +3,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  ArrowDown01Icon,
   ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowReloadHorizontalIcon,
-  CheckmarkCircle02Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  FlimSlateIcon,
   Image03Icon,
   ImageAdd02Icon,
   ImageUpload01Icon,
@@ -69,6 +68,7 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
+import { MediaPageLink } from "@/components/media-page-link";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
@@ -174,6 +174,80 @@ const WORKFLOW_TABS: Array<{
     hint: "Change an image with an instruction",
   },
 ];
+
+/** Workflow switcher: one icon per workflow, down the page's left edge. Icon-only, so the
+ *  label rides the tooltip and the heading beside it. An unsupported workflow dims in place
+ *  rather than collapsing, so the icons never shuffle as models load. */
+function WorkflowRail({
+  workflow,
+  onSelect,
+  isEnabled,
+}: {
+  workflow: WorkflowId;
+  onSelect: (id: WorkflowId) => void;
+  isEnabled: (tab: (typeof WORKFLOW_TABS)[number]) => boolean;
+}) {
+  // Arrow keys skip disabled buttons, so the rail has no dead stops.
+  const move = (from: WorkflowId, delta: number) => {
+    const usable = WORKFLOW_TABS.filter(isEnabled);
+    if (usable.length === 0) return;
+    const at = usable.findIndex((t) => t.id === from);
+    const next = usable[(at + delta + usable.length) % usable.length];
+    if (next) onSelect(next.id);
+  };
+  return (
+    <div
+      role="tablist"
+      aria-orientation="vertical"
+      aria-label="Workflow"
+      className="flex w-[44px] shrink-0 flex-col items-center gap-2.5 overflow-y-auto border-r border-border/60 pb-7"
+    >
+      {WORKFLOW_TABS.map((t) => {
+        const enabled = isEnabled(t);
+        const active = workflow === t.id;
+        return (
+          // Trigger wraps the button: a disabled button fires no pointer events, so its
+          // tooltip would never open.
+          <Tooltip key={t.id} delayDuration={300}>
+            <TooltipPrimitive.Trigger asChild={true}>
+              <div>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  aria-label={t.label}
+                  disabled={!enabled}
+                  tabIndex={active ? 0 : -1}
+                  onKeyDown={(e) => {
+                    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+                    e.preventDefault();
+                    move(t.id, e.key === "ArrowDown" ? 1 : -1);
+                  }}
+                  onClick={() => onSelect(t.id)}
+                  className={cn(
+                    "corner-squircle flex size-9 items-center justify-center rounded-xl transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    active
+                      ? "bg-foreground/[0.09] text-foreground dark:bg-foreground/[0.16]"
+                      : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-foreground/[0.1]",
+                    !enabled &&
+                      "opacity-40 hover:bg-transparent hover:text-muted-foreground",
+                  )}
+                >
+                  <HugeiconsIcon icon={t.icon} className="size-5" />
+                </button>
+              </div>
+            </TooltipPrimitive.Trigger>
+            <TooltipContent side="right" sideOffset={8}>
+              {enabled
+                ? `${t.label} - ${t.hint}`
+                : `${t.label} - the loaded model cannot do this`}
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
 
 // The images each conditioned workflow consumed, named for the restore toast: a recipe keeps the scalar settings but not the uploads.
 // Keys are the backend's own workflow strings; txt2img is absent because it restores completely.
@@ -2283,13 +2357,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, [status?.loaded, status?.workflows, workflow]);
 
-  // Create (requires null) needs txt2img once a model is loaded: an edit-only model has no text-to-image mode, so its Create
-  // row is disabled. With nothing loaded, Create stays available so the user can pick a model.
+  // Only a loaded model disables a workflow, and only one it cannot do (an edit-only model has
+  // no txt2img, so Create dims). With nothing loaded every workflow stays open to set up first.
   const workflowEnabled = (t: (typeof WORKFLOW_TABS)[number]) => {
-    const wf = status?.workflows ?? [];
-    return t.requires === null
-      ? !status?.loaded || wf.includes("txt2img")
-      : wf.includes(t.requires);
+    if (!status?.loaded) return true;
+    const wf = status.workflows ?? [];
+    return wf.includes(t.requires === null ? "txt2img" : t.requires);
   };
   const activeWorkflowTab =
     WORKFLOW_TABS.find((t) => t.id === workflow) ?? WORKFLOW_TABS[0];
@@ -2404,7 +2477,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {/* Top: the model selector, kept at the chat tab's exact position so the shared element matches. Load progress shows in a toast. */}
       <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-2 pr-2 pt-[11px]">
         <div className="flex items-center gap-2">
@@ -2443,7 +2516,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             value={pageMode}
             onValueChange={(v) => setPageMode(v as "create" | "train")}
             fit={true}
-            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-10"
+            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-11"
             tabs={[
               {
                 value: "create",
@@ -2488,6 +2561,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               <TooltipContent>Advanced options</TooltipContent>
             </Tooltip>
           )}
+          {/* Video is a separate page, so it sits out here rather than in the mode strip. */}
+          <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
         </div>
       </div>
       {/* Train mode: the full-page training workspace. Unmounted in Create mode so its polling stops; Create's own state is untouched. */}
@@ -2508,74 +2583,24 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           onFamiliesChange={setTrainFamilies}
         />
       ) : (
-      /* Controls rail + preview canvas: both on the page background, split by a rule, on the Hub centered measure. Each pane pads its own content. */
-      <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
-        <div className="flex w-[368px] shrink-0 flex-col overflow-hidden border-r border-border/60">
+      /* Controls rail + preview canvas: both on the page background, split by a rule, on the Hub centered measure. Each pane pads its own content.
+         Padding is asymmetric: the rail hugs the left edge, the settings column keeps a wide gutter. */
+      <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pl-2.5 sm:pr-8">
+        <WorkflowRail
+          workflow={workflow}
+          onSelect={setWorkflow}
+          isEnabled={workflowEnabled}
+        />
+        <div className="flex w-[420px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
-          <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-7">
-            {/* Seven workflows do not fit a segmented strip in this rail, so: a dropdown. A row stays disabled until the model supports it. */}
-            <div className="grid gap-1.5">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild={true}>
-                  <button
-                    type="button"
-                    aria-label="Workflow"
-                    className="corner-squircle flex h-9 w-full items-center gap-2 rounded-xl bg-foreground/[0.07] px-3 text-left transition-colors hover:bg-foreground/[0.11] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-foreground/[0.12] dark:hover:bg-foreground/[0.16]"
-                  >
-                    <HugeiconsIcon
-                      icon={activeWorkflowTab.icon}
-                      className="size-4 shrink-0 text-muted-foreground"
-                    />
-                    <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
-                      {activeWorkflowTab.label}
-                    </span>
-                    <HugeiconsIcon
-                      icon={ArrowDown01Icon}
-                      className="size-4 shrink-0 text-muted-foreground"
-                    />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  {WORKFLOW_TABS.map((t) => {
-                    const enabled = workflowEnabled(t);
-                    return (
-                      // Rows stay one line; the description arrives on hover. The trigger wraps the row: a disabled item has pointer-events: none.
-                      <Tooltip key={t.id} delayDuration={550}>
-                        <TooltipPrimitive.Trigger asChild={true}>
-                          <div>
-                            <DropdownMenuItem
-                              disabled={!enabled}
-                              onSelect={() => setWorkflow(t.id)}
-                              className="gap-2"
-                            >
-                              <HugeiconsIcon
-                                icon={t.icon}
-                                className="size-4 shrink-0 text-muted-foreground"
-                              />
-                              <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                                {t.label}
-                              </span>
-                              <HugeiconsIcon
-                                icon={CheckmarkCircle02Icon}
-                                className={cn(
-                                  "size-3.5 shrink-0",
-                                  workflow === t.id ? "text-foreground" : "invisible",
-                                )}
-                              />
-                            </DropdownMenuItem>
-                          </div>
-                        </TooltipPrimitive.Trigger>
-                        <TooltipContent side="right" sideOffset={6}>
-                          {enabled
-                            ? t.hint
-                            : `Needs a loaded model that supports ${t.label.toLowerCase()}`}
-                        </TooltipContent>
-                      </Tooltip>
-                    );
-                  })}
-                </DropdownMenuContent>
-              </DropdownMenu>
-              {/* Description sits under the closed trigger, matching the Field hints below it, so the button stays one line. */}
+          <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-10">
+            {/* The rail is icon-only, so name the active workflow over the controls it drives. */}
+            <div className="grid gap-1">
+              {/* h-9 centres the heading on the rail's first icon, so it does not read as
+                  that icon's label. Same type as the Train page headings. */}
+              <h2 className="flex h-9 items-center px-0.5 font-heading text-base font-medium text-foreground">
+                {activeWorkflowTab.label}
+              </h2>
               <p className="px-0.5 text-ui-11p5 leading-snug text-muted-foreground">
                 {activeWorkflowTab.hint}
               </p>
