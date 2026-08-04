@@ -2020,7 +2020,11 @@ def _ensure_cpu_torch() -> None:
                     "hip = getattr(torch.version, 'hip', '') or ''; "
                     "cuda = getattr(torch.version, 'cuda', '') or ''; "
                     "ver = getattr(torch, '__version__', '').lower(); "
-                    "gpu = bool(hip) or 'rocm' in ver or bool(cuda) or bool(re.search(r'\\+cu\\d+', ver)); "
+                    # '+xpu' too: an XPU wheel sets neither torch.version.cuda nor .hip, so
+                    # without it a working Intel build reads as "cpu", this helper returns
+                    # "already a CPU build", and an explicit CPU pin over it does nothing.
+                    # Keyed on the local label, since torch.version.xpu is None on some builds.
+                    "gpu = bool(hip) or 'rocm' in ver or bool(cuda) or bool(re.search(r'\\+cu\\d+', ver)) or '+xpu' in ver; "
                     "print('gpu' if gpu else 'cpu')"
                 ),
             ],

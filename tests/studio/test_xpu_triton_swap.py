@@ -471,3 +471,42 @@ def test_install_sh_does_not_carry_a_second_copy():
     # It used to. install.sh runs setup.sh, which runs this module, so a copy there is both
     # redundant and a place for the two to drift apart.
     assert "replace generic Triton" not in (REPO / "install.sh").read_text(encoding = "utf-8")
+
+
+class TestCpuRepairSeesAnXpuWheel:
+    """An explicit CPU pin must be able to replace a +xpu wheel.
+
+    `_ensure_cpu_torch` classifies the installed build and returns early on "already a CPU
+    build". An XPU wheel sets neither `torch.version.cuda` nor `.hip`, so before this it read
+    as CPU and the pin was silently ignored. The predicate is executed here, not re-implemented:
+    it is pulled out of the module source so a future edit to it is what this test sees.
+    """
+
+    @staticmethod
+    def _classify(ver, cuda = "", hip = ""):
+        src = STACK.read_text(encoding = "utf-8")
+        # The probe body is a concatenation of string literals inside the subprocess call.
+        start = src.index("def _ensure_cpu_torch() -> None:")
+        seg = src[start : src.index("\n\ndef ", start)]
+        line = next(l for l in seg.splitlines() if l.strip().startswith('"gpu = '))
+        expr = line.strip().removeprefix('"gpu = ').removesuffix('; "')
+        import re as _re
+
+        return "gpu" if eval(expr, {"re": _re, "hip": hip, "cuda": cuda, "ver": ver.lower()}) else "cpu"
+
+    def test_xpu_wheel_is_a_gpu_build(self):
+        assert self._classify("2.9.1+xpu") == "gpu"
+
+    @pytest.mark.parametrize(
+        "ver,cuda,hip,want",
+        [
+            ("2.9.1+cu128", "12.8", "", "gpu"),
+            ("2.9.1+rocm6.4", "", "6.4", "gpu"),
+            ("2.9.1+cpu", "", "", "cpu"),
+            ("2.9.1", "", "", "cpu"),
+        ],
+    )
+    def test_other_families_are_unchanged(self, ver, cuda, hip, want):
+        # The XPU arm must be additive: a CPU build still has to read as CPU, or every
+        # explicit CPU pin would force-reinstall torch on every update.
+        assert self._classify(ver, cuda, hip) == want

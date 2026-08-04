@@ -25,12 +25,16 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 # From the pin read to the end of the acting if/elif chain.
-awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on{print} on && /_SKIP_PYTHON_DEPS=false$/{n++} n==2{exit}' \
+# Stop at the `fi` that closes the escape chain, NOT after the Nth _SKIP_PYTHON_DEPS=false:
+# counting assignments silently truncates the block the moment an arm is added, and the arms
+# that survive still answer, so the new cases fail while the old ones pass.
+awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on && /^    elif \[ -n "\$INSTALLED_VER"/{exit} on{print}' \
     "$SETUP_SH" > "$WORK/blk.sh"
-echo "        fi" >> "$WORK/blk.sh"
 [ -s "$WORK/blk.sh" ] || { echo "FATAL: escape block not found in $SETUP_SH" >&2; exit 1; }
 # An extraction that lost any of the three moving parts would make cases below pass vacuously.
-for _need in _setup_pin_leaf _setup_pin_is_xpu _setup_generic_triton; do
+_arms=$(grep -c '_SKIP_PYTHON_DEPS=false' "$WORK/blk.sh")
+[ "$_arms" = "3" ] || { echo "FATAL: expected 3 escape arms, extracted $_arms" >&2; exit 1; }
+for _need in _setup_pin_leaf _setup_pin_is_xpu _setup_generic_triton _setup_pin_known_nonxpu; do
     grep -q "$_need" "$WORK/blk.sh" || { echo "FATAL: extraction lost $_need" >&2; exit 1; }
 done
 bash -n "$WORK/blk.sh" || { echo "FATAL: extracted block does not parse" >&2; exit 1; }
@@ -122,6 +126,22 @@ check "pin URL ending /XPU"   "$(escape "$(make_venv '2.9.1+cpu' no y)" "https:/
 # Lowercasing must not widen the match: a custom leaf that merely ends in xpu stays unknown
 # whatever its case.
 check "custom leaf PRIVATE-XPU" "$(escape "$(make_venv '2.9.1+cpu' no z)" "https://mirror/simple/PRIVATE-XPU")" true
+
+echo "migrating AWAY from xpu escapes too -- the pin is authoritative"
+# An up-to-date install whose wheel is +xpu, with the pin switched to another family: only
+# install_python_stack applies the pin, and the fast path skips it, so without this the user
+# asked for CUDA and kept the XPU wheel.
+check "cu128 pin over xpu wheel"  "$(escape "$(make_venv '2.9.1+xpu' no A)" "https://download.pytorch.org/whl/cu128")" false
+check "rocm pin over xpu wheel"   "$(escape "$(make_venv '2.9.1+xpu' no B)" "https://download.pytorch.org/whl/rocm6.4")" false
+check "cpu pin over xpu wheel"    "$(escape "$(make_venv '2.9.1+xpu' no C)" "https://download.pytorch.org/whl/cpu")" false
+check "gfx pin over xpu wheel"    "$(escape "$(make_venv '2.9.1+xpu' no D)" "https://repo.radeon.com/whl/gfx1151")" false
+check "FAMILY=cu128 over xpu wheel" "$(escape "$(make_venv '2.9.1+xpu' no E)" "" "cu128")" false
+# Digit-gated: a custom verbatim leaf is UNKNOWN to the repair helpers, so escaping on it
+# would mean a full dependency pass every update that changes nothing.
+check "custom rocm-current over xpu" "$(escape "$(make_venv '2.9.1+xpu' no F)" "https://mirror/whl/rocm-current")" true
+check "custom cu-private over xpu"   "$(escape "$(make_venv '2.9.1+xpu' no G)" "https://mirror/whl/cu-private")" true
+# ...and a non-XPU wheel must not be dragged in by a non-XPU pin.
+check "cu128 pin over cuda wheel"  "$(escape "$(make_venv '2.9.1+cu128' no H)" "https://download.pytorch.org/whl/cu128")" true
 
 echo "a leaf that merely ends in xpu is NOT the curated family"
 # The shared parsers call this an unknown family and refuse to act, so clearing the skip flag

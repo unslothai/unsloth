@@ -1149,6 +1149,14 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # shadowing the XPU one forever. Read the dist-info name off disk -- "triton-<ver>"
         # is the generic one; the XPU builds are pytorch_triton_xpu-* / triton_xpu-*, which
         # this glob does not match.
+        # A pin the shared classifiers actually recognise as a non-XPU family. Digit-gated like
+        # them, so a custom verbatim leaf (rocm-current, cu-private) stays UNKNOWN: those get no
+        # repair helper, so escaping on one would mean a full dependency pass every update that
+        # changes nothing.
+        _setup_pin_known_nonxpu=false
+        case "$_setup_pin_leaf" in
+            cpu|cu[0-9]*|rocm[0-9]*|gfx[0-9]*) _setup_pin_known_nonxpu=true ;;
+        esac
         _setup_generic_triton=false
         if [ "$_setup_pin_is_xpu" = true ] || [ "$_setup_pin_leaf" = "xpu" ]; then
             for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
@@ -1160,6 +1168,12 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             _SKIP_PYTHON_DEPS=false
         elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_generic_triton" = true ]; then
             substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_pin_known_nonxpu" = true ]; then
+            # Migrating AWAY from XPU. The pin is authoritative, but only install_python_stack
+            # acts on it, and the fast path skips that -- so an up-to-date install kept its
+            # +xpu wheel while the user had asked for CUDA or ROCm.
+            substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
             _SKIP_PYTHON_DEPS=false
         fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
