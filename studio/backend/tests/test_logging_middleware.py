@@ -360,8 +360,7 @@ def test_legacy_download_progress_heartbeats_not_suppressed(logs, monkeypatch):
 
 
 def test_generation_progress_polls_heartbeat(logs, monkeypatch):
-    # 300ms polls outran the base dedup window; now they heartbeat: first hit logs,
-    # the rest of the burst collapses.
+    # The 300ms poll timer always landed just outside the 300ms base dedup window.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
     for path in (
