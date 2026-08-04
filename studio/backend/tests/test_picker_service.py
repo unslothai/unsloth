@@ -27,7 +27,7 @@ def test_iter_ggufs_skips_gguf_companions(tmp_path):
     (tmp_path / "mmproj-F16.gguf").write_bytes(b"")
     (tmp_path / "mtp-model-Q8_0.gguf").write_bytes(b"")
     (mtp_dir / "model-Q8_0-MTP.gguf").write_bytes(b"")
-    # A DSpark drafter carries its own chat template; probing it reads the wrong one.
+    # A DSpark drafter has its own chat template; probing it reads the wrong one.
     (dspark_dir / "dspark-model-Q8_0.gguf").write_bytes(b"")
     (tmp_path / "model-Q8_0-be.gguf").write_bytes(b"")
 

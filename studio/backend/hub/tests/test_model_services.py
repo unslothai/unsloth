@@ -136,8 +136,8 @@ def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, mo
 
 
 def test_custom_inventory_filters_dspark_companions_at_registered_root(tmp_path):
-    # Registering dspark/ as the scan root strips the directory from every
-    # relative path, so the dspark- basename prefix has to carry the exclusion.
+    # Registering dspark/ as the scan root strips it from every relative path,
+    # so the dspark- basename prefix has to carry the exclusion.
     root = tmp_path / "dspark"
     root.mkdir()
     for name in (
