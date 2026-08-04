@@ -1138,8 +1138,8 @@ def _graceful_shutdown(server = None):
 
     # 6. Stop the Cloudflare tunnel (if started).
     try:
-        from cloudflare_tunnel import stop_studio_tunnel
-        stop_studio_tunnel()
+        from cloudflare_tunnel import close_studio_tunnel_lifecycle
+        close_studio_tunnel_lifecycle()
     except Exception as e:
         logger.warning("Error stopping Cloudflare tunnel: %s", e)
 
@@ -1477,6 +1477,33 @@ def _cloudflare_tunnel_should_start(
     return host in ("0.0.0.0", "::") and not api_only
 
 
+def _final_bound_port(server, requested_port: int) -> int:
+    """Resolve Uvicorn's OS-assigned port after readiness for ``port=0``."""
+    if requested_port > 0:
+        return requested_port
+    for listener in getattr(server, "servers", ()):
+        for sock in getattr(listener, "sockets", ()) or ():
+            address = sock.getsockname()
+            if isinstance(address, tuple) and len(address) >= 2 and int(address[1]) > 0:
+                return int(address[1])
+    raise RuntimeError("Uvicorn did not expose its final bound port")
+
+
+_CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
+
+
+def _consume_cloudflare_intent(cloudflare: "Optional[bool]", secure: bool) -> str:
+    """Resolve user intent without confusing a compatibility flag with opt-out."""
+    inherited = os.environ.pop(_CLOUDFLARE_INTENT_ENV, None)
+    if inherited in {"unset", "enabled", "disabled"}:
+        return inherited
+    if secure or cloudflare is True:
+        return "enabled"
+    if cloudflare is False:
+        return "disabled"
+    return "unset"
+
+
 def _stream_isatty(stream) -> bool:
     """isatty() that treats broken streams as non-interactive.
 
@@ -1739,6 +1766,7 @@ def run_server(
 
     boot_started = time.perf_counter()
     logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
+    cloudflare_intent = _consume_cloudflare_intent(cloudflare, secure)
 
     # Reap every child if the parent dies abnormally (terminal close, Task
     # Manager kill, SIGKILL); must run before any child can spawn.
@@ -1962,6 +1990,19 @@ def run_server(
     app.state.secure = secure
     app.state.llama_parallel_slots = llama_parallel_slots
 
+    global _cloudflare_url, _cloudflare_requested, _cloudflare_flag
+    _cloudflare_url = None
+    _cloudflare_flag = cloudflare
+    app.state.cloudflare_url = None
+    from utils.public_access_settings import configure_public_access
+
+    configure_public_access(
+        app.state,
+        port = port,
+        intent = cloudflare_intent,
+        is_colab = _IS_COLAB,
+    )
+
     # Expose a shutdown callable before the server accepts requests so
     # /api/shutdown is ready as soon as readiness publishes.
     def _trigger_shutdown():
@@ -2009,6 +2050,10 @@ def run_server(
         app.state.suppress_bootstrap_injection = True
         app.state.bootstrap_password = None
 
+    from cloudflare_tunnel import open_studio_tunnel_lifecycle
+
+    open_studio_tunnel_lifecycle()
+
     # Run server in a daemon thread with explicit new_event_loop() +
     # run_until_complete() (not asyncio.run) so nest_asyncio's patches don't
     # interfere when Colab/IPython already runs a loop on the main thread.
@@ -2050,6 +2095,11 @@ def run_server(
         (time.perf_counter() - boot_started) * 1000,
     )
 
+    port = _final_bound_port(_server, port)
+    app.state.server_port = port
+    app.state.server_url = f"http://{_url_host(_display_host_for_bind(host))}:{port}"
+    app.state.public_access_port = port
+
     _write_pid_file(port, host)
     import atexit
 
@@ -2075,13 +2125,14 @@ def run_server(
                 parent_pid = int(owner_pid) if owner_pid.isdigit() else None,
             )
 
+    from cloudflare_tunnel import set_studio_tunnel_url_callback
+
+    set_studio_tunnel_url_callback(lambda url: _publish_cloudflare_url(app.state, url))
+    app.state.public_access_ready = True
+
     # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often
     # unreachable). Started pre-banner and even when silent so the CLI banner can
     # read app.state.cloudflare_url; torn down by _graceful_shutdown.
-    global _cloudflare_url, _cloudflare_requested, _cloudflare_flag
-    _cloudflare_url = None
-    _cloudflare_flag = cloudflare
-    app.state.cloudflare_url = None
     _cloudflare_enabled = _cloudflare_tunnel_should_start(
         cloudflare = cloudflare,
         host = host,
@@ -2093,16 +2144,15 @@ def run_server(
 
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
-            from cloudflare_tunnel import set_studio_tunnel_url_callback
-            from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
-
-            set_studio_tunnel_url_callback(lambda url: _publish_cloudflare_url(app.state, url))
+            from cloudflare_tunnel import start_studio_tunnel
             start_studio_tunnel(port, managed_by = "launch")
-            # Backstop: tear the tunnel down even on an abnormal exit that bypasses
-            # _graceful_shutdown (e.g. an exception after startup -> sys.exit). Idempotent.
-            atexit.register(stop_studio_tunnel)
         except Exception as e:
             logger.debug("Cloudflare tunnel skipped: %s", e)
+
+    # Backstop for both launch- and settings-managed tunnels on abnormal exits.
+    from cloudflare_tunnel import close_studio_tunnel_lifecycle
+
+    atexit.register(close_studio_tunnel_lifecycle)
 
     # --secure fails closed: no tunnel means no public link, so exit rather than
     # silently fall back to a raw port.
@@ -2151,6 +2201,11 @@ def run_server(
             )
     except Exception as e:  # best-effort: never block startup on the timeout
         logger.warning("Bootstrap timeout not armed: %s", e)
+
+    from utils.public_access_settings import maybe_auto_start_public_access
+
+    if maybe_auto_start_public_access(app.state):
+        logger.info("Public access auto-start scheduled")
 
     if not silent:
         _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)

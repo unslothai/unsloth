@@ -62,6 +62,29 @@ def test_cloudflare_gate(cloudflare, host, secure, api_only, is_colab, expected)
     )
 
 
+@pytest.mark.parametrize(
+    "inherited,cloudflare,secure,expected",
+    [
+        ("unset", False, False, "unset"),
+        ("disabled", False, False, "disabled"),
+        (None, False, False, "disabled"),
+        (None, None, False, "unset"),
+        (None, None, True, "enabled"),
+    ],
+)
+def test_cloudflare_intent_preserves_compatibility_provenance(
+    monkeypatch, inherited, cloudflare, secure, expected
+):
+    import run
+
+    if inherited is None:
+        monkeypatch.delenv(run._CLOUDFLARE_INTENT_ENV, raising = False)
+    else:
+        monkeypatch.setenv(run._CLOUDFLARE_INTENT_ENV, inherited)
+    assert run._consume_cloudflare_intent(cloudflare, secure) == expected
+    assert run._CLOUDFLARE_INTENT_ENV not in run.os.environ
+
+
 def test_run_server_accepts_secure_kwarg():
     import inspect
 
@@ -69,6 +92,27 @@ def test_run_server_accepts_secure_kwarg():
 
     assert "secure" in inspect.signature(run.run_server).parameters
     assert inspect.signature(run.run_server).parameters["secure"].default is False
+
+
+def test_final_bound_port_uses_uvicorn_listener_for_ephemeral_bind():
+    from types import SimpleNamespace
+
+    import run
+
+    sock = SimpleNamespace(getsockname = lambda: ("127.0.0.1", 43123))
+    server = SimpleNamespace(servers = [SimpleNamespace(sockets = [sock])])
+    assert run._final_bound_port(server, 0) == 43123
+    assert run._final_bound_port(server, 8888) == 8888
+    source = (_BACKEND / "run.py").read_text()
+    resolved = source.index("port = _final_bound_port(_server, port)")
+    assert all(
+        resolved < source.index(consumer, resolved)
+        for consumer in (
+            "app.state.public_access_port",
+            "TAURI_PORT={port}",
+            "start_studio_tunnel(port",
+        )
+    )
 
 
 def test_arg_parser_secure_polarity_and_not_secure_alias():

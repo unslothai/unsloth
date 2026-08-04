@@ -7,10 +7,10 @@ import threading
 from typing import Any, Literal, Optional
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from auth.storage import rotate_preview_link_secret
 from core.rag.config import default_gguf_repo, effective_gguf_repo
 from loggers import get_logger
@@ -61,6 +61,13 @@ from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.public_access_settings import (
+    DEFAULT_PUBLIC_ACCESS_AUTO_START,
+    public_access_status,
+    set_public_access_auto_start,
+    start_public_access,
+    stop_public_access,
 )
 from utils.embedding_model_settings import (
     MAX_EMBEDDING_MODEL_LENGTH,
@@ -919,6 +926,88 @@ class PreviewSharingPayload(BaseModel):
 class PreviewSharingResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
+
+
+class PublicAccessAutoStartPayload(BaseModel):
+    enabled: StrictBool
+
+
+class PublicAccessResponse(BaseModel):
+    state: Literal["off", "starting", "online", "stopping", "error"]
+    url: Optional[str] = None
+    error: Optional[str] = None
+    auto_start: bool
+    default_auto_start: bool = DEFAULT_PUBLIC_ACCESS_AUTO_START
+    available: bool
+    managed_by: Optional[Literal["launch", "settings", "colab"]] = None
+    can_start: bool
+    can_stop: bool
+    block_reason: Optional[str] = None
+    streaming_supported: bool = True
+
+
+def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    if via_api_key:
+        raise HTTPException(status_code = 403, detail = "Public access requires a UI session.")
+
+
+def _public_access_response(request: Request) -> PublicAccessResponse:
+    return PublicAccessResponse(**public_access_status(request.app.state))
+
+
+@router.get("/public-access", response_model = PublicAccessResponse)
+def get_public_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> PublicAccessResponse:
+    return _public_access_response(request)
+
+
+@router.post("/public-access/start", response_model = PublicAccessResponse)
+def start_public_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> PublicAccessResponse:
+    try:
+        response = PublicAccessResponse(**start_public_access(request.app.state))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.public_access_start_requested subject=%s", current_subject)
+    return response
+
+
+@router.post("/public-access/stop", response_model = PublicAccessResponse)
+def stop_public_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> PublicAccessResponse:
+    try:
+        response = PublicAccessResponse(**stop_public_access(request.app.state))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.public_access_stop_requested subject=%s", current_subject)
+    return response
+
+
+@router.put("/public-access/auto-start", response_model = PublicAccessResponse)
+def update_public_access_auto_start(
+    request: Request,
+    payload: PublicAccessAutoStartPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> PublicAccessResponse:
+    if bool(getattr(request.app.state, "public_access_is_colab", False)):
+        raise HTTPException(status_code = 409, detail = "colab")
+    set_public_access_auto_start(payload.enabled)
+    logger.info(
+        "settings.public_access_auto_start_updated subject=%s enabled=%s",
+        current_subject,
+        payload.enabled,
+    )
+    return _public_access_response(request)
 
 
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)

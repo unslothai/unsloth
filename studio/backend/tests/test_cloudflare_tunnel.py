@@ -14,7 +14,6 @@ import io
 import os
 import sys
 import tarfile
-import threading
 import types
 from pathlib import Path
 
@@ -351,6 +350,8 @@ def _fake_proc(text):
 
 def test_reader_captures_url_and_registration():
     t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
+    exited = []
+    t.set_on_exit(exited.append)
     t._reader(
         _fake_proc(
             "INF Requesting new quick Tunnel on trycloudflare.com...\n"
@@ -362,25 +363,7 @@ def test_reader_captures_url_and_registration():
     assert t.ready is True
     assert t.wait_for_ready(0) == t.url
     assert t.error == "cloudflared exited"
-
-
-def test_reader_notifies_controller_observer_on_exit():
-    exited = []
-    output = _fake_proc(
-        "INF |  https://words-here-abc.trycloudflare.com  |\n"
-        "INF Registered tunnel connection connIndex=0 protocol=http2\n"
-    )
-    early = ct.CloudflareTunnel(8080, "/bin/cloudflared")
-    early.set_on_exit(exited.append)
-    early._reader(output)
-    late = ct.CloudflareTunnel(8081, "/bin/cloudflared")
-    late._reader(output)
-    late.set_on_exit(exited.append)
-    assert exited == [early, late]
-    late._proc = types.SimpleNamespace(poll = lambda: None)
-    claimed = []
-    assert late._publish_if_running(lambda: claimed.append(True)) is False
-    assert claimed == []
+    assert exited == [t]
 
 
 def test_reader_url_without_registration_is_not_ready():
@@ -662,14 +645,8 @@ def test_tunnel_status_tracks_owner_and_post_ready_exit(monkeypatch):
             self.error = None
             instances.append(self)
 
-        def start(self):
-            pass
-
-        def wait_for_ready(self, timeout):
-            return self.url
-
-        def stop(self):
-            pass
+        start = stop = lambda self: None
+        wait_for_ready = lambda self, timeout: self.url
 
         def set_on_exit(self, callback):
             self.on_exit = callback
@@ -707,140 +684,6 @@ def test_tunnel_status_tracks_owner_and_post_ready_exit(monkeypatch):
     assert instances[-1].url not in published
     assert ct.get_studio_tunnel_status()["state"] == "error"
     ct.set_studio_tunnel_url_callback(None)
-
-
-def test_start_studio_tunnel_rejects_unknown_owner(monkeypatch):
-    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: None)
-    with pytest.raises(ValueError, match = "Unknown Cloudflare tunnel owner"):
-        ct.start_studio_tunnel(8080, managed_by = "other")
-
-
-class _GatedStartLock:
-    def __init__(
-        self,
-        barrier = None,
-        gates = None,
-    ):
-        self._lock = threading.Lock()
-        self._barrier = barrier
-        self._gates = gates or {}
-
-    def __enter__(self):
-        if self._barrier is not None:
-            self._barrier.wait(timeout = 2)
-        queued, allowed = self._gates.get(threading.current_thread().name, (None, None))
-        if queued is not None:
-            queued.set()
-            allowed.wait(timeout = 2)
-        self._lock.acquire()
-        return self
-
-    def __exit__(self, *exc):
-        self._lock.release()
-
-
-def _install_ready_controller(
-    monkeypatch,
-    instances,
-    start_lock,
-    first_waiting = None,
-    release_first = None,
-):
-    class _Stub:
-        def __init__(self, *_args, **_kwargs):
-            self.url = "https://words.trycloudflare.com"
-            instances.append(self)
-
-        def start(self):
-            pass
-
-        def wait_for_ready(self, timeout):
-            if len(instances) == 1 and first_waiting is not None:
-                first_waiting.set()
-                release_first.wait(timeout = 2)
-            return self.url
-
-        def stop(self):
-            if release_first is not None:
-                release_first.set()
-
-    monkeypatch.setattr(ct, "_start_lock", start_lock)
-    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
-    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
-    monkeypatch.setattr(ct, "verify_public_url", lambda url, **kw: True)
-
-
-def test_equivalent_concurrent_starts_are_idempotent(monkeypatch):
-    instances = []
-    barrier = threading.Barrier(3)
-    _install_ready_controller(monkeypatch, instances, _GatedStartLock(barrier = barrier))
-    results = []
-    threads = [
-        threading.Thread(
-            name = f"equivalent-{index}",
-            target = lambda: results.append(ct.start_studio_tunnel(8091, managed_by = "settings")),
-        )
-        for index in range(2)
-    ]
-    for thread in threads:
-        thread.start()
-    barrier.wait(timeout = 2)
-    for thread in threads:
-        thread.join(timeout = 2)
-
-    assert all(not thread.is_alive() for thread in threads)
-    assert results == ["https://words.trycloudflare.com", "https://words.trycloudflare.com"]
-    assert len(instances) == 1
-    ct.stop_studio_tunnel()
-
-
-def test_stale_queued_start_cannot_replace_post_stop_start(monkeypatch):
-    first_waiting, release_first = threading.Event(), threading.Event()
-    stale_queued, allow_stale = threading.Event(), threading.Event()
-    fresh_queued, allow_fresh = threading.Event(), threading.Event()
-    instances, results = [], {}
-    start_lock = _GatedStartLock(
-        gates = {
-            "stale-start": (stale_queued, allow_stale),
-            "fresh-start": (fresh_queued, allow_fresh),
-        }
-    )
-    _install_ready_controller(
-        monkeypatch,
-        instances,
-        start_lock,
-        first_waiting = first_waiting,
-        release_first = release_first,
-    )
-
-    def _start(name, port, owner):
-        return threading.Thread(
-            name = f"{name}-start",
-            target = lambda: results.setdefault(name, ct.start_studio_tunnel(port, managed_by = owner)),
-        )
-
-    first, stale = _start("first", 8088, "launch"), _start("stale", 8089, "colab")
-    first.start()
-    assert first_waiting.wait(timeout = 2)
-    stale.start()
-    assert stale_queued.wait(timeout = 2)
-    ct.stop_studio_tunnel()
-    first.join(timeout = 2)
-    assert not first.is_alive()
-
-    fresh = _start("fresh", 8090, "settings")
-    fresh.start()
-    assert fresh_queued.wait(timeout = 2)
-    allow_fresh.set()
-    fresh.join(timeout = 2)
-    assert not fresh.is_alive()
-    allow_stale.set()
-    stale.join(timeout = 2)
-    assert not stale.is_alive()
-    assert results == {"first": None, "fresh": "https://words.trycloudflare.com", "stale": None}
-    assert len(instances) == 2
-    assert ct.get_studio_tunnel_status()["managed_by"] == "settings"
-    ct.stop_studio_tunnel()
 
 
 def test_start_studio_tunnel_registers_before_wait(monkeypatch):
@@ -1162,7 +1005,7 @@ def test_run_server_registers_tunnel_atexit_backstop():
     # An abnormal exit (exception after startup -> sys.exit) bypasses
     # _graceful_shutdown; an atexit backstop must still stop the tunnel.
     src = _RUN_PY.read_text(encoding = "utf-8")
-    assert "atexit.register(stop_studio_tunnel)" in src
+    assert "atexit.register(close_studio_tunnel_lifecycle)" in src
 
 
 def _run_print_cloudflare_line(

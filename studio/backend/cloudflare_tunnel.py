@@ -425,6 +425,8 @@ _start_lock = threading.Lock()
 # attempts aborts the loop instead of starting a tunnel nobody will ever stop.
 _shutdown_requested = False
 _tunnel_generation = 0
+_tunnel_lifecycle = 0
+_accepting_starts = True
 _tunnel_state = "off"
 _tunnel_owner: Optional[str] = None
 _tunnel_url: Optional[str] = None
@@ -432,6 +434,28 @@ _tunnel_error: Optional[str] = None
 _tunnel_port: Optional[int] = None
 _tunnel_url_callback: Optional[Callable[[Optional[str]], None]] = None
 _TUNNEL_OWNERS = frozenset({"launch", "settings", "colab"})
+
+
+def open_studio_tunnel_lifecycle() -> None:
+    """Open a new backend lifecycle and invalidate workers from any prior one."""
+    global _tunnel_lifecycle, _accepting_starts
+    with _active_lock:
+        _tunnel_lifecycle += 1
+        _accepting_starts = True
+
+
+def capture_studio_tunnel_start_admission() -> Optional[Tuple[int, int]]:
+    """Capture the lifecycle/generation that admitted an asynchronous start."""
+    with _active_lock:
+        if not _accepting_starts:
+            return None
+        return (_tunnel_lifecycle, _tunnel_generation)
+
+
+def get_studio_tunnel_control_token() -> Tuple[int, int]:
+    """Return the current lifecycle/generation for worker bookkeeping."""
+    with _active_lock:
+        return (_tunnel_lifecycle, _tunnel_generation)
 
 
 def _set_tunnel_url_locked(url: Optional[str]) -> None:
@@ -498,6 +522,7 @@ def start_studio_tunnel(
     timeout: float = _READY_TIMEOUT,
     *,
     managed_by: str = "launch",
+    admission: Optional[Tuple[int, int]] = None,
 ) -> Optional[str]:
     """Start a quick tunnel and return its public URL once it is actually
     serving, or None (best-effort).
@@ -514,6 +539,10 @@ def start_studio_tunnel(
     if managed_by not in _TUNNEL_OWNERS:
         raise ValueError(f"Unknown Cloudflare tunnel owner: {managed_by}")
     with _active_lock:
+        if not _accepting_starts:
+            return None
+        if admission is not None and admission != (_tunnel_lifecycle, _tunnel_generation):
+            return None
         requested_generation = _tunnel_generation
     with _start_lock:
         with _active_lock:
@@ -524,7 +553,11 @@ def start_studio_tunnel(
                 and _active_tunnel is not None
             ):
                 return _tunnel_url
-            if requested_generation != _tunnel_generation:
+            if (
+                not _accepting_starts
+                or requested_generation != _tunnel_generation
+                or (admission is not None and admission != (_tunnel_lifecycle, _tunnel_generation))
+            ):
                 return None
             _shutdown_requested = False
             _tunnel_generation += 1
@@ -614,11 +647,13 @@ def start_studio_tunnel(
         return None
 
 
-def stop_studio_tunnel() -> None:
+def stop_studio_tunnel(*, admission: Optional[Tuple[int, int]] = None) -> None:
     """Terminate the active tunnel, if any. Idempotent."""
     global _active_tunnel, _shutdown_requested, _tunnel_generation
     global _tunnel_state, _tunnel_owner, _tunnel_url, _tunnel_error, _tunnel_port
     with _active_lock:
+        if admission is not None and admission != (_tunnel_lifecycle, _tunnel_generation):
+            return
         # Latch so an in-flight start_studio_tunnel won't start a fresh tunnel
         # (e.g. its http2 retry) after we have already torn down.
         _shutdown_requested = True
@@ -635,3 +670,12 @@ def stop_studio_tunnel() -> None:
             _tunnel_state = "off"
             _tunnel_owner = None
             _tunnel_port = None
+
+
+def close_studio_tunnel_lifecycle() -> None:
+    """Permanently reject queued starts for this backend lifecycle, then stop."""
+    global _tunnel_lifecycle, _accepting_starts
+    with _active_lock:
+        _accepting_starts = False
+        _tunnel_lifecycle += 1
+    stop_studio_tunnel()

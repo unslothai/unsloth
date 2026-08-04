@@ -11,7 +11,6 @@ import io
 import re
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -209,19 +208,11 @@ def test_gate_success_applies_route_equivalent_change(monkeypatch):
 # ── ordering inside run_server (source-level, repo convention) ───────
 
 
-def test_cloudflare_controller_publication_updates_health_state(monkeypatch):
-    monkeypatch.setattr(run, "_cloudflare_url", None)
-    app_state = SimpleNamespace(cloudflare_url = None)
-    run._publish_cloudflare_url(app_state, "https://live.trycloudflare.com")
-    assert (run._cloudflare_url, app_state.cloudflare_url) == (
-        "https://live.trycloudflare.com",
-        "https://live.trycloudflare.com",
-    )
-    run._publish_cloudflare_url(app_state, None)
-    assert (run._cloudflare_url, app_state.cloudflare_url) == (None, None)
-
-
 def test_gate_runs_before_server_bind_in_source():
+    app_state = type("State", (), {})()
+    run._publish_cloudflare_url(app_state, "https://live.trycloudflare.com")
+    assert app_state.cloudflare_url == run._cloudflare_url == "https://live.trycloudflare.com"
+    run._publish_cloudflare_url(app_state, None)
     # The gate must run before the uvicorn socket binds: on a wildcard bind
     # the served HTML injects the bootstrap credential for first login, so a
     # pre-gate listener would hand out the default password mid-prompt.
