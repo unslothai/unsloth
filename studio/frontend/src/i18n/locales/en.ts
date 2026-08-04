@@ -1012,7 +1012,7 @@ export const en = {
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",
-        desktopCheckFailedDescription: "Check your connection and try again.",
+        desktopCheckFailedDescription: "Details:",
         desktopCurrent: "Desktop app is up to date",
         desktopCurrentDescription:
           "Unsloth will continue checking automatically.",
