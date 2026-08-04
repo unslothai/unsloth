@@ -203,28 +203,6 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
-  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel
-  // registers shortly after startup, so poll (bounded) until it shows.
-  const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
-  const serverUrl = usePlatformStore((s) => s.serverUrl);
-  useEffect(() => {
-    if (cloudflareUrl) return;
-    let cancelled = false;
-    void (async () => {
-      for (let attempt = 0; attempt < 12 && !cancelled; attempt++) {
-        try {
-          await fetchDeviceType({ force: true });
-        } catch {
-          // Ignore startup blips; copy-link falls back to serverUrl/origin.
-        }
-        if (cancelled || usePlatformStore.getState().cloudflareUrl) return;
-        await new Promise((r) => setTimeout(r, 2500));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [cloudflareUrl]);
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
@@ -459,11 +437,18 @@ export function HistoryCardGrid({
                   className="absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
                   onClick={async (e) => {
                     e.stopPropagation();
+                    try {
+                      await fetchDeviceType({ force: true });
+                    } catch {
+                      // Fall back to the last known server URL or this origin.
+                    }
                     // Encode each segment but keep "/" so the /p route matches.
                     const ref = (run.preview_ref ?? "")
                       .split("/")
                       .map(encodeURIComponent)
                       .join("/");
+                    const { cloudflareUrl, serverUrl } =
+                      usePlatformStore.getState();
                     const base = (
                       cloudflareUrl ??
                       serverUrl ??

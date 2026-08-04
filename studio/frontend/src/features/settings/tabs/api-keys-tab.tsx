@@ -19,6 +19,7 @@ import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
+import { PublicAccessSection } from "../components/public-access-section";
 import { UsageExamples } from "../components/usage-examples";
 
 export function ApiKeysTab() {
@@ -169,6 +170,8 @@ export function ApiKeysTab() {
       </section>
 
       <MonitorLink />
+
+      <PublicAccessSection />
 
       <ModelAutoSwitchSection />
 
