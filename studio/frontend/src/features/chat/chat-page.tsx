@@ -2992,7 +2992,9 @@ export function ChatPage({
     (adapter: LoraModelOption) => {
       void (async () => {
         try {
-          await selectModel({
+          // Same path as a normal row pick, so the adapter's remembered
+          // per-model settings apply here too.
+          await stageOrLoad({
             id: adapter.id,
             source: "lora",
             isLora: true,
@@ -3002,10 +3004,16 @@ export function ChatPage({
         } catch {
           return;
         }
+        // A declined stop-running-chats confirm (or a rival load in flight)
+        // returns without switching, so compare would open on the old
+        // checkpoint. Only enter once this adapter is the live one.
+        if (useChatRuntimeStore.getState().params.checkpoint !== adapter.id) {
+          return;
+        }
         enterCompare();
       })();
     },
-    [selectModel, enterCompare],
+    [stageOrLoad, enterCompare],
   );
 
   const exitCompare = useCallback(() => {
