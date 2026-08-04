@@ -121,52 +121,6 @@ def test_tool_spec_rejects_empty_command():
     assert spec is None
 
 
-def test_split_rejects_malformed_tool_marker():
-    recipe = {
-        "columns": [
-            {
-                "column_type": "validation",
-                "name": "bad_tool",
-                "target_columns": ["code"],
-                "validator_type": "local_callable",
-                "validator_params": {"validation_function": "unsloth_tool_validator:!!bad!!"},
-                "batch_size": 10,
-            }
-        ]
-    }
-    with pytest.raises(ValueError, match = "malformed unsloth_tool_validator marker"):
-        tool.split_tool_local_callable_validators(recipe)
-
-
-def test_split_keeps_non_tool_local_callable_columns():
-    """Markers that are not ours (OXC, or arbitrary strings) are left alone."""
-    recipe = {
-        "columns": [
-            {
-                "column_type": "validation",
-                "name": "oxc_check",
-                "target_columns": ["code"],
-                "validator_type": "local_callable",
-                "validator_params": {
-                    "validation_function": "unsloth_oxc_validator:javascript:syntax:auto"
-                },
-                "batch_size": 10,
-            },
-            {
-                "column_type": "validation",
-                "name": "foreign",
-                "target_columns": ["code"],
-                "validator_type": "local_callable",
-                "validator_params": {"validation_function": "some_other_tool:payload"},
-                "batch_size": 10,
-            },
-        ]
-    }
-    sanitized, specs = tool.split_tool_local_callable_validators(recipe)
-    assert specs == []
-    assert len(sanitized["columns"]) == 2
-
-
 def test_tool_spec_rejects_oversized_command():
     spec = tool._parse_tool_spec(
         column = _tool_column(
@@ -374,6 +328,61 @@ def test_split_tool_extracts_and_leaves_others():
     assert [column["name"] for column in sanitized["columns"]] == ["oxc_one", "python_one"]
 
 
+@pytest.mark.parametrize(
+    "validation_function",
+    [
+        # Bad base64: decode fails inside the marker.
+        "unsloth_tool_validator:!!bad!!",
+        # Empty payload: decode yields no ext/command to build a spec from.
+        "unsloth_tool_validator:",
+    ],
+)
+def test_split_rejects_malformed_tool_marker(validation_function):
+    recipe = {
+        "columns": [
+            {
+                "column_type": "validation",
+                "name": "bad_tool",
+                "target_columns": ["code"],
+                "validator_type": "local_callable",
+                "validator_params": {"validation_function": validation_function},
+                "batch_size": 10,
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match = "malformed unsloth_tool_validator marker"):
+        tool.split_tool_local_callable_validators(recipe)
+
+
+def test_split_keeps_non_tool_local_callable_columns():
+    """Markers that are not ours (OXC, or arbitrary strings) are left alone."""
+    recipe = {
+        "columns": [
+            {
+                "column_type": "validation",
+                "name": "oxc_check",
+                "target_columns": ["code"],
+                "validator_type": "local_callable",
+                "validator_params": {
+                    "validation_function": "unsloth_oxc_validator:javascript:syntax:auto"
+                },
+                "batch_size": 10,
+            },
+            {
+                "column_type": "validation",
+                "name": "foreign",
+                "target_columns": ["code"],
+                "validator_type": "local_callable",
+                "validator_params": {"validation_function": "some_other_tool:payload"},
+                "batch_size": 10,
+            },
+        ]
+    }
+    sanitized, specs = tool.split_tool_local_callable_validators(recipe)
+    assert specs == []
+    assert len(sanitized["columns"]) == 2
+
+
 def test_tool_callable_runs_successful_command():
     import pandas as pd
 
@@ -498,7 +507,6 @@ def test_tool_timeout_kills_child_processes(monkeypatch, tmp_path):
 def test_tool_success_path_reaps_background_children(tmp_path):
     """A daemonized child must be reaped on the success path too, and the row
     must not stall on the pipe it keeps open."""
-    import os
     import time
 
     import pandas as pd
@@ -526,10 +534,6 @@ def test_tool_success_path_reaps_background_children(tmp_path):
             pass
         time.sleep(0.1)
     assert dead, f"child {child_pid} still alive after the check completed"
-
-
-def test_tool_max_workers_at_least_one():
-    assert tool._tool_max_workers() >= 1
 
 
 def test_secure_tmp_root_creates_private_dir(monkeypatch, tmp_path):
@@ -574,6 +578,10 @@ def test_secure_tmp_root_falls_back_on_symlink(monkeypatch, tmp_path):
     if os.name == "posix":
         assert result.stat().st_mode & 0o777 == 0o700
     tool._secure_validator_tmp_root.cache_clear()
+
+
+def test_tool_max_workers_at_least_one():
+    assert tool._tool_max_workers() >= 1
 
 
 def test_tool_batch_empty_returns_empty():

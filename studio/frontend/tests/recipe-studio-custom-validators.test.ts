@@ -235,7 +235,7 @@ test("imported non-KiB-aligned caps round-trip losslessly", () => {
     toolConfig({ tool_output_max_kib: "195.3125" }),
   );
   assert.ok(marker?.startsWith(`${TOOL_MARKER}:`));
-  const spec = markers.decodeToolSpec(marker!.slice(TOOL_MARKER.length + 1));
+  const spec = markers.decodeToolSpec(marker?.slice(TOOL_MARKER.length + 1) ?? "");
   assert.equal(spec?.output_max_chars, 200000);
   // And the reverse: a hand-crafted marker with a non-aligned char count
   // parses back to an exact fractional KiB value.
@@ -265,6 +265,14 @@ test("imported non-KiB-aligned caps round-trip losslessly", () => {
     "n1",
   );
   assert.equal(config.tool_output_max_kib, "195.3125");
+  // A KiB-aligned char count parses back to the integer KiB string.
+  const aligned = markers.validationFunctionFromConfig(
+    toolConfig({ tool_output_max_kib: "8" }),
+  );
+  const alignedSpec = markers.decodeToolSpec(
+    aligned?.slice(TOOL_MARKER.length + 1) ?? "",
+  );
+  assert.equal("output_max_chars" in (alignedSpec ?? {}), false);
 });
 
 test("tool marker round-trips the configurable caps", () => {

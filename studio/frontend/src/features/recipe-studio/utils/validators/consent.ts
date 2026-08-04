@@ -3,12 +3,10 @@
 
 import type { ValidatorConfig } from "../../types";
 
-const TOOL_CONTENT_KEYS = [
-  "tool_command",
-  "tool_ext",
-  "tool_scaffold",
-] as const;
-const CUSTOM_CONTENT_KEYS = ["custom_source"] as const;
+const CONTENT_KEYS_BY_TYPE: Record<string, readonly string[]> = {
+  tool: ["tool_command", "tool_ext", "tool_scaffold"],
+  custom: ["custom_source"],
+};
 
 export function isValidatorConsentRequired(config: ValidatorConfig): boolean {
   return (
@@ -18,13 +16,7 @@ export function isValidatorConsentRequired(config: ValidatorConfig): boolean {
 }
 
 function contentKeysFor(config: ValidatorConfig): readonly string[] {
-  if (config.validator_type === "tool") {
-    return TOOL_CONTENT_KEYS;
-  }
-  if (config.validator_type === "custom") {
-    return CUSTOM_CONTENT_KEYS;
-  }
-  return [];
+  return CONTENT_KEYS_BY_TYPE[config.validator_type] ?? [];
 }
 
 export function consentInvalidatedByEdit(

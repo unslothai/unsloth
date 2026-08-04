@@ -10,9 +10,7 @@ export type ToolValidatorSpec = {
   ext: string;
   command: string;
   scaffold?: ToolScaffoldFile[];
-  // biome-ignore lint/style/useNamingConvention: marker schema (mirrors the backend spec)
   output_max_chars?: number;
-  // biome-ignore lint/style/useNamingConvention: marker schema (mirrors the backend spec)
   source_file_max_chars?: number;
 };
 
@@ -157,9 +155,7 @@ export function encodeToolSpec(spec: ToolValidatorSpec): string {
     ext: string;
     command: string;
     scaffold?: ToolScaffoldFile[];
-    // biome-ignore lint/style/useNamingConvention: marker schema
     output_max_chars?: number;
-    // biome-ignore lint/style/useNamingConvention: marker schema
     source_file_max_chars?: number;
   } = {
     ext: spec.ext,
@@ -203,16 +199,11 @@ export function normalizeToolOutputMaxKib(value: string | undefined): string {
     return String(TOOL_OUTPUT_MAX_KIB_DEFAULT);
   }
   return String(
-    Math.min(
-      Math.max(parsed, TOOL_OUTPUT_MAX_KIB_MIN),
-      TOOL_OUTPUT_MAX_KIB_MAX,
-    ),
+    Math.min(Math.max(parsed, TOOL_OUTPUT_MAX_KIB_MIN), TOOL_OUTPUT_MAX_KIB_MAX),
   );
 }
 
-export function normalizeToolScaffoldFileMaxKib(
-  value: string | undefined,
-): string {
+export function normalizeToolScaffoldFileMaxKib(value: string | undefined): string {
   const parsed = parseKib(value);
   if (parsed === null) {
     return String(TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT);
@@ -225,9 +216,7 @@ export function normalizeToolScaffoldFileMaxKib(
   );
 }
 
-export function toolOutputMaxKibError(
-  value: string | undefined,
-): string | null {
+export function toolOutputMaxKibError(value: string | undefined): string | null {
   const trimmed = (value ?? "").trim();
   if (!trimmed) {
     return null;
@@ -304,7 +293,8 @@ export function decodeToolSpec(encoded: string): ToolValidatorSpec | null {
     // A missing/invalid ext or command is NOT rejected here: the config
     // validators flag those. Rejecting them would make an invalid mid-edit
     // state un-importable and lose the rest of the tool's state (scaffold
-    // rows, command) on recipe reload. Path-hostile values (path separators)
+    // rows, command) on recipe reload. Path-hostile values (path separators,
+    // and "." / "..", which the leading-dot strip already reduces to "")
     // are dropped from the round-trip instead, so they can never reach a
     // filename/shell string; the validators then flag the missing extension.
     const safeExt = PATH_HOSTILE_EXT_RE.test(ext) ? "" : ext;
@@ -372,16 +362,10 @@ export function validationFunctionFromConfig(
       command,
       ...(scaffold.length > 0 ? { scaffold } : {}),
       ...(outputMaxChars !== TOOL_OUTPUT_MAX_KIB_DEFAULT * 1024
-        ? {
-            // biome-ignore lint/style/useNamingConvention: marker schema
-            output_max_chars: outputMaxChars,
-          }
+        ? { output_max_chars: outputMaxChars }
         : {}),
       ...(sourceFileMaxChars !== TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT * 1024
-        ? {
-            // biome-ignore lint/style/useNamingConvention: marker schema
-            source_file_max_chars: sourceFileMaxChars,
-          }
+        ? { source_file_max_chars: sourceFileMaxChars }
         : {}),
     })}`;
   }

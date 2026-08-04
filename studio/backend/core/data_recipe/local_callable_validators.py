@@ -567,7 +567,8 @@ def _terminate_tool_process_tree(proc: subprocess.Popen[str]) -> None:
         # The command runs as a session leader (start_new_session=True), so its
         # process group id equals its pid. killpg by that id also works when the
         # leader has already exited and been reaped but children remain in the
-        # group (a command that backgrounded children and returned).
+        # group (a command that backgrounded children and returned) — the
+        # per-pid getpgid lookup would fail once the leader is gone.
         try:
             os.killpg(proc.pid, signal.SIGKILL)
             return
@@ -766,9 +767,10 @@ def _run_tool_single(
                 # folder in use on Windows. Reap the whole group here too.
                 _terminate_tool_process_tree(proc)
             # Do NOT close the pipes from this thread: a reader blocked in
-            # read() makes close() wait for it, which would stall on a leaked
-            # pipe holder. Killing the group closes the write ends, so the
-            # readers hit EOF and the joins below finish immediately.
+            # read() makes close() wait for it (the buffered reader lock is
+            # shared), which would stall on a leaked pipe holder. Killing the
+            # group closes the write ends, so the readers hit EOF and the
+            # bounded joins below finish instead of stalling the row.
             out_reader.join(timeout = 5)
             err_reader.join(timeout = 5)
             stdout = out_reader.output
