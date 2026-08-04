@@ -814,6 +814,26 @@ jobs:
             "$dmg_path"
 
       # ── Windows: build + sign ──
+      # install.ps1 is a bundle resource the bundler never signs, yet the app
+      # runs it first. Sign before the build packs it in; the signature is an
+      # appended comment block, so the repo copy for `irm ... | iex` is unaffected.
+      - name: Sign the bundled install script
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+        run: |
+          $script = (Resolve-Path 'install.ps1').Path
+          studio/src-tauri/windows/sign-with-trusted-signing.ps1 -Path $script
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not sign install.ps1 (exit $LASTEXITCODE)"; exit 1 }
+          $sig = Get-AuthenticodeSignature $script
+          Write-Host "install.ps1 -> $($sig.Status) $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { Write-Host "::error::install.ps1 is $($sig.Status) after signing"; exit 1 }
+
       - name: Build Windows app
         id: build_windows
         if: matrix.platform == 'windows-latest'
@@ -830,6 +850,260 @@ jobs:
           projectPath: studio
           tauriScript: npx --prefix . tauri
           args: -v ${{ matrix.args }}
+
+      # ── Windows: scan the signed bundles with Defender before publishing ──
+      # 0.1.512-beta shipped a "Trojan:Win32/Wacatac.B!ml" false positive nothing
+      # here caught. The runner disables Defender and excludes both drive roots,
+      # so restore it and verify the restore took; "!ml" is a cloud verdict, so
+      # MAPS must be on; MpCmdRun exit codes are ambiguous, so read the output.
+      - name: Scan Windows bundles with Defender
+        if: matrix.platform == 'windows-latest'
+        # A custom MpCmdRun scan defaults to a one-day timeout.
+        timeout-minutes: 20
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $atp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection'
+          if (Test-Path $atp) { Remove-ItemProperty -Path $atp -Name 'ForceDefenderPassiveMode' -ErrorAction SilentlyContinue }
+          Start-Service -Name WinDefend -ErrorAction SilentlyContinue
+
+          foreach ($x in @((Get-MpPreference).ExclusionPath)) {
+            if ($x) { Remove-MpPreference -ExclusionPath $x -ErrorAction SilentlyContinue }
+          }
+          Set-MpPreference `
+            -DisableRealtimeMonitoring $false -DisableIOAVProtection $false `
+            -DisableScriptScanning $false -DisableBehaviorMonitoring $false `
+            -DisableArchiveScanning $false -MAPSReporting Advanced `
+            -SubmitSamplesConsent SendAllSamples -CloudBlockLevel High `
+            -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false -ErrorAction Continue
+
+          $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+          $plat = Get-ChildItem 'C:\ProgramData\Microsoft\Windows Defender\Platform' -Directory -ErrorAction SilentlyContinue |
+                  Sort-Object Name -Descending | Select-Object -First 1
+          if ($plat -and (Test-Path "$($plat.FullName)\MpCmdRun.exe")) { $mp = "$($plat.FullName)\MpCmdRun.exe" }
+          Update-MpSignature -UpdateSource MicrosoftUpdateServer -ErrorAction Continue
+          & $mp -SignatureUpdate 2>&1 | Write-Host
+
+          $status = Get-MpComputerStatus
+          $pref = Get-MpPreference
+          Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
+
+          # Set-MpPreference can return cleanly and still be ignored, so verify.
+          # Split by whether the gap invalidates the verdict: cloud-delivered
+          # protection is inactive without active mode, MAPS and block-at-first-
+          # sight, and "!ml" is a cloud verdict, so a clean result without them
+          # cannot see what this gate exists to catch. Leftover exclusions only
+          # weaken it, since -DisableRemediation ignores file exclusions.
+          $fatal = @()
+          $degraded = @()
+          if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
+          if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
+          if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
+          if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
+          if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
+          if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
+
+          # Configuration is not connectivity. Retried, so one network blip does
+          # not block a release.
+          $maps = $false
+          foreach ($try in 1..3) {
+            $mapsOut = (& $mp -ValidateMapsConnection 2>&1 | Out-String)
+            if ($LASTEXITCODE -eq 0) { $maps = $true; break }
+            Write-Host "  MAPS check $try failed: $($mapsOut.Trim())"
+            Start-Sleep -Seconds (5 * $try)
+          }
+          if (-not $maps) { $fatal += 'cannot reach the Defender cloud service' }
+
+          # Positive control: clean and broken-scanner look identical. Split into
+          # fragments so this file is not itself a sample.
+          $eicarPath = Join-Path $env:RUNNER_TEMP 'defender-selftest.com'
+          # Real-time protection may block the write; that is the control passing.
+          $controlPassed = $false
+          try {
+            [System.IO.File]::WriteAllText(
+              $eicarPath,
+              'X5O!P%@AP[4\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!' + '$H+H*')
+          } catch { }
+          if (Test-Path $eicarPath) {
+            $controlOut = (& $mp -Scan -ScanType 3 -File $eicarPath -DisableRemediation 2>&1 | Out-String)
+            $controlPassed = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
+            Remove-Item $eicarPath -Force -ErrorAction SilentlyContinue
+          } else {
+            Write-Host 'EICAR positive control blocked on write; real-time protection is live.'
+            $controlPassed = $true
+          }
+          if (-not $controlPassed) { $fatal += 'EICAR positive control did not fire' }
+
+          if ($degraded) {
+            Write-Host "::warning::Defender is not fully configured on this runner ($($degraded -join '; ')). Scanning anyway."
+          }
+          if ($fatal) {
+            Write-Host "::error::Defender cannot give an authoritative verdict here ($($fatal -join '; ')); refusing to publish on a scan that cannot see the detection class this gate exists for"
+            exit 1
+          }
+
+          # Fatal, not a warning: exiting 0 here would pass an unscanned release.
+          if ([string]::IsNullOrWhiteSpace($env:ARTIFACT_PATHS)) {
+            Write-Host '::error::tauri-action produced no artifactPaths output; refusing to publish unscanned bundles'
+            exit 1
+          }
+          try {
+            $paths = @($env:ARTIFACT_PATHS | ConvertFrom-Json)
+          } catch {
+            Write-Host "::error::could not parse artifactPaths ($($_.Exception.Message)); refusing to publish unscanned bundles"
+            exit 1
+          }
+          $missing = @($paths | Where-Object { $_ -and -not (Test-Path $_ -PathType Leaf) })
+          if ($missing) {
+            Write-Host "::error::artifactPaths lists files that do not exist: $($missing -join ', ')"
+            exit 1
+          }
+          $paths = @($paths | Where-Object { $_ })
+          if (-not $paths) {
+            Write-Host '::error::artifactPaths resolved to an empty list; refusing to publish unscanned bundles'
+            exit 1
+          }
+          Write-Host "scanning $($paths.Count) Windows bundle(s)"
+
+          # Scan copies: real-time protection is live, so a detection would delete
+          # the release artifact itself. Copies double as submission material,
+          # since clearance is per hash and a rebuild hashes differently.
+          $work = Join-Path $env:RUNNER_TEMP 'defender-scan'
+          Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+          # Real-time protection acts on open and on write, and -DisableRemediation
+          # governs only the explicit scan, so a hit would quarantine the bundle
+          # mid-copy and leave the failure handler nothing to upload. Exempt both
+          # ends of the copy. The verdict is unaffected: -DisableRemediation
+          # ignores file exclusions. Left in place, since the copies must survive
+          # until the failure-gated preserve step runs.
+          $exclude = @($work) + @($paths | Split-Path -Parent | Sort-Object -Unique)
+          Add-MpPreference -ExclusionPath $exclude -ErrorAction Continue
+
+          # -ErrorAction Continue does not stop on a rejected exclusion, so read
+          # it back. Defender stores these verbatim; normalise anyway.
+          $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
+          $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })
+          $notApplied = @($exclude | Where-Object { $applied -notcontains (& $norm $_) })
+          if ($notApplied) {
+            Write-Host "::error::Defender refused these exclusions: $($notApplied -join ', '); a detection would quarantine the bundle mid-copy and leave nothing to submit"
+            exit 1
+          }
+
+          $detected = @()
+          $unscanned = @()
+          foreach ($f in $paths) {
+            $leaf = Split-Path $f -Leaf
+            $copy = Join-Path $work $leaf
+            Copy-Item $f $copy -Force
+
+            # Block-at-first-sight only consults the cloud for internet-zone files,
+            # so stamp mark-of-the-web or this is not the user path.
+            "[ZoneTransfer]`nZoneId=3" | Set-Content -Path $copy -Stream Zone.Identifier -Encoding Ascii -ErrorAction SilentlyContinue
+
+            $out = & $mp -Scan -ScanType 3 -File $copy -DisableRemediation 2>&1
+            $code = $LASTEXITCODE
+            $text = ($out | Out-String)
+            $out | ForEach-Object { Write-Host "  $_" }
+
+            # Exit 2 is a detection or a scan error, and 0 is the only documented
+            # clean code, so read the output text too.
+            if ($text -match 'found\s+\d+\s+threat') {
+              $names = @([regex]::Matches($text, '((?:Trojan|Virus|Worm|Backdoor|Ransom|HackTool|PUA|Behavior|Program|Misleading)[:\w\./!\-]+)') |
+                         ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+              if (-not $names) { $names = @('unnamed detection') }
+              Write-Host "::error::Defender flagged ${leaf}: $($names -join ', ')"
+              $detected += "$leaf [$($names -join ', ')]"
+            } elseif ($code -ne 0) {
+              Write-Host "::error::Defender did not complete a scan of $leaf (MpCmdRun exit $code)"
+              $unscanned += "$leaf [exit $code]"
+            } else {
+              Write-Host "clean: $leaf"
+            }
+          }
+
+          if ($unscanned) {
+            Write-Host "::error::Refusing to publish bundles Defender could not scan: $($unscanned -join '; ')"
+          }
+          if ($detected) {
+            Write-Host "::error::Refusing to publish a Windows bundle Defender flags: $($detected -join '; ')"
+            Write-Host 'If this is a false positive, submit it at https://www.microsoft.com/en-us/wdsi/filesubmission (Software developer -> incorrectly detected) and re-run once cleared.'
+          }
+          if ($detected -or $unscanned) { exit 1 }
+          Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "All $($paths.Count) Windows bundle(s) scanned clean."
+
+      # Later steps carry an implicit success(), so on a detection the flagged
+      # bundle would be discarded with the runner.
+      - name: Preserve flagged Windows bundles
+        if: failure() && matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: flagged-windows-bundles-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/defender-scan/*
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 7
+
+      # ── Windows: every executable in the bundle must be signed ──
+      # NSIS runs its plugin DLLs from $PLUGINSDIR; signing the installer misses them.
+      - name: Verify every executable in the Windows bundles is signed
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
+        run: |
+          $paths = @($env:ARTIFACT_PATHS | ConvertFrom-Json) |
+                   Where-Object { $_ -like '*-setup.exe' }
+          if (-not $paths) { Write-Host '::error::no Windows installer to verify'; exit 1 }
+          .github/scripts/assert-bundle-signed.ps1 -Path $paths
+
+      # ── Windows: assemble a Microsoft false-positive submission packet ──
+      # The WDSI portal is a web form with no API, so this cannot be automated,
+      # but pre-filling the lookups makes submitting a build take seconds.
+      - name: Prepare Microsoft submission packet
+        if: (success() || failure()) && matrix.platform == 'windows-latest' && steps.build_windows.outcome == 'success'
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
+        run: |
+          $paths = @($env:ARTIFACT_PATHS | ConvertFrom-Json) |
+                   Where-Object { $_ -like '*-setup.exe' }
+          $md = @(
+            '## Microsoft submission packet',
+            '',
+            'Submit at <https://www.microsoft.com/en-us/wdsi/filesubmission> before announcing this release.',
+            'Choose **Software developer** -> **Incorrectly detected as malware/malicious**.',
+            'The portal caps uploads at 50 MB. Clearance is per hash, so never substitute a',
+            'different file: for a larger bundle use <https://security.microsoft.com/reportsubmission>,',
+            'which takes 500 MB.',
+            ''
+          )
+          foreach ($f in $paths) {
+            $item = Get-Item $f
+            $sig = Get-AuthenticodeSignature $f
+            $md += "### $($item.Name)"
+            $md += ''
+            $md += '| field | value |'
+            $md += '|---|---|'
+            $md += "| SHA-256 | ``$((Get-FileHash -Algorithm SHA256 $f).Hash)`` |"
+            $md += "| SHA-1 | ``$((Get-FileHash -Algorithm SHA1 $f).Hash)`` |"
+            $md += "| Size | $($item.Length) bytes |"
+            $md += "| Signature | $($sig.Status) |"
+            $md += "| Signer | $($sig.SignerCertificate.Subject) |"
+            $md += "| Product | $($env:APP_VERSION) |"
+            $md += ''
+          }
+          $md += '> Clearance is per hash. It fixes the release you submit and nothing after it,'
+          $md += '> so this is a complement to signing, not a substitute.'
+          $out = "$env:RUNNER_TEMP\ms-submission-packet.md"
+          $md -join "`n" | Out-File $out -Encoding utf8
+          $md -join "`n" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-Host ($md -join "`n")
 
       - name: Stage release assets
         shell: bash
