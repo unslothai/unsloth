@@ -23,6 +23,35 @@ def isolated_studio_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def no_hub(monkeypatch):
+    """Fail every Hub lookup in-process, recording what was asked for.
+
+    HF_HUB_OFFLINE is read into huggingface_hub.constants at import time, so
+    setting it from a test is a no-op and the lookups still dial out.
+    """
+    import huggingface_hub
+
+    attempts: list[str] = []
+
+    class _NoHubApi:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def list_repo_files(self, repo_id, **kwargs):
+            attempts.append(repo_id)
+            raise ConnectionError("Hub is unavailable in tests")
+
+    def _no_load_dataset(*args, **kwargs):
+        path = kwargs.get("path", args[0] if args else None)
+        attempts.append(str(path))
+        raise ConnectionError("Hub is unavailable in tests")
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _NoHubApi)
+    monkeypatch.setattr("datasets.load_dataset", _no_load_dataset)
+    return attempts
+
+
 def _check(dataset_name: str) -> HTTPException:
     request = datasets_route.CheckFormatRequest(dataset_name = dataset_name)
     with pytest.raises(HTTPException) as exc:
@@ -30,32 +59,61 @@ def _check(dataset_name: str) -> HTTPException:
     return exc.value
 
 
-def test_missing_upload_reports_404():
+def test_missing_upload_reports_404(no_hub):
     from utils.paths import dataset_uploads_root
 
     missing = dataset_uploads_root() / "deleted-upload-test-fixture.jsonl"
     assert not missing.exists()
     error = _check(str(missing))
     assert error.status_code == 404
-    assert "no longer exists" in error.detail
+    assert "no longer on disk" in error.detail
+    assert no_hub == [], "a local path must never be sent to the Hub as a repo id"
 
 
-def test_corrupt_local_file_keeps_its_own_error(monkeypatch):
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param("{path}", id = "as-sent-by-the-ui"),
+        pytest.param(" {path}", id = "leading-whitespace"),
+        pytest.param("{path} ", id = "trailing-whitespace"),
+    ],
+)
+def test_every_spelling_of_a_missing_upload_reports_404(spelling, no_hub):
+    """resolve_dataset_path strips before testing absoluteness, so a guard on the
+    raw string disagrees here and ships the local path to the Hub as a repo id."""
     from utils.paths import dataset_uploads_root
 
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    monkeypatch.setenv("HF_DATASETS_OFFLINE", "1")
+    missing = dataset_uploads_root() / "deleted-upload-test-fixture.jsonl"
+    error = _check(spelling.format(path = missing))
+    assert error.status_code == 404
+    assert no_hub == []
+
+
+def test_a_tilde_spelling_is_still_a_local_file(tmp_path, monkeypatch, no_hub):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / ".unsloth" / "studio"))
+
+    error = _check("~/.unsloth/studio/assets/datasets/uploads/deleted.jsonl")
+    assert error.status_code == 404
+    assert no_hub == []
+
+
+def test_corrupt_local_file_keeps_its_own_error(no_hub):
+    from utils.paths import dataset_uploads_root
+
     corrupt = dataset_uploads_root() / "corrupt-test-fixture.jsonl"
     corrupt.parent.mkdir(parents = True, exist_ok = True)
     corrupt.write_text("{not valid json at all\n")
-    try:
-        assert _check(str(corrupt)).status_code != 404
-    finally:
-        corrupt.unlink(missing_ok = True)
+
+    error = _check(str(corrupt))
+    assert error.status_code == 500, "an unreadable file is not a missing one"
+    assert "no longer on disk" not in str(error.detail)
 
 
-def test_hub_repo_id_never_reports_a_deleted_file(monkeypatch):
-    # A repo id under an "uploads" namespace must keep its own Hub error.
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    monkeypatch.setenv("HF_DATASETS_OFFLINE", "1")
-    assert _check("uploads/private-or-unreachable").status_code != 404
+def test_hub_repo_id_never_reports_a_deleted_file(no_hub):
+    """A relative reference stays a Hub lookup, however local it looks."""
+    error = _check("uploads/private-or-unreachable")
+
+    assert error.status_code != 404
+    assert no_hub, "the Hub branch is where a relative reference belongs"

@@ -1044,13 +1044,20 @@ if (import.meta.hot) {
   import.meta.hot.dispose(unsubscribeHfTokenMirror);
 }
 
+/** POSIX, Windows drive, UNC or extended-length path. A Hub repo id is never one. */
+function isLocalDatasetPath(datasetName: string): boolean {
+  return /^([/\\]|[A-Za-z]:[\\/])/.test(datasetName.trim());
+}
+
 /** Drop a selection whose file the backend reports as gone (404). */
 export function clearDeletedDataset(datasetName: string): void {
+  // Only a local file can be deleted, so an unrelated 404 cannot wipe a good pick.
+  if (!isLocalDatasetPath(datasetName)) return;
   const { dataset, uploadedFile, setDataset, selectLocalDataset } =
     useTrainingConfigStore.getState();
-  if (dataset === datasetName) {
-    setDataset(null);
-  } else if (uploadedFile === datasetName) {
+  if (uploadedFile === datasetName) {
     selectLocalDataset(null);
+  } else if (dataset === datasetName) {
+    setDataset(null);
   }
 }

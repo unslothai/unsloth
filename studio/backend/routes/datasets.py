@@ -506,8 +506,14 @@ async def get_dataset_download_progress(
 
 
 _MISSING_DATASET_DETAIL = (
-    "This dataset file no longer exists. Upload it again or pick another dataset."
+    "This dataset is no longer on disk. Add it again or pick another dataset."
 )
+
+
+def _is_local_dataset_ref(dataset_name: str) -> bool:
+    """Absolute means local. Normalised like resolve_dataset_path, so a '~' or
+    space-padded spelling is not mistaken for a Hub repo id."""
+    return Path(str(dataset_name or "").strip()).expanduser().is_absolute()
 
 
 @router.post("/check-format", response_model = CheckFormatResponse)
@@ -535,11 +541,13 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
         total_rows = None
 
         # Local uploads and recipes are always sent as absolute paths, so a missing
-        # one is a deleted file rather than a Hub repo id.
-        if not dataset_path.exists() and Path(request.dataset_name).is_absolute():
+        # one is a deleted file rather than a Hub repo id. One stat() for both
+        # branches, or a file deleted in between would fall through both.
+        dataset_exists = dataset_path.exists()
+        if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
             raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
 
-        if dataset_path.exists():
+        if dataset_exists:
             # ── Local file ──────────────────────────────────────────
             train_split = request.train_split or "train"
             preview_slice, total_rows = _load_local_preview_slice(
