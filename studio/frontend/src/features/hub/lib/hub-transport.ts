@@ -262,9 +262,8 @@ export function createHubTransport(
 
     try {
       const response = await direct(input, init);
-      // A listing this browser fetched itself means the backend is not serving
-      // the feed. Leaving the flag set would keep forcing the phase to
-      // "available" and hide the next direct failure behind an idle proxy.
+      // The browser fetched the listing itself, so the backend is not serving
+      // the feed; a stale flag would force "available" and hide the next failure.
       setHubProxyServing(false);
       return response;
     } catch (error) {

@@ -541,7 +541,7 @@ test("a direct listing success retires the proxy-serving flag", async () => {
   await fallen(HF_URL, {});
   assert.equal(isHubProxyServing(), true);
 
-  // A later search reaches the Hub itself, so the proxy is out of the picture.
+  // A later search reaches the Hub itself, so the proxy is out of it.
   const recovered = createHubTransport("models", {
     direct: async () => new Response("[]", { status: 200 }),
     backend: backend.backend,
@@ -553,7 +553,7 @@ test("a direct listing success retires the proxy-serving flag", async () => {
     "a stale flag keeps forcing the phase to available off an idle proxy",
   );
 
-  // The point of clearing it: the next direct failure is visible again.
+  // Why it matters: the next direct failure is visible again.
   markRemoteNetworkOffline(
     HF_ORIGIN,
     30_000,

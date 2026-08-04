@@ -68,9 +68,9 @@ const lastFailureByOrigin = new Map<
 >();
 
 /**
- * Which feed a request belongs to. The origin is shared, but a block can be
- * per-path, so an avatar or README success must not clear the discovery
- * diagnosis: the panel would revert to the generic message it replaced.
+ * Which feed a request belongs to. A block can be per-path, so an avatar or
+ * README success must not clear the discovery diagnosis and revert the panel to
+ * the generic message.
  */
 export type HubService = "discovery" | "other";
 
@@ -181,8 +181,8 @@ export function markRemoteNetworkOnline(
     return;
   }
   const hadWindow = remoteOfflineUntilByOrigin.delete(origin);
-  // Only the feed that recorded a diagnosis may retire it. Reachability is
-  // origin-wide, but the cause on screen belongs to the request that failed.
+  // Reachability is origin-wide, but the cause on screen belongs to the feed
+  // that recorded it, so only that feed may retire it.
   const hadFailure =
     lastFailureByOrigin.get(origin)?.service === service &&
     lastFailureByOrigin.delete(origin);

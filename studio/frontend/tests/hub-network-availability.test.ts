@@ -292,8 +292,8 @@ test("an avatar success does not erase the discovery diagnosis", async () => {
     "discovery",
   );
   const original = globalThis.fetch;
-  // The owner-avatar probe resolves 404 for a user account, and any resolved
-  // response counts as reachability, so this is the everyday case.
+  // The owner-avatar probe 404s for a user account, and any resolved response
+  // counted as reachability, so this is the everyday case.
   globalThis.fetch = (async () =>
     new Response("", { status: 404 })) as typeof fetch;
   try {
