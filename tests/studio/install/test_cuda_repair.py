@@ -109,9 +109,7 @@ def _run_cuda_repair(
         patch.object(
             stack_mod.subprocess,
             "run",
-            side_effect = _make_run(
-                torch_state, cuda_version, torch_rc, smi_rc, compute_caps
-            ),
+            side_effect = _make_run(torch_state, cuda_version, torch_rc, smi_rc, compute_caps),
         ),
         patch.dict(stack_mod.os.environ, env, clear = False),
     ):
@@ -427,35 +425,25 @@ class TestCudaIndexResolution:
 
 class TestPreTuringWheelFamily:
     def test_volta_host_selects_cu126_over_the_driver_family(self):
-        assert "cu126" in _index_url(
-            _run_cuda_repair(cuda_version = "13.0", compute_caps = ("7.0",))
-        )
+        assert "cu126" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = ("7.0",)))
 
     def test_pascal_host_selects_cu126_over_the_driver_family(self):
-        assert "cu126" in _index_url(
-            _run_cuda_repair(cuda_version = "12.8", compute_caps = ("6.1",))
-        )
+        assert "cu126" in _index_url(_run_cuda_repair(cuda_version = "12.8", compute_caps = ("6.1",)))
 
     def test_turing_host_keeps_the_driver_family(self):
-        assert "cu130" in _index_url(
-            _run_cuda_repair(cuda_version = "13.0", compute_caps = ("7.5",))
-        )
+        assert "cu130" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = ("7.5",)))
 
     def test_mixed_host_within_cu126_range_is_capped(self):
         # cu126 spans sm_50-90, so serving the Volta card costs the newer one nothing.
         for caps in (("7.0", "8.6"), ("6.1", "9.0"), ("5.0", "7.5")):
-            assert "cu126" in _index_url(
-                _run_cuda_repair(cuda_version = "13.0", compute_caps = caps)
-            )
+            assert "cu126" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = caps))
 
     def test_mixed_host_outside_cu126_range_keeps_the_driver_family(self):
         # Blackwell is past cu126's ceiling and Kepler is under its floor, so
         # neither mix has a family that covers the whole host. Capping would stop
         # the newer card from working at all, so the older one keeps its status quo.
         for caps in (("7.0", "12.0"), ("3.7", "8.6")):
-            assert "cu130" in _index_url(
-                _run_cuda_repair(cuda_version = "13.0", compute_caps = caps)
-            )
+            assert "cu130" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = caps))
 
     def test_cu126_venv_is_repaired_after_a_blackwell_upgrade(self):
         # The span cuts both ways: a cu126 venv predating a GPU swap has nothing
@@ -557,9 +545,7 @@ class TestPreTuringWheelFamily:
             ("cuda|cu130|2.11.0", ("7.0", "12.0")),
             ("cuda|cu130|2.11.0", ("7.0", "N/A")),
         ):
-            mock_pip = _run_cuda_repair(
-                torch_state = state, cuda_version = "13.0", compute_caps = caps
-            )
+            mock_pip = _run_cuda_repair(torch_state = state, cuda_version = "13.0", compute_caps = caps)
             mock_pip.assert_not_called()
 
     def test_explicit_pin_wins_over_the_architecture_policy(self):

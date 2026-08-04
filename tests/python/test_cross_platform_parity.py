@@ -81,9 +81,19 @@ class TestPreTuringCapParity:
     # prose or a docstring cannot satisfy the assertion.
     _SITES = (
         (INSTALL_SH, '_cap_cuda_family_for_pre_turing "', "get_torch_index_url() {", "\n}"),
-        (INSTALL_PS1, "Get-CudaFamilyCappedForPreTuring $", "function Get-TorchIndexUrl", "\n    }"),
+        (
+            INSTALL_PS1,
+            "Get-CudaFamilyCappedForPreTuring $",
+            "function Get-TorchIndexUrl",
+            "\n    }",
+        ),
         (SETUP_PS1, "Get-CudaFamilyCappedForPreTuring $", "function Get-PytorchCudaTag", "\n}"),
-        (STACK_PY, "_cap_cuda_family_for_pre_turing(", "def _detect_cuda_torch_index_url", "\ndef "),
+        (
+            STACK_PY,
+            "_cap_cuda_family_for_pre_turing(",
+            "def _detect_cuda_torch_index_url",
+            "\ndef ",
+        ),
     )
 
     def test_cu126_span_agrees_across_the_python_modules(self):

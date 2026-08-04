@@ -1379,7 +1379,7 @@ def _cuda_family_sm_range(family: str, torch_release: str = "") -> "tuple[int, i
     """
     if not _is_cuda_family_leaf(family):
         return None
-    number = int(family[len("cu"):])
+    number = int(family[len("cu") :])
     if number < 124:
         return (37, 90)
     if number < 128:

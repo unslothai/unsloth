@@ -1220,16 +1220,18 @@ class TestLinuxCudaChoiceFromRelease:
         # contradict what the installer does for the same host.
         mock_linux_runtime(monkeypatch, ["cuda13"])
         host = make_host(driver_cuda_version = (13, 0), compute_caps = ["70", "86"])
-        release = make_release([
-            make_artifact(
-                "bundle-cuda12-portable.tar.gz",
-                runtime_line = "cuda12",
-                supported_sms = ["70", "75", "80", "86", "89", "90"],
-                min_sm = 70,
-                max_sm = 90,
-            ),
-            make_artifact("bundle-cuda13-older.tar.gz", runtime_line = "cuda13"),
-        ])
+        release = make_release(
+            [
+                make_artifact(
+                    "bundle-cuda12-portable.tar.gz",
+                    runtime_line = "cuda12",
+                    supported_sms = ["70", "75", "80", "86", "89", "90"],
+                    min_sm = 70,
+                    max_sm = 90,
+                ),
+                make_artifact("bundle-cuda13-older.tar.gz", runtime_line = "cuda13"),
+            ]
+        )
 
         assert linux_cuda_choice_from_release(host, release) is None
         assert "UNSLOTH_TORCH_INDEX_FAMILY=cu126" in capsys.readouterr().err
@@ -1262,17 +1264,19 @@ class TestLinuxCudaChoiceFromRelease:
             machine = "aarch64" if case == "arm64" else "x86_64",
         )
         kind = "linux-arm64-cuda" if case == "arm64" else "linux-cuda"
-        release = make_release([
-            make_artifact(
-                f"bundle-{line}.tar.gz",
-                install_kind = kind,
-                runtime_line = line,
-                supported_sms = sms,
-                min_sm = lo,
-                max_sm = hi,
-            )
-            for line, sms, lo, hi in artifacts
-        ])
+        release = make_release(
+            [
+                make_artifact(
+                    f"bundle-{line}.tar.gz",
+                    install_kind = kind,
+                    runtime_line = line,
+                    supported_sms = sms,
+                    min_sm = lo,
+                    max_sm = hi,
+                )
+                for line, sms, lo, hi in artifacts
+            ]
+        )
 
         assert linux_cuda_choice_from_release(host, release) is None
         warning = capsys.readouterr().err
