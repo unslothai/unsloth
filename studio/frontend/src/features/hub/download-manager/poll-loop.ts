@@ -675,6 +675,12 @@ export async function startJob(
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
       : {}),
+    // Recorded so a later start for the same scope slot can tell whether this running job is fetching its files or a different quant's. An adopted job keeps the existing record.
+    ...(req.files && req.files.length > 0
+      ? { scopedFiles: [...req.files] }
+      : opts.adopt && existing?.scopedFiles
+        ? { scopedFiles: existing.scopedFiles }
+        : {}),
   });
 
   if (!opts.adopt) {
@@ -916,7 +922,15 @@ export async function probeAndAdopt(
       for (const active of activeDownloads) {
         options.onModelAdopt?.(active);
         adoptJob(
-          { kind, repoId, variant: active.variant, expectedBytes: 0 },
+          {
+            kind,
+            repoId,
+            variant: active.variant,
+            expectedBytes: 0,
+            // Carry the live job's own file list so the adopted record can be matched against a later start for the same slot.
+            // Without it the adopted job had an unknown set and any sibling checkpoint's request read as "already started".
+            ...(active.files && active.files.length > 0 ? { files: [...active.files] } : {}),
+          },
           active.generation,
           active.state,
         );

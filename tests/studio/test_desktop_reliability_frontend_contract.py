@@ -14,6 +14,8 @@ DATA_TAB = FRONTEND / "features/settings/tabs/data-tab.tsx"
 PROMPT_STORAGE = FRONTEND / "features/chat/prompt-storage/prompt-storage-dialog.tsx"
 
 APP_SIDEBAR = FRONTEND / "components/app-sidebar.tsx"
+SIDEBAR_PRIMITIVE = FRONTEND / "components/ui/sidebar.tsx"
+NAVBAR = FRONTEND / "components/navbar.tsx"
 INDEX_CSS = FRONTEND / "index.css"
 THREAD = FRONTEND / "components/assistant-ui/thread.tsx"
 THREAD_SIDEBAR = FRONTEND / "features/chat/thread-sidebar.tsx"
@@ -340,8 +342,10 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = TITLEBAR.read_text(encoding = "utf-8")
 
-    assert 'pinned ? "gap-2 pl-3" : "justify-center"' in source
-    assert "gap-2 px-3" not in source
+    assert 'showSidebarSurface && !pinned ? "7rem" : sidebarWidth' in source
+    assert "style={{ width: titlebarNavigationWidth }}" in source
+    assert "left: titlebarNavigationWidth" in source
+    assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
     # The curved transition and sidebar-colored backing are expanded-only;
@@ -355,6 +359,79 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         'className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
         in source
     )
+
+
+def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
+    titlebar = TITLEBAR.read_text(encoding = "utf-8")
+    sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
+
+    assert 'import { ArrowLeft, ArrowRight } from "lucide-react";' in titlebar
+    assert "<ArrowLeft" in titlebar
+    assert "<ArrowRight" in titlebar
+    assert "window.history.back()" in titlebar
+    assert "window.history.forward()" in titlebar
+    assert 'src="/circle-logo-small.png"' in header
+    assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
+
+
+def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
+    titlebar = TITLEBAR.read_text(encoding = "utf-8")
+    chat_page = CHAT_PAGE.read_text(encoding = "utf-8")
+    navigation = titlebar.split("export function DesktopTitlebarNavigation", 1)[1].split(
+        "export function WindowTitlebar", 1
+    )[0]
+
+    assert "{expanded && (" not in navigation
+    assert navigation.count('aria-label="Go back"') == 1
+    assert navigation.count('aria-label="Go forward"') == 1
+
+    assert "inline-flex size-[33px] shrink-0" in navigation
+
+    assert navigation.count("onDoubleClick={stopTitlebarDrag}") == 3
+    assert "maximized" not in navigation
+    assert "const maximizeRefreshSequence = useRef(0);" in titlebar
+    assert "const scheduleMaximizedRefresh = useCallback" in titlebar
+    assert "window.setTimeout(() =>" in titlebar
+    assert "scheduleMaximizedRefresh();" in titlebar
+
+    assert '"pl-3"' in titlebar
+    assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
+
+    assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in chat_page
+    assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(
+        encoding = "utf-8"
+    )
+    assert 'className="!size-[33px] rounded-[10px] text-muted-foreground"' in chat_page
+    assert 'aria-label="New chat"' in chat_page
+    new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
+    assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
+
+
+def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
+    app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    primitive = SIDEBAR_PRIMITIVE.read_text(encoding = "utf-8")
+    navbar = NAVBAR.read_text(encoding = "utf-8")
+
+    assert "collapseToZero={isTauri}" in app_sidebar
+    assert "collapseToZero = false" in primitive
+    assert 'collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"' in primitive
+    assert "usesNativeMacTitlebar && !pinned" in navbar
+    assert "<DesktopTitlebarNavigation" in navbar
+
+    assert "top-px z-[60]" in navbar
+    assert "z-40 h-[48px]" in navbar
+
+    assert "windowFocused" not in navbar
+    assert "bg-[#d0d0d0]" not in navbar
+    assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
+        encoding = "utf-8"
+    )
+    assert '"--studio-titlebar-navigation-offset-y": "2px"' in APP_PROVIDER.read_text(
+        encoding = "utf-8"
+    )
+    assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+    assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
 
 
 def test_visible_mac_sidebar_header_is_a_drag_region():

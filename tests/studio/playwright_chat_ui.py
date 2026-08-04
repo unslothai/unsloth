@@ -1457,6 +1457,20 @@ with sync_playwright() as p:
                 btn = c
                 break
         if btn is None:
+            # Unpinned rows (Video, Recipes, Export by default) live in the sidebar's "More" flyout, which opens on hover, so hover
+            # first: a click would toggle it back shut. Click is the fallback for a no-hover environment.
+            more_btn = page.get_by_role("button", name = re.compile(r"^\s*More\s*$", re.I)).first
+            if more_btn.count() > 0:
+                more_btn.hover()
+                page.wait_for_timeout(500)
+                item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
+                if item.count() == 0:
+                    more_btn.click(force = True)
+                    page.wait_for_timeout(500)
+                    item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
+                if item.count() > 0:
+                    btn = item
+        if btn is None:
             soft_fail(f"nav '{label}' not found")
             return False
         # force=True bypasses the actionability check: the post-toggle

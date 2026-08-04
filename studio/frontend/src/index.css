@@ -1047,10 +1047,14 @@ html[data-chat-font] .aui-root {
 	.sidebar-nav-btn:hover,
 	.sidebar-nav-btn[data-active="true"],
 	.sidebar-nav-btn[data-state="open"],
+	.sidebar-nav-btn[data-menu-open="true"],
 	.group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	/* Images: the chevron discloses this row's own list, so the row stays lit while the
+	   pointer is on it. Scoped to the row's wrapper, clear of the list below it. */
+	.group\/images-item:hover > .relative > .sidebar-nav-btn,
 	.group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		background-color: var(--nav-surface-hover) !important;
 		color: #000 !important;
@@ -1058,10 +1062,12 @@ html[data-chat-font] .aui-root {
 	.dark .sidebar-nav-btn:hover,
 	.dark .sidebar-nav-btn[data-active="true"],
 	.dark .sidebar-nav-btn[data-state="open"],
+	.dark .sidebar-nav-btn[data-menu-open="true"],
 	.dark .group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/images-item:hover > .relative > .sidebar-nav-btn,
 	.dark .group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		color: #fff !important;
 	}
@@ -1080,6 +1086,10 @@ html[data-chat-font] .aui-root {
 	}
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
+	}
+	/* A disclosure stays put while its list is open, unlike the hover-only row actions. */
+	.sidebar-row-action.is-disclosure-open {
+		@apply opacity-100 pointer-events-auto;
 	}
 	/* Secondary row action (the pinned-chat unpin button) sits just left of
 	   the primary "…" options button. */
@@ -1235,6 +1245,73 @@ html[data-chat-font] .aui-root {
 	.panel-slider:active [data-slot="slider-thumb"] {
 		box-shadow: 0 0 0 12px
 			color-mix(in srgb, var(--panel-slider-fg) 22%, transparent) !important;
+	}
+
+	/* Images (Create + Train) and Video: a lighter control border than the palette
+	   default. Light mode only, since dark mode draws these controls borderless.
+	   Overrides the token, so every derived shade stays in step. */
+	html:not(.dark) .diffusion-surface {
+		--border: #e9e9e9;
+		--input: #e9e9e9;
+	}
+
+	/* Settings columns on Images and Video: content dissolves at whichever edge it runs
+	   past, rather than being cut off. Same masks as the model picker list. */
+	.panel-scroll-fade.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+	}
+	.panel-scroll-fade.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 20px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
+	}
+	.panel-scroll-fade.is-scrolled.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 20px),
+			transparent
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 20px),
+			transparent
+		);
+	}
+
+	/* Images and Video: a field's "i" only appears with the row it belongs to. Matched on the
+	   InfoHint itself so every field style is covered, including the shared chat slider.
+	   Two levels up is the field container; higher ancestors deliberately do not match. */
+	.diffusion-surface [data-slot="info-hint"] {
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 150ms;
+	}
+	.diffusion-surface *:hover > [data-slot="info-hint"],
+	.diffusion-surface *:hover > * > [data-slot="info-hint"],
+	.diffusion-surface *:focus-within > [data-slot="info-hint"],
+	.diffusion-surface *:focus-within > * > [data-slot="info-hint"],
+	.diffusion-surface [data-slot="info-hint"]:focus-visible {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	/* The Create / Train action floats over its settings, so hover must lighten the fill
+	   rather than thin it: a translucent green would show the controls behind it. Mixes to
+	   what bg-primary/80 looks like on the page, but stays opaque. */
+	.btn-float-action:hover:not(:disabled) {
+		background-color: color-mix(
+			in srgb,
+			var(--primary) 80%,
+			var(--background)
+		) !important;
 	}
 
 	/* Inline numeric input — used for slider values and Context Length.

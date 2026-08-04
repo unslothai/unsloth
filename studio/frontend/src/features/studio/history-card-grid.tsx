@@ -34,7 +34,13 @@ import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 import { Spinner } from "@/components/ui/spinner";
-import { translate, useT } from "@/i18n";
+import {
+  type Locale,
+  formatRelativeTime,
+  translate,
+  useLocale,
+  useT,
+} from "@/i18n";
 
 type StudioT = ReturnType<typeof useT>;
 
@@ -171,15 +177,19 @@ function Sparkline({
   );
 }
 
-function formatRelativeTime(isoDate: string, t: StudioT): string {
+function formatRunRelativeTime(
+  isoDate: string,
+  t: StudioT,
+  locale: Locale,
+): string {
   const diff = Date.now() - new Date(isoDate).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return t("studio.history.relativeJustNow");
-  if (mins < 60) return t("studio.history.relativeMinutesAgo", { count: mins });
+  if (mins < 60) return formatRelativeTime(locale, -mins, "minute");
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return t("studio.history.relativeHoursAgo", { count: hrs });
+  if (hrs < 24) return formatRelativeTime(locale, -hrs, "hour");
   const days = Math.floor(hrs / 24);
-  return t("studio.history.relativeDaysAgo", { count: days });
+  return formatRelativeTime(locale, -days, "day");
 }
 
 
@@ -193,6 +203,7 @@ export function HistoryCardGrid({
   onResumeStarted,
 }: HistoryCardGridProps): ReactElement {
   const t = useT();
+  const locale = useLocale();
   const [runs, setRuns] = useState<TrainingRunSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -433,7 +444,7 @@ export function HistoryCardGrid({
                   {formatStatusLabel(wasContinued ? "resumed_later" : run.status, t)}
                 </span>
                 <span className="text-ui-10 text-muted-foreground">
-                  {formatRelativeTime(run.started_at, t)}
+                  {formatRunRelativeTime(run.started_at, t, locale)}
                 </span>
               </div>
               {canResume && (
