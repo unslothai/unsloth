@@ -154,9 +154,7 @@ def test_resume_from_external_mlx_output_dir(outputs_home, tmp_path_factory, mon
     assert "checkpoint-25" in result.output
 
 
-def test_external_mlx_resume_honours_a_recorded_rewind(
-    outputs_home, tmp_path_factory, monkeypatch
-):
+def test_external_mlx_resume_honours_a_recorded_rewind(outputs_home, tmp_path_factory, monkeypatch):
     # The external MLX scan picks the newest checkpoint too, so it needs the same cap.
     from studio.backend.core.training.resume import record_resume_rewind
     from unsloth_cli.commands import train as train_cmd

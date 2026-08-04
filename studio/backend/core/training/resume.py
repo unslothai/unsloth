@@ -29,7 +29,6 @@ def _is_under_outputs(path: Path) -> bool:
 def current_training_backend() -> str:
     """Backend a new run trains with on this host (worker.py's MLX fast-path)."""
     from core.training.training import is_apple_silicon_training_platform
-
     return "mlx" if is_apple_silicon_training_platform() else "pt"
 
 
