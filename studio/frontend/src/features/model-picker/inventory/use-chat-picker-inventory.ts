@@ -8,18 +8,12 @@ import type {
 } from "@/features/chat";
 import {
   type CachedInventoryRow,
-  type LocalInventoryRow,
-  type LocalSource,
   isHiddenModelId,
   useHubInventory,
 } from "@/features/hub";
 import { useMemo } from "react";
 
-const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
-  "lmstudio",
-  "models_dir",
-  "custom",
-]);
+import { buildPickerLocalModels } from "./chat-picker-inventory-sources";
 
 function isCompleteCachedRow(row: CachedInventoryRow): boolean {
   return !row.partial && !row.liveDownload;
@@ -46,18 +40,6 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     cache_path: row.cachePath,
     size_bytes: row.bytes,
     last_modified: row.lastModified ?? undefined,
-  };
-}
-
-function toLocalModelInfo(row: LocalInventoryRow): LocalModelInfo {
-  return {
-    id: row.loadId,
-    display_name: row.displayName ?? row.title,
-    path: row.path,
-    source: row.source as LocalModelInfo["source"],
-    model_id: row.modelId ?? row.repoId,
-    model_format: row.modelFormat,
-    updated_at: row.updatedAt,
   };
 }
 
@@ -104,19 +86,12 @@ export function useChatPickerInventory(
   );
   const localModels = useMemo(
     () =>
-      inventory.localRows
-        .filter(
-          (row) =>
-            PICKER_LOCAL_SOURCES.has(row.source) &&
-            // Skip non-chat rows (e.g. a folder with only config.json is
-            // classified "unknown" -> canChat false); selecting one would try to
-            // load a weightless path. toLocalModelInfo drops capabilities, so
-            // this is the only place the guard can live.
-            row.capabilities.canChat &&
-            !isHiddenModelId(row.modelId, row.repoId, row.path),
-        )
-        .map(toLocalModelInfo),
-    [inventory.localRows],
+      buildPickerLocalModels(inventory.cachedRows, inventory.localRows).filter(
+        // Skip hidden infrastructure and embedding models after projection;
+        // the projector preserves every identity used by the matcher.
+        (row) => !isHiddenModelId(row.model_id, row.id, row.path),
+      ),
+    [inventory.cachedRows, inventory.localRows],
   );
 
   return {
