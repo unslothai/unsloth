@@ -7262,13 +7262,56 @@ class LlamaCppBackend:
         "libgomp.so.1": " (Debian/Ubuntu: libgomp1, Fedora/RHEL: libgomp)",
     }
 
+    # Shared objects Unsloth ships itself, next to llama-server in build/bin
+    # (see runtime_payload_health_groups in install_llama_prebuilt.py, and
+    # _llama_server_env_for_binary which puts that dir on LD_LIBRARY_PATH). No
+    # distro packages these, so a loader failure naming one means the managed
+    # runtime is incomplete or mismatched, not that something must be installed.
+    _BUNDLED_LIB_PREFIXES = ("libllama", "libggml", "libmtmd")
+
+    @staticmethod
+    def _is_bundled_llama_library(lib: str) -> bool:
+        # The loader prints a bare soname when the file is absent but a full
+        # path when it found and rejected it, so compare on the basename.
+        return os.path.basename((lib or "").strip()).startswith(
+            LlamaCppBackend._BUNDLED_LIB_PREFIXES
+        )
+
     @staticmethod
     def _missing_library_message(lib: str) -> str:
+        """The loader could not FIND ``lib`` ("cannot open shared object file")."""
+        if LlamaCppBackend._is_bundled_llama_library(lib):
+            return (
+                f"llama-server could not start: {lib} is part of Unsloth's own "
+                "llama.cpp runtime and is missing from the install. Run "
+                "`unsloth studio update` to reinstall it, then load the model "
+                "again."
+            )
         return (
             f"llama-server could not start: the system library "
             f"{lib or 'it needs'} is missing. Install it with your package "
             f"manager{LlamaCppBackend._SHARED_LIB_PACKAGES.get(lib, '')}, "
             "then load the model again."
+        )
+
+    @staticmethod
+    def _unloadable_library_message(lib: str, reason: str) -> str:
+        """The loader FOUND ``lib`` and refused it: the same "error while
+        loading shared libraries" line also carries "file too short", "invalid
+        ELF header", "wrong ELF class", ... Installing a package is the wrong
+        advice there -- the file is already present."""
+        detail = f" ({reason})" if reason else ""
+        if LlamaCppBackend._is_bundled_llama_library(lib):
+            return (
+                f"llama-server could not start: {lib}, part of Unsloth's own "
+                f"llama.cpp runtime, could not be loaded{detail}. The install "
+                "is incomplete or mismatched. Run `unsloth studio update` to "
+                "reinstall it, then load the model again."
+            )
+        return (
+            f"llama-server could not start: the library {lib or 'it needs'} "
+            f"could not be loaded{detail}. Reinstall or update whatever "
+            "provides it, then load the model again."
         )
 
     @staticmethod
@@ -7291,9 +7334,29 @@ class LlamaCppBackend:
         # The dynamic loader kills llama-server before main(), so nothing below
         # matches and the fallback blames the file or memory instead. The Linux
         # prebuilt links libgomp.so.1, which a stock container does not ship.
-        missing_lib = re.search(r"error while loading shared libraries:\s*([^\s:]+)", output or "")
+        missing_lib = re.search(
+            r"error while loading shared libraries:\s*([^\s:]+):?[ \t]*([^\n]*)",
+            output or "",
+        )
         if missing_lib:
-            return LlamaCppBackend._missing_library_message(missing_lib.group(1))
+            _lib = missing_lib.group(1)
+            _reason = missing_lib.group(2).strip()
+            # glibc omits the object name entirely on its own allocation
+            # failures ("...shared libraries: cannot create search path array"),
+            # so the first word is prose, not a library. Report it unnamed.
+            if not (
+                "/" in _lib
+                or "\\" in _lib
+                or any(_e in _lib for _e in (".so", ".dylib", ".dll"))
+            ):
+                return LlamaCppBackend._unloadable_library_message(
+                    "", f"{_lib} {_reason}".strip()
+                )
+            # Only "cannot open shared object file" means absent; the same line
+            # reports corrupt/incompatible libraries too, which are present.
+            if "cannot open" in _reason.lower() or not _reason:
+                return LlamaCppBackend._missing_library_message(_lib)
+            return LlamaCppBackend._unloadable_library_message(_lib, _reason)
 
         # Tensor parallelism (--split-mode tensor) is arch-gated in llama.cpp;
         # unsupported architectures abort the load with this marker. Point the
@@ -7355,10 +7418,20 @@ class LlamaCppBackend:
                     "Ollama instead."
                 )
 
-        # 127 is the loader's own exit status, so a truncated tail that lost the
-        # message above still points at a library rather than at the GGUF.
+        # 127 without any loader line above is not specific to a library: it is
+        # also what a shell wrapper entrypoint reports when its exec target is
+        # gone (_llama_lib_dir supports those, as does a custom
+        # LLAMA_SERVER_PATH), and what a "symbol lookup error" from a mismatched
+        # runtime exits with. Name both causes instead of blaming a distro
+        # package -- but still keep it off the GGUF and off memory.
         if returncode == 127:
-            return LlamaCppBackend._missing_library_message("")
+            return (
+                "llama-server exited immediately (status 127): either the "
+                "llama-server executable could not be found or run, or one of "
+                "the shared libraries it needs could not be loaded. Check the "
+                "llama-server log, and run `unsloth studio update` to "
+                "reinstall the llama.cpp runtime."
+            )
 
         # SIGKILL with no diagnostic output is the OOM killer (e.g. a model too
         # large for the WSL VM's RAM cap); name it actionably.

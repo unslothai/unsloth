@@ -209,12 +209,76 @@ class TestMissingSharedLibrary:
         assert "package manager" in msg
         assert "libgomp1" not in msg
 
-    def test_exit_127_with_no_output_still_points_at_a_library(self):
-        # The binary or one of its libraries was not found; either way the
-        # generic file/memory message is wrong.
+    def test_exit_127_with_no_output_names_both_causes(self):
+        # 127 is also a shell-wrapper entrypoint whose exec target is gone, so
+        # it must not claim a distro package is missing. The generic
+        # file/memory message is still wrong.
         msg = _classify("", "/models/x.gguf", "local/x", 127)
-        assert "system library" in msg
+        assert "could not be found or run" in msg
+        assert "shared libraries" in msg
+        assert "package manager" not in msg
         assert "GGUF file is valid" not in msg
+        assert "enough memory" not in msg.lower()
+
+    def test_wrapper_exec_failure_is_not_called_a_system_library(self):
+        # write_exec_wrapper's entrypoint: /bin/sh reports a missing exec
+        # target as "not found" and exits 127.
+        out = (
+            "/home/t/.unsloth/llama.cpp/llama-server: 2: exec: "
+            "./build/bin/llama-server: not found"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "package manager" not in msg
+        assert "could not be found or run" in msg
+
+    def test_symbol_lookup_error_is_not_called_a_system_library(self):
+        # A mismatched bundled runtime exits 127 with this, not a loader line.
+        out = "llama-server: symbol lookup error: llama-server: undefined symbol: ggml_backend_init"
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "package manager" not in msg
+
+    def test_bundled_runtime_library_points_at_the_installer(self):
+        # libggml/libllama/libmtmd ship in build/bin (runtime_payload_health_groups)
+        # and no package manager can supply them.
+        out = (
+            "/home/t/.unsloth/llama.cpp/build/bin/llama-server: error while loading "
+            "shared libraries: libggml.so.0: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "libggml.so.0" in msg
+        assert "unsloth studio update" in msg
+        assert "package manager" not in msg
+
+    def test_corrupt_library_is_not_reported_as_missing(self):
+        # glibc reuses the same prefix for a present-but-unusable library.
+        out = (
+            "/opt/llama/llama-server: error while loading shared libraries: "
+            "/usr/lib/x86_64-linux-gnu/libgomp.so.1: file too short"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "file too short" in msg
+        assert "is missing" not in msg
+        assert "Install it with your package manager" not in msg
+
+    def test_corrupt_bundled_library_points_at_the_installer(self):
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "/home/t/.unsloth/llama.cpp/build/bin/libggml-cuda.so: invalid ELF header"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "invalid ELF header" in msg
+        assert "unsloth studio update" in msg
+        assert "is missing" not in msg
+
+    def test_nameless_loader_error_does_not_invent_a_library(self):
+        # glibc's own allocation failures pass an empty object name, so the
+        # text right after the colon is prose, not a soname.
+        out = "llama-server: error while loading shared libraries: cannot create search path array"
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "cannot create search path array" in msg
+        assert "the library cannot" not in msg
+        assert "is missing" not in msg
 
     def test_loader_error_wins_without_a_returncode(self):
         msg = _classify(self._LOADER_OUT, "/models/x.gguf", "local/x")
