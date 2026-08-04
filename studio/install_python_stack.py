@@ -3403,20 +3403,30 @@ def _install_eval_extra(*, package_name: str, local_repo: str) -> None:
     if NO_TORCH or package_name != "unsloth":
         return
     _progress("eval extra")
+    # Wheels only, best-effort: several lm-eval transitives ship sdist-only,
+    # and a clean install must never compile from source. Where the wheelhouse
+    # lacks them, `unsloth eval` tells the user to install the extra instead.
     if local_repo:
         # the checkout is overlaid with --no-deps so the torch/CUDA stack is
         # not re-resolved; a full `-e repo[eval]` install would resolve the
         # base deps again, so install only the extra's own packages
-        pip_install(
+        ok = pip_install_try(
             "Installing unsloth[eval] extra",
             "--no-cache-dir",
+            "--only-binary=:all:",
             *_eval_extra_requirements(local_repo),
         )
     else:
-        pip_install(
+        ok = pip_install_try(
             "Installing unsloth[eval] extra",
             "--no-cache-dir",
+            "--only-binary=:all:",
             "unsloth[eval]",
+        )
+    if not ok:
+        _safe_print(
+            '   unsloth[eval] skipped (no prebuilt wheels on this platform); '
+            'run pip install "unsloth[eval]" to enable unsloth eval.'
         )
 
 
