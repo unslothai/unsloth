@@ -4,6 +4,7 @@
 import asyncio
 import json
 import sys
+import threading
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -424,64 +425,142 @@ def test_read_only_download_state_lookup_does_not_create_directories(monkeypatch
     assert not studio_cache.exists()
 
 
-def test_cached_gguf_inventory_enumerates_state_directories_once(monkeypatch, tmp_path):
+def test_model_inventories_share_state_index_and_track_flight_inputs(monkeypatch, tmp_path):
     studio_cache = tmp_path / "studio-cache"
-    hub_cache = tmp_path / "hub-cache"
+    hub_caches = [tmp_path / "cache-a", tmp_path / "cache-b"]
+    hub_cache = hub_caches[0]
     monkeypatch.setattr(state_dir, "cache_root", lambda: studio_cache)
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = hub_cache),
-    )
-    repos = []
+    hf_paths = lambda: SimpleNamespace(hub_cache = hub_cache)
+    monkeypatch.setattr("utils.hf_cache_settings.get_hf_cache_paths", hf_paths)
+    repo_groups = [[], []]
     for index in range(3):
+        cache_index = min(index, 1)
+        repo_cache = hub_caches[cache_index]
         repo_id = f"Org/Model-{index}"
-        repo_path = hub_cache / f"models--Org--Model-{index}"
+        repo_path = repo_cache / f"models--Org--Model-{index}"
         snapshot = repo_path / "snapshots" / "revision"
         snapshot.mkdir(parents = True)
         (snapshot / "model-Q4_K_M.gguf").write_bytes(b"x")
+        (repo_path / "blobs").mkdir()
+        (repo_path / "blobs" / "blob").write_bytes(b"x")
         repo = _repo(repo_id, [_file("model-Q4_K_M.gguf", 1)], repo_path)
         repo.revisions[0].snapshot_path = snapshot
-        repos.append(repo)
+        repo_groups[cache_index].append(repo)
         assert download_manifest.write_manifest(
             "model",
             repo_id,
             "Q4_K_M",
             [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = index + 1)],
             "http",
-            hub_cache = hub_cache,
+            hub_cache = repo_cache,
         )
         if index:
             assert download_manifest.write_cancel_marker(
-                "model", repo_id, "Q4_K_M", "http", hub_cache = hub_cache
+                "model", repo_id, "Q4_K_M", "http", hub_cache = repo_cache
             )
 
     manifest_root = studio_cache / "hub-state" / "manifests"
     marker_root = studio_cache / "hub-state" / "cancelled"
-    watched = {
-        manifest_root,
-        marker_root,
-        next(path for path in manifest_root.iterdir() if path.name.startswith("cache-")),
-        next(path for path in marker_root.iterdir() if path.name.startswith("cache-")),
-    }
+    watched = {manifest_root, marker_root, *manifest_root.iterdir(), *marker_root.iterdir()}
     calls = Counter()
+    entered, release = threading.Event(), threading.Event()
+    release.set()
     real_iterdir = Path.iterdir
 
     def counting_iterdir(path):
         if path in watched:
             calls[path] += 1
+            if not release.is_set() and path == manifest_root:
+                entered.set()
+                release.wait()
         return real_iterdir(path)
 
     monkeypatch.setattr(Path, "iterdir", counting_iterdir)
     monkeypatch.setattr(
         cache_inventory,
         "all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = repos)],
+        lambda: [SimpleNamespace(repos = repos) for repos in repo_groups],
     )
     rows = cache_inventory._scan_cached_gguf()
     assert [(row["repo_id"], row["size_bytes"], row["partial"]) for row in rows] == [
         (f"Org/Model-{index}", index + 1, bool(index)) for index in range(3)
     ]
     assert calls == Counter({path: 1 for path in watched})
+    calls.clear()
+    monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: hub_cache)
+    monkeypatch.setattr(local_inventory, "legacy_hf_cache_dir", lambda: tmp_path / "missing")
+    monkeypatch.setattr(local_inventory, "hf_default_cache_dir", lambda: hub_cache)
+    monkeypatch.setattr(local_inventory, "lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr(local_inventory, "ollama_model_dirs", lambda: [])
+    registered = []
+    monkeypatch.setattr(local_inventory, "list_scan_folders", lambda: list(registered))
+    known_caches = lambda: hub_caches
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", known_caches)
+    local_response = asyncio.run(local_inventory.list_local_models_response(str(hub_cache)))
+    assert {
+        row.model_id: row.partial for row in local_response.models if row.model_format == "gguf"
+    } == {
+        "Org/Model-0": False,
+        "Org/Model-1": True,
+        "Org/Model-2": True,
+    }
+    assert calls == Counter({path: 1 for path in watched})
+    calls.clear()
+    release.clear()
+    custom_root = tmp_path / "new"
+    custom_root.mkdir()
+    (custom_root / "Tracked-Q4_K_M.gguf").write_bytes(b"x")
+
+    async def run_requests(mutate_registry = False, cancel_waiters = False):
+        loaded = 0
+        both_loaded = asyncio.Event()
+
+        async def load_custom_folders():
+            nonlocal loaded
+            folders = list(registered)
+            loaded += 1
+            if loaded == 2:
+                both_loaded.set()
+            return folders
+
+        monkeypatch.setattr(local_inventory, "_load_custom_folders", load_custom_folders)
+        first = asyncio.create_task(local_inventory.list_local_models_response(str(hub_cache)))
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            if mutate_registry:
+                registered.append({"id": 1, "path": str(custom_root), "created_at": "now"})
+            second = asyncio.create_task(local_inventory.list_local_models_response(str(hub_cache)))
+            await asyncio.wait_for(both_loaded.wait(), 1)
+            if cancel_waiters:
+                first.cancel()
+                second.cancel()
+                await asyncio.gather(first, second, return_exceptions = True)
+        finally:
+            release.set()
+        if cancel_waiters:
+            for _ in range(100):
+                if not local_inventory._local_inventory_flights:
+                    return
+                await asyncio.sleep(0.01)
+        return await asyncio.gather(first, second)
+
+    asyncio.run(run_requests(cancel_waiters = True))
+    assert calls == Counter({path: 1 for path in watched})
+    assert local_inventory._local_inventory_flights == {}
+    calls.clear()
+    entered.clear()
+    release.clear()
+    first_response, second_response = asyncio.run(run_requests(mutate_registry = True))
+    assert calls == Counter({path: 2 for path in watched})
+    assert not any(row.source == "custom" for row in first_response.models)
+    assert any(row.source == "custom" for row in second_response.models)
+
+
+@pytest.mark.parametrize("models_dir", ["\0", "~unsloth-user-that-does-not-exist/models"])
+def test_local_inventory_malformed_models_dir_stays_forbidden(models_dir):
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(local_inventory.list_local_models_response(models_dir))
+    assert exc_info.value.status_code == 403
 
 
 def test_concurrent_cached_gguf_requests_share_scan_after_waiter_disconnect(monkeypatch):

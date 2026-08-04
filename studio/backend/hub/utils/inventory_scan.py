@@ -639,22 +639,33 @@ def _repo_signal_applies_to_snapshot(
 
 
 def _gguf_variant_manifest_blob_hashes(
-    repo_id: str, repo_cache_dir: Optional[Path] = None
+    repo_id: str,
+    repo_cache_dir: Optional[Path] = None,
+    variant_state = None,
 ) -> frozenset[str]:
     from hub.utils import download_manifest
 
     hashes: set[str] = set()
     hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
-    for variant, _path in download_manifest.iter_variant_manifests(
-        "model",
-        repo_id,
-        hub_cache = hub_cache,
-    ):
-        manifest = download_manifest.read_manifest(
+    manifests = (
+        variant_state.iter_manifests()
+        if variant_state is not None
+        else download_manifest.iter_variant_manifests(
             "model",
             repo_id,
-            variant,
             hub_cache = hub_cache,
+        )
+    )
+    for variant, _path in manifests:
+        manifest = (
+            variant_state.manifest_for(variant)
+            if variant_state is not None
+            else download_manifest.read_manifest(
+                "model",
+                repo_id,
+                variant,
+                hub_cache = hub_cache,
+            )
         )
         if manifest is None:
             continue
@@ -687,10 +698,15 @@ def _snapshot_legacy_partial(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
     snapshot_dir: Optional[Path] = None,
+    variant_state = None,
 ) -> bool:
     if repo_type != "model":
         return _legacy_partial(repo_type, repo_id, repo_cache_dir)
-    ignored_hashes = _gguf_variant_manifest_blob_hashes(repo_id, repo_cache_dir)
+    ignored_hashes = _gguf_variant_manifest_blob_hashes(
+        repo_id,
+        repo_cache_dir,
+        variant_state,
+    )
     if repo_cache_dir is not None:
         return _repo_cache_dir_has_snapshot_legacy_partial(
             repo_cache_dir,
@@ -1431,6 +1447,7 @@ def is_snapshot_partial(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
     snapshot_dir: Optional[Path] = None,
+    variant_state = None,
 ) -> bool:
     """Repo-row partial flag for snapshot-style downloads (full-snapshot models, i.e.
     safetensors/adapter/checkpoint, and all datasets).
@@ -1452,21 +1469,31 @@ def is_snapshot_partial(
         repo_cache_dir, snapshot_dir, quants = False
     )
     return _compose_partial(
-        lambda: repo_signal_applies
-        and download_manifest.has_cancel_marker(
-            repo_type,
-            repo_id,
-            None,
-            hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+        lambda: (
+            repo_signal_applies
+            and download_manifest.has_cancel_marker(
+                repo_type,
+                repo_id,
+                None,
+                hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+            )
         ),
-        lambda: _snapshot_legacy_partial(repo_type, repo_id, repo_cache_dir, snapshot_dir),
-        lambda: repo_signal_applies
-        and _manifest_partial(
+        lambda: _snapshot_legacy_partial(
             repo_type,
             repo_id,
-            None,
-            snapshot_dir,
             repo_cache_dir,
+            snapshot_dir,
+            variant_state,
+        ),
+        lambda: (
+            repo_signal_applies
+            and _manifest_partial(
+                repo_type,
+                repo_id,
+                None,
+                snapshot_dir,
+                repo_cache_dir,
+            )
         ),
         lambda: _recovered_snapshot_cannot_serve(repo_cache_dir, snapshot_dir, quants = False),
     )
@@ -1769,32 +1796,38 @@ def is_variant_partial(
     the per-variant endpoint still reports a cancelled quant as broken."""
     from hub.utils import download_manifest
     return _compose_partial(
-        lambda: repo_signal_applies
-        and (
-            variant_state.has_marker(variant)
-            if variant_state is not None
-            else download_manifest.has_cancel_marker(
-                "model",
-                repo_id,
-                variant,
-                hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+        lambda: (
+            repo_signal_applies
+            and (
+                variant_state.has_marker(variant)
+                if variant_state is not None
+                else download_manifest.has_cancel_marker(
+                    "model",
+                    repo_id,
+                    variant,
+                    hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+                )
             )
         ),
         # blobs/ is repo-wide, so a retry's .incomplete belongs to the newest snapshot.
-        lambda: repo_signal_applies
-        and bool(
-            incomplete_blob_hashes
-            and variant_blob_hashes
-            and incomplete_blob_hashes.intersection(variant_blob_hashes)
+        lambda: (
+            repo_signal_applies
+            and bool(
+                incomplete_blob_hashes
+                and variant_blob_hashes
+                and incomplete_blob_hashes.intersection(variant_blob_hashes)
+            )
         ),
-        lambda: repo_signal_applies
-        and _manifest_partial(
-            "model",
-            repo_id,
-            variant,
-            snapshot_dir,
-            repo_cache_dir,
-            variant_state,
+        lambda: (
+            repo_signal_applies
+            and _manifest_partial(
+                "model",
+                repo_id,
+                variant,
+                snapshot_dir,
+                repo_cache_dir,
+                variant_state,
+            )
         ),
     )
 
