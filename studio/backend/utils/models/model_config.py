@@ -1237,7 +1237,6 @@ def _is_mmproj(filename: str) -> bool:
 # ``dflash/`` holds real weights, so dflash is a drafter by prefix only.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
-_REPRIEVABLE_KINDS = ("dspark", "dflash")
 
 
 def _is_mtp_drafter(path: str) -> bool:
@@ -1264,59 +1263,6 @@ def _is_mtp_drafter(path: str) -> bool:
     name, parents = parts[-1], parts[:-1]
     return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
         kind in parents for kind in _DRAFTER_DIR_KINDS
-    )
-
-
-_NON_GGUF_WEIGHT_BIN_PREFIXES = ("pytorch_model", "model", "adapter_model", "consolidated")
-
-
-def _is_non_gguf_weight(path: str) -> bool:
-    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if name.endswith(".safetensors"):
-        return True
-    return name.endswith(".bin") and name.startswith(_NON_GGUF_WEIGHT_BIN_PREFIXES)
-
-
-def _is_drafter_dir(path: str) -> bool:
-    p = path.replace("\\", "/").lower()
-    if not p.endswith(".gguf"):
-        return False
-    return any(kind in [s for s in p.split("/")[:-1] if s] for kind in _DRAFTER_DIR_KINDS)
-
-
-def _has_quant_token(path: str) -> bool:
-    """Whether *path* carries a real quant token, mirroring the match half of
-    hub.utils.gguf.extract_quant_token (which returns None where this is False)."""
-    stem = re.sub(r"-\d{3,}-of-\d{3,}", "", path.rsplit("/", 1)[-1].rsplit(".", 1)[0])
-    if _GGUF_KNOWN_QUANT_RE.search(stem):
-        return True
-    parents = path.rsplit("/", 1)[0] if "/" in path else ""
-    return any(_GGUF_KNOWN_QUANT_RE.search(seg) for seg in parents.split("/") if seg)
-
-
-def _is_reprievable_drafter(path: str) -> bool:
-    """Mirrors hub.utils.gguf.is_reprievable_drafter_path."""
-    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return any(name.startswith(f"{kind}-") for kind in _REPRIEVABLE_KINDS)
-
-
-def _drafter_paths_in(paths) -> frozenset:
-    """Mirrors hub.utils.gguf.drafter_paths_in: a prefix-named drafter of a
-    family-named kind with no main weight beside it in the same listing is that
-    listing's main weight."""
-    listing = list(paths)
-    drafters = {p for p in listing if p.lower().endswith(".gguf") and _is_mtp_drafter(p)}
-    has_main = any(
-        _is_non_gguf_weight(p)
-        or (p.lower().endswith(".gguf") and p not in drafters and not _is_mmproj(p))
-        for p in listing
-    )
-    if has_main:
-        return frozenset(drafters)
-    return frozenset(
-        p
-        for p in drafters
-        if _is_drafter_dir(p) or not _is_reprievable_drafter(p) or not _has_quant_token(p)
     )
 
 
@@ -1409,30 +1355,6 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
     for f in iterator:
         if f.is_file() and _is_gguf_filename(f.name):
             yield f
-
-
-# Cap the whole-listing walk so a huge snapshot cannot run unbounded.
-_MAX_SNAPSHOT_LISTING_ENTRIES = 100_000
-
-
-def _snapshot_listing(directory: Path) -> list[str]:
-    """Every file under *directory* as posix rel paths, so the drafter reprieve
-    sees non-GGUF weights too. Mirrors hub.utils.gguf.repo_listing_in."""
-    out: list[str] = []
-    try:
-        for index, entry in enumerate(directory.rglob("*"), start = 1):
-            if index > _MAX_SNAPSHOT_LISTING_ENTRIES:
-                break
-            try:
-                # A dangling symlink is a GC'd blob, not an absent file. Dropping
-                # it would hide the repo's main weight and reprieve the drafter.
-                if entry.is_file() or entry.is_symlink():
-                    out.append(entry.relative_to(directory).as_posix())
-            except OSError:
-                continue
-    except OSError:
-        return out
-    return out
 
 
 _GGUF_SPLIT_FILE_RE = re.compile(
@@ -2208,8 +2130,7 @@ def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufV
     """
     any_vision = False
     for snap in _iter_hf_cache_snapshots(repo_id):
-        # whole_repo: a snapshot is one repo's full listing, as the remote path sees it.
-        variants, has_vision = list_local_gguf_variants(str(snap), whole_repo = True)
+        variants, has_vision = list_local_gguf_variants(str(snap))
         any_vision = any_vision or has_vision
         if variants:
             return variants, any_vision
@@ -2266,11 +2187,6 @@ def list_gguf_variants(
     quant_totals: dict[str, int] = {}  # quant -> total bytes
     quant_first_file: dict[str, str] = {}  # quant -> first filename (display)
 
-    # Whole-repo listing, so the drafter reprieve applies exactly as it does in
-    # detect_gguf_model_remote: otherwise a repo whose real quants all carry the
-    # family prefix lists nothing and the load falls back to a hard-coded quant.
-    drafters = _drafter_paths_in(s.rfilename for s in info.siblings)
-
     for sibling in info.siblings:
         fname = sibling.rfilename
         if not fname.lower().endswith(".gguf"):
@@ -2281,8 +2197,8 @@ def list_gguf_variants(
         if "mmproj" in fname.lower():
             has_vision = True
             continue
-        # Drafters are speculative-decoding companions, not quants.
-        if fname in drafters:
+        # MTP drafters are speculative-decoding companions, not quants.
+        if _is_mtp_drafter(fname):
             continue
 
         quant = _extract_quant_label(fname)
@@ -2330,19 +2246,12 @@ def _resolve_gguf_dir(p: Path) -> Optional[Path]:
 
 
 def list_local_gguf_variants(
-    directory: str,
-    model_root: Optional[str] = None,
-    *,
-    whole_repo: bool = False,
+    directory: str, model_root: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool]:
     """List GGUF quant variants in a local directory.
 
     Like :func:`list_gguf_variants` but reads the filesystem. Aggregates shard
     sizes by quant label so split GGUFs appear as one variant.
-
-    *whole_repo* marks *directory* as one repo's full contents (an HF cache
-    snapshot), the only local case where the drafter reprieve applies. Mirrors
-    hub.utils.gguf.list_local_gguf_variants.
 
     Returns:
         (variants, has_vision): non-mmproj GGUF variants + vision flag.
@@ -2364,16 +2273,7 @@ def list_local_gguf_variants(
     # some HF GGUF repos for the largest quants) are picked up. Result
     # filenames keep the relative subpath so ``_find_local_gguf_by_variant``
     # can locate the file again.
-    scanned = [
-        (f, f.relative_to(p).as_posix()) for f in sorted(_iter_gguf_files(p, recursive = True))
-    ]
-    drafters = {rel for f, rel in scanned if _is_local_mtp_drafter(f, root, rel)}
-    if whole_repo and drafters:
-        # The FULL listing, not just the GGUFs: a weight in another format beside
-        # the drafter is something to accompany, so nothing is reprieved.
-        drafters &= _drafter_paths_in(_snapshot_listing(p))
-
-    for f, rel in scanned:
+    for f in sorted(_iter_gguf_files(p, recursive = True)):
         if _is_mmproj(f.name):
             has_vision = True
             continue
@@ -2383,7 +2283,8 @@ def list_local_gguf_variants(
             size = 0
         # Use the relative path so ``BF16/foo.gguf`` and ``Q4_K_M/foo.gguf``
         # get distinct quant labels instead of collapsing on basename.
-        if rel in drafters:
+        rel = f.relative_to(p).as_posix()
+        if _is_local_mtp_drafter(f, root, rel):
             continue
         quant = _extract_quant_label(rel)
         if _is_big_endian_gguf_path(rel, quant):
@@ -2450,23 +2351,17 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
 
     Excludes mmproj (vision projector) files so a partial cache holding only
     the projector cannot route it as the main model.
-
-    A snapshot is one repo's whole listing, so the drafter reprieve applies here
-    exactly as it does remotely: offline must resolve what online resolves.
     """
     for snap in _iter_hf_cache_snapshots(repo_id):
-        listing = _snapshot_listing(snap)
-        drafters = _drafter_paths_in(listing)
         rel_files = []
-        for rel in listing:
-            if not rel.lower().endswith(".gguf"):
-                continue
+        for f in _iter_gguf_files(snap, recursive = True):
+            rel = f.relative_to(snap).as_posix()
             quant = _extract_quant_label(rel)
-            if _is_mmproj(rel) or rel in drafters or _is_big_endian_gguf_path(rel, quant):
+            if _is_mmproj(f.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
                 continue
             rel_files.append(rel)
         if rel_files:
-            return _pick_best_gguf(sorted(rel_files))
+            return _pick_best_gguf(rel_files)
     return None
 
 
@@ -2490,13 +2385,16 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
         try:
             info = hf_model_info(repo_id, token = hf_token)
             repo_files = []
-            drafters = _drafter_paths_in(s.rfilename for s in info.siblings)
             for sibling in info.siblings:
                 fname = sibling.rfilename
                 if not fname.lower().endswith(".gguf"):
                     continue
                 quant = _extract_quant_label(fname)
-                if _is_mmproj(fname) or fname in drafters or _is_big_endian_gguf_path(fname, quant):
+                if (
+                    _is_mmproj(fname)
+                    or _is_mtp_drafter(fname)
+                    or _is_big_endian_gguf_path(fname, quant)
+                ):
                     continue
                 repo_files.append(fname)
             return _pick_best_gguf(repo_files)

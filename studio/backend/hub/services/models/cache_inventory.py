@@ -32,11 +32,11 @@ from hub.services.models.common import (
     _is_checkpoint_weight_name,
     _is_training_artefact_name,
     _is_gguf_filename,
+    _is_main_gguf_filename,
     _is_mmproj_filename,
     _is_transformers_safetensors_weight_name,
     _local_inventory_id,
     _runtime_for_format,
-    _snapshot_main_gguf_names,
 )
 
 # Imported at module scope (not inside the per-repo scan loop) so a broken
@@ -114,21 +114,15 @@ def all_hf_cache_scans():
     return hf_cache_scan.all_hf_cache_scans()
 
 
-def _revision_main_gguf_names(revision) -> set[str]:
-    """Main GGUFs in ONE revision, whose file list is that repo's whole listing."""
-    return _snapshot_main_gguf_names(_cached_repo_file_name(f) for f in revision.files)
-
-
 def _repo_gguf_size_bytes(repo_info) -> int:
     """Sum primary GGUF blob sizes across revisions, deduped by blob path (HF hardlinks shared blobs); mmproj is excluded so a vision-adapter-only repo isn't classed as GGUF."""
     unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
-        main = _revision_main_gguf_names(revision)
         for f in revision.files:
             # Snapshot-relative: only the directory marks an MTP/ drafter as a companion.
             name = _cached_repo_file_name(f)
-            if name in main:
+            if _is_main_gguf_filename(name):
                 blob_path = getattr(f, "blob_path", None)
                 size = f.size_on_disk or 0
                 if blob_path:
@@ -158,9 +152,8 @@ def _blob_mtime(file_obj) -> float:
 def _repo_gguf_last_modified(repo_info) -> float:
     latest = 0.0
     for revision in repo_info.revisions:
-        main = _revision_main_gguf_names(revision)
         for f in revision.files:
-            if _cached_repo_file_name(f) in main:
+            if _is_main_gguf_filename(_cached_repo_file_name(f)):
                 latest = max(latest, _blob_mtime(f))
     return latest
 
@@ -237,13 +230,12 @@ def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[
     blob_map: dict[str, set[str]] = {}
     repo_path = getattr(repo_info, "repo_path", None)
     for revision in repo_info.revisions:
-        main = _revision_main_gguf_names(revision)
         for f in revision.files:
             name = _cached_repo_file_name(f)
             if include_companions:
                 if not _is_gguf_filename(name):
                     continue
-            elif name not in main:
+            elif not _is_main_gguf_filename(name):
                 continue
             blob_path = getattr(f, "blob_path", None)
             if not blob_path:
@@ -571,7 +563,7 @@ def _repo_gguf_payload_snapshots(repo_info) -> tuple[Optional[Path], frozenset[s
         snapshot
         for revision in repo_info.revisions
         if (snapshot := getattr(revision, "snapshot_path", None)) is not None
-        and _revision_main_gguf_names(revision)
+        and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
     ]
     complete = [
         snapshot

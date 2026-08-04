@@ -27,7 +27,6 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
 )
 from hub.utils.gguf import (
-    drafter_paths_in,
     extract_quant_label,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
@@ -36,7 +35,6 @@ from hub.utils.gguf import (
     list_gguf_variants_from_hf_cache,
     list_local_gguf_variants,
     list_partial_gguf_variants_from_state,
-    repo_listing_in,
     pick_best_gguf,
 )
 from hub.utils.paths import (
@@ -250,16 +248,13 @@ def _manifest_variant_blob_hashes(
         return frozenset()
     variant_key = variant.lower()
     hashes: set[str] = set()
-    # Same listing-aware set plan_from_expected_files uses, so a reprieved main
-    # is not mistaken for a companion and left with no hashes at all.
-    drafters = drafter_paths_in(expected.path for expected in manifest.expected_files)
     for expected in manifest.expected_files:
         if not expected.sha256:
             continue
         if include_companions:
             hashes.add(expected.sha256)
             continue
-        if is_main_gguf_variant_path(expected.path, variant_key, drafters):
+        if is_main_gguf_variant_path(expected.path, variant_key):
             hashes.add(expected.sha256)
     return frozenset(hashes)
 
@@ -347,19 +342,14 @@ def _local_main_gguf_blobs_by_quant(
                         continue
                 except (AttributeError, OSError, RuntimeError, ValueError):
                     continue
-            blob_map = cache_inventory._repo_gguf_blob_map(
+            for path, hashes in cache_inventory._repo_gguf_blob_map(
                 repo_info,
                 include_companions = True,
-            )
-            # One repo's whole listing, so the reprieve applies: without it every
-            # quant of a drafter-named repo lands in companion_blobs and the
-            # variant map comes out empty.
-            repo_drafters = drafter_paths_in(str(path).replace("\\", "/") for path in blob_map)
-            for path, hashes in blob_map.items():
+            ).items():
                 normalized = str(path).replace("\\", "/")
                 if not hashes:
                     continue
-                if _is_mmproj_filename(normalized) or normalized in repo_drafters:
+                if _is_mmproj_filename(normalized) or _is_mtp_drafter_path(normalized):
                     companion_blobs.setdefault(normalized, set()).update(
                         str(blob) for blob in hashes if blob
                     )
@@ -825,8 +815,6 @@ async def get_gguf_variants_answer(
                     continue
                 by_filename: dict[str, int] = {}
                 by_quant: dict[str, int] = {}
-                # A snapshot is one repo's whole listing, so the reprieve applies.
-                snap_drafters = drafter_paths_in(repo_listing_in(snap))
                 for f in gguf_paths:
                     try:
                         rel = f.relative_to(snap).as_posix()
@@ -836,7 +824,7 @@ async def get_gguf_variants_answer(
                         continue
                     key = rel.lower()
                     by_filename[key] = max(by_filename.get(key, 0), size)
-                    if _is_mmproj_filename(f.name) or rel in snap_drafters:
+                    if _is_mmproj_filename(f.name) or _is_mtp_drafter_path(rel):
                         continue
                     q = extract_quant_label(rel)
                     if is_big_endian_gguf_path(rel, q):

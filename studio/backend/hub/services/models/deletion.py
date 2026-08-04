@@ -31,7 +31,12 @@ from hub.utils.paths import (
 )
 from hub.services import resolve_destructive_repo_ids
 from hub.services.models import cache_inventory, downloads, gguf_variants
-from hub.services.models.common import _is_gguf_filename
+from hub.services.models.common import (
+    _is_gguf_filename,
+    _is_main_gguf_filename,
+    _is_mmproj_filename,
+    _is_mtp_drafter_path,
+)
 
 logger = get_logger(__name__)
 
@@ -74,16 +79,11 @@ def _path_exists_or_symlink(path: Path) -> bool:
 
 
 def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
-    """*predicate* is called as ``(name, main_names)``: the snapshot-relative name
-    (a bare ``file_name`` cannot tell an ``MTP/`` drafter from a quant) and that
-    revision's reprieve-aware main GGUFs. Deciding "main" and "companion" from the
-    same set is what keeps a delete from reclaiming a repo's other quants."""
     matches: list[tuple[Path, Optional[Path], str]] = []
     for rev in getattr(target_repo, "revisions", ()):
-        main_names = cache_inventory._revision_main_gguf_names(rev)
         for f in getattr(rev, "files", ()):
-            name = cache_inventory._cached_repo_file_name(f)
-            if not predicate(name, main_names):
+            name = str(getattr(f, "file_name", ""))
+            if not predicate(name):
                 continue
             file_path = getattr(f, "file_path", None)
             if not file_path:
@@ -104,7 +104,7 @@ def _has_remaining_main_gguf(target_repo) -> bool:
         _path_exists_or_symlink(snap)
         for snap, _blob, _name in _repo_file_matches(
             target_repo,
-            lambda name, main_names: name in main_names,
+            _is_main_gguf_filename,
         )
     )
 
@@ -198,7 +198,7 @@ def _delete_gguf_variant_from_repos(
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         matched = _repo_file_matches(
             target_repo,
-            lambda name, main_names: name in main_names
+            lambda name: _is_main_gguf_filename(name)
             and extract_quant_label(name).lower() == variant.lower(),
         )
 
@@ -214,11 +214,10 @@ def _delete_gguf_variant_from_repos(
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
             companion_matches = _repo_file_matches(
                 target_repo,
-                # Companions: mmproj and the drafter -- downloaded with every
-                # variant, so the last variant's delete reclaims them. Anything
-                # in main_names is a real quant, even when it is prefix-named
-                # (a reprieved repo names every quant after the drafter family).
-                lambda name, main_names: _is_gguf_filename(name) and name not in main_names,
+                # Companions: mmproj and the MTP drafter -- downloaded with
+                # every variant, so the last variant's delete reclaims them.
+                lambda name: _is_gguf_filename(name)
+                and (_is_mmproj_filename(name) or _is_mtp_drafter_path(name)),
             )
             for snap, _blob, name in companion_matches:
                 try:
@@ -421,7 +420,7 @@ def reclaim_replaced_gguf_variant(
         stale_matches: list[tuple[Path, Optional[Path], str]] = []
         matches = _repo_file_matches(
             target_repo,
-            lambda name, main_names: name in main_names
+            lambda name: _is_main_gguf_filename(name)
             and extract_quant_label(name).lower() == variant_key,
         )
         for snap, blob, name in matches:

@@ -9,7 +9,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 from loggers import get_logger
 
@@ -83,39 +83,34 @@ def is_mmproj_filename(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
-# dspark and dflash are the same DeepSeek V4 Flash drafter: the folder it ships
-# in and the architecture it reports.
+# Separate-file drafter kinds. dspark and dflash are the same DeepSeek V4 Flash
+# drafter: the folder it ships in and the architecture it reports.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
 
-# Narrower than the prefix rule, since a directory name can be the user's: only
-# ``mtp/`` and ``dspark/`` are ever a publisher's companion folder, while
-# ``dflash/`` is a family name a user picks for real weights. DFlash drafters
-# still match the prefix (ggml-org/Qwen3.6-27B-GGUF: dflash-Qwen3.6-27B-BF16.gguf).
+# Narrower than the prefix rule: only ``mtp/`` and ``dspark/`` are ever a
+# publisher's companion folder, while ``dflash/`` is a family name a user picks
+# for real weights.
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
-
-# Kinds whose names also name a model family, so a listing of nothing but these
-# can be a real model rather than a companion left on its own. No family is
-# named MTP, so an ``mtp-`` file is always a companion.
-_REPRIEVABLE_KINDS = ("dspark", "dflash")
 
 
 def is_mtp_drafter_path(path: str) -> bool:
     """True for a separate-file speculative-decoding drafter, a companion to the
-    main model rather than a selectable quant: repo-root ``mtp-*.gguf`` (the Q8_0
-    copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir
-    copies (Gemma 4) and the ``dspark/`` drafters (DeepSeek V4 Flash). Repos that
-    bake the head into the main GGUF (Qwen) have no such file, so this is False
-    for them. Must be excluded from main-model selection everywhere mmproj is.
+    main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the
+    Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/``
+    subdir copies (Gemma 4) and the ``dspark/`` drafters (DeepSeek V4 Flash).
+    Repos that bake the head into the main GGUF (Qwen) have no such file, so this
+    is False for them. Must be excluded from main-model selection everywhere
+    mmproj is.
 
     Matched by basename prefix, or by an exact parent directory for the kinds in
     ``_DRAFTER_DIR_KINDS``; never a substring, since the kind names double as
     family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and
     ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model.
 
-    CANONICAL COPY, with two mirrors that must change in lockstep:
-    utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub)
-    and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub
-    imports; bundles the mmproj check).
+    CANONICAL COPY. Layering keeps two mirrors that must change in lockstep:
+    utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import
+    hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core
+    avoids hub imports; bundles the mmproj check).
     """
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
@@ -129,68 +124,6 @@ def is_mtp_drafter_path(path: str) -> bool:
 
 def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
-
-
-_NON_GGUF_WEIGHT_BIN_PREFIXES = ("pytorch_model", "model", "adapter_model", "consolidated")
-
-
-def is_non_gguf_weight_path(path: str) -> bool:
-    """True for a primary weight file in another format, which counts as a main
-    model when deciding whether a drafter has something to accompany. Mirrors
-    hub.services.models.common._is_model_directory, so ``tokenizer.bin`` is out."""
-    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if name.endswith(".safetensors"):
-        return True
-    return name.endswith(".bin") and name.startswith(_NON_GGUF_WEIGHT_BIN_PREFIXES)
-
-
-def is_drafter_dir_path(path: str) -> bool:
-    """True when *path* sits under a drafter directory, the half of the rule the
-    publisher controls. Always a companion, unlike the basename prefix."""
-    p = path.replace("\\", "/").lower()
-    if not p.endswith(".gguf"):
-        return False
-    return any(kind in [s for s in p.split("/")[:-1] if s] for kind in _DRAFTER_DIR_KINDS)
-
-
-def is_reprievable_drafter_path(path: str) -> bool:
-    """Whether *path* is named for a kind in ``_REPRIEVABLE_KINDS``, the only
-    files ``drafter_paths_in`` may promote to a main model."""
-    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return any(name.startswith(f"{kind}-") for kind in _REPRIEVABLE_KINDS)
-
-
-def drafter_paths_in(paths: Iterable[str]) -> frozenset[str]:
-    """The drafter GGUFs among *paths*. A companion is only a companion when it
-    has something to accompany, so a PREFIX-named drafter with no main model
-    beside it is kept: a repo can be named after the drafter family and carry
-    the prefix on every real quant (mradermacher/DFlash-Qwen3.5-27B-Uncensored-
-    GGUF), and drafter-only repos exist. Where a main model IS present the
-    prefix still wins, or ggml-org/Qwen3.6-27B-GGUF's 3 GB
-    ``dflash-Qwen3.6-27B-BF16.gguf`` would merge into the real 54 GB one.
-
-    A DIRECTORY-named drafter (``mtp/``, ``dspark/``) is never reprieved: the
-    publisher laid it out as a companion, and a snapshot holding only that is a
-    half-downloaded repo, not a model. Neither is an ``mtp-`` file, whose kind
-    never names a family (``_REPRIEVABLE_KINDS``).
-    """
-    listing = list(paths)
-    drafters = {path for path in listing if is_gguf_filename(path) and is_mtp_drafter_path(path)}
-    has_main = any(
-        is_non_gguf_weight_path(path)
-        or (is_gguf_filename(path) and path not in drafters and not is_mmproj_filename(path))
-        for path in listing
-    )
-    if has_main:
-        return frozenset(drafters)
-    # A reprieved file also has to look like a quant to be selectable as one.
-    return frozenset(
-        path
-        for path in drafters
-        if is_drafter_dir_path(path)
-        or not is_reprievable_drafter_path(path)
-        or extract_quant_token(path) is None
-    )
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
@@ -250,32 +183,13 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
             continue
 
 
-def repo_listing_in(directory: Path) -> list[str]:
-    """Every file under *directory* as posix rel paths, so a whole-repo drafter
-    decision sees non-GGUF weights too. Bounded like ``iter_gguf_files``."""
-    out: list[str] = []
-    seen = 0
-    for dirpath, dirnames, filenames in os.walk(directory, onerror = lambda _e: None):
-        base = Path(dirpath)
-        for name in filenames:
-            try:
-                out.append((base / name).relative_to(directory).as_posix())
-            except ValueError:
-                continue
-        seen += len(dirnames) + len(filenames)
-        if seen > _MAX_LOCAL_SCAN_ENTRIES:
-            break
-    return out
-
-
 def pick_best_gguf(filenames: list[str]) -> Optional[str]:
-    drafters = drafter_paths_in(filenames)
     gguf_files = [
         name
         for name in filenames
         if is_gguf_filename(name)
         and not is_mmproj_filename(name)
-        and name not in drafters
+        and not is_mtp_drafter_path(name)
         and not is_big_endian_gguf_path(name, extract_quant_label(name))
     ]
     if not gguf_files:
@@ -435,7 +349,7 @@ def list_gguf_variants_from_hf_cache(
     # Pick the snapshot the inventory row does: newest holding a whole quant, else first non-empty.
     fallback: Optional[tuple[list[GgufVariantInfo], bool, set]] = None
     for snapshot in snapshots:
-        variants, has_vision = list_local_gguf_variants(str(snapshot), whole_repo = True)
+        variants, has_vision = list_local_gguf_variants(str(snapshot))
         complete = complete_snapshot_variants(str(snapshot)) if variants else set()
         if variants:
             # Selection only: an unlabelled quant cannot be judged, so it counts as usable.
@@ -508,11 +422,10 @@ def list_partial_gguf_variants_from_state(
         size_bytes = 0
         companion_bytes = 0
         if manifest is not None:
-            drafters = drafter_paths_in(file.path for file in manifest.expected_files)
             for expected in manifest.expected_files:
                 if not is_gguf_filename(expected.path):
                     continue
-                if expected.path in drafters:
+                if is_mtp_drafter_path(expected.path):
                     # Downloaded with every variant (like mmproj) but not a
                     # selectable quant; count it so the shown download size
                     # matches what is fetched.
@@ -570,7 +483,7 @@ def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Option
     if it is already downloaded in the HF cache, else ``None``. Read-only — never
     triggers a download. Lets callers read header metadata before a load."""
     for snapshot in iter_snapshots_preferring_whole(repo_id, gguf_variant):
-        variants, _ = list_local_gguf_variants(str(snapshot), whole_repo = True)
+        variants, _ = list_local_gguf_variants(str(snapshot))
         for variant in variants:
             if gguf_variant is None or variant.quant == gguf_variant:
                 candidate = snapshot / variant.filename
@@ -625,15 +538,12 @@ def list_gguf_variants(
     has_vision = False
     quant_totals: dict[str, int] = {}
     quant_first_file: dict[str, str] = {}
-    drafters = drafter_paths_in(
-        name for s in info.siblings if isinstance(name := getattr(s, "rfilename", None), str)
-    )
 
     for sibling in info.siblings:
         filename = getattr(sibling, "rfilename", None)
         if not isinstance(filename, str) or not is_gguf_filename(filename):
             continue
-        if filename in drafters:
+        if is_mtp_drafter_path(filename):
             continue
         if is_mmproj_filename(filename):
             has_vision = True
@@ -673,13 +583,8 @@ def _resolve_gguf_dir(path: Path) -> Optional[Path]:
 
 
 def list_local_gguf_variants(
-    directory: str,
-    model_root: Optional[str] = None,
-    *,
-    whole_repo: bool = False,
+    directory: str, model_root: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool]:
-    """*whole_repo* marks *directory* as one repo's full contents (an HF cache
-    snapshot), which is the only local case where the drafter reprieve applies."""
     root = _resolve_gguf_dir(Path(directory))
     if root is None:
         return [], False
@@ -698,20 +603,7 @@ def list_local_gguf_variants(
     quant_first_file: dict[str, str] = {}
     has_vision = False
 
-    # An arbitrary folder gets no reprieve: one holding only a companion is a
-    # half-downloaded repo, indistinguishable from a drafter-named one. A whole
-    # snapshot is the same listing the remote path sees, so it does.
-    scanned = [
-        (file, file.relative_to(root).as_posix())
-        for file in sorted(iter_gguf_files(root, recursive = True))
-    ]
-    drafters = {rel for file, rel in scanned if _is_local_mtp_drafter(file, custom_root, rel)}
-    if whole_repo and drafters:
-        # The FULL listing, not just the GGUFs: a safetensors weight beside the
-        # drafter is something to accompany, so there is nothing to reprieve.
-        drafters &= drafter_paths_in(repo_listing_in(root))
-
-    for file, rel in scanned:
+    for file in sorted(iter_gguf_files(root, recursive = True)):
         if is_mmproj_filename(file.name):
             # A projector llama.cpp cannot open is not vision support.
             try:
@@ -723,7 +615,8 @@ def list_local_gguf_variants(
             size = file.stat().st_size
         except OSError:
             size = 0
-        if rel in drafters:
+        rel = file.relative_to(root).as_posix()
+        if _is_local_mtp_drafter(file, custom_root, rel):
             continue
         quant = extract_quant_label(rel)
         if is_big_endian_gguf_path(rel, quant):

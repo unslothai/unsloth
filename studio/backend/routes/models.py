@@ -2873,14 +2873,12 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
         for root in roots:
             matches: list[tuple[str, Path]] = []
             total = 0
-            # A snapshot root is one repo's whole listing, so the reprieve applies.
-            main_names = _snapshot_main_gguf_names(repo_listing_in(root))
             for f in _iter_gguf_paths(root):
                 try:
                     rel = f.relative_to(root).as_posix()
                 except ValueError:
                     rel = f.name
-                q = _main_variant_gguf_label(rel, main_names)
+                q = _main_variant_gguf_label(rel)
                 if q is None or _normalized_quant_label(q) != want:
                     continue
                 try:
@@ -3177,36 +3175,16 @@ def _cached_repo_file_name(file_obj) -> str:
     return impl(file_obj)
 
 
-def _main_variant_gguf_label(rel_path: str, main_names: Optional[set[str]] = None) -> Optional[str]:
-    """*main_names* comes from a whole-repo listing (a snapshot or a revision), so
-    the drafter reprieve applies; None keeps the context-free per-path rule."""
-    if main_names is not None:
-        if rel_path not in main_names:
-            return None
-    elif not _is_main_gguf_filename(rel_path.rsplit("/", 1)[-1]) or _is_mtp_drafter(rel_path):
+def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
+    name = rel_path.rsplit("/", 1)[-1]
+    if not _is_main_gguf_filename(name):
+        return None
+    if _is_mtp_drafter(rel_path):
         return None
     label = _extract_quant_label(rel_path)
     if _is_big_endian_gguf_path(rel_path, label):
         return None
     return label
-
-
-def _revision_main_gguf_names(revision) -> set[str]:
-    """Main GGUFs in ONE revision, whose file list is that repo's whole listing, so
-    the drafter reprieve applies. Delegates to the cache-inventory copy."""
-    from hub.services.models.cache_inventory import _revision_main_gguf_names as impl
-    return impl(revision)
-
-
-def _snapshot_main_gguf_names(names) -> set[str]:
-    """Main GGUFs among ONE snapshot's full file listing; the reprieve applies."""
-    from hub.services.models.common import _snapshot_main_gguf_names as impl
-    return impl(names)
-
-
-def repo_listing_in(directory) -> list[str]:
-    from hub.utils.gguf import repo_listing_in as impl
-    return impl(directory)
 
 
 def _normalized_quant_label(label: str) -> str:
@@ -3275,11 +3253,10 @@ def _repo_gguf_size_bytes(repo_info) -> int:
     unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
-        main = _revision_main_gguf_names(revision)
         for f in revision.files:
             # Snapshot-relative: only the directory tells an MTP/ drafter from a primary quant.
             name = _cached_repo_file_name(f)
-            if name in main:
+            if _is_main_gguf_filename(name):
                 blob_path = getattr(f, "blob_path", None)
                 size = f.size_on_disk or 0
                 if blob_path:
@@ -3322,9 +3299,8 @@ def _repo_gguf_last_modified(repo_info) -> float:
     """
     latest = 0.0
     for revision in repo_info.revisions:
-        main = _revision_main_gguf_names(revision)
         for f in revision.files:
-            if _cached_repo_file_name(f) in main:
+            if _is_main_gguf_filename(_cached_repo_file_name(f)):
                 latest = max(latest, _blob_mtime(f))
     return latest
 
@@ -3366,7 +3342,7 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
         Path(snapshot)
         for revision in repo_info.revisions
         if (snapshot := getattr(revision, "snapshot_path", None)) is not None
-        and _revision_main_gguf_names(revision)
+        and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
     ]
     candidates.sort(key = snapshot_selection_key, reverse = True)
     # Newest first, skipping any holding no whole quant, else a torn download beats a loadable one.
@@ -3598,8 +3574,6 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
         for rev in candidate_revisions:
             snapshot = getattr(rev, "snapshot_path", None)
             matches = []
-            # A revision's file list is one repo's whole listing.
-            main_names = _revision_main_gguf_names(rev)
             for f in rev.files:
                 p = Path(f.file_path)
                 rel = f.file_name
@@ -3608,7 +3582,7 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
                         rel = p.relative_to(snapshot).as_posix()
                     except ValueError:
                         pass
-                label = _main_variant_gguf_label(rel, main_names)
+                label = _main_variant_gguf_label(rel)
                 if label is None or _normalized_quant_label(label) != want:
                     continue
                 if p.exists() or p.is_symlink():

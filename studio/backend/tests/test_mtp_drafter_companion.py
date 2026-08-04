@@ -67,25 +67,21 @@ DRAFTER_CASES = [
     ("dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", True),
     # Local scans can hand the predicate a Windows path.
     ("dspark\\dspark-DeepSeek-V4-Flash-0731-BF16.gguf", True),
-    # Same drafter published under its general.architecture name -- the prefix
-    # carries it, e.g. ggml-org/Qwen3.6-27B-GGUF ships the drafter at the root.
+    # Same drafter published under its general.architecture name; the prefix
+    # carries it, e.g. ggml-org/Qwen3.6-27B-GGUF ships one at the repo root.
     ("dflash/dflash-model-Q8_0.gguf", True),
     ("dflash-model.gguf", True),
     ("dflash-Qwen3.6-27B-BF16.gguf", True),
-    ("dflash-Qwen3.6-27B-Q8_0.gguf", True),
     # ...but dflash is a family name, so the DIRECTORY is not a drafter marker.
     # No published repo uses a dflash/ companion folder, while users do name a
     # local folder after the family they downloaded.
     ("dflash/Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
-    ("DFlash/Laguna-S-2.1-DFlash-Q5_K_M.gguf", False),
     ("foo/dflash/bar.gguf", False),
     # Real Hub filenames where dflash/dspark is the family name: each IS the model.
     ("Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
     ("qwen36-35b-a3b-dflash-Q8_0.gguf", False),
     ("laguna-xs21-dflash-q4.gguf", False),
-    ("mimo-v25-pro-dflash-draft-bf16-rope5m.gguf", False),
     ("xdspark/model.gguf", False),
-    ("sdflash/model.gguf", False),
     ("dspark/README.md", False),
 ]
 
@@ -155,165 +151,6 @@ def test_variant_plans_carry_drafter_as_companion():
     assert q4.main_size_bytes == 4_000
     # Download size = main + mmproj + drafter.
     assert q4.download_size_bytes == 4_600
-
-
-DEEPSEEK_SIBLINGS = [
-    _sib("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00002.gguf", 9_000, "q4-1"),
-    _sib("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00002.gguf", 8_000, "q4-2"),
-    _sib("UD-IQ1_S/DeepSeek-V4-Flash-0731-UD-IQ1_S-00001-of-00002.gguf", 5_000, "iq1-1"),
-    _sib("UD-IQ1_S/DeepSeek-V4-Flash-0731-UD-IQ1_S-00002-of-00002.gguf", 4_000, "iq1-2"),
-    _sib("dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf", 1_100, "dspark-bf16"),
-    _sib("dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", 1_000, "dspark-q8"),
-]
-
-
-def test_dspark_drafters_are_not_quants_and_are_not_auto_fetched():
-    plans = build_gguf_variant_plans(DEEPSEEK_SIBLINGS)
-
-    # The drafters carry BF16/Q8_0 tokens; neither may become a quant.
-    assert set(plans) == {"ud-q4_k_xl", "ud-iq1_s"}
-
-    # DSpark is opt-in and ~11 GB per file, so unlike the root mtp-*.gguf it
-    # must not be folded into every plan.
-    for plan in plans.values():
-        assert not any(name.startswith("dspark/") for name in plan.target_filenames)
-        assert plan.companion_hashes == frozenset()
-
-    q4 = plans["ud-q4_k_xl"]
-    assert q4.main_size_bytes == 17_000
-    assert q4.download_size_bytes == 17_000
-
-
-def test_a_repo_of_only_drafters_still_lists_them():
-    # A companion needs something to accompany. mradermacher puts the repo name
-    # on every file, so all 11 quants of DFlash-Qwen3.5-27B-Uncensored-GGUF
-    # carry the dflash- prefix; filtering them would empty a real 27B model.
-    mradermacher = [
-        _sib("DFlash-Qwen3.5-27B-Uncensored.Q4_K_M.gguf", 16_000, "q4"),
-        _sib("DFlash-Qwen3.5-27B-Uncensored.Q8_0.gguf", 28_000, "q8"),
-        _sib("DFlash-Qwen3.5-27B-Uncensored.mmproj-f16.gguf", 900, "mmproj"),
-    ]
-    assert set(build_gguf_variant_plans(mradermacher)) == {"q4_k_m", "q8_0"}
-
-    # A reprieved file still has to look like a quant, so a drafter whose name
-    # carries no quant token stays a companion.
-    assert build_gguf_variant_plans([_sib("dspark-drafter-blob.gguf", 6_900, "d1")]) == {}
-
-
-def test_a_drafter_beside_non_gguf_weights_is_still_a_companion():
-    # Weights in another format are still a main model, so the drafter has
-    # something to accompany and must not be advertised as a GGUF variant.
-    siblings = [
-        _sib("model-00001-of-00001.safetensors", 64_000, "st"),
-        _sib("mtp-model-Q8_0.gguf", 100, "d"),
-    ]
-    assert build_gguf_variant_plans(siblings) == {}
-
-
-def test_a_reprieved_root_drafter_is_not_also_a_companion():
-    # The plan builder would otherwise fold the same file in twice, doubling
-    # main_size_bytes and duplicating target_filenames.
-    plans = build_gguf_variant_plans([_sib("dflash-model-Q8_0.gguf", 1_000, "d")])
-    plan = plans["q8_0"]
-    assert plan.target_filenames == ("dflash-model-Q8_0.gguf",)
-    assert plan.main_size_bytes == 1_000
-    assert plan.download_size_bytes == 1_000
-
-
-MRADERMACHER = [
-    "DFlash-Qwen3.5-27B-Uncensored.Q4_K_M.gguf",
-    "DFlash-Qwen3.5-27B-Uncensored.Q8_0.gguf",
-]
-GGML_ORG = [
-    "Qwen3.6-27B-BF16.gguf",
-    "Qwen3.6-27B-Q8_0.gguf",
-    "dflash-Qwen3.6-27B-BF16.gguf",
-    "mtp-Qwen3.6-27B-Q8_0.gguf",
-]
-
-
-def test_every_whole_repo_consumer_agrees_on_a_reprieved_repo():
-    # The reprieve is only useful if the loader and the auto-download admission
-    # resolve what the picker advertises.
-    from core.inference.llama_cpp import _gguf_files_for_variant
-    from core.inference.openai_auto_download import _gguf_variants
-
-    assert _gguf_files_for_variant(MRADERMACHER, "Q4_K_M") == [MRADERMACHER[0]]
-    assert sorted(_gguf_variants(_sib(n, 1_000, n) for n in MRADERMACHER)) == ["Q4_K_M", "Q8_0"]
-
-    # ...and a repo that does have main weights still hides its drafters.
-    assert _gguf_files_for_variant(GGML_ORG, "BF16") == ["Qwen3.6-27B-BF16.gguf"]
-    assert sorted(_gguf_variants(_sib(n, 1_000, n) for n in GGML_ORG)) == ["BF16", "Q8_0"]
-
-
-def test_only_a_whole_snapshot_gets_the_reprieve_locally(tmp_path):
-    # An HF cache snapshot is the same listing the remote path sees; an
-    # arbitrary folder is not, so it keeps the stricter per-path filter.
-    for name in MRADERMACHER:
-        (tmp_path / name).write_bytes(b"x" * 16)
-
-    whole = list_hub_local_gguf_variants(str(tmp_path), whole_repo = True)[0]
-    assert sorted(v.quant for v in whole) == ["Q4_K_M", "Q8_0"]
-    assert list_hub_local_gguf_variants(str(tmp_path))[0] == []
-
-
-def test_a_directory_named_drafter_is_never_reprieved():
-    # A snapshot holding only MTP/ or dspark/ is a half-downloaded repo, not a
-    # drafter-only one, so the publisher's layout still wins.
-    assert build_gguf_variant_plans([_sib("MTP/mtp-gemma-4-12b-it.gguf", 100, "d")]) == {}
-    assert build_gguf_variant_plans([_sib("dspark/dspark-model-BF16.gguf", 100, "d")]) == {}
-
-
-def test_drafters_beside_a_main_model_are_still_excluded():
-    # ggml-org/Qwen3.6-27B-GGUF: the guard must not fire here, or the 3 GB
-    # dflash BF16 merges into the real 54 GB one.
-    ggml_org = [
-        _sib("Qwen3.6-27B-BF16.gguf", 53_810, "bf16"),
-        _sib("Qwen3.6-27B-Q8_0.gguf", 28_600, "q8"),
-        _sib("dflash-Qwen3.6-27B-BF16.gguf", 3_470, "dflash-bf16"),
-        _sib("mtp-Qwen3.6-27B-Q8_0.gguf", 3_160, "mtp-q8"),
-    ]
-    plans = build_gguf_variant_plans(ggml_org)
-    assert set(plans) == {"bf16", "q8_0"}
-    assert plans["bf16"].main_filenames == frozenset({"Qwen3.6-27B-BF16.gguf"})
-    assert plans["bf16"].main_size_bytes == 53_810
-
-
-def test_dspark_only_repo_has_no_preferred_drafter_to_download():
-    # preferred_mtp_sibling picks what is fetched with every variant, and a
-    # DSpark repo ships no launchable drafter.
-    assert preferred_mtp_sibling(DEEPSEEK_SIBLINGS) is None
-
-
-def test_cached_drafter_lookup_ignores_dspark(tmp_path, monkeypatch):
-    # _cached_repo_mtp_drafter feeds --spec-type draft-mtp, so a cached DSpark
-    # file must not surface there even though it is a companion for selection.
-    from core.inference import llama_cpp as llama_cpp_module
-
-    def _snapshot(files):
-        snap = tmp_path / f"snap{len(list(tmp_path.iterdir()))}"
-        for rel in files:
-            path = snap / rel
-            path.parent.mkdir(parents = True, exist_ok = True)
-            path.write_bytes(b"x")
-        return snap
-
-    dspark_only = _snapshot(["dspark/dspark-model-Q8_0.gguf", "model-Q4_K_M.gguf"])
-    with_mtp = _snapshot(["mtp-model.gguf", "model-Q4_K_M.gguf"])
-
-    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
-    snapshots: list[Path] = []
-    monkeypatch.setattr(
-        "utils.models.model_config._iter_hf_cache_snapshots",
-        lambda *a, **k: list(snapshots),
-    )
-
-    snapshots[:] = [dspark_only]
-    assert backend._cached_repo_mtp_drafter("some/repo") is None
-
-    snapshots[:] = [with_mtp, dspark_only]
-    found = backend._cached_repo_mtp_drafter("some/repo")
-    assert found is not None and found.endswith("mtp-model.gguf")
 
 
 def test_baked_in_repo_plans_unchanged():
@@ -641,25 +478,6 @@ def test_detect_gguf_model_rejects_mtp_subdir_copy(tmp_path):
     assert detect_gguf_model(str(sub)) is None
     assert list_local_gguf_variants(str(tmp_path))[0] == []
     assert list_hub_local_gguf_variants(str(tmp_path))[0] == []
-
-
-def test_local_dflash_folder_keeps_its_models(tmp_path):
-    # DFlash is a family name, not a companion folder: no published repo ships a
-    # dflash/ dir, but a user does name the folder after what they downloaded
-    # (z-lab/Qwen3.6-35B-A3B-DFlash, poolside/Laguna-S-2.1-DFlash, ...).
-    # Matching the directory would hide the weights from every detection path.
-    sub = tmp_path / "dflash"
-    sub.mkdir()
-    main = sub / "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf"
-    main.write_bytes(b"x" * 100)
-    drafter = sub / "dflash-Qwen3.6-27B-BF16.gguf"  # ggml-org/Qwen3.6-27B-GGUF
-    drafter.write_bytes(b"x" * 10)
-
-    assert detect_gguf_model(str(main)) == str(main.resolve())
-    assert detect_gguf_model(str(sub)) == str(main.resolve())
-    assert detect_gguf_model(str(drafter)) is None
-    for lister in (list_local_gguf_variants, list_hub_local_gguf_variants):
-        assert [v.filename for v in lister(str(sub))[0]] == [main.name]
 
 
 def test_registered_mtp_root_keeps_descendant_models_and_excludes_companions(tmp_path, monkeypatch):
@@ -1089,453 +907,85 @@ def test_companion_search_root_keeps_non_quant_directories(tmp_path):
         assert _local_gguf_companion_search_root(str(directory), str(weight)) == str(directory)
 
 
-# ── Whole-repo scope for the drafter reprieve ────────────────────────
-# The reprieve applies to WHOLE-REPO listings only: remote sibling lists and HF
-# cache snapshots. An arbitrary local folder never gets it (a folder holding
-# only a companion is a half-downloaded repo), which the tests above pin.
+# ── DSpark drafters (DeepSeek V4 Flash) ──────────────────────────────
 
-
-def _snapshot(root: Path, repo: str, names: dict[str, int]) -> Path:
-    """A one-revision HF cache snapshot for *repo* holding *names* -> size."""
-    snap = root / f"models--{repo.replace('/', '--')}" / "snapshots" / "rev1"
-    for rel, size in names.items():
-        file = snap / rel
-        file.parent.mkdir(parents = True, exist_ok = True)
-        file.write_bytes(b"x" * size)
-    return snap
-
-
-def _use_cache(monkeypatch, root: Path) -> None:
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = root),
-    )
-
-
-# 1. Offline detection must resolve what the online path resolves.
-def test_hf_cache_detection_reprieves_a_drafter_named_repo(tmp_path, monkeypatch):
-    """A cache snapshot IS a whole-repo listing. Without the reprieve, offline or
-    after a Hub failure a drafter-prefixed repo returned no GGUF at all."""
-    from utils.models.model_config import _detect_gguf_from_hf_cache
-
-    repo = "mradermacher/DFlash-Qwen3.5-27B-Uncensored-GGUF"
-    _snapshot(
-        tmp_path,
-        repo,
-        {
-            "DFlash-Qwen3.5-27B-Uncensored.Q4_K_M.gguf": 16,
-            "DFlash-Qwen3.5-27B-Uncensored.Q8_0.gguf": 32,
-        },
-    )
-    _use_cache(monkeypatch, tmp_path)
-
-    assert _detect_gguf_from_hf_cache(repo) == "DFlash-Qwen3.5-27B-Uncensored.Q4_K_M.gguf"
-
-
-def test_hf_cache_detection_still_rejects_a_directory_named_drafter(tmp_path, monkeypatch):
-    """Negative control: a ``dspark/`` companion is never reprieved."""
-    from utils.models.model_config import _detect_gguf_from_hf_cache
-
-    repo = "unsloth/DeepSeek-V4-Flash-0731-GGUF"
-    _snapshot(tmp_path, repo, {"dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf": 16})
-    _use_cache(monkeypatch, tmp_path)
-
-    assert _detect_gguf_from_hf_cache(repo) is None
-
-
-# 2. The loader mirror must read the quant token exactly as the canonical does.
-@pytest.mark.parametrize(
-    "listing,expected",
-    [
-        # Quant named by the PARENT directory, not the basename.
-        (["Q4_K_M/dflash-model.gguf"], set()),
-        # No family is named MTP, so mtp- is never reprieved whatever names it.
-        (["BF16/mtp-model.gguf"], {"BF16/mtp-model.gguf"}),
-        # Still a drafter: nothing anywhere names a quant.
-        (["dflash-model.gguf"], {"dflash-model.gguf"}),
-        # Directory-named drafters are never reprieved, quant token or not.
-        (["Q4_K_M/dspark/drafter.gguf"], {"Q4_K_M/dspark/drafter.gguf"}),
-    ],
-)
-def test_drafter_reprieve_mirrors_agree_on_parent_quant_tokens(listing, expected):
-    from core.inference.llama_cpp import _drafter_paths_in as _core_drafter_paths_in
-    from hub.utils.gguf import drafter_paths_in
-    from utils.models.model_config import _drafter_paths_in as _utils_drafter_paths_in
-
-    assert set(drafter_paths_in(listing)) == expected
-    assert set(_utils_drafter_paths_in(listing)) == expected
-    assert set(_core_drafter_paths_in(listing)) == expected
-
-
-def test_variant_file_lookup_finds_a_parent_quant_reprieved_weight():
-    """The picker advertises ``Q4_K_M`` for it, so the loader must resolve it too
-    or the load fails with no main file."""
-    from core.inference.llama_cpp import _gguf_files_for_variant
-    assert _gguf_files_for_variant(["Q4_K_M/dflash-model.gguf"], "Q4_K_M") == [
-        "Q4_K_M/dflash-model.gguf"
-    ]
-
-
-# 3. The reprieve decision needs the FULL snapshot listing, not just the GGUFs.
-def test_whole_repo_reprieve_sees_non_gguf_weights(tmp_path):
-    """A safetensors weight is something to accompany, so the drafter beside it
-    stays a companion instead of becoming a phantom Q8_0 quant."""
-    (tmp_path / "model.safetensors").write_bytes(b"x" * 4096)
-    (tmp_path / "config.json").write_bytes(b"{}")
-    (tmp_path / "mtp-model-Q8_0.gguf").write_bytes(b"x" * 64)
-
-    assert list_hub_local_gguf_variants(str(tmp_path), whole_repo = True)[0] == []
-
-
-def test_whole_repo_reprieve_still_applies_without_a_main_weight(tmp_path):
-    """Negative control: with nothing to accompany, the quant-labelled drafter IS
-    the snapshot's weight."""
-    (tmp_path / "dflash-model-Q8_0.gguf").write_bytes(b"x" * 64)
-
-    variants = list_hub_local_gguf_variants(str(tmp_path), whole_repo = True)[0]
-    assert [(v.quant, v.filename) for v in variants] == [("Q8_0", "dflash-model-Q8_0.gguf")]
-    # ...but an arbitrary folder gets no reprieve, so the same tree lists nothing.
-    assert list_hub_local_gguf_variants(str(tmp_path))[0] == []
-
-
-# 4. A fully downloaded drafter-named repo must be a usable, chattable row.
-def test_cache_inventory_admits_a_fully_downloaded_drafter_named_repo(tmp_path):
-    """Every file carries the family prefix (mradermacher names files after the
-    repo), so the context-free predicate left the snapshot with no variants."""
-    from hub.services.models import cache_inventory, common
-    from hub.utils import inventory_scan
-
-    names = {
-        "DFlash-Qwen3.5-27B-Uncensored.Q4_K_M.gguf": 32,
-        "DFlash-Qwen3.5-27B-Uncensored.Q8_0.gguf": 64,
-    }
-    snap = _snapshot(tmp_path, "mradermacher/DFlash-Qwen3.5-27B-Uncensored-GGUF", names)
-
-    assert inventory_scan._completed_gguf_variants(snap) == {"Q4_K_M", "Q8_0"}
-    assert inventory_scan.snapshot_has_complete_variants(str(snap)) is True
-    rows = common._classify_local_path(snap, "hf_cache", model_id = "org/DFlash-GGUF")
-    assert [row.model_format for row in rows] == ["gguf"]
-
-    revision = SimpleNamespace(
-        commit_hash = "rev1",
-        snapshot_path = str(snap),
-        files = [
-            SimpleNamespace(
-                file_path = str(snap / rel),
-                file_name = rel,
-                size_on_disk = size,
-                blob_path = None,
-                blob_last_modified = 1.0,
-            )
-            for rel, size in names.items()
-        ],
-    )
-    repo_info = SimpleNamespace(repo_path = None, revisions = [revision])
-    assert cache_inventory._repo_has_gguf_files(repo_info) is True
-
-
-def test_arbitrary_folder_scans_keep_the_context_free_rule(tmp_path):
-    """The scoping rule: only snapshots are whole-repo listings. A scanned folder
-    holding one companion is a half-downloaded repo, not a model."""
-    from hub.services.models import common
-
-    (tmp_path / "mtp-model-Q8_0.gguf").write_bytes(b"x" * 64)
-
-    assert common._main_gguf_files(tmp_path) == []
-    assert [row.model_format for row in common._classify_local_path(tmp_path, "models_dir")] == [
-        "unknown"
-    ]
-
-
-# 5. The low-disk fallback must not strip every candidate.
-def test_smallest_fitting_variant_uses_the_listing_aware_drafter_set(monkeypatch):
-    """In a drafter-named repo the context-free predicate removed every candidate
-    and the original disk-space error was raised over a quant that fits."""
-    import huggingface_hub
-
-    from core.inference.llama_cpp import LlamaCppBackend
-
-    sizes = {
-        "DFlash-Qwen3.5-27B-Uncensored.Q4_K_M.gguf": 100,
-        "DFlash-Qwen3.5-27B-Uncensored.Q8_0.gguf": 900,
-    }
-    monkeypatch.setattr(
-        huggingface_hub, "list_repo_files", lambda repo, token = None: list(sizes), raising = False
-    )
-    monkeypatch.setattr(
-        huggingface_hub,
-        "get_paths_info",
-        lambda repo, paths, token = None: [
-            SimpleNamespace(path = path, size = sizes[path]) for path in paths
-        ],
-        raising = False,
-    )
-
-    assert LlamaCppBackend._find_smallest_fitting_variant("org/DFlash-GGUF", 500) == (
-        "DFlash-Qwen3.5-27B-Uncensored.Q4_K_M.gguf",
-        100,
-        [],
-    )
-
-
-def test_smallest_fitting_variant_still_skips_real_companions(monkeypatch):
-    """Negative control: beside a real weight the drafter is a companion again."""
-    import huggingface_hub
-
-    from core.inference.llama_cpp import LlamaCppBackend
-
-    sizes = {
-        "model-Q4_K_M.gguf": 400,
-        "mtp-model-Q8_0.gguf": 100,
-        "mmproj-F16.gguf": 50,
-    }
-    monkeypatch.setattr(
-        huggingface_hub, "list_repo_files", lambda repo, token = None: list(sizes), raising = False
-    )
-    monkeypatch.setattr(
-        huggingface_hub,
-        "get_paths_info",
-        lambda repo, paths, token = None: [
-            SimpleNamespace(path = path, size = sizes[path]) for path in paths
-        ],
-        raising = False,
-    )
-
-    assert LlamaCppBackend._find_smallest_fitting_variant("org/Model-GGUF", 500) == (
-        "model-Q4_K_M.gguf",
-        400,
-        [],
-    )
-
-
-# 6. Only a kind that also names a model family can be reprieved. This is what
-# keeps a drafter from becoming its own --model-draft: MTP is the one kind
-# Studio launches, and an mtp- file is never promoted to a main weight.
-MTP_ONLY_SIBLINGS = [
-    _sib("mtp-model-Q8_0.gguf", 64, "drafter"),
-    SimpleNamespace(rfilename = "README.md", size = 1, lfs = None),
+DEEPSEEK_SIBLINGS = [
+    _sib("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00002.gguf", 9_000, "q4-1"),
+    _sib("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00002.gguf", 8_000, "q4-2"),
+    _sib("UD-IQ1_S/DeepSeek-V4-Flash-0731-UD-IQ1_S-00001-of-00002.gguf", 5_000, "iq1-1"),
+    _sib("dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf", 1_100, "dspark-bf16"),
+    _sib("dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", 1_000, "dspark-q8"),
 ]
 
 
-def test_an_mtp_drafter_is_never_reprieved_into_its_own_model():
-    """Reprieving this would advertise it as Q8_0 while drafter discovery still
-    picked it, launching -m X --model-draft X."""
-    from hub.utils.gguf import drafter_paths_in, is_reprievable_drafter_path
+def test_dspark_drafters_are_not_quants_and_are_not_auto_fetched():
+    plans = build_gguf_variant_plans(DEEPSEEK_SIBLINGS)
 
-    assert not is_reprievable_drafter_path("mtp-model-Q8_0.gguf")
-    assert drafter_paths_in([s.rfilename for s in MTP_ONLY_SIBLINGS]) == frozenset(
-        {"mtp-model-Q8_0.gguf"}
+    # The drafters carry BF16/Q8_0 tokens; neither may become a quant. Before the
+    # filter they were also the two smallest entries, so the fit heuristic
+    # promoted them in a repo whose real quants are 87 GB+.
+    assert set(plans) == {"ud-q4_k_xl", "ud-iq1_s"}
+
+    # DSpark is opt-in and ~11 GB per file, so unlike the root mtp-*.gguf it
+    # must not be folded into every plan.
+    for plan in plans.values():
+        assert not any(name.startswith("dspark/") for name in plan.target_filenames)
+        assert plan.companion_hashes == frozenset()
+
+    q4 = plans["ud-q4_k_xl"]
+    assert q4.main_size_bytes == 17_000
+    assert q4.download_size_bytes == 17_000
+
+
+def test_a_root_dflash_drafter_is_not_a_quant():
+    """ggml-org/Qwen3.6-27B-GGUF ships a 3 GB dflash- drafter beside the real
+    54 GB BF16; merging them would hand llama.cpp the drafter as the model."""
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Qwen3.6-27B-BF16.gguf", 54_000, "bf16"),
+            _sib("dflash-Qwen3.6-27B-BF16.gguf", 3_000, "dflash"),
+        ]
     )
-    # So it is a companion, never a variant, and the two can never collide.
-    assert build_gguf_variant_plans(MTP_ONLY_SIBLINGS) == {}
-    assert preferred_mtp_sibling(MTP_ONLY_SIBLINGS) is MTP_ONLY_SIBLINGS[0]
+    assert set(plans) == {"bf16"}
+    assert plans["bf16"].main_filenames == frozenset({"Qwen3.6-27B-BF16.gguf"})
+    assert plans["bf16"].main_size_bytes == 54_000
 
 
-def test_a_reprieved_drafter_is_not_an_mtp_drafter_candidate(tmp_path, monkeypatch):
-    """The kinds that CAN be reprieved are not the kind Studio launches, so the
-    offline reuse path finds no drafter to pair a dflash weight with."""
-    from core.inference.llama_cpp import LlamaCppBackend
-
-    _snapshot(tmp_path, "org/DFlash-Model-GGUF", {"dflash-model-Q8_0.gguf": 64})
-    _use_cache(monkeypatch, tmp_path)
-
-    backend = LlamaCppBackend()
-    assert backend._cached_repo_mtp_drafter("org/DFlash-Model-GGUF") is None
+def test_gemma_mtp_is_still_auto_downloaded():
+    """Filtering only removes drafters from the quant list. The root mtp-*.gguf
+    is still fetched with every variant so MTP speculative decoding works."""
+    plans = build_gguf_variant_plans(GEMMA_SIBLINGS)
+    for plan in plans.values():
+        assert "mtp-gemma-4-12b-it.gguf" in plan.target_filenames
 
 
-def test_launch_refuses_a_drafter_equal_to_the_model(tmp_path):
-    """Last line of defence, whatever resolved the path (extras, a stale cache):
-    llama-server must never be handed -m X --model-draft X."""
-    from core.inference.llama_cpp import LlamaCppBackend
+def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, monkeypatch):
+    """_cached_repo_mtp_drafter uses the companion predicate inversely, to pick a
+    drafter to launch with --spec-type draft-mtp. DSpark needs draft-dspark plus
+    --fit off, so broadening that predicate must not widen what is launched."""
+    import core.inference.llama_cpp as llama_cpp_module
 
-    model = tmp_path / "mtp-model-Q8_0.gguf"
-    model.write_bytes(b"x" * 64)
-    backend = LlamaCppBackend()
+    def _snapshot(files):
+        snap = tmp_path / f"snap{len(list(tmp_path.iterdir()))}"
+        for rel in files:
+            path = snap / rel
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_bytes(b"x")
+        return snap
 
-    assert (
-        backend._resolve_launch_mtp_path(mtp_draft_path = str(model), model_path = str(model)) is None
-    )
-    flags = backend._build_speculative_flags(
-        speculative_type = "mtp",
-        spec_draft_n_max = None,
-        extra_args = None,
-        model_identifier = "org/MTP-Model-GGUF",
-        model_path = str(model),
-        gpus = False,
-        binary = None,
-        mtp_draft_path = str(model),
-    )
-    assert "--model-draft" not in flags
+    dspark_only = _snapshot(["dspark/dspark-model-Q8_0.gguf", "model-Q4_K_M.gguf"])
+    with_mtp = _snapshot(["mtp-model.gguf", "model-Q4_K_M.gguf"])
 
-
-def test_launch_keeps_a_genuine_separate_drafter(tmp_path):
-    """Negative control: a real companion beside a different model still loads."""
-    from core.inference.llama_cpp import LlamaCppBackend
-
-    model = tmp_path / "gemma-4-12b-it-Q4_K_M.gguf"
-    model.write_bytes(b"x" * 64)
-    drafter = tmp_path / "mtp-gemma-4-12b-it.gguf"
-    drafter.write_bytes(b"x" * 8)
-    backend = LlamaCppBackend()
-
-    assert backend._resolve_launch_mtp_path(
-        mtp_draft_path = str(drafter), model_path = str(model)
-    ) == str(drafter)
-
-
-# 7. The runtime listers and the cached resolvers are whole-repo consumers too.
-def test_runtime_remote_lister_reprieves_a_drafter_named_repo(monkeypatch):
-    """list_gguf_variants feeds the load path. Filtering per sibling left a
-    drafter-named repo with no variants, so the load fell back to a hard-coded
-    Q4_K_M that such repos need not publish."""
-    from utils.models import model_config
-
-    siblings = [_sib(name, 1_000, name) for name in MRADERMACHER]
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+    snapshots: list[Path] = []
     monkeypatch.setattr(
-        model_config,
-        "hf_model_info",
-        lambda *_a, **_k: SimpleNamespace(siblings = siblings),
-        raising = False,
-    )
-    monkeypatch.setattr(
-        "huggingface_hub.model_info", lambda *_a, **_k: SimpleNamespace(siblings = siblings)
+        "utils.models.model_config._iter_hf_cache_snapshots",
+        lambda *a, **k: list(snapshots),
     )
 
-    variants, _has_vision = model_config.list_gguf_variants("mradermacher/DFlash-GGUF")
-    assert sorted(v.quant for v in variants) == ["Q4_K_M", "Q8_0"]
+    snapshots[:] = [dspark_only]
+    assert backend._cached_repo_mtp_drafter("some/repo") is None
 
-
-def test_runtime_local_lister_reprieves_only_a_whole_snapshot(tmp_path):
-    """The cache fallback serves snapshots, which are whole-repo listings; an
-    arbitrary folder keeps the stricter per-path rule."""
-    from utils.models.model_config import list_local_gguf_variants
-
-    for name in MRADERMACHER:
-        (tmp_path / name).write_bytes(b"x" * 16)
-
-    whole = list_local_gguf_variants(str(tmp_path), whole_repo = True)[0]
-    assert sorted(v.quant for v in whole) == ["Q4_K_M", "Q8_0"]
-    assert list_local_gguf_variants(str(tmp_path))[0] == []
-
-
-def test_runtime_local_lister_sees_non_gguf_weights(tmp_path):
-    """A safetensors weight is something to accompany, so nothing is reprieved."""
-    from utils.models.model_config import list_local_gguf_variants
-
-    (tmp_path / "model.safetensors").write_bytes(b"x" * 4096)
-    (tmp_path / "dflash-model-Q8_0.gguf").write_bytes(b"x" * 64)
-
-    assert list_local_gguf_variants(str(tmp_path), whole_repo = True)[0] == []
-
-
-def test_cached_variant_label_uses_the_listing(tmp_path):
-    """_resolve_quant_gguf and _resolve_cached_model_path back the KV-cache
-    estimate and the cached-path/reveal endpoints. Per-path they skipped every
-    variant of a reprieved repo, so those returned null and 404."""
-    from hub.services.models.common import _snapshot_main_gguf_names
-    from routes.models import _main_variant_gguf_label
-
-    main_names = _snapshot_main_gguf_names(MRADERMACHER)
-    assert _main_variant_gguf_label(MRADERMACHER[0], main_names) == "Q4_K_M"
-    # Without the listing the same file is read as a companion.
-    assert _main_variant_gguf_label(MRADERMACHER[0]) is None
-    # A genuine companion stays skipped either way.
-    assert (
-        _main_variant_gguf_label(
-            "dspark/dspark-model-Q8_0.gguf",
-            _snapshot_main_gguf_names(["dspark/dspark-model-Q8_0.gguf", "model-Q4_K_M.gguf"]),
-        )
-        is None
-    )
-
-
-# 8. Deleting one quant of a reprieved repo must not reclaim the others.
-def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
-    """A realistic HF cache repo: snapshot symlinks pointing at blobs."""
-    repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
-    snap = repo_dir / "snapshots" / "rev1"
-    blobs = repo_dir / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
-    files = []
-    for index, name in enumerate(names):
-        blob = blobs / f"sha{index}"
-        blob.write_bytes(b"x" * 64)
-        link = snap / name
-        link.parent.mkdir(parents = True, exist_ok = True)
-        link.symlink_to(blob)
-        files.append(
-            SimpleNamespace(
-                file_name = name,
-                file_path = str(link),
-                blob_path = str(blob),
-                size_on_disk = 64,
-            )
-        )
-    return SimpleNamespace(
-        repo_id = repo_id,
-        repo_type = "model",
-        repo_path = repo_dir,
-        revisions = [SimpleNamespace(files = files, snapshot_path = str(snap))],
-    ), snap
-
-
-def test_deleting_one_quant_of_a_reprieved_repo_keeps_the_others(tmp_path):
-    """Every quant carries the family prefix, so the per-path predicate called
-    them all drafters: the delete matched nothing, and making it match without
-    also fixing the companion sweep would have deleted the user's other quants.
-    """
-    from hub.services.models.deletion import _delete_gguf_variant_from_repos
-
-    repo, snap = _cache_repo(tmp_path, "mradermacher/DFlash-GGUF", MRADERMACHER)
-    result = _delete_gguf_variant_from_repos(
-        "mradermacher/DFlash-GGUF", "Q4_K_M", [repo], None, root = tmp_path
-    )
-
-    assert result["status"] == "deleted"
-    assert not (snap / MRADERMACHER[0]).is_symlink()
-    # The other quant is a main weight, not a companion to sweep up.
-    assert (snap / MRADERMACHER[1]).is_symlink()
-
-
-def test_deleting_the_last_quant_still_reclaims_real_companions(tmp_path):
-    """Positive control: a genuine drafter beside a real quant is still swept."""
-    from hub.services.models.deletion import _delete_gguf_variant_from_repos
-
-    repo, snap = _cache_repo(
-        tmp_path, "org/Model-GGUF", ["model-Q4_K_M.gguf", "mtp-model.gguf", "mmproj-F16.gguf"]
-    )
-    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
-
-    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
-    assert not (snap / "mtp-model.gguf").is_symlink()
-    assert not (snap / "mmproj-F16.gguf").is_symlink()
-
-
-def test_snapshot_listing_keeps_dangling_symlinks(tmp_path):
-    """A GC'd blob leaves a dangling link. Dropping it hides the repo's main
-    weight, which reprieves the drafter and makes IT the model."""
-    import os
-
-    from hub.utils.gguf import drafter_paths_in, repo_listing_in
-    from utils.models.model_config import _drafter_paths_in, _snapshot_listing
-
-    (tmp_path / "dflash-Qwen3.6-27B-BF16.gguf").write_bytes(b"x")
-    os.symlink(tmp_path / "gone", tmp_path / "Qwen3.6-27B-BF16.gguf")
-
-    assert sorted(_snapshot_listing(tmp_path)) == sorted(repo_listing_in(tmp_path))
-    for listing in (_snapshot_listing(tmp_path), repo_listing_in(tmp_path)):
-        assert drafter_paths_in(listing) == {"dflash-Qwen3.6-27B-BF16.gguf"}
-        assert _drafter_paths_in(listing) == {"dflash-Qwen3.6-27B-BF16.gguf"}
-
-
-def test_a_subdir_mmproj_is_not_something_to_accompany():
-    """The loader mirror tested mmproj on the basename while the canonical test
-    uses the full path, so an mmproj/ subdir copy counted as a main weight."""
-    from core.inference.llama_cpp import _drafter_paths_in as core_drafter_paths_in
-    from core.inference.llama_cpp import _gguf_files_for_variant
-    from hub.utils.gguf import drafter_paths_in
-
-    listing = ["dflash-Model-Q4_K_M.gguf", "mmproj/vision-F16.gguf"]
-    assert core_drafter_paths_in(listing) == drafter_paths_in(listing) == frozenset()
-    assert _gguf_files_for_variant(listing, "Q4_K_M") == ["dflash-Model-Q4_K_M.gguf"]
+    snapshots[:] = [with_mtp, dspark_only]
+    found = backend._cached_repo_mtp_drafter("some/repo")
+    assert found is not None and found.endswith("mtp-model.gguf")

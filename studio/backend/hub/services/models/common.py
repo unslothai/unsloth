@@ -18,7 +18,6 @@ from hub.schemas.inventory import (
     ModelRuntime,
 )
 from hub.utils.gguf import (
-    drafter_paths_in as _drafter_paths_in,
     extract_quant_label,
     is_gguf_filename as _is_gguf_filename,
     is_mmproj_filename as _is_mmproj_filename,
@@ -311,28 +310,9 @@ def _classify_non_gguf_model_format(
 
 
 def _is_main_gguf_filename(name: str) -> bool:
-    """Per-path, context-free. Keep it that way: an arbitrary folder holding only
-    a companion is a half-downloaded repo, so it gets no drafter reprieve. Whole
-    repo (snapshot / revision) listings use ``_snapshot_main_gguf_names``."""
     return (
         _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter_path(name)
     )
-
-
-def _snapshot_main_gguf_names(names) -> set[str]:
-    """Main GGUFs among ONE repo snapshot's or revision's FULL file listing.
-
-    Whole-repo scope, so the drafter reprieve applies (a repo named after the
-    drafter family carries the prefix on every real quant). Never call this with
-    an arbitrary local folder's contents.
-    """
-    listing = [str(name).replace("\\", "/") for name in names]
-    drafters = _drafter_paths_in(listing)
-    return {
-        name
-        for name in listing
-        if _is_gguf_filename(name) and not _is_mmproj_filename(name) and name not in drafters
-    }
 
 
 def _iter_gguf_paths(root: Path):
@@ -391,17 +371,6 @@ def _iter_hf_cache_model_files(path: Path) -> list[Path]:
         return []
 
 
-def _relative_names(root: Path, files) -> List[str]:
-    """*files* as paths relative to *root* (bare names when they are not under it)."""
-    names: List[str] = []
-    for entry in files:
-        try:
-            names.append(entry.relative_to(root).as_posix())
-        except ValueError:
-            names.append(entry.name)
-    return names
-
-
 def _file_size_bytes(path: Path) -> int:
     try:
         if path.is_file() or path.is_symlink():
@@ -415,19 +384,12 @@ def _sum_file_sizes(paths) -> int:
     return sum(_file_size_bytes(path) for path in paths)
 
 
-def _main_gguf_files(
-    path: Path,
-    *,
-    include_symlinks: bool = False,
-    repo_listing: Optional[List[str]] = None,
-) -> list[Path]:
-    """*repo_listing* marks *path* as one repo's full contents (a cache snapshot),
-    the only case where the drafter reprieve applies; None keeps the per-path rule."""
-    entries = _iter_immediate_files(path, include_symlinks = include_symlinks)
-    if repo_listing is None:
-        return [entry for entry in entries if _is_main_gguf_filename(entry.name)]
-    main = _snapshot_main_gguf_names(repo_listing)
-    return [entry for entry in entries if entry.name in main]
+def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path]:
+    return [
+        entry
+        for entry in _iter_immediate_files(path, include_symlinks = include_symlinks)
+        if _is_main_gguf_filename(entry.name)
+    ]
 
 
 def _format_label(model_format: ModelFormat) -> str:
@@ -569,12 +531,6 @@ def _classify_local_path(
     gguf_files = _main_gguf_files(
         scan_path,
         include_symlinks = include_broken_snapshot_symlinks,
-        # Only a cache snapshot is a whole-repo listing; a scanned folder is not.
-        repo_listing = (
-            _relative_names(scan_path, files)
-            if source == "hf_cache" and scan_path.is_dir()
-            else None
-        ),
     )
     if gguf_files:
         gguf_size_bytes = _sum_file_sizes(gguf_files)
