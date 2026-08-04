@@ -153,18 +153,33 @@ assert_reply() {
 #     week before and 633s the day after.
 # Blaming start.py for the second is wrong, so flag it and let the caller judge
 # the turn on its assertions. TIMED_OUT is global: callers with no assertion that
-# can rescue a partial turn (connection, resume) still treat it as fatal.
+# can rescue a partial turn (connection, resume, attribution-ab) treat it as fatal.
 #
-# Only 124 counts. Do NOT add --kill-after here: it makes a TERM-ignoring child
-# exit 137, and 137 is also what an external SIGKILL (the OOM killer) produces,
-# so the two become indistinguishable and a real crash would be waived. Plain
-# timeout(1) reports 124 for an expiry either way, TERM-ignoring or not.
+# Deciding that the cap was hit needs care. timeout(1) reports 124 when the
+# command dies on the TERM it sends, but a CLI that catches or ignores TERM is
+# not bounded at all without --kill-after (measured: a TERM-ignoring loop under
+# `timeout 2` was still alive 8s later). --kill-after makes that case exit 137
+# -- and so does an unrelated SIGKILL, e.g. the OOM killer, which must NOT be
+# waived as a timeout. The two are indistinguishable by status, so read the wall
+# clock instead of the exit code: only a 137 that arrives at or after the
+# deadline is an expiry (measured: kill-after fired at 5s on a 3s cap, an
+# external kill -9 landed at 1s on a 30s cap).
 run_timed() {  # $1=outfile, rest=command
   local out="$1"; shift
   TIMED_OUT=0
-  timeout "$TIMEOUT" "$@" > "$out" 2>&1
+  local t0=$SECONDS
+  timeout --kill-after=30 "$TIMEOUT" "$@" > "$out" 2>&1
   local rc=$?
-  if [ "$rc" -eq 124 ]; then
+  local elapsed=$(( SECONDS - t0 ))
+  local expired=0
+  [ "$rc" -eq 124 ] && expired=1
+  # Only compare against a bare-seconds cap; a timeout(1) duration suffix
+  # (600s / 10m) is left to the 124 path rather than parsed here.
+  case "$TIMEOUT" in
+    *[!0-9]*) ;;
+    *) [ "$rc" -eq 137 ] && [ "$elapsed" -ge "$TIMEOUT" ] && expired=1 ;;
+  esac
+  if [ "$expired" -eq 1 ]; then
     redact "$out"  # guide_fail may exit below, so scrub the transcript here too
     echo "[$AGENT] last 40 lines before timeout:"; tail -40 "$out" 2>/dev/null || true
     [ -s "$out" ] || guide_fail "invoke timed out after ${TIMEOUT}s having printed nothing (headless-TTY hang -- the recipe likely needs a non-interactive/print flag)"
@@ -437,7 +452,10 @@ case "$MODE" in
     OUT1="$LOGS_DIR/${AGENT}-fileedit-turn1.txt"
     OUT2="$LOGS_DIR/${AGENT}-fileedit-turn2.txt"
     T1='Create a file named hello.py in the current directory whose entire contents are a single line: print("Hello"). Do not run it.'
-    T2='Run hello.py with python and show me the exact output.'
+    # T2 asks for ran.txt as well as the printed output. Only the normal path
+    # is judged on the transcript; ran.txt is what a waived cap falls back on,
+    # because it is the one artifact a narrated answer cannot produce.
+    T2='Run hello.py with python, show me the exact output, and write that output to ran.txt.'
 
     # The start.py recipe writers + crosscheck must see the repo; run them
     # from the repo root BEFORE cd-ing into the scratch work dir. opencode/openclaw
@@ -524,17 +542,19 @@ case "$MODE" in
       || { echo "[$AGENT] turn-2 transcript:"; tail -60 "$OUT2" 2>/dev/null || true; \
       guide_fail "turn 2 (run hello.py) exited non-zero (rc=$rc)"; }
     # Turn 1's side effects were asserted before turn 2 started, so on a waived
-    # cap the grep below is the only thing judging this turn -- and hello.py's
-    # own source contains the string, so an agent that merely read the file back
-    # and then blocked would satisfy it. Demand the bare line that running it
-    # produces (CSI-stripped: agents colorize, and this is line-anchored).
+    # cap nothing below judges this turn but the transcript -- and no transcript
+    # can. 'Hello' is hello.py's own source, the program's stdout, AND a
+    # plausible narration of the answer by a model that never ran anything; the
+    # three are indistinguishable as text. ran.txt is the one thing only an
+    # executed tool call leaves behind, so the waiver hangs off that.
     if [ "${TIMED_OUT:-0}" = 1 ]; then
-      _esc=$(printf '\033')
-      sed -E "s/${_esc}\[[0-9;]*[a-zA-Z]//g" "$OUT2" > "$OUT2.plain" 2>/dev/null || cp "$OUT2" "$OUT2.plain"
-      grep -qE '^[[:space:]]*Hello[[:space:]]*$' "$OUT2.plain" || {
+      [ -f ran.txt ] || {
         echo "[$AGENT] turn-2 transcript:"; tail -60 "$OUT2" 2>/dev/null || true
-        guide_fail "turn 2 timed out and its transcript never shows hello.py's output on a line of its own (reading the file back does not count)"
+        guide_fail "turn 2 timed out without leaving ran.txt, so nothing shows it ran hello.py rather than describing it"
       }
+      _ran="$(tr -d '[:space:]' < ran.txt)"
+      [ "$_ran" = "Hello" ] || guide_fail "turn 2 timed out and ran.txt holds '$_ran', expected 'Hello'"
+      echo "[$AGENT] turn 2 capped, but ran.txt proves hello.py actually ran"
     fi
     if grep -q 'Hello' "$OUT2"; then
       echo "[$AGENT] turn 2 OK (run output contains 'Hello')"
