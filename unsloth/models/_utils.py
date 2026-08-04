@@ -1113,6 +1113,52 @@ def _adapter_repo_has_safetensors(
         return False
 
 
+def _repo_has_weighted_st_subfolders(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+):
+    """Best-effort: does this sentence-transformers repo keep weights in subfolder modules as well as at
+    the root? Any failure returns False, which keeps the previous behaviour.
+
+    weights_at_root is a two-way split, root weights or per-subfolder weights, and an ST model can be
+    both: unsloth/embeddinggemma-300m ships a root model.safetensors plus 2_Dense/model.safetensors and
+    3_Dense/model.safetensors, which the ST load reads as part of the model. Pruning those made the
+    download unsatisfiable, and unsloth_zoo's post-download gate then reported it as a network fault.
+
+    modules.json is a few hundred bytes, and the module taxonomy is shared with unsloth_zoo rather than
+    restated, so the two cannot drift apart."""
+    try:
+        import json as _json
+
+        from huggingface_hub import hf_hub_download
+
+        from unsloth_zoo.hf_cache_state import _ST_WEIGHTED_MODULE_TYPES
+
+        path = hf_hub_download(
+            model_name, "modules.json", token = token, revision = revision,
+        )
+        with open(path, "r", encoding = "utf-8") as f:
+            modules = _json.load(f)
+        if not isinstance(modules, list):
+            return False
+        for module in modules:
+            if not isinstance(module, dict):
+                continue
+            module_path = module.get("path")
+            # strip() before strip("/"): "  ".strip("/") is still truthy, and blank is not a subfolder.
+            if not isinstance(module_path, str) or not module_path.strip().strip("/"):
+                continue  # the root module, already covered by the root weight check
+            module_type = module.get("type")
+            leaf = module_type.rsplit(".", 1)[-1].lower() if isinstance(module_type, str) else ""
+            if leaf in _ST_WEIGHTED_MODULE_TYPES:
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def _prefetch_ignore_patterns(
     model_name,
     *,
@@ -1318,7 +1364,14 @@ def maybe_prefetch_hf_snapshot(
     elif weights_at_root:
         # A bare load reads only root weights: drop subdir weights (fp16/, checkpoint dirs) while keeping
         # subdir configs. Diffusion leaves weights_at_root False.
-        ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
+        #
+        # Except when the repo is both: a sentence-transformers model with a root weight AND weighted
+        # module subfolders (2_Dense/...), which the ST load reads too. Dropping those turned a
+        # satisfiable request into one that could never succeed. See _repo_has_weighted_st_subfolders.
+        if not _repo_has_weighted_st_subfolders(
+            model_name, token = token, revision = revision
+        ):
+            ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
     try:
         snapshot_download_with_xet_fallback(
             model_name,
