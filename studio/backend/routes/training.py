@@ -1730,6 +1730,30 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 )
 
 
+_DATASETS_CASE_INSENSITIVE: Optional[bool] = None
+
+
+def _dataset_folder_is_case_insensitive(folder: Path) -> bool:
+    """True when ``folder`` cannot hold two names differing only by case.
+
+    Probed once per process against the real filesystem rather than keyed off ``sys.platform``:
+    NTFS and the default APFS fold case, but macOS also ships case-SENSITIVE APFS volumes and a
+    Linux host can keep its Studio home on an exFAT/NTFS mount. A failed probe answers False,
+    which keeps the case-sensitive behaviour (two names, two files) unchanged.
+    """
+    global _DATASETS_CASE_INSENSITIVE
+    if _DATASETS_CASE_INSENSITIVE is None:
+        import tempfile
+
+        try:
+            with tempfile.NamedTemporaryFile(prefix = ".case-probe-", dir = folder) as probe:
+                probe_name = Path(probe.name).name
+                _DATASETS_CASE_INSENSITIVE = (folder / probe_name.upper()).exists()
+        except OSError:
+            return False
+    return _DATASETS_CASE_INSENSITIVE
+
+
 def _clean_diffusion_dataset_name(name: str) -> str:
     """Validate a dataset folder name: a single path component, no traversal, printable.
 
@@ -1868,6 +1892,25 @@ async def upload_diffusion_dataset(
                             f"caption. Rename one before uploading."
                         ),
                     )
+            # Reject a CASE variant of a name already in this batch, but only where the filesystem folds case: there
+            # 'Cat.png' and 'cat.png' are ONE destination, so the commit below would replace the first staged part with
+            # the second while `uploaded` still counted both -- a training image (or caption) silently dropped. No single
+            # folder can hold such a pair, but the open dialog's cross-folder search/Recents view can put one in a batch.
+            # The same-name exemption above is for a SEPARATE repeat upload over a file already on disk, a deliberate
+            # overwrite; inside one batch both parts are new, so there is nothing to overwrite. On a case-sensitive
+            # filesystem the two are genuinely different files with their own sidecars, so they stay allowed.
+            if any(n.casefold() == fname_cf for n in names) and _dataset_folder_is_case_insensitive(
+                folder
+            ):
+                clash_cf = next(n for n in names if n.casefold() == fname_cf)
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        f"Duplicate file '{filename}' differs from '{clash_cf}' only by letter "
+                        "case, so on this filesystem they are one file and would overwrite each "
+                        "other. Rename one before uploading."
+                    ),
+                )
             names.append(filename)
         # Stage each file to a temp name and move it in only once the whole batch is written, so a mid-batch failure leaves the dataset untouched, including any same-name file a direct write would truncate.
         staged: list[tuple[Path, Path]] = []  # (temp, final)

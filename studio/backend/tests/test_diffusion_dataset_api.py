@@ -573,6 +573,51 @@ def test_upload_rejects_exact_duplicate_name_within_one_batch(client, ds_root):
     assert r.status_code == 200
 
 
+def test_upload_rejects_case_only_duplicate_on_a_case_insensitive_filesystem(
+    client, ds_root, monkeypatch
+):
+    # 'Cat.png' and 'cat.png' are ONE destination on NTFS / default APFS, so the staged commit replaced the first
+    # part with the second and the response still reported both as uploaded: a training image silently dropped.
+    # The pair reaches one batch from the open dialog's cross-folder search/Recents view. Linux keeps both files,
+    # so the rejection is gated on a real probe of the datasets root, faked here.
+    import routes.training as training
+
+    monkeypatch.setattr(training, "_dataset_folder_is_case_insensitive", lambda folder: True)
+    r = _upload(
+        client,
+        "styleset",
+        [("Cat.png", _png_bytes((10, 20, 30))), ("cat.png", _png_bytes((90, 90, 90)))],
+    )
+    assert r.status_code == 400
+    assert "only by letter case" in r.json()["detail"]
+    assert "Cat.png" in r.json()["detail"]  # names the part it collides with
+    folder = ds_root / "styleset"
+    assert not any(p.suffix.lower() == ".png" for p in folder.iterdir())  # all-or-nothing
+    # Captions collapse at one destination the same way and never reach the image stem check.
+    r = _upload(client, "styleset", [("Cat.txt", b"caption A"), ("cat.txt", b"caption B")])
+    assert r.status_code == 400
+    assert "only by letter case" in r.json()["detail"]
+    assert not any(p.suffix.lower() == ".txt" for p in folder.iterdir())
+    # A SEPARATE repeat upload is the deliberate overwrite it has always been, on either filesystem.
+    assert _upload(client, "styleset", [("Cat.png", _png_bytes())]).status_code == 200
+    assert _upload(client, "styleset", [("cat.png", _png_bytes())]).status_code == 200
+
+
+def test_case_insensitivity_probe_matches_this_filesystem(client, ds_root):
+    # The probe is what gates the rejection above, so pin it against the real root: Linux CI is case-sensitive.
+    import routes.training as training
+
+    folder = ds_root / "probeset"
+    folder.mkdir()
+    training._DATASETS_CASE_INSENSITIVE = None
+    try:
+        (folder / "probe.tmp").write_text("x")
+        expected = (folder / "PROBE.TMP").exists()
+        assert training._dataset_folder_is_case_insensitive(folder) is expected
+    finally:
+        training._DATASETS_CASE_INSENSITIVE = None
+
+
 def test_upload_rejects_extension_case_variant_sidecar_collision(client, ds_root):
     # An EXTENSION-case variant pair has exactly equal stems, so both resolve to ONE sidecar and must 400.
     r = _upload(client, "styleset", [("dog.PNG", _png_bytes()), ("dog.png", _png_bytes())])

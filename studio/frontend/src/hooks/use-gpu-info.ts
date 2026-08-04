@@ -7,6 +7,7 @@ import {
   type PinnableGpuContext,
   type ReconciledGpuSelection,
   type SystemGpuDevice,
+  pickLoadDevice,
   reconcileGpuSelection,
   resolveGpuSelectionContext,
 } from "./gpu-selection";
@@ -86,13 +87,8 @@ function toGpuInfo(
     // Shared-memory (Vulkan iGPU) devices report the same system RAM pool, so they are counted once rather than summed.
     memoryTotalGb: aggregateGpuMemoryTotalGb(devices),
     maxDeviceMemoryGb: devices.reduce((max, d) => Math.max(max, d.memory_total_gb ?? 0), 0),
-    // Lowest visible ordinal = torch's current device = where the pipeline lands. The list is already filtered by any
-    // CUDA_VISIBLE_DEVICES mask, so the minimum index is right whether the indices are physical or relative.
-    loadDeviceMemoryGb:
-      devices.reduce(
-        (pick, d) => ((d.index ?? 0) < (pick.index ?? 0) ? d : pick),
-        devices[0],
-      )?.memory_total_gb ?? 0,
+    // Lowest visible ordinal = torch's current device = where the pipeline lands.
+    loadDeviceMemoryGb: pickLoadDevice(devices)?.memory_total_gb ?? 0,
   };
 }
 
