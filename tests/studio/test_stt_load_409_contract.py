@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Wording contract behind the frontend's split of /audio/stt/load 409s.
 
 The route maps two different failures onto 409: a model that was never
