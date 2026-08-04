@@ -1223,6 +1223,17 @@ html[data-chat-font] .aui-root {
 		--input: #e9e9e9;
 	}
 
+	/* The Create / Train action floats over its settings, so hover must lighten the fill
+	   rather than thin it: a translucent green would show the controls behind it. Mixes to
+	   what bg-primary/80 looks like on the page, but stays opaque. */
+	.btn-float-action:hover:not(:disabled) {
+		background-color: color-mix(
+			in srgb,
+			var(--primary) 80%,
+			var(--background)
+		) !important;
+	}
+
 	/* Inline numeric input — used for slider values and Context Length.
 	   Designed to read as *editable text* rather than a pill button so
 	   it doesn't mirror the Select/dropdown components on the panel.

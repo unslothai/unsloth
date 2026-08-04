@@ -1534,9 +1534,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           Gutters match Images, so both pages' content starts at the same 40px. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
         {/* Widened by the pl-8 so the controls keep their old width. */}
-        <div className="flex w-[400px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
+        <div className="relative flex w-[400px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
-          <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-7">
+          <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-20 pl-0.5 pr-7">
           {/* Names the pane, as the Images column does. h-9 keeps both pages' headings level. */}
           <div className="grid gap-1">
             <h2 className="flex h-9 items-center font-heading text-base font-medium text-foreground">
@@ -1656,16 +1656,28 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             {advancedControls}
           </AdvancedDisclosure>
 
-          {busy === "generating" ? (
-            <Button variant="outline" onClick={handleCancelGenerate}>
-              <Spinner className="mr-2 size-4" />
-              Cancel
-            </Button>
-          ) : (
-            <Button onClick={handleGenerate} disabled={busy !== null || !status?.loaded}>
-              Generate
-            </Button>
-          )}
+          </div>
+          {/* Floats over the settings so it needs no bar of its own. */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-7">
+            {busy === "generating" ? (
+              <Button
+                // Opaque hover: this one floats over the settings too.
+                className="pointer-events-auto h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                variant="outline"
+                onClick={handleCancelGenerate}
+              >
+                <Spinner className="mr-2 size-4" />
+                Cancel
+              </Button>
+            ) : (
+              <Button
+                className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                onClick={handleGenerate}
+                disabled={busy !== null || !status?.loaded}
+              >
+                Generate
+              </Button>
+            )}
           </div>
         </div>
 

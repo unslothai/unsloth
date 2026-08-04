@@ -1101,10 +1101,10 @@ export function DiffusionTrainPanel({
       {/* Left: configure. No cards: both panes sit on the page background, split by a full-height rule. */}
       {/* Gutters match the Create tab: pl-8 puts the content 40px in, level with the model
           selector above and with the pr-10 on the other side of the rule. */}
-      <div className="flex w-[416px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
+      <div className="relative flex w-[416px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
         {/* pl-0.5 keeps focus rings off the scroll container's edge. pt-1.5
             matches the right pane's p-1.5, so both headings start on the same line. */}
-        <div className="hover-scrollbar flex min-h-0 flex-col gap-5 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-10 pt-1.5">
+        <div className="hover-scrollbar flex min-h-0 flex-col gap-5 flex-1 overflow-y-auto overflow-x-hidden pb-20 pl-0.5 pr-10 pt-1.5">
           <div>
             {/* Matches "Training settings" across the rule, so the two headings read as one row. */}
             <h2 className="font-heading flex items-center gap-1.5 text-base font-medium">
@@ -1342,23 +1342,24 @@ export function DiffusionTrainPanel({
             />
           </div>
 
-          {/* Start lives here; Stop lives in the run card next to the live stats. */}
-          <div className="mt-auto pt-2">
-            <Button
-              type="button"
-              className="w-full"
-              onClick={onStart}
-              disabled={starting || uploading || running || familyUntrainable}
-            >
-              {starting
-                ? "Starting..."
-                : running
-                  ? "Training in progress"
-                  : familyUntrainable
-                    ? "Not supported on this GPU"
-                    : "Start training"}
-            </Button>
-          </div>
+        </div>
+        {/* Floats over the settings, as Create's Generate does.
+            Stop lives in the run card next to the live stats. */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-10">
+          <Button
+            type="button"
+            className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+            onClick={onStart}
+            disabled={starting || uploading || running || familyUntrainable}
+          >
+            {starting
+              ? "Starting..."
+              : running
+                ? "Training in progress"
+                : familyUntrainable
+                  ? "Not supported on this GPU"
+                  : "Start training"}
+          </Button>
         </div>
       </div>
 
