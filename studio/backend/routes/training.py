@@ -1744,7 +1744,6 @@ def _dataset_folder_is_case_insensitive(folder: Path) -> bool:
     global _DATASETS_CASE_INSENSITIVE
     if _DATASETS_CASE_INSENSITIVE is None:
         import tempfile
-
         try:
             with tempfile.NamedTemporaryFile(prefix = ".case-probe-", dir = folder) as probe:
                 probe_name = Path(probe.name).name
