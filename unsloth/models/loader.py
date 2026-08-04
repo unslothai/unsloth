@@ -105,6 +105,8 @@ from ._utils import (
     process_vision_info,
     unsloth_compile_transformers,
     fast_inference_setup,
+    _requested_float32,
+    _mark_requested_float32,
     _get_text_only_config,
     resolve_model_class,
     _is_family_text_decoder,
@@ -452,6 +454,9 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_4bit = False
 
         # Login to allow private models
+        # Before any normalization: dtype is also derived from a 4bit config's
+        # compute dtype below, which is not a request for the whole model.
+        user_float32 = _requested_float32(dtype)
         token = hf_login(token)
         # Align dtype with bnb_4bit_compute_dtype if provided and dtype is unset.
         if dtype is None and quantization_config is not None:
@@ -478,7 +483,7 @@ class FastLanguageModel(FastLlamaModel):
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
         if load_in_8bit or full_finetuning or qat_scheme is not None:
-            return FastModel.from_pretrained(
+            delegated, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
                 dtype = dtype,
@@ -513,6 +518,7 @@ class FastLanguageModel(FastLlamaModel):
                 *args,
                 **kwargs,
             )
+            return _mark_requested_float32(delegated, user_float32), tokenizer
 
         if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
             dtype = getattr(torch, dtype)
@@ -896,7 +902,7 @@ class FastLanguageModel(FastLlamaModel):
         # elif model_type == "granite":
         #     dispatch_model = FastGraniteModel
         else:
-            return FastModel.from_pretrained(
+            delegated, tokenizer = FastModel.from_pretrained(
                 model_name = old_model_name,
                 max_seq_length = max_seq_length,
                 dtype = dtype,
@@ -931,6 +937,7 @@ class FastLanguageModel(FastLlamaModel):
                 *args,
                 **kwargs,
             )
+            return _mark_requested_float32(delegated, user_float32), tokenizer
 
         # Apply gradient checkpointing with smart heuristics
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
@@ -1103,7 +1110,7 @@ class FastLanguageModel(FastLlamaModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
-        return model, tokenizer
+        return _mark_requested_float32(model, user_float32), tokenizer
 
 
 from ..kernels import (
@@ -1208,6 +1215,9 @@ class FastModel(FastBaseModel):
                 load_in_4bit = False
 
         # Login to allow private models
+        # Before any normalization: dtype is also derived from a 4bit config's
+        # compute dtype below, which is not a request for the whole model.
+        user_float32 = _requested_float32(dtype)
         token = hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
@@ -1233,10 +1243,6 @@ class FastModel(FastBaseModel):
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
-        # Record whether float32 was ASKED for, as opposed to arrived at by upcasting.
-        # Only an explicit request may suppress the float16 autocast that full
-        # finetuning relies on for V100/T4 (see rl.py, issue #4082).
-        os.environ["UNSLOTH_USER_FLOAT32"] = "1" if dtype == torch.float32 else "0"
         assert load_in_fp8 in (True, False, "block")
 
         patch_compiled_autograd()
@@ -2152,7 +2158,7 @@ class FastModel(FastBaseModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
-        return model, tokenizer
+        return _mark_requested_float32(model, user_float32), tokenizer
 
 
 class FastVisionModel(FastModel):

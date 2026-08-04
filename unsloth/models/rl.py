@@ -1075,7 +1075,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "float32 = dtype == torch.float32\n"
             # Set by from_pretrained only when the caller passed dtype = torch.float32
             # themselves, which is a request rather than a side effect of upcasting.
-            "user_float32 = os.environ.get('UNSLOTH_USER_FLOAT32', '0') == '1'\n"
+            # On the model, so loading a second model cannot rewrite this one's answer.
+            "user_float32 = bool(getattr(model, '_unsloth_user_float32', False))\n"
             "if full_finetuning:\n"
             "    if bfloat16 and use_fp16: use_fp16 = False\n"
             "    if float16 and use_bf16: use_bf16 = False\n"

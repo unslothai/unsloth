@@ -1045,6 +1045,10 @@ class FastBaseModel:
         # The base + tokenizer prefetch runs AFTER the load-mode validation below, so an invalid
         # load_in_* combination fails without first downloading a snapshot.
 
+        # Whether float32 was ASKED for, as opposed to arrived at by upcasting.
+        # Only an explicit request may suppress the float16 autocast that full
+        # finetuning relies on for V100/T4 (see rl.py, issue #4082).
+        user_float32 = _requested_float32(dtype)
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
@@ -1054,10 +1058,6 @@ class FastBaseModel:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
-        # Record whether float32 was ASKED for, as opposed to arrived at by upcasting.
-        # Only an explicit request may suppress the float16 autocast that full
-        # finetuning relies on for V100/T4 (see rl.py, issue #4082).
-        os.environ["UNSLOTH_USER_FLOAT32"] = "1" if dtype == torch.float32 else "0"
 
         bnb_compute_dtype = dtype
         do_forced_float32 = False
@@ -1829,7 +1829,7 @@ class FastBaseModel:
         # Saving restores sentencepiece assets from the repo name alone, which carries no
         # branch. Stamped here, not per processor branch, so a fallback cannot lose it.
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
-        return model, tokenizer
+        return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
     def get_peft_model(

@@ -77,18 +77,20 @@ def _run(model_dtype, bf16_supported, fp16 = False, bf16 = False,
          mixed_precision = "float32", user_float32 = None):
     """Execute the block and report what it decided."""
     config = types.SimpleNamespace(dtype = model_dtype, torch_dtype = model_dtype)
-    model = types.SimpleNamespace(config = config)
+    # from_pretrained records this only when the caller passed dtype =
+    # torch.float32 themselves. Defaulting it from the model dtype keeps each
+    # test's intent readable; the V100 recipe below overrides it.
+    model = types.SimpleNamespace(
+        config = config,
+        _unsloth_user_float32 = (
+            (model_dtype is torch.float32) if user_float32 is None
+            else user_float32 == "1"),
+    )
     args = _Args(fp16 = fp16, bf16 = bf16)
     env = {
         "UNSLOTH_FORCE_FLOAT32": force_float32,
         "UNSLOTH_ENABLE_FULL_FINETUNING": full_finetuning,
         "UNSLOTH_MIXED_PRECISION": mixed_precision,
-        # from_pretrained sets this only when the caller passed
-        # dtype = torch.float32 themselves. Defaulting it from the model dtype
-        # keeps each test's intent readable; the V100 recipe below overrides it.
-        "UNSLOTH_USER_FLOAT32": (
-            ("1" if model_dtype is torch.float32 else "0")
-            if user_float32 is None else user_float32),
     }
     fake_os = types.SimpleNamespace(environ = env)
 
@@ -213,7 +215,7 @@ def test_upcast_float32_on_a_v100_still_gets_fp16_autocast():
     float16 autocast over float32 master weights is the ordinary V100/T4
     mixed-precision recipe (issue #4082). Only an explicit
     `dtype = torch.float32` at load time may suppress it, which is why the
-    new branch is gated on UNSLOTH_USER_FLOAT32 rather than on the dtype.
+    new branch is gated on the recorded request rather than on the dtype.
     """
     args, env = _run(torch.float32, bf16_supported = False,
                      full_finetuning = "1", user_float32 = "0")
@@ -222,11 +224,47 @@ def test_upcast_float32_on_a_v100_still_gets_fp16_autocast():
 
 
 def test_loaders_record_the_explicit_request():
-    # The gate is worthless if nothing ever sets the variable.
-    for rel in ("unsloth/models/vision.py", "unsloth/models/loader.py"):
+    """Every public entry point, since only the outermost one sees the
+    argument as the caller wrote it."""
+    for rel in ("unsloth/models/loader.py", "unsloth/models/vision.py"):
         src = (REPO_ROOT / rel).read_text(encoding = "utf-8")
-        assert 'os.environ["UNSLOTH_USER_FLOAT32"]' in src, rel
-        assert 'dtype == torch.float32 else "0"' in src, rel
+        assert "_requested_float32(dtype)" in src, rel
+        assert "_mark_requested_float32(" in src, rel
+
+
+def test_the_legacy_language_model_path_records_it_too():
+    """llama, mistral, gemma, gemma2, qwen2 and qwen3 LoRA/QLoRA loads go
+    through dispatch_model.from_pretrained, which is neither of the two loaders
+    that used to record this. Those are most of the notebooks."""
+    src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    cls = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.ClassDef) and n.name == "FastLanguageModel")
+    fn = next(n for n in cls.body
+              if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    body = ast.unparse(fn)
+    assert "_requested_float32(dtype)" in body
+    # Every exit, including the two that hand off to FastModel: it would
+    # otherwise record the dtype we derived from a 4bit compute dtype.
+    returns = [ast.unparse(n) for n in ast.walk(fn)
+               if isinstance(n, ast.Return) and n.value is not None]
+    assert returns, "expected the loader to return a model"
+    for statement in returns:
+        assert "_mark_requested_float32(" in statement, statement
+
+
+def test_the_request_is_read_from_the_model_not_the_environment():
+    """A process-global would describe whichever model loaded last, so a
+    program that loads two before building a trainer would train the first
+    with the second's precision."""
+    assert "_unsloth_user_float32" in MP_SRC
+    assert "UNSLOTH_USER_FLOAT32" not in MP_SRC
+
+
+def test_a_model_without_the_marker_keeps_the_old_behaviour():
+    """Anything the loaders did not touch must not opt into the new branch."""
+    args, _ = _run(torch.float32, bf16_supported = False, user_float32 = "0")
+    assert (args.fp16, args.bf16) == (True, False)
 
 
 def test_block_still_compiles():

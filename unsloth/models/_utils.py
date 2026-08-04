@@ -17,6 +17,8 @@ __version__ = "2026.8.8"
 __all__ = [
     "SUPPORTS_BFLOAT16",
     "is_bfloat16_supported",
+    "_requested_float32",
+    "_mark_requested_float32",
     "is_vLLM_available",
     "prepare_model_for_kbit_training",
     "xformers",
@@ -2792,6 +2794,32 @@ def offload_output_embeddings(model, temporary_location: str = "_unsloth_tempora
 # Fixes a weird Torch 2.3 bug which says T4s have bfloat16
 def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
+
+
+def _requested_float32(dtype):
+    """Did the caller ask for float32, as opposed to us arriving at it?
+
+    Read the argument as given: `dtype` is also derived from a 4bit config's
+    `bnb_4bit_compute_dtype`, which describes one quantized matmul and not the
+    model, and full finetuning turns that config off again.
+    """
+    if isinstance(dtype, str):
+        dtype = getattr(torch, dtype, None)
+    return dtype is torch.float32
+
+
+def _mark_requested_float32(model, requested):
+    """Record the answer on the model itself.
+
+    Not in the environment: a program that loads two models before building a
+    trainer would then describe whichever loaded last. Outermost caller wins,
+    since only it saw the argument before normalization.
+    """
+    try:
+        model._unsloth_user_float32 = bool(requested)
+    except Exception:
+        pass
+    return model
 
 
 def is_vLLM_available():
