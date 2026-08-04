@@ -220,9 +220,7 @@ class TestMissingSharedLibrary:
         assert "GGUF file is valid" not in msg
         assert "enough memory" not in msg.lower()
 
-    def test_exit_127_on_a_pinned_binary_does_not_send_it_to_the_updater(
-        self, monkeypatch
-    ):
+    def test_exit_127_on_a_pinned_binary_does_not_send_it_to_the_updater(self, monkeypatch):
         # A wrapper whose exec target is gone exits 127 with no loader line, and
         # the updater refuses to touch a LLAMA_SERVER_PATH pin, so the managed
         # remedy is a dead end there too.
