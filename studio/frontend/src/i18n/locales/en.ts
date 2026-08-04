@@ -46,10 +46,17 @@ export const en = {
       chatGenerating: "Generating",
       compare: "Compare",
       search: "Search",
-      hub: "Model hub",
       projects: "Projects",
+      hub: "Model hub",
       train: "Train",
       recipes: "Recipes",
+      images: "Images",
+      video: "Video",
+      more: "More",
+      // Last entry of the More flyout; opens Settings -> Appearance.
+      customizeSidebar: "Customize sidebar",
+      // Rendered uppercase in a pill beside a recently shipped tab.
+      newBadge: "New",
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",
@@ -593,10 +600,18 @@ export const en = {
         compactSidebarDescription:
           "Keep the sidebar expanded instead of collapsing to icons.",
       },
-      sidebarMenu: {
-        title: "Sidebar menu",
+      sidebarNav: {
+        title: "Sidebar navigation",
         description:
-          "Show, hide, and reorder items in the sidebar profile menu. Settings, Help, Log out, and Shutdown stay fixed.",
+          "Pin and reorder the sidebar tabs. Unpinned tabs collect in the More menu; a single unpinned tab is hidden instead of getting a menu of one. New chat stays fixed.",
+        dragToReorder: "Drag to reorder",
+        pinToSidebar: "Pin {name} to the sidebar",
+        moreHolds: "More ({count})",
+      },
+      sidebarMenu: {
+        title: "Profile menu",
+        description:
+          "Choose which shortcuts appear when you click your name at the bottom of the sidebar, and in what order. Settings, Help, Log out, and Shutdown always appear.",
         darkModeToggle: "Dark mode toggle",
         dragToReorder: "Drag to reorder",
       },
