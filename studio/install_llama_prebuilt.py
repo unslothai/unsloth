@@ -5805,6 +5805,34 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
     log(f"existing install reused; recorded llama_backend={llama_backend!r} from this run")
 
 
+def sync_marker_ggml_tree(install_dir: Path, ggml_tree: str | None) -> None:
+    """Backfill the ggml tree id when the bundle is reused unchanged.
+
+    write_prebuilt_metadata only runs on a real install, and the fingerprint does
+    not hash ggml_tree, so an already-current install would keep a tree-less
+    marker forever and install_whisper_prebuilt would stay on the "-mix-" suffix
+    this key exists to replace. Unlike llama_backend, a None tree is "the release
+    did not declare one" (upstream ggml-org tags), not "clear it".
+    """
+    if not isinstance(ggml_tree, str) or not ggml_tree:
+        return
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    try:
+        marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(marker, dict) or marker.get("ggml_tree") == ggml_tree:
+        return
+    marker["ggml_tree"] = ggml_tree
+    if not _write_marker(marker_path, marker):
+        log(
+            f"WARNING: could not record ggml_tree={ggml_tree!r} in {marker_path}; "
+            "slim whisper pairing will fall back to the tag suffix"
+        )
+        return
+    log(f"existing install reused; recorded ggml_tree={ggml_tree!r} from this run")
+
+
 def expected_install_fingerprint(
     *,
     llama_tag: str,
@@ -6898,6 +6926,7 @@ def install_prebuilt(
                         install_dir,
                         persisted_llama_backend(persist_llama_backend, current.attempts[0]),
                     )
+                    sync_marker_ggml_tree(install_dir, current.approved_checksums.ggml_tree)
                     return
             with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
                 probe_path = work_dir / "stories260K.gguf"
@@ -6922,6 +6951,7 @@ def install_prebuilt(
                                 install_dir,
                                 persisted_llama_backend(persist_llama_backend, choice),
                             )
+                            sync_marker_ggml_tree(install_dir, plan.approved_checksums.ggml_tree)
                             return
                     log(
                         "selected "

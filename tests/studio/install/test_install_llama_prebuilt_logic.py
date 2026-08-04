@@ -3906,6 +3906,45 @@ def test_marker_sync_strands_no_temp_file_when_the_first_write_fails(tmp_path, m
     assert [q.name for q in install_dir.iterdir() if ".tmp-" in q.name] == []
 
 
+TREE_A = "8f3c6e197debb027f500df9f76e710e137f9fe68"
+
+
+def test_reused_install_backfills_the_ggml_tree(tmp_path):
+    """An install made before ggml_tree existed must gain it on reuse.
+
+    write_prebuilt_metadata only runs on a real install and the fingerprint does
+    not hash ggml_tree, so without this the marker stays tree-less forever and
+    slim whisper pairing silently falls back to the "-mix-" suffix.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    (install_dir / "build" / "bin").mkdir(parents = True)
+    marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker.write_text(json.dumps({"release_tag": "b10173-mix-2c8b9c1"}) + "\n", encoding = "utf-8")
+
+    INSTALL_LLAMA_PREBUILT.sync_marker_ggml_tree(install_dir, TREE_A)
+
+    payload = json.loads(marker.read_text(encoding = "utf-8"))
+    assert payload["ggml_tree"] == TREE_A
+    assert payload["release_tag"] == "b10173-mix-2c8b9c1"   # nothing else lost
+    assert INSTALL_LLAMA_PREBUILT.installed_llama_ggml_tree(install_dir) == TREE_A
+
+
+@pytest.mark.parametrize("declared", [None, ""])
+def test_reused_install_keeps_the_ggml_tree_when_the_release_declares_none(tmp_path, declared):
+    """A release with no ggml_tree (upstream ggml-org tags) must not erase one."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker.write_text(
+        json.dumps({"release_tag": "b10173-mix-2c8b9c1", "ggml_tree": TREE_A}) + "\n",
+        encoding = "utf-8",
+    )
+
+    INSTALL_LLAMA_PREBUILT.sync_marker_ggml_tree(install_dir, declared)
+
+    assert json.loads(marker.read_text(encoding = "utf-8"))["ggml_tree"] == TREE_A
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
 @pytest.mark.parametrize("mode", [0o444, 0o644, 0o664])
 def test_marker_sync_preserves_the_marker_mode(tmp_path, mode):
