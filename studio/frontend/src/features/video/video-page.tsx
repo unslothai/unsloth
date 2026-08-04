@@ -1507,7 +1507,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   return (
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {/* Top: the model selector, sitting clear of the sidebar and level with the controls column below. Load progress shows in a toast. */}
-      <div className="flex h-[48px] shrink-0 items-start justify-between pl-2 pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+      <div className="flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         <div className="flex items-center gap-3">
           <ModelSelector
             models={VIDEO_MODELS}
