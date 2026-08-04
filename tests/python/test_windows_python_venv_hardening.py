@@ -180,6 +180,58 @@ Write-Output ("dir=" + [string]$script:StudioVenvRollbackDir)
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
+def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Path, shell: str):
+    """Restoration must merge the two halves, not clear the destination first.
+
+    After a partway move the target holds the entries the move never got to -- not
+    an incomplete *new* environment. The committed-replacement path removes the
+    target before moving the backup back, which for a split tree deletes files that
+    exist nowhere else. Keeping the rollback active is only safe if restoration
+    takes a merge path, so this pins the file that never moved to being still there.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    blocks = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in (
+            "Remove-StudioVenvTreeWithRetry",
+            "Merge-StudioVenvRollbackTree",
+            "Restore-StudioVenvRollback",
+        )
+    )
+    target = tmp_path / "unsloth_studio"
+    backup = tmp_path / "unsloth_studio.rollback.20260804120000.999"
+    # The half the interrupted move left behind, and the half that got across.
+    (target / "Scripts").mkdir(parents = True)
+    (target / "Scripts" / "unsloth.exe").write_text("irreplaceable", encoding = "utf-8")
+    (backup / "Lib" / "site-packages").mkdir(parents = True)
+    (backup / "Lib" / "site-packages" / "marker.txt").write_text("moved", encoding = "utf-8")
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+function substep {{ param([string]$Text, [string]$Color) }}
+{blocks}
+$script:StudioVenvRollbackActive  = $true
+$script:StudioVenvRollbackDir     = $env:TEST_BACKUP_DIR
+$script:StudioVenvRollbackTarget  = $env:TEST_TARGET_DIR
+$script:StudioVenvRollbackPartial = $true
+Restore-StudioVenvRollback
+Write-Output ("active=" + $script:StudioVenvRollbackActive)
+"""
+    env = os.environ.copy()
+    env["TEST_BACKUP_DIR"] = str(backup)
+    env["TEST_TARGET_DIR"] = str(target)
+    out = _run_powershell(shell, script, env)
+
+    # The file that never moved is the whole point: the pre-merge path deleted it.
+    assert (target / "Scripts" / "unsloth.exe").read_text(encoding = "utf-8") == "irreplaceable", out
+    # ...and the half that did move comes back rather than being stranded.
+    assert (target / "Lib" / "site-packages" / "marker.txt").is_file(), out
+    assert not backup.exists(), out
+    assert "active=False" in out, out
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("case", ["missing", "unlaunchable", "working"])
 def test_managed_python_readiness_probe(tmp_path: Path, shell: str, case: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
