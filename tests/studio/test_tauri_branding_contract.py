@@ -71,9 +71,9 @@ def test_desktop_artwork_uses_plain_unsloth_lockups() -> None:
         assert "unsloth" in source
         assert "/studio.png" not in source
 
-    titlebar = read(FRONTEND / "src/components/tauri/window-titlebar.tsx")
-    assert "/rounded-512.png" in titlebar
-    assert "Unsloth" in titlebar
+    sidebar = read(FRONTEND / "src/components/app-sidebar.tsx")
+    assert "/circle-logo-small.png" in sidebar
+    assert "unsloth" in sidebar
     assert not (FRONTEND / "public/studio.png").exists()
 
     branding = TAURI / "windows/branding"

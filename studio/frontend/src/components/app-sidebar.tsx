@@ -45,6 +45,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import {
+  DesktopTitlebarNavigation,
   getClientPlatform,
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
@@ -361,7 +362,7 @@ function NavItem({
           data-tour={dataTour}
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
         >
-          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
+          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-hover/menu-button:animate-icon-pop" />
           <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
           {badge && (
             <NavBadge
@@ -552,6 +553,7 @@ export function AppSidebar() {
     }),
   });
   const {
+    pinned,
     togglePinned,
     isMobile,
     setOpenMobile,
@@ -840,6 +842,8 @@ export function AppSidebar() {
   ]);
 
   const chatDisabled = trainingInProgress;
+  const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
+
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
   const navRows: Record<SidebarNavItemId, NavRowDef> = {
@@ -999,8 +1003,7 @@ export function AppSidebar() {
     sidebarState !== "collapsed" &&
     !(navRows.images.active && imagesPageMode === "train");
 
-  const showSidebarBrand = !usesCustomTitlebar;
-  const showCompactMacBrand = showSidebarBrand && usesNativeMacTitlebar;
+  const showSidebarBrand = true;
 
   function chatSearchForProject(projectId: string | null) {
     if (projectId) {
@@ -1577,6 +1580,7 @@ export function AppSidebar() {
     <>
     <Sidebar
       collapsible="icon"
+      collapseToZero={isTauri}
       variant="sidebar"
       className={cn(
         // Rail background comes from --sidebar-surface (index.css) so the
@@ -1589,32 +1593,33 @@ export function AppSidebar() {
       <SidebarHeader
         className={cn(
           "relative",
-          showSidebarBrand
-            ? showCompactMacBrand
-              ? "h-[var(--studio-chat-header-height,48px)] pl-[calc(var(--studio-mac-traffic-light-inset,78px)+6px)] pr-2 pt-[var(--studio-chat-header-padding-top,9px)] pb-0 group-data-[collapsible=icon]:h-[calc(var(--studio-mac-titlebar-height,34px)+var(--studio-chat-control-height,33px)+8px)] group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pt-[calc(var(--studio-mac-titlebar-height,34px)+8px)]"
-              : "pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0"
-            : "h-[var(--studio-custom-titlebar-height,34px)] shrink-0 p-0",
+          usesDesktopTitlebar
+            ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+6px)]"
+            : "pl-3 pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0",
         )}
       >
         {showSidebarBrand && (
           <>
-            {usesNativeMacTitlebar && (
+            {usesNativeMacTitlebar && !isMobile && (
               <div
                 data-tauri-drag-region
-                aria-hidden="true"
-                className="absolute inset-x-0 top-0 z-0 h-[var(--studio-mac-titlebar-height,34px)] select-none"
-              />
+                className="absolute inset-x-0 top-0 z-10 flex h-[var(--studio-desktop-titlebar-height,34px)] items-start pt-px pl-[calc(var(--studio-mac-traffic-light-inset,78px)+6px)] select-none group-data-[collapsible=icon]:hidden"
+              >
+                <DesktopTitlebarNavigation
+                  expanded={pinned}
+                  onToggleSidebar={togglePinned}
+                />
+              </div>
             )}
             <div
               data-tauri-drag-region={usesNativeMacTitlebar || undefined}
               className={cn(
                 "relative z-10 flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
-                showCompactMacBrand &&
-                  "h-[var(--studio-chat-control-height,33px)] justify-end gap-2",
-                !showCompactMacBrand && "justify-between",
+                usesDesktopTitlebar
+                  ? "justify-between pl-4 pr-3"
+                  : "justify-between",
               )}
             >
-              {!showCompactMacBrand && (
                 <Link
                   to="/chat"
                   onClick={(event) => {
@@ -1637,16 +1642,15 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="h-[calc(26px+0.5rem*var(--ui-font-scale,1))] w-[calc(26px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
+                    className="h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
                   />
-                  <span className="truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-white dark:tracking-[0.02em]">
+                  <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-white dark:tracking-[0.02em]">
                     unsloth
                   </span>
                   <span className="nav-badge ml-0.5 inline-flex shrink-0 items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
                     {t("shell.beta")}
                   </span>
                 </Link>
-              )}
               <div className="flex shrink-0 items-center gap-0.25">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
@@ -1674,7 +1678,7 @@ export function AppSidebar() {
                     </kbd>
                   </TooltipContent>
                 </Tooltip>
-                {!isMobile && (
+                {!isMobile && !usesDesktopTitlebar && (
                   <Tooltip>
                     <TooltipPrimitive.Trigger asChild>
                       <button
@@ -1697,7 +1701,7 @@ export function AppSidebar() {
                 )}
               </div>
             </div>
-            {!isMobile && (
+            {!isMobile && (!usesDesktopTitlebar || usesNativeMacTitlebar) && (
               <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
@@ -1728,7 +1732,7 @@ export function AppSidebar() {
       <SidebarGroup
         className={cn(
           "group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 shrink-0 transition-[padding]",
-          showCompactMacBrand ? "pt-0" : "pt-[9px]",
+          usesDesktopTitlebar ? "pt-3" : "pt-[9px]",
           // Scrolled: New Chat is pinned, give a little gap below it.
           scrolled ? "pb-[5px]" : "pb-px",
         )}
