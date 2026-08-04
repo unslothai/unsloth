@@ -5999,3 +5999,13 @@ def test_hub_gguf_files_unknown_on_malformed_endpoint(monkeypatch, endpoint):
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     monkeypatch.setenv("HF_ENDPOINT", endpoint)
     assert start._hub_gguf_files("owner/model") is None
+
+
+def test_codex_attach_check_skips_direct_gguf_files(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: pytest.fail("a direct .gguf file needs no variants probe"),
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "./local/model.GGUF")

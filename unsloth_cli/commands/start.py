@@ -1733,6 +1733,11 @@ def _attach_gguf_check_for_codex(base: str, key: str, model: Optional[str]) -> N
     if not model:
         return
     repo, _ = _split_repo_variant(model)
+    # A direct .gguf file is GGUF by definition, and the variants route lists
+    # only directories (or a file's parent with model metadata), so an empty
+    # answer there would wrongly reject a loadable file.
+    if repo.lower().endswith(".gguf"):
+        return
     try:
         info = _http_json(
             "GET", f"{base}/api/models/gguf-variants?{urlencode({'repo_id': repo})}", key
