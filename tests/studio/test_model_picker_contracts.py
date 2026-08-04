@@ -410,10 +410,14 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
     # localPath alone: preferLocalCache would answer from disk and drop the undownloaded quants.
-    assert (
-        "listGgufVariants(repoId, hfToken, localSource ? { localPath: localSource } : undefined)"
-        in picker
+    # #7767 added the expander's abort signal to this call, so the options are an object
+    # literal now rather than the bare localSource ternary.
+    call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
+    assert call, "the expander must still list variants for the row's own repo"
+    assert "...(localSource ? { localPath: localSource } : {})" in call.group(0), (
+        "the expander drops the row's own cache directory"
     )
+    assert "preferLocalCache" not in call.group(0)
     assert "cachePath={c.cache_path}" in picker
 
     # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.
@@ -528,11 +532,19 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     assert auto_load.count("preferLocalCache: true") >= 2
     assert auto_load.count("localPath: repo.cache_path") >= 2
 
+    # #7767 moved the query building out of chat-api into its own module, so the listing
+    # imports without the auth barrel. Both halves are pinned: the caller must still hand
+    # its options to the builder, and the builder must still forward them.
     chat_api = _read("features/chat/api/chat-api.ts")
     variants_fn = chat_api.split("export async function listGgufVariants", 1)[1]
     variants_fn = variants_fn.split("export interface KvCacheEstimate", 1)[0]
-    assert 'params.set("prefer_local_cache", "true")' in variants_fn
-    assert 'params.set("local_path", localPath)' in variants_fn
+    assert "ggufVariantsQuery(repoId, options, isHuggingFaceOffline())" in variants_fn
+
+    query_src = _read("features/chat/api/gguf-variants-request.ts")
+    query_fn = query_src.split("export function ggufVariantsQuery", 1)[1]
+    query_fn = query_fn.split("\nexport ", 1)[0]
+    assert 'params.set("prefer_local_cache", "true")' in query_fn
+    assert 'params.set("local_path", localPath)' in query_fn
 
 
 def test_cache_location_update_invalidates_frontend_inventory():
