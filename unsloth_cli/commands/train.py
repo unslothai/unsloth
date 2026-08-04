@@ -135,6 +135,7 @@ def train(
         from studio.backend.core.training.resume import (
             get_resume_checkpoint_path,
             normalize_resume_output_dir,
+            current_training_backend,
             record_resume_rewind,
             resume_run_dir,
         )
@@ -147,7 +148,16 @@ def train(
         except ValueError as e:
             root_error = e
 
-        cli_backend = "mlx" if _should_use_mlx_backend_for_cli() else "pt"
+        # The shared discriminator consults hardware detection, so a host that
+        # cannot train (broken MLX stack, CPU-only) rejects here instead of
+        # accepting a bundle the trainer will fail on.
+        cli_backend = current_training_backend()
+        if cli_backend is None:
+            typer.echo(
+                "Error: training is unavailable on this host, so the run cannot be resumed.",
+                err = True,
+            )
+            raise typer.Exit(code = 2)
         resume_checkpoint = (
             get_resume_checkpoint_path(resume_dir, backend = cli_backend) if resume_dir else None
         )
@@ -157,7 +167,7 @@ def train(
             # see; accept such a dir directly when it holds a valid checkpoint.
             # Only the MLX adapter writes outside the outputs root; the HF
             # trainer would reject an external output_dir at training time.
-            if _should_use_mlx_backend_for_cli():
+            if cli_backend == "mlx":
                 external = Path(resume_target).expanduser()
                 if not external.is_absolute():
                     external = Path.cwd() / external

@@ -70,6 +70,9 @@ def _pytorch_backend(monkeypatch):
     # Host-independent default: the MLX-specific tests override explicitly.
     from unsloth_cli.commands import train as train_cmd
     monkeypatch.setattr(train_cmd, "_should_use_mlx_backend_for_cli", lambda: False)
+    from studio.backend.core.training import resume as _resume
+
+    monkeypatch.setattr(_resume, "current_training_backend", lambda: "pt")
 
 
 @pytest.fixture
@@ -137,6 +140,9 @@ def test_resume_from_external_mlx_output_dir(outputs_home, tmp_path_factory, mon
     from unsloth_cli.commands import train as train_cmd
 
     monkeypatch.setattr(train_cmd, "_should_use_mlx_backend_for_cli", lambda: True)
+    from studio.backend.core.training import resume as _resume
+
+    monkeypatch.setattr(_resume, "current_training_backend", lambda: "mlx")
     external = tmp_path_factory.mktemp("mlx_run")
     import numpy as np
     from safetensors.numpy import save_file
@@ -160,6 +166,9 @@ def test_external_mlx_resume_honours_a_recorded_rewind(outputs_home, tmp_path_fa
     from unsloth_cli.commands import train as train_cmd
 
     monkeypatch.setattr(train_cmd, "_should_use_mlx_backend_for_cli", lambda: True)
+    from studio.backend.core.training import resume as _resume
+
+    monkeypatch.setattr(_resume, "current_training_backend", lambda: "mlx")
     external = tmp_path_factory.mktemp("mlx_rewind")
     _write_mlx_checkpoint(external, 25)
     _write_mlx_checkpoint(external, 50)

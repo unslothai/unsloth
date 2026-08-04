@@ -568,13 +568,6 @@ async def start_training(
             # teardown can take seconds), which would otherwise freeze every concurrent request. The diffusion admission is held ACROSS
             # the spawn so the decision is atomic: entering it re-tests the state under the service's own lock, and while held reserve() refuses.
             with _diffusion_gpu_admission():
-                if request.resume_from_checkpoint:
-                    # Rewinding onto an older checkpoint must outlive this run;
-                    # recorded only here, past every pre-start rejection, so a
-                    # refused start cannot cap future resumes.
-                    record_resume_rewind(
-                        request.resume_from_checkpoint, backend = current_training_backend()
-                    )
                 success = await asyncio.to_thread(
                     backend.start_training,
                     job_id = job_id,
@@ -594,6 +587,13 @@ async def start_training(
             # 409 matching the route-entry guard, not an internal error.
             raise HTTPException(status_code = 409, detail = str(exc))
 
+        if success and request.resume_from_checkpoint:
+            # Rewinding onto an older checkpoint must outlive this run; recorded
+            # only once the backend accepted the start, so a refused start
+            # cannot cap future resumes.
+            record_resume_rewind(
+                request.resume_from_checkpoint, backend = current_training_backend()
+            )
         if not success:
             progress_error = backend.trainer.training_progress.error
             return TrainingJobResponse(

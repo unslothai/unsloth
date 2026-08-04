@@ -3492,6 +3492,12 @@ def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
     step = int(getattr(trainer, "_global_step", 0) or 0)
     # A periodic save or a resumed run may already cover the current step.
     if _mlx_has_checkpoint_at_step(output_dir, step):
+        # Adopting an existing same-step checkpoint makes it part of this
+        # timeline; refresh its state mtime so a rewind cap lifts to it.
+        try:
+            (Path(output_dir) / f"checkpoint-{step}" / "trainer_state.json").touch()
+        except OSError:
+            pass
         return True
     if step <= 0 or optimizer is None:
         return False

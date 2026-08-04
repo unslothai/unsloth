@@ -169,3 +169,24 @@ def test_worker_guard_covers_sigbreak_when_present(monkeypatch):
     worker._install_worker_sigint_guard()
     assert 21 in installed
     assert installed[21] is installed[signal_mod.SIGINT]
+
+
+def test_stop_adopting_an_existing_checkpoint_refreshes_its_state(tmp_path, monkeypatch):
+    # A stop landing exactly on an abandoned sibling's step adopts it into the
+    # new timeline; without the mtime refresh a rewind cap would never lift.
+    import os
+    import time as _time
+
+    ckpt = tmp_path / "checkpoint-7"
+    ckpt.mkdir()
+    state = ckpt / "trainer_state.json"
+    state.write_text('{"global_step": 7}')
+    old = _time.time() - 3600
+    os.utime(state, (old, old))
+    monkeypatch.setattr(worker, "_mlx_has_checkpoint_at_step", lambda out, step: True)
+
+    class _Trainer:
+        _global_step = 7
+
+    assert worker._write_mlx_stop_checkpoint(_Trainer(), object(), str(tmp_path)) is True
+    assert state.stat().st_mtime > old + 1800

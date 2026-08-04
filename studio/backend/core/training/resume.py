@@ -37,8 +37,6 @@ def current_training_backend() -> "str | None":
         should_use_mlx_training_backend,
     )
 
-    if not is_apple_silicon_training_platform():
-        return "pt"
     from utils.hardware import hardware as _hw
 
     if _hw.DEVICE is None:
@@ -46,6 +44,12 @@ def current_training_backend() -> "str | None":
             _hw.detect_hardware()
         except Exception:
             return None
+    if _hw.CHAT_ONLY:
+        # No usable training backend at all (CPU-only host, or Apple Silicon
+        # with a broken MLX stack): nothing is resumable here.
+        return None
+    if not is_apple_silicon_training_platform():
+        return "pt"
     return "mlx" if should_use_mlx_training_backend(device = _hw.DEVICE) else None
 
 
