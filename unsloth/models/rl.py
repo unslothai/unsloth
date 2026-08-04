@@ -1429,22 +1429,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += saving_check
 
     # Edit dataset_num_proc
-    # The policy lives in unsloth_zoo.dataset_num_proc rather than inline: this
-    # heuristic had drifted into four copies, two of them wrong (stdlib
-    # `multiprocessing` asked about a start method `datasets` takes from
-    # `multiprocess`, and `1` used as the serial sentinel when it builds a Pool(1)
-    # on datasets >= 4.1).
-    #
-    # The zoo, not unsloth, so that generated trainer source never imports back
-    # into the package that generated it. unsloth.utils.dataset_num_proc is the
-    # fallback for a zoo predating the module, and the whole ladder is guarded so
-    # a generated file that outlives either degrades to the caller's value rather
-    # than failing to build a config.
-    #
-    # serial_as_none = False because this writes back to the *config*, where
-    # unsloth_zoo.sft_prepare_dataset reads `None` as "auto-size me": collapsing
-    # an explicit 1 would inflate it downstream. The config keeps the user's
-    # intent; the map() call site (rl_replacements.py) makes it safe.
+    # The policy lives in unsloth_zoo.dataset_num_proc: it had drifted into four
+    # inline copies, two wrong (stdlib `multiprocessing` asked about a start
+    # method `datasets` takes from `multiprocess`, and `1` used as the serial
+    # sentinel when datasets >= 4.1 builds a Pool(1) for it). The zoo rather than
+    # unsloth, so generated source never imports back into its generator;
+    # unsloth.utils.dataset_num_proc is the fallback for an older zoo, and the
+    # ladder is guarded so a stale generated file degrades to the caller's value.
+    # serial_as_none = False since this writes to the *config*, where
+    # unsloth_zoo.sft_prepare_dataset reads `None` as "auto-size me"; the map()
+    # call site (rl_replacements.py) is what makes it safe.
     if "dataset_num_proc" in call_args:
         num_proc_check = (
             "try:\n"

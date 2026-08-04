@@ -76,10 +76,9 @@ SMALL = dnp.ZOO_MIN_ROWS_FOR_MULTIPROC - 1
 def _reset(monkeypatch):
     dnp.reset_warning_state()
     monkeypatch.delenv(dnp.NUM_PROC_ENV_VAR, raising = False)
-    # Pin CPUs, memory and start method so the assertions are about the wrapper's
-    # policy, not this machine. The CPU count matters: auto is
-    # min(max(cpu_count // 2, 2), AUTO_NUM_PROC_CAP), so reaching the cap needs
-    # >= 2 * AUTO_NUM_PROC_CAP logical CPUs -- a 4-core runner yields 2, not 8.
+    # Pin CPUs, memory and start method so the assertions are about the wrapper,
+    # not this machine. Auto is min(max(cpu_count // 2, 2), AUTO_NUM_PROC_CAP),
+    # so reaching the cap needs >= 2 * AUTO_NUM_PROC_CAP logical CPUs.
     psutil = pytest.importorskip("psutil")
     monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 64)
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 1000)
@@ -94,10 +93,9 @@ def _reset(monkeypatch):
 def _zoo_source():
     """Read unsloth_zoo's dataset_utils source without importing it.
 
-    Importing the package pulls torch, which is not always loadable in a test
-    environment, and these two checks only need the text. find_spec on the
-    submodule would import unsloth_zoo, so locate the top level package (which
-    is not executed) and read the file off disk.
+    Importing the package pulls torch, which is not always loadable here, and
+    these two checks only need the text. find_spec on the submodule would import
+    unsloth_zoo, so locate the top level package and read the file off disk.
     """
     spec = importlib.util.find_spec("unsloth_zoo")
     locations = list(getattr(spec, "submodule_search_locations", None) or [])
@@ -192,10 +190,9 @@ def test_an_unsized_split_does_not_hide_a_large_sized_one(trainer):
     """Regression: one unsized split disabled the bound for every other split.
 
     An unsized split used to abandon the measurement and return None, which the
-    zoo reads as "auto", not "in-process" -- so it sized the *sized* split with
-    its own uncapped min(max(cpu_count + 4, 2), 64), 64 forked workers on a
-    192-core host. The unsized split can never use workers anyway (the zoo's
-    IterableDataset branch passes no num_proc), so skip it, do not veto on it.
+    zoo reads as "auto", not "in-process", so it sized the *sized* split with its
+    own uncapped min(max(cpu_count + 4, 2), 64). The unsized one can never use
+    workers anyway (the zoo's IterableDataset branch passes no num_proc).
     """
     assert dnp.resolve_responses_only_num_proc(trainer, None) == dnp.AUTO_NUM_PROC_CAP
 

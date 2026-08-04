@@ -18,10 +18,9 @@ unsloth_zoo.dataset_num_proc owns it; this copy only runs on a zoo that predates
 the module, and ``test_the_two_copies_have_not_drifted`` holds them together.
 
 The module is stdlib-only by design and is loaded straight off disk rather than
-via ``import unsloth``, so these worker-count assertions stay meaningful on a
-host whose torch/unsloth_zoo pair cannot import. The ``test_rl_codegen_*`` cases
-tie it back to the import path ``unsloth/models/rl.py`` generates, so a rename
-cannot slip through.
+via ``import unsloth``, so these assertions stay meaningful on a host whose
+torch/unsloth_zoo pair cannot import. The ``test_rl_codegen_*`` cases tie it back
+to the import path ``unsloth/models/rl.py`` generates, catching a rename.
 """
 
 from __future__ import annotations
@@ -33,9 +32,8 @@ from pathlib import Path
 import pytest
 
 try:
-    # Before the dnp fixture spoofs sys.platform: multiprocess picks its concrete
-    # contexts from sys.platform at import time, so a first import under a spoofed
-    # one hands a Windows runner the POSIX fork contexts.
+    # Import before the dnp fixture spoofs sys.platform: multiprocess picks its
+    # contexts at import time, so a Windows runner would get POSIX fork contexts.
     import multiprocess  # noqa: F401
 except ImportError:
     pass
@@ -156,11 +154,8 @@ def test_config_layer_is_none_not_one_on_a_non_fork_start_method(monkeypatch, dn
     Only SFT gets its map site rewritten (rl_replacements.py); DPO, KTO, CPO,
     ORPO, Reward and PRM pass ``args.dataset_num_proc`` straight into
     ``Dataset.map``, where a ``1`` builds a ``Pool(1)`` whose spawned child
-    re-imports the user's ``__main__`` (#3211 / #3397). Those configs carried
-    ``None`` on spawn hosts before this module; they must still.
-
-    None is safe here precisely because forking is unavailable: every auto-sizer
-    reading the config vetoes on a non-fork start method too.
+    re-imports the user's ``__main__`` (#3211 / #3397). None is safe here
+    precisely because forking is unavailable, so every auto-sizer vetoes too.
     """
     _force_start_method(monkeypatch, dnp, method)
     assert dnp.get_dataset_num_proc(desired, serial_as_none = False) is None
@@ -242,9 +237,8 @@ def test_explicit_value_is_clamped_by_memory(monkeypatch, dnp, capsys):
     """The gap that caused issue #2693.
 
     Studio passes an explicit ``max(1, cpu_count // 4)``, dozens of workers at
-    ~680 MB each on a big-core machine, and the old heuristic capped only the
-    auto path -- so an explicit request sailed through however little RAM there
-    was.
+    ~680 MB each on a big-core machine, and the old heuristic bounded only the
+    auto path, so that sailed through however little RAM there was.
     """
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
@@ -387,9 +381,8 @@ def test_start_method_probe_prefers_the_real_default_over_list_order(monkeypatch
     It copies stdlib ``get_all_start_methods()`` verbatim, darwin branch
     included, while keeping ``fork`` as its ``_default_context`` on every POSIX
     platform (``#FIXME: spawn`` in multiprocess/context.py). Since ``datasets``
-    pools come from ``multiprocess``, trusting the list would say 'spawn' while
-    ``Dataset.map`` forks -- vetoing every worker and misreporting the start
-    method in the dead-worker diagnostics.
+    pools come from ``multiprocess``, trusting the list would veto every worker
+    and misreport the start method in the dead-worker diagnostics.
     """
     import sys as _sys
 
@@ -402,12 +395,12 @@ def test_start_method_probe_prefers_the_real_default_over_list_order(monkeypatch
 def test_macos_stays_in_process_even_though_multiprocess_forks(monkeypatch, dnp, capsys):
     """The probe reports fork on macOS; policy still refuses to use it.
 
-    Two separate things on purpose. ``multiprocess`` really does fork on darwin,
-    so the diagnostics must say so, but CPython moved the macOS default to spawn
-    in 3.8 (bpo-33725) because forking there "can lead to crashes of the
-    subprocess as macOS system libraries may start threads" -- and this parent
-    holds Torch and a threaded BLAS. Fixing the probe without this guard would
-    take macOS from always-serial to AUTO_NUM_PROC_CAP forked workers.
+    ``multiprocess`` really does fork on darwin, so the diagnostics must say so,
+    but CPython moved the macOS default to spawn in 3.8 (bpo-33725) because
+    forking there "can lead to crashes of the subprocess as macOS system
+    libraries may start threads" -- and this parent holds Torch and a threaded
+    BLAS. Fixing the probe without the guard would take macOS from always-serial
+    to AUTO_NUM_PROC_CAP forked workers.
     """
     _force_start_method(monkeypatch, dnp, "fork")
     # Pin memory so the contrast is about policy, not the runner's free RAM.
@@ -529,11 +522,10 @@ def test_rl_codegen_imports_the_module_that_exists():
 def test_generated_source_reaches_for_the_zoo_before_unsloth():
     """Generated trainer source must not import back into unsloth.
 
-    unsloth/__init__.py is what generates that source, so a `from unsloth...`
-    there is an import of the package mid-flight; it also drags
-    unsloth/utils/__init__.py -> packing -> attention_dispatch -> models._utils,
-    i.e. torch and the model stack, into a module that needs none of it. Both
-    call sites in rl_replacements.py must therefore try unsloth_zoo first.
+    unsloth/__init__.py generates that source, so a `from unsloth...` there is an
+    import of the package mid-flight, and it drags unsloth/utils/__init__.py ->
+    packing -> attention_dispatch -> models._utils (torch and the model stack)
+    into a module needing none of it. Both call sites must try the zoo first.
     """
     source = RL_PATH.with_name("rl_replacements.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
@@ -686,8 +678,7 @@ def test_studio_num_proc_cap_has_not_drifted(dnp):
 
     hardware.py cannot import this module without pulling unsloth's whole
     __init__ into hardware detection, so it carries its own copy. Read it out of
-    the source rather than importing studio, which needs a backend environment
-    this suite does not have.
+    the source, since importing studio needs a backend environment this lacks.
     """
     hardware = REPO_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
     if not hardware.is_file():
@@ -713,8 +704,8 @@ def test_studio_bounds_its_own_computed_worker_count(dnp):
 
     trainer.py asks for cpu_count // 4 and safe_num_proc's auto path is
     cpu_count // 3, so a 64-core host produced 16 workers and a 192-core one 48.
-    Those arrive here as explicit ints, so they were treated as deliberate and
-    only clamped by free memory -- a roomy machine kept all 48.
+    Those arrive downstream as explicit ints, only clamped by free memory, so a
+    roomy machine kept all 48.
     """
     hardware = REPO_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
     if not hardware.is_file():
@@ -739,8 +730,7 @@ def test_the_recovery_advice_does_not_promise_more_than_it_delivers(dnp):
 
     The dead-worker message is the one place a user is told what to do next, so
     it has to be true. On fork, train_on_responses_only over the Zoo's threshold
-    gets ``1`` rather than ``None`` -- deliberately, since a bare None reads as
-    "size it for me" and would inflate to the Zoo's uncapped count -- which
+    gets ``1`` -- a bare None would read as "size it for me" -- which
     ``datasets`` >= 4.1 turns into a Pool(1). Saying "tokenize in-process"
     flatly was wrong for exactly the large-dataset runs that die.
     """
@@ -792,9 +782,9 @@ def test_probe_rejects_a_start_method_the_host_does_not_offer(monkeypatch, dnp):
     """The private default-context chain is not trustworthy on its own.
 
     On a Windows runner it answered "fork" while get_all_start_methods() was
-    ["spawn"]. Believing it read Windows as forkable, so
-    _workers_unusable_reason() returned None and workers were let through --
-    the spawn re-import loop of #3211 / #3397.
+    ["spawn"]. Believing it reads Windows as forkable, so
+    _workers_unusable_reason() returns None and workers get through -- the spawn
+    re-import loop of #3211 / #3397.
     """
     import sys as _sys
     import types

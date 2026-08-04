@@ -3255,10 +3255,9 @@ def get_torch_device_str() -> str:
     return "cpu"
 
 
-# Mirrors AUTO_NUM_PROC_CAP in unsloth_zoo.dataset_num_proc. Duplicated rather
-# than imported: that import pulls in a whole training package, and this module
-# loads during hardware detection long before any of it is needed. A canary in
-# tests/utils/test_dataset_num_proc.py fails if the two ever drift.
+# Mirrors AUTO_NUM_PROC_CAP in unsloth_zoo.dataset_num_proc; copied rather than
+# imported to keep hardware detection free of the training package. A canary in
+# tests/utils/test_dataset_num_proc.py fails if the two drift.
 _STUDIO_NUM_PROC_CAP = 8
 
 
@@ -3290,13 +3289,11 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
     if desired is None or not isinstance(desired, int):
         desired = max(1, (os.cpu_count() or 1) // 3)
 
-    # Bound it. Every number reaching here is a backend heuristic, not user
-    # intent: cpu_count // 3 above and cpu_count // 4 from trainer.py, so a
-    # 64-core host produces 16 and a 192-core one 48. Downstream those look like
-    # deliberate requests and are only clamped by free memory, so on a roomy
-    # machine they reach Dataset.map intact -- the shape of issue #2693, and
-    # slower besides (32 workers measured 14.2s against 6.3s in-process, ~1GB
-    # each). UNSLOTH_DATASET_NUM_PROC is read downstream and still overrides.
+    # Every number reaching here is a backend heuristic (cpu_count // 3 above,
+    # cpu_count // 4 from trainer.py), but downstream it looks like user intent
+    # and is only clamped by free memory, so a 64-core host sends 16 workers to
+    # Dataset.map -- the shape of issue #2693, and slower besides (32 workers
+    # measured 14.2s against 6.3s in-process, ~1GB each).
     if desired > _STUDIO_NUM_PROC_CAP:
         logger.info(
             f"num_proc {desired} -> {_STUDIO_NUM_PROC_CAP}: tokenization stops "
@@ -3342,22 +3339,19 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
     Return a safe ``num_proc`` for ``Dataset.map()`` and ``Dataset.filter()``.
 
     Returns ``None`` on spawn platforms (Windows, macOS). ``None`` -- not ``1``
-    -- is the disable sentinel: on ``datasets`` >= 4.1 (Studio pins 4.3.0)
-    ``map()`` takes the pool branch for any ``num_proc >= 1``, so ``num_proc=1``
-    still builds a ``Pool(1)``. Only ``None`` is in-process on every version the
-    library extra allows.
+    -- is the disable sentinel: ``datasets`` >= 4.1 (Studio pins 4.3.0) takes
+    the pool branch for any ``num_proc >= 1``, so ``1`` still builds a
+    ``Pool(1)``.
 
     Also returns ``None`` on XPU once its runtime is initialized in this
     process: ``os.fork()`` corrupts the Level-Zero context, making Triton
     kernels fail with "Pointer argument doesn't reference XPU device memory".
     Pre-init XPU hosts can still parallelize CPU-side preprocessing.
 
-    There is deliberately no CUDA equivalent. Forking after
-    ``torch.cuda._lazy_init()`` is a hazard in general, but the child here only
-    runs the tokenizer, and 300 forced-fork map() runs on an initialized CUDA
-    context produced no failures. Since ``detect_hardware()`` always initializes
-    CUDA, the guard would serialize tokenization for every CUDA run at no
-    measured benefit. The worker-count bound in
+    There is deliberately no CUDA equivalent: the child only runs the tokenizer,
+    and 300 forced-fork map() runs on an initialized CUDA context produced no
+    failures. Since ``detect_hardware()`` always initializes CUDA, such a guard
+    would serialize every CUDA run for nothing. The worker-count bound in
     ``unsloth_zoo.dataset_num_proc`` is what addresses issue #2693.
     """
     if sys.platform in ("win32", "darwin"):

@@ -552,18 +552,14 @@ def sft_trainer_prepare_dataset(function_name, function):
         )""",
                 where = "sft_prepare_dataset pack_dataset call",
             )
-            # why: this is the map() call site, so it -- not the config -- is where
-            # the worker count must be made safe. Two defects in the Zoo copy: it
-            # asks stdlib `multiprocessing` for the start method while datasets
-            # takes it from `multiprocess`, and its low-memory branch yields 1,
-            # which still builds a Pool(1) on datasets >= 4.1. Route it through the
-            # shared helper so a config None auto-sizes with the capped policy
-            # instead of the Zoo's uncapped `cpu_count + 4 -> 64`.
-            #
-            # The helper is imported from the Zoo, not from unsloth, so generated
-            # trainer source never imports back into the package that generated
-            # it; unsloth.utils.dataset_num_proc is only the fallback for a Zoo
-            # predating the module.
+            # why: the map() call site -- not the config -- is where the worker
+            # count must be made safe. The Zoo copy asks stdlib `multiprocessing`
+            # for a start method datasets takes from `multiprocess`, and its
+            # low-memory branch yields 1, which still builds a Pool(1) on
+            # datasets >= 4.1. The shared helper caps a config None instead of
+            # the Zoo's uncapped `cpu_count + 4 -> 64`. Imported from the Zoo so
+            # generated source never imports back into its generator;
+            # unsloth.utils.dataset_num_proc is only the fallback for an older Zoo.
             function = _require_replace(
                 function,
                 """if not isinstance(dataset, IterableDataset):
@@ -590,22 +586,19 @@ def sft_trainer_prepare_dataset(function_name, function):
                 getattr(args, "dataset_num_proc", None)
             )""",
                 where = "sft_prepare_dataset dataset_num_proc selection",
-                # required = False, unlike the edits above: this anchor is the one
-                # whose absence is harmless, and the likeliest to drift since
-                # unsloth_zoo is a floor dependency and this is the block whose
-                # policy just changed. If it drifts the Zoo reads
-                # args.dataset_num_proc, which the config layer already bounded, so
-                # the memory ceiling that fixes #2693 still holds. Hard-failing
+                # required = False, unlike the edits above: this anchor is the
+                # likeliest to drift and its absence is harmless -- the Zoo then
+                # reads args.dataset_num_proc, which the config layer already
+                # bounded, so the #2693 memory ceiling still holds. Hard-failing
                 # would break every install on a newer Zoo over an optimisation.
                 required = False,
             )
-            # why: datasets compares pool PIDs and never reads the child's exit
-            # status, so every worker death -- OOM kill, segfault, real exception
-            # -- flattens into "One of the subprocesses has abruptly died during
-            # map operation". Wrap both tokenizing map() calls so the user gets
-            # the worker count, start method and implied memory instead of a
-            # guess. count = 2 is the prompt-completion and plain-text branches,
-            # and the drift canary asserts both are still there.
+            # why: datasets never reads the child's exit status, so every worker
+            # death -- OOM kill, segfault, real exception -- flattens into "One
+            # of the subprocesses has abruptly died during map operation". Wrap
+            # both tokenizing map() calls (count = 2: the prompt-completion and
+            # plain-text branches) so the user gets the worker count, start
+            # method and implied memory instead.
             function = _require_replace(
                 function,
                 """            with _w.catch_warnings():

@@ -57,14 +57,11 @@ else:
 
     @_functools.wraps(_zoo_train_on_responses_only)
     def train_on_responses_only(*args, **kwargs):
-        # The zoo still sizes its own dataset.map() workers with the uncapped
-        # min(max(cpu_count + 4, 2), 64) heuristic, forking dozens of workers
-        # that each get a dill-pickled tokenizer copy (issue #2693). It is a
-        # separate package, so bound the count on the way in;
-        # resolve_responses_only_num_proc explains how "in-process" has to be
-        # encoded for the zoo, which reads None as "auto". It lives in the zoo,
-        # beside the helper it bounds; the local copy is the fallback for a zoo
-        # predating it.
+        # The zoo still auto-sizes its dataset.map() workers with the uncapped
+        # min(max(cpu_count + 4, 2), 64) heuristic (issue #2693) and is a
+        # separate package, so bound the count on the way in. See
+        # resolve_responses_only_num_proc; the local copy is only the fallback
+        # for a zoo predating it.
         try:
             from unsloth_zoo.dataset_num_proc import resolve_responses_only_num_proc
         except ImportError:
@@ -76,8 +73,7 @@ else:
             # Signature drift, or a bad call. Let the zoo raise its own error.
             return _zoo_train_on_responses_only(*args, **kwargs)
 
-        # return_function hands back the masking closure before the zoo reads
-        # num_proc, so there is nothing to bound.
+        # The zoo returns the masking closure before reading num_proc.
         if bound.arguments.get("return_function", False):
             return _zoo_train_on_responses_only(*args, **kwargs)
 

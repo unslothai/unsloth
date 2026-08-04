@@ -1315,9 +1315,8 @@ if _IS_MLX:
     def train_on_responses_only(*args, **kwargs):
         """Mask non-response tokens through the shared zoo dataset helper."""
         # Prefer the chat_templates export, which bounds the zoo's dataset.map()
-        # worker count (issue #2693). It is None on a torch-free host, so fall
-        # back to the raw zoo helper and let it raise its own ImportError rather
-        # than "NoneType is not callable".
+        # worker count (issue #2693). It is None on a torch-free host; fall back
+        # so the zoo raises its own ImportError, not "NoneType is not callable".
         from .chat_templates import train_on_responses_only as _train_on_responses_only
 
         if _train_on_responses_only is None:

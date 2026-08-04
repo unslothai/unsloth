@@ -2631,12 +2631,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
-    # No start-method override here. Forcing stdlib multiprocessing onto "fork"
-    # never reached Dataset.map(), which does `from multiprocess import Pool` and
-    # so keeps its own default context; the guard it did flip now asks
-    # multiprocess directly (unsloth_zoo/dataset_num_proc.py). Linux defaults
-    # to fork anyway, so dropping it changes no behaviour and stops overriding a
-    # process-wide setting for every later pool in this worker.
+    # No start-method override: Dataset.map() imports Pool from `multiprocess`,
+    # so forcing stdlib multiprocessing onto "fork" never reached it. Linux forks
+    # by default, and the guard now asks multiprocess directly.
 
     # ── 1c. On Windows, check Triton availability (must be before import torch) ──
     if sys.platform == "win32":

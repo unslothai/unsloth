@@ -25,10 +25,9 @@ import pytest
 import utils.hardware.hardware as hw
 
 try:
-    # Before the fixture below spoofs sys.platform: multiprocess picks its
-    # concrete contexts from sys.platform at import time, so a first import under
-    # a spoofed one hands a Windows runner the POSIX fork contexts and the pool
-    # then dies reaching for os.WNOHANG.
+    # Import before the fixture below spoofs sys.platform: multiprocess picks its
+    # contexts at import time, so a Windows runner would get POSIX fork contexts
+    # and the pool would then die reaching for os.WNOHANG.
     import multiprocess  # noqa: F401
 except ImportError:
     pass
@@ -108,11 +107,10 @@ def _patch_runtime(monkeypatch, name, *, is_initialized):
 def test_dataset_map_num_proc_parallelizes_on_initialized_cuda(monkeypatch):
     """An initialized CUDA context must not disable dataset workers.
 
-    Forking after torch.cuda._lazy_init() is a hazard in general, but the map
-    child only runs the tokenizer, and 300 forced-fork map() runs on an
+    The map child only runs the tokenizer, and 300 forced-fork map() runs on an
     initialized context produced no failures. Since detect_hardware() always
-    initializes CUDA, a guard would serialize tokenization for every CUDA run.
-    Pinned so it is not added back without new evidence.
+    initializes CUDA, a guard would serialize every CUDA run. Pinned so it is
+    not added back without new evidence.
     """
     _patch_device(monkeypatch, hw.DeviceType.CUDA)
     _patch_runtime(monkeypatch, "cuda", is_initialized = True)
