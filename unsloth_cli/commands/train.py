@@ -30,8 +30,6 @@ def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None
         typer.echo(f"Warning: failed to activate Transformers sidecar: {exc}", err = True)
 
 
-
-
 def _external_resume_checkpoint(path: Path) -> "str | None":
     from studio.backend.core.training.resume import is_resume_checkpoint_valid
 
