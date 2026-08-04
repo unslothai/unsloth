@@ -622,6 +622,73 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
 
 
+def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
+    reset = _between(
+        SHARED_COMPOSER,
+        "function resetPromptQueue()",
+        "function advanceQueue()",
+    )
+    assert "isQueueRunningRef.current = false;" in reset
+    assert "setIsQueueRunning(false);" in reset
+    assert "queueRef.current = [];" in reset
+    assert "queueIndexRef.current = 0;" in reset
+    assert "setQueueProgress({ current: 0, total: 0 });" in reset
+
+    send_flow = _between(
+        SHARED_COMPOSER,
+        "async function send()",
+        "sendRef.current = send;",
+    )
+    unavailable_lifecycle = _between(
+        send_flow,
+        "if (compareLifecycleLease === null)",
+        "const releaseCompareModelLifecycle = () =>",
+    )
+    assert "resetPromptQueue();" in unavailable_lifecycle
+
+    failed_preflight = _between(
+        send_flow,
+        "compareStopDecision = await confirmStopRunningChatsIfNeeded(",
+        "if (!compareStopDecision.proceed)",
+    )
+    assert "resetPromptQueue();" in failed_preflight
+
+    declined_preflight = _between(
+        send_flow,
+        "if (!compareStopDecision.proceed)",
+        "if (!submittedDraftIsCurrent())",
+    )
+    assert (
+        declined_preflight.index("releaseCompareModelLifecycle();")
+        < declined_preflight.index("resetPromptQueue();")
+        < declined_preflight.index("return;")
+    )
+
+    changed_draft = _between(
+        send_flow,
+        "const keepChangedDraft = () =>",
+        "const clearSubmittedDraft = () =>",
+    )
+    assert "releaseCompareModelLifecycle();" in changed_draft
+    assert "resetPromptQueue();" in changed_draft
+
+    failed_gpu_discovery = _between(
+        send_flow,
+        "// Warm the device cache before the snapshot below",
+        "// The GPU/offload knobs both compare loads must use",
+    )
+    assert "resetPromptQueue();" in failed_gpu_discovery
+
+    compare_run = _between(
+        send_flow,
+        "setComparing(true);",
+        "} else {",
+    )
+    failed_compare = _between(compare_run, "} catch (err) {", "} finally {")
+    assert "compareStepSucceededRef.current = false;" in failed_compare
+    assert "resetPromptQueue();" in failed_compare
+
+
 def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     target = _between(
         THREAD,

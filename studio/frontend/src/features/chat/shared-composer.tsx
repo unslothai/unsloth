@@ -816,14 +816,21 @@ export function SharedComposer({
     return () => clearInterval(id);
   }, [handlesRef]);
 
+  function resetPromptQueue() {
+    if (!isQueueRunningRef.current && queueRef.current.length === 0) {
+      return;
+    }
+    isQueueRunningRef.current = false;
+    setIsQueueRunning(false);
+    queueRef.current = [];
+    queueIndexRef.current = 0;
+    setQueueProgress({ current: 0, total: 0 });
+  }
+
   function advanceQueue() {
     const nextIndex = queueIndexRef.current + 1;
     if (nextIndex >= queueRef.current.length) {
-      isQueueRunningRef.current = false;
-      setIsQueueRunning(false);
-      queueRef.current = [];
-      queueIndexRef.current = 0;
-      setQueueProgress({ current: 0, total: 0 });
+      resetPromptQueue();
       toast.success("Prompt queue complete");
       return;
     }
@@ -844,11 +851,7 @@ export function SharedComposer({
     prevComparingRef.current = comparing;
     if (!isQueueRunningRef.current || !wasComparing || comparing) return;
     if (!compareStepSucceededRef.current) {
-      isQueueRunningRef.current = false;
-      setIsQueueRunning(false);
-      queueRef.current = [];
-      queueIndexRef.current = 0;
-      setQueueProgress({ current: 0, total: 0 });
+      resetPromptQueue();
       toast.error("Prompt queue stopped", {
         description: "A compare step failed; remaining prompts were not sent.",
       });
@@ -977,12 +980,18 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
-    if (composingRef.current) return;
+    if (composingRef.current) {
+      resetPromptQueue();
+      return;
+    }
     const submittedText = text;
     const submittedImages = pendingImages;
     const submittedAudio = pendingAudio;
     const msg = submittedText.trim();
-    if (!msg && submittedImages.length === 0 && !submittedAudio) return;
+    if (!msg && submittedImages.length === 0 && !submittedAudio) {
+      resetPromptQueue();
+      return;
+    }
 
     const hasCompareHandles = Boolean(
       handlesRef.current["model1"] || handlesRef.current["model2"],
@@ -1000,6 +1009,7 @@ export function SharedComposer({
         description:
           "Use the model dropdown above each pane, then send your prompt.",
       });
+      resetPromptQueue();
       return;
     }
 
@@ -1013,6 +1023,7 @@ export function SharedComposer({
       // for its side, and the chat-adapter's pre-stream gate runs per-side
       // against that fresh state.
       toast.error(imageUnavailableReason);
+      resetPromptQueue();
       return;
     }
 
@@ -1035,7 +1046,10 @@ export function SharedComposer({
     if (msg) {
       content.push({ type: "text", text: msg });
     }
-    if (content.length === 0) return;
+    if (content.length === 0) {
+      resetPromptQueue();
+      return;
+    }
 
     let compareLifecycleLease: ModelLifecycleLease | null = null;
     if (isGeneralizedCompare) {
@@ -1046,6 +1060,7 @@ export function SharedComposer({
         toast.info("A model is loading", {
           description: "Wait for it to finish or cancel it first.",
         });
+        resetPromptQueue();
         return;
       }
     }
@@ -1073,6 +1088,7 @@ export function SharedComposer({
       pendingAudioRef.current === submittedAudio;
     const keepChangedDraft = () => {
       releaseCompareModelLifecycle();
+      resetPromptQueue();
       toast.info("Message changed while preparing", {
         description: "Your updated draft was kept. Send it again when ready.",
       });
@@ -1096,6 +1112,7 @@ export function SharedComposer({
         );
       } catch (error) {
         releaseCompareModelLifecycle();
+        resetPromptQueue();
         toast.error("Compare failed", {
           description: error instanceof Error ? error.message : "Unknown error",
         });
@@ -1103,6 +1120,7 @@ export function SharedComposer({
       }
       if (!compareStopDecision.proceed) {
         releaseCompareModelLifecycle();
+        resetPromptQueue();
         return;
       }
     }
@@ -1134,6 +1152,7 @@ export function SharedComposer({
         }
       } catch (error) {
         releaseCompareModelLifecycle();
+        resetPromptQueue();
         toast.error("Compare failed", {
           description: error instanceof Error ? error.message : "Unknown error",
         });
@@ -1587,6 +1606,7 @@ export function SharedComposer({
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
         compareStepSucceededRef.current = false;
+        resetPromptQueue();
         // The install already unloaded the previously active model; drop the
         // checkpoint so the UI does not keep pointing at an unloaded model.
         if (upgradeUnloadedActive) {
@@ -2477,11 +2497,7 @@ export function SharedComposer({
             <button
               type="button"
               onClick={() => {
-                isQueueRunningRef.current = false;
-                setIsQueueRunning(false);
-                queueRef.current = [];
-                queueIndexRef.current = 0;
-                setQueueProgress({ current: 0, total: 0 });
+                resetPromptQueue();
                 stop();
               }}
               aria-label="Stop prompt queue"
