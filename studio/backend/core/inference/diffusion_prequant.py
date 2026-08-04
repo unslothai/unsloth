@@ -322,7 +322,9 @@ def load_prequantized_transformer(
 
 
 def _resolve_checkpoint_path(
-    source: PrequantSource, hf_token: Optional[str], cache_dir: Optional[str] = None
+    source: PrequantSource,
+    hf_token: Optional[str],
+    cache_dir: Optional[str] = None,
 ) -> Optional[str]:
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
@@ -333,6 +335,7 @@ def _resolve_checkpoint_path(
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
         from huggingface_hub import hf_hub_download
+
         try:
             from huggingface_hub.errors import EntryNotFoundError
         except Exception:  # noqa: BLE001 — older hub layouts; fall back to a private marker

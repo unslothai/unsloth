@@ -502,7 +502,12 @@ def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
     downloaded.write_bytes(b"x")
     roots: list = []
 
-    def _dl(repo_id, filename, token = None, cache_dir = None):
+    def _dl(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
         roots.append(cache_dir)
         return str(downloaded)
 
@@ -788,7 +793,11 @@ def test_the_loader_reuses_the_hit_the_cache_probe_found(monkeypatch, tmp_path):
         fallback_filename = "transformer_fp8.pt",
     )
 
-    def _cache(repo_id, filename, cache_dir = None):
+    def _cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
         # Only the live root holds it; the import-time default (cache_dir None) is a miss.
         path = live / filename
         return str(path) if cache_dir == str(live) and path.is_file() else None
