@@ -12,9 +12,25 @@ import { setHubProxyFirst } from "./hub-transport";
 export function hubProxyFirst(): boolean {
   try {
     const endpoint = usePlatformStore.getState().hubEndpoint;
-    return Boolean(endpoint) && endpoint !== DEFAULT_HUB_ENDPOINT;
+    if (!endpoint) return false;
+    // Normalised: a trailing slash, different case or an explicit :443 is still
+    // the official Hub, and forcing those through the proxy would give up
+    // direct browser access for nothing.
+    return originKey(endpoint) !== originKey(DEFAULT_HUB_ENDPOINT);
   } catch {
     return false;
+  }
+}
+
+const DEFAULT_PORTS: Record<string, string> = { "http:": "80", "https:": "443" };
+
+function originKey(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const port = u.port || DEFAULT_PORTS[u.protocol] || "";
+    return `${u.protocol}//${u.hostname.toLowerCase()}:${port}`;
+  } catch {
+    return raw;
   }
 }
 

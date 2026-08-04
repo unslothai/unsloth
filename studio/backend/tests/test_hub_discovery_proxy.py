@@ -427,3 +427,28 @@ class TestStreamDeadline:
         response = _call([("search", "gemma")])
         assert json.loads(response.body) == [{"id": "a"}]
         assert (response.headers.get("link") or response.headers.get("Link")) is None
+
+
+class TestHealthHubEndpoint:
+    def test_userinfo_never_reaches_the_client(self, monkeypatch):
+        import main
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://user:password@mirror.example")
+        value = main._hub_endpoint()
+        assert "password" not in value and "user" not in value, value
+        assert value == "https://mirror.example"
+
+    @pytest.mark.parametrize(
+        "endpoint,expected",
+        [
+            ("https://HuggingFace.CO", "https://huggingface.co"),
+            ("https://mirror.example/hf", "https://mirror.example"),
+            ("", "https://huggingface.co"),
+            ("   ", "https://huggingface.co"),
+        ],
+    )
+    def test_only_a_normalised_origin_is_reported(self, monkeypatch, endpoint, expected):
+        import main
+
+        monkeypatch.setenv("HF_ENDPOINT", endpoint)
+        assert main._hub_endpoint() == expected

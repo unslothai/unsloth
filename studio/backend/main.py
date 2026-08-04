@@ -822,12 +822,25 @@ _IS_COLAB = os.path.isdir("/content") and (
 
 
 def _hub_endpoint() -> str:
-    """Effective Hub endpoint, read per call so HF_ENDPOINT stays live."""
+    """Effective Hub origin, read per call so HF_ENDPOINT stays live.
+
+    Origin only: HF_ENDPOINT may carry userinfo, and the client just needs to
+    know whether this is a mirror, not the server's credentials.
+    """
+    default = "https://huggingface.co"
     try:
+        from urllib.parse import urlsplit
+
         from utils.utils import hf_endpoint_url
-        return hf_endpoint_url()
+
+        parsed = urlsplit(hf_endpoint_url())
+        host = parsed.hostname
+        if not host:
+            return default
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        return f"{parsed.scheme.lower()}://{host.lower()}{port}"
     except Exception:
-        return "https://huggingface.co"
+        return default
 
 
 def _build_csp(script_nonce: "str | None" = None) -> str:
