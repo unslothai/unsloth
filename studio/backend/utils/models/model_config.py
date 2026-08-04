@@ -1233,22 +1233,31 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# Mirrors hub.utils.gguf._DRAFTER_KINDS.
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+
+
 def _is_mtp_drafter(path: str) -> bool:
-    """True for a separate-file MTP drafter (speculative head), a companion
-    to the main model rather than a selectable quant: the repo-root
-    ``mtp-*.gguf`` or the ``MTP/`` subdir copies (Gemma 4).
+    """True for a separate-file speculative-decoding drafter, a companion to
+    the main model rather than a selectable quant: the repo-root
+    ``mtp-*.gguf``, the ``MTP/`` subdir copies (Gemma 4) or the ``dspark/``
+    drafters (DeepSeek V4 Flash).
 
     Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub).
     Must be excluded everywhere mmproj is, or the drafter leaks into variant
     menus (a phantom quant) and quant-matched file lookups -- e.g. a ``Q8_0``
     request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead
-    of the real weight.
+    of the real weight, or to ``dspark/dspark-...-Q8_0.gguf``.
+
+    Prefix or exact directory only, never a substring: the kind names double
+    as family names, so ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model.
     """
-    p = path.lower()
+    p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
-    name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    parts = [segment for segment in p.split("/") if segment]
+    name, parents = parts[-1], parts[:-1]
+    return any(name.startswith(f"{kind}-") or kind in parents for kind in _DRAFTER_KINDS)
 
 
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.

@@ -1116,21 +1116,49 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
     return False
 
 
+# Mirrors hub.utils.gguf._DRAFTER_KINDS.
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+
+
+def _drafter_path_kind(path: str) -> Optional[str]:
+    """Which drafter kind names *path*, by basename prefix or exact parent
+    directory -- never a substring, since the kind names double as family
+    names (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model)."""
+    p = path.replace("\\", "/").lower()
+    if not p.endswith(".gguf"):
+        return None
+    parts = [segment for segment in p.split("/") if segment]
+    name, parents = parts[-1], parts[:-1]
+    for kind in _DRAFTER_KINDS:
+        if name.startswith(f"{kind}-") or kind in parents:
+            return kind
+    return None
+
+
 def _is_companion_gguf_path(path: str) -> bool:
-    """True for a non-main GGUF: vision mmproj or a separate MTP drafter
-    (repo-root ``mtp-*.gguf`` or the ``MTP/`` subdir copies, Gemma 4).
+    """True for a non-main GGUF: vision mmproj or a separate speculative-decoding
+    drafter (repo-root ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, or
+    the ``dspark/`` drafters for DeepSeek V4 Flash).
 
     Mirrors hub.utils.gguf so variant resolution never picks a companion as
     the main model -- e.g. a Gemma ``Q8_0`` request must not resolve to the
     ``MTP/...-Q8_0-MTP.gguf`` drafter, which sorts ahead of the real weight.
+
+    EXCLUSION ONLY. Use `_is_mtp_only_drafter_path` to pick a drafter to launch.
     """
     p = path.lower()
     if not p.endswith(".gguf"):
         return False
     if "mmproj" in p:
         return True
-    name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    return _drafter_path_kind(path) is not None
+
+
+def _is_mtp_only_drafter_path(path: str) -> bool:
+    """MTP only, the one kind Studio launches today (``--spec-type draft-mtp``).
+    DSpark needs ``draft-dspark`` plus ``--fit off``, so drafter discovery must
+    narrow to MTP instead of reusing the broad companion predicate."""
+    return _drafter_path_kind(path) == "mtp"
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
@@ -7169,7 +7197,8 @@ class LlamaCppBackend:
             )
             for snap in snapshots:  # newest first
                 for f in sorted(_gguf_snapshot_files(snap)):
-                    if _is_companion_gguf_path(f) and "mmproj" not in f.lower():
+                    # A cached DSpark drafter must never reach --spec-type draft-mtp.
+                    if _is_mtp_only_drafter_path(f):
                         (roots if "/" not in f else subdirs).append(snap / f)
             # Keep snapshot order (newest first), root before any MTP/ copy, so a
             # newer main GGUF pairs with the newest cached drafter, not a stale one.
