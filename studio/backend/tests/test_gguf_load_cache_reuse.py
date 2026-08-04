@@ -692,6 +692,9 @@ class TestLoadHubDownloadExclusion:
             model_identifier = REPO,
             adopt_load_intent_if_matched = lambda _intent: True,
             _audio_probed = True,
+            # The reuse fast path consults this before asserting CHAT ownership; a real
+            # LlamaCppBackend exposes it as a property, so the double has to carry it too.
+            holds_no_vram = False,
         )
         request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
 
@@ -728,6 +731,9 @@ class TestLoadHubDownloadExclusion:
             matches_load_source = lambda _intent: True,
             adopt_load_intent_if_matched = lambda _intent: True,
             _audio_probed = True,
+            # The reuse fast path consults this before asserting CHAT ownership; a real
+            # LlamaCppBackend exposes it as a property, so the double has to carry it too.
+            holds_no_vram = False,
         )
         config = SimpleNamespace(
             identifier = REPO,
