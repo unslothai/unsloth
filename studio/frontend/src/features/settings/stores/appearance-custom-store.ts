@@ -86,6 +86,63 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
     connections: false,
   };
 
+/** Sidebar NAVIGATION rows the user can pin and reorder, distinct from the profile-menu entries above. Array order is render order. Unpinned rows go to the "More" flyout, except a lone one, which is hidden. */
+export const SIDEBAR_NAV_ITEM_IDS = [
+  // Model hub leads: picking a model comes before the work that uses one.
+  "hub",
+  "projects",
+  "images",
+  // Video sits directly under Images: the two media tabs read as one pair.
+  "video",
+  "train",
+  "recipes",
+  "export",
+  "api",
+] as const;
+
+export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number];
+
+export type SidebarNavItemPref = {
+  id: SidebarNavItemId;
+  /** true = top-level row; false = under "More". */
+  pinned: boolean;
+};
+
+// Matches the shipped layout, so an untouched install looks unchanged.
+export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
+  hub: true,
+  projects: true,
+  images: true,
+  video: true,
+  train: true,
+  recipes: false,
+  export: false,
+  api: false,
+};
+
+/** Every previously shipped layout, so a migration can tell an untouched install from one the
+ *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects. */
+const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "train", pinned: true },
+    { id: "video", pinned: false },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+];
+
 export const MAX_IMPORTED_FONTS = 3;
 /** Imported-font family name cap; must match the backend name max_length (100). */
 export const MAX_IMPORTED_FONT_NAME_LENGTH = 100;
@@ -105,7 +162,7 @@ export type AppearanceCustomization = {
   chatFont: string | null;
   codeFont: string | null;
   importedFonts: ImportedFont[];
-  /** Root font size in px (rem base). null = browser default (16). */
+  /** UI font size in px. null = app default (15). */
   uiFontSize: number | null;
   /** Code/pre font size in px. null = inherit each element's own size. */
   codeFontSize: number | null;
@@ -117,6 +174,8 @@ export type AppearanceCustomization = {
   fontSmoothing: boolean;
   /** Order and visibility of the optional sidebar profile menu items. */
   sidebarMenu: SidebarMenuItemPref[];
+  /** Order of the sidebar nav rows, and which are pinned vs. under "More". */
+  sidebarNav: SidebarNavItemPref[];
 };
 
 const EMPTY_MODE_COLORS: CustomModeColors = {
@@ -142,10 +201,15 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
     id,
     visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id],
   })),
+  sidebarNav: SIDEBAR_NAV_ITEM_IDS.map((id) => ({
+    id,
+    pinned: SIDEBAR_NAV_DEFAULT_PINNED[id],
+  })),
 };
 
-export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 16 } as const;
+export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
 export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
+const UI_FONT_SIZE_CSS_BASE = 16;
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
@@ -228,6 +292,26 @@ function isSidebarMenuItemId(value: unknown): value is SidebarMenuItemId {
   return SIDEBAR_MENU_ITEM_IDS.includes(value as SidebarMenuItemId);
 }
 
+function isSidebarNavItemId(value: unknown): value is SidebarNavItemId {
+  return SIDEBAR_NAV_ITEM_IDS.includes(value as SidebarNavItemId);
+}
+
+function sanitizeSidebarNav(value: unknown): SidebarNavItemPref[] {
+  const items: SidebarNavItemPref[] = [];
+  const seen = new Set<SidebarNavItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    const source = (entry ?? {}) as Partial<SidebarNavItemPref>;
+    if (!isSidebarNavItemId(source.id) || seen.has(source.id)) continue;
+    seen.add(source.id);
+    items.push({ id: source.id, pinned: source.pinned !== false });
+  }
+  // Ids added after the payload was written land at the end with their default.
+  for (const id of SIDEBAR_NAV_ITEM_IDS) {
+    if (!seen.has(id)) items.push({ id, pinned: SIDEBAR_NAV_DEFAULT_PINNED[id] });
+  }
+  return items;
+}
+
 function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
   const items: SidebarMenuItemPref[] = [];
   const seen = new Set<SidebarMenuItemId>();
@@ -279,6 +363,7 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
     sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
+    sidebarNav: sanitizeSidebarNav(source.sidebarNav),
   };
 }
 
@@ -356,13 +441,23 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 2,
+      version: 4,
       storage: createJSONStorage(() => guardedLocalStorage),
-      migrate: (persisted) => {
+      migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
-        return {
-          customization: sanitizeCustomization(state.customization),
-        } as AppearanceCustomState;
+        const customization = sanitizeCustomization(state.customization);
+        // Adopt the new layout only where the stored one is still a shipped
+        // default, so a user's own arrangement survives.
+        if (version < 4) {
+          const stored = JSON.stringify(customization.sidebarNav);
+          const untouched = SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
+            (layout) => JSON.stringify(layout) === stored,
+          );
+          if (untouched) {
+            customization.sidebarNav = [...DEFAULT_CUSTOMIZATION.sidebarNav];
+          }
+        }
+        return { customization } as AppearanceCustomState;
       },
       // Sanitize on EVERY rehydrate, not just version bumps: a same-version
       // payload written by an older bundle (e.g. before importedFonts existed)
@@ -681,12 +776,13 @@ export function applyCustomizationToDocument(
   // size: rem-based layout geometry must not move with the preference. The
   // scale reaches text through the --text-* / --text-ui-* / --leading-*
   // tokens in index.css.
-  if (c.uiFontSize !== null && c.uiFontSize !== UI_FONT_SIZE_RANGE.default) {
+  const effectiveUiFontSize = c.uiFontSize ?? UI_FONT_SIZE_RANGE.default;
+  if (effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default) {
     setVar(
       "--ui-font-scale",
-      String(c.uiFontSize / UI_FONT_SIZE_RANGE.default),
+      String(effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE),
     );
-    el.setAttribute("data-ui-font-size", String(c.uiFontSize));
+    el.setAttribute("data-ui-font-size", String(effectiveUiFontSize));
   } else {
     setVar("--ui-font-scale", null);
     el.removeAttribute("data-ui-font-size");

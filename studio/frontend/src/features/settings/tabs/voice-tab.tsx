@@ -39,6 +39,7 @@ import {
 } from "@/features/hub";
 import { useDebouncedValue, useWheelScrollRef } from "@/hooks";
 import { useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
@@ -78,6 +79,11 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "hi-IN", label: "हिन्दी" },
   { value: "ar-SA", label: "العربية" },
 ];
+
+// Keep spoken preview content independent of the interface locale. The system
+// voice and loaded local model may not support the language used by the UI.
+const TTS_PREVIEW_TEXT =
+  "Hello from Unsloth! This is a preview of the selected voice.";
 
 // Speech-recognition models, not voices. Name and size are separate so the list
 // can right-align the size; the speed/accuracy note lives in the row description.
@@ -208,7 +214,7 @@ function SttModelPicker({
       <PopoverTrigger asChild={true}>
         <button
           type="button"
-          aria-label="Speech recognition model"
+          aria-label={t("settings.voice.dictation.sttModelLabel")}
           className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10 focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
         >
           <span className="truncate">{sttModelName(value)}</span>
@@ -297,9 +303,6 @@ function SttModelPicker({
     </Popover>
   );
 }
-
-const TTS_PREVIEW_TEXT =
-  "Hello from Unsloth Studio! This is a preview of the selected voice.";
 
 function useAudioInputDevices() {
   const t = useT();
@@ -759,14 +762,16 @@ export function VoiceTab() {
         audio.addEventListener("error", () => {
           releasePreviewAudio();
           markPreviewing(false);
-          toast.error("TTS preview failed");
+          toast.error(t("settings.voice.readAloud.previewFailed"));
         });
         previewAudioRef.current = audio;
         await audio.play();
       } catch (error) {
         if (!controller.signal.aborted) {
           toast.error(
-            error instanceof Error ? error.message : "TTS preview failed",
+            error instanceof Error
+              ? error.message
+              : t("settings.voice.readAloud.previewFailed"),
           );
         }
         releasePreviewAudio();
@@ -833,38 +838,44 @@ export function VoiceTab() {
               : t("settings.voice.dictation.engineBrowserDescription")
           }
         >
-          <Select
-            value={dictationEngine}
-            onValueChange={(value) => {
-              const next = value === "model" ? "model" : "browser";
-              if (next !== dictationEngine) {
-                // Unload whichever backend was resident for the old engine.
-                void unloadSttModel().catch(() => {});
-                if (next === "model") {
-                  setSttPhase("checking");
-                  setSttDevice(null);
-                  setSttDownload(null);
+          {isTauri ? (
+            <span className="text-sm text-muted-foreground">
+              {t("settings.voice.dictation.engineModel")}
+            </span>
+          ) : (
+            <Select
+              value={dictationEngine}
+              onValueChange={(value) => {
+                const next = value === "model" ? "model" : "browser";
+                if (next !== dictationEngine) {
+                  // Unload whichever backend was resident for the old engine.
+                  void unloadSttModel().catch(() => {});
+                  if (next === "model") {
+                    setSttPhase("checking");
+                    setSttDevice(null);
+                    setSttDownload(null);
+                  }
                 }
-              }
-              setDictationEngine(next);
-            }}
-          >
-            <SelectTrigger
-              aria-label="Dictation engine"
-              className="w-56"
-              size="sm"
+                setDictationEngine(next);
+              }}
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="browser">
-                {t("settings.voice.dictation.engineBrowser")}
-              </SelectItem>
-              <SelectItem value="model">
-                {t("settings.voice.dictation.engineModel")}
-              </SelectItem>
-            </SelectContent>
-          </Select>
+              <SelectTrigger
+                aria-label={t("settings.voice.dictation.engineLabel")}
+                className="w-56"
+                size="sm"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="browser">
+                  {t("settings.voice.dictation.engineBrowser")}
+                </SelectItem>
+                <SelectItem value="model">
+                  {t("settings.voice.dictation.engineModel")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          )}
         </SettingsRow>
 
         {isLocalEngine ? (
@@ -1022,7 +1033,11 @@ export function VoiceTab() {
         >
           {hasLabels ? (
             <Select value={micDeviceId} onValueChange={setMicDeviceId}>
-              <SelectTrigger aria-label="Microphone" className="min-w-56 max-w-72" size="sm">
+              <SelectTrigger
+                aria-label={t("settings.voice.dictation.microphoneLabel")}
+                className="min-w-56 max-w-72"
+                size="sm"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1033,7 +1048,10 @@ export function VoiceTab() {
                   .filter((d) => d.deviceId && d.deviceId !== "default")
                   .map((d, i) => (
                     <SelectItem key={d.deviceId} value={d.deviceId}>
-                      {d.label || `Microphone ${i + 1}`}
+                      {d.label ||
+                        t("settings.voice.dictation.microphoneFallbackName", {
+                          index: i + 1,
+                        })}
                     </SelectItem>
                   ))}
                 {!knownMic && micDeviceId !== "default" ? (
@@ -1060,7 +1078,7 @@ export function VoiceTab() {
             onValueChange={setDictationLanguage}
           >
             <SelectTrigger
-              aria-label="Dictation language"
+              aria-label={t("settings.voice.dictation.languageLabel")}
               className="min-w-56 max-w-72"
               size="sm"
             >
@@ -1133,7 +1151,7 @@ export function VoiceTab() {
                 }
               >
                 <SelectTrigger
-                  aria-label="TTS engine"
+                  aria-label={t("settings.voice.readAloud.engineLabel")}
                   className="min-w-56 max-w-72"
                   size="sm"
                 >
@@ -1164,7 +1182,7 @@ export function VoiceTab() {
               >
                 <Select value={ttsVoiceURI} onValueChange={setTtsVoiceURI}>
                   <SelectTrigger
-                    aria-label="Text to speech voice"
+                    aria-label={t("settings.voice.readAloud.voiceLabel")}
                     className="min-w-56 max-w-72"
                     size="sm"
                   >
@@ -1195,7 +1213,7 @@ export function VoiceTab() {
                 step={0.05}
                 onValueChange={([v]) => v !== undefined && setTtsRate(v)}
                 className="w-48"
-                aria-label="Speaking rate"
+                aria-label={t("settings.voice.readAloud.speedLabel")}
               />
             </SettingsRow>
 
@@ -1211,7 +1229,7 @@ export function VoiceTab() {
                   step={0.05}
                   onValueChange={([v]) => v !== undefined && setTtsPitch(v)}
                   className="w-48"
-                  aria-label="Voice pitch"
+                  aria-label={t("settings.voice.readAloud.pitchLabel")}
                 />
               </SettingsRow>
             )}
@@ -1227,7 +1245,7 @@ export function VoiceTab() {
                 step={0.05}
                 onValueChange={([v]) => v !== undefined && setTtsVolume(v)}
                 className="w-48"
-                aria-label="Playback volume"
+                aria-label={t("settings.voice.readAloud.volumeLabel")}
               />
             </SettingsRow>
 

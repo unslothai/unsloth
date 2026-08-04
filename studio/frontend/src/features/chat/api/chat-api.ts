@@ -8,6 +8,8 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
+import { isHuggingFaceOffline } from "@/features/hub/lib/network";
+// eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
@@ -31,6 +33,11 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import {
+  type GgufVariantsRequestOptions,
+  ggufVariantsQuery,
+  runBoundedVariantsRequest,
+} from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
@@ -161,6 +168,13 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
   return parseJsonOrThrow<ApiMonitorEntry>(response);
 }
 
+export async function clearApiMonitor(): Promise<void> {
+  const response = await authFetch("/api/inference/monitor", {
+    method: "DELETE",
+  });
+  await parseJsonOrThrow<{ cleared: boolean }>(response);
+}
+
 export interface ActiveGenerationsResponse {
   count: number;
   /** Conversations with a generation in flight. Shorter than `count` when a
@@ -186,7 +200,11 @@ export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
+  // Tagged so auto-load can tell a user cancellation from a backend rejection.
+  if (!preparedToken.proceed)
+    throw Object.assign(new Error("Model load cancelled."), {
+      unslothUserCancelled: true,
+    });
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -200,11 +218,35 @@ export async function loadModel(
   return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
 }
 
+export async function countChatInputTokens(payload: {
+  model: string;
+  messages: OpenAIChatCompletionsRequest["messages"];
+  enable_thinking?: boolean;
+  reasoning_effort?: OpenAIChatCompletionsRequest["reasoning_effort"];
+  preserve_thinking?: boolean;
+  enable_tools?: boolean;
+  enabled_tools?: string[];
+  mcp_enabled?: boolean;
+  rag_scope?: Record<string, unknown>;
+  auto_heal_tool_calls?: boolean;
+  // `model` is informational: the endpoint counts with whatever is resident and reports which.
+}): Promise<{ input_tokens: number; model?: string }> {
+  const response = await authFetch("/api/inference/chat/count_tokens", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
+}
+
 export async function validateModel(
   payload: LoadModelRequest,
 ): Promise<ValidateModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
+  if (!preparedToken.proceed)
+    throw Object.assign(new Error("Model load cancelled."), {
+      unslothUserCancelled: true,
+    });
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -224,6 +266,9 @@ export async function validateModel(
       // --fit, while a pinned layer count is owned by the user. Tell validate
       // so it applies the same training-guard policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
+      // Only 0 changes the verdict: a zero-layer DiffusionGemma split places
+      // no layers, so validate must not refuse what /load would accept.
+      gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
     }),
@@ -249,6 +294,9 @@ export async function fetchGgufStagedMetadata(payload: {
   layerCount: number | null;
   moeLayerCount: number | null;
   isDiffusion: boolean;
+  /** Unclassifiable, so `isDiffusion: false` above means "not known to be diffusion":
+   *  callers picking a GPU split must assume possibly-diffusion. */
+  diffusionUnknown: boolean;
 }> {
   let nativePathLease: string | null = null;
   if (payload.nativePathToken) {
@@ -258,11 +306,13 @@ export async function fetchGgufStagedMetadata(payload: {
       ).nativePathLease;
     } catch {
       // Lease expired / revoked: degrade to no metadata (the load can re-mint).
+      // Nothing was read, so the diffusion answer is unknown rather than false.
       return {
         contextLength: null,
         layerCount: null,
         moeLayerCount: null,
         isDiffusion: false,
+        diffusionUnknown: true,
       };
     }
   }
@@ -283,6 +333,8 @@ export async function fetchGgufStagedMetadata(payload: {
     layerCount: res.layer_count ?? null,
     moeLayerCount: res.moe_layer_count ?? null,
     isDiffusion: res.is_diffusion ?? false,
+    // Absent on a pre-#7575 backend, which never reported the inconclusive case.
+    diffusionUnknown: res.diffusion_unknown ?? false,
   };
 }
 
@@ -331,6 +383,18 @@ export interface CachedGgufRepo {
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
   has_vision?: boolean;
+  /** HF pipeline task inferred from the GGUF architecture ("text-to-image" for diffusion), so the Images picker can show only diffusion GGUFs. Optional for older backends. */
+  task?: string | null;
+  /** True when some quant has a download manifest or cancel marker. Optional
+   * for older-backend compatibility. */
+  has_variant_state?: boolean;
+  partial?: boolean;
+  capabilities?: CachedRepoCapabilities | null;
+}
+
+/** The subset of a row's capabilities auto-load acts on; Hub view models have a wider type. */
+export interface CachedRepoCapabilities {
+  can_chat?: boolean;
 }
 
 export async function getGgufDownloadProgress(
@@ -416,6 +480,8 @@ export interface LocalModelInfo {
   // weights that cannot load yet.
   partial?: boolean;
   updated_at?: number | null;
+  // HF pipeline task inferred from the GGUF architecture, so the Images picker can filter to diffusion ("text-to-image"). Optional for older backends.
+  task?: string | null;
 }
 
 interface LocalModelListResponse {
@@ -447,9 +513,16 @@ export interface CachedModelRepo {
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
+  /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */
+  task?: string | null;
+  /** True when the snapshot is incomplete (a cancelled/partial download): such a repo must not count as downloaded, or a click re-downloads the full weights. */
+  partial?: boolean;
+  /** True for a diffusion repo with no model_index.json: a single-file checkpoint loadable only via from_single_file, so task pickers must not offer it as a pipeline load unless the curated catalog carries its artifact. */
+  single_file?: boolean;
   /** Owning cache dir; sent so a delete targets this copy, not the active
    * cache. Optional for older-backend compatibility. */
   cache_path?: string | null;
+  capabilities?: CachedRepoCapabilities | null;
 }
 
 export async function listCachedModels(
@@ -993,10 +1066,8 @@ export async function browseFolders(
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
   const qs = params.toString();
-  // Forward the AbortSignal through authFetch -> fetch so a cancelled
-  // FolderBrowser navigation actually cancels the in-flight request
-  // server-side, instead of just dropping the response while the backend
-  // keeps walking large directory trees.
+  // Forward the AbortSignal through authFetch -> fetch so a cancelled FolderBrowser navigation cancels the request server-side, instead of
+  // dropping the response while the backend keeps walking large directory trees.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
     signal ? { signal } : undefined,
@@ -1007,23 +1078,16 @@ export async function browseFolders(
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
-  options?: {
-    preferLocalCache?: boolean;
-    localPath?: string | null;
-  },
+  options?: GgufVariantsRequestOptions,
 ): Promise<GgufVariantsResponse> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  if (options?.preferLocalCache) {
-    params.set("prefer_local_cache", "true");
-  }
-  const localPath = options?.localPath?.trim();
-  if (localPath) {
-    params.set("local_path", localPath);
-  }
-  const response = await authFetch(`/api/models/gguf-variants?${params}`, {
-    headers: hubTokenHeader(hfToken),
+  const params = ggufVariantsQuery(repoId, options, isHuggingFaceOffline());
+  return runBoundedVariantsRequest(options?.signal, async (signal) => {
+    const response = await authFetch(`/api/models/gguf-variants?${params}`, {
+      headers: hubTokenHeader(hfToken),
+      signal,
+    });
+    return parseJsonOrThrow<GgufVariantsResponse>(response);
   });
-  return parseJsonOrThrow<GgufVariantsResponse>(response);
 }
 
 export interface KvCacheEstimate {
@@ -1279,10 +1343,8 @@ export async function* streamChatCompletions(
       }
     }
   } finally {
-    // Only abort on an early/abnormal exit. After a natural [DONE] (or server
-    // EOF) the request is logically complete and the backend finalizes its
-    // api-monitor entry right after the sentinel; cancelling here can be seen as
-    // a disconnect and mark a successful request as cancelled.
+    // Only abort on an early/abnormal exit: after a natural [DONE] (or server EOF) the request is logically complete and the
+    // backend finalizes its api-monitor entry, so cancelling here can mark a successful request as cancelled.
     if (!completed) {
       try {
         await reader.cancel();

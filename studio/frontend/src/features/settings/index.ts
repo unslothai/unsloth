@@ -3,6 +3,7 @@
 
 export { SettingsDialog } from "./settings-dialog";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
+export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
@@ -31,6 +32,8 @@ export type {
   AppearanceCustomization,
   CustomModeColors,
   ReduceMotionSetting,
+  SidebarNavItemId,
+  SidebarNavItemPref,
 } from "./stores/appearance-custom-store";
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export type {

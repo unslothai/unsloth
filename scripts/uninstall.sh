@@ -17,9 +17,21 @@ Usage:
   curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh
   sh scripts/uninstall.sh
 
+To read this help from the piped form, sh needs -s so the arguments reach the
+script instead of the shell. Spelled out, with the same URL as above:
+  curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh -s -- --help
+
+Never pipe to `sh -h` expecting help. Neither form prints this message: where
+-h is accepted (bash, zsh, macOS /bin/sh) it is the shell's own hashall option,
+so the shell consumes it and the script uninstalls with no arguments; where it
+is not (dash, busybox sh) the shell exits with "Illegal option -h".
+
 Stops running Unsloth Studio servers, then removes the install dir, launcher
 data dir, CLI shim, desktop shortcut, macOS .app bundle and Launch Services
-entry. The Hugging Face cache at ~/.cache/huggingface is left in place.
+entry. In a default-mode install it also removes the shared prebuilts that sit
+beside the install dir: ~/.unsloth/{llama.cpp,node,whisper.cpp,.cache}. The
+Hugging Face cache at ~/.cache/huggingface is left in place, as is anything
+else you keep under ~/.unsloth.
 
 On WSL it also removes this distro's Windows-side shortcuts under /mnt/*/Users,
 strips the Unsloth block from ~/.bashrc, and uses sudo to delete
@@ -61,6 +73,32 @@ _kill_pid_file() {
 # BRE-escape a path so it can be embedded in a pkill -f regex.
 _pkill_escape() {
     printf '%s' "$1" | sed -e 's:[][\\.^$*+?{|}()/]:\\&:g'
+}
+
+# Owned sd.cpp roots (default $HOME/.unsloth/stable-diffusion.cpp + each custom root's
+# <parent>/stable-diffusion.cpp sibling), each gated on the install-time owner marker so we never
+# stop a user-managed sd-server from an unrelated checkout at one of these paths.
+_owned_sd_cpp_roots() {
+    _default_sd="$HOME/.unsloth/stable-diffusion.cpp"
+    [ -f "$_default_sd/.unsloth-studio-owned" ] && printf '%s\n' "$_default_sd"
+    _custom_studio_roots 2>/dev/null | while IFS= read -r _root; do
+        [ -n "$_root" ] || continue
+        _sd_root="$(dirname "$_root")/stable-diffusion.cpp"
+        [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
+    done
+}
+
+# pkill resident sd-server / sd-cli under an owned sd.cpp root before that tree is removed (a live
+# native server keeps running after its binary is unlinked). Anchored on the owned root.
+_stop_owned_sd_cpp_processes() {
+    _signal="$1"
+    command -v pkill >/dev/null 2>&1 || return 0
+    _owned_sd_cpp_roots | while IFS= read -r _root; do
+        [ -n "$_root" ] || continue
+        [ -d "$_root" ] || continue
+        _re=$(_pkill_escape "$_root")
+        pkill "-$_signal" -f "^${_re}/([^ ]*/)?sd-(server|cli)( |\$)" 2>/dev/null || true
+    done
 }
 
 _pkill_studio() {
@@ -108,6 +146,12 @@ $_roots_from_conf"
             pkill -KILL -f "$_pat" 2>/dev/null || true
         done
     done
+
+    # Native diffusion servers (sd-server / sd-cli) survive unlinking their binary,
+    # so stop the ones under an owned sd.cpp root before those trees are removed.
+    _stop_owned_sd_cpp_processes TERM
+    sleep 0.5
+    _stop_owned_sd_cpp_processes KILL
 }
 
 _remove_path() {
@@ -251,12 +295,41 @@ _unsloth_uninstall_main() {
             continue
         fi
         _remove_path "$_custom_root"
+        # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
+        # the root at <parent>/stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
+        # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
+        # build behind. Only remove a sibling Studio installed: <parent> is a user-chosen dir
+        # and "stable-diffusion.cpp" is exactly what `git clone` of leejet/stable-diffusion.cpp
+        # produces, so require our owner marker (written by install_sd_cpp_prebuilt) before rm,
+        # and keep any unowned checkout. A pre-marker Studio build is left behind, never a user
+        # file deleted. Guard the derived parent path the same way.
+        _custom_sd_cpp="$(dirname "$_custom_root")/stable-diffusion.cpp"
+        if _is_unsafe_root "$_custom_sd_cpp"; then
+            echo "  refusing to remove unsafe path: $_custom_sd_cpp" >&2
+        elif [ -e "$_custom_sd_cpp" ] && [ ! -f "$_custom_sd_cpp/.unsloth-studio-owned" ]; then
+            echo "  keeping sd.cpp without Studio owner marker: $_custom_sd_cpp" >&2
+        else
+            _remove_path "$_custom_sd_cpp"
+        fi
     done
     _remove_path "$HOME/.unsloth/studio"
     # Default-mode shared llama.cpp build + cache are siblings of studio (not removed
     # by deleting it). No-op in env/custom mode (they nest under the custom root) and
     # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
     _remove_path "$HOME/.unsloth/llama.cpp"
+    # Default-mode native diffusion (stable-diffusion.cpp / sd-cli) build, a sibling of
+    # studio like llama.cpp (install_sd_cpp_prebuilt.default_install_dir()). No-op in
+    # env/custom mode and when absent. "stable-diffusion.cpp" is exactly what a `git clone` of
+    # leejet/stable-diffusion.cpp produces, so a user may keep their own checkout (or point
+    # UNSLOTH_SD_CPP_PATH) at this default path; require our owner marker (written by
+    # install_sd_cpp_prebuilt) before rm, mirroring the custom-root guard above, so a user's own
+    # checkout or a pre-marker Studio build is kept rather than deleted.
+    _default_sd_cpp="$HOME/.unsloth/stable-diffusion.cpp"
+    if [ -e "$_default_sd_cpp" ] && [ ! -f "$_default_sd_cpp/.unsloth-studio-owned" ]; then
+        echo "  keeping sd.cpp without Studio owner marker: $_default_sd_cpp" >&2
+    else
+        _remove_path "$_default_sd_cpp"
+    fi
     _remove_path "$HOME/.unsloth/.cache"
     # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
     # default mode. No-op in env/custom mode (nested under the custom root) and absent.
@@ -265,9 +338,24 @@ _unsloth_uninstall_main() {
     # Normally pruned after activate, but an interrupted build can leave it behind;
     # removing it lets the rmdir below succeed. No-op in env/custom mode and absent.
     _remove_path "$HOME/.unsloth/.staging"
-    # llama.cpp install lock (serializes the shared build); a stray one keeps ~/.unsloth
-    # from being pruned below. No-op in env/custom mode and when absent.
+    # Managed whisper.cpp dictation engine (install_whisper_prebuilt.py), a sibling
+    # of studio in default mode. Only present when a whisper prebuilt matching the
+    # pinned llama.cpp build existed at install time, so many installs lack it.
+    _remove_path "$HOME/.unsloth/whisper.cpp"
+    # Prebuilt install locks. Every prebuilt serializes on
+    # <parent>/.<name>.install.lock (prebuilt_core.py:1129), so llama.cpp, node and
+    # whisper.cpp each leave one; a stray lock keeps ~/.unsloth from being pruned
+    # below. No-op in env/custom mode and when absent.
     _remove_path "$HOME/.unsloth/.llama.cpp.install.lock"
+    _remove_path "$HOME/.unsloth/.node.install.lock"
+    _remove_path "$HOME/.unsloth/.whisper.cpp.install.lock"
+    # Taking over an abandoned lock renames it to .stale.<pid> before unlinking
+    # (install_node_prebuilt.py); a crash between the two steps strands the rename,
+    # and a stranded one blocks the rmdir below. Unmatched globs stay literal,
+    # hence the existence test.
+    for _stale in "$HOME"/.unsloth/.*.install.lock.stale.*; do
+        [ -e "$_stale" ] && _remove_path "$_stale"
+    done
     # ROCm-on-WSL helper artifacts (librocdxg build clone + smoke-test venv). No-op
     # where they don't exist; removing them lets the rmdir below succeed.
     _remove_path "$HOME/.unsloth/librocdxg"

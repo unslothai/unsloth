@@ -447,37 +447,35 @@ def _load_gguf_backend(
     llama_extra_args: Optional[List[str]] = None,
 ):
     ensure_studio_backend_path()
-    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
     from core.inference.tensor_fallback import load_with_tensor_fallback
 
     llama_backend = LlamaCppBackend()
     extra_args = _validate_llama_extra_args_or_exit(llama_extra_args)
-    common = dict(
+    intent_fields = dict(
         hf_variant = model_config.gguf_variant,
         model_identifier = model_config.identifier,
         is_vision = model_config.is_vision,
         n_ctx = max_seq_length,
     )
+    if model_config.gguf_hf_repo:
+        intent_fields.update(hf_repo = model_config.gguf_hf_repo, hf_token = hf_token)
+    else:
+        intent_fields.update(
+            gguf_path = model_config.gguf_file,
+            mmproj_path = model_config.gguf_mmproj_file,
+            mtp_draft_path = model_config.gguf_mtp_file,
+        )
 
     async def _attempt_gguf_load(
         requested_tensor_parallel: bool, attempt_extra_args: Optional[List[str]]
     ) -> bool:
-        attempt_common = dict(
-            common,
-            tensor_parallel = requested_tensor_parallel,
-            extra_args = attempt_extra_args,
-        )
-        if model_config.gguf_hf_repo:
-            return llama_backend.load_model(
-                hf_repo = model_config.gguf_hf_repo,
-                hf_token = hf_token,
-                **attempt_common,
-            )
         return llama_backend.load_model(
-            gguf_path = model_config.gguf_file,
-            mmproj_path = model_config.gguf_mmproj_file,
-            mtp_draft_path = model_config.gguf_mtp_file,
-            **attempt_common,
+            GgufLoadIntent(
+                **intent_fields,
+                tensor_parallel = requested_tensor_parallel,
+                extra_args = attempt_extra_args,
+            )
         )
 
     loaded = asyncio.run(

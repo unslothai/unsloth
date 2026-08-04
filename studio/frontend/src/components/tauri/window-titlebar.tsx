@@ -13,6 +13,7 @@ import {
   SquareSquareIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
 import {
   type MouseEvent,
@@ -20,6 +21,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -103,6 +105,88 @@ function WindowControlButton({
   );
 }
 
+export function DesktopTitlebarNavigation({
+  expanded,
+  onToggleSidebar,
+  className,
+}: {
+  expanded: boolean;
+  onToggleSidebar: () => void;
+  className?: string;
+}): ReactElement {
+  const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+  const buttonClass =
+    "inline-flex size-[33px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+  return (
+    <div
+      className={cn(
+        "flex mt-1 translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center gap-0.5",
+        className,
+      )}
+      role="toolbar"
+      aria-label="Sidebar and page navigation"
+    >
+      <button
+        type="button"
+        title={expanded ? "Collapse sidebar" : "Expand sidebar"}
+        aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+        onMouseDown={stopTitlebarDrag}
+        onDoubleClick={stopTitlebarDrag}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleSidebar();
+        }}
+        className={buttonClass}
+      >
+        <HugeiconsIcon
+          icon={LayoutAlignLeftIcon}
+          strokeWidth={1.75}
+          className="size-icon"
+        />
+      </button>
+      <button
+        type="button"
+        title="Go back"
+        aria-label="Go back"
+        onMouseDown={stopTitlebarDrag}
+        onDoubleClick={stopTitlebarDrag}
+        onClick={(event) => {
+          event.stopPropagation();
+          window.history.back();
+        }}
+        className={buttonClass}
+      >
+        <ArrowLeft
+          aria-hidden="true"
+          strokeWidth={1.75}
+          className="size-icon"
+        />
+      </button>
+      <button
+        type="button"
+        title="Go forward"
+        aria-label="Go forward"
+        onMouseDown={stopTitlebarDrag}
+        onDoubleClick={stopTitlebarDrag}
+        onClick={(event) => {
+          event.stopPropagation();
+          window.history.forward();
+        }}
+        className={buttonClass}
+      >
+        <ArrowRight
+          aria-hidden="true"
+          strokeWidth={1.75}
+          className="size-icon"
+        />
+      </button>
+    </div>
+  );
+}
+
 export function WindowTitlebar({
   showSidebarSurface = false,
 }: {
@@ -111,6 +195,9 @@ export function WindowTitlebar({
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const { pinned, togglePinned } = useSidebarPin();
+
+  const maximizeRefreshSequence = useRef(0);
+  const maximizeRefreshTimer = useRef<number | null>(null);
   // The titlebar sits outside the sidebar wrapper, so it cannot inherit
   // --sidebar-width. Read the resized width from the same store instead.
   const { width } = useSidebarWidth();
@@ -120,19 +207,36 @@ export function WindowTitlebar({
         `var(--studio-sidebar-live-width, ${width}px)`
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
+
+  const titlebarNavigationWidth =
+    showSidebarSurface && !pinned ? "7rem" : sidebarWidth;
   const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
       return;
     }
+    const refreshSequence = ++maximizeRefreshSequence.current;
     try {
       const appWindow = await getAppWindow();
-      setMaximized(await appWindow.isMaximized());
+      const nextMaximized = await appWindow.isMaximized();
+      if (refreshSequence === maximizeRefreshSequence.current) {
+        setMaximized(nextMaximized);
+      }
     } catch {
       // Window permission not ready yet: keep previous visual state.
     }
   }, [enabled]);
+
+  const scheduleMaximizedRefresh = useCallback(() => {
+    if (maximizeRefreshTimer.current !== null) {
+      window.clearTimeout(maximizeRefreshTimer.current);
+    }
+    maximizeRefreshTimer.current = window.setTimeout(() => {
+      maximizeRefreshTimer.current = null;
+      refreshMaximized().catch(() => undefined);
+    }, 80);
+  }, [refreshMaximized]);
 
   useEffect(() => {
     if (!enabled) {
@@ -150,10 +254,10 @@ export function WindowTitlebar({
         }
         setMaximized(await appWindow.isMaximized());
         unlistenResize = await appWindow.onResized(() => {
-          refreshMaximized().catch(() => undefined);
+          scheduleMaximizedRefresh();
         });
         unlistenFocus = await appWindow.onFocusChanged(() => {
-          refreshMaximized().catch(() => undefined);
+          scheduleMaximizedRefresh();
         });
       } catch {
         // Missing capabilities should not break the rest of the app shell.
@@ -164,10 +268,16 @@ export function WindowTitlebar({
 
     return () => {
       mounted = false;
+
+      maximizeRefreshSequence.current += 1;
+      if (maximizeRefreshTimer.current !== null) {
+        window.clearTimeout(maximizeRefreshTimer.current);
+        maximizeRefreshTimer.current = null;
+      }
       unlistenResize?.();
       unlistenFocus?.();
     };
-  }, [enabled, refreshMaximized]);
+  }, [enabled, refreshMaximized, scheduleMaximizedRefresh]);
 
   const runWindowAction = useCallback(
     (action: (appWindow: TauriWindow) => Promise<void>) => {
@@ -175,7 +285,7 @@ export function WindowTitlebar({
         try {
           const appWindow = await getAppWindow();
           await action(appWindow);
-          await refreshMaximized();
+          scheduleMaximizedRefresh();
         } catch {
           // Keep custom chrome inert rather than throwing into React on denied commands.
         }
@@ -183,7 +293,7 @@ export function WindowTitlebar({
 
       runAction().catch(() => undefined);
     },
-    [refreshMaximized],
+    [scheduleMaximizedRefresh],
   );
 
   const handleDragMouseDown = useCallback(
@@ -262,74 +372,22 @@ export function WindowTitlebar({
           <div
             className={cn(
               "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
-              pinned ? "gap-2 pl-3" : "justify-center",
+              "pl-3",
             )}
-            style={{ width: sidebarWidth }}
+            style={{ width: titlebarNavigationWidth }}
             onMouseDown={handleDragMouseDown}
             onDoubleClick={handleDragDoubleClick}
           >
-            {pinned ? (
-              <>
-                <div className="flex min-w-0 flex-1 items-center gap-2">
-                  <img
-                    src="/rounded-512.png"
-                    alt=""
-                    aria-hidden="true"
-                    draggable={false}
-                    className="size-5 shrink-0 rounded-[6px] object-cover"
-                  />
-                  <span className="min-w-0 truncate text-ui-13 font-semibold leading-none tracking-[0.01em] text-nav-fg">
-                    Unsloth Studio
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  title="Collapse sidebar"
-                  aria-label="Collapse sidebar"
-                  onMouseDown={(event) => event.stopPropagation()}
-                  onDoubleClick={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    togglePinned();
-                  }}
-                  className="inline-flex size-8 shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
-                  <HugeiconsIcon
-                    icon={LayoutAlignLeftIcon}
-                    strokeWidth={1.75}
-                    className="size-icon"
-                  />
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                title="Expand sidebar"
-                aria-label="Expand sidebar"
-                onMouseDown={(event) => event.stopPropagation()}
-                onDoubleClick={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  togglePinned();
-                }}
-                className="inline-flex size-8 items-center justify-center rounded-[10px] transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <img
-                  src="/rounded-512.png"
-                  alt=""
-                  aria-hidden="true"
-                  draggable={false}
-                  className="size-5 rounded-[6px] object-cover"
-                />
-                <span className="sr-only">Expand sidebar</span>
-              </button>
-            )}
+            <DesktopTitlebarNavigation
+              expanded={pinned}
+              onToggleSidebar={togglePinned}
+            />
           </div>
         )}
         <div
           className="pointer-events-auto absolute top-0 h-full"
           style={{
-            left: sidebarWidth,
+            left: titlebarNavigationWidth,
             right: "calc(var(--studio-window-control-inset,112px) + 0.5rem)",
           }}
           onMouseDown={handleDragMouseDown}

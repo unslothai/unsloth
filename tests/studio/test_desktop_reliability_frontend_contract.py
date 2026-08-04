@@ -14,6 +14,8 @@ DATA_TAB = FRONTEND / "features/settings/tabs/data-tab.tsx"
 PROMPT_STORAGE = FRONTEND / "features/chat/prompt-storage/prompt-storage-dialog.tsx"
 
 APP_SIDEBAR = FRONTEND / "components/app-sidebar.tsx"
+SIDEBAR_PRIMITIVE = FRONTEND / "components/ui/sidebar.tsx"
+NAVBAR = FRONTEND / "components/navbar.tsx"
 INDEX_CSS = FRONTEND / "index.css"
 THREAD = FRONTEND / "components/assistant-ui/thread.tsx"
 THREAD_SIDEBAR = FRONTEND / "features/chat/thread-sidebar.tsx"
@@ -22,6 +24,10 @@ TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
 TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
+TAURI_UPDATE_CONTEXT = FRONTEND / "hooks/tauri-update-context.ts"
+TAURI_UPDATE_HOOK = FRONTEND / "hooks/use-tauri-update.ts"
+UPDATE_INSTRUCTIONS = FRONTEND / "features/settings/components/update-studio-instructions.tsx"
+DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 
 
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
@@ -29,6 +35,88 @@ APP_PROVIDER = FRONTEND / "app/provider.tsx"
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
+TRAINING_SECTION = FRONTEND / "features/studio/sections/training-section.tsx"
+MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
+IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
+AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
+
+
+def test_desktop_update_offer_remains_actionable_from_settings():
+    provider = APP_PROVIDER.read_text(encoding = "utf-8")
+    context = TAURI_UPDATE_CONTEXT.read_text(encoding = "utf-8")
+    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
+    settings = UPDATE_INSTRUCTIONS.read_text(encoding = "utf-8")
+
+    assert "<TauriUpdateContext.Provider value={update}>" in provider
+    context_start = provider.index("<TauriUpdateContext.Provider value={update}>")
+    context_end = provider.index("</TauriUpdateContext.Provider>", context_start)
+    assert "{appContent}" in provider[context_start:context_end]
+    assert "appContent={" in provider
+    assert "useContext(TauriUpdateContext)" in context
+    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000)
+    # and the installUpdate() reset.
+    assert "checkForUpdate," in hook.split("  return {", 1)[1]
+    manual = hook.split("async function checkForUpdate()", 1)[1]
+    assert "checkedRef.current = true;" in manual.split("try {", 1)[0]
+    offer = hook.split("function offerUpdate", 1)[1].split("\n  }", 1)[0]
+    assert "setDismissed(false);" in offer
+    assert "isNewOffer" in offer
+    assert "const available = update.info !== null && !checking;" in settings
+    assert "void update.installUpdate();" in settings
+    assert "void update.checkForUpdate();" in settings
+
+
+def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
+    """resolveUpdatePolicy fails safe to manual_linux_package on every platform.
+
+    Acting on that guess routes macOS, Windows and AppImage into the Linux-only
+    command, which returns Ok(None) off Linux, so Settings would claim the app
+    was up to date while an update was waiting.
+    """
+    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
+    policy = DESKTOP_UPDATE_POLICY.read_text(encoding = "utf-8")
+
+    assert "resolved: boolean" in hook
+    assert "resolved: false" in hook
+
+    manual_branch = hook.split("async function checkForUpdate()", 1)[1].split(
+        'if (policy.mode === "manual_linux_package") {',
+        1,
+    )[1]
+    give_up = manual_branch.split("checkDesktopUpdate()", 1)[0]
+    # Only a resolved policy may end the check without the in-app updater.
+    assert "if (resolved) {" in give_up
+    assert 'setStatus("idle");' in give_up
+    assert "await checkDesktopUpdate();" in manual_branch
+    # The Rust command self-gates on the real OS, so it is safe to consult first.
+    manual_cmd = policy.split("async fn check_desktop_manual_update", 1)[1]
+    assert "ManualLinuxPackage" in manual_cmd.split("{", 1)[1][:400]
+
+
+def test_settings_update_button_is_inert_while_an_install_runs():
+    settings = UPDATE_INSTRUCTIONS.read_text(encoding = "utf-8")
+
+    assert 'update.status === "updating-backend"' in settings
+    assert 'update.status === "downloading"' in settings
+    assert 'update.status === "installing"' in settings
+    assert "disabled={busy}" in settings
+    assert "aria-busy={busy}" in settings
+
+
+def test_desktop_update_check_failures_are_retryable():
+    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
+    settings = UPDATE_INSTRUCTIONS.read_text(encoding = "utf-8")
+    policy = DESKTOP_UPDATE_POLICY.read_text(encoding = "utf-8")
+
+    assert "setCheckError(String(e));" in hook
+    assert "update.checkError !== null" in settings
+    assert 't("settings.about.update.retryCheck")' in settings
+    # The reason must reach the user, not just the console.
+    assert "${update.checkError}" in settings
+    assert "server returned HTTP {status}" in policy
+    request = policy.split("let response = client", 1)[1].split("let metadata", 1)[0]
+    assert ".map_err(" in request
+    assert "return Ok(None);" not in request
 
 
 def test_file_actions_route_through_native_commands_only_in_tauri():
@@ -104,6 +192,32 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     assert "downloadFile(" in thread
 
 
+def test_generated_download_buttons_use_the_native_save_boundary():
+    helper = NATIVE_FILES.read_text(encoding = "utf-8")
+    training = TRAINING_SECTION.read_text(encoding = "utf-8")
+    markdown = MARKDOWN_TEXT.read_text(encoding = "utf-8")
+    image = IMAGE.read_text(encoding = "utf-8")
+    audio = AUDIO_PLAYER.read_text(encoding = "utf-8")
+
+    assert "downloadFile(bytes, filename" in helper
+    assert "browserUrlDownload(url, filename)" in helper
+    assert "if (!isTauri)" in helper
+    assert "downloadFile(yamlStr, filename" in training
+    assert "downloadFile(text, filename" in markdown
+    assert "fallbackExt" in markdown
+    assert 'rust: "rs"' in markdown
+    assert "downloadUrl(part.image, filename)" in image
+    assert "urlToBlob(part.image)" in image
+    assert 'downloadUrl(src, "generated-audio.wav")' in audio
+
+    tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
+    assert "connect-src 'self' ipc: http://ipc.localhost" in tauri_config
+
+    for source in (training, markdown, image, audio):
+        assert 'document.createElement("a")' not in source
+        assert "isDownloadCancelled(error)" in source
+
+
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
     helper = CLIPBOARD_FILES.read_text(encoding = "utf-8")
     thread = THREAD.read_text(encoding = "utf-8")
@@ -171,6 +285,19 @@ def test_native_clipboard_bridge_is_bounded_and_registered():
     assert "native_clipboard::read_native_clipboard_png" in tauri_main
 
 
+def test_mac_dock_reopens_hidden_main_window():
+    source = TAURI_MAIN.read_text(encoding = "utf-8")
+    show_helper = source.split("fn show_main_window", 1)[1].split("\n}\n", 1)[0]
+    run_handler = source.split(".run(|app, event|", 1)[1]
+
+    for action in ("window.show()", "window.unminimize()", "window.set_focus()"):
+        assert action in show_helper
+    assert "tauri::RunEvent::Reopen" in run_handler
+    assert "has_visible_windows: false" in run_handler
+    reopen_handler = run_handler.split("tauri::RunEvent::Reopen", 1)[1].split("=>", 1)[1]
+    assert "show_main_window(app)" in reopen_handler
+
+
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
@@ -197,11 +324,28 @@ def test_full_app_layout_uses_its_own_initialized_marker():
     assert "hasInitializedAppLayout && hasSavedState" in source
 
 
+def test_first_app_layout_survives_a_stale_setup_window_size():
+    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    minimum_helper = source.split("async function enforceMinimumWindowSize", 1)[1].split(
+        "async function applyAppWindowLayout", 1
+    )[0]
+    app_layout = source.split("async function applyAppWindowLayout", 1)[1].split(
+        "async function showWindowFallback", 1
+    )[0]
+
+    assert "requestedSize.width" in minimum_helper
+    assert "requestedSize.height" in minimum_helper
+    assert "requestedSize = { width: finalW, height: finalH };" in app_layout
+    assert "enforceMinimumWindowSize(win, LogicalSize, isCurrent, requestedSize)" in app_layout
+
+
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = TITLEBAR.read_text(encoding = "utf-8")
 
-    assert 'pinned ? "gap-2 pl-3" : "justify-center"' in source
-    assert "gap-2 px-3" not in source
+    assert 'showSidebarSurface && !pinned ? "7rem" : sidebarWidth' in source
+    assert "style={{ width: titlebarNavigationWidth }}" in source
+    assert "left: titlebarNavigationWidth" in source
+    assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
     # The curved transition and sidebar-colored backing are expanded-only;
@@ -215,6 +359,79 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         'className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
         in source
     )
+
+
+def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
+    titlebar = TITLEBAR.read_text(encoding = "utf-8")
+    sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
+
+    assert 'import { ArrowLeft, ArrowRight } from "lucide-react";' in titlebar
+    assert "<ArrowLeft" in titlebar
+    assert "<ArrowRight" in titlebar
+    assert "window.history.back()" in titlebar
+    assert "window.history.forward()" in titlebar
+    assert 'src="/circle-logo-small.png"' in header
+    assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
+
+
+def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
+    titlebar = TITLEBAR.read_text(encoding = "utf-8")
+    chat_page = CHAT_PAGE.read_text(encoding = "utf-8")
+    navigation = titlebar.split("export function DesktopTitlebarNavigation", 1)[1].split(
+        "export function WindowTitlebar", 1
+    )[0]
+
+    assert "{expanded && (" not in navigation
+    assert navigation.count('aria-label="Go back"') == 1
+    assert navigation.count('aria-label="Go forward"') == 1
+
+    assert "inline-flex size-[33px] shrink-0" in navigation
+
+    assert navigation.count("onDoubleClick={stopTitlebarDrag}") == 3
+    assert "maximized" not in navigation
+    assert "const maximizeRefreshSequence = useRef(0);" in titlebar
+    assert "const scheduleMaximizedRefresh = useCallback" in titlebar
+    assert "window.setTimeout(() =>" in titlebar
+    assert "scheduleMaximizedRefresh();" in titlebar
+
+    assert '"pl-3"' in titlebar
+    assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
+
+    assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in chat_page
+    assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(
+        encoding = "utf-8"
+    )
+    assert 'className="!size-[33px] rounded-[10px] text-muted-foreground"' in chat_page
+    assert 'aria-label="New chat"' in chat_page
+    new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
+    assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
+
+
+def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
+    app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    primitive = SIDEBAR_PRIMITIVE.read_text(encoding = "utf-8")
+    navbar = NAVBAR.read_text(encoding = "utf-8")
+
+    assert "collapseToZero={isTauri}" in app_sidebar
+    assert "collapseToZero = false" in primitive
+    assert 'collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"' in primitive
+    assert "usesNativeMacTitlebar && !pinned" in navbar
+    assert "<DesktopTitlebarNavigation" in navbar
+
+    assert "top-px z-[60]" in navbar
+    assert "z-40 h-[48px]" in navbar
+
+    assert "windowFocused" not in navbar
+    assert "bg-[#d0d0d0]" not in navbar
+    assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
+        encoding = "utf-8"
+    )
+    assert '"--studio-titlebar-navigation-offset-y": "2px"' in APP_PROVIDER.read_text(
+        encoding = "utf-8"
+    )
+    assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+    assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
 
 
 def test_visible_mac_sidebar_header_is_a_drag_region():
@@ -243,6 +460,22 @@ def test_collapsed_mac_sidebar_hides_divider():
 
     assert "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0" in source
     assert "top-[var(--studio-mac-titlebar-height,34px)]" not in source
+
+
+def test_chat_sidebar_rows_are_compact_without_vertical_padding():
+    sidebar_source = APP_SIDEBAR.read_text(encoding = "utf-8")
+    block = sidebar_source.split("function renderChatSidebarItem", 1)[1]
+
+    assert (
+        '"sidebar-nav-btn h-[30px] cursor-pointer rounded-full py-0 pr-4 '
+        'text-ui-14p5 leading-ui-19 tracking-nav font-medium"'
+    ) in block
+    assert (
+        '"text-foreground h-[30px] w-full border-0 bg-transparent py-0 pr-4 '
+        'text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none"'
+    ) in block
+    assert 'isPinned && variant !== "project" && "gap-[8.5px]"' in block
+    assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
 
 
 def test_chat_sidebar_row_actions_visible_on_coarse_pointers():

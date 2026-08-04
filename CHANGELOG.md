@@ -34,6 +34,106 @@ rename the heading at release time.
 
 ## Unreleased
 
+## 2026.8.2
+
+### What's Changed
+
+- More efficient downloading. Auto XET to HTTP fallback after XET stalling.
+- UI designing and alignment improvements.
+- Chat UI and many other bug fixes.
+- A continued update from the 2026.7.6 Kimi K3 + DeepSeek-V4 0731 release
+
+## 2026.8.1
+
+### What's Changed
+
+- DeepSeek-V4 0731 Support
+- Many fixes for Windows
+- Many bug fixes for all models and systems
+- A continued update from the 2026.7.6 Kimi K3 release
+
+## 2026.7.6
+
+### What's Changed
+
+- Kimi K3 runs locally with Unsloth Dynamic GGUFs. Moonshot AI's 2.8T
+  parameter MoE has 104B active parameters, native vision and a 1M context
+  window.
+- Parallel chat keeps several conversations generating at once, so a new chat
+  no longer interrupts the answer already streaming.
+- Deep Research turns a local model into a full research workflow that plans,
+  searches, organizes evidence and writes a cited report.
+- AMD support covers more GPUs, with more reliable ROCm inference and
+  training on Windows, WSL and Linux.
+- Intel XPU brings local chat and training to Intel Arc and Data Center GPUs,
+  and DoRA is selectable alongside LoRA and full fine-tuning.
+
+### Kimi K3
+
+Kimi K3 loads with thinking on, and low, high and max reasoning efforts are
+all supported. Multi-GPU setups are detected automatically and expert layers
+can be offloaded to system memory.
+
+It is a very large model, so plan hardware accordingly:
+
+- `UD-IQ1_S` is 595GB on disk.
+- `UD-Q4_K_XL` is 1.51TB on disk.
+- `UD-Q8_K_XL` is 1.56TB on disk, for lossless inference.
+
+Read the [Kimi K3 guide](https://unsloth.ai/docs/models/kimi-k3) and learn
+more about
+[Unsloth Dynamic 2.0 GGUFs](https://unsloth.ai/docs/basics/unsloth-dynamic-2.0-ggufs).
+
+### Parallel chat
+
+- 4 llama-server slots by default, adjustable in the web UI.
+- Tools, uploads, self-healing and agents stay isolated between chats.
+- Stop one chat without interrupting others or restarting the server.
+- The slot count is reduced automatically when memory is limited.
+- Reloading a model still stops active chats after confirmation.
+
+### Deep Research
+
+- Review and edit the plan before research begins.
+- Follow progress and collected sources while it works.
+- Resume or cancel without losing completed research.
+- Allow or block websites to control source selection.
+- Sources and citations stay saved with each run.
+- Unsupported claims, contradictions and unresolved gaps are checked before
+  writing, and recommendations without direct evidence are marked as testable
+  inferences.
+
+One run can be active per chat, and Deep Research currently works with local
+models. Optional full-page grounding reads top search results into temporary
+RAG before synthesis; enable it with `UNSLOTH_RESEARCH_AUTO_SCRAPE=1`. It is
+off by default because it adds scraping time and needs extra context.
+
+### Improved AMD support
+
+This builds on the initial
+[AMD release and setup guide](https://unsloth.ai/docs/basics/amd):
+
+- Detection is better for RDNA2, Radeon, Ryzen, Strix Halo and workstation
+  GPUs.
+- MI50 and Radeon VII support 16-bit LoRA and full fine-tuning on Linux.
+- 4-bit NaNs, library conflicts and long RDNA startup stalls are fixed.
+- Unsupported Windows HIP GPUs can fall back to Vulkan.
+- Vulkan devices show their real names and can be selected individually.
+- Clean Windows installs no longer require Winget or developer tools.
+
+### Also in this release
+
+- Large exports can use every visible GPU, avoiding GPU 0 memory limits.
+- MLX gains better VLM and LoRA support, and the inference sidecar is
+  activated before detection.
+- Incorrect `flash_attention_2` model output is fixed.
+- Unsloth and its saving utilities now work without bitsandbytes.
+- `.json` datasets and the Qwen3.5 / Qwen3.6 MoE and GRPO notebook setup are
+  fixed.
+- Hub download folders are easier to find and open.
+- `unsloth start <agent> --as-subagent` lets Claude Code, Codex, OpenCode and
+  Pi delegate tasks to a local Unsloth model.
+
 ## 2026.7.5
 
 ### What's Changed
@@ -41,12 +141,8 @@ rename the heading at release time.
 - AMD support is here. Train, run RL, chat with and deploy 500+ models on
   Radeon, Instinct, Ryzen and data center GPUs across Windows, WSL and Linux,
   up to 2x faster with 70% less VRAM and no accuracy loss.
-- Intel XPU support lands in Studio, so Arc and Data Center GPUs run chat and
-  training alongside the NVIDIA, AMD and Apple paths.
 - Local speech to text dictation runs fully offline, with slim Whisper bundles
   and a picker for custom models.
-- DoRA training is available in Studio, selectable next to LoRA and full
-  fine-tuning in the training tab.
 - The update popup previews release notes inline, pulled from this file and
   matched to the exact version being offered.
 

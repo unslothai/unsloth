@@ -34,12 +34,15 @@ import {
   useRef,
   useState,
 } from "react";
+import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
+import { isOllamaLinkPath } from "../model-config/model-identity";
 import {
   type PerModelConfig,
   resolveInitialConfig,
 } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
+import type { CatalogGroup } from "./model-selector/model-catalog";
 import { PillTabs } from "./model-selector/pill-tabs";
 import {
   buildSourceTabs,
@@ -147,6 +150,12 @@ interface ModelSelectorProps {
   triggerDataTour?: string;
   contentDataTour?: string;
   showCloudIndicator?: boolean;
+  /** Restrict the Hub tab to a pipeline task (e.g. text-to-image). */
+  task?: HfTaskFilter;
+  /** Canonical model groups (Images / Video pages): collapses a model's artifact repos into one row with a format second level and device-aware routing. Undefined (chat) changes nothing. */
+  catalog?: CatalogGroup[];
+  /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they pick so it reads as separate from the chat model. */
+  placeholder?: string;
 }
 
 function ModelSelectorTrigger({
@@ -158,6 +167,8 @@ function ModelSelectorTrigger({
   className,
   dataTour,
   onEject,
+  // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
+  placeholder = "Select model",
 }: {
   currentModel?: ModelOption;
   isLoaded: boolean;
@@ -167,6 +178,7 @@ function ModelSelectorTrigger({
   className?: string;
   dataTour?: string;
   onEject?: () => void;
+  placeholder?: string;
 }) {
   return (
     <PopoverTrigger asChild={true}>
@@ -185,6 +197,8 @@ function ModelSelectorTrigger({
             "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
           // More left padding than right; the chevron is pulled close to the
           // label (below) so the trigger reads balanced around the text.
+          // Height stays pinned: both call sites force the chat header's own
+          // --studio-chat-control-height, which its fixed header cannot grow.
           size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
           size === "default" && "h-9 pl-4 pr-2 text-sm",
           size === "lg" && "h-10 pl-4.5 pr-2.5 text-sm",
@@ -233,7 +247,7 @@ function ModelSelectorTrigger({
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
           <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
-            {currentModel?.name ?? "Select model"}
+            {currentModel?.name ?? placeholder}
             {showCloudIndicator ? (
               <HugeiconsIcon
                 icon={CloudIcon}
@@ -330,6 +344,8 @@ function ModelSelectorContent({
   deleteDisabled,
   className,
   dataTour,
+  task,
+  catalog,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -350,6 +366,8 @@ function ModelSelectorContent({
   deleteDisabled?: boolean;
   className?: string;
   dataTour?: string;
+  task?: HfTaskFilter;
+  catalog?: CatalogGroup[];
 }) {
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
@@ -480,11 +498,15 @@ function ModelSelectorContent({
   const visibleConfigTarget = open ? configTarget : null;
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
     const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+    const isGguf = meta.isGguf ?? Boolean(meta.ggufVariant);
     setConfigTarget({
       id,
       displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
       ggufVariant: meta.ggufVariant ?? null,
-      isGguf: meta.isGguf ?? Boolean(meta.ggufVariant),
+      isGguf,
+      // Ollama's models sit under a link dir the resolver skips, so mirroring their
+      // settings would advertise a load the API can never make.
+      apiLoadable: isGguf && !isOllamaLinkPath(id),
       meta,
     });
   };
@@ -509,14 +531,16 @@ function ModelSelectorContent({
       className={cn(
         "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
         visibleConfigTarget
-          ? "w-[min(468px,calc(100vw-1rem))] px-4 pt-4 pb-4"
+          ? "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-y-auto px-4 pt-4 pb-4"
           : cn(
               "pt-4 pb-0 pl-4",
               // Sized so the left-packed row keeps uniform gaps and the last
               // dropdown's right gap matches the pill's left gap (pl-4 vs pr-4).
+              // Widths track the controls they hold, so the tuned single-line
+              // row does not wrap once text and icons grow.
               hasExternal
-                ? "w-[min(614px,calc(100vw-1rem))] pr-4"
-                : "w-[min(506px,calc(100vw-1rem))] pr-2",
+                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
+                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
             ),
         className,
       )}
@@ -591,6 +615,8 @@ function ModelSelectorContent({
             onConfigure={openConfigPage}
             deleteDisabled={deleteDisabled}
             onEject={hasSelection && onEject ? onEject : undefined}
+            task={task}
+            catalog={catalog}
             section={effectiveHubSection}
             sectionToggle={
               <PillTabs
@@ -675,6 +701,9 @@ export function ModelSelector({
   triggerDataTour,
   contentDataTour,
   showCloudIndicator = false,
+  task,
+  catalog,
+  placeholder,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -781,6 +810,7 @@ export function ModelSelector({
         className={className}
         dataTour={triggerDataTour}
         onEject={onEject ? handleEject : undefined}
+        placeholder={placeholder}
       />
       <ModelSelectorContent
         open={open}
@@ -797,11 +827,14 @@ export function ModelSelector({
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
-        onBrowseHub={handleBrowseHub}
+        // The image tab (the only caller passing `task`) is a self-contained curated + on-device picker, so it omits the "Search Hub" button.
+        onBrowseHub={task ? undefined : handleBrowseHub}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         className={contentClassName}
         dataTour={contentDataTour}
+        task={task}
+        catalog={catalog}
       />
     </Popover>
   );
@@ -859,13 +892,13 @@ function ExternalModelPicker({
       <div className="relative">
         <HugeiconsIcon
           icon={Search01Icon}
-          className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
+          className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
         />
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search models"
-          className="h-9 pl-8"
+          className="h-(--picker-control-h) pl-8"
         />
       </div>
       <div className="-mr-1.5 max-h-72 overflow-y-auto pr-1.5">

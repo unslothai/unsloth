@@ -6575,6 +6575,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
+        # A GUI backend opens a native window and blocks plt.show() until closed.
+        "MPLBACKEND": "Agg",
         # sitecustomize shim: remaps ChatGPT code-interpreter paths (/mnt/data
         # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
         "PYTHONPATH": _SANDBOX_SITE_DIR,
@@ -6779,6 +6781,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     for var in _BYPASS_ENV_WINDOWS_PROFILE_VARS:
         if var in os.environ:
             env[var] = workdir
+    env.setdefault("MPLBACKEND", "Agg")
     return env
 
 
@@ -7151,6 +7154,35 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
             }
         )
     return specs
+
+
+def cached_mcp_tools() -> tuple[list[dict], bool]:
+    """The MCP schemas already in cache, and whether that is the whole set.
+
+    get_enabled_mcp_tools() renders the same servers, but reaches the network to do it: it
+    spawns stdio servers, blocks for a probe timeout on one that is down, and writes cache and
+    cool-off state. A background token count must not do any of that, so this reads only what
+    those probes have already filled in.
+
+    ``complete`` is False when an enabled server has nothing cached and is not in its
+    post-failure cool-off, meaning a completion would probe it and render schemas this cannot
+    price. A cool-off server renders nothing on the completion path either, so skipping that one
+    is exact rather than short. Callers that must not undercount should decline on False.
+    """
+    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    if not stdio_mcp_enabled():
+        servers = [s for s in servers if not is_stdio(s["url"])]
+
+    specs: list[dict] = []
+    complete = True
+    for server in servers:
+        payload = get_cached_tools(server["id"])
+        if payload is None:
+            if not in_failure_cooloff(server["id"]):
+                complete = False
+            continue
+        specs.extend(_mcp_specs_for_server(server, payload))
+    return specs, complete
 
 
 async def get_enabled_mcp_tools() -> list[dict]:

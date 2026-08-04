@@ -59,6 +59,8 @@ studio = [
     "*.ps1",
     "*.bat",
     "node_prebuilt_pins.json",
+    "src-tauri/icons/icon.icns",
+    "src-tauri/icons/icon.png",
     "frontend/dist/**/*",
     "frontend/*.json",
     "frontend/*.ts",
@@ -100,6 +102,8 @@ studio = [
     "boto3>=1.34.0",
     "httpx>=0.27.0",
     "fastmcp>=3.0.2",
+    "gguf",
+    "av>=12.0.0",
     "sqlite-vec==0.1.9",
     "pymupdf==1.27.2.3",
     "pymupdf4llm==0.3.4",
@@ -112,7 +116,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.7.7",
+    "unsloth_zoo>=2026.8.3",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -126,7 +130,15 @@ huggingfacenotorch = [
     "peft>=0.18.0,!=0.11.0",
     "huggingface_hub>=0.34.0",
     "hf_transfer",
-    "diffusers",
+    # 0.39 is the floor the diffusion stack already assumes: Krea2Pipeline (the Krea 2
+    # workflow raises without it), the cache_context child-registry behavior, and the
+    # Flux2 / Z-Image pipelines. An unversioned entry let an upgrade keep an older
+    # diffusers, so advertised models failed to load until the user upgraded by hand.
+    # diffusers dropped 3.9 in 0.38, and we still support it (requires-python >= 3.9),
+    # so the floor is conditional: pinning it outright leaves pip no candidate at all
+    # on 3.9 and the whole extra becomes unresolvable.
+    "diffusers>=0.39.0 ; python_version >= '3.10'",
+    "diffusers ; python_version < '3.10'",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
@@ -149,7 +161,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.7.7",
+    "unsloth_zoo>=2026.8.3",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -637,7 +649,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.7.7",
+    "unsloth_zoo>=2026.8.3",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",

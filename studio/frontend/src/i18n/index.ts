@@ -29,6 +29,7 @@ export {
   translate,
 } from "./messages";
 export type { Locale, TranslationKey } from "./messages";
+export { formatRelativeTime } from "./relative-time";
 export type {
   DeepPartialMessageTree,
   InterpolationValues,

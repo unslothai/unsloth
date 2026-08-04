@@ -3,7 +3,9 @@
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
-    "types": ["node"],
+    // vite/client so a test may import a src module that (transitively) reads
+    // import.meta.env; without it those reads fail to typecheck here only.
+    "types": ["node", "vite/client"],
     "skipLibCheck": true,
 
     "moduleResolution": "bundler",

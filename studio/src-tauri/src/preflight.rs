@@ -752,7 +752,7 @@ exit 1
     ) -> BackendProbe {
         install_test_owner();
         let port = backend_server(health_body, route_status).await;
-        let client = reqwest::Client::new();
+        let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
         let health = backend_health(&client, port).await.unwrap();
         backend_desktop_auth_status(&client, port, &health, Some(EXPECTED_ROOT_ID)).await
     }
@@ -764,7 +764,7 @@ exit 1
             "401 Unauthorized",
         )
         .await;
-        let client = reqwest::Client::new();
+        let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
 
         assert!(backend_health(&client, port).await.is_some());
     }
@@ -891,7 +891,7 @@ exit 1
     async fn backend_expected_root_id_missing_is_external_conflict_before_auth_probe() {
         install_test_owner();
         let port = backend_server(desktop_ready_health(EXPECTED_ROOT_ID), "401 Unauthorized").await;
-        let client = reqwest::Client::new();
+        let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
         let health = backend_health(&client, port).await.unwrap();
 
         assert!(matches!(

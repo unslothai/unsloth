@@ -7,6 +7,8 @@
  * Kept free of React so the numbers can be unit-tested directly.
  */
 
+import type { Locale } from "@/i18n";
+
 const TRAILING_ZERO_DECIMAL = /\.0$/;
 
 /** Compact form used on every stat tile: 12.3K, 4.5M, 19.8B. */
@@ -43,6 +45,183 @@ export function formatCompactNumber(value: number): string {
 export function formatFullNumber(value: number): string {
   if (!Number.isFinite(value)) return "0";
   return Math.round(value).toLocaleString();
+}
+
+const DAY_FORMATTERS = new Map<Locale, Intl.NumberFormat>();
+const WEEK_FORMATTERS = new Map<Locale, Intl.NumberFormat>();
+const COUNT_FORMATTERS = new Map<Locale, Intl.NumberFormat>();
+const PLURAL_RULES = new Map<Locale, Intl.PluralRules>();
+
+function cachedFormatter(
+  cache: Map<Locale, Intl.NumberFormat>,
+  locale: Locale,
+  options?: Intl.NumberFormatOptions,
+): Intl.NumberFormat {
+  const cached = cache.get(locale);
+  if (cached) {
+    return cached;
+  }
+  const formatter = new Intl.NumberFormat(locale, options);
+  cache.set(locale, formatter);
+  return formatter;
+}
+
+function cachedPluralRules(locale: Locale): Intl.PluralRules {
+  const cached = PLURAL_RULES.get(locale);
+  if (cached) {
+    return cached;
+  }
+  const rules = new Intl.PluralRules(locale);
+  PLURAL_RULES.set(locale, rules);
+  return rules;
+}
+
+/** Locale-aware day unit, including languages with multiple plural forms. */
+export function formatDayCount(value: number, locale: Locale): string {
+  return cachedFormatter(DAY_FORMATTERS, locale, {
+    style: "unit",
+    unit: "day",
+    unitDisplay: "long",
+  }).format(value);
+}
+
+export type ProfileCountUnit = "week" | "token" | "message" | "step";
+
+type LexicalProfileCountUnit = Exclude<ProfileCountUnit, "week">;
+type PluralCategory = "zero" | "one" | "two" | "few" | "many" | "other";
+type CountTemplate = { other: string } & Partial<
+  Record<PluralCategory, string>
+>;
+
+// Intl formats calendar units such as weeks, but not app-specific nouns such
+// as tokens, messages, or training steps. Keep those forms together here so
+// every call site selects them with the same CLDR plural category.
+const PROFILE_COUNT_TEMPLATES = {
+  en: {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} message", other: "{value} messages" },
+    step: { one: "{value} step", other: "{value} steps" },
+  },
+  "zh-CN": {
+    token: { other: "{value} 个 token" },
+    message: { other: "{value} 条消息" },
+    step: { other: "{value} 步" },
+  },
+  ja: {
+    token: { other: "{value} トークン" },
+    message: { other: "{value} 件のメッセージ" },
+    step: { other: "{value} ステップ" },
+  },
+  ko: {
+    token: { other: "{value} 토큰" },
+    message: { other: "메시지 {value}개" },
+    step: { other: "{value} 스텝" },
+  },
+  es: {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} mensaje", other: "{value} mensajes" },
+    step: { one: "{value} paso", other: "{value} pasos" },
+  },
+  "pt-BR": {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} mensagem", other: "{value} mensagens" },
+    step: { one: "{value} passo", other: "{value} passos" },
+  },
+  fr: {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} message", other: "{value} messages" },
+    step: { one: "{value} étape", other: "{value} étapes" },
+  },
+  de: {
+    token: { one: "{value} Token", other: "{value} Tokens" },
+    message: { one: "{value} Nachricht", other: "{value} Nachrichten" },
+    step: { one: "{value} Schritt", other: "{value} Schritte" },
+  },
+  it: {
+    token: { one: "{value} token", other: "{value} token" },
+    message: { one: "{value} messaggio", other: "{value} messaggi" },
+    step: { one: "{value} step", other: "{value} step" },
+  },
+  ru: {
+    token: {
+      one: "{value} токен",
+      few: "{value} токена",
+      many: "{value} токенов",
+      other: "{value} токена",
+    },
+    message: {
+      one: "{value} сообщение",
+      few: "{value} сообщения",
+      many: "{value} сообщений",
+      other: "{value} сообщения",
+    },
+    step: {
+      one: "{value} шаг",
+      few: "{value} шага",
+      many: "{value} шагов",
+      other: "{value} шага",
+    },
+  },
+  hi: {
+    token: { one: "{value} टोकन", other: "{value} टोकन" },
+    message: { one: "{value} संदेश", other: "{value} संदेश" },
+    step: { one: "{value} स्टेप", other: "{value} स्टेप" },
+  },
+  ar: {
+    token: {
+      zero: "{value} توكن",
+      one: "توكن واحد",
+      two: "توكنان",
+      few: "{value} توكنات",
+      many: "{value} توكنًا",
+      other: "{value} توكن",
+    },
+    message: {
+      zero: "{value} رسالة",
+      one: "رسالة واحدة",
+      two: "رسالتان",
+      few: "{value} رسائل",
+      many: "{value} رسالة",
+      other: "{value} رسالة",
+    },
+    step: {
+      zero: "{value} خطوة",
+      one: "خطوة واحدة",
+      two: "خطوتان",
+      few: "{value} خطوات",
+      many: "{value} خطوة",
+      other: "{value} خطوة",
+    },
+  },
+} satisfies Record<Locale, Record<LexicalProfileCountUnit, CountTemplate>>;
+
+type ProfileCountLocale = Locale;
+
+/** A localized count phrase for the dynamic nouns used by profile stats. */
+export function formatProfileCount(
+  value: number,
+  unit: ProfileCountUnit,
+  locale: ProfileCountLocale,
+  displayValue?: string,
+): string {
+  const finiteValue = Number.isFinite(value) ? value : 0;
+  if (unit === "week") {
+    return cachedFormatter(WEEK_FORMATTERS, locale, {
+      style: "unit",
+      unit: "week",
+      unitDisplay: "long",
+    }).format(finiteValue);
+  }
+
+  const category = cachedPluralRules(locale).select(
+    finiteValue,
+  ) as PluralCategory;
+  const templates: CountTemplate = PROFILE_COUNT_TEMPLATES[locale][unit];
+  const template = templates[category] ?? templates.other;
+  const formattedValue =
+    displayValue ??
+    cachedFormatter(COUNT_FORMATTERS, locale).format(finiteValue);
+  return template.replace("{value}", () => formattedValue);
 }
 
 /** Compact duration for chat and training time: 4h 8m, 12m 30s, 45s. */

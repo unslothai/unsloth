@@ -51,6 +51,24 @@ def _denylist_inert(monkeypatch):
     monkeypatch.setattr(folder_browser, "is_denied_system_path", lambda _p: False)
 
 
+def _download_body(**over) -> SimpleNamespace:
+    """A download request with every field the route reads.
+
+    Built by hand rather than through the schema so these tests stay cheap, so it lists
+    the newer scoping fields too: leaving one off reads as AttributeError inside the
+    route, not as a missing default.
+    """
+    body = {
+        "repo_id": "Org/Model",
+        "gguf_variant": None,
+        "use_xet": False,
+        "scope_id": None,
+        "files": None,
+    }
+    body.update(over)
+    return SimpleNamespace(**body)
+
+
 def _repo(repo_id: str, files: list[SimpleNamespace], repo_path: Path):
     return SimpleNamespace(
         repo_id = repo_id,
@@ -101,6 +119,63 @@ def test_big_endian_detection_ignores_model_name_be_token():
     assert gguf.pick_best_gguf(["model-Q4_K_M-be.gguf", "model-Q4_K_M.gguf"]) == (
         "model-Q4_K_M.gguf"
     )
+
+
+def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, monkeypatch):
+    root = tmp_path / "MTP"
+    root.mkdir()
+    main = root / "Qwen3.6-27B-MTP-Q6_K.gguf"
+    model_dir = root / "model"
+    model_dir.mkdir()
+    (model_dir / "Qwen3.6-27B-MTP-Q8_0.GGUF").write_bytes(b"x")
+    for file in (
+        main,
+        root / "gemma-4-12b-it-Q8_0-MTP.gguf",
+        root / "mtp-gemma-4-12b-it.gguf",
+    ):
+        file.write_bytes(b"x")
+
+    monkeypatch.setattr(gguf, "iter_gguf_files", lambda *_: pytest.fail("recursive scan"))
+    rows = local_inventory._scan_custom_folder(root)
+
+    paths = {Path(row.load_id) for row in rows}
+    assert {main, model_dir} <= paths
+    assert root / "gemma-4-12b-it-Q8_0-MTP.gguf" not in paths
+    assert root / "mtp-gemma-4-12b-it.gguf" not in paths
+
+    companion_root = tmp_path / "companion" / "MTP"
+    (companion_root / "other.gguf").mkdir(parents = True)
+    (companion_root / "config.json").write_bytes(b"{}")
+    (companion_root / "gemma-4-12b-it-Q8_0-MTP.gguf").write_bytes(b"x")
+    (companion_root / "other.gguf" / "Qwen3.6-27B-Q8_0.gguf").write_bytes(b"x")
+    assert companion_root not in {
+        Path(row.load_id) for row in local_inventory._scan_custom_folder(companion_root)
+    }
+
+
+def test_custom_inventory_filters_dspark_companions_at_registered_root(tmp_path):
+    # Registering dspark/ as the scan root strips it from every relative path,
+    # so the dspark- basename prefix has to carry the exclusion.
+    root = tmp_path / "dspark"
+    root.mkdir()
+    for name in (
+        "dspark-DeepSeek-V4-Flash-0731-BF16.gguf",
+        "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf",
+    ):
+        (root / name).write_bytes(b"x")
+
+    assert local_inventory._scan_custom_folder(root) == []
+
+
+def test_unregistered_variant_identity_stays_scan_relative(tmp_path):
+    from utils.models.model_config import list_local_gguf_variants
+
+    snapshot = tmp_path / "deadbeef"
+    snapshot.mkdir()
+    (snapshot / "model.gguf").write_bytes(b"x")
+
+    assert [v.quant for v in list_local_gguf_variants(str(snapshot))[0]] == ["model"]
+    assert [v.quant for v in gguf.list_local_gguf_variants(str(snapshot))[0]] == ["model"]
 
 
 def _cached_model_row(tmp_path: Path, *, partial: bool, active_cache: bool | None, size_bytes: int):
@@ -702,7 +777,7 @@ def test_cached_gguf_scan_dedupes_and_excludes_mmproj_only(monkeypatch, tmp_path
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
@@ -723,7 +798,7 @@ def test_cached_gguf_scan_preserves_partial_flag(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: True,
+        lambda _repo_id, _path, **_kw: True,
     )
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
@@ -766,7 +841,7 @@ def test_cached_gguf_scan_includes_variant_state_without_completed_gguf(monkeypa
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: True,
+        lambda _repo_id, _path, **_kw: True,
     )
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
@@ -799,7 +874,7 @@ def test_cached_gguf_scan_hides_infra_repos_without_user_downloads(monkeypatch, 
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
@@ -834,7 +909,7 @@ def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(monkeypa
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_gguf()}
@@ -866,12 +941,125 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_models()}
 
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
+
+
+_SNAPSHOT_SHA = "a" * 40
+
+
+def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: str):
+    """One cached diffusion repo through _scan_cached_models, with the download-partial signal
+    forced off so only the pipeline-shape checks can flag the row.
+
+    The snapshot is materialised on disk, not just described: the pipeline-shape checks read the
+    directory the row resolves to, so a revision without a real ``snapshot_path`` would report no
+    manifest and no denoiser for every repo alike and the assertions below would all pass on
+    nothing.
+    """
+    repo_path = tmp_path / f"hub/models--{repo_id.replace('/', '--')}"
+    snapshot = repo_path / "snapshots" / _SNAPSHOT_SHA
+    snapshot.mkdir(parents = True)
+    for f in files:
+        target = snapshot / f.file_name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"\0" * min(int(f.size_on_disk), 4096))
+    refs = repo_path / "refs"
+    refs.mkdir(parents = True, exist_ok = True)
+    (refs / "main").write_text(_SNAPSHOT_SHA)
+    revision = SimpleNamespace(files = files, snapshot_path = snapshot, commit_hash = _SNAPSHOT_SHA)
+    repo = SimpleNamespace(
+        repo_id = repo_id, repo_type = "model", repo_path = repo_path, revisions = [revision]
+    )
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    # The real signature takes snapshot_dir; a double that omits it raises TypeError, which the
+    # per-repo except swallows into an empty row list and every assertion below stops running.
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda _repo, gguf: task)
+    rows = cache_inventory._scan_cached_models()
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_cached_models_scan_marks_a_companion_only_pipeline_partial(monkeypatch, tmp_path):
+    """A GGUF image load prefetches the base repo's manifest + VAE + text encoder and skips the
+    multi-GB transformer. Every file its manifest expected arrived, so the download-partial check
+    passes it, but from_pretrained cannot load it -- the picker must not advertise it as on-device
+    (same rule /api/models/cached applies)."""
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "Org/Pipeline-Companions-Only",
+        [
+            _file("model_index.json", 900),
+            _file("vae/diffusion_pytorch_model.safetensors", 300_000_000),
+            _file("text_encoder/model.safetensors", 900_000_000),
+        ],
+        task = "text-to-image",
+    )
+
+    assert row["partial"] is True
+    # A companion-only snapshot arrived intact, so it has no Resume / Redownload story.
+    assert row["partial_transport"] is None
+
+
+def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_path):
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "Org/Pipeline-Complete",
+        [
+            _file("model_index.json", 900),
+            _file("vae/diffusion_pytorch_model.safetensors", 300_000_000),
+            _file("text_encoder/model.safetensors", 900_000_000),
+            _file("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 4_000_000_000),
+        ],
+        task = "text-to-image",
+    )
+
+    assert row["partial"] is False
+    assert row["single_file"] is False
+
+
+def test_cached_models_scan_flags_a_single_file_diffusion_checkpoint(monkeypatch, tmp_path):
+    """No root model_index.json: loadable only through from_single_file + a filename. The picker
+    gates on this flag, and before it was carried here every hub-sourced row read as a full
+    pipeline -- so a checkpoint-only repo was offered as a pipeline load and failed after the
+    handoff."""
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "Org/Single-File-Checkpoint",
+        [_file("config.json", 12), _file("z-image-turbo-fp8.safetensors", 6_000_000_000)],
+        task = "text-to-image",
+    )
+
+    assert row["single_file"] is True
+    assert row["partial"] is False
+
+
+def test_cached_models_scan_leaves_chat_repos_unflagged(monkeypatch, tmp_path):
+    """The flag is a diffusion-picker concern: a chat repo (no task) never carries it, so a plain
+    safetensors model is not mistaken for a single-file checkpoint."""
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "Org/Chat-Model",
+        [_file("config.json", 12), _file("model.safetensors", 100)],
+        task = None,
+    )
+
+    assert row["single_file"] is False
 
 
 def test_cached_scans_hide_embedders_configured_by_cache_path(monkeypatch, tmp_path):
@@ -909,12 +1097,12 @@ def test_cached_scans_hide_embedders_configured_by_cache_path(monkeypatch, tmp_p
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     assert cache_inventory._scan_cached_gguf() == []
@@ -972,12 +1160,12 @@ def test_cached_scans_hide_embedders_configured_by_snapshot_path(monkeypatch, tm
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     assert cache_inventory._scan_cached_gguf() == []
@@ -1015,7 +1203,7 @@ def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     result = {"cached": cache_inventory._scan_cached_models()}
@@ -1049,12 +1237,12 @@ def test_cached_scans_hide_stale_default_embedder_after_custom_setting(monkeypat
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_gguf_repo_partial",
-        lambda _repo_id, _path: False,
+        lambda _repo_id, _path, **_kw: False,
     )
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda _kind, _repo_id, _path, **_kw: False,
     )
 
     assert cache_inventory._scan_cached_gguf() == []
@@ -3040,11 +3228,7 @@ def test_model_download_records_completed_baseline_for_new_gguf_variant(monkeypa
     monkeypatch.setattr(downloads, "_registry", registry)
     monkeypatch.setattr(downloads, "_spawn_download_worker", lambda *_args, **_kwargs: _Proc())
 
-    asyncio.run(
-        downloads.download_model_response(
-            SimpleNamespace(repo_id = "Org/Model", gguf_variant = "Q4_K_M", use_xet = False)
-        )
-    )
+    asyncio.run(downloads.download_model_response(_download_body(gguf_variant = "Q4_K_M")))
 
     assert registry.claim_kwargs["blob_hashes"] == frozenset({"mainhash"})
     assert registry.claim_kwargs["progress_blob_hashes"] == frozenset({"mainhash", "mmprojhash"})
@@ -3126,11 +3310,7 @@ def test_gguf_model_download_skips_completed_baseline_for_variant_resume_state(
     monkeypatch.setattr(downloads, "_registry", registry)
     monkeypatch.setattr(downloads, "_spawn_download_worker", lambda *_args, **_kwargs: _Proc())
 
-    asyncio.run(
-        downloads.download_model_response(
-            SimpleNamespace(repo_id = "Org/Model", gguf_variant = "Q4_K_M", use_xet = False)
-        )
-    )
+    asyncio.run(downloads.download_model_response(_download_body(gguf_variant = "Q4_K_M")))
 
     assert registry.claim_kwargs["completed_baseline_bytes"] == 0
 
@@ -3327,11 +3507,7 @@ def test_model_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
         lambda proc, **_kwargs: killed.append(proc),
     )
 
-    result = asyncio.run(
-        downloads.download_model_response(
-            SimpleNamespace(repo_id = "Org/Model", gguf_variant = None, use_xet = False)
-        )
-    )
+    result = asyncio.run(downloads.download_model_response(_download_body()))
 
     assert result["state"] == "cancelled"
     assert killed
@@ -3443,11 +3619,7 @@ def test_model_download_watcher_invalidates_hf_cache_scan(monkeypatch):
 
     monkeypatch.setattr(downloads.asyncio, "to_thread", _inline_to_thread)
 
-    result = asyncio.run(
-        downloads.download_model_response(
-            SimpleNamespace(repo_id = "Org/Model", gguf_variant = None, use_xet = False)
-        )
-    )
+    result = asyncio.run(downloads.download_model_response(_download_body()))
 
     assert result["accepted"] is True
     assert invalidated == [True]
@@ -3512,20 +3684,8 @@ def test_two_concurrent_same_repo_variants_both_complete(monkeypatch, tmp_path):
 
     async def _run_both():
         return await asyncio.gather(
-            downloads.download_model_response(
-                SimpleNamespace(
-                    repo_id = "Org/Model",
-                    gguf_variant = "Q4_K_M",
-                    use_xet = False,
-                )
-            ),
-            downloads.download_model_response(
-                SimpleNamespace(
-                    repo_id = "Org/Model",
-                    gguf_variant = "Q8_0",
-                    use_xet = False,
-                )
-            ),
+            downloads.download_model_response(_download_body(gguf_variant = "Q4_K_M")),
+            downloads.download_model_response(_download_body(gguf_variant = "Q8_0")),
         )
 
     results = asyncio.run(_run_both())

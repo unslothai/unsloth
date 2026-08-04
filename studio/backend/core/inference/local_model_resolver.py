@@ -47,10 +47,18 @@ _WARM_DUTY = 10.0
 
 def _is_abs_path_id(value: str) -> bool:
     """True when an id is an absolute filesystem path (the ./models and LM Studio
-    scanners use the on-disk path as the id) rather than a repo id like org/name."""
-    from pathlib import Path
+    scanners use the on-disk path as the id) rather than a repo id like org/name.
+
+    Both spellings count on every host. Path() follows the running OS, so a
+    Windows backend read "/home/me/x.gguf" as relative and a POSIX one read
+    "C:\\models\\x.gguf" the same way, and either then reached /v1/models as a
+    published id. Ids outlive the machine that wrote them: settings sync, a WSL
+    session and a copied config all carry the other platform's spelling, and the
+    model-override identity already folds both. Neither reading can misfire on a
+    repo id, which has no leading separator, drive or UNC prefix."""
+    from pathlib import PurePosixPath, PureWindowsPath
     try:
-        return Path(value).is_absolute()
+        return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
     except Exception:
         return False
 
@@ -91,7 +99,7 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local
     path so /load resolves the variant locally and never fetches a remote one."""
     from pathlib import Path
-    from utils.models.model_config import _is_mmproj, list_local_gguf_variants
+    from utils.models.model_config import detect_gguf_model, list_local_gguf_variants
 
     path = getattr(info, "path", None)
     if not isinstance(path, str):
@@ -106,7 +114,7 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             # advertise a projector and a switch could load it instead of the weights,
             # evicting the loaded model. The directory branch below is already mmproj
             # free (list_local_gguf_variants drops mmproj quants).
-            if p.suffix.lower() != ".gguf" or _is_mmproj(p.name):
+            if p.suffix.lower() != ".gguf" or detect_gguf_model(str(p)) is None:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
         load_dir = _resolve_load_dir(p)
