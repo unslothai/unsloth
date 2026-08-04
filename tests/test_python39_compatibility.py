@@ -42,7 +42,8 @@ def declared_floor():
 
 def package_files(root = PACKAGE_ROOT, minimum = 50):
     files = sorted(
-        p for p in root.rglob("*.py")
+        p
+        for p in root.rglob("*.py")
         if "__pycache__" not in p.parts and "node_modules" not in p.parts
     )
     assert len(files) >= minimum, f"only found {len(files)} files under {root}, glob is wrong"
