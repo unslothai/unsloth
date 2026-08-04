@@ -259,3 +259,26 @@ test("a proxy URL trailer is stripped as well as a Hub one", () => {
   assert.ok(!clean.includes("acme-internal"));
   assert.equal(clean, "Api error with status 502");
 });
+
+test("recordFailure false leaves the origin unmarked for a caller with a fallback", async () => {
+  reset();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new TypeError("Failed to fetch");
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      fetchWithTimeout(`${HF}/api/models`, {}, 1_000, { recordFailure: false }),
+    );
+    assert.equal(
+      getHubPhase(HF),
+      "available",
+      "recording here re-renders consumers, whose cleanup aborts the fallback",
+    );
+    // The default still records, for callers with no fallback of their own.
+    await assert.rejects(fetchWithTimeout(`${HF}/api/models`, {}, 1_000));
+    assert.equal(getHubPhase(HF), "unavailable");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
