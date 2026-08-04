@@ -378,6 +378,29 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
   };
 }
 
+/** Adopt the latest default only when the sidebar still matches one we shipped. */
+export function migrateShippedSidebarNavDefault(
+  customization: AppearanceCustomization,
+  storedVersion: number,
+  migrationVersion: number,
+): AppearanceCustomization {
+  // Once this migration version has been persisted, the same layout may be a
+  // deliberate user choice and must never be adopted again.
+  if (storedVersion >= migrationVersion) return customization;
+  const stored = JSON.stringify(customization.sidebarNav);
+  // Sanitize each layout too: the stored one has since gained any ids added
+  // after it was written, so a raw compare would never match.
+  const untouched = SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
+    (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
+  );
+  return untouched
+    ? {
+        ...customization,
+        sidebarNav: [...DEFAULT_CUSTOMIZATION.sidebarNav],
+      }
+    : customization;
+}
+
 export function isDefaultCustomization(c: AppearanceCustomization): boolean {
   return JSON.stringify(c) === JSON.stringify(DEFAULT_CUSTOMIZATION);
 }
@@ -456,20 +479,11 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
-        const customization = sanitizeCustomization(state.customization);
-        // Adopt the new layout only where the stored one is still a shipped
-        // default, so a user's own arrangement survives.
-        if (version < 5) {
-          const stored = JSON.stringify(customization.sidebarNav);
-          // Sanitize each layout too: the stored one has since gained any ids
-          // added after it was written, so a raw compare would never match.
-          const untouched = SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
-            (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
-          );
-          if (untouched) {
-            customization.sidebarNav = [...DEFAULT_CUSTOMIZATION.sidebarNav];
-          }
-        }
+        const customization = migrateShippedSidebarNavDefault(
+          sanitizeCustomization(state.customization),
+          version,
+          5,
+        );
         return { customization } as AppearanceCustomState;
       },
       // Sanitize on EVERY rehydrate, not just version bumps: a same-version
