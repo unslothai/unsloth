@@ -433,6 +433,9 @@ class ApprovedReleaseChecksums:
     resolved_source_ref: str | None = None
     source_commit: str | None = None
     source_commit_short: str | None = None
+    # git tree id of ggml/ in the built source. Changes exactly when ggml
+    # changes, so it is the real ABI key for slim whisper bundles.
+    ggml_tree: str | None = None
     artifacts: dict[str, ApprovedArtifactHash] = field(default_factory = dict)
 
 
@@ -1430,6 +1433,7 @@ def parse_approved_release_checksums(
 
     source_commit = normalize_source_commit(payload.get("source_commit"))
     source_commit_short = payload.get("source_commit_short")
+    ggml_tree = payload.get("ggml_tree")
     source_repo = payload.get("source_repo")
     source_repo_url = payload.get("source_repo_url")
     source_ref_kind = normalize_source_ref_kind(payload.get("source_ref_kind"))
@@ -1454,6 +1458,7 @@ def parse_approved_release_checksums(
         source_commit_short = source_commit_short
         if isinstance(source_commit_short, str) and source_commit_short
         else None,
+        ggml_tree = ggml_tree if isinstance(ggml_tree, str) and ggml_tree else None,
         artifacts = artifacts,
     )
 
@@ -5678,6 +5683,8 @@ def write_prebuilt_metadata(
         "source_ref_kind": approved_checksums.source_ref_kind,
         "requested_source_ref": approved_checksums.requested_source_ref,
         "resolved_source_ref": approved_checksums.resolved_source_ref,
+        # Read back by install_whisper_prebuilt.py to pair slim bundles.
+        "ggml_tree": approved_checksums.ggml_tree,
         "bundle_profile": choice.bundle_profile,
         "runtime_line": choice.runtime_line,
         "coverage_class": choice.coverage_class,
@@ -5892,6 +5899,18 @@ def installed_llama_runtime(install_dir: Path | None = None) -> tuple[Path, str,
         return None
     profile = metadata.get("bundle_profile")
     return bin_dir, release_tag, profile if isinstance(profile, str) else ""
+
+
+def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
+    """ggml tree id of the managed llama.cpp install, or None for installs made
+    before it was recorded. Kept separate from installed_llama_runtime() so that
+    tuple keeps its shape for existing callers."""
+    root = install_dir if install_dir is not None else default_managed_llama_dir()
+    metadata = load_prebuilt_metadata(root)
+    if metadata is None:
+        return None
+    tree = metadata.get("ggml_tree")
+    return tree if isinstance(tree, str) and tree else None
 
 
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
