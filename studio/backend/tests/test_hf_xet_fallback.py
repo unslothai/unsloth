@@ -629,3 +629,40 @@ def test_apply_xet_env_returns_none_when_the_zoo_cannot_size(monkeypatch):
         shim, "_load_optional", lambda _name: types.SimpleNamespace(apply_xet_env = _boom)
     )
     assert shim.apply_xet_env({}) is None, "a raising zoo must degrade, not crash the download"
+
+
+def test_a_zoo_that_can_resize_is_asked_for_the_workers_own_cache(monkeypatch):
+    """``env`` is a copy of ours and already carries the zoo's import-time sizing, which its
+    setdefault apply would keep. A zoo that can resize gets the worker's cache instead, so a backend
+    whose cache moved after startup does not size the worker for the volume it left behind. An older
+    zoo, with no resize to call, keeps the previous behaviour."""
+    import types
+
+    import utils.hf_xet_fallback as shim
+
+    seen = {}
+
+    def _resize(env, cache_dir, **kwargs):
+        seen["cache_dir"] = cache_dir
+        env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"] = "1000000000"
+        return {"HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT": "1000000000"}
+
+    def _apply(env, **kwargs):
+        seen["applied"] = True
+        return {}
+
+    monkeypatch.setattr(shim, "_load_optional", lambda _name: types.SimpleNamespace(
+        apply_xet_env = _apply, resize_for_cache_dir = _resize,
+    ))
+    env = {"HF_HUB_CACHE": "/new/volume/hub",
+           "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT": "64000000000"}
+    written = shim.apply_xet_env(env, env["HF_HUB_CACHE"])
+    assert seen["cache_dir"] == "/new/volume/hub"
+    assert "applied" not in seen, "resizing and applying both would size the worker twice"
+    assert written["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"] == "1000000000"
+    assert env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"] == "1000000000"
+
+    monkeypatch.setattr(shim, "_load_optional",
+                        lambda _name: types.SimpleNamespace(apply_xet_env = _apply))
+    assert shim.apply_xet_env({}, "/new/volume/hub") == {}
+    assert seen["applied"] is True

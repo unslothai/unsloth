@@ -163,16 +163,21 @@ def test_the_zoo_decides_and_studio_does_not_second_guess_it(monkeypatch):
 
     seen = {}
 
-    def _apply(env):
+    def _apply(env, cache_dir = None):
         seen.update(env)
+        seen["cache_dir"] = cache_dir
         env["HF_XET_SENTINEL"] = "sized-by-the-zoo"
         return {"HF_XET_SENTINEL": "sized-by-the-zoo"}
 
     monkeypatch.setattr(shim, "apply_xet_env", _apply)
-    env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
+    env = _spawn_env(monkeypatch, use_xet = True, parent_env = {
+        "HF_XET_HIGH_PERFORMANCE": "1", "HF_HUB_CACHE": "/moved/volume/hub",
+    })
     assert env["HF_XET_SENTINEL"] == "sized-by-the-zoo"
     # The worker's own env is what gets sized, and the flag is left exactly as the zoo left it.
     assert seen["HF_HUB_DISABLE_XET"] == "0"
+    # Sized against the cache the worker will write to, not whichever one this process started with.
+    assert seen["cache_dir"] == "/moved/volume/hub"
     assert env["HF_XET_HIGH_PERFORMANCE"] == "1"
 
 

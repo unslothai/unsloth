@@ -139,7 +139,10 @@ def spawn_worker(
         # UNSLOTH_XET_FORCE_CAPS=1 bounds the machine regardless. Studio hand-rolled this, and the
         # copies drifted: on a 2TB host the worker got a 24GB laptop's buffer and ran 3.4x slower.
         from utils import hf_xet_fallback
-        if hf_xet_fallback.apply_xet_env(env) is None and not _allow_high_performance():
+        # The worker's own cache, which the sizing measures: this backend's env may still name the
+        # one it started with, since moving the cache in Settings does not rewrite the live process.
+        sized = hf_xet_fallback.apply_xet_env(env, env.get("HF_HUB_CACHE"))
+        if sized is None and not _allow_high_performance():
             # No tuning module: that unsloth_zoo is also the one setting HF_XET_HIGH_PERFORMANCE=1
             # at import, and `env` is seeded from the parent, so that inherited "1" would hand the
             # worker a 64GB ceiling (xet-core applies the preset AFTER reading the environment).
