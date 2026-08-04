@@ -989,3 +989,69 @@ def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, m
     snapshots[:] = [with_mtp, dspark_only]
     found = backend._cached_repo_mtp_drafter("some/repo")
     assert found is not None and found.endswith("mtp-model.gguf")
+
+
+# ── Deletion: only auto-fetched companions are reclaimed ─────────────
+
+
+def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
+    """A realistic HF cache repo: snapshot symlinks pointing at blobs."""
+    repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
+    snap = repo_dir / "snapshots" / "rev1"
+    blobs = repo_dir / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    files = []
+    for index, name in enumerate(names):
+        blob = blobs / f"sha{index}"
+        blob.write_bytes(b"x" * 64)
+        link = snap / name
+        link.parent.mkdir(parents = True, exist_ok = True)
+        link.symlink_to(blob)
+        files.append(
+            SimpleNamespace(
+                file_name = name,
+                file_path = str(link),
+                blob_path = str(blob),
+                size_on_disk = 64,
+            )
+        )
+    return SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_dir,
+        revisions = [SimpleNamespace(files = files, snapshot_path = str(snap))],
+    ), snap
+
+
+def test_deleting_a_variant_keeps_an_opt_in_dspark_drafter(tmp_path):
+    """DSpark is in no variant plan, so Studio never downloaded it with the quant
+    and must not reclaim it: that would destroy an ~11 GB file the user fetched
+    deliberately."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        ["model-Q4_K_M.gguf", "dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf"],
+    )
+    _delete_gguf_variant_from_repos(
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root = tmp_path
+    )
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
+
+
+def test_deleting_the_last_variant_still_reclaims_mtp_and_mmproj(tmp_path):
+    """Positive control: those ARE fetched with every variant, so they still go."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path, "org/Model-GGUF", ["model-Q4_K_M.gguf", "mtp-model.gguf", "mmproj-F16.gguf"]
+    )
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert not (snap / "mtp-model.gguf").is_symlink()
+    assert not (snap / "mmproj-F16.gguf").is_symlink()

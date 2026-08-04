@@ -122,6 +122,18 @@ def is_mtp_drafter_path(path: str) -> bool:
     )
 
 
+def is_mtp_only_drafter_path(path: str) -> bool:
+    """MTP drafters only, for the delete path rather than selection. Studio fetches
+    the root ``mtp-*.gguf`` with every variant, so a variant delete may reclaim it.
+    DSpark and DFlash are opt-in and in no variant plan, so sweeping them up with a
+    variant would destroy a file Studio never downloaded."""
+    p = path.replace("\\", "/").lower()
+    if not p.endswith(".gguf"):
+        return False
+    parts = [segment for segment in p.split("/") if segment]
+    return parts[-1].startswith("mtp-") or "mtp" in parts[:-1]
+
+
 def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 

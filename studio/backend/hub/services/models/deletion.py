@@ -35,7 +35,7 @@ from hub.services.models.common import (
     _is_gguf_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
-    _is_mtp_drafter_path,
+    _is_mtp_only_drafter_path,
 )
 
 logger = get_logger(__name__)
@@ -216,8 +216,10 @@ def _delete_gguf_variant_from_repos(
                 target_repo,
                 # Companions: mmproj and the MTP drafter -- downloaded with
                 # every variant, so the last variant's delete reclaims them.
+                # MTP only, not every drafter kind: DSpark is opt-in and in no
+                # variant plan, so Studio never fetched it and must not reclaim it.
                 lambda name: _is_gguf_filename(name)
-                and (_is_mmproj_filename(name) or _is_mtp_drafter_path(name)),
+                and (_is_mmproj_filename(name) or _is_mtp_only_drafter_path(name)),
             )
             for snap, _blob, name in companion_matches:
                 try:
