@@ -97,9 +97,14 @@ def _matches_preview_route(path: str, method: str) -> bool:
         "path": path[len(_PREVIEW_PATH_PREFIX) - 1 :],
         "root_path": "",
     }
+    # Match.FULL only. A Match.PARTIAL (right path, wrong verb) never reaches
+    # FastAPI's 405: Starlette's router prefers ANY full match over a partial
+    # one, and the wrapped app's GET catch-all fully matches every path -- so
+    # e.g. GET /p/<run>/v1/chat/completions (a POST-only route) would be served
+    # index.html instead, exactly the leak this gate exists to stop.
     for route in preview_router.routes:
         match, _ = route.matches(probe)
-        if match is not Match.NONE:
+        if match is Match.FULL:
             return True
     return False
 

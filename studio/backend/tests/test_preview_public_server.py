@@ -381,6 +381,35 @@ def test_listener_masks_method_mismatches_on_real_routes(app):
     assert post_on_page.status_code == 404
 
 
+def test_listener_never_serves_the_spa_on_a_method_mismatch(app):
+    # Starlette's router prefers any Match.FULL over a partial one, so an
+    # allowed verb on the wrong preview route never reaches FastAPI's 405 --
+    # main.py's GET catch-all fully matches it first and serves index.html.
+    # The gate must reject the method mismatch itself.
+    from fastapi.responses import PlainTextResponse
+
+    @app.get("/{full_path:path}")
+    def _spa(full_path: str):
+        return PlainTextResponse(f"SPA-INDEX {full_path}")
+
+    token = preview_token.sign_preview_ref("demorun")
+    statuses = _serve_and_get(
+        app,
+        [
+            # GET on the POST-only chat routes.
+            "/p/demorun/v1/chat/completions",
+            "/p/anything/v1/chat/completions",
+            "/p/demorun/ckpt/v1/chat/completions",
+            # A signed link must still work.
+            f"/p/demorun?k={token}",
+        ],
+    )
+    assert statuses["/p/demorun/v1/chat/completions"] == 404
+    assert statuses["/p/anything/v1/chat/completions"] == 404
+    assert statuses["/p/demorun/ckpt/v1/chat/completions"] == 404
+    assert statuses[f"/p/demorun?k={token}"] == 200
+
+
 def test_health_marker_matches_the_tunnel_probe(app):
     # start_preview_tunnel only advertises a URL when this exact marker answers.
     import cloudflare_tunnel as ct
