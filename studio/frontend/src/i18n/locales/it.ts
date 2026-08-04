@@ -987,7 +987,7 @@ export const it = {
       osWindows: "Windows",
       secureHttps: "HTTPS sicuro",
       secureHttpsHint:
-        "La porta su 0.0.0.0 resta raggiungibile globalmente. Per la massima sicurezza avvia Unsloth con --secure, così viene esposto solo questo link HTTPS.",
+        "La porta su 0.0.0.0 resta raggiungibile da ovunque. Per la massima sicurezza avvia Unsloth con --secure, così viene esposto solo questo link HTTPS.",
       copyTunnelUrl: "Copia l'URL del tunnel",
       copySnippet: "Copia lo snippet",
       copy: "Copia",
