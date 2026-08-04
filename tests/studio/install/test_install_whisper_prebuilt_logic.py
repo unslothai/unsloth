@@ -828,7 +828,7 @@ def test_llama_runtime_pairs_falls_back_to_mix_suffix(installed, required, pairs
     assert M.llama_runtime_pairs(installed, required) is pairs
 
 
-# Real releases: both carry -mix-2c8b9c1, but their ggml trees genuinely differ.
+# Real releases: same -mix-2c8b9c1 suffix, but genuinely different ggml trees.
 SUFFIX_SHARED_A = "b10173-mix-2c8b9c1"
 SUFFIX_SHARED_B = "b10181-mix-2c8b9c1"
 TREE_A = "8f3c6e197debb027f500df9f76e710e137f9fe68"
@@ -838,11 +838,11 @@ TREE_B = "e96ffb0e063f66952b0c54796a74755b6041c867"
 @pytest.mark.parametrize(
     "installed,required,installed_tree,required_tree,pairs",
     [
-        # The bug this replaces: a shared suffix is not a shared ggml.
+        # The bug this fixes: a shared suffix is not a shared ggml.
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, TREE_B, False),
         # Different suffixes, same ggml: ABI-identical, so it pairs.
         ("b10241-mix-89aa77b", "b10225-mix-345e1e3", TREE_A, TREE_A, True),
-        # Either side missing a tree falls back to the suffix.
+        # A missing tree on either side falls back to the suffix.
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, None, TREE_B, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, None, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, "", "", True),

@@ -433,8 +433,8 @@ class ApprovedReleaseChecksums:
     resolved_source_ref: str | None = None
     source_commit: str | None = None
     source_commit_short: str | None = None
-    # git tree id of ggml/ in the built source. Changes exactly when ggml
-    # changes, so it is the real ABI key for slim whisper bundles.
+    # git tree id of ggml/ in the built source: changes exactly when ggml does,
+    # so it is the real ABI key for slim whisper bundles.
     ggml_tree: str | None = None
     artifacts: dict[str, ApprovedArtifactHash] = field(default_factory = dict)
 
@@ -5902,9 +5902,8 @@ def installed_llama_runtime(install_dir: Path | None = None) -> tuple[Path, str,
 
 
 def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
-    """ggml tree id of the managed llama.cpp install, or None for installs made
-    before it was recorded. Kept separate from installed_llama_runtime() so that
-    tuple keeps its shape for existing callers."""
+    """ggml tree id of the managed llama.cpp install; None for installs predating
+    it. Separate from installed_llama_runtime() to keep that tuple's shape."""
     root = install_dir if install_dir is not None else default_managed_llama_dir()
     metadata = load_prebuilt_metadata(root)
     if metadata is None:

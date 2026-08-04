@@ -340,9 +340,9 @@ def _llama_ggml_commit(tag: str) -> str | None:
     """The "-mix-" suffix of a fork tag "b<upstream_build>-mix-<suffix>".
 
     Despite the name this is NOT a ggml commit: it hashes the pinned PR set, so
-    it stays constant while the base tag, and ggml with it, moves. One value
-    covered eight releases spanning b9909..b10001, whose ggml trees differ.
-    Kept only as a fallback for releases predating ggml_tree; prefer that."""
+    it stays constant while the base tag, and ggml with it, moves (one value
+    covered b9909..b10001, whose ggml trees differ). Fallback only, for releases
+    predating ggml_tree."""
     marker = "-mix-"
     idx = tag.rfind(marker)
     end = idx + len(marker)
@@ -358,9 +358,9 @@ def llama_runtime_pairs(
 ) -> bool:
     """Whether an installed llama tag can back a slim bundle needing required_tag.
     An exact tag always pairs. Otherwise prefer the ggml tree ids, which change
-    exactly when ggml does; fall back to the "-mix-" suffix only when either
-    side omits one, since that suffix does not track ggml at all (see
-    _llama_ggml_commit). requires_ggml_sonames stays the per-file ABI gate."""
+    exactly when ggml does; the "-mix-" suffix does not track ggml at all (see
+    _llama_ggml_commit), so it is only used when either tree is missing.
+    requires_ggml_sonames stays the per-file ABI gate."""
     if not isinstance(required_tag, str):
         return False
     if installed_tag == required_tag:
