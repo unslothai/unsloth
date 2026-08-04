@@ -26,7 +26,11 @@ GATED_REPO = "black-forest-labs/FLUX.1-dev"
 
 
 class _FakeInfo:
-    def __init__(self, gated, siblings = ()):
+    def __init__(
+        self,
+        gated,
+        siblings = (),
+    ):
         # The Hub reports "auto" / "manual" (a truthy STRING) or False, never True.
         self.gated = gated
         self.siblings = list(siblings)
@@ -38,17 +42,34 @@ class _FakeSibling:
         self.size = size
 
 
-def _stub_hub(monkeypatch, *, info = None, model_info_error = None, download_error = None):
+def _stub_hub(
+    monkeypatch,
+    *,
+    info = None,
+    model_info_error = None,
+    download_error = None,
+):
     """Point HfApi.model_info / hf_hub_download at canned outcomes; returns the probe log."""
     probed: list = []
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             if model_info_error is not None:
                 raise model_info_error
             return info
 
-    def _download(repo_id, filename, token = None, cache_dir = None, **kwargs):
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+        **kwargs,
+    ):
         probed.append((repo_id, filename))
         if download_error is not None:
             raise download_error
@@ -61,15 +82,12 @@ def _stub_hub(monkeypatch, *, info = None, model_info_error = None, download_err
 
 def _gated_error():
     from huggingface_hub.errors import GatedRepoError
-
     return GatedRepoError("401 Client Error. Cannot access gated repo for url ...")
 
 
 def test_a_gated_base_fails_at_plan_time_naming_the_repo_and_its_licence(monkeypatch):
     # The whole point: metadata says 18 files / 15.4 GiB, the first byte says 401. Fail here, with something to act on.
-    probed = _stub_hub(
-        monkeypatch, info = _FakeInfo("auto"), download_error = _gated_error()
-    )
+    probed = _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _gated_error())
 
     with pytest.raises(ValueError) as excinfo:
         _assert_base_repo_accessible(GATED_REPO, None)
@@ -147,9 +165,7 @@ def test_download_plan_refuses_a_gated_base_before_listing_files(monkeypatch):
         info = _FakeInfo("auto", [_FakeSibling("model_index.json", 1000)]),
         download_error = _gated_error(),
     )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: GATED_REPO
-    )
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: GATED_REPO)
 
     with pytest.raises(ValueError) as excinfo:
         DiffusionBackend().download_plan(
@@ -169,9 +185,7 @@ def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):
         "core.inference.diffusion.detect_family_for_pick",
         lambda *a, **k: types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False),
     )
-    monkeypatch.setattr(
-        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: GATED_REPO
-    )
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: GATED_REPO)
     _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _gated_error())
 
     def _no_prefetch(*a, **k):

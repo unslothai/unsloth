@@ -737,7 +737,11 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     )
     asked: list = []
 
-    def _cache(repo_id, filename, cache_dir = None):
+    def _cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
         asked.append((repo_id, filename, cache_dir))
         return str(tmp_path / filename) if (tmp_path / filename).is_file() else None
 

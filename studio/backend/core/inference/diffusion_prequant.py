@@ -179,7 +179,7 @@ def prequant_checkpoint_cached(source: Any, *, cache_dir: Optional[str] = None) 
         from huggingface_hub import try_to_load_from_cache
     except Exception:  # noqa: BLE001 — no cache API to ask: treat as not cached
         return False
-    for root in ((cache_dir, None) if cache_dir else (None,)):
+    for root in (cache_dir, None) if cache_dir else (None,):
         for name in (source.filename, source.fallback_filename):
             if not name:
                 continue
