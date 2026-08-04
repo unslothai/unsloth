@@ -583,6 +583,15 @@ def sft_trainer_prepare_dataset(function_name, function):
                 getattr(args, "dataset_num_proc", None)
             )""",
                 where = "sft_prepare_dataset dataset_num_proc selection",
+                # required = False, unlike the edits above: this is the one anchor
+                # whose absence is harmless. unsloth_zoo is a floor dependency, not
+                # a pin, and this is the block we just changed the policy of, so it
+                # is likelier to drift upstream than the rest. If it does, the Zoo
+                # falls back to reading args.dataset_num_proc -- which the config
+                # layer has already bounded -- so the memory ceiling that fixes
+                # #2693 still holds. Hard-failing here would break every install on
+                # a newer Zoo to recover an optimisation, not a correctness fix.
+                required = False,
             )
             # why: datasets flattens every worker death -- OOM kill, segfault,
             # real exception -- into "One of the subprocesses has abruptly died

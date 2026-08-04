@@ -276,6 +276,19 @@ def test_env_override_can_force_in_process(monkeypatch, dnp, raw):
     assert dnp.get_dataset_num_proc(16) is None
 
 
+@pytest.mark.parametrize("raw", ["0", "none", "None", "false", "", "1"])
+def test_env_override_in_process_is_encoded_for_the_config_layer(monkeypatch, dnp, raw):
+    # Regression: the env override used to return before _serial(), so asking
+    # for in-process tokenization wrote None into the *config*, which
+    # unsloth_zoo.sft_prepare_dataset reads as "auto-size me" and inflates back
+    # to its own uncapped cpu_count + 4 -> 64. The escape hatch the dead-worker
+    # message recommends would have raised the worker count instead of removing
+    # it. At the config layer serial is 1, never None.
+    _force_start_method(monkeypatch, dnp, "fork")
+    monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, raw)
+    assert dnp.get_dataset_num_proc(16, serial_as_none = False) == 1
+
+
 def test_env_override_is_uncapped(monkeypatch, dnp):
     _force_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "100")

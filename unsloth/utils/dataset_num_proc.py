@@ -254,7 +254,13 @@ def get_dataset_num_proc(
     #    fork-safe is never silently downgraded.
     env_set, env_value = _from_environment()
     if env_set:
-        return env_value
+        # env_value None means the user asked for in-process, so it has to be
+        # encoded for this layer like every other serial path. Returning a bare
+        # None here would write None into the *config*, which downstream reads
+        # as "auto-size me" -- so UNSLOTH_DATASET_NUM_PROC=0, the escape hatch
+        # the dead-worker message tells people to use, would have inflated the
+        # worker count instead of removing it.
+        return _serial(serial_as_none) if env_value is None else env_value
 
     # 2. `datasets` workers receive the tokenizer closure through a dill pickle
     #    over a pipe. Under spawn/forkserver the child must also re-import the
