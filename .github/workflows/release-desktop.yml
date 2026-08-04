@@ -947,7 +947,18 @@ jobs:
           # ends of the copy. The verdict is unaffected: -DisableRemediation
           # ignores file exclusions. Left in place, since the copies must survive
           # until the failure-gated preserve step runs.
-          Add-MpPreference -ExclusionPath (@($work) + @($paths | Split-Path -Parent | Sort-Object -Unique)) -ErrorAction Continue
+          $exclude = @($work) + @($paths | Split-Path -Parent | Sort-Object -Unique)
+          Add-MpPreference -ExclusionPath $exclude -ErrorAction Continue
+
+          # -ErrorAction Continue does not stop on a rejected exclusion, so read
+          # it back. Defender stores these verbatim; normalise anyway.
+          $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
+          $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })
+          $notApplied = @($exclude | Where-Object { $applied -notcontains (& $norm $_) })
+          if ($notApplied) {
+            Write-Host "::error::Defender refused these exclusions: $($notApplied -join ', '); a detection would quarantine the bundle mid-copy and leave nothing to submit"
+            exit 1
+          }
 
           $detected = @()
           $unscanned = @()
