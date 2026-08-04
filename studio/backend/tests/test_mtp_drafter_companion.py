@@ -67,10 +67,18 @@ DRAFTER_CASES = [
     ("dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", True),
     # Local scans can hand the predicate a Windows path.
     ("dspark\\dspark-DeepSeek-V4-Flash-0731-BF16.gguf", True),
-    # Same drafter published under its general.architecture name.
+    # Same drafter published under its general.architecture name -- the prefix
+    # carries it, e.g. ggml-org/Qwen3.6-27B-GGUF ships the drafter at the root.
     ("dflash/dflash-model-Q8_0.gguf", True),
     ("dflash-model.gguf", True),
-    ("foo/dflash/bar.gguf", True),
+    ("dflash-Qwen3.6-27B-BF16.gguf", True),
+    ("dflash-Qwen3.6-27B-Q8_0.gguf", True),
+    # ...but dflash is a family name, so the DIRECTORY is not a drafter marker.
+    # No published repo uses a dflash/ companion folder, while users do name a
+    # local folder after the family they downloaded.
+    ("dflash/Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
+    ("DFlash/Laguna-S-2.1-DFlash-Q5_K_M.gguf", False),
+    ("foo/dflash/bar.gguf", False),
     # Real Hub filenames where dflash/dspark is the family name: each IS the model.
     ("Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
     ("qwen36-35b-a3b-dflash-Q8_0.gguf", False),
@@ -538,6 +546,25 @@ def test_detect_gguf_model_rejects_mtp_subdir_copy(tmp_path):
     assert detect_gguf_model(str(sub)) is None
     assert list_local_gguf_variants(str(tmp_path))[0] == []
     assert list_hub_local_gguf_variants(str(tmp_path))[0] == []
+
+
+def test_local_dflash_folder_keeps_its_models(tmp_path):
+    # DFlash is a family name, not a companion folder: no published repo ships a
+    # dflash/ dir, but a user does name the folder after what they downloaded
+    # (z-lab/Qwen3.6-35B-A3B-DFlash, poolside/Laguna-S-2.1-DFlash, ...).
+    # Matching the directory would hide the weights from every detection path.
+    sub = tmp_path / "dflash"
+    sub.mkdir()
+    main = sub / "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf"
+    main.write_bytes(b"x" * 100)
+    drafter = sub / "dflash-Qwen3.6-27B-BF16.gguf"  # ggml-org/Qwen3.6-27B-GGUF
+    drafter.write_bytes(b"x" * 10)
+
+    assert detect_gguf_model(str(main)) == str(main.resolve())
+    assert detect_gguf_model(str(sub)) == str(main.resolve())
+    assert detect_gguf_model(str(drafter)) is None
+    for lister in (list_local_gguf_variants, list_hub_local_gguf_variants):
+        assert [v.filename for v in lister(str(sub))[0]] == [main.name]
 
 
 def test_registered_mtp_root_keeps_descendant_models_and_excludes_companions(tmp_path, monkeypatch):

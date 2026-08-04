@@ -87,6 +87,12 @@ def is_mmproj_filename(filename: str) -> bool:
 # in and the architecture it reports.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
 
+# Narrower than the prefix rule, since a directory name can be the user's: only
+# ``mtp/`` and ``dspark/`` are ever a publisher's companion folder, while
+# ``dflash/`` is a family name a user picks for real weights. DFlash drafters
+# still match the prefix (ggml-org/Qwen3.6-27B-GGUF: dflash-Qwen3.6-27B-BF16.gguf).
+_DRAFTER_DIR_KINDS = ("mtp", "dspark")
+
 
 def is_mtp_drafter_path(path: str) -> bool:
     """True for a separate-file speculative-decoding drafter, a companion to the
@@ -96,8 +102,9 @@ def is_mtp_drafter_path(path: str) -> bool:
     bake the head into the main GGUF (Qwen) have no such file, so this is False
     for them. Must be excluded from main-model selection everywhere mmproj is.
 
-    Matched by basename prefix or exact parent directory, never a substring: the
-    kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and
+    Matched by basename prefix, or by an exact parent directory for the kinds in
+    ``_DRAFTER_DIR_KINDS``; never a substring, since the kind names double as
+    family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and
     ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model.
 
     CANONICAL COPY, with two mirrors that must change in lockstep:
@@ -110,7 +117,9 @@ def is_mtp_drafter_path(path: str) -> bool:
         return False
     parts = [segment for segment in p.split("/") if segment]
     name, parents = parts[-1], parts[:-1]
-    return any(name.startswith(f"{kind}-") or kind in parents for kind in _DRAFTER_KINDS)
+    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
+        kind in parents for kind in _DRAFTER_DIR_KINDS
+    )
 
 
 def is_gguf_filename(filename: str) -> bool:

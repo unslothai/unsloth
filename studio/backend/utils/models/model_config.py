@@ -1233,8 +1233,10 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
-# Mirrors hub.utils.gguf._DRAFTER_KINDS.
+# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS. A folder named
+# ``dflash/`` holds real weights, so dflash is a drafter by prefix only.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
 def _is_mtp_drafter(path: str) -> bool:
@@ -1249,15 +1251,19 @@ def _is_mtp_drafter(path: str) -> bool:
     request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead
     of the real weight, or to ``dspark/dspark-...-Q8_0.gguf``.
 
-    Prefix or exact directory only, never a substring: the kind names double
-    as family names, so ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model.
+    Prefix, or an exact directory for ``_DRAFTER_DIR_KINDS``; never a substring,
+    since the kind names double as family names
+    (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model, and so is anything in a
+    user's ``dflash/`` folder).
     """
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
     parts = [segment for segment in p.split("/") if segment]
     name, parents = parts[-1], parts[:-1]
-    return any(name.startswith(f"{kind}-") or kind in parents for kind in _DRAFTER_KINDS)
+    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
+        kind in parents for kind in _DRAFTER_DIR_KINDS
+    )
 
 
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.

@@ -1116,21 +1116,26 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
     return False
 
 
-# Mirrors hub.utils.gguf._DRAFTER_KINDS.
+# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
 def _drafter_path_kind(path: str) -> Optional[str]:
-    """Which drafter kind names *path*, by basename prefix or exact parent
-    directory -- never a substring, since the kind names double as family
-    names (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model)."""
+    """Which drafter kind names *path*: basename prefix, or an exact parent
+    directory for ``_DRAFTER_DIR_KINDS``. Never a substring, since the kind names
+    double as family names (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model,
+    and so is anything in a user's ``dflash/`` folder)."""
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return None
     parts = [segment for segment in p.split("/") if segment]
     name, parents = parts[-1], parts[:-1]
     for kind in _DRAFTER_KINDS:
-        if name.startswith(f"{kind}-") or kind in parents:
+        if name.startswith(f"{kind}-"):
+            return kind
+    for kind in _DRAFTER_DIR_KINDS:
+        if kind in parents:
             return kind
     return None
 
