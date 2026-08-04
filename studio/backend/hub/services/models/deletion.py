@@ -16,7 +16,11 @@ from loggers import get_logger
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.gguf import extract_quant_label, extract_quant_token
+from hub.utils.gguf import (
+    extract_quant_label,
+    extract_quant_token,
+    is_mtp_only_drafter_path as _is_mtp_only_drafter_path,
+)
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
     iter_repo_cache_dirs,
@@ -35,7 +39,6 @@ from hub.services.models.common import (
     _is_gguf_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
-    _is_mtp_drafter_path,
 )
 
 logger = get_logger(__name__)
@@ -216,8 +219,10 @@ def _delete_gguf_variant_from_repos(
                 target_repo,
                 # Companions: mmproj and the MTP drafter -- downloaded with
                 # every variant, so the last variant's delete reclaims them.
+                # MTP only: DSpark is opt-in and in no variant plan, so Studio
+                # never fetched it and must not reclaim it.
                 lambda name: _is_gguf_filename(name)
-                and (_is_mmproj_filename(name) or _is_mtp_drafter_path(name)),
+                and (_is_mmproj_filename(name) or _is_mtp_only_drafter_path(name)),
             )
             for snap, _blob, name in companion_matches:
                 try:

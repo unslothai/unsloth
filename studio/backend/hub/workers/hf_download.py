@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Union
 
 _HERE = Path(__file__).resolve().parent
 _BACKEND = _HERE.parent.parent
@@ -49,7 +50,9 @@ from hub.utils.gguf_plan import (
 )
 from hub.utils.state_dir import RepoType
 
-HfTokenArg = str | bool | None
+# typing.Union, not `str | bool | None`: an alias is evaluated on import, and PEP 604
+# raises below the 3.10 floor. The future import does not defer an assigned value.
+HfTokenArg = Union[str, bool, None]
 
 
 # Bound the metadata fetch so a stalled connection fails the worker (exit 1)
