@@ -1223,6 +1223,11 @@ with sync_playwright() as p:
                     };
                 };
                 return {
+                    // The scale the size tokens are multiplied by: index.css sets the 15px
+                    // product default, and the appearance store overrides it inline as
+                    // preference / 16 for any other size.
+                    uiFontScale: getComputedStyle(root)
+                        .getPropertyValue('--ui-font-scale').trim(),
                     actualRenderLinux: root.classList.contains('render-linux'),
                     isDesktopLinux: ua.includes('linux') && !ua.includes('android'),
                     isDark: root.classList.contains('dark'),
@@ -1236,6 +1241,9 @@ with sync_playwright() as p:
                 };
             }""",
         )
+
+    # text-ui-15p5 unscaled (index.css: calc(0.96875rem * var(--ui-font-scale, 1))).
+    _TEXT_UI_15P5_PX = 15.5
 
     def assert_chat_typography(label, typography):
         if typography.get("error"):
@@ -1264,8 +1272,27 @@ with sync_playwright() as p:
             if len(actual["fontSize"]) != 1:
                 fail(f"chat font size {label}/{role}: not uniform, got {actual['fontSize']!r}")
             font_size = float(actual["fontSize"][0].removesuffix("px"))
+            # Pin the token, not a range: one spanning every preference (12 to 20, so
+            # 11.625px to 19.375px) also admits the neighbouring tokens.
+            try:
+                ui_font_scale = float(typography.get("uiFontScale") or "1")
+            except ValueError:
+                ui_font_scale = None
+            if ui_font_scale is None:
+                fail(f"chat font size {label}/{role}: unreadable --ui-font-scale")
+            expected_size = _TEXT_UI_15P5_PX * ui_font_scale
+            if abs(font_size - expected_size) > 0.01:
+                fail(
+                    f"chat font size {label}/{role}: expected text-ui-15p5, "
+                    f"{_TEXT_UI_15P5_PX}px * {ui_font_scale} = {expected_size:g}px, "
+                    f"got {font_size}px"
+                )
             expected_spacing = expected_em * font_size
-            spacings = [float(v.removesuffix("px")) for v in actual["letterSpacing"]]
+            # float() raises on "normal", which is how zero tracking is reported.
+            spacings = [
+                0.0 if v.strip() == "normal" else float(v.removesuffix("px"))
+                for v in actual["letterSpacing"]
+            ]
             # Sub-pixel tolerance only: the browser reports the exact product, so anything larger
             # would stop the check from noticing a changed tracking value.
             if len(spacings) != 1 or abs(spacings[0] - expected_spacing) > 0.005:
