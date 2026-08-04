@@ -823,3 +823,14 @@ def test_listener_lock_is_created_lazily_on_the_running_loop():
     lock = asyncio.run(use())
     assert lock is not None
     assert lst._get_lock() is lock
+
+
+def test_gate_rechecks_the_kill_switch_before_forwarding(app, monkeypatch):
+    # During a disable the tunnel teardown lags the persisted setting; a
+    # still-valid signed link must 404 at the gate, before body parsing.
+    import utils.preview_sharing_settings as sharing
+
+    monkeypatch.setattr(sharing, "get_preview_sharing_enabled", lambda: False)
+    token = preview_token.sign_preview_ref("demorun")
+    statuses = _serve_and_get(app, [f"/p/demorun?k={token}"])
+    assert statuses[f"/p/demorun?k={token}"] == 404
