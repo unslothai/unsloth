@@ -569,7 +569,8 @@ function Get-NvccMaxArch {
 # CUDA_VISIBLE_DEVICES is ignored because the wheel must support the host.
 # Mirrors _nvidia_cu126_verdict in install.sh.
 function Get-NvidiaCu126Verdict {
-    param([string]$SmiExe)
+    # Floor is per-release, not fixed: only 2.11 dropped sm_70 from cu128.
+    param([string]$SmiExe, [int]$LegacyFloorSm = 75)
     if (-not $SmiExe) { return '' }
     $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
     if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
@@ -581,7 +582,7 @@ function Get-NvidiaCu126Verdict {
         if (-not $value) { continue }
         if ($value -notmatch '^(\d+)\.(\d+)$') { return '' }
         $sm = ([int]$Matches[1] * 10) + [int]$Matches[2]
-        if ($sm -lt 75) { $legacy = $true }
+        if ($sm -lt $LegacyFloorSm) { $legacy = $true }
         if ($sm -lt 50 -or $sm -gt 90) { $outsideCu126 = $true }
         $seen = $true
     }
@@ -593,7 +594,10 @@ function Get-NvidiaCu126Verdict {
 function Get-CudaFamilyCappedForPreTuring {
     param([string]$Family, [string]$SmiExe)
     if ($Family -notin @('cu128', 'cu130')) { return $Family }
-    $verdict = Get-NvidiaCu126Verdict $SmiExe
+    # Windows pins torch<2.11, whose cu128 still ships sm_70, so only cu130
+    # strands a Volta here. Raise to 75 when that pin reaches 2.11.
+    $legacyFloorSm = if ($Family -eq 'cu128') { 70 } else { 75 }
+    $verdict = Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm
     if (-not $verdict) { return $Family }
     # This runs twice per setup; announce once without polluting pipeline output.
     $announce = -not $script:PreTuringCapAnnounced
@@ -3499,6 +3503,15 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # direct `studio update`; only a broken venv or an unpinned drift wipes.
     if ($shouldRebuild -and $_pinnedIdx -and $installedTorchTag) {
         substep "Torch-index pin changed ($installedTorchTag) -- reinstalling torch from the pin in place." "Cyan"
+        $script:PinChangedForceReinstall = $true
+        $shouldRebuild = $false
+    }
+    # Same for an unpinned cu* -> cu* move: the capability cap can change the expected
+    # family on an otherwise healthy venv, and only install.ps1 creates venvs, so wiping
+    # here strands a direct `studio update`. CPU/ROCm/XPU drift still rebuilds.
+    if ($shouldRebuild -and -not $_pinnedIdx -and $installedTorchTag -and
+        (Test-CudaFamilyLeaf $installedTorchTag) -and (Test-CudaFamilyLeaf $expectedTorchTag)) {
+        substep "CUDA family $installedTorchTag does not cover this host -- reinstalling $expectedTorchTag in place." "Cyan"
         $script:PinChangedForceReinstall = $true
         $shouldRebuild = $false
     }

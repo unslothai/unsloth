@@ -1768,6 +1768,9 @@ def _ensure_cuda_torch() -> None:
         _installed_desc = _installed_cu if _installed_cu else "an untagged CUDA build"
         _why = f"torch is {_installed_desc} but the pinned CUDA index is {_pin_leaf}"
     elif _marker == "cuda" and not _pinned_cuda:
+        # x86_64 only, like the cap: the spans below are the x86_64 build matrix.
+        if platform.machine().lower() not in ("x86_64", "amd64"):
+            return
         # Check both ends of the installed family's SM span.
         _family = _installed_cu or _runtime_cu
         _span = _cuda_family_sm_range(_family, _installed_release)

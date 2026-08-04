@@ -1530,6 +1530,7 @@ def _warn_uncovered_cuda_host(
     detected_runtime_lines: list[str],
     driver_runtime_lines: list[str],
     artifacts: list[PublishedLlamaArtifact],
+    is_arm64: bool = False,
 ) -> None:
     """Log an uncovered CUDA host once, with cu126 advice only when it can help.
 
@@ -1537,7 +1538,26 @@ def _warn_uncovered_cuda_host(
     path. The explicit pin remains valid when llama.cpp visibility differs from
     the installer's physical inventory.
     """
-    reason = (tuple(host_sms), tuple(detected_runtime_lines), tuple(driver_runtime_lines))
+    # Decided before the dedupe: the host facts are release invariant but `artifacts`
+    # is not, and the release walk-back would let an unhelpful release swallow the
+    # remedy. aarch64 is excluded because the cap itself is x86_64 only.
+    advise_cu126 = (
+        not is_arm64
+        and any(int(sm) < _TURING_MIN_SM for sm in host_sms)
+        and all(_CU126_SM_RANGE[0] <= int(sm) <= _CU126_SM_RANGE[1] for sm in host_sms)
+        and "cuda12" in driver_runtime_lines
+        and "cuda12" not in detected_runtime_lines
+        and any(
+            artifact.runtime_line == "cuda12" and _artifact_covers_sms(artifact, host_sms)
+            for artifact in artifacts
+        )
+    )
+    reason = (
+        tuple(host_sms),
+        tuple(detected_runtime_lines),
+        tuple(driver_runtime_lines),
+        advise_cu126,
+    )
     if reason in _UNCOVERED_CUDA_HOST_WARNINGS:
         return
     _UNCOVERED_CUDA_HOST_WARNINGS.add(reason)
@@ -1548,16 +1568,7 @@ def _warn_uncovered_cuda_host(
         f", runnable by this driver={','.join(driver_runtime_lines) or 'none'})"
         " -- GGUF inference will fall back to a source build or the CPU"
     )
-    if (
-        any(int(sm) < _TURING_MIN_SM for sm in host_sms)
-        and all(_CU126_SM_RANGE[0] <= int(sm) <= _CU126_SM_RANGE[1] for sm in host_sms)
-        and "cuda12" in driver_runtime_lines
-        and "cuda12" not in detected_runtime_lines
-        and any(
-            artifact.runtime_line == "cuda12" and _artifact_covers_sms(artifact, host_sms)
-            for artifact in artifacts
-        )
-    ):
+    if advise_cu126:
         message += (
             ". CUDA 13 dropped pre-Turing GPUs, so the venv needs a CUDA 12 runtime:"
             " re-run the Unsloth installer with UNSLOTH_TORCH_INDEX_FAMILY=cu126"
@@ -1626,7 +1637,11 @@ def linux_cuda_choice_from_release(
             "linux_cuda_selection: no Linux CUDA runtime line satisfied both runtime libraries and driver compatibility"
         )
         _warn_uncovered_cuda_host(
-            host_sms, detected_runtime_lines, driver_runtime_lines, published_artifacts
+            host_sms,
+            detected_runtime_lines,
+            driver_runtime_lines,
+            published_artifacts,
+            host.is_arm64,
         )
         return None
 
@@ -1777,7 +1792,11 @@ def linux_cuda_choice_from_release(
 
     if not attempts:
         _warn_uncovered_cuda_host(
-            host_sms, detected_runtime_lines, driver_runtime_lines, published_artifacts
+            host_sms,
+            detected_runtime_lines,
+            driver_runtime_lines,
+            published_artifacts,
+            host.is_arm64,
         )
         return None
 

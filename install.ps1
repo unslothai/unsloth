@@ -2698,7 +2698,8 @@ exit 0
     # CUDA_VISIBLE_DEVICES is ignored because the wheel must support the host.
     # Mirrors _nvidia_cu126_verdict in install.sh.
     function Get-NvidiaCu126Verdict {
-        param([string]$SmiExe)
+        # Floor is per-release, not fixed: only 2.11 dropped sm_70 from cu128.
+        param([string]$SmiExe, [int]$LegacyFloorSm = 75)
         if (-not $SmiExe) { return '' }
         $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
         if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
@@ -2710,7 +2711,7 @@ exit 0
             if (-not $value) { continue }
             if ($value -notmatch '^(\d+)\.(\d+)$') { return '' }
             $sm = ([int]$Matches[1] * 10) + [int]$Matches[2]
-            if ($sm -lt 75) { $legacy = $true }
+            if ($sm -lt $LegacyFloorSm) { $legacy = $true }
             if ($sm -lt 50 -or $sm -gt 90) { $outsideCu126 = $true }
             $seen = $true
         }
@@ -2722,7 +2723,10 @@ exit 0
     function Get-CudaFamilyCappedForPreTuring {
         param([string]$Family, [string]$SmiExe)
         if ($Family -notin @('cu128', 'cu130')) { return $Family }
-        switch (Get-NvidiaCu126Verdict $SmiExe) {
+        # Windows pins torch<2.11, whose cu128 still ships sm_70, so only cu130
+        # strands a Volta here. Raise to 75 when that pin reaches 2.11.
+        $legacyFloorSm = if ($Family -eq 'cu128') { 70 } else { 75 }
+        switch (Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm) {
             'cu126' {
                 substep "pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $Family wheels start at sm_75" "Yellow"
                 return 'cu126'
