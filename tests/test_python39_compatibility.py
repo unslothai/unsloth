@@ -22,6 +22,13 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "unsloth"
 
+# studio/ ships under the same requires-python, so it is held to the syntax check. Its
+# evaluated-union debt is ratcheted rather than fixed here: the 35 files involved include
+# FastAPI routers and pydantic models, where `from __future__ import annotations` is
+# supported but has real failure modes around class dependencies, so converting them needs
+# Studio actually booted and its routes exercised. The ratchet stops the debt growing.
+STUDIO_UNION_DEBT = 35
+
 
 def declared_floor():
     """The ``>=X.Y`` in requires-python, as a tuple for ast.parse(feature_version=)."""
@@ -33,10 +40,46 @@ def declared_floor():
     return int(floor.group(1)), int(floor.group(2))
 
 
-def package_files():
-    files = sorted(p for p in PACKAGE_ROOT.rglob("*.py") if "__pycache__" not in p.parts)
-    assert len(files) > 50, f"only found {len(files)} files, the glob is wrong"
+def package_files(root = PACKAGE_ROOT, minimum = 50):
+    files = sorted(
+        p for p in root.rglob("*.py")
+        if "__pycache__" not in p.parts and "node_modules" not in p.parts
+    )
+    assert len(files) >= minimum, f"only found {len(files)} files under {root}, glob is wrong"
     return files
+
+
+def packaged_roots():
+    """Top-level directories setuptools ships, from the `include` list in pyproject.
+
+    Read rather than hardcoded so a newly packaged directory cannot silently escape the
+    floor guarantee.
+    """
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8")
+    block = re.search(r"^include\s*=\s*\[(.*?)\]", text, re.MULTILINE | re.DOTALL)
+    assert block, "no packages.find include list in pyproject.toml"
+    roots = []
+    for pattern in re.findall(r"[\"']([^\"']+)[\"']", block.group(1)):
+        top = pattern.split(".")[0].rstrip("*")
+        candidate = REPO_ROOT / top
+        if candidate.is_dir() and candidate not in roots:
+            roots.append(candidate)
+    assert roots, "no packaged directories resolved from pyproject"
+    return roots
+
+
+def evaluated_union_files(root):
+    """Files under `root` that would raise on the floor, i.e. need the future import."""
+    offenders = set()
+    for path in package_files(root, minimum = 1):
+        tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
+        if has_future_annotations(tree):
+            continue
+        for expression in evaluated_annotations(tree):
+            for inner in ast.walk(expression):
+                if isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.BitOr):
+                    offenders.add(path)
+    return offenders
 
 
 def signature_annotations(node):
@@ -118,22 +161,44 @@ def has_future_annotations(tree):
     )
 
 
-def test_every_module_parses_on_the_declared_floor():
+def test_every_packaged_module_parses_on_the_declared_floor():
+    """Every directory pyproject ships, not just unsloth/ - studio/ is packaged too."""
     floor = declared_floor()
     broken = []
-    for path in package_files():
-        try:
-            ast.parse(
-                path.read_text(encoding = "utf-8"),
-                filename = str(path),
-                feature_version = floor,
-            )
-        except SyntaxError as error:
-            broken.append(f"{path.relative_to(REPO_ROOT)}:{error.lineno}: {error.msg}")
+    for root in packaged_roots():
+        for path in package_files(root, minimum = 1):
+            try:
+                ast.parse(
+                    path.read_text(encoding = "utf-8"),
+                    filename = str(path),
+                    feature_version = floor,
+                )
+            except SyntaxError as error:
+                broken.append(f"{path.relative_to(REPO_ROOT)}:{error.lineno}: {error.msg}")
     assert not broken, (
         "syntax newer than the declared floor "
-        f"{floor[0]}.{floor[1]}; either rewrite it or raise requires-python:\n  "
-        + "\n  ".join(broken)
+        f"{floor[0]}.{floor[1]} in a packaged directory; either rewrite it or raise "
+        "requires-python:\n  " + "\n  ".join(broken)
+    )
+
+
+def test_studio_evaluated_unions_do_not_grow():
+    """studio/ is shipped on the same floor but still carries unions that raise there.
+
+    A ratchet, not a pass: converting those files needs Studio booted and its routes
+    exercised, because FastAPI resolves annotations when it builds each endpoint. This
+    keeps the debt from growing in the meantime.
+    """
+    if declared_floor() >= (3, 10):
+        pytest.skip("floor is 3.10+, PEP 604 evaluates fine")
+    studio = REPO_ROOT / "studio"
+    if not studio.is_dir():
+        pytest.skip("no studio/ directory in this checkout")
+    offenders = evaluated_union_files(studio)
+    assert len(offenders) <= STUDIO_UNION_DEBT, (
+        f"{len(offenders)} studio files now evaluate PEP 604 unions on the floor, up from "
+        f"{STUDIO_UNION_DEBT}. Add `from __future__ import annotations` to the new ones:\n  "
+        + "\n  ".join(sorted(str(p.relative_to(REPO_ROOT)) for p in offenders))[:2000]
     )
 
 
