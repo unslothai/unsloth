@@ -5796,6 +5796,7 @@ def test_hub_gguf_files_parses_listing(monkeypatch):
 def test_hub_gguf_files_unknown_on_error_or_empty_listing(monkeypatch):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+
     def unauthorized(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 401, "unauthorized", None, None)
 
