@@ -186,6 +186,8 @@ function ModelSelectorTrigger({
             "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
           // More left padding than right; the chevron is pulled close to the
           // label (below) so the trigger reads balanced around the text.
+          // Height stays pinned: both call sites force the chat header's own
+          // --studio-chat-control-height, which its fixed header cannot grow.
           size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
           size === "default" && "h-9 pl-4 pr-2 text-sm",
           size === "lg" && "h-10 pl-4.5 pr-2.5 text-sm",
@@ -519,9 +521,11 @@ function ModelSelectorContent({
               "pt-4 pb-0 pl-4",
               // Sized so the left-packed row keeps uniform gaps and the last
               // dropdown's right gap matches the pill's left gap (pl-4 vs pr-4).
+              // Widths track the controls they hold, so the tuned single-line
+              // row does not wrap once text and icons grow.
               hasExternal
-                ? "w-[min(614px,calc(100vw-1rem))] pr-4"
-                : "w-[min(506px,calc(100vw-1rem))] pr-2",
+                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
+                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
             ),
         className,
       )}
@@ -864,13 +868,13 @@ function ExternalModelPicker({
       <div className="relative">
         <HugeiconsIcon
           icon={Search01Icon}
-          className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
+          className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
         />
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search models"
-          className="h-9 pl-8"
+          className="h-(--picker-control-h) pl-8"
         />
       </div>
       <div className="-mr-1.5 max-h-72 overflow-y-auto pr-1.5">
