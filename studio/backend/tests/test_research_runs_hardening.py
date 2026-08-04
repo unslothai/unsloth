@@ -860,88 +860,7 @@ def test_stream_completion_timeout_is_absolute_despite_keepalives(monkeypatch):
     assert state == {"iteratorClosed": True, "responseClosed": True}
 
 
-def test_stream_completion_times_out_when_only_transport_noise_arrives(monkeypatch):
-    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.1)
-    state = {"iteratorClosed": False, "responseClosed": False}
-
-    class _NoiseStream:
-        status_code = 200
-
-        def raise_for_status(self):
-            return self
-
-        async def aclose(self):
-            state["responseClosed"] = True
-
-        async def aiter_lines(self):
-            try:
-                noise = (
-                    ": keep-alive",
-                    'data: {"choices":[{"delta":{"role":"assistant"}}]}',
-                    'data: {"choices":[{"delta":{"content":""}}]}',
-                    'data: {"choices":[{"delta":{"content":" \\n"}}]}',
-                    'data: {"choices":[{"delta":{"reasoning_content":"\\t"}}]}',
-                    'data: {"choices":[],"usage":{"prompt_tokens":1}}',
-                )
-                while True:
-                    for line in noise:
-                        await asyncio.sleep(0.01)
-                        yield line
-            finally:
-                state["iteratorClosed"] = True
-
-    _install_fake_client(monkeypatch, [_NoiseStream()])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
-
-    assert state == {"iteratorClosed": True, "responseClosed": True}
-
-
-def test_stream_completion_first_output_timeout_covers_response_headers(monkeypatch):
-    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
-    state = {"sendCancelled": False}
-
-    class _BlockingClient:
-        def __init__(self, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc_info):
-            return False
-
-        def build_request(self, method, url, **kwargs):
-            return (method, url)
-
-        async def send(
-            self,
-            request,
-            *,
-            stream = False,
-        ):
-            try:
-                await asyncio.Event().wait()
-            finally:
-                state["sendCancelled"] = True
-
-    monkeypatch.setattr(research_runs.httpx, "AsyncClient", _BlockingClient)
-    monkeypatch.setattr(
-        research_runs.auth_storage, "create_api_key", lambda **kwargs: ("token", {"id": 1})
-    )
-    monkeypatch.setattr(research_runs.auth_storage, "revoke_internal_api_key", lambda key_id: None)
-    supervisor = _make_supervisor(_noop_check_active)
-
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
-
-    assert state["sendCancelled"] is True
-
-
 def test_stream_completion_times_out_when_output_stalls(monkeypatch):
-    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.1)
 
     class _StalledStream:
@@ -966,8 +885,32 @@ def test_stream_completion_times_out_when_output_stalls(monkeypatch):
         _run_stream(supervisor, timeout_seconds = 1.0)
 
 
+def test_stream_cleanup_error_does_not_replace_output_stall(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.05)
+
+    class _BrokenStalledStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            raise httpx.CloseError("socket already failed")
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"started"}}]}'
+            while True:
+                await asyncio.sleep(0.01)
+                yield ": keep-alive"
+
+    _install_fake_client(monkeypatch, [_BrokenStalledStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelOutputIdleTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
+
+
 def test_stream_completion_semantic_output_resets_the_idle_timeout(monkeypatch):
-    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(research_runs.db, "append_worker_event", lambda *args, **kwargs: 1)
 
@@ -995,13 +938,89 @@ def test_stream_completion_semantic_output_resets_the_idle_timeout(monkeypatch):
     assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "thinking", "stop")
 
 
+def test_stream_completion_does_not_apply_idle_timeout_during_prefill(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.03)
+
+    class _SlowPrefillStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            for _ in range(5):
+                await asyncio.sleep(0.02)
+                yield ": keep-alive"
+            yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_SlowPrefillStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop")
+
+
+def test_stream_completion_counts_whitespace_tokens_as_output(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.15)
+
+    class _WhitespaceStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            for text in (" ", "\n", "\t"):
+                await asyncio.sleep(0.04)
+                yield f'data: {{"choices":[{{"delta":{{"content":{json.dumps(text)}}}}}]}}'
+            yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_WhitespaceStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == (" \n\treport", "", "stop")
+
+
+def test_stream_completion_stops_at_done_even_if_socket_stays_open(monkeypatch):
+    state = {"iteratorClosed": False, "responseClosed": False}
+
+    class _OpenSocketAfterDone:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            state["responseClosed"] = True
+
+        async def aiter_lines(self):
+            try:
+                yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+                yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+                yield "data: [DONE]"
+                await asyncio.Event().wait()
+            finally:
+                state["iteratorClosed"] = True
+
+    _install_fake_client(monkeypatch, [_OpenSocketAfterDone()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop")
+    assert state == {"iteratorClosed": True, "responseClosed": True}
+
+
 @pytest.mark.parametrize(
     ("exc", "message"),
     (
-        (
-            research_runs.ModelFirstOutputTimeout("first"),
-            "Local model did not produce output before its first-output timeout",
-        ),
         (
             research_runs.ModelOutputIdleTimeout("idle"),
             "Local model stopped producing output before completion",
