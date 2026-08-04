@@ -3255,8 +3255,8 @@ def get_torch_device_str() -> str:
     return "cpu"
 
 
-# Mirrors AUTO_NUM_PROC_CAP in unsloth.utils.dataset_num_proc. Duplicated rather
-# than imported: that import pulls in unsloth's whole __init__, and this module
+# Mirrors AUTO_NUM_PROC_CAP in unsloth_zoo.dataset_num_proc. Duplicated rather
+# than imported: that import pulls in a whole training package, and this module
 # loads during hardware detection long before any of it is needed. A canary in
 # tests/utils/test_dataset_num_proc.py fails if the two ever drift.
 _STUDIO_NUM_PROC_CAP = 8
@@ -3358,7 +3358,7 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
     context produced no failures. Since ``detect_hardware()`` always initializes
     CUDA, the guard would serialize tokenization for every CUDA run at no
     measured benefit. The worker-count bound in
-    ``unsloth.utils.dataset_num_proc`` is what addresses issue #2693.
+    ``unsloth_zoo.dataset_num_proc`` is what addresses issue #2693.
     """
     if sys.platform in ("win32", "darwin"):
         return None

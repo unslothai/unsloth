@@ -62,8 +62,13 @@ else:
         # that each get a dill-pickled tokenizer copy (issue #2693). It is a
         # separate package, so bound the count on the way in;
         # resolve_responses_only_num_proc explains how "in-process" has to be
-        # encoded for the zoo, which reads None as "auto".
-        from .utils.dataset_num_proc import resolve_responses_only_num_proc
+        # encoded for the zoo, which reads None as "auto". It lives in the zoo,
+        # beside the helper it bounds; the local copy is the fallback for a zoo
+        # predating it.
+        try:
+            from unsloth_zoo.dataset_num_proc import resolve_responses_only_num_proc
+        except ImportError:
+            from .utils.dataset_num_proc import resolve_responses_only_num_proc
 
         try:
             bound = _ZOO_RESPONSES_ONLY_SIGNATURE.bind_partial(*args, **kwargs)

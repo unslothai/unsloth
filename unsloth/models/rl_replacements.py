@@ -559,6 +559,11 @@ def sft_trainer_prepare_dataset(function_name, function):
             # which still builds a Pool(1) on datasets >= 4.1. Route it through the
             # shared helper so a config None auto-sizes with the capped policy
             # instead of the Zoo's uncapped `cpu_count + 4 -> 64`.
+            #
+            # The helper is imported from the Zoo, not from unsloth, so generated
+            # trainer source never imports back into the package that generated
+            # it; unsloth.utils.dataset_num_proc is only the fallback for a Zoo
+            # predating the module.
             function = _require_replace(
                 function,
                 """if not isinstance(dataset, IterableDataset):
@@ -577,7 +582,10 @@ def sft_trainer_prepare_dataset(function_name, function):
                         dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))
             map_kwargs["num_proc"] = dataset_num_proc""",
                 """if not isinstance(dataset, IterableDataset):
-            from unsloth.utils.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
+            try:
+                from unsloth_zoo.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
+            except ImportError:
+                from unsloth.utils.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
             map_kwargs["num_proc"] = _unsloth_get_dataset_num_proc(
                 getattr(args, "dataset_num_proc", None)
             )""",
@@ -602,7 +610,10 @@ def sft_trainer_prepare_dataset(function_name, function):
                 function,
                 """            with _w.catch_warnings():
                 _w.filterwarnings("ignore", message=".*couldn't be hashed properly.*")""",
-                """            from unsloth.utils.dataset_num_proc import map_failure_diagnostics as _unsloth_map_diagnostics
+                """            try:
+                from unsloth_zoo.dataset_num_proc import map_failure_diagnostics as _unsloth_map_diagnostics
+            except ImportError:
+                from unsloth.utils.dataset_num_proc import map_failure_diagnostics as _unsloth_map_diagnostics
             with _w.catch_warnings(), _unsloth_map_diagnostics(map_kwargs.get("num_proc")):
                 _w.filterwarnings("ignore", message=".*couldn't be hashed properly.*")""",
                 count = 2,

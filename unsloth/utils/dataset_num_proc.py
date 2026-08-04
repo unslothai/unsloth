@@ -12,7 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Single source of truth for the ``dataset_num_proc`` used by ``Dataset.map()``.
+"""Fallback copy of the ``dataset_num_proc`` policy for ``Dataset.map()``.
+
+The source of truth is ``unsloth_zoo.dataset_num_proc``: generated trainer
+source must not import back into the package that generated it, and the three
+remaining copies of this heuristic live in ``unsloth_zoo.dataset_utils``. Every
+caller here tries the zoo first and only falls back to this module on a zoo that
+predates it, so this copy exists solely so that upgrading unsloth alone still
+fixes the bug. ``test_the_two_copies_have_not_drifted`` compares the two
+whenever both are importable; delete this file once the zoo floor guarantees
+the module.
 
 Replaces four drifted copies of the same heuristic (generated trainer source in
 ``unsloth/models/rl.py``, plus ``unsloth_zoo.dataset_utils``), two of which were
@@ -382,7 +391,7 @@ def map_failure_diagnostics(num_proc: Optional[int]) -> "Iterator[None]":
             f"can use, or {NUM_PROC_ENV_VAR}=<n> to choose a count. That is "
             f"in-process everywhere except train_on_responses_only on a split "
             f"over {ZOO_MIN_ROWS_FOR_MULTIPROC:,} rows, where it is one worker: "
-            f"the Zoo reads a bare None there as 'size it for me'.\n"
+            f"a bare None there reads as 'size it for me'.\n"
             f"  Original error: {exception}"
         ) from exception
 

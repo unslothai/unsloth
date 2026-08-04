@@ -2634,7 +2634,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # No start-method override here. Forcing stdlib multiprocessing onto "fork"
     # never reached Dataset.map(), which does `from multiprocess import Pool` and
     # so keeps its own default context; the guard it did flip now asks
-    # multiprocess directly (unsloth/utils/dataset_num_proc.py). Linux defaults
+    # multiprocess directly (unsloth_zoo/dataset_num_proc.py). Linux defaults
     # to fork anyway, so dropping it changes no behaviour and stops overriding a
     # process-wide setting for every later pool in this worker.
 

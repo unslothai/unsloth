@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for unsloth.utils.dataset_num_proc.
+"""Tests for unsloth.utils.dataset_num_proc, the fallback copy of the policy.
+
+unsloth_zoo.dataset_num_proc owns it; this copy only runs on a zoo that predates
+the module, and ``test_the_two_copies_have_not_drifted`` holds them together.
 
 The module is stdlib-only by design and is loaded straight off disk rather than
 via ``import unsloth``, so these worker-count assertions stay meaningful on a
@@ -42,8 +45,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = REPO_ROOT / "unsloth" / "utils" / "dataset_num_proc.py"
 RL_PATH = REPO_ROOT / "unsloth" / "models" / "rl.py"
 
-# The dotted path unsloth/models/rl.py bakes into every generated trainer.
-GENERATED_IMPORT_MODULE = "unsloth.utils.dataset_num_proc"
+# The dotted paths unsloth/models/rl.py bakes into every generated trainer: the
+# zoo first, so generated source does not import back into unsloth, then this
+# package as the fallback for a zoo that predates the module.
+GENERATED_IMPORT_MODULE = "unsloth_zoo.dataset_num_proc"
+GENERATED_FALLBACK_MODULE = "unsloth.utils.dataset_num_proc"
 GENERATED_IMPORT_NAME = "get_dataset_num_proc"
 
 
@@ -511,9 +517,72 @@ def test_rl_codegen_imports_the_module_that_exists():
     # otherwise surface only at trainer-construction time in production.
     snippet = _rl_num_proc_snippet()
     assert f"from {GENERATED_IMPORT_MODULE} import {GENERATED_IMPORT_NAME}" in snippet
+    assert f"from {GENERATED_FALLBACK_MODULE} import {GENERATED_IMPORT_NAME}" in snippet
+    assert snippet.index(GENERATED_IMPORT_MODULE) < snippet.index(GENERATED_FALLBACK_MODULE), (
+        "the zoo has to be tried first; the unsloth copy is only the fallback"
+    )
     assert MODULE_PATH.is_file()
     module = _load_module()
     assert callable(getattr(module, GENERATED_IMPORT_NAME))
+
+
+def test_generated_source_reaches_for_the_zoo_before_unsloth():
+    """Generated trainer source must not import back into unsloth.
+
+    unsloth/__init__.py is what generates that source, so a `from unsloth...`
+    there is an import of the package mid-flight; it also drags
+    unsloth/utils/__init__.py -> packing -> attention_dispatch -> models._utils,
+    i.e. torch and the model stack, into a module that needs none of it. Both
+    call sites in rl_replacements.py must therefore try unsloth_zoo first.
+    """
+    source = RL_PATH.with_name("rl_replacements.py").read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    injected = [
+        ast.literal_eval(node.args[2])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") == "_require_replace"
+        and len(node.args) >= 3
+        and isinstance(node.args[2], ast.Constant)
+    ]
+    reaching = [text for text in injected if "dataset_num_proc" in text]
+    assert len(reaching) == 2, "expected the num_proc selection and the map() wrapper"
+    for text in reaching:
+        assert f"from {GENERATED_IMPORT_MODULE} import" in text
+        assert text.index(GENERATED_IMPORT_MODULE) < text.index(GENERATED_FALLBACK_MODULE), (
+            f"this injection imports unsloth before the zoo:\n{text}"
+        )
+
+
+def test_the_two_copies_have_not_drifted():
+    """The zoo owns the policy; this package keeps a fallback copy.
+
+    Two copies can disagree, and the failure would be silent: whichever import
+    wins decides the worker count. Compare them with docstrings stripped, so
+    prose may differ per repo but no branch, constant or message may.
+    """
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo not installed")
+    zoo_file = Path(list(spec.submodule_search_locations)[0]) / "dataset_num_proc.py"
+    if not zoo_file.is_file():
+        pytest.skip("this unsloth_zoo predates dataset_num_proc")
+
+    def _shape(path):
+        tree = ast.parse(path.read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            body = node.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                node.body = body[1:] or [ast.Pass()]
+        return ast.dump(ast.parse(ast.unparse(tree)))
+
+    assert _shape(MODULE_PATH) == _shape(zoo_file), (
+        "unsloth/utils/dataset_num_proc.py and unsloth_zoo/dataset_num_proc.py "
+        "have diverged; the zoo copy is the source of truth"
+    )
 
 
 def test_rl_codegen_snippet_is_valid_python_at_method_indent():
