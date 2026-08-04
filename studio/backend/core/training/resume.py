@@ -169,7 +169,9 @@ def is_resume_checkpoint_valid(
 
 
 def get_resume_checkpoint_path(
-    path_value: str, expected_step: Optional[int] = None, backend: Optional[str] = None
+    path_value: str,
+    expected_step: Optional[int] = None,
+    backend: Optional[str] = None,
 ) -> Optional[str]:
     path = resolve_output_dir(path_value)
     if not _is_under_outputs(path) or not path.is_dir():
