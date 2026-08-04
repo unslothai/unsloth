@@ -3266,7 +3266,7 @@ export function ChatPage({
               : pinned
                 ? "pl-2"
                 : isTauri
-                  ? "pl-[max(0.75rem,calc(var(--studio-mac-traffic-light-inset,0px)+0.375rem))]"
+                  ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
                   : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
               "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",

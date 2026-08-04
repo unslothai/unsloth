@@ -6,11 +6,25 @@ import {
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export function Navbar() {
   const { isMobile, pinned, togglePinned } = useSidebar();
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
+
+  const [windowFocused, setWindowFocused] = useState(() => document.hasFocus());
+
+  useEffect(() => {
+    if (!usesNativeMacTitlebar) return;
+    const handleFocus = () => setWindowFocused(true);
+    const handleBlur = () => setWindowFocused(false);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, [usesNativeMacTitlebar]);
   if (!isMobile) {
     return (
       <>
@@ -23,6 +37,17 @@ export function Navbar() {
             />
           )}
         </header>
+
+        {usesNativeMacTitlebar && !windowFocused && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute left-[14px] top-[11px] z-[55] flex gap-2"
+          >
+            <span className="size-3 rounded-full bg-[#b8b8b8] ring-1 ring-black/10" />
+            <span className="size-3 rounded-full bg-[#b8b8b8] ring-1 ring-black/10" />
+            <span className="size-3 rounded-full bg-[#b8b8b8] ring-1 ring-black/10" />
+          </div>
+        )}
 
         {usesNativeMacTitlebar && !pinned && (
           <DesktopTitlebarNavigation

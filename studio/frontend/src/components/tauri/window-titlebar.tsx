@@ -122,7 +122,7 @@ export function DesktopTitlebarNavigation({
 
   return (
     <div
-      className={cn("flex items-center gap-0.5", className)}
+      className={cn("flex translate-y-[0.5px] items-center gap-0.5", className)}
       role="toolbar"
       aria-label="Sidebar and page navigation"
     >
