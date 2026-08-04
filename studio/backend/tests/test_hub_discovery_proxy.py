@@ -268,3 +268,26 @@ class TestPaginationLink:
         monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (200, b"[]", ""))
         response = _call([("search", "gemma")])
         assert (response.headers.get("link") or response.headers.get("Link")) is None
+
+    def test_relative_next_link_from_a_mirror_is_accepted(self, monkeypatch):
+        # RFC 8288 permits a relative target; a mirror emitting one must still
+        # paginate instead of silently stopping after the first page.
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.example")
+        rewritten = discovery.rewrite_next_link(
+            "models",
+            discovery.parse_next_link('</api/models?cursor=abc123>; rel="next"'),
+            "http://127.0.0.1:8888/",
+        )
+        assert rewritten is not None, "a relative mirror link must resolve, not be dropped"
+        assert "cursor=abc123" in rewritten
+
+    def test_relative_link_still_cannot_escape_the_endpoint(self, monkeypatch):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.example")
+        assert (
+            discovery.rewrite_next_link(
+                "models",
+                discovery.parse_next_link('<https://evil.example/api/models>; rel="next"'),
+                "http://127.0.0.1:8888/",
+            )
+            is None
+        )

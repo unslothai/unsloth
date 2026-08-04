@@ -13,6 +13,7 @@ import {
   isHubFetchError,
   markRemoteNetworkOffline,
   markRemoteNetworkOnline,
+  sanitizeHubErrorMessage,
 } from "../src/features/hub/lib/network.ts";
 
 const HF = "https://huggingface.co";
@@ -228,4 +229,23 @@ test("an unrelated origin failing does not take the Hub down", () => {
     "available",
     "a datasets-server outage must not make the model hub look offline",
   );
+});
+
+test("the SDK's URL trailer never survives into a rendered message", () => {
+  // Exact shape from @huggingface/hub createApiError: message, then
+  // ". URL: <url>. Request ID: <id>".
+  const raw =
+    "Api error with status 502. URL: https://huggingface.co/api/models?search=my-private-project&limit=100. Request ID: abc123";
+  const clean = sanitizeHubErrorMessage(raw);
+  assert.ok(
+    !clean.includes("my-private-project"),
+    "the search query must not reach the screen",
+  );
+  assert.ok(!clean.includes("URL:"), "no URL trailer");
+  assert.equal(clean, "Api error with status 502");
+});
+
+test("sanitizing leaves a message with no trailer alone", () => {
+  assert.equal(sanitizeHubErrorMessage("Search failed"), "Search failed");
+  assert.equal(sanitizeHubErrorMessage(""), "");
 });

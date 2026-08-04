@@ -367,6 +367,17 @@ export function classifyFetchFailure(
   };
 }
 
+/**
+ * Drop the trailer @huggingface/hub's createApiError appends to every message
+ * ("... URL: <full request url>. Request ID: ..."). The URL carries the user's
+ * search query, and on a private deployment the mirror's hostname.
+ */
+export function sanitizeHubErrorMessage(message: string): string {
+  if (!message) return message;
+  const cleaned = message.replace(/\.?\s*URL:\s*\S+(\.\s*Request ID:\s*\S+)?\.?\s*$/, "");
+  return cleaned.trim() || message;
+}
+
 export async function fetchWithTimeout(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1] = {},

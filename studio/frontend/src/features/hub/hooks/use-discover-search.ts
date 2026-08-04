@@ -3,7 +3,11 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { toast } from "@/lib/toast";
-import { clearRemoteBackoff, type HubFailure } from "@/features/hub/lib/network";
+import {
+  clearRemoteBackoff,
+  type HubFailure,
+  sanitizeHubErrorMessage,
+} from "@/features/hub/lib/network";
 import { useHubAvailability } from "./use-online-status";
 import {
   type HfModelResult,
@@ -143,15 +147,25 @@ export function useDiscoverSearch({
   const rawFetchMore = isDatasetMode
     ? datasetSearch.fetchMore
     : modelSearch.fetchMore;
-  const rawSearchError = isDatasetMode ? datasetSearch.error : modelSearch.error;
+  // Sanitized once here so the toast and both catalog branches are covered:
+  // the proxy-first path records no classified failure, so this is the only
+  // thing standing between the SDK's URL trailer and the screen.
+  const rawErrorMessage = isDatasetMode ? datasetSearch.error : modelSearch.error;
+  const rawSearchError = rawErrorMessage
+    ? sanitizeHubErrorMessage(rawErrorMessage)
+    : rawErrorMessage;
   const retrySearch = isDatasetMode ? datasetSearch.retry : modelSearch.retry;
   // Surfaced regardless of availability: the failure IS the thing worth showing.
   const searchError = isDiscoverTab ? rawSearchError : null;
   const searchFailure = isDiscoverTab ? failure : null;
+  // Allowed while probing: with results preserved on screen this is the only
+  // request the view can make, so gating it on `online` left Load more a
+  // permanent no-op. The backoff still blocks the `unavailable` window.
+  const canProbe = online || phase === "probing";
   const fetchMore = useCallback(() => {
-    if (!online || !hasMore) return false;
+    if (!canProbe || !hasMore) return false;
     return rawFetchMore();
-  }, [online, hasMore, rawFetchMore]);
+  }, [canProbe, hasMore, rawFetchMore]);
 
   const handleRetrySearch = useCallback(() => {
     // Always re-probe: refusing during the backoff left users unable to test a

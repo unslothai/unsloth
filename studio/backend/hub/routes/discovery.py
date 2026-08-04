@@ -187,10 +187,13 @@ def rewrite_next_link(
     """
     if not next_url:
         return None
-    from urllib.parse import parse_qsl, urlsplit
+    from urllib.parse import parse_qsl, urljoin, urlsplit
 
-    base = urlsplit(hf_endpoint_url())
-    parsed = urlsplit(next_url)
+    endpoint = hf_endpoint_url()
+    base = urlsplit(endpoint)
+    # RFC 8288 targets may be relative; resolve first so a mirror emitting
+    # `</api/models?cursor=...>` is not mistaken for an off-endpoint link.
+    parsed = urlsplit(urljoin(endpoint, next_url))
     if (parsed.scheme, parsed.netloc) != (base.scheme, base.netloc):
         return None
     try:
