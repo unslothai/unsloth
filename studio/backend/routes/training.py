@@ -591,9 +591,7 @@ async def start_training(
             # Rewinding onto an older checkpoint must outlive this run; recorded
             # only once the backend accepted the start, so a refused start
             # cannot cap future resumes.
-            record_resume_rewind(
-                request.resume_from_checkpoint, backend = current_training_backend()
-            )
+            record_resume_rewind(request.resume_from_checkpoint, backend = current_training_backend())
         if not success:
             progress_error = backend.trainer.training_progress.error
             return TrainingJobResponse(

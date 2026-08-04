@@ -69,6 +69,7 @@ def _write_mlx_checkpoint(out: Path, step: int) -> Path:
 def _pytorch_backend(monkeypatch):
     # Host-independent default: the MLX-specific tests override explicitly.
     from unsloth_cli.commands import train as train_cmd
+
     monkeypatch.setattr(train_cmd, "_should_use_mlx_backend_for_cli", lambda: False)
     from studio.backend.core.training import resume as _resume
 
