@@ -302,7 +302,10 @@ class CloudflareTunnel:
             self.binary,
             "tunnel",
             "--url",
-            f"http://localhost:{self.port}",
+            # 127.0.0.1, not localhost: the origin server binds IPv4 loopback,
+            # and on hosts where localhost resolves only to ::1 cloudflared
+            # would dial an address nothing (or another process) listens on.
+            f"http://127.0.0.1:{self.port}",
             "--no-autoupdate",
         ]
         if self.protocol:
