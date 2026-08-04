@@ -5814,3 +5814,35 @@ def test_codex_rejects_non_gguf_model_before_connect(monkeypatch):
     )
     assert result.exit_code == 1
     assert "Codex needs a GGUF model" in result.output
+
+
+def test_codex_preflight_normalizes_ownerless_shorthand(monkeypatch):
+    calls = _fake_hub_listing(monkeypatch, {"unsloth/Qwen3-0.6B": []})
+    with pytest.raises(typer.Exit):
+        start._preflight_codex_gguf("Qwen3-0.6B")
+    assert calls[0] == "unsloth/Qwen3-0.6B"
+
+
+def test_codex_preflight_shorthand_skips_existing_local_dir(monkeypatch, tmp_path):
+    calls = _fake_hub_listing(monkeypatch, {})
+    (tmp_path / "Qwen3-0.6B").mkdir()
+    monkeypatch.chdir(tmp_path)
+    start._preflight_codex_gguf("Qwen3-0.6B")
+    assert calls == []
+
+
+def test_hub_gguf_files_ignores_auxiliary_ggufs(monkeypatch):
+    payload = {
+        "siblings": [
+            {"rfilename": "mmproj-F16.gguf"},
+            {"rfilename": "mtp-gemma.gguf"},
+            {"rfilename": "MTP/gemma-Q8_0-MTP.gguf"},
+            {"rfilename": "README.md"},
+        ]
+    }
+    monkeypatch.setattr(
+        start.urllib.request,
+        "urlopen",
+        lambda request, timeout: io.BytesIO(json.dumps(payload).encode()),
+    )
+    assert start._hub_gguf_files("owner/mmproj-pack") == []

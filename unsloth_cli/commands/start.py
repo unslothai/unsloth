@@ -1658,7 +1658,16 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
     if not isinstance(siblings, list) or not siblings:
         return None
     names = [s.get("rfilename") for s in siblings if isinstance(s, dict)]
-    return [n for n in names if isinstance(n, str) and n.lower().endswith(".gguf")]
+    ggufs = [n for n in names if isinstance(n, str) and n.lower().endswith(".gguf")]
+    return [n for n in ggufs if not _is_auxiliary_gguf(n)]
+
+
+def _is_auxiliary_gguf(filename: str) -> bool:
+    # Vision projectors and MTP drafters are companions, not loadable weights;
+    # mirrors the server's detect_gguf_model_remote filtering.
+    p = filename.lower()
+    name = p.rsplit("/", 1)[-1]
+    return "mmproj" in p or name.startswith("mtp-") or "/mtp/" in f"/{p}"
 
 
 def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
@@ -1680,6 +1689,14 @@ def _preflight_codex_gguf(model: Optional[str]) -> None:
     if not is_loopback_url(expected):
         return
     repo, _ = _split_repo_variant(model)
+    if "/" not in repo and not _is_model_path(repo):
+        # The server canonicalizes owner-less shorthands to unsloth/<name>.
+        try:
+            if Path(os.path.expanduser(repo)).exists():
+                return
+        except OSError:
+            return
+        repo = f"unsloth/{repo}"
     if not _is_hub_model_id(repo):
         return
     files = _hub_gguf_files(repo)
