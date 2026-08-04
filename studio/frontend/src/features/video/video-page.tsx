@@ -8,6 +8,7 @@ import {
   FlimSlateIcon,
   Image03Icon,
   InformationCircleIcon,
+  SparklesIcon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -1557,7 +1558,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           >
           {/* Names the pane, as the Images column does. h-9 keeps both pages' headings level. */}
           <div className="grid gap-1">
-            <h2 className="flex h-9 items-center font-heading text-base font-medium text-foreground">
+            <h2 className="flex h-9 items-center gap-2 font-heading text-base font-medium text-foreground">
+              {/* The Images page's Create icon, so both headings read the same. */}
+              <HugeiconsIcon icon={SparklesIcon} className="size-4 shrink-0" />
               Create
             </h2>
             <p className="text-ui-11p5 leading-snug text-muted-foreground">
