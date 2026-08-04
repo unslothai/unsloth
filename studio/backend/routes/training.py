@@ -27,9 +27,11 @@ try:
     from core.training import get_training_backend
     from core.training.resume import (
         can_resume_run,
+        current_training_backend,
         find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        record_resume_rewind,
         resume_run_dir,
     )
     from utils.models.model_config import load_model_defaults
@@ -42,9 +44,11 @@ except ImportError:
     from core.training import get_training_backend
     from core.training.resume import (
         can_resume_run,
+        current_training_backend,
         find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        record_resume_rewind,
         resume_run_dir,
     )
     from utils.models.model_config import load_model_defaults
@@ -272,13 +276,22 @@ async def start_training(
                     status_code = 400,
                     detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state.",
                 )
-            resume_checkpoint = get_resume_checkpoint_path(resume_output_dir)
+            # Validate against the backend this host trains with: an MLX bundle cannot
+            # resume a PyTorch run (or the reverse), and that must fail here rather
+            # than after model and dataset loading.
+            resume_backend = current_training_backend()
+            resume_checkpoint = get_resume_checkpoint_path(
+                resume_output_dir, backend = resume_backend
+            )
             if not resume_checkpoint:
                 raise HTTPException(
                     status_code = 400,
-                    detail = "Resume checkpoint must include saved trainer state.",
+                    detail = "Resume checkpoint must include saved trainer state for this training backend.",
                 )
             request.resume_from_checkpoint = resume_checkpoint
+            # Rewinding onto an older checkpoint must outlive this run: without the
+            # record, a later resume would jump to the timeline it abandoned.
+            record_resume_rewind(resume_checkpoint, backend = resume_backend)
             # New files continue in the run dir even when a checkpoint-N was targeted.
             resume_output_dir = resume_run_dir(resume_checkpoint)
 

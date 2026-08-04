@@ -5,11 +5,15 @@
 
 import json
 import pickletools
+import time
 import zipfile
 from pathlib import Path
 from typing import Optional
 
 from utils.paths import outputs_root, resolve_output_dir
+
+# Records a resume that rewound past newer checkpoints; see record_resume_rewind.
+_REWIND_MARKER = "resume_rewind.json"
 
 
 def _is_under_outputs(path: Path) -> bool:
@@ -22,10 +26,19 @@ def _is_under_outputs(path: Path) -> bool:
         return False
 
 
+def current_training_backend() -> str:
+    """Backend a new run trains with on this host (worker.py's MLX fast-path)."""
+    from core.training.training import is_apple_silicon_training_platform
+
+    return "mlx" if is_apple_silicon_training_platform() else "pt"
+
+
 def has_resume_state(path_value: Optional[str]) -> bool:
     if not path_value:
         return False
-    return get_resume_checkpoint_path(path_value) is not None
+    # Backend-scoped: a bundle the other backend wrote cannot resume here, so it
+    # must not light up Resume in history either.
+    return get_resume_checkpoint_path(path_value, backend = current_training_backend()) is not None
 
 
 def _checkpoint_step(path: Path) -> int:
@@ -168,6 +181,68 @@ def is_resume_checkpoint_valid(
     return step_valid and valid_bundle
 
 
+def _checkpoint_written_at(path: Path) -> float:
+    # trainer_state.json is rewritten on every save, so it dates the checkpoint even
+    # when a resumed run rewrites a same-numbered directory.
+    try:
+        return (path / "trainer_state.json").stat().st_mtime
+    except OSError:
+        return -1.0
+
+
+def resume_step_cap(run_dir: Path) -> Optional[int]:
+    """Highest step a plain resume may select, from a recorded rewind (None: no cap)."""
+    try:
+        marker = json.loads((run_dir / _REWIND_MARKER).read_text(encoding = "utf-8"))
+        step, recorded_at = marker["step"], float(marker["recorded_at"])
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        TypeError,
+        KeyError,
+        ValueError,
+    ):
+        return None
+    if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+        return None
+    # A checkpoint written after the rewind belongs to the new timeline and raises the
+    # cap to itself; the abandoned siblings it did not reach stay out of selection.
+    for checkpoint in run_dir.glob("checkpoint-*"):
+        checkpoint_step = _checkpoint_step(checkpoint)
+        if checkpoint_step > step and _checkpoint_written_at(checkpoint) > recorded_at:
+            step = checkpoint_step
+    return step
+
+
+def record_resume_rewind(resume_checkpoint: str, backend: Optional[str] = None) -> None:
+    """Remember that a resume rewound past newer checkpoints, or drop the record.
+
+    Deleting the abandoned checkpoints would discard user data, so the rewind is
+    recorded instead: until the new timeline writes past that step, a later plain
+    resume must not jump forward onto the timeline this one abandoned.
+    """
+    path = Path(resume_checkpoint)
+    step = _checkpoint_step(path)
+    if step < 0:
+        return
+    run_dir = path.parent
+    rewound = any(
+        _checkpoint_step(sibling) > step and is_resume_checkpoint_valid(sibling, backend = backend)
+        for sibling in run_dir.glob("checkpoint-*")
+    )
+    try:
+        if rewound:
+            (run_dir / _REWIND_MARKER).write_text(
+                json.dumps({"step": step, "recorded_at": time.time()}), encoding = "utf-8"
+            )
+        else:
+            # Nothing newer to keep out of reach: this resume adopts the newest timeline.
+            (run_dir / _REWIND_MARKER).unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
 def get_resume_checkpoint_path(
     path_value: str,
     expected_step: Optional[int] = None,
@@ -176,15 +251,19 @@ def get_resume_checkpoint_path(
     path = resolve_output_dir(path_value)
     if not _is_under_outputs(path) or not path.is_dir():
         return None
+    # An explicitly targeted checkpoint is the user's choice; only the sibling scan
+    # below is capped by a recorded rewind.
     if is_resume_checkpoint_valid(path, expected_step, backend):
         return str(path)
 
+    step_cap = resume_step_cap(path)
     checkpoints = sorted(path.glob("checkpoint-*"), key = _checkpoint_step, reverse = True)
     return next(
         (
             str(checkpoint)
             for checkpoint in checkpoints
             if _checkpoint_step(checkpoint) >= 0
+            and (step_cap is None or _checkpoint_step(checkpoint) <= step_cap)
             and is_resume_checkpoint_valid(checkpoint, expected_step, backend)
         ),
         None,

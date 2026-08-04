@@ -48,6 +48,23 @@ def _write_checkpoint(out: Path, step: int) -> Path:
     return checkpoint
 
 
+def _write_mlx_checkpoint(out: Path, step: int) -> Path:
+    import numpy as np
+    from safetensors.numpy import save_file
+
+    checkpoint = out / f"checkpoint-{step}"
+    checkpoint.mkdir(parents = True, exist_ok = True)
+    (checkpoint / "trainer_state.json").write_text(
+        json.dumps({"global_step": step}), encoding = "utf-8"
+    )
+    save_file({"weight": np.ones(1, dtype = np.float32)}, checkpoint / "adapters.safetensors")
+    save_file(
+        {"state": np.ones(1, dtype = np.float32)},
+        checkpoint / "optimizer_state.safetensors",
+    )
+    return checkpoint
+
+
 @pytest.fixture(autouse = True)
 def _pytorch_backend(monkeypatch):
     # Host-independent default: the MLX-specific tests override explicitly.
@@ -137,6 +154,29 @@ def test_resume_from_external_mlx_output_dir(outputs_home, tmp_path_factory, mon
     assert "checkpoint-25" in result.output
 
 
+def test_external_mlx_resume_honours_a_recorded_rewind(
+    outputs_home, tmp_path_factory, monkeypatch
+):
+    # The external MLX scan picks the newest checkpoint too, so it needs the same cap.
+    from studio.backend.core.training.resume import record_resume_rewind
+    from unsloth_cli.commands import train as train_cmd
+
+    monkeypatch.setattr(train_cmd, "_should_use_mlx_backend_for_cli", lambda: True)
+    external = tmp_path_factory.mktemp("mlx_rewind")
+    _write_mlx_checkpoint(external, 25)
+    _write_mlx_checkpoint(external, 50)
+    record_resume_rewind(str(external / "checkpoint-25"), backend = "mlx")
+
+    result = CliRunner().invoke(
+        _app(),
+        ["--dry-run", "--resume-from-checkpoint", str(external)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "checkpoint-25" in result.output
+    assert "checkpoint-50" not in result.output
+
+
 def test_external_fallback_is_mlx_only(outputs_home, tmp_path_factory, monkeypatch):
     # On the PyTorch path the trainer rejects external output dirs at training
     # time, so a dry run must not accept them either.
@@ -151,6 +191,65 @@ def test_external_fallback_is_mlx_only(outputs_home, tmp_path_factory, monkeypat
     )
     assert result.exit_code == 2, result.output
     assert "write checkpoints under" in result.output
+
+
+def test_resume_honours_a_recorded_rewind(outputs_home):
+    # The run that rewound to checkpoint-10 stopped before passing checkpoint-20,
+    # so a later plain --resume must continue the rewound timeline, not the other.
+    from studio.backend.core.training.resume import record_resume_rewind
+
+    outputs = outputs_home / "outputs"
+    _write_checkpoint(outputs, 20)
+    record_resume_rewind(str(outputs / "checkpoint-10"), backend = "pt")
+
+    result = CliRunner().invoke(_app(), ["--dry-run", "--resume"])
+
+    assert result.exit_code == 0, result.output
+    assert f"resume_from_checkpoint: {outputs / 'checkpoint-10'}" in result.output
+    assert "checkpoint-20" not in result.output
+
+
+def test_resume_from_an_older_checkpoint_records_the_rewind(outputs_home, monkeypatch):
+    # A real (non dry) resume onto an older checkpoint has to leave the record
+    # behind before training starts, since the run may never surpass its siblings.
+    from unsloth_cli.commands import train as train_cmd
+
+    class _FailingTrainer:
+        def load_model(self, **_kwargs):
+            return False
+
+    outputs = outputs_home / "outputs"
+    _write_checkpoint(outputs, 20)
+    monkeypatch.setattr(train_cmd, "_create_cli_trainer", lambda *_args: _FailingTrainer())
+
+    result = CliRunner().invoke(
+        _app(),
+        [
+            "--model",
+            "unsloth/Qwen3-0.6B",
+            "--dataset",
+            "org/dataset",
+            "--resume-from-checkpoint",
+            "outputs/checkpoint-10",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert json.loads((outputs / "resume_rewind.json").read_text())["step"] == 10
+
+
+def test_dry_run_resume_records_no_rewind(outputs_home):
+    # A dry run only resolves the target; it must not constrain later resumes.
+    outputs = outputs_home / "outputs"
+    _write_checkpoint(outputs, 20)
+
+    result = CliRunner().invoke(
+        _app(),
+        ["--dry-run", "--resume-from-checkpoint", "outputs/checkpoint-10"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (outputs / "resume_rewind.json").exists() is False
 
 
 def test_pytorch_resume_rejects_mlx_only_checkpoints(outputs_home, monkeypatch):

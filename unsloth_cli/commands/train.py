@@ -31,7 +31,7 @@ def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None
 
 
 def _external_resume_checkpoint(path: Path) -> "str | None":
-    from studio.backend.core.training.resume import is_resume_checkpoint_valid
+    from studio.backend.core.training.resume import is_resume_checkpoint_valid, resume_step_cap
 
     if (
         path.name.startswith("checkpoint-")
@@ -41,10 +41,14 @@ def _external_resume_checkpoint(path: Path) -> "str | None":
         return str(path)
     best_step, best = -1, None
     if path.is_dir():
+        # Same rewind cap the outputs-root helper applies to its sibling scan.
+        step_cap = resume_step_cap(path)
         for child in path.glob("checkpoint-*"):
             try:
                 step = int(child.name.rsplit("-", 1)[1])
             except ValueError:
+                continue
+            if step_cap is not None and step > step_cap:
                 continue
             if step > best_step and is_resume_checkpoint_valid(child, step, backend = "mlx"):
                 best_step, best = step, str(child)
@@ -131,6 +135,7 @@ def train(
         from studio.backend.core.training.resume import (
             get_resume_checkpoint_path,
             normalize_resume_output_dir,
+            record_resume_rewind,
             resume_run_dir,
         )
         from utils.paths import outputs_root
@@ -172,6 +177,12 @@ def train(
                     err = True,
                 )
             raise typer.Exit(code = 2)
+
+        if not dry_run:
+            # Rewinding onto an older checkpoint must outlive this run: without the
+            # record, a later resume would jump to the timeline it abandoned. A dry
+            # run resolves the target without starting one, so it records nothing.
+            record_resume_rewind(resume_checkpoint, backend = cli_backend)
 
         # New checkpoints continue in the run dir, not inside checkpoint-N/.
         cfg.training.output_dir = Path(resume_run_dir(resume_checkpoint))
