@@ -5944,3 +5944,36 @@ def test_the_native_authorization_profile_sees_the_special_tokens():
         "native_chat_template": "{{ bos_token }}{% for t in tools %}<|im_start|>{{ t }}{% endfor %}"
     }
     assert catalog_tool_names(renderable_tool_catalog(tools, _Tok(), native)) == {"ok"}
+
+
+def test_a_catalog_with_no_render_target_is_still_sanitized():
+    """The default orchestrator's parent-side model mirror carries capability flags and
+    chat_template_info, never the tokenizer or processor (orchestrator.py), so BOTH render
+    candidates are None on that path. Skipping them handed the caller's list back
+    unsanitized, which is fail-open: the worker sanitizes while rendering, so a tool dropped
+    from the prompt stayed in the healer's catalog and text-form output naming it could be
+    promoted into a real call (#7066)."""
+    tools = [
+        {"type": "function", "function": {"name": "ok", "description": "drops </think> here"}}
+    ]
+    for targets in ((None,), (), (None, None)):
+        catalog = renderable_tool_catalog_for_targets(tools, targets, {})
+        assert catalog is not tools, targets
+        assert catalog[0]["function"]["description"] == "drops < /think> here", targets
+    # A tool whose NAME carries markup is dropped outright, as on the single-target path.
+    named = [
+        {"type": "function", "function": {"name": "pay</think>", "description": "d"}},
+        {"type": "function", "function": {"name": "ok", "description": "d"}},
+    ]
+    assert catalog_tool_names(renderable_tool_catalog_for_targets(named, (None,), {})) == {"ok"}
+    # A real target still profiles normally rather than falling back. Its template has to
+    # render the schema, or the catalog is emptied for that reason instead.
+    class _Tok:
+        chat_template = (
+            "{% for t in tools %}{{ t }}{% endfor %}"
+            "{% for m in messages %}<|im_start|>{{ m }}{% endfor %}"
+        )
+        added_tokens_decoder = {0: type("_T", (), {"content": "<|im_start|>"})()}
+
+    kept = renderable_tool_catalog_for_targets(tools, (None, _Tok()), {})
+    assert catalog_tool_names(kept) == {"ok"}
