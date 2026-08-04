@@ -1223,6 +1223,11 @@ with sync_playwright() as p:
                     };
                 };
                 return {
+                    // The scale the size tokens are multiplied by: index.css sets the 15px
+                    // product default, and the appearance store overrides it inline as
+                    // preference / 16 for any other size.
+                    uiFontScale: getComputedStyle(root)
+                        .getPropertyValue('--ui-font-scale').trim(),
                     actualRenderLinux: root.classList.contains('render-linux'),
                     isDesktopLinux: ua.includes('linux') && !ua.includes('android'),
                     isDark: root.classList.contains('dark'),
@@ -1236,6 +1241,10 @@ with sync_playwright() as p:
                 };
             }""",
         )
+
+    # The unscaled size of the text-ui-15p5 token chat renders at (index.css:
+    # --text-ui-15p5: calc(0.96875rem * var(--ui-font-scale, 1))).
+    _TEXT_UI_15P5_PX = 15.5
 
     def assert_chat_typography(label, typography):
         if typography.get("error"):
@@ -1265,11 +1274,23 @@ with sync_playwright() as p:
                 fail(f"chat font size {label}/{role}: not uniform, got {actual['fontSize']!r}")
             font_size = float(actual["fontSize"][0].removesuffix("px"))
             # Asserting the em means the size itself is no longer checked, where the old px
-            # literal caught it implicitly. Bound it: loose enough that a deliberate scale
-            # change or a font-size preference passes, tight enough that chat text rendering
-            # at a heading or caption size does not.
-            if not 12.0 <= font_size <= 18.0:
-                fail(f"chat font size {label}/{role}: {font_size}px is outside 12-18px")
+            # literal caught it implicitly. Assert the token rather than a range: chat is
+            # text-ui-15p5, which is 15.5px scaled by --ui-font-scale, so this holds at
+            # every supported preference (12 to 20, i.e. 11.625px to 19.375px) while still
+            # catching a swap to a neighbouring token that a range would admit.
+            try:
+                ui_font_scale = float(typography.get("uiFontScale") or "1")
+            except ValueError:
+                ui_font_scale = None
+            if ui_font_scale is None:
+                fail(f"chat font size {label}/{role}: unreadable --ui-font-scale")
+            expected_size = _TEXT_UI_15P5_PX * ui_font_scale
+            if abs(font_size - expected_size) > 0.01:
+                fail(
+                    f"chat font size {label}/{role}: expected text-ui-15p5, "
+                    f"{_TEXT_UI_15P5_PX}px * {ui_font_scale} = {expected_size:g}px, "
+                    f"got {font_size}px"
+                )
             expected_spacing = expected_em * font_size
             # "normal" is how a zero tracking is reported, and float() raises on it, which
             # would surface as a test error rather than this check failing.
