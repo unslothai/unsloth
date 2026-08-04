@@ -420,12 +420,8 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "top-px z-[60]" in navbar
     assert "z-40 h-[48px]" in navbar
 
-    assert "!windowFocused" in navbar
-    assert "left-[14px] top-[17px]" in navbar
-    assert "size-[14px]" in navbar
-    assert "gap-[6px]" in navbar
-    assert "bg-[#d0d0d0]" in navbar
-    assert "dark:bg-[#5a5a5a]" in navbar
+    assert "windowFocused" not in navbar
+    assert "bg-[#d0d0d0]" not in navbar
     assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
         encoding = "utf-8"
     )
