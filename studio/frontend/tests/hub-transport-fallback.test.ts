@@ -16,6 +16,7 @@ const { createHubTransport } = await import(
 const {
   HubFetchError,
   getHubPhase,
+  isHuggingFaceOffline,
   markRemoteNetworkOffline,
   markRemoteNetworkOnline,
 } = await import("../src/features/hub/lib/network.ts");
@@ -193,6 +194,26 @@ function failAndMarkOffline() {
     throw new HubFetchError(OPAQUE_FAILURE);
   };
 }
+
+test("a served page does not tell the direct clients the origin is reachable", async () => {
+  markRemoteNetworkOnline();
+  const backend = captureBackend();
+  const transport = createHubTransport("models", {
+    direct: failAndMarkOffline(),
+    backend: backend.backend,
+  });
+  await transport(HF_URL, {});
+
+  // The catalog may use the proxied feed...
+  assert.equal(getHubPhase(HF_ORIGIN), "available");
+  // ...but README and owner-avatar fetches still go direct, so telling them the
+  // origin is back would have them fail and re-mark it, restoring the flapping.
+  assert.equal(
+    isHuggingFaceOffline(),
+    true,
+    "a backend success must not promote browser-origin reachability",
+  );
+});
 
 test("a page served by the backend clears the recorded Hub failure", async () => {
   markRemoteNetworkOnline();

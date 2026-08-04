@@ -4,7 +4,7 @@
 import {
   fetchWithTimeout,
   isHubFetchError,
-  markRemoteNetworkOnline,
+  setHubProxyServing,
 } from "./network";
 import { HUB_HF_TOKEN_HEADER } from "./hub-token-header";
 
@@ -180,15 +180,9 @@ export function createHubTransport(
   ): Promise<Response> => {
     const req = toProxyRequest(raw, resource, init);
     const response = await backend(req.url, req.init);
-    if (response.ok) {
-      // A proxy URL is same-origin; the origin it stands in for is the Hub's.
-      const origin = isProxyUrl(raw)
-        ? DEFAULT_HUB_ENDPOINT
-        : hubUrlOf(raw)?.origin;
-      if (origin) {
-        markRemoteNetworkOnline(origin);
-      }
-    }
+    // Only that the backend can serve us. The origin's own state is left alone
+    // so the direct clients stay suppressed instead of failing and re-marking.
+    setHubProxyServing(response.ok);
     return response;
   };
 

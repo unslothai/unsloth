@@ -56,6 +56,11 @@ export function isHubFetchError(error: unknown): error is HubFetchError {
 }
 
 const remoteOfflineUntilByOrigin = new Map<string, number>();
+// Set when the backend serves Hub content this browser could not fetch. Kept
+// apart from the origin state on purpose: clearing that would tell the direct
+// clients (README, owner avatars) the origin is reachable, and their immediate
+// failure would re-mark it, which is the flapping this whole change removes.
+let hubProxyServing = false;
 // The TTL controls when we retry; this controls what we tell the user. Cleared
 // only by a success, so the cause outlives the backoff window.
 const lastFailureByOrigin = new Map<string, HubFailure>();
@@ -122,15 +127,30 @@ export type HubPhase = "available" | "probing" | "unavailable";
 export function getHubPhase(
   origin: string = HUGGING_FACE_ORIGIN,
 ): HubPhase {
+  if (hubProxyServing && origin === HUGGING_FACE_ORIGIN) {
+    return "available";
+  }
   if (!lastFailureByOrigin.has(origin)) {
     return "available";
   }
   return isRemoteNetworkOffline(origin) ? "unavailable" : "probing";
 }
 
+/** Record whether the backend is currently serving Hub content for us. */
+export function setHubProxyServing(serving: boolean): void {
+  if (hubProxyServing === serving) {
+    return;
+  }
+  hubProxyServing = serving;
+  emitNetworkStatusChange();
+}
+
 export function getLastHubFailure(
   origin: string = HUGGING_FACE_ORIGIN,
 ): HubFailure | null {
+  if (hubProxyServing && origin === HUGGING_FACE_ORIGIN) {
+    return null;
+  }
   return lastFailureByOrigin.get(origin) ?? null;
 }
 
@@ -141,6 +161,7 @@ export function markRemoteNetworkOnline(origin?: string): void {
     }
     remoteOfflineUntilByOrigin.clear();
     lastFailureByOrigin.clear();
+    hubProxyServing = false;
     emitNetworkStatusChange();
     return;
   }
