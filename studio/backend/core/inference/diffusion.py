@@ -466,9 +466,23 @@ def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> Non
         pass
     try:
         from huggingface_hub import HfApi, get_hf_file_metadata, hf_hub_url
-        from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+        from huggingface_hub.errors import (
+            GatedRepoError,
+            HfHubHTTPError,
+            RepositoryNotFoundError,
+        )
     except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
         return
+
+    def _is_auth_error(exc: Any) -> bool:
+        """A 401/403 that hf_raise_for_status did not classify.
+
+        An expired or malformed token answers 401 "Invalid credentials in Authorization header",
+        which _http.py excludes from its RepoNotFound branch by name, and a token without the right
+        permission answers a bare 403. Both arrive as plain HfHubHTTPError, so catching only the
+        classified errors fails open on exactly the case this probe exists to catch."""
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        return status in (401, 403)
     try:
         gated = getattr(HfApi().model_info(repo, token = hf_token), "gated", None)
     except GatedRepoError:  # a gated repo can also withhold its metadata
@@ -476,6 +490,10 @@ def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> Non
     except RepositoryNotFoundError:
         # The size estimate swallows this and plans zero bytes, so without a raise the pick
         # downloads nothing and fails later with no explanation.
+        raise ValueError(_repo_access_message(repo, gated = False)) from None
+    except HfHubHTTPError as exc:
+        if not _is_auth_error(exc):
+            return  # a 5xx or rate limit is not an access verdict
         raise ValueError(_repo_access_message(repo, gated = False)) from None
     except Exception:  # noqa: BLE001 — offline / transient: the download surfaces any real error
         return
@@ -487,6 +505,10 @@ def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> Non
         # probe and 401 again mid-prefetch. The HEAD hits the same /resolve/ URL the shards do.
         get_hf_file_metadata(hf_hub_url(repo, "model_index.json"), token = hf_token)
     except GatedRepoError:
+        raise ValueError(_repo_access_message(repo, gated = True)) from None
+    except HfHubHTTPError as exc:
+        if not _is_auth_error(exc):
+            return
         raise ValueError(_repo_access_message(repo, gated = True)) from None
     except Exception:  # noqa: BLE001 — no manifest / offline / transient is not an access verdict
         return
@@ -1589,7 +1611,11 @@ class DiffusionBackend:
                 # only while already cached: fetching it means a SECOND multi-GB denoiser and the
                 # GGUF never runs. An explicit fp8/int8 request, a LoRA bake (dense by construction)
                 # and every non-GGUF kind keep today's behaviour, where the prequant IS the point.
-                if kind == "gguf" and transformer_quant_auto and not loras:
+                # An all-zero-weight list is not a bake: LoraSpec and every sibling check read
+                # weight 0 as disabled, so plain truthiness here would skip the decline and fetch
+                # the dense companion for a request that applies no adapter at all.
+                baking_loras = any(w != 0 for (_lid, w) in (loras or ()))
+                if kind == "gguf" and transformer_quant_auto and not baking_loras:
                     uncached_prequant = _uncached_prequant_repo(
                         fam,
                         target,

@@ -232,3 +232,41 @@ def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):
     )
 
     assert GATED_REPO in (backend.load_progress().get("error") or "")
+
+
+def _auth_error(status):
+    """The bare HfHubHTTPError hf_raise_for_status leaves for an unclassified 401/403.
+
+    Its RepoNotFound branch excludes 401 "Invalid credentials in Authorization header" by name, and
+    a permission-scoped 403 has no branch at all, so neither becomes GatedRepoError."""
+    import requests
+    from huggingface_hub.errors import HfHubHTTPError
+
+    response = requests.Response()
+    response.status_code = status
+    return HfHubHTTPError(f"{status} Client Error.", response = response)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_an_invalid_token_is_an_access_error_not_a_transient_one(status, monkeypatch):
+    """An expired token must not fail open: that is the case the probe exists for."""
+    _stub_hub(monkeypatch, model_info_error = _auth_error(status))
+    with pytest.raises(ValueError) as excinfo:
+        _assert_base_repo_accessible(GATED_REPO, "stale-token")
+    assert GATED_REPO in str(excinfo.value)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_an_invalid_token_on_the_byte_probe_is_an_access_error(status, monkeypatch):
+    """Same on the second half, where metadata succeeded and only the HEAD carries the verdict."""
+    _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _auth_error(status))
+    with pytest.raises(ValueError) as excinfo:
+        _assert_base_repo_accessible(GATED_REPO, "stale-token")
+    assert GATED_REPO in str(excinfo.value)
+
+
+@pytest.mark.parametrize("status", [500, 429])
+def test_a_server_error_still_fails_open(status, monkeypatch):
+    """A 5xx or a rate limit is not an access verdict, so an offline-ish host still loads."""
+    _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _auth_error(status))
+    _assert_base_repo_accessible(GATED_REPO, "token")

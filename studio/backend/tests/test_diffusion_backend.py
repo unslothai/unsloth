@@ -3389,6 +3389,43 @@ def test_auto_quant_takes_a_hosted_prequant_that_is_already_cached(
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("loras", [[("adapter", 0.0)], [("a", 0.0), ("b", 0.0)]])
+def test_all_zero_weight_loras_do_not_look_like_a_bake(loras, fake_runtime, tmp_path, monkeypatch):
+    # LoraSpec and every sibling check read weight 0 as disabled, so plain truthiness on the list
+    # would call this a bake, skip the decline and fetch the dense companion for a request that
+    # applies no adapter at all.
+    _stub_hosted_prequant(monkeypatch, cached = False)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", loras = loras
+    )
+
+    assert calls == []
+
+
+def test_a_weighted_lora_is_still_treated_as_a_bake(fake_runtime, tmp_path, monkeypatch):
+    # The other direction, so the zero-weight fix does not turn every bake into a GGUF load: a
+    # real adapter must still take the dense route, which this runtime cannot complete and so
+    # reports rather than silently dropping the adapter.
+    _stub_hosted_prequant(monkeypatch, cached = False)
+    _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    with pytest.raises(RuntimeError, match = "LoRA adapters could not be applied"):
+        backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            loras = [("adapter", 0.8)],
+        )
+
+
 def test_an_explicit_quant_request_still_downloads_the_hosted_prequant(
     fake_runtime, tmp_path, monkeypatch
 ):
