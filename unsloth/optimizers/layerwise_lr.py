@@ -40,11 +40,7 @@ def _is_embedding_param(name):
 
 
 def check_layerwise_lr_compat(layerwise_lr_decay, q_galore_config):
-    if (
-        layerwise_lr_decay is not None
-        and layerwise_lr_decay != 1.0
-        and q_galore_config is not None
-    ):
+    if layerwise_lr_decay is not None and layerwise_lr_decay != 1.0 and q_galore_config is not None:
         raise ValueError(
             "Unsloth: layerwise_lr_decay is not supported together with q_galore_config. "
             "Set one of them to None."

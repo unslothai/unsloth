@@ -155,22 +155,30 @@ def test_num_layers_uses_full_model_depth():
     base, decay = 1e-3, 0.9
     # Only layer 0 is trainable, but the real model has 32 layers.
     groups = make_groups(
-        build_model(1), lr = base, weight_decay = 0.0, layerwise_lr_decay = decay,
-        num_layers = 32, verbose = False,
+        build_model(1),
+        lr = base,
+        weight_decay = 0.0,
+        layerwise_lr_decay = decay,
+        num_layers = 32,
+        verbose = False,
     )
-    assert lr_by_tag(groups)["layer0"] == pytest.approx(base * decay ** 31)
+    assert lr_by_tag(groups)["layer0"] == pytest.approx(base * decay**31)
 
 
 def test_num_layers_clamped_to_seen_indices():
     base, decay = 1e-3, 0.9
     # A too-small num_layers must not produce negative exponents (lr > base).
     groups = make_groups(
-        build_model(4), lr = base, weight_decay = 0.0, layerwise_lr_decay = decay,
-        num_layers = 2, verbose = False,
+        build_model(4),
+        lr = base,
+        weight_decay = 0.0,
+        layerwise_lr_decay = decay,
+        num_layers = 2,
+        verbose = False,
     )
     lrs = lr_by_tag(groups)
     assert lrs["layer3"] == pytest.approx(base)
-    assert lrs["layer0"] == pytest.approx(base * decay ** 3)
+    assert lrs["layer0"] == pytest.approx(base * decay**3)
 
 
 def test_compat_check_rejects_q_galore_combo():
@@ -194,11 +202,15 @@ def test_separate_stacks_decay_independently():
         )
     # config depth (decoder) must not leak into the vision stack.
     groups = make_groups(
-        FakeModel(named), lr = base, weight_decay = 0.0, layerwise_lr_decay = decay,
-        num_layers = 4, verbose = False,
+        FakeModel(named),
+        lr = base,
+        weight_decay = 0.0,
+        layerwise_lr_decay = decay,
+        num_layers = 4,
+        verbose = False,
     )
     lrs = lr_by_tag(groups)
-    assert lrs["dec3"] == pytest.approx(base)               # decoder top = base
-    assert lrs["dec0"] == pytest.approx(base * decay ** 3)  # decoder depth 4
-    assert lrs["vis5"] == pytest.approx(base)               # vision top = base
-    assert lrs["vis0"] == pytest.approx(base * decay ** 5)  # vision depth 6, independent
+    assert lrs["dec3"] == pytest.approx(base)  # decoder top = base
+    assert lrs["dec0"] == pytest.approx(base * decay**3)  # decoder depth 4
+    assert lrs["vis5"] == pytest.approx(base)  # vision top = base
+    assert lrs["vis0"] == pytest.approx(base * decay**5)  # vision depth 6, independent
