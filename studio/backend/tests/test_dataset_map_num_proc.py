@@ -318,6 +318,10 @@ def test_the_cap_no_longer_advertises_an_override_it_cannot_honour():
 
 def test_a_serial_request_survives_the_config_round_trip(monkeypatch):
     """The audio paths ask for 1; the config layer must still see a request for 1."""
+    # The map-site half of this needs the policy: without it
+    # _bounded_by_the_shared_policy returns the count unchanged by design, so a
+    # runner with no unsloth_zoo reads 1 rather than None.
+    pytest.importorskip("unsloth_zoo.dataset_num_proc")
     _patch_device(monkeypatch, hw.DeviceType.CPU)
     assert hw.dataset_map_num_proc(1, serial_as_none = False) == 1
     # The map-site default is what turns it back into "no pool" at the call.
@@ -365,6 +369,7 @@ def test_spawn_platforms_keep_none_at_either_layer(monkeypatch, platform):
 
 def test_every_other_caller_keeps_the_map_site_default(monkeypatch):
     """Only the config boundary opts in; the seven map-site callers must not."""
+    pytest.importorskip("unsloth_zoo.dataset_num_proc")
     _patch_device(monkeypatch, hw.DeviceType.CPU)
     assert hw.dataset_map_num_proc(1) is None
     assert hw.dataset_map_num_proc(4) == 4
