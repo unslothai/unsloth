@@ -482,16 +482,22 @@ def test_the_swap_runs_after_every_torch_migration():
         calls = [
             s.value.func.id
             for s in body
-            if isinstance(s, _ast.Expr) and isinstance(s.value, _ast.Call)
-            and isinstance(s.value.func, _ast.Name) and s.value.func.id.startswith("_ensure_")
+            if isinstance(s, _ast.Expr)
+            and isinstance(s.value, _ast.Call)
+            and isinstance(s.value.func, _ast.Name)
+            and s.value.func.id.startswith("_ensure_")
         ]
         if "_ensure_xpu_triton" in calls:
             blocks.append(calls)
     assert len(blocks) == 2, f"expected 2 repair blocks, found {len(blocks)}: {blocks}"
     for calls in blocks:
         assert calls[-1] == "_ensure_xpu_triton", calls
-        for migration in ("_ensure_cuda_torch", "_ensure_rocm_torch",
-                          "_ensure_xpu_torch", "_ensure_cpu_torch"):
+        for migration in (
+            "_ensure_cuda_torch",
+            "_ensure_rocm_torch",
+            "_ensure_xpu_torch",
+            "_ensure_cpu_torch",
+        ):
             assert calls.index(migration) < calls.index("_ensure_xpu_triton"), (migration, calls)
 
 
