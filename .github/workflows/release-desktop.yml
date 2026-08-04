@@ -800,6 +800,27 @@ jobs:
             "$dmg_path"
 
       # ── Windows: build + sign ──
+      # install.ps1 is a bundle resource, so the bundler never signs it, yet it
+      # is the first thing the app runs after install. Sign it before the build
+      # packs it in. The signature is an appended comment block, so the repo copy
+      # served for `irm ... | iex` is unaffected.
+      - name: Sign the bundled install script
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+        run: |
+          $script = (Resolve-Path 'install.ps1').Path
+          studio/src-tauri/windows/sign-with-trusted-signing.ps1 -Path $script
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not sign install.ps1 (exit $LASTEXITCODE)"; exit 1 }
+          $sig = Get-AuthenticodeSignature $script
+          Write-Host "install.ps1 -> $($sig.Status) $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { Write-Host "::error::install.ps1 is $($sig.Status) after signing"; exit 1 }
+
       - name: Build Windows app
         id: build_windows
         if: matrix.platform == 'windows-latest'
