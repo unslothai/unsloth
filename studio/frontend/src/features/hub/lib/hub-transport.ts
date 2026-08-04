@@ -153,6 +153,24 @@ function toInfoRequest(
 }
 
 /**
+ * The fetch every modelInfo caller should use: with a mirror configured it goes
+ * through the path-preserving backend route rather than the public Hub.
+ */
+export function createModelInfoFetch(
+  resource: HubResource = "models",
+): typeof fetch {
+  return createHubTransport(resource, { proxyFirst: hubProxyFirstRef });
+}
+
+// Set by the hub feature at import time; kept indirect so this module does not
+// pull in @/config/env, which is unimportable outside vite.
+let hubProxyFirstRef: () => boolean = defaultProxyFirst;
+
+export function setHubProxyFirst(fn: () => boolean): void {
+  hubProxyFirstRef = fn;
+}
+
+/**
  * A fetch for the Hub SDK: direct first, falling back to the same-origin backend
  * when the browser cannot make the request but the server can.
  *

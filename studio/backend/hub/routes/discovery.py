@@ -176,11 +176,19 @@ def parse_next_link(link_header: str) -> Optional[str]:
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
-def _authority(parsed) -> tuple:
-    """(scheme, host, effective port), so case and a default port compare equal."""
-    scheme = (parsed.scheme or "").lower()
-    port = parsed.port if parsed.port is not None else _DEFAULT_PORTS.get(scheme)
-    return scheme, (parsed.hostname or "").lower(), port
+def _authority(parsed) -> Optional[tuple]:
+    """(scheme, host, effective port), so case and a default port compare equal.
+
+    None when the authority is malformed: `.port` raises on a nonnumeric or
+    out-of-range port, and the next-page header is optional, so an unusable link
+    must be dropped rather than turned into a 500 on a good first page.
+    """
+    try:
+        scheme = (parsed.scheme or "").lower()
+        port = parsed.port if parsed.port is not None else _DEFAULT_PORTS.get(scheme)
+        return scheme, (parsed.hostname or "").lower(), port
+    except ValueError:
+        return None
 
 
 def rewrite_next_link(
@@ -206,10 +214,14 @@ def rewrite_next_link(
     base = urlsplit(endpoint)
     # RFC 8288 targets may be relative; resolve first so a mirror emitting
     # `</api/models?cursor=...>` is not mistaken for an off-endpoint link.
-    parsed = urlsplit(urljoin(endpoint, next_url))
+    try:
+        parsed = urlsplit(urljoin(endpoint, next_url))
+    except ValueError:
+        return None
     # Compare normalised authority, not raw netloc: case and an explicit default
     # port are equivalent, and a textual check would drop a valid link.
-    if _authority(parsed) != _authority(base):
+    target, expected = _authority(parsed), _authority(base)
+    if target is None or target != expected:
         return None
     try:
         pairs = build_discovery_query(_QueryPairs(parse_qsl(parsed.query)))

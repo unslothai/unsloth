@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DEFAULT_HUB_ENDPOINT, usePlatformStore } from "@/config/env";
+import { setHubProxyFirst } from "./hub-transport";
 
 /**
  * A mirror is unreachable from the browser: the page CSP lists only the official
@@ -16,3 +17,5 @@ export function hubProxyFirst(): boolean {
     return false;
   }
 }
+
+setHubProxyFirst(hubProxyFirst);

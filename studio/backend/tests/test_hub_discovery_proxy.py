@@ -391,3 +391,39 @@ class TestStreamDeadline:
         )
         assert rewritten is not None, endpoint
         assert "cursor=abc123" in rewritten
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "https://huggingface.co:notaport/api/models",
+            "https://huggingface.co:99999/api/models",
+            "https://[oops/api/models",
+        ],
+    )
+    def test_a_malformed_link_is_dropped_not_raised(self, monkeypatch, target):
+        # The next-page header is optional; a bad one must not turn a good first
+        # page into a 500.
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        assert (
+            discovery.rewrite_next_link(
+                "models",
+                discovery.parse_next_link(f"<{target}>; rel=\"next\""),
+                "http://127.0.0.1:8888/",
+            )
+            is None
+        )
+
+    def test_a_malformed_link_still_returns_the_page(self, monkeypatch):
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        monkeypatch.setattr(
+            discovery,
+            "_fetch_upstream",
+            lambda url, token: (
+                200,
+                b'[{"id":"a"}]',
+                '<https://huggingface.co:notaport/api/models>; rel="next"',
+            ),
+        )
+        response = _call([("search", "gemma")])
+        assert json.loads(response.body) == [{"id": "a"}]
+        assert (response.headers.get("link") or response.headers.get("Link")) is None

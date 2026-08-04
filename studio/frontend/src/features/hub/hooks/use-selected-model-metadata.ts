@@ -3,6 +3,8 @@
 
 import type { HfModelResult } from "@/features/hub/hooks/use-hub-model-search";
 import { cachedModelInfo } from "../lib/hf-cache";
+import { createModelInfoFetch } from "../lib/hub-transport";
+import "../lib/hub-endpoint";
 import { useEffect, useState } from "react";
 import { toHfModelResult } from "../lib/view-models";
 
@@ -38,6 +40,9 @@ export function useSelectedModelMetadata(
 
     cachedModelInfo({
       name: repoId,
+      // Mirror-aware: without it a deep-linked repo sends its id and the user's
+      // token to the public Hub even when HF_ENDPOINT points elsewhere.
+      fetch: createModelInfoFetch(),
       ...(accessToken ? { accessToken } : {}),
     })
       .then((result) => {

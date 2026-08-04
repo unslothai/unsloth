@@ -386,3 +386,24 @@ test("without a mirror, model-info stays on the direct route", async () => {
   assert.equal(direct, 1);
   assert.equal(backend.calls.length, 0);
 });
+
+test("the shared model-info fetch honours a configured mirror", async () => {
+  const backend = captureBackend();
+  const transport = createHubTransport("models", {
+    direct: async () => {
+      throw new Error("a mirror user's model-info must not hit the public Hub");
+    },
+    backend: backend.backend,
+    proxyFirst: () => true,
+  });
+  // Same path shape useSelectedModelMetadata produces for a deep-linked repo.
+  await transport(
+    "https://huggingface.co/api/models/unsloth/gemma-3-4b-it/revision/HEAD",
+    {},
+  );
+  assert.equal(backend.calls.length, 1);
+  assert.ok(
+    backend.calls[0].url.startsWith("/api/hub/discovery-info/models"),
+    backend.calls[0].url,
+  );
+});
