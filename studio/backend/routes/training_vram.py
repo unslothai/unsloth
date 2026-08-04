@@ -95,15 +95,29 @@ def summarize_resident_stt() -> Dict[str, Any]:
             model = ggml.loaded_model
             device = device or ggml.device
         loading = loading or ggml.is_loading()
-        return {
-            "model": model,
-            "device": device,
-            "loading": loading,
-            "any": bool(model or loading),
-        }
     except Exception as e:
         logger.warning("Could not inspect STT sidecar: %s", e)
         return {"model": None, "device": None, "loading": False, "any": False}
+
+    # Same reasoning for mtmd: its llama-server holds VRAM too, so admission has
+    # to see it. Its own boundary, so an mtmd import failure cannot discard what
+    # the other two engines just reported.
+    try:
+        from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+        mtmd = get_mtmd_stt_sidecar()
+        if not model:
+            model = mtmd.loaded_model
+            device = device or mtmd.device
+        loading = loading or mtmd.is_loading()
+    except Exception as e:
+        logger.warning("Could not inspect mtmd STT sidecar: %s", e)
+
+    return {
+        "model": model,
+        "device": device,
+        "loading": loading,
+        "any": bool(model or loading),
+    }
 
 
 def can_keep_chat_during_training(
@@ -468,6 +482,19 @@ def free_stt_model_for_training(reason: str) -> List[str]:
                 freed.append(f"stt:{ggml_model}")
     except Exception as e:
         logger.warning("Could not unload GGUF STT model: %s", e)
+
+    # The mtmd sidecar serves Qwen3-ASR through llama-server at -ngl 99, so it
+    # holds VRAM exactly like the other two and has to be freed as well.
+    try:
+        from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+        mtmd = get_mtmd_stt_sidecar()
+        mtmd_model = mtmd.loaded_model
+        if mtmd_model or mtmd.is_loading():
+            logger.info("Unloading mtmd STT model '%s' for training (%s)", mtmd_model, reason)
+            mtmd.unload()
+            freed.append(f"stt:{mtmd_model or 'mtmd-loading'}")
+    except Exception as e:
+        logger.warning("Could not unload mtmd STT model: %s", e)
 
     return freed
 

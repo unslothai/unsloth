@@ -225,9 +225,17 @@ def _active_hf_hub_cache() -> Path:
     hf_home = (os.environ.get("HF_HOME") or "").strip()
     if hf_home:
         return Path(hf_home).expanduser() / "hub"
-    from huggingface_hub.constants import HF_HUB_CACHE
+    # The download workers spawn with get_hf_cache_paths(), which also honours a
+    # cache location set in Studio. Read the same source, or a relocated cache
+    # is written by the worker and looked for here in the old place.
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
 
-    return Path(HF_HUB_CACHE)
+        return Path(get_hf_cache_paths().hub_cache)
+    except Exception:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        return Path(HF_HUB_CACHE)
 
 
 def _repo_cache_dir(repo: str) -> Path:

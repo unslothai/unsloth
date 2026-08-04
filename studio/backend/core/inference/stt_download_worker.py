@@ -38,27 +38,36 @@ def spawn_download(args: Sequence[str], hf_token: Optional[str] = None) -> subpr
     # Parallel Range chunks leave sparse partials a resumed sequential writer
     # cannot reuse, which defeats the point of cancelling.
     env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-    env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0" if hf_token else "1"
-    for token_key in (
-        "HF_TOKEN",
-        "HF_HUB_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-        "HUGGINGFACE_HUB_TOKEN",
-        "HUGGINGFACEHUB_API_TOKEN",
-    ):
-        env.pop(token_key, None)
+    # Replace the inherited credentials only when the caller supplied one. With
+    # no token, leave the ambient login alone: the parent plans the download
+    # with it, so scrubbing here would fail gated repos that used to work.
     if hf_token:
+        env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
+        for token_key in (
+            "HF_TOKEN",
+            "HF_HUB_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "HUGGINGFACE_HUB_TOKEN",
+            "HUGGINGFACEHUB_API_TOKEN",
+        ):
+            env.pop(token_key, None)
         env["HF_TOKEN"] = hf_token
     existing_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
-    return subprocess.Popen(
+    from utils.process_lifetime import adopt_pid, child_popen_kwargs
+
+    process = subprocess.Popen(
         [sys.executable, "-m", "core.inference.stt_download_worker", *args],
         env = env,
         cwd = str(cwd),
         stdout = subprocess.DEVNULL,
         stderr = subprocess.PIPE,
-        start_new_session = sys.platform != "win32",
+        # Die with Studio: a detached worker would keep pulling gigabytes after
+        # the app closed, with nothing left able to stop it.
+        **child_popen_kwargs(),
     )
+    adopt_pid(process.pid)  # terminate_all backstop for graceful exits
+    return process
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -77,6 +86,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         hf_hub_download(
             repo_id = args.repo_id,
             filename = args.filename,
+            revision = args.revision,
             token = token,
         )
         return 0

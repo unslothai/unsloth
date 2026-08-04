@@ -8250,7 +8250,9 @@ async def stt_download_cancel(
     engine = _resolve_serving_stt_engine(payload.engine if payload else None)
     module = _stt_download_module(engine)
     cancelled = await asyncio.to_thread(module.cancel_model_download)
-    return JSONResponse(content = {"cancelled": cancelled, **module.download_status()})
+    # This request's result last: download_status() carries its own historical
+    # "cancelled", which would otherwise report a no-op as a cancellation.
+    return JSONResponse(content = {**module.download_status(), "cancelled": cancelled})
 
 
 @studio_router.post("/audio/stt/load")

@@ -27,6 +27,8 @@ from typing import Optional
 
 from loggers import get_logger
 
+from utils.process_lifetime import adopt_pid, child_popen_kwargs
+
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
 from core.inference.stt_sidecar import (
     STT_KEEP_ALIVE_SECONDS,
@@ -102,6 +104,13 @@ def is_available() -> bool:
     return find_llama_server_binary() is not None
 
 
+def _llama_server_child_env(binary: str) -> dict:
+    """The chat backend's llama-server environment, for the same binary."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    return LlamaCppBackend._llama_server_env_for_binary(binary)
+
+
 def ensure_engine_available() -> str:
     binary = find_llama_server_binary()
     if not binary:
@@ -110,6 +119,17 @@ def ensure_engine_available() -> str:
             "Run `unsloth studio update` to install it."
         )
     return binary
+
+
+def _cached_main_revision(repo: str) -> Optional[str]:
+    """The commit `main` currently points at in the cache, if it is recorded."""
+    from core.inference.stt_sidecar import _repo_cache_dir
+
+    try:
+        revision = (_repo_cache_dir(repo) / "refs" / "main").read_text("utf-8").strip()
+    except OSError:
+        return None
+    return revision or None
 
 
 def _cached_file(model_id: str, filename: str) -> Optional[str]:
@@ -232,10 +252,16 @@ class _MtmdDownloadState:
             from core.inference.stt_download_worker import spawn_download
 
             # One worker per file. Both are required, so a cancel between them
-            # leaves the model not downloaded.
+            # leaves the model not downloaded. The first resolves "main" and the
+            # second is pinned to whatever it landed on, so a repo update
+            # mid-download cannot mix two commits. The first stays unpinned
+            # because hf_hub_download only writes refs/main for a named
+            # revision, and _cached_file() resolves through that ref.
+            revision: Optional[str] = None
             for filename in (spec.model_file, spec.mmproj_file):
                 process = spawn_download(
-                    ["--repo-id", spec.repo, "--filename", filename],
+                    ["--repo-id", spec.repo, "--filename", filename]
+                    + (["--revision", revision] if revision else []),
                     hf_token = hf_token or None,
                 )
                 with self._lock:
@@ -244,6 +270,7 @@ class _MtmdDownloadState:
                     self._process = process
                 _, stderr = process.communicate()
                 if process.returncode == 0:
+                    revision = revision or _cached_main_revision(spec.repo)
                     continue
                 with self._lock:
                     if self._cancelled or process.returncode < 0:
@@ -280,6 +307,8 @@ class MtmdSttSidecar:
 
     def __init__(self, keep_alive_seconds: float = STT_KEEP_ALIVE_SECONDS) -> None:
         self._lock = threading.RLock()
+        # Held across a whole startup; _lock is released while llama-server boots.
+        self._start_lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._model_id: Optional[str] = None
@@ -370,6 +399,12 @@ class MtmdSttSidecar:
     def load(self, model: Optional[str] = None) -> None:
         model_id = resolve_mtmd_model_id(model)
         binary = ensure_engine_available()
+        # Startup happens outside _lock (it is slow), so this keeps two callers
+        # from each spawning a server and orphaning the first.
+        with self._start_lock:
+            self._load_locked(model_id, binary)
+
+    def _load_locked(self, model_id: str, binary: str) -> None:
         with self._lock:
             if self._process_alive() and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
@@ -397,7 +432,20 @@ class MtmdSttSidecar:
                 "99",
             ]
             sock.close()
-            process = subprocess.Popen(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.PIPE)
+            process = subprocess.Popen(
+                cmd,
+                # Nothing reads these, and an undrained pipe blocks llama-server
+                # mid-startup once its logs fill the buffer.
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                stdin = subprocess.DEVNULL,
+                # Bundled libs and pip CUDA runtimes on the loader path, secrets
+                # scrubbed, as the chat backend spawns the same binary.
+                env = _llama_server_child_env(binary),
+                # Die with Studio, so a crash never orphans a server on the GPU.
+                **child_popen_kwargs(),
+            )
+            adopt_pid(process.pid)  # terminate_all backstop for graceful exits
             if not self._wait_for_server(process, port):
                 try:
                     process.terminate()

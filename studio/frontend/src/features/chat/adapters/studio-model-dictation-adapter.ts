@@ -388,9 +388,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       reportedTranscriptionError = true;
       console.error("STT transcription error:", error);
       // An undownloaded model is the ordinary first-run state, not a failure.
-      // Point at the download; never start it here.
+      // Point at the download; never start it here. Recording has already begun
+      // by this point, so end it: nothing spoken now could be transcribed.
       if (error instanceof SttModelNotDownloadedError) {
         requestSttDownload(sessionModel);
+        finishSession("cancelled");
         return;
       }
       const message =
