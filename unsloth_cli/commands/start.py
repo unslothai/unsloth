@@ -1521,6 +1521,7 @@ def _resolve_model(
     key: str,
     requested: Optional[str],
     load: LoadOptions = LoadOptions(),
+    preload_check = None,
 ) -> dict:
     models = _loaded_models(base, key)
     load_requested = False
@@ -1558,6 +1559,12 @@ def _resolve_model(
     )
     if requested and match is None:
         load_requested = True
+        # Only here is an evicting load certain. A pre-load gate must not reject
+        # a request the resident model already satisfies (e.g. a path-loaded
+        # GGUF advertised as a bare basename that collides with a non-GGUF
+        # unsloth/<name>).
+        if preload_check is not None:
+            preload_check(base, key, requested)
         active = next((m for m in models if m.get("loaded") is not False), None)
         active_id = active.get("id") if active else None
         if active_id and not _model_id_matches(
@@ -2895,13 +2902,18 @@ def _connect(
     )
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
-        # An auto-started server already loaded its model; only an attach can
-        # still trigger an evicting load, so the pre-load check runs there.
-        if preload_check is not None and server is None:
-            preload_check(base, key, model)
         # A server we just started has exactly the requested model loaded, so resolve to
         # whatever it is serving instead of re-matching the raw --model string.
-        entry = _resolve_model(base, key, None if server is not None else model, load)
+        # An auto-started server already loaded its model; only an attach can
+        # still trigger an evicting load, so the pre-load check is handed to
+        # _resolve_model, which runs it only when that load is imminent.
+        entry = _resolve_model(
+            base,
+            key,
+            None if server is not None else model,
+            load,
+            preload_check = None if server is not None else preload_check,
+        )
     except BaseException:
         _shutdown_auto_served()
         raise

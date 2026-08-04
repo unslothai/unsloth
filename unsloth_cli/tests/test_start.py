@@ -5993,6 +5993,34 @@ def test_codex_attach_rejects_before_load(fake_studio, monkeypatch):
     assert "Codex needs a GGUF model" in result.output
 
 
+def test_codex_attach_reuses_resident_model_without_preload_probe(fake_studio, monkeypatch):
+    # When the resident model already answers --model no load happens, so the
+    # pre-load gate must not run: a canonical empty listing would reject a
+    # session that works.
+    inner = start._http_json
+    probes = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/gguf-variants" in url:
+            probes.append(url)
+            return {"variants": []}
+        if url.endswith("/api/inference/load"):
+            pytest.fail("the resident model already matches; no load is needed")
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(start.start_app, ["codex", "--model", MODEL["id"], "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert probes == []
+
+
 @pytest.mark.parametrize("endpoint", ["", "huggingface.co", "not a url"])
 def test_hub_gguf_files_unknown_on_malformed_endpoint(monkeypatch, endpoint):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
