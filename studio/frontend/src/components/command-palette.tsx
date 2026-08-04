@@ -26,8 +26,10 @@ import { useCommandPaletteStore } from "@/stores/command-palette";
 import {
   ChefHatIcon,
   DashboardCircleIcon,
+  FlimSlateIcon,
   DownloadSquare01Icon,
   Folder01Icon,
+  Image03Icon,
   Message01Icon,
   PencilEdit02Icon,
   Search01Icon,
@@ -59,8 +61,10 @@ const SETTINGS_TAB_ENTRIES: {
   { id: "resources", labelKey: "settings.tabs.resources", keywords: ["resources", "hardware", "storage"] },
   { id: "chat", labelKey: "settings.tabs.chat", keywords: ["archived"] },
   { id: "connections", labelKey: "settings.tabs.connections", keywords: ["providers"] },
+  { id: "data", labelKey: "settings.tabs.data", keywords: ["archived", "import", "export"] },
   { id: "api-keys", labelKey: "settings.tabs.apiKeys", keywords: ["api keys"] },
   { id: "voice", labelKey: "settings.tabs.voice", keywords: ["dictation", "microphone", "read aloud"] },
+  { id: "agents", labelKey: "settings.tabs.agents", keywords: ["agent", "subagent", "codex", "claude"] },
   { id: "about", labelKey: "settings.tabs.about", keywords: ["help", "version", "updates"] },
 ];
 
@@ -150,6 +154,23 @@ function PaletteContent() {
             <HugeiconsIcon icon={DashboardCircleIcon} strokeWidth={1.75} />
             <span>{t("shell.navigation.hub")}</span>
           </CommandItem>
+          <CommandItem
+            onSelect={runAndClose(() => navigate({ to: "/images" }))}
+            keywords={["image", "generate"]}
+          >
+            <HugeiconsIcon icon={Image03Icon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.images")}</span>
+          </CommandItem>
+          {/* Video is diffusers-only, so chat-only hosts omit it, like the sidebar disables it. */}
+          {!chatOnly && (
+            <CommandItem
+              onSelect={runAndClose(() => navigate({ to: "/video" }))}
+              keywords={["video", "generate"]}
+            >
+              <HugeiconsIcon icon={FlimSlateIcon} strokeWidth={1.75} />
+              <span>{t("shell.navigation.video")}</span>
+            </CommandItem>
+          )}
           {/* chat-only guard redirects /studio; omit rather than dead-end */}
           {!chatOnly && (
             <CommandItem
