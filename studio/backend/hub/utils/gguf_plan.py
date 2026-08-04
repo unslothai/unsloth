@@ -73,7 +73,9 @@ def is_companion_gguf_path(path: str, drafters: Optional[Collection[str]] = None
 
 
 def is_main_gguf_variant_path(
-    path: str, variant: str, drafters: Optional[Collection[str]] = None
+    path: str,
+    variant: str,
+    drafters: Optional[Collection[str]] = None,
 ) -> bool:
     return (
         is_gguf_filename(path)
