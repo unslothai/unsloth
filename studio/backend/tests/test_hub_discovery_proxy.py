@@ -472,8 +472,6 @@ class TestHealthHubEndpoint:
                 seen["timeout"] = kw.get("timeout")
                 return _Resp()
 
-        monkeypatch.setattr(
-            "huggingface_hub.utils.get_session", lambda: _Session()
-        )
+        monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: _Session())
         discovery._fetch_upstream("https://huggingface.co/api/models", None)
         assert seen["timeout"] <= discovery._REQUEST_TIMEOUT_SECONDS / 2
