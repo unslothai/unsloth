@@ -144,12 +144,24 @@ if command -v python3 >/dev/null 2>&1; then
     mkdir -p "$WORK/fakemod"
     printf 'import ctypes\nctypes.CDLL(None).sleep(60)\n' > "$WORK/fakemod/torch.py"
     _fast_probe=$(printf '%s' "$_probe" | sed 's/signal\.alarm([0-9]*)/signal.alarm(2)/')
+    # Bounded WITHOUT GNU timeout: macOS ships none (Homebrew coreutils names it gtimeout), and
+    # a missing one exits 127 the instant it is called -- which reads as "the probe was killed"
+    # and passed both checks below on every macOS run without python ever starting. Own
+    # watchdog, so this asserts the same thing on every platform.
     _t0=$(date +%s)
-    ( cd "$WORK/fakemod" && PYTHONPATH="$WORK/fakemod" timeout 30 python3 -c "$_fast_probe" ) >/dev/null 2>&1
-    _rc=$?
+    ( cd "$WORK/fakemod" && PYTHONPATH="$WORK/fakemod" python3 -c "$_fast_probe" ) >/dev/null 2>&1 &
+    _probe_pid=$!
+    ( sleep 30; kill -9 "$_probe_pid" ) >/dev/null 2>&1 &
+    _watchdog_pid=$!
+    # Own stderr: the shell reports a job killed by a signal ("Alarm clock") on this line.
+    { wait "$_probe_pid"; _rc=$?; } 2>/dev/null
+    kill "$_watchdog_pid" >/dev/null 2>&1
     _elapsed=$(( $(date +%s) - _t0 ))
     check "a wedged driver is killed, not waited on" "$([ "$_rc" -ne 0 ] && echo yes || echo no)" "yes"
-    check "killed at the deadline, not after"        "$([ "$_elapsed" -lt 10 ] && echo yes || echo no)" "yes"
+    # Lower bound as well as upper: the alarm is 2s, so a run that returns instantly did not
+    # execute the probe at all, which is exactly how the missing-timeout case looked.
+    check "killed at the deadline, not after" \
+        "$([ "$_elapsed" -ge 1 ] && [ "$_elapsed" -lt 10 ] && echo yes || echo no)" "yes"
 fi
 
 # The fast path skips install_python_stack when the package version is current, and that pass
