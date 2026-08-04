@@ -3133,12 +3133,32 @@ def _monitor_openai_sse_event(
     # keep-warm middleware claiming the slot on a failed stream.
     status = None
     for line in event.decode("utf-8", errors = "ignore").splitlines():
-        result = _monitor_openai_sse_line(monitor_id, line.strip(), context_length)
+        stripped = line.strip()
+        result = _monitor_openai_sse_line(monitor_id, stripped, context_length)
+        if result is None and not monitor_id:
+            # Monitoring off returns early above; the relay still needs the
+            # error/done verdict or a failed stream claims the preview slot.
+            result = _sse_line_stream_status(stripped)
         if result == "error":
             status = "error"
         elif result == "done" and status is None:
             status = "done"
     return status
+
+
+def _sse_line_stream_status(raw_line: str) -> Optional[str]:
+    if not raw_line.startswith("data:"):
+        return None
+    data_str = raw_line[5:].lstrip()
+    if data_str == "[DONE]":
+        return "done"
+    try:
+        data = json.loads(data_str)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict) and _monitor_openai_error_message(data):
+        return "error"
+    return None
 
 
 def _monitor_anthropic_usage(

@@ -2048,3 +2048,13 @@ def test_successful_preview_request_refreshes_idle_timer(slot_state):
     _run_middleware(_ok, "/p/demo/v1/chat/completions")
     assert llama_keepwarm._last_active > 0.0  # _note_end stamped activity
     _reset_keepwarm_counters()
+
+
+def test_sse_event_reports_errors_with_monitoring_disabled():
+    # api_monitor.start() returns an empty id when monitoring is off; the relay
+    # still needs the error verdict or a failed stream claims the preview slot.
+    from routes import inference as inf
+
+    assert inf._monitor_openai_sse_event(None, b'data: {"error": {"message": "boom"}}\n\n') == "error"
+    assert inf._monitor_openai_sse_event("", b"data: [DONE]\n\n") == "done"
+    assert inf._monitor_openai_sse_event(None, b'data: {"choices": []}\n\n') is None
