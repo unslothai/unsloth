@@ -186,11 +186,11 @@ function ModelSelectorTrigger({
             "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
           // More left padding than right; the chevron is pulled close to the
           // label (below) so the trigger reads balanced around the text.
-          size === "sm" &&
-            "h-[calc(2rem*var(--ui-font-scale,1))] pl-3 pr-1.5 text-xs",
-          size === "default" && "h-(--picker-control-h) pl-4 pr-2 text-sm",
-          size === "lg" &&
-            "h-[calc(2.5rem*var(--ui-font-scale,1))] pl-4.5 pr-2.5 text-sm",
+          // Height stays pinned: both call sites force the chat header's own
+          // --studio-chat-control-height, which its fixed header cannot grow.
+          size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
+          size === "default" && "h-9 pl-4 pr-2 text-sm",
+          size === "lg" && "h-10 pl-4.5 pr-2.5 text-sm",
           className,
         )}
       >
@@ -521,11 +521,11 @@ function ModelSelectorContent({
               "pt-4 pb-0 pl-4",
               // Sized so the left-packed row keeps uniform gaps and the last
               // dropdown's right gap matches the pill's left gap (pl-4 vs pr-4).
-              // Chrome that never moves plus the labels that scale, so the
-              // tuned single-line row does not wrap once text grows.
+              // Widths track the controls they hold, so the tuned single-line
+              // row does not wrap once text and icons grow.
               hasExternal
-                ? "w-[min(calc(323px+291px*var(--ui-font-scale,1)),calc(100vw-1rem))] pr-4"
-                : "w-[min(calc(260px+246px*var(--ui-font-scale,1)),calc(100vw-1rem))] pr-2",
+                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
+                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
             ),
         className,
       )}

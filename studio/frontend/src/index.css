@@ -305,12 +305,20 @@
 	   18px), so icons read slightly smaller than enlarged text. */
 	--ui-icon-size: min(calc(1rem * var(--ui-font-scale, 1)), calc(0.5rem + 0.5rem * var(--ui-font-scale, 1)));
 	--icon-size: var(--ui-icon-size);
-	/* Model picker header controls. Padding, gaps and icons come from the
-	   pinned --spacing, so only the label's share scales; scaling the whole
-	   box starves the label (64px of the 110px trigger is chrome). Both match
-	   the h-9 / w-[110px] they replace at the 16px default. */
+	/* Mirrors the size-3.5 rule applied inside popovers (see the icon block
+	   below), so widths that reserve room for those icons track them. */
+	--ui-icon-size-sm: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1)));
+	/* Model picker header controls. Padding and gaps come from the pinned
+	   --spacing, the icons and label both scale, so reserve each separately.
+	   The trigger is 2.25rem of padding and gaps, two icons, then the label.
+	   All match the h-9 / w-[110px] / 506px they replace at the 16px default. */
 	--picker-control-h: calc(1.125rem + 1.125rem * var(--ui-font-scale, 1));
-	--picker-control-w: calc(4rem + 2.875rem * var(--ui-font-scale, 1));
+	--picker-control-w: calc(2.25rem + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
+	/* Panel: pl-4, two gaps and pr-2, the pills' padding, their two icons and
+	   label, then the two dropdowns. */
+	--picker-panel-w: calc(6.25rem + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
+	/* Provider row adds one more control; split like the rest. */
+	--picker-panel-w-external: calc(var(--picker-panel-w) + 4rem + 2.75rem * var(--ui-font-scale, 1));
 	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
 	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
 	   chat-message action bar so the leftmost icon's visual edge aligns
