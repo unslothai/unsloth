@@ -54,7 +54,7 @@ export const hi = {
       train: "ट्रेनिंग",
       recipes: "रेसिपी",
       export: "एक्सपोर्ट",
-      recents: "हाल की चैट",
+      recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
       settings: "सेटिंग्स",
       api: "API",
@@ -957,7 +957,7 @@ export const hi = {
       osWindows: "Windows",
       secureHttps: "सुरक्षित HTTPS",
       secureHttpsHint:
-        "0.0.0.0 वाला पोर्ट अब भी सभी नेटवर्क इंटरफ़ेस से पहुँचा जा सकता है। पूरी सुरक्षा के लिए Unsloth को --secure के साथ शुरू करें, ताकि केवल यह HTTPS लिंक उपलब्ध हो।",
+        "0.0.0.0 वाला पोर्ट अब भी विश्व स्तर पर पहुँचा जा सकता है। पूरी सुरक्षा के लिए Unsloth को --secure के साथ शुरू करें, ताकि केवल यह HTTPS लिंक उपलब्ध हो।",
       copyTunnelUrl: "टनल URL कॉपी करें",
       copySnippet: "स्निपेट कॉपी करें",
       copy: "कॉपी करें",
