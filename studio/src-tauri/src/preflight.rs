@@ -14,7 +14,8 @@ use std::path::PathBuf;
 use types::{BackendProbe, ManagedProbe};
 pub use types::{DesktopPreflightDisposition, DesktopPreflightResult, ExternalBackendConflict};
 pub(crate) use version::{
-    backend_version_stale_reason, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION,
+    DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 
 #[cfg(test)]
@@ -193,6 +194,9 @@ pub async fn desktop_preflight_result_with_state(
 
     if let Some(snapshot) = crate::process::owned_backend_snapshot(state)? {
         let Some(owner) = snapshot.owner.clone() else {
+            // TAURI_PORT is emitted only after uvicorn lifespan completes; keep
+            // this ownerless path on full health so auth/bootstrap are ready.
+
             let probe = match snapshot.port {
                 Some(port) => backend::probe_ownerless_spawned_backend(port).await,
                 None => backend,
@@ -495,8 +499,70 @@ mod tests {
     }
 
     #[cfg(unix)]
+    static MANAGED_CAPABILITY_CACHE_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    #[cfg(unix)]
+    struct ManagedCapabilityCacheHome {
+        path: PathBuf,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    #[cfg(unix)]
+    impl ManagedCapabilityCacheHome {
+        fn new(test_name: &str) -> Self {
+            use std::time::{SystemTime, UNIX_EPOCH};
+
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "unsloth-preflight-cache-{test_name}-{}-{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            let previous = std::env::var_os("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME");
+            std::env::set_var("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME", &path);
+            Self { path, previous }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ManagedCapabilityCacheHome {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME", previous);
+            } else {
+                std::env::remove_var("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME");
+            }
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[cfg(unix)]
+    fn managed_capability_cache_path_for_test() -> PathBuf {
+        std::env::var_os("UNSLOTH_TEST_DESKTOP_CAPABILITY_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(dirs::home_dir)
+            .unwrap()
+            .join(".unsloth")
+            .join("studio")
+            .join("desktop_capability_cache.json")
+    }
+
+    #[cfg(unix)]
+    fn remove_managed_capability_cache() {
+        let _ = std::fs::remove_file(managed_capability_cache_path_for_test());
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn managed_cli_capability_probe_classifies_core_cases() {
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("core-cases");
+        remove_managed_capability_cache();
+
         for (name, script, stale_reason) in [
             (
                 "cap-missing",
@@ -512,7 +578,7 @@ exit 1
                 r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
-  printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"version":"2026.5.3"}'
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.5.3"}'
   exit 0
 fi
 exit 1
@@ -524,7 +590,7 @@ exit 1
                 r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
-  printf '{"desktop_protocol_version":1,"desktop_manageability_version":1,"supports_api_only":true,"supports_provision_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","version":"2026.5.3"}'
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_install_ok":true,"version":"2026.5.3"}'
   exit 0
 fi
 if [ "$1" = "studio" ] && [ "$2" = "provision-desktop-auth" ] && [ "$3" = "--help" ]; then exit 0; fi
@@ -549,6 +615,75 @@ exit 1
                 (probe, expected) => panic!("unexpected probe {probe:?}, expected {expected:?}"),
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_cli_capability_help_probe_runs_before_cache() {
+        use std::fs;
+
+        let _cache_guard = MANAGED_CAPABILITY_CACHE_TEST_LOCK.lock().await;
+        let _cache_home = ManagedCapabilityCacheHome::new("cache-hit");
+
+        remove_managed_capability_cache();
+        // `-h` always succeeds unless `modeh` exists; the desktop-capabilities
+        // probe always succeeds unless `modecap` exists. Toggling those lets us
+        // prove the ordering: -h runs on every probe (even a cache hit), while
+        // the heavier capability probe is skipped once the cache is warm.
+        let fake = fake_cli(
+            "cap-cache-hit",
+            r#"#!/bin/sh
+log="$0.calls"
+modeh="$0.modeh"
+modecap="$0.modecap"
+printf '%s\n' "$*" >> "$log"
+if [ "$1" = "-h" ]; then
+  if [ -f "$modeh" ]; then exit 42; fi
+  exit 0
+fi
+if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
+  if [ -f "$modecap" ]; then exit 42; fi
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.5.3"}'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let bin = fake.bin.clone();
+        let calls = bin.with_extension("calls");
+        let modeh = bin.with_extension("modeh");
+        let modecap = bin.with_extension("modecap");
+
+        // Cold probe: runs -h and the capability probe, then caches the result.
+        assert!(matches!(
+            probe_managed_bin(bin.clone()).await,
+            ManagedProbe::Ready { .. }
+        ));
+        let first_calls = fs::read_to_string(&calls).unwrap();
+        assert!(first_calls.contains("-h"));
+        assert!(first_calls.contains("studio desktop-capabilities --json"));
+
+        // Cache hit: -h still runs, but the capability probe is skipped (breaking
+        // it via `modecap` proves it is not invoked).
+        fs::write(&modecap, "broken").unwrap();
+        fs::write(&calls, "").unwrap();
+        assert!(matches!(
+            probe_managed_bin(bin.clone()).await,
+            ManagedProbe::Ready { .. }
+        ));
+        assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
+
+        // A non-launchable CLI is caught by the -h probe even with a warm cache:
+        // preflight reports Stale (for repair) and never trusts the cache.
+        fs::write(&modeh, "broken").unwrap();
+        fs::write(&calls, "").unwrap();
+        assert!(matches!(
+            probe_managed_bin(bin).await,
+            ManagedProbe::Stale { .. }
+        ));
+        assert_eq!(fs::read_to_string(&calls).unwrap(), "-h\n");
+
+        remove_managed_capability_cache();
     }
 
     const EXPECTED_ROOT_ID: &str =
@@ -578,7 +713,7 @@ exit 1
     fn desktop_ready_health_with_owner(root_id: &str, include_owner: bool) -> String {
         let owner = desktop_owner_json(include_owner);
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{root_id}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{root_id}"{owner}}}"#
         )
     }
 
@@ -617,7 +752,7 @@ exit 1
     ) -> BackendProbe {
         install_test_owner();
         let port = backend_server(health_body, route_status).await;
-        let client = reqwest::Client::new();
+        let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
         let health = backend_health(&client, port).await.unwrap();
         backend_desktop_auth_status(&client, port, &health, Some(EXPECTED_ROOT_ID)).await
     }
@@ -629,7 +764,7 @@ exit 1
             "401 Unauthorized",
         )
         .await;
-        let client = reqwest::Client::new();
+        let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
 
         assert!(backend_health(&client, port).await.is_some());
     }
@@ -638,7 +773,7 @@ exit 1
     async fn backend_with_auth_support_but_missing_protocol_is_old() {
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -657,6 +792,41 @@ exit 1
     }
 
     #[tokio::test]
+    async fn legacy_manageability_same_root_backend_is_still_ready() {
+        // Same migration window as the owned-backend case: a server from the
+        // release before the CLI gained studio_install_ok reports manageability
+        // 1. That capability is CLI-side, so it must not turn a live,
+        // protocol-compatible backend into a conflict the user has to kill.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                desktop_owner_json(true)
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn backend_without_any_manageability_field_is_old() {
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                desktop_owner_json(true)
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::Old { reason, .. } if reason == "desktop_manageability_unsupported"
+        ));
+    }
+
+    #[tokio::test]
     async fn compatible_same_root_without_desktop_owner_is_ready() {
         let probe = probe_test_backend(
             desktop_ready_health_with_owner(EXPECTED_ROOT_ID, false),
@@ -671,7 +841,7 @@ exit 1
     async fn stale_same_root_without_desktop_owner_is_external_conflict() {
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
             ),
             "401 Unauthorized",
         )
@@ -721,7 +891,7 @@ exit 1
     async fn backend_expected_root_id_missing_is_external_conflict_before_auth_probe() {
         install_test_owner();
         let port = backend_server(desktop_ready_health(EXPECTED_ROOT_ID), "401 Unauthorized").await;
-        let client = reqwest::Client::new();
+        let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
         let health = backend_health(&client, port).await.unwrap();
 
         assert!(matches!(
@@ -751,7 +921,7 @@ exit 1
     async fn backend_capability_false_is_old_even_when_route_401() {
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",

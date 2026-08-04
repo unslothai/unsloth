@@ -27,6 +27,9 @@ class GgufVariantDetail(BaseModel):
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
+    update_available: bool = Field(
+        False, description = "Whether a newer main GGUF blob is available on Hugging Face"
+    )
     partial: bool = Field(
         False,
         description = "Whether this variant has an in-progress (.incomplete) blob in cache",
@@ -96,6 +99,18 @@ class LocalModelInfo(BaseModel):
         None,
         description = "HF repo id for cached models, e.g. org/model",
     )
+    active_cache: Optional[bool] = Field(
+        None,
+        description = "Whether this HF entry belongs to the current download cache.",
+    )
+    task: Optional[str] = Field(
+        None,
+        description = (
+            "Inferred pipeline task. The task-scoped pickers filter On Device rows on it and the "
+            "chat picker routes a diffusion pick by it, so a row without one is dropped from "
+            "those lists."
+        ),
+    )
     base_model: Optional[str] = Field(
         None,
         description = "Base model from adapter_config.json when this is an adapter",
@@ -157,6 +172,7 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
     inventory_id: Optional[str] = None
@@ -165,10 +181,21 @@ class CachedRepoBase(BaseModel):
     runtime: ModelRuntime = "unknown"
     format_variant: Optional[str] = None
     capabilities: LocalModelCapabilities = Field(default_factory = LocalModelCapabilities)
+    # Inferred pipeline task ("text-to-image" / "text-to-video" / a chat task / None). The task-scoped pickers filter On
+    # Device rows on it and the chat picker routes a diffusion pick by it, so a row without one is dropped from those lists.
+    task: Optional[str] = None
 
 
 class CachedGgufRepo(CachedRepoBase):
     model_format: ModelFormat = "gguf"
+    has_variant_state: bool = Field(
+        False,
+        description = (
+            "Whether a download manifest or cancel marker exists for some quant. A sibling "
+            "cancelled before any file landed changes nothing else on this row, so callers "
+            "watching for on-disk change need this to notice it."
+        ),
+    )
 
 
 class CachedGgufResponse(BaseModel):
@@ -180,10 +207,19 @@ class CachedModelRepo(CachedRepoBase):
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
     tags: Optional[List[str]] = None
+    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint needing from_single_file
+    # + a filename. Pickers must not offer it as a pipeline load unless the catalog carries a curated artifact for it.
+    single_file: bool = False
 
 
 class CachedModelsResponse(BaseModel):
     cached: List[CachedModelRepo] = Field(default_factory = list)
+
+
+class HiddenModelsResponse(BaseModel):
+    needles: List[str] = Field(default_factory = list)
+    exact_ids: List[str] = Field(default_factory = list)
+    exact_paths: List[str] = Field(default_factory = list)
 
 
 class AddScanFolderRequest(BaseModel):

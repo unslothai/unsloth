@@ -78,6 +78,9 @@ function passwordValidationMessage(
       minLength: MIN_PASSWORD_LENGTH,
     });
   }
+  if (/\s/.test(nextPassword)) {
+    return t("settings.general.passwordDialog.newHasSpaces");
+  }
   if (nextPassword !== confirmPassword) {
     return t("settings.general.passwordDialog.mismatch");
   }
@@ -160,6 +163,7 @@ export function ChangePasswordDialog() {
 
   const currentTooShort = hasStartedTooShortPassword(current);
   const nextTooShort = hasStartedTooShortPassword(next);
+  const nextHasSpaces = /\s/.test(next);
   const mismatch = confirm.length > 0 && next !== confirm;
   const samePassword = hasReusablePassword(current, next);
   const validationMessage = passwordValidationMessage(
@@ -279,13 +283,15 @@ export function ChangePasswordDialog() {
                 minLength={MIN_PASSWORD_LENGTH}
                 disabled={submitting}
               />
-              {nextTooShort || samePassword ? (
+              {nextTooShort || nextHasSpaces || samePassword ? (
                 <p className="text-xs text-destructive" aria-live="polite">
                   {nextTooShort
                     ? t("settings.general.passwordDialog.newTooShort", {
                         minLength: MIN_PASSWORD_LENGTH,
                       })
-                    : t("settings.general.passwordDialog.samePassword")}
+                    : nextHasSpaces
+                      ? t("settings.general.passwordDialog.newHasSpaces")
+                      : t("settings.general.passwordDialog.samePassword")}
                 </p>
               ) : null}
             </div>

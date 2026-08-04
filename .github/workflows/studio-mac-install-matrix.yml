@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Proves Studio's llama.cpp install loads on every supported macOS. The heavy
+# Proves Unsloth's llama.cpp install loads on every supported macOS. The heavy
 # app smokes stay single-OS; this matrix covers the OS-version dimension cheaply
 # (install.sh + binary-load assert). Regression guard for the macOS-version
 # selection in studio/install_llama_prebuilt.py.
@@ -60,7 +60,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.

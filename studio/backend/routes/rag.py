@@ -19,7 +19,7 @@ import secrets
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -47,12 +47,18 @@ _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 def _sanitize_filename(name: str) -> str:
     base = os.path.basename(name or "").strip() or "document"
     base = _SAFE.sub("_", base)
-    return base[:200]
+    if len(base) <= 200:
+        return base
+    # Trim the stem, not the extension: _save_upload gates on the extension, so
+    # a plain truncation would reject a long-named .txt as "unsupported".
+    stem, ext = os.path.splitext(base)
+    if not ext or len(ext) > 32:
+        return base[:200]
+    return stem[: 200 - len(ext)] + ext
 
 
-def _save_upload(file: UploadFile) -> tuple[str, str]:
-    """Persist an upload; returns (stored_path, filename)."""
-    filename = _sanitize_filename(file.filename or "document")
+def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple[str, str]:
+    """Copy a validated document stream into the managed uploads root."""
     ext = os.path.splitext(filename)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise HTTPException(
@@ -62,17 +68,81 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
     uploads = ensure_dir(rag_uploads_root())
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
     size = 0
-    with open(stored_path, "wb") as out:
-        while True:
-            block = file.file.read(1 << 20)
-            if not block:
-                break
-            size += len(block)
-            out.write(block)
+    cap = config.MAX_UPLOAD_BYTES
+    try:
+        with open(stored_path, "wb") as out:
+            while True:
+                block = source.read(1 << 20)
+                if not block:
+                    break
+                size += len(block)
+                if cap and size > cap:
+                    break
+                out.write(block)
+    except OSError:
+        _remove_stored_upload(stored_path)
+        raise
+    if cap and size > cap:
+        _remove_stored_upload(stored_path)
+        raise HTTPException(
+            status_code = 413,
+            detail = f"File exceeds the {cap // (1024 * 1024)} MB upload limit.",
+        )
     if size == 0:
-        os.remove(stored_path)
-        raise HTTPException(status_code = 400, detail = "Uploaded file is empty.")
+        _remove_stored_upload(stored_path)
+        raise HTTPException(status_code = 400, detail = empty_detail)
     return stored_path, filename
+
+
+def _save_upload(file: UploadFile) -> tuple[str, str]:
+    """Persist a browser upload; returns (stored_path, filename)."""
+    filename = _sanitize_filename(file.filename or "document")
+    return _persist_upload_stream(
+        file.file,
+        filename,
+        empty_detail = "Uploaded file is empty.",
+    )
+
+
+def _save_native_path_upload(lease: str) -> tuple[str, str]:
+    """Persist a desktop drop; returns (stored_path, filename).
+
+    The webview never gets to name a path directly: Rust signs the path it saw and we
+    re-verify + re-stat that grant here before reading a byte.
+    """
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+
+    try:
+        grant = verify_native_path_lease(
+            lease,
+            operation = "attach",
+            expected_kind = "attachment",
+            expected_path_type = "file",
+            allowed_suffixes = sorted(config.UPLOAD_EXTS),
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+    filename = _sanitize_filename(grant.canonical_path.name)
+    try:
+        with open(grant.canonical_path, "rb") as source:
+            return _persist_upload_stream(
+                source,
+                filename,
+                empty_detail = "Dropped file is empty.",
+            )
+    except OSError as exc:
+        raise HTTPException(status_code = 400, detail = "Dropped file could not be read.") from exc
+
+
+def _resolve_document_upload(
+    file: UploadFile | None, native_path_lease: str | None
+) -> tuple[str, str]:
+    if native_path_lease:
+        return _save_native_path_upload(native_path_lease)
+    if file is None:
+        raise HTTPException(status_code = 400, detail = "No file was provided.")
+    return _save_upload(file)
 
 
 def _remove_stored_upload(stored_path: str | None) -> None:
@@ -156,7 +226,7 @@ def create_knowledge_base(
             conn,
             name = payload.name.strip(),
             description = (payload.description or None),
-            embedding_model = config.EMBEDDING_MODEL,
+            embedding_model = config.effective_embedding_model(),
         )
         return {"id": kb_id, "name": payload.name.strip()}
     finally:
@@ -206,7 +276,10 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
 @router.post("/knowledge-bases/{kb_id}/documents")
 async def upload_kb_document(
     kb_id: str,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    ocr: bool | None = Form(None),
+    caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
@@ -216,9 +289,9 @@ async def upload_kb_document(
             raise HTTPException(status_code = 404, detail = "Knowledge base not found")
     finally:
         conn.close()
-    stored_path, filename = _save_upload(file)
+    stored_path, filename = _resolve_document_upload(file, native_path_lease)
     document_id, job_id = ingestion.start_ingestion(
-        store.kb_scope(kb_id), kb_id, None, filename, stored_path
+        store.kb_scope(kb_id), kb_id, None, filename, stored_path, ocr = ocr, caption = caption
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -237,13 +310,22 @@ def list_kb_documents(kb_id: str, subject: str = Depends(get_current_subject)) -
 @router.post("/threads/{thread_id}/documents")
 async def upload_thread_document(
     thread_id: str,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    ocr: bool | None = Form(None),
+    caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
-    stored_path, filename = _save_upload(file)
+    stored_path, filename = _resolve_document_upload(file, native_path_lease)
     document_id, job_id = ingestion.start_ingestion(
-        store.thread_scope(thread_id), None, thread_id, filename, stored_path
+        store.thread_scope(thread_id),
+        None,
+        thread_id,
+        filename,
+        stored_path,
+        ocr = ocr,
+        caption = caption,
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -262,7 +344,10 @@ def list_thread_documents(thread_id: str, subject: str = Depends(get_current_sub
 @router.post("/projects/{project_id}/documents")
 async def upload_project_document(
     project_id: str,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    ocr: bool | None = Form(None),
+    caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
@@ -270,7 +355,7 @@ async def upload_project_document(
 
     if get_chat_project(project_id) is None:
         raise HTTPException(status_code = 404, detail = "Project not found")
-    stored_path, filename = _save_upload(file)
+    stored_path, filename = _resolve_document_upload(file, native_path_lease)
     document_id, job_id = ingestion.start_ingestion(
         store.project_scope(project_id),
         None,
@@ -278,6 +363,8 @@ async def upload_project_document(
         filename,
         stored_path,
         project_id = project_id,
+        ocr = ocr,
+        caption = caption,
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -291,6 +378,39 @@ def list_project_documents(project_id: str, subject: str = Depends(get_current_s
         return {"documents": [_doc_view(d) for d in docs]}
     finally:
         conn.close()
+
+
+@router.get("/documents")
+def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> dict:
+    """Every uploaded file across chats, projects, and knowledge bases (settings
+    Data tab)."""
+    _require_rag()
+    conn = rag_db.get_connection()
+    try:
+        docs = store.list_all_documents(conn)
+        kb_names = {kb["id"]: kb["name"] for kb in store.list_kbs(conn)}
+    finally:
+        conn.close()
+
+    from storage.studio_db import list_chat_projects
+
+    project_names = {p["id"]: p["name"] for p in list_chat_projects(include_archived = True)}
+
+    out = []
+    for doc in docs:
+        view = _doc_view(doc)
+        stored_path = doc.get("stored_path")
+        size = None
+        if stored_path:
+            try:
+                size = os.path.getsize(stored_path)
+            except OSError:
+                size = None
+        view["sizeBytes"] = size
+        view["kbName"] = kb_names.get(doc.get("kb_id"))
+        view["projectName"] = project_names.get(doc.get("project_id"))
+        out.append(view)
+    return {"documents": out}
 
 
 @router.delete("/documents/{document_id}")
@@ -321,6 +441,7 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
         "stage": row.get("stage"),
         "progress": row.get("progress") or 0.0,
         "error": row.get("error"),
+        "numChunks": row.get("num_chunks") or 0,
     }
 
 
@@ -398,8 +519,10 @@ _CONTENT_TYPES = {
     ".txt": "text/plain; charset=utf-8",
     ".md": "text/markdown; charset=utf-8",
     ".markdown": "text/markdown; charset=utf-8",
-    ".html": "text/html; charset=utf-8",
-    ".htm": "text/html; charset=utf-8",
+    # Served as plain text, never text/html: an uploaded HTML document rendered
+    # same-origin would execute its scripts with access to the app's storage.
+    ".html": "text/plain; charset=utf-8",
+    ".htm": "text/plain; charset=utf-8",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
 

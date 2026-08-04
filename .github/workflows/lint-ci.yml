@@ -13,10 +13,10 @@
 #     committed YAML / JSON config.
 #
 # TypeScript and Rust are NOT duplicated here on purpose:
-#   - Studio Frontend CI runs `npm run typecheck` (= `tsc --noEmit`)
+#   - Unsloth Frontend CI runs `npm run typecheck` (= `tsc --noEmit`)
 #     and `npm run build` (vite/swc) on every studio/frontend/**
 #     change, which is a full TS AST + type check.
-#   - Studio Tauri CI runs `tauri build --debug --no-bundle` on
+#   - Unsloth Tauri CI runs `tauri build --debug --no-bundle` on
 #     every studio/src-tauri/** or studio/frontend/** change, which
 #     compiles the Rust crate (= cargo check + cargo build).
 # Each is a stricter check than a parse-only step would be, so a
@@ -105,26 +105,42 @@ jobs:
         # exactly where a hoist refactor lives, and it skips brand-new
         # files whose re-export imports would otherwise look "unused".
         #
-        # Diff against the true merge-base, not the base tip. A two-dot
-        # diff against the tip re-lints every file the base branch
-        # changed after the PR branched, comparing newer base code
-        # (BEFORE) against the PR's older snapshot (AFTER) - a
-        # time-reversed comparison that flags the base branch's own
-        # refactors as blockers on PRs that never touched those files.
-        # The compare API returns the merge-base without needing local
-        # history, and fetching that single commit by SHA keeps the
-        # shallow (fetch-depth: 1) clone.
+        # Diff the merge-base against the PR HEAD, and pin BOTH ends
+        # explicitly.
+        #
+        # The base tip is the wrong BEFORE: a two-dot diff against it
+        # re-lints every file the base branch changed after the PR
+        # branched, comparing newer base code (BEFORE) against the PR's
+        # older snapshot (AFTER) - a time-reversed comparison that flags
+        # the base branch's own refactors as blockers.
+        #
+        # `HEAD` is the wrong AFTER for the same reason. On a
+        # pull_request event the checkout is refs/pull/N/merge, i.e.
+        # merge(PR head, base tip), so `$MERGE_BASE..HEAD` still spans
+        # every base commit since the branch point and reintroduces the
+        # exact false positives the merge-base was chosen to avoid.
+        # Naming the PR head SHA makes the range the PR's own commits
+        # and nothing else.
+        #
+        # Both endpoints are fetched by SHA so the shallow
+        # (fetch-depth: 1) clone is preserved; the verifier reads each
+        # revision with `git show REF:path` and never needs a checkout.
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           MERGE_BASE=$(gh api \
             "repos/${{ github.repository }}/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
             --jq .merge_base_commit.sha)
+          # A fork PR's head is not on origin as a branch, but it is
+          # always reachable as refs/pull/N/head.
           git fetch --no-tags --depth=1 origin "$MERGE_BASE"
+          git fetch --no-tags --depth=1 origin \
+            "refs/pull/${{ github.event.pull_request.number }}/head"
           mapfile -t CHANGED < <(
             git diff --name-only --diff-filter=M \
-              "$MERGE_BASE" HEAD -- '*.py' \
+              "$MERGE_BASE" "$HEAD_SHA" -- '*.py' \
               | grep -vE '(^|/)(unsloth_compiled_cache|node_modules|build|dist)/' || true
           )
           if [ "${#CHANGED[@]}" -eq 0 ]; then
@@ -132,10 +148,11 @@ jobs:
             exit 0
           fi
           printf 'merge base: %s\n' "$MERGE_BASE"
+          printf 'pr head:    %s\n' "$HEAD_SHA"
           printf 'checking %d file(s):\n' "${#CHANGED[@]}"
           printf '  %s\n' "${CHANGED[@]}"
           python scripts/verify_import_hoist.py \
-            --before "$MERGE_BASE" --after HEAD "${CHANGED[@]}"
+            --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
 
       - name: No leftover debugger / pdb / breakpoint calls
         # Catches the "I'll just stick a breakpoint() here" mistake

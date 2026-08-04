@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, Sequence, TYPE_CHECKING
 
 from fastapi import HTTPException
 from loggers import get_logger
@@ -21,6 +21,7 @@ from hub.utils import download_registry
 from hub.utils import download_manifest
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_cache_state import has_active_incomplete_blobs
+from hub.utils.snapshot_filters import blob_hashes_for_siblings
 from hub.utils.paths import (
     is_valid_gguf_variant as _is_valid_gguf_variant,
     is_valid_repo_id as _is_valid_repo_id,
@@ -44,6 +45,29 @@ def _download_job_key(repo_id: str, variant: Optional[str]) -> str:
     )
 
 
+# A scope rides the variant slot as "@name". No GGUF quant label starts with "@", so a scoped job never collides with a real variant or the full snapshot.
+_SCOPE_PREFIX = "@"
+
+
+def _scope_variant(scope_id: Optional[str]) -> Optional[str]:
+    scope = (scope_id or "").strip()
+    return f"{_SCOPE_PREFIX}{scope}" if scope else None
+
+
+def scoped_file_blob_hashes(
+    repo_id: str, files: Sequence[str], hf_token: Optional[str]
+) -> frozenset[str]:
+    """Blob hashes for exactly ``files``, so a scoped job's progress, purge and peer
+    protection cover its own files and nothing else in the repo."""
+    from huggingface_hub import HfApi
+
+    wanted = set(files)
+    info = HfApi().model_info(repo_id, files_metadata = True, token = hf_token)
+    return blob_hashes_for_siblings(
+        [s for s in info.siblings if getattr(s, "rfilename", None) in wanted]
+    )
+
+
 def _job_status(
     key: str,
     *,
@@ -60,26 +84,103 @@ def _job_status(
     return DownloadJobStatus(state = state, error = error, generation = generation)
 
 
+def _diffusion_load_in_flight(repo_id: str) -> bool:
+    """Whether the Images or Video backend is currently STAGING *repo_id* (or its companion
+    base repo) for a load. Both stage through the same HF cache as the download worker, so a
+    download started now would put two writers on the same blobs -- the exact race the
+    llama.cpp guard below prevents for chat. ``loading_repo_ids`` is the same signal the
+    delete-cached guard uses. Best-effort: an unavailable backend reports not-in-flight so a
+    probe failure never blocks a legitimate download."""
+    key = download_registry.normalize_repo_key(repo_id)
+    getters = []
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        getters.append(get_active_diffusion_engine)
+    except Exception:
+        pass
+    try:
+        from core.inference.video import get_video_backend
+        getters.append(get_video_backend)
+    except Exception:
+        pass
+    for get_backend in getters:
+        try:
+            backend = get_backend()
+            for lid in getattr(backend, "loading_repo_ids", tuple)():
+                if download_registry.normalize_repo_key(str(lid)) == key:
+                    return True
+        except Exception as e:
+            logger.debug(f"Load-in-flight probe failed for {repo_id}: {e}")
+            continue
+    return False
+
+
+def _load_in_flight(repo_id: str) -> bool:
+    """Whether ANY loader is already fetching *repo_id*. Chat is not the only loader that
+    downloads on the load path: the Images and Video backends stage their snapshots the same
+    way, so both are consulted."""
+    try:
+        from core.inference.llama_cpp import hf_gguf_load_in_flight
+        if hf_gguf_load_in_flight(repo_id):
+            return True
+    except Exception:
+        pass
+    return _diffusion_load_in_flight(repo_id)
+
+
+def _load_in_flight_error(repo_id: str) -> HTTPException:
+    return HTTPException(
+        status_code = 409,
+        detail = (
+            f"A model load for '{repo_id}' is in progress and may be "
+            "downloading it. Wait for the load to finish (or cancel it), "
+            "then start the download."
+        ),
+    )
+
+
+def _reject_if_load_in_flight(repo_id: str) -> None:
+    if _load_in_flight(repo_id):
+        raise _load_in_flight_error(repo_id)
+
+
 def _spawn_download_worker(
     repo_id: str,
     variant: Optional[str],
     hf_token: Optional[str],
     use_xet: bool = True,
     protected_blob_hashes: Optional[frozenset[str]] = None,
+    cache_env: Optional[dict[str, str]] = None,
+    files: Optional[Sequence[str]] = None,
+    allow_ambient_token: bool = True,
 ) -> subprocess.Popen:
     args = ["--repo-id", repo_id]
     if variant:
         args.extend(["--variant", variant])
+    if files:
+        # Via a temp file, not argv: a pipeline repo's list runs to hundreds of names.
+        args.extend(["--files-json", download_lifecycle.write_files_manifest(files)])
     return download_lifecycle.spawn_worker(
         args,
         hf_token,
         use_xet = use_xet,
         protected_blob_hashes = protected_blob_hashes,
+        cache_env = cache_env,
+        allow_ambient_token = allow_ambient_token,
     )
 
 
-async def download_model_response(body: DownloadModelRequest, hf_token: Optional[str] = None):
-    """Start a background download for a HuggingFace model."""
+async def download_model_response(
+    body: DownloadModelRequest,
+    hf_token: Optional[str] = None,
+    *,
+    allow_ambient_token: bool = True,
+):
+    """Start a background download for a HuggingFace model.
+
+    ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent
+    no token, for repos named over the API rather than chosen here.
+    """
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
@@ -89,34 +190,69 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
 
+    # Avoid concurrent writers to the same HF cache files.
+    _reject_if_load_in_flight(repo_id)
+
     variant = (body.gguf_variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(
             status_code = 400,
             detail = f"Invalid gguf_variant: {variant!r}",
         )
+    # A scoped job fetches only `files` and keys itself apart from the repo's full snapshot.
+    scoped_files = [f for f in (body.files or []) if f and f.strip()]
+    scope_variant = _scope_variant(body.scope_id)
+    if scope_variant is not None:
+        if variant is not None:
+            raise HTTPException(
+                status_code = 400,
+                detail = "scope_id and gguf_variant are mutually exclusive.",
+            )
+        if not scoped_files:
+            raise HTTPException(status_code = 400, detail = "scope_id requires a non-empty files list.")
+        if not _is_valid_gguf_variant(scope_variant):
+            raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
+        variant = scope_variant
     key = _download_job_key(repo_id, variant)
-    use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
+    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
+    # makes that outlast its 3s budget while every other Studio request waits behind it.
+    use_xet, transport_reason = await asyncio.to_thread(
+        download_lifecycle.resolve_requested_use_xet,
+        getattr(body, "transport_mode", None),
+        body.use_xet,
+    )
     transport = download_lifecycle.resolve_transport(use_xet)
+    logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    cache_paths = get_hf_cache_paths()
+    cache_env = cache_paths.child_env({})
     variant_blob_hashes = frozenset()
     variant_progress_blob_hashes = frozenset()
     completed_baseline_bytes = 0
     if variant is not None:
         try:
-            variant_blob_hashes = await asyncio.to_thread(
-                gguf_variants.gguf_variant_blob_hashes,
-                repo_id,
-                variant,
-                hf_token,
-                include_companions = False,
-            )
-            variant_progress_blob_hashes = await asyncio.to_thread(
-                gguf_variants.gguf_variant_blob_hashes,
-                repo_id,
-                variant,
-                hf_token,
-                include_companions = True,
-            )
+            if scope_variant is not None:
+                # A scope owns exactly its own files: same set for purge and for progress.
+                variant_blob_hashes = await asyncio.to_thread(
+                    scoped_file_blob_hashes, repo_id, scoped_files, hf_token
+                )
+                variant_progress_blob_hashes = variant_blob_hashes
+            else:
+                variant_blob_hashes = await asyncio.to_thread(
+                    gguf_variants.gguf_variant_blob_hashes,
+                    repo_id,
+                    variant,
+                    hf_token,
+                    include_companions = False,
+                )
+                variant_progress_blob_hashes = await asyncio.to_thread(
+                    gguf_variants.gguf_variant_blob_hashes,
+                    repo_id,
+                    variant,
+                    hf_token,
+                    include_companions = True,
+                )
         except Exception as e:
             logger.warning(
                 "GGUF hash pre-resolution failed for %s [%s]; continuing without "
@@ -147,9 +283,24 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
         blob_hashes = variant_blob_hashes,
         progress_blob_hashes = variant_progress_blob_hashes,
         completed_baseline_bytes = completed_baseline_bytes,
+        admission_check = lambda: not _load_in_flight(repo_id),
+        hub_cache = str(cache_paths.hub_cache),
+        xet_cache = str(cache_paths.xet_cache),
+        scoped_files = scoped_files if scope_variant is not None else None,
     )
     generation = _registry.current_generation(key)
     if not claimed:
+        if claim_state == "admission_blocked":
+            raise _load_in_flight_error(repo_id)
+        if claim_state == "scope_file_mismatch":
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"Another download for '{repo_id}' is already fetching a different "
+                    "set of files. Wait for it to finish (or cancel it), then start "
+                    "this one."
+                ),
+            )
         # claim_state is the blocking job's state. The client can attach only
         # when the blocker is this key's own in-flight job (adoptable); a
         # cross-variant conflict or in-progress delete is not accepted.
@@ -159,7 +310,12 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             "accepted": _registry.adoptable(key),
             "generation": generation,
         }
-    download_manifest.clear_cancel_marker("model", repo_id, variant)
+    download_manifest.clear_cancel_marker(
+        "model",
+        repo_id,
+        variant,
+        hub_cache = cache_paths.hub_cache,
+    )
     # Blobs a concurrent same-repo variant is already writing (e.g. a shared
     # mmproj). The worker must not purge these during cache preparation.
     protected_blob_hashes = _registry.peer_blob_hashes(key) if variant else frozenset()
@@ -174,6 +330,9 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             hf_token,
             use_xet = use_xet,
             protected_blob_hashes = protected_blob_hashes,
+            cache_env = cache_env,
+            files = scoped_files if scope_variant is not None else None,
+            allow_ambient_token = allow_ambient_token,
         ),
         hf_token = hf_token,
         label = label,

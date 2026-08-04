@@ -69,6 +69,7 @@ export function serializeConfigToYaml(
     target_modules: state.targetModules,
     use_rslora: state.loraVariant === "rslora",
     use_loftq: state.loraVariant === "loftq",
+    use_dora: state.loraVariant === "dora",
   };
 
   if (includeVisionFields) {

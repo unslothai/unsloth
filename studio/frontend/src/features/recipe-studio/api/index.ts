@@ -494,3 +494,13 @@ export async function removeUnstructuredFile(
     throw new Error("Failed to remove file");
   }
 }
+
+export async function removeUnstructuredBlock(blockId: string): Promise<void> {
+  const res = await authFetch(
+    `${DATA_DESIGNER_API_BASE}/seed/unstructured-block/${encodeURIComponent(blockId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok && res.status !== 404) {
+    throw new Error("Failed to remove uploaded files");
+  }
+}

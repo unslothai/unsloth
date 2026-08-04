@@ -26,7 +26,8 @@ export interface TrainingStatusResponse {
     total_steps?: number;
     loss?: number;
     learning_rate?: number;
-    output_dir?: string;
+    // null = explicit clear (run stopped without saving); absent = unchanged.
+    output_dir?: string | null;
   } | null;
   metric_history?: {
     steps?: number[];
@@ -83,6 +84,7 @@ export interface TrainingRuntimeState {
   startError: string | null;
   startModelName: string | null;
   startDatasetName: string | null;
+  startProjectName: string | null;
   startFromResume: boolean;
   sseConnected: boolean;
   firstStepReceived: boolean;
@@ -121,6 +123,7 @@ export interface TrainingRuntimeActions {
     modelName: string | null,
     datasetName: string | null,
     fromResume?: boolean,
+    projectName?: string | null,
   ) => void;
   setSseConnected: (value: boolean) => void;
   setLastEventId: (value: number | null) => void;
@@ -160,6 +163,7 @@ export interface TrainingViewData {
 
   // Config summary
   modelName: string;
+  projectName: string | null;
   trainingMethod: string;
 
   // Time-series (for ChartsSection)

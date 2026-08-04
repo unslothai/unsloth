@@ -4,15 +4,15 @@
 # Mac counterpart to studio-update-smoke.yml. Verifies that on a real
 # Apple Silicon (macos-14, M1) runner:
 #
-#   1. install.sh --local --no-torch installs Studio AND auto-fetches
+#   1. install.sh --local --no-torch installs Unsloth AND auto-fetches
 #      the prebuilt llama.cpp Mac binary (llama-bNNNN-bin-macos-arm64
 #      from ggml-org/llama.cpp). Hitting the source-build fallback is
-#      treated as an Unsloth bug -- Studio must always pick the
+#      treated as an Unsloth bug -- Unsloth must always pick the
 #      prebuilt on Mac.
 #   2. unsloth studio update --local is idempotent. Two consecutive
 #      runs both report "prebuilt up to date and validated", no
 #      source-build fallback.
-#   3. The installed Studio still boots and /api/health returns
+#   3. The installed Unsloth still boots and /api/health returns
 #      healthy after the update path.
 
 name: Mac Studio Update CI
@@ -42,7 +42,7 @@ permissions:
 
 jobs:
   update-idempotency:
-    name: Studio Updating Tests
+    name: Unsloth Updating Tests
     runs-on: macos-14
     timeout-minutes: 30
     steps:
@@ -59,7 +59,7 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -106,7 +106,7 @@ jobs:
           grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
           echo "second update was clean"
 
-      - name: Boot Studio briefly to confirm the install is still usable
+      - name: Boot Unsloth briefly to confirm the install is still usable
         run: |
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18891 \
@@ -123,13 +123,13 @@ jobs:
             sleep 1
           done
           if [ -z "$HEALTHY" ]; then
-            echo "Studio failed to come up after \`update\`"
+            echo "Unsloth failed to come up after \`update\`"
             tail -200 logs/studio.log
             kill "$PID" 2>/dev/null || true
             exit 1
           fi
           kill "$PID" 2>/dev/null || true
-          echo "post-update Studio /api/health OK"
+          echo "post-update Unsloth /api/health OK"
 
       - name: Uninstall and verify clean
         # Round-trip through scripts/uninstall.sh on real macOS. As a side

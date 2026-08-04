@@ -43,7 +43,7 @@ export function KeyRevealCard({
         onClick={handleCopy}
         className={cn(
           "flex w-full items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2.5 font-mono text-sm transition-colors hover:bg-muted/60",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           copied && "border-emerald-500/40 bg-emerald-500/10",
         )}
         aria-label={
@@ -61,14 +61,14 @@ export function KeyRevealCard({
         />
       </button>
       <div className="flex items-center justify-between gap-3 pt-0.5">
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-ui-11 text-muted-foreground">
           {t("settings.apiKeys.copyNow")}
         </p>
         <Button
           type="button"
           size="sm"
           onClick={onDone}
-          className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+          className="focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           {t("common.done")}
         </Button>
