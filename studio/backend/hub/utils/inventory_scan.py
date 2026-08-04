@@ -1509,28 +1509,100 @@ def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
         return False
 
 
+def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
+    """The denoiser subdirs this pipeline's own ``model_index.json`` declares, or None.
+
+    The fixed ``_DENOISER_DIRS`` pair only names the SINGLE-denoiser layout. Multi-DiT pipelines
+    carry more than one and would otherwise be judged complete on whichever the loop happened to
+    reach first: Ideogram 4 pairs ``transformer/`` with ``unconditional_transformer/``, and the
+    dual-expert video pipelines pair it with ``transformer_2/``. Reading the manifest keys instead
+    of hardcoding names keeps this correct for layouts that do not exist yet.
+
+    A ``[null, null]`` entry is diffusers' way of saying the component is deliberately absent
+    (``safety_checker`` is the usual one), so it is not a missing denoiser. None means the manifest
+    could not be trusted to enumerate them, and the caller keeps the older fixed-pair rule.
+    """
+    try:
+        with (snapshot / "model_index.json").open("r", encoding = "utf-8") as fh:
+            manifest = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    found = []
+    for key, value in manifest.items():
+        if not isinstance(key, str) or key.startswith("_"):
+            continue
+        name = key.lower()
+        if name != "unet" and "transformer" not in name:
+            continue
+        # ["diffusers", "FluxTransformer2DModel"]; a [null, null] pair means intentionally absent.
+        if isinstance(value, (list, tuple)) and not any(v for v in value):
+            continue
+        found.append(key)
+    return tuple(found) or None
+
+
+def _component_weights_complete(component: Path) -> bool:
+    """Whether *component* holds a denoiser the loader could actually read.
+
+    Presence of ONE weight file is not enough. A sharded denoiser is described by an
+    ``*.index.json`` whose ``weight_map`` names every shard, and an interrupted or pattern-filtered
+    fetch that landed ``...-00001-of-00002.safetensors`` alone satisfies a first-match test while
+    failing at load. When an index is present, every shard it names must be on disk.
+    """
+    shards: set[str] = set()
+    for index in component.glob("*.index.json"):
+        try:
+            with index.open("r", encoding = "utf-8") as fh:
+                weight_map = json.load(fh).get("weight_map")
+        except (OSError, ValueError, AttributeError):
+            # An unreadable index cannot prove incompleteness, so fall back to the presence test.
+            continue
+        if isinstance(weight_map, dict):
+            shards.update(str(v) for v in weight_map.values() if v)
+    if shards:
+        # is_file() follows the snapshot symlink, so a dangling blob is correctly absent.
+        return all((component / shard).is_file() for shard in shards)
+    for entry in component.rglob("*"):
+        if entry.is_file() and entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES):
+            return True
+    return False
+
+
 def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
     """The companion-only-prefetch check scoped to ONE snapshot dir.
 
     Same signal as :func:`repo_pipeline_missing_denoiser` -- a root ``model_index.json`` with no
-    weight under ``transformer/`` or ``unet/`` -- but judged on the directory the caller's row
-    actually loads, not on whichever revision this module would have picked for itself. Two
-    snapshot selectors disagree: a row pinned to (or resolving through ``refs/main`` to) a complete
-    revision would otherwise be marked partial by a newer companion-only one sitting beside it.
-    Best-effort in the same direction: a read error reports not-missing.
+    usable weights under the pipeline's denoiser component(s) -- but judged on the directory the
+    caller's row actually loads, not on whichever revision this module would have picked for
+    itself. Two snapshot selectors disagree: a row pinned to (or resolving through ``refs/main``
+    to) a complete revision would otherwise be marked partial by a newer companion-only one
+    sitting beside it.
+
+    Stricter than the repo-wide twin in two ways, because this decides whether a row is advertised
+    as runnable: EVERY denoiser the manifest declares must be present (not just the first one
+    found), and a sharded one must have every shard its index names. Best-effort in the same
+    direction: a read error reports not-missing.
     """
     if not snapshot_has_pipeline_index(snapshot):
         return False
     try:
-        for denoiser in _DENOISER_DIRS:
-            component = Path(snapshot) / denoiser
-            if not component.is_dir():
-                continue
-            for entry in component.rglob("*"):
-                # is_file() follows the snapshot symlink, so a dangling blob is correctly absent.
-                if entry.is_file() and entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES):
-                    return False
-        return True
+        root = Path(snapshot)
+        declared = _manifest_denoiser_components(root)
+        if declared is not None:
+            # The manifest enumerated them, so every one must be there: a multi-DiT pipeline with
+            # only its first denoiser fetched cannot load.
+            return not all(
+                (root / name).is_dir() and _component_weights_complete(root / name)
+                for name in declared
+            )
+        # No trustworthy manifest: the older rule, where either name satisfying it is enough,
+        # since a UNet pipeline has no transformer/ and a DiT one has no unet/.
+        return not any(
+            (root / name).is_dir() and _component_weights_complete(root / name)
+            for name in _DENOISER_DIRS
+        )
     except OSError:
         return False
 

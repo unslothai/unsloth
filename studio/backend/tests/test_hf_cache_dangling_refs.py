@@ -3159,6 +3159,114 @@ def test_a_newer_companion_only_snapshot_does_not_make_the_ref_snapshot_partial(
     assert rows[0]["single_file"] is False
 
 
+def _pipeline_snapshot(tmp_path, manifest: dict, files: dict) -> Path:
+    """A diffusers pipeline snapshot: a root ``model_index.json`` plus component subdirs."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "model_index.json").write_bytes(json.dumps(manifest).encode())
+    for name, blob in files.items():
+        target = snapshot / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(blob)
+    return snapshot
+
+
+_FLUX_INDEX = {
+    "_class_name": "FluxPipeline",
+    "transformer": ["diffusers", "FluxTransformer2DModel"],
+    "vae": ["diffusers", "AutoencoderKL"],
+    "safety_checker": [None, None],
+}
+_IDEOGRAM_INDEX = {
+    "_class_name": "Ideogram4Pipeline",
+    "transformer": ["diffusers", "Ideogram4Transformer2DModel"],
+    "unconditional_transformer": ["diffusers", "Ideogram4Transformer2DModel"],
+    "vae": ["diffusers", "AutoencoderKL"],
+}
+_WAN_INDEX = {
+    "_class_name": "WanPipeline",
+    "transformer": ["diffusers", "WanTransformer3DModel"],
+    "transformer_2": ["diffusers", "WanTransformer3DModel"],
+    "vae": ["diffusers", "AutoencoderKLWan"],
+}
+
+
+def test_a_denoiser_missing_half_its_shards_is_not_a_present_denoiser(tmp_path):
+    """One weight file is not the denoiser. A sharded transformer is described by an index naming
+    every shard, and a fetch that landed only shard 1 of 2 satisfies a first-match test while
+    failing at load, so the row would be advertised as runnable."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                {
+                    "weight_map": {
+                        "a": "diffusion_pytorch_model-00001-of-00002.safetensors",
+                        "b": "diffusion_pytorch_model-00002-of-00002.safetensors",
+                    }
+                }
+            ).encode(),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / "transformer" / "diffusion_pytorch_model-00002-of-00002.safetensors").write_bytes(
+        b"\0" * 256
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_an_unsharded_denoiser_still_passes_on_presence_alone(tmp_path):
+    """No index, so there is nothing to be incomplete against and the plain presence test stands."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {"transformer/diffusion_pytorch_model.safetensors": b"\0" * 256},
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+@pytest.mark.parametrize(
+    "manifest, second",
+    [
+        (_IDEOGRAM_INDEX, "unconditional_transformer"),
+        (_WAN_INDEX, "transformer_2"),
+    ],
+)
+def test_a_multi_denoiser_pipeline_needs_every_denoiser_it_declares(manifest, second, tmp_path):
+    """Ideogram 4 and the dual-expert video pipelines carry two denoisers. Judging the snapshot on
+    whichever one the scan reached first calls the half-fetched pipeline complete, so the declared
+    set comes from the manifest and all of it must be on disk."""
+    files = {
+        "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+    }
+    snapshot = _pipeline_snapshot(tmp_path, manifest, files)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / second).mkdir()
+    (snapshot / second / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_an_unreadable_manifest_keeps_the_fixed_denoiser_pair(tmp_path):
+    """The manifest enumerates the denoisers, so a corrupt one must fall back to the older fixed
+    pair rather than concluding a pipeline declares none and is therefore complete."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "model_index.json").write_bytes(b"{not json")
+    (snapshot / "vae").mkdir()
+    (snapshot / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / "unet").mkdir()
+    (snapshot / "unet" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
 def _snapshot_with(tmp_path, files: dict) -> Path:
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
