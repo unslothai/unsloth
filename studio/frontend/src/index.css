@@ -2388,10 +2388,14 @@ html[data-chat-font] .aui-root {
 
 [data-sonner-toast][data-styled='true']:has([data-button]) {
 	display: grid !important;
-	grid-template-columns: 16px minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr);
 	align-items: start !important;
 	column-gap: 10px !important;
 	row-gap: 10px !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) {
+	grid-template-columns: 16px minmax(0, 1fr);
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]) [data-icon] {
@@ -2400,13 +2404,21 @@ html[data-chat-font] .aui-root {
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]) [data-content] {
+	grid-column: 1;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) [data-content] {
 	grid-column: 2;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]) [data-button] {
-	grid-column: 2;
+	grid-column: 1;
 	justify-self: start;
 	margin: 0 !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) [data-button] {
+	grid-column: 2;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-close-button]) {
@@ -2415,8 +2427,21 @@ html[data-chat-font] .aui-root {
 
 /* Loading toast keeps its own vertical padding from #7683. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
+	display: flex !important;
+	align-items: center !important;
+	gap: 12px !important;
 	padding-top: 14px !important;
 	padding-bottom: 14px !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
+	flex: 1 1 auto;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast [data-button] {
+	align-self: center;
+	flex: none;
+	margin-left: auto !important;
 }
 
 /* Progress bar is the last row; give it room below. */
