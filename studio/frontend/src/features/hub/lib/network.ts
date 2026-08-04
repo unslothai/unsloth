@@ -136,6 +136,10 @@ export function getHubPhase(
   return isRemoteNetworkOffline(origin) ? "unavailable" : "probing";
 }
 
+export function isHubProxyServing(): boolean {
+  return hubProxyServing;
+}
+
 /** Record whether the backend is currently serving Hub content for us. */
 export function setHubProxyServing(serving: boolean): void {
   if (hubProxyServing === serving) {

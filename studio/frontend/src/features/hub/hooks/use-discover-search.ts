@@ -109,7 +109,7 @@ export function useDiscoverSearch({
   /** Accepted for compatibility; availability is read from the network store. */
   online?: boolean;
 }): DiscoverSearch {
-  const { phase, failure } = useHubAvailability();
+  const { phase, failure, proxyServing } = useHubAvailability();
   const online = phase === "available";
 
   // Not gated on availability: gating disabled the paginated hook, which
@@ -194,7 +194,10 @@ export function useDiscoverSearch({
   const wasUnavailableRef = useRef(phase !== "available");
   const lastReconnectAtRef = useRef(0);
   useEffect(() => {
-    if (online && wasUnavailableRef.current && isDiscoverTab) {
+    // Not on proxy-served availability: the iterator already has its page, and
+    // retrySearch would build a fresh transport with no affinity and re-attempt
+    // the blocked direct request.
+    if (online && !proxyServing && wasUnavailableRef.current && isDiscoverTab) {
       const now = Date.now();
       if (now - lastReconnectAtRef.current > RECONNECT_RETRY_COOLDOWN_MS) {
         lastReconnectAtRef.current = now;
@@ -205,7 +208,7 @@ export function useDiscoverSearch({
       }
     }
     wasUnavailableRef.current = !online;
-  }, [online, retrySearch, isDiscoverTab]);
+  }, [online, proxyServing, retrySearch, isDiscoverTab]);
 
   return {
     results,

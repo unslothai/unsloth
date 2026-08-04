@@ -28,7 +28,7 @@ export {
   type HfSortKey,
   useHubModelSearch,
 } from "./hooks/use-hub-model-search";
-export { useOnlineStatus } from "./hooks/use-online-status";
+export { useHubAvailability, useOnlineStatus } from "./hooks/use-online-status";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
 export { bumpInventoryVersion } from "./stores/inventory-events";
 export {

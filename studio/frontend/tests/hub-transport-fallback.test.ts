@@ -16,6 +16,7 @@ const { createHubTransport } = await import(
 const {
   HubFetchError,
   getHubPhase,
+  isHubProxyServing,
   isHuggingFaceOffline,
   markRemoteNetworkOffline,
   markRemoteNetworkOnline,
@@ -405,5 +406,23 @@ test("the shared model-info fetch honours a configured mirror", async () => {
   assert.ok(
     backend.calls[0].url.startsWith("/api/hub/discovery-info/models"),
     backend.calls[0].url,
+  );
+});
+
+test("proxy-served availability is distinguishable from a real reconnect", async () => {
+  markRemoteNetworkOnline();
+  const backend = captureBackend();
+  const transport = createHubTransport("models", {
+    direct: failAndMarkOffline(),
+    backend: backend.backend,
+  });
+  await transport(HF_URL, {});
+
+  assert.equal(getHubPhase(HF_ORIGIN), "available");
+  assert.equal(
+    isHubProxyServing(),
+    true,
+    "the reconnect toast and retry must not fire off the proxy standing in: " +
+      "a fresh transport has no affinity and would re-attempt the blocked direct request",
   );
 });

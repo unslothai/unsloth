@@ -5,6 +5,7 @@ import {
   getBrowserOfflineRetryDelayMs,
   getHubPhase,
   getLastHubFailure,
+  isHubProxyServing,
   type HubFailure,
   type HubPhase,
   isHuggingFaceOffline,
@@ -64,6 +65,8 @@ export function useOnlineStatus(): boolean {
 export interface HubAvailability {
   phase: HubPhase;
   failure: HubFailure | null;
+  /** True when availability comes from the backend, not this browser. */
+  proxyServing: boolean;
 }
 
 function getPhaseSnapshot(): HubPhase {
@@ -72,6 +75,10 @@ function getPhaseSnapshot(): HubPhase {
 
 function getServerPhaseSnapshot(): HubPhase {
   return "available";
+}
+
+function getServerProxySnapshot(): boolean {
+  return false;
 }
 
 function getFailureSnapshot(): HubFailure | null {
@@ -97,5 +104,10 @@ export function useHubAvailability(): HubAvailability {
     getFailureSnapshot,
     getServerFailureSnapshot,
   );
-  return { phase, failure };
+  const proxyServing = useSyncExternalStore(
+    subscribeOnlineStatus,
+    isHubProxyServing,
+    getServerProxySnapshot,
+  );
+  return { phase, failure, proxyServing };
 }

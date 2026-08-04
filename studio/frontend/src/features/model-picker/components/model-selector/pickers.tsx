@@ -52,7 +52,7 @@ import {
   jobKeyOf,
   useDownloadManagerStore,
   useHfTokenStore,
-  useOnlineStatus,
+  useHubAvailability,
 } from "@/features/hub";
 import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
 import { extractParamLabel } from "@/lib/model-size";
@@ -1813,7 +1813,9 @@ export function HubModelPicker({
   const debouncedQuery = useDebouncedValue(query);
   // Shared Hub search stack (the same hooks the Hub page uses) so the picker
   // and Hub run one implementation. Scoped to unsloth like the old listing.
-  const online = useOnlineStatus();
+  // Content availability, not browser reachability: gating on the latter
+  // aborted the backend fallback the same failure had just kicked off.
+  const online = useHubAvailability().phase === "available";
   // Sanitize to anonymous on a malformed token, matching the Hub page.
   const accessToken = hfApiToken(hfToken);
   // Recommended section: a live unsloth listing sorted by the dropdown. The
