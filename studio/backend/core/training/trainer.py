@@ -69,6 +69,7 @@ from datasets import Dataset
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
 from utils.models import is_vision_model, detect_audio_type
+from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets.completion_masking import apply_completion_masking
@@ -831,6 +832,16 @@ class UnslothTrainer:
                 logger.info("Loaded text model")
 
             raise_if_offloaded(self.model, device_map, "Unsloth training")
+
+            restored_repo_id = restore_hf_cache_repo_identity(
+                self.model,
+                lookup_name,
+                expected_repo_id = model_name,
+            )
+            if restored_repo_id:
+                logger.info(
+                    f"Restored Hub model identity for saved adapter metadata: {restored_repo_id}"
+                )
 
             if self.should_stop:
                 return False

@@ -101,13 +101,20 @@ def _install_lightweight_backend_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "auth.authentication", auth_mod)
 
     core_pkg = types.ModuleType("core")
+    core_pkg.__path__ = []
     core_export = types.ModuleType("core.export")
     core_export.get_export_backend = lambda: None
     core_inference = types.ModuleType("core.inference")
+    core_inference.__path__ = []
     core_inference.get_inference_backend = lambda: None
     monkeypatch.setitem(sys.modules, "core", core_pkg)
     monkeypatch.setitem(sys.modules, "core.export", core_export)
     monkeypatch.setitem(sys.modules, "core.inference", core_inference)
+    _load_module(
+        "core.inference.model_ids",
+        "core/inference/model_ids.py",
+        monkeypatch,
+    )
 
     utils_pkg = types.ModuleType("utils")
     utils_pkg.__path__ = []
@@ -138,6 +145,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.utils", utils_utils)
 
     utils_models = types.ModuleType("utils.models")
+    utils_models.__path__ = []
     for name in (
         "scan_trained_models",
         "scan_exported_models",
@@ -155,6 +163,11 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_models.is_embedding_model = lambda *args, **kwargs: False
     utils_models.ModelConfig = object
     monkeypatch.setitem(sys.modules, "utils.models", utils_models)
+    _load_module(
+        "utils.models.model_identity",
+        "utils/models/model_identity.py",
+        monkeypatch,
+    )
 
     utils_model_config = types.ModuleType("utils.models.model_config")
     utils_model_config._pick_best_gguf = lambda variants: variants[0] if variants else None

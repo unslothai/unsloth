@@ -29,6 +29,7 @@ from huggingface_hub import HfApi, ModelCard
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
+from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import detect_audio_type
 from utils.paths import (
     ensure_dir,
@@ -511,6 +512,12 @@ class ExportBackend:
                 self.is_peft = adapter_config.exists()
             else:
                 self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
+
+            restored_repo_id = restore_hf_cache_repo_identity(model, base_model)
+            if restored_repo_id:
+                logger.info(
+                    f"Restored Hub model identity for legacy adapter export: {restored_repo_id}"
+                )
 
             self.current_model = model
             self.current_tokenizer = tokenizer
