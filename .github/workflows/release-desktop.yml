@@ -1016,8 +1016,8 @@ jobs:
           retention-days: 7
 
       # ── Windows: every executable in the bundle must be signed ──
-      # NSIS runs its plugin DLLs from $PLUGINSDIR, so the installer being signed
-      # says nothing about what it drops on disk.
+      # NSIS runs its plugin DLLs from $PLUGINSDIR, which a signed installer
+      # says nothing about.
       - name: Verify every executable in the Windows bundles is signed
         if: matrix.platform == 'windows-latest'
         shell: pwsh
