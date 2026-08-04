@@ -2714,12 +2714,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                         <button
                           key={key}
                           type="button"
+                          aria-pressed={on}
                           onClick={() => setExtendSides((s) => ({ ...s, [key]: !s[key] }))}
                           className={cn(
-                            "rounded-lg px-2 py-1.5 text-xs font-medium ring-1 transition-colors",
+                            // border, not ring: index.css blanks the ring on the button holding
+                            // mouse focus. Dark mode drops it and separates by fill, as inputs do.
+                            "rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-transparent",
                             on
-                              ? "bg-primary/10 text-foreground ring-primary/40"
-                              : "text-muted-foreground ring-border hover:text-foreground",
+                              ? "border-primary/50 bg-primary/15 text-foreground hover:bg-primary/20 dark:bg-primary/25 dark:hover:bg-primary/30"
+                              : "border-border bg-background text-muted-foreground hover:bg-accent/50 hover:text-foreground dark:bg-white/[0.06] dark:hover:bg-white/[0.1]",
                           )}
                         >
                           {label}
