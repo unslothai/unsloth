@@ -1212,7 +1212,7 @@ export function AppSidebar() {
         className={cn(
           "relative",
           usesDesktopTitlebar
-            ? "h-[calc(var(--studio-desktop-titlebar-height,34px)+48px)] shrink-0 p-0 pt-[var(--studio-desktop-titlebar-height,34px)]"
+            ? "shrink-0 p-0 pt-[var(--studio-desktop-titlebar-height,34px)]"
             : "pl-3 pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0",
         )}
       >
@@ -1234,7 +1234,7 @@ export function AppSidebar() {
               className={cn(
                 "relative z-10 flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
                 usesDesktopTitlebar
-                  ? "h-12 justify-between pl-3 pr-3"
+                  ? "justify-between px-3"
                   : "justify-between",
               )}
             >
@@ -1349,7 +1349,8 @@ export function AppSidebar() {
       {/* Uniform pl-1.5 pr-1.75 keeps every hover pill the same width, inset from the edge. */}
       <SidebarGroup
         className={cn(
-          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 shrink-0 pt-[9px] transition-[padding]",
+          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 shrink-0 transition-[padding]",
+          usesDesktopTitlebar ? "pt-1" : "pt-[9px]",
           // Scrolled: New Chat is pinned, give a little gap below it.
           scrolled ? "pb-[5px]" : "pb-px",
         )}
