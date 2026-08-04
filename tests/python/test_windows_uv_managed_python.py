@@ -52,7 +52,13 @@ $req = New-UvManagedPythonRequest
 $req | ConvertTo-Json -Compress
 """
     payload = json.loads(_run_powershell(shell, script))
-    assert payload == {"Version": "3.13", "Path": "3.13", "Arch": "x86_64", "ManagedByUv": True}
+    assert payload == {
+        "Version": "3.13",
+        "Path": "3.13",
+        "Arch": "x86_64",
+        "ManagedByUv": True,
+        "RequireManagedPython": True,
+    }
 
 
 def test_non_arm64_prefers_uv_managed_python_before_winget_bootstrap():
@@ -61,15 +67,20 @@ def test_non_arm64_prefers_uv_managed_python_before_winget_bootstrap():
     helper = source.index("function New-UvManagedPythonRequest")
     non_arm64 = source.index('} elseif ((Get-HostMachineArch) -ne "arm64") {')
     managed = source.index("$DetectedPython = New-UvManagedPythonRequest")
+    managed_flag = source.index("--managed-python --python")
+    venv_create = source.index('step "venv" "creating Python $($DetectedPython.Version) virtual environment"')
     winget = source.index(
         "winget install -e --id $pythonPackageId --source winget --architecture x64"
     )
 
-    assert uv_step < helper < non_arm64 < managed < winget
+    assert uv_step < helper < non_arm64 < managed < winget < venv_create < managed_flag
     assert 'step "python" "using uv-managed Python $($DetectedPython.Version)"' in source
     assert (
         'substep "no compatible system Python found; uv will download and manage it for this environment"'
         in source
+    )
+    assert (
+        'uv venv $VenvDir --managed-python --python "$($DetectedPython.Path)"' in source
     )
 
 

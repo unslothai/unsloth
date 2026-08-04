@@ -1564,6 +1564,7 @@ exit 0
             Path = $PythonVersion
             Arch = "x86_64"
             ManagedByUv = $true
+            RequireManagedPython = $true
         }
     }
 
@@ -1931,7 +1932,11 @@ exit 0
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
-        $venvExit = Invoke-InstallCommand -Label "create virtual environment" { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+        if ($DetectedPython.RequireManagedPython) {
+            $venvExit = Invoke-InstallCommand -Label "create virtual environment" { uv venv $VenvDir --managed-python --python "$($DetectedPython.Path)" }
+        } else {
+            $venvExit = Invoke-InstallCommand -Label "create virtual environment" { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+        }
         if ($venvExit -ne 0) {
             Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
