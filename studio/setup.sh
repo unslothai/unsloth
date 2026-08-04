@@ -1112,7 +1112,11 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # merely ends in xpu (…/private-xpu) is an UNKNOWN family to them, so a *xpu match
         # would clear the skip flag on every up-to-date run while _ensure_xpu_torch declines
         # to act -- a full dependency pass every update that repairs nothing.
-        _setup_pin_leaf="${_setup_pin##*/}"
+        # Lowercased like every other leaf parser (install.sh _torch_index_url_leaf, setup.ps1
+        # Get-TorchIndexLeaf, install_python_stack _torch_index_leaf). Without it
+        # UNSLOTH_TORCH_INDEX_FAMILY=XPU keeps the fast path on while those classifiers, once
+        # reached, call the same pin XPU -- so the repair below never runs and the wheel stays.
+        _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
         # Disk first, no interpreter: torch/version.py carries the local label, so a wedged
         # Intel driver cannot hang `studio update` inside `import torch` here, and a non-Intel
         # host pays one glob. Read unconditionally, NOT only under a pin: the pin is one-shot,

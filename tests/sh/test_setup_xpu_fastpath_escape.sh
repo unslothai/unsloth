@@ -113,6 +113,15 @@ check "FAMILY=xpu + cpu wheel" "$(escape "$(make_venv '2.9.1+cpu' no n)" "" "xpu
 check "pin with query"    "$(escape "$(make_venv '2.9.1+cpu' no o)" "$XPU?token=x")" false
 check "pin with fragment" "$(escape "$(make_venv '2.9.1+cpu' no p)" "$XPU#f")" false
 check "pin with two trailing slashes" "$(escape "$(make_venv '2.9.1+cpu' no q)" "$XPU//")" false
+# Case. Every other leaf parser lowercases (install.sh _torch_index_url_leaf, setup.ps1
+# Get-TorchIndexLeaf, install_python_stack _torch_index_leaf), so those accept FAMILY=XPU and
+# would migrate the wheel; this one kept the fast path on and the repair never ran.
+check "FAMILY=XPU uppercase"  "$(escape "$(make_venv '2.9.1+cpu' no w)" "" "XPU")" false
+check "FAMILY=Xpu mixed case" "$(escape "$(make_venv '2.9.1+cpu' no x)" "" "Xpu")" false
+check "pin URL ending /XPU"   "$(escape "$(make_venv '2.9.1+cpu' no y)" "https://download.pytorch.org/whl/XPU")" false
+# Lowercasing must not widen the match: a custom leaf that merely ends in xpu stays unknown
+# whatever its case.
+check "custom leaf PRIVATE-XPU" "$(escape "$(make_venv '2.9.1+cpu' no z)" "https://mirror/simple/PRIVATE-XPU")" true
 
 echo "a leaf that merely ends in xpu is NOT the curated family"
 # The shared parsers call this an unknown family and refuse to act, so clearing the skip flag
