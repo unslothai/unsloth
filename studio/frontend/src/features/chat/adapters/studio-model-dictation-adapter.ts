@@ -19,7 +19,6 @@ import {
   markDictationFailed,
   markDictationTranscript,
 } from "./dictation-outcome";
-import { isUnrecoverableSttLoadError, sttRequestError } from "./stt-load-error";
 import {
   type StudioDictationSession,
   isMissingDeviceError,
@@ -206,10 +205,7 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
       const body = (await response.json().catch(() => null)) as {
         detail?: string;
       } | null;
-      throw sttRequestError(
-        body?.detail ?? `HTTP ${response.status}`,
-        response.status,
-      );
+      throw new Error(body?.detail ?? `HTTP ${response.status}`);
     }
   });
 }
@@ -335,15 +331,15 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     let lastFrameAt = 0;
     let cutting = false;
     let finalCutDone = false;
+    // One budget per failure the user can act on. The warm-up and the segments
+    // fail for their own reasons, so a warm-up toast must not spend the budget
+    // that reports actually losing recorded audio.
     let reportedTranscriptionError = false;
+    let reportedPreloadError = false;
 
-    const reportTranscriptionError = (error: unknown) => {
-      if (reportedTranscriptionError || cancelled || ended) return;
-      reportedTranscriptionError = true;
+    const toastSttError = (error: unknown, fallback: string) => {
       const message =
-        error instanceof Error && error.message
-          ? error.message
-          : "A recorded segment could not be transcribed.";
+        error instanceof Error && error.message ? error.message : fallback;
       console.error("STT transcription error:", error);
       toast.error(message, {
         action: {
@@ -351,6 +347,25 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           onClick: () => useSettingsDialogStore.getState().openDialog("voice"),
         },
       });
+    };
+
+    const reportTranscriptionError = (error: unknown) => {
+      if (reportedTranscriptionError || cancelled || ended) return;
+      reportedTranscriptionError = true;
+      toastSttError(error, "A recorded segment could not be transcribed.");
+    };
+
+    /**
+     * The warm-up is cache-only and fails whenever the model is missing, still
+     * downloading, or briefly unavailable. Recording continues either way: the
+     * model may be ready by the time the user stops, and /transcribe/raw loads
+     * it itself. What must not happen is this failure silencing the one at stop
+     * time, leaving the user with an empty composer and no explanation.
+     */
+    const reportPreloadError = (error: unknown) => {
+      if (reportedPreloadError || cancelled || ended) return;
+      reportedPreloadError = true;
+      toastSttError(error, "The dictation model could not be loaded.");
     };
 
     const buildTranscript = () =>
@@ -420,8 +435,6 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         } catch (error) {
           if (!cancelled && !abortController.signal.aborted) {
             // Keep transcribed segments, but never hide that part was lost.
-            // Only a lost segment is partial: the model preload shares this
-            // reporter and can fail without costing any audio.
             markDictationFailed();
             reportTranscriptionError(error);
           }
@@ -633,12 +646,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         }
         // Warm the model only after mic access. The backend loads cache-only
         // and never downloads here.
-        void loadSttModel(sessionModel, sessionEngine).catch((error) => {
-          reportTranscriptionError(error);
-          // A model that cannot load will not transcribe at stop time either,
-          // so end now rather than record audio that is already lost.
-          if (isUnrecoverableSttLoadError(error)) finishSession("error");
-        });
+        void loadSttModel(sessionModel, sessionEngine).catch(
+          reportPreloadError,
+        );
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
           onAudioFrame(rawRms, now);
         });
