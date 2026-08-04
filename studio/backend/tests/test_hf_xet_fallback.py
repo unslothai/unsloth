@@ -598,8 +598,9 @@ def test_apply_xet_env_delegates_to_the_zoo(monkeypatch):
         env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"] = "123"
         return {"HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE": "123"}
 
-    monkeypatch.setattr(shim, "_load_optional",
-                        lambda _name: types.SimpleNamespace(apply_xet_env = _apply))
+    monkeypatch.setattr(
+        shim, "_load_optional", lambda _name: types.SimpleNamespace(apply_xet_env = _apply)
+    )
     env = {"HF_HUB_DISABLE_XET": "0"}
     assert shim.apply_xet_env(env) == {"HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE": "123"}
     assert env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"] == "123"
@@ -624,6 +625,7 @@ def test_apply_xet_env_returns_none_when_the_zoo_cannot_size(monkeypatch):
     def _boom(env, **kwargs):
         raise RuntimeError("no")
 
-    monkeypatch.setattr(shim, "_load_optional",
-                        lambda _name: types.SimpleNamespace(apply_xet_env = _boom))
+    monkeypatch.setattr(
+        shim, "_load_optional", lambda _name: types.SimpleNamespace(apply_xet_env = _boom)
+    )
     assert shim.apply_xet_env({}) is None, "a raising zoo must degrade, not crash the download"

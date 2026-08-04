@@ -149,11 +149,9 @@ def test_xet_worker_is_sized_from_the_machine(monkeypatch):
     hold (buffer + files * per-file) must fit the limit the same call set."""
     env = _spawn_env(monkeypatch, use_xet = True)
     limit = int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"])
-    worst = (
-        int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"])
-        + int(env["HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS"])
-        * int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE"])
-    )
+    worst = int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"]) + int(
+        env["HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS"]
+    ) * int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE"])
     assert 0 < worst <= limit
     assert env["HF_HUB_DISABLE_XET"] == "0"
 

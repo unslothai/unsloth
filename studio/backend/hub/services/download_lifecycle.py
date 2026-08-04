@@ -85,7 +85,10 @@ def resolve_auto_use_xet() -> tuple[bool, str]:
 def _allow_high_performance() -> bool:
     """Legacy opt-in, still honoured for installs whose unsloth_zoo cannot size the worker itself."""
     return os.environ.get("UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", "").strip().lower() in (
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     )
 
 
@@ -136,7 +139,6 @@ def spawn_worker(
         # UNSLOTH_XET_FORCE_CAPS=1 bounds the machine regardless. Studio hand-rolled this, and the
         # copies drifted: on a 2TB host the worker got a 24GB laptop's buffer and ran 3.4x slower.
         from utils import hf_xet_fallback
-
         if hf_xet_fallback.apply_xet_env(env) is None and not _allow_high_performance():
             # No tuning module: that unsloth_zoo is also the one setting HF_XET_HIGH_PERFORMANCE=1
             # at import, and `env` is seeded from the parent, so that inherited "1" would hand the
