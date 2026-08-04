@@ -2143,7 +2143,7 @@ def save_to_gguf(
                         f"{build_instructions}\n"
                         "Once that's done, redo the quantization.\n"
                         f"Error: {e}"
-                    )
+                    ) from e  # keep the cause: the OOM check walks it for the returncode
 
         # Outputs already on disk pre-date this run; never delete them on a failure.
         preexisting_outputs = {
@@ -3280,6 +3280,35 @@ _DISK_FULL_PATTERNS = (
 # about space; above it, blaming disk sends the user nowhere useful.
 _DISK_HEADROOM_BYTES = 2 * 1024 ** 3
 
+# A SIGKILLed child is 128 + 9 to a shell, so llama-quantize (run through
+# `shell = True`) surfaces as "returned non-zero exit status 137" with no
+# signal named anywhere in the text.
+_OOM_KILL_PATTERNS = (
+    "sigkill",
+    "exit status 137",
+    "exit code 137",
+    "exited with code 137",
+    "exited with code -9",
+)
+
+
+def _iter_exception_chain(exc, max_links = 10):
+    """The exception plus its explicit causes and implicit contexts.
+
+    Every layer here re-raises as a plain RuntimeError, so `returncode` and the
+    original wording only survive on the chained cause.
+    """
+    seen = set()
+    queue = [exc]
+    while queue and len(seen) < max_links:
+        current = queue.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        queue.append(getattr(current, "__cause__", None))
+        queue.append(getattr(current, "__context__", None))
+
 
 def _gguf_child_was_oom_killed(exc):
     """Was the converter killed by the kernel rather than failing on its own?
@@ -3296,10 +3325,18 @@ def _gguf_child_was_oom_killed(exc):
     SIGKILL alone is the signal: a converter that fails on its own raises and
     exits non-zero, so a kill is either the OOM-killer or someone stopping the
     run by hand, and both are worth naming.
+
+    llama-quantize runs under a shell, which reports the kill as exit status
+    137 instead of a signal, and every layer re-raises as a plain RuntimeError,
+    so the whole chain is checked rather than just the outermost exception.
     """
-    if getattr(exc, "returncode", None) in (-9, 137):
-        return True
-    return "signals.sigkill" in f"{exc}".lower() or "sigkill" in f"{exc}".lower()
+    for error in _iter_exception_chain(exc):
+        if getattr(error, "returncode", None) in (-9, 137):
+            return True
+        text = f"{error}".lower()
+        if any(pattern in text for pattern in _OOM_KILL_PATTERNS):
+            return True
+    return False
 
 
 def _gguf_failure_looks_like_disk(exc, save_directory = None):

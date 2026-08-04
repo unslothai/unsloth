@@ -139,6 +139,54 @@ def test_sigkill_is_recognised_from_the_returncode(code):
     assert _gguf_child_was_oom_killed(_Called())
 
 
+def test_a_shell_wrapped_137_is_recognised():
+    """llama-quantize runs under `shell = True`, so /bin/sh reports a SIGKILLed
+    child as exit status 137 and never names the signal. unsloth_zoo then
+    re-raises a plain RuntimeError, dropping `returncode`, so the wording is
+    the only thing left."""
+    from unsloth.save import _gguf_child_was_oom_killed
+    exc = RuntimeError(
+        "Failed to quantize model.BF16.gguf to q4_k_m: Command "
+        "'/root/llama.cpp/llama-quantize model.BF16.gguf model.Q4_K_M.gguf q4_k_m 8' "
+        "returned non-zero exit status 137."
+    )
+    assert _gguf_child_was_oom_killed(exc)
+
+
+def test_a_chained_cause_is_inspected():
+    """`raise RuntimeError(...) from e` keeps the CalledProcessError, and its
+    returncode is a stronger signal than any wording."""
+    import subprocess
+
+    from unsloth.save import _gguf_child_was_oom_killed
+    cause = subprocess.CalledProcessError(137, "llama-quantize ...")
+    outer = RuntimeError("Unsloth: Quantization failed for model.Q4_K_M.gguf")
+    outer.__cause__ = cause
+    assert _gguf_child_was_oom_killed(outer)
+
+
+def test_an_implicit_context_is_inspected():
+    """Layers that re-raise without `from` still leave __context__ behind."""
+    import subprocess
+
+    from unsloth.save import _gguf_child_was_oom_killed
+    try:
+        try:
+            raise subprocess.CalledProcessError(-9, "convert_hf_to_gguf.py ...")
+        except subprocess.CalledProcessError:
+            raise RuntimeError("Unsloth: GGUF conversion failed")
+    except RuntimeError as outer:
+        assert _gguf_child_was_oom_killed(outer)
+
+
+def test_the_quantize_wrapper_chains_its_cause():
+    """The build-llama.cpp branch must chain too, else the 137 is unreachable
+    from the outer handler."""
+    src = Path(save.__file__).read_text(encoding="utf-8")
+    i = src.index("You might have to compile llama.cpp yourself")
+    assert "from e" in src[i:i + 900]
+
+
 def test_an_ordinary_converter_failure_is_not_called_an_oom():
     """A converter that fails on its own must keep its own message."""
     from unsloth.save import _gguf_child_was_oom_killed
