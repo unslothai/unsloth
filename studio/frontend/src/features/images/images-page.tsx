@@ -2806,18 +2806,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 >
                   Negative prompt
                 </button>
-                {/* Hint and chevron stay out of the way until the row is wanted. */}
-                <span
-                  className={cn(
-                    REVEAL_ON_ROW_HOVER,
-                    negativeOpen && "pointer-events-auto opacity-100",
-                  )}
-                >
-                  <InfoHint>
-                    What to steer the image away from. Only used when guidance
-                    is above 0.
-                  </InfoHint>
-                </span>
+                {/* The hint follows the shared hover rule; the chevron matches it. */}
+                <InfoHint>
+                  What to steer the image away from. Only used when guidance is
+                  above 0.
+                </InfoHint>
                 <button
                   type="button"
                   // The labelled button above is the accessible toggle; this is decoration.

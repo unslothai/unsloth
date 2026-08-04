@@ -1223,6 +1223,23 @@ html[data-chat-font] .aui-root {
 		--input: #e9e9e9;
 	}
 
+	/* Images and Video: a field's "i" only appears with the row it belongs to. Matched on the
+	   InfoHint itself so every field style is covered, including the shared chat slider.
+	   Two levels up is the field container; higher ancestors deliberately do not match. */
+	.diffusion-surface [data-slot="info-hint"] {
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 150ms;
+	}
+	.diffusion-surface *:hover > [data-slot="info-hint"],
+	.diffusion-surface *:hover > * > [data-slot="info-hint"],
+	.diffusion-surface *:focus-within > [data-slot="info-hint"],
+	.diffusion-surface *:focus-within > * > [data-slot="info-hint"],
+	.diffusion-surface [data-slot="info-hint"]:focus-visible {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
 	/* The Create / Train action floats over its settings, so hover must lighten the fill
 	   rather than thin it: a translucent green would show the controls behind it. Mixes to
 	   what bg-primary/80 looks like on the page, but stays opaque. */
