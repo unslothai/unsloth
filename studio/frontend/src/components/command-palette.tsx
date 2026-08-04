@@ -29,6 +29,7 @@ import {
   FlimSlateIcon,
   DownloadSquare01Icon,
   Folder01Icon,
+  Globe02Icon,
   Image03Icon,
   Message01Icon,
   PencilEdit02Icon,
@@ -78,11 +79,18 @@ export function CommandPalette() {
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
       if (e.key.toLowerCase() !== "p") return;
       e.preventDefault(); // prevents the browser print dialog
+      // A held shortcut auto-repeats keydown; toggling on repeats would
+      // close the palette on the first repeat after it opened.
+      if (e.repeat) return;
       useCommandPaletteStore.getState().toggle();
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+
+  // Hidden-shell routes unmount the palette; leave the store closed so it
+  // does not remount already open after the auth flow.
+  useEffect(() => () => useCommandPaletteStore.getState().setOpen(false), []);
 
   return (
     <CommandDialog
@@ -194,6 +202,14 @@ function PaletteContent() {
           >
             <HugeiconsIcon icon={DownloadSquare01Icon} strokeWidth={1.75} />
             <span>{t("shell.navigation.export")}</span>
+          </CommandItem>
+          {/* The monitor page, not the API keys dialog. */}
+          <CommandItem
+            onSelect={runAndClose(() => navigate({ to: "/api-monitor" }))}
+            keywords={["api", "monitor", "requests"]}
+          >
+            <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.api")}</span>
           </CommandItem>
           <CommandItem onSelect={openSettings()} keywords={["preferences"]}>
             <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
