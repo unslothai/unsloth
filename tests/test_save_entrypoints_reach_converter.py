@@ -31,7 +31,7 @@ SAVE_PY = Path(__file__).resolve().parents[1] / "unsloth" / "save.py"
 
 @pytest.fixture(scope="module")
 def tree():
-    return ast.parse(SAVE_PY.read_text())
+    return ast.parse(SAVE_PY.read_text(encoding = "utf-8"))
 
 
 def _func(tree, name):
