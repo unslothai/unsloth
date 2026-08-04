@@ -291,3 +291,79 @@ class TestPaginationLink:
             )
             is None
         )
+
+
+class TestInfoRoute:
+    def _info(self, repo = "unsloth/gemma-3-4b-it", revision = "HEAD", items = ()):
+        return asyncio.run(
+            discovery.discovery_info(
+                "models",
+                _Request(list(items)),
+                repo = repo,
+                revision = revision,
+                hf_token = None,
+                current_subject = "tester",
+            )
+        )
+
+    def test_the_repo_path_is_preserved_on_the_mirror(self, monkeypatch):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.example")
+        seen = {}
+
+        def _capture(url, token):
+            seen["url"] = url
+            return 200, b'{"id": "x"}', ""
+
+        monkeypatch.setattr(discovery, "_fetch_upstream", _capture)
+        self._info()
+        assert seen["url"].startswith("https://hf-mirror.example/api/models/"), seen
+        assert "unsloth/gemma-3-4b-it/revision/HEAD" in seen["url"], seen
+
+    @pytest.mark.parametrize("repo", ["../../etc/passwd", "a b", "", "x" * 300])
+    def test_invalid_repos_are_rejected(self, repo):
+        with pytest.raises(HTTPException) as excinfo:
+            self._info(repo = repo)
+        assert excinfo.value.status_code == 400
+
+    @pytest.mark.parametrize("revision", ["a b", "rev;rm -rf", "..\\x"])
+    def test_invalid_revisions_are_rejected(self, revision):
+        with pytest.raises(HTTPException) as excinfo:
+            self._info(revision = revision)
+        assert excinfo.value.status_code == 400
+
+    def test_listing_filters_are_not_accepted_here(self):
+        with pytest.raises(HTTPException) as excinfo:
+            self._info(items = [("search", "gemma")])
+        assert excinfo.value.status_code == 400
+
+
+class TestStreamDeadline:
+    def test_a_slow_drip_is_cut_off(self, monkeypatch):
+        # requests' timeout bounds inactivity, not total duration, so without an
+        # overall deadline this loop would hold the worker thread forever.
+        monkeypatch.setattr(discovery, "_REQUEST_TIMEOUT_SECONDS", 0.05)
+
+        class _Resp:
+            status_code = 200
+            headers = {}
+
+            def iter_content(self, chunk_size = 0):
+                import time as _t
+
+                while True:
+                    _t.sleep(0.02)
+                    yield b"x"
+
+            def close(self):
+                pass
+
+        class _Session:
+            def get(self, url, **kw):
+                return _Resp()
+
+        monkeypatch.setattr(
+            "huggingface_hub.utils.get_session", lambda: _Session()
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            discovery._fetch_upstream("https://huggingface.co/api/models", None)
+        assert excinfo.value.status_code == 504

@@ -17,16 +17,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import time
 from typing import Any, Dict, List, Literal, Optional
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from auth.authentication import get_current_subject
 from hub.dependencies import get_hf_token
 from hub.utils.download_registry import scrub_secrets
 from hub.utils.hf_errors import hf_error_status
+from hub.utils.paths import is_valid_repo_id
 from utils.utils import hf_endpoint_url
 
 
@@ -240,7 +243,15 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
         if response.status_code in (301, 302, 303, 307, 308):
             return response.status_code, b"", ""
         body = bytearray()
+        # requests' timeout bounds inactivity between chunks, not the whole
+        # download, so a slow drip would pin this worker thread indefinitely.
+        deadline = time.monotonic() + _REQUEST_TIMEOUT_SECONDS
         for chunk in response.iter_content(chunk_size = 65536):
+            if time.monotonic() > deadline:
+                raise HTTPException(
+                    status_code = 504,
+                    detail = "Hugging Face took too long to send the discovery response",
+                )
             if not chunk:
                 continue
             body.extend(chunk)
@@ -254,20 +265,8 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
         response.close()
 
 
-@router.get("/discovery/{resource}")
-async def discovery_search(
-    resource: Literal["models", "datasets"],
-    request: Request,
-    hf_token: Optional[str] = Depends(get_hf_token),
-    current_subject: str = Depends(get_current_subject),
-):
-    try:
-        pairs = build_discovery_query(request.query_params)
-    except DiscoveryQueryError as e:
-        raise HTTPException(status_code = 400, detail = str(e))
-
-    url = build_upstream_url(resource, pairs)
-
+async def _proxy_get(url: str, hf_token: Optional[str]) -> tuple:
+    """Fetch upstream and map every failure mode -> (payload, link_header)."""
     try:
         status, body, link = await asyncio.to_thread(_fetch_upstream, url, hf_token)
     except HTTPException:
@@ -293,21 +292,93 @@ async def discovery_search(
         # See _UPSTREAM_AUTH_STATUS: never surface this as our own 401/403.
         raise HTTPException(
             status_code = _UPSTREAM_AUTH_STATUS,
-            detail = "Hugging Face rejected the credentials for this search",
+            detail = "Hugging Face rejected the credentials for this request",
         )
     if status >= 400:
         raise HTTPException(
             status_code = 502 if status >= 500 else status,
-            detail = f"Hugging Face returned {status} for this search",
+            detail = f"Hugging Face returned {status} for this request",
         )
-
     try:
-        payload = json.loads(body.decode("utf-8"))
+        return json.loads(body.decode("utf-8")), link
     except Exception:
         raise HTTPException(
             status_code = 502,
             detail = "Hugging Face returned a malformed discovery response",
         )
+
+
+# Only `expand` is meaningful on a single-repo lookup; the listing filters are
+# rejected so this cannot be turned into a second listing route.
+_INFO_PARAMS = frozenset({"expand"})
+_REVISION_RE = re.compile(r"^[A-Za-z0-9._\-/]{1,128}$")
+
+
+def build_info_query(params: Any) -> List[tuple]:
+    """Allowlist for the single-repo lookup."""
+    pairs: List[tuple] = []
+    items = params.multi_items() if hasattr(params, "multi_items") else list(params.items())
+    for name, raw in items:
+        if name in ("repo", "revision"):
+            continue
+        if name not in _INFO_PARAMS:
+            _reject(f"Unsupported query parameter {name!r}")
+        if len(pairs) >= _MAX_REPEATED_VALUES:
+            _reject(f"Too many values for {name!r}")
+        value = raw.strip()
+        if len(value) > _MAX_STRING_LENGTH:
+            _reject(f"Query parameter {name!r} is too long")
+        pairs.append((name, value))
+    return pairs
+
+
+@router.get("/discovery-info/{resource}")
+async def discovery_info(
+    resource: Literal["models", "datasets"],
+    request: Request,
+    repo: str = Query(..., max_length = 200),
+    revision: str = Query("HEAD", max_length = 128),
+    hf_token: Optional[str] = Depends(get_hf_token),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Single-repo lookup, so a mirror user's model-info never hits the public Hub.
+
+    The listing route drops the path, which would turn this into a search, so
+    the repo and revision are validated and re-encoded here instead.
+    """
+    if not is_valid_repo_id(repo):
+        raise HTTPException(status_code = 400, detail = f"Invalid repo: {repo!r}")
+    if not _REVISION_RE.match(revision):
+        raise HTTPException(status_code = 400, detail = "Invalid revision")
+    try:
+        pairs = build_info_query(request.query_params)
+    except DiscoveryQueryError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+
+    base = hf_endpoint_url().rstrip("/")
+    path = "/".join(quote(part, safe = "") for part in repo.split("/"))
+    url = f"{base}/api/{resource}/{path}/revision/{quote(revision, safe = '')}"
+    if pairs:
+        url += "?" + urlencode(pairs)
+    payload, _ = await _proxy_get(url, hf_token)
+    return JSONResponse(content = payload)
+
+
+@router.get("/discovery/{resource}")
+async def discovery_search(
+    resource: Literal["models", "datasets"],
+    request: Request,
+    hf_token: Optional[str] = Depends(get_hf_token),
+    current_subject: str = Depends(get_current_subject),
+):
+    try:
+        pairs = build_discovery_query(request.query_params)
+    except DiscoveryQueryError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+
+    url = build_upstream_url(resource, pairs)
+
+    payload, link = await _proxy_get(url, hf_token)
 
     headers = {}
     # Absolute, not relative: the Hub client's link parser only recognises an

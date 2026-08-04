@@ -11,6 +11,7 @@ import { HUB_HF_TOKEN_HEADER } from "./hub-token-header";
 export type HubResource = "models" | "datasets";
 
 export const PROXY_PREFIX = "/api/hub/discovery/";
+const INFO_PREFIX = "/api/hub/discovery-info/";
 export const DEFAULT_HUB_ENDPOINT = "https://huggingface.co";
 
 // Only transport failures justify a retry. A real HTTP status proves the direct
@@ -90,6 +91,26 @@ function isListingUrl(raw: string, resource: HubResource): boolean {
 }
 
 /**
+ * modelInfo's /api/{resource}/{repo}/revision/{rev}. It needs the path-preserving
+ * route: sending it to the listing proxy loses the repo, and leaving it direct
+ * would put a mirror user's repo id and token on the public Hub.
+ */
+function infoTargetOf(
+  raw: string,
+  resource: HubResource,
+): { repo: string; revision: string } | null {
+  const path = hubUrlOf(raw)?.pathname;
+  const m = path?.match(
+    new RegExp(`^/api/${resource}/(.+)/revision/([^/]+)$`),
+  );
+  if (!m) return null;
+  return {
+    repo: decodeURIComponent(m[1]),
+    revision: decodeURIComponent(m[2]),
+  };
+}
+
+/**
  * Retarget a Hub request at the Studio backend. The SDK puts the HF token in
  * Authorization, but on our API that slot is the Studio session, so the token
  * moves to the internal header and authFetch supplies the bearer.
@@ -114,6 +135,21 @@ export function toProxyRequest(
     url: `${PROXY_PREFIX}${resource}${search}`,
     init: { ...init, headers },
   };
+}
+
+function toInfoRequest(
+  target: { repo: string; revision: string },
+  raw: string,
+  resource: HubResource,
+  init: Parameters<typeof fetch>[1],
+): { url: string; init: Parameters<typeof fetch>[1] } {
+  const req = toProxyRequest(raw, resource, init);
+  const params = new URLSearchParams(hubUrlOf(raw)?.search ?? "");
+  const out = new URLSearchParams();
+  out.set("repo", target.repo);
+  out.set("revision", target.revision);
+  for (const v of params.getAll("expand")) out.append("expand", v);
+  return { url: `${INFO_PREFIX}${resource}?${out}`, init: req.init };
 }
 
 /**
@@ -165,8 +201,13 @@ export function createHubTransport(
       return viaBackend(raw, init);
     }
 
-    // Listing-only route: see isListingUrl.
     if (!isListingUrl(raw, resource)) {
+      const info = infoTargetOf(raw, resource);
+      if (info && (useProxy || proxyFirst())) {
+        const req = toInfoRequest(info, raw, resource, init);
+        return backend(req.url, req.init);
+      }
+      // Anything else keeps its path and stays on the direct route.
       return direct(input, init);
     }
 

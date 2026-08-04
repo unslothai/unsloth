@@ -256,16 +256,18 @@ test("a model-info request is never retargeted at the listing proxy", async () =
     proxyFirst: () => true,
   });
 
-  const res = await transport(MODEL_INFO_URL, {});
+  await transport(MODEL_INFO_URL, {});
 
-  assert.equal(res.status, 200);
-  assert.equal(
-    backend.calls.length,
-    0,
-    "the proxy drops the pathname, so modelInfo would parse a listing array " +
-      "as one repo and cache a model with id and name undefined",
-  );
-  assert.deepEqual(seen, [MODEL_INFO_URL]);
+  // In mirror mode it goes to the path-preserving info route. What it must
+  // never reach is the listing route, which drops the pathname: modelInfo would
+  // parse a listing array as one repo and cache a model with no id or name.
+  for (const call of backend.calls) {
+    assert.ok(
+      !call.url.startsWith("/api/hub/discovery/"),
+      `model-info must not hit the listing route (got ${call.url})`,
+    );
+  }
+  assert.deepEqual(seen, []);
 });
 
 test("a model-info transport failure is not retried through the proxy", async () => {
@@ -323,4 +325,43 @@ test("a stuck-false navigator.onLine does not veto the fallback", async () => {
     1,
     "a browser-reported offline state must still try the server",
   );
+});
+
+const INFO_URL =
+  "https://huggingface.co/api/models/unsloth/gemma-3-4b-it/revision/HEAD?expand=gguf";
+
+test("with a mirror configured, model-info goes to the path-preserving route", async () => {
+  const backend = captureBackend();
+  const transport = createHubTransport("models", {
+    direct: async () => {
+      throw new Error("a mirror user's model-info must not hit the public Hub");
+    },
+    backend: backend.backend,
+    proxyFirst: () => true,
+  });
+  await transport(INFO_URL, {});
+  assert.equal(backend.calls.length, 1);
+  const url = backend.calls[0].url;
+  assert.ok(url.startsWith("/api/hub/discovery-info/models"), url);
+  assert.ok(
+    url.includes("repo=unsloth%2Fgemma-3-4b-it"),
+    "the repo must survive; the listing route would drop it",
+  );
+  assert.ok(url.includes("expand=gguf"));
+});
+
+test("without a mirror, model-info stays on the direct route", async () => {
+  const backend = captureBackend();
+  let direct = 0;
+  const transport = createHubTransport("models", {
+    direct: async () => {
+      direct += 1;
+      return new Response("{}", { status: 200 });
+    },
+    backend: backend.backend,
+    proxyFirst: () => false,
+  });
+  await transport(INFO_URL, {});
+  assert.equal(direct, 1);
+  assert.equal(backend.calls.length, 0);
 });
