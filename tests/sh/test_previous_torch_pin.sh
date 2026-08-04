@@ -90,9 +90,8 @@ assert_eq "upgrade env set"    "" "$(UNSLOTH_TORCH_UPGRADE=1 _previous_torch_pin
 assert_eq "upgrade env 0"      "torch==2.10.0" "$(UNSLOTH_TORCH_UPGRADE=0 _previous_torch_pin '2.10.0+cu126' 'torch>=2.4,<2.12.0')"
 
 echo "=== the preservation probe reads off disk, not through the interpreter ==="
-# `import torch` loads the SYCL runtime and can block indefinitely on a wedged Intel driver,
-# and this probe runs before setup.sh's bounded ones, so a hang here takes the installer with
-# it. Executed, not grepped: the stub interpreter records that it was called.
+# `import torch` can block forever on a wedged Intel driver, and this probe runs before
+# setup.sh's bounded ones. Executed, not grepped: the stub interpreter records being called.
 _PREVBLK=$(mktemp)
 awk '/^    _PREV_TORCH_VER=""$/{on=1} on{print} on && /tail -n 1 \|\| true\)$/{exit}' \
     "$INSTALL_SH" > "$_PREVBLK"

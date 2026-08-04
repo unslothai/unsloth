@@ -22,8 +22,8 @@ export interface HardwareInfo {
     torch: string | null;
     cuda: string | null;
     rocm: string | null;
-    // Intel XPU (SYCL). The backend has always emitted this; without it here the About tab
-    // shows no runtime row at all on an Arc host, since cuda and rocm are both null there.
+    // Intel XPU (SYCL). The backend always emitted this; without it the About tab shows no
+    // runtime row at all on an Arc host, where cuda and rocm are both null.
     xpu: string | null;
     transformers: string | null;
     unsloth: string | null;

@@ -73,11 +73,9 @@ async function fetchInstallSource(): Promise<UpdateInstallSource> {
   }
 }
 
-// Every accelerator runtime the backend reported, not just the first. A dual CUDA+XPU build
-// running in XPU mode reports both -- hardware.py deliberately supports that and hides CUDA
-// only at device selection -- so returning CUDA alone hid the XPU row on exactly the host it
-// was added for. Module scope on purpose: inlining this pushes AboutTab past the
-// cognitive-complexity ceiling.
+// Every accelerator runtime the backend reported, not just the first: a dual CUDA+XPU build in
+// XPU mode reports both, so returning CUDA alone hid the XPU row. Module scope on purpose --
+// inlining this pushes AboutTab past the cognitive-complexity ceiling.
 type RuntimeRow = { labelKey: TranslationKey; version: string };
 
 function acceleratorRuntimes(hw: HardwareInfo): RuntimeRow[] {

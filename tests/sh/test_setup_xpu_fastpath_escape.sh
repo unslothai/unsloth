@@ -3,20 +3,19 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # The manifest fast path must not strand an Intel venv.
 #
-# `unsloth studio update` skips install_python_stack entirely when the package version is
-# current, and that pass is the ONLY thing that repairs an XPU wheel or swaps generic Triton
-# out. Two ways that goes wrong:
+# `unsloth studio update` skips install_python_stack when the package version is current, and
+# that pass is the ONLY thing that repairs an XPU wheel or swaps generic Triton out. Two ways
+# that goes wrong:
 #
-# * the pin is ONE-SHOT. `UNSLOTH_TORCH_INDEX_FAMILY=xpu ./install.sh` leaves nothing in the
-#   environment, so every later update sees no pin. Keying the escape on the pin alone means a
-#   migrated +xpu venv that picked generic triton back up keeps it forever, and torch.compile
-#   silently loads the CUDA-oriented library on an Arc GPU.
-# * the leaf must match EXACTLY. The shared index parsers treat only a bare `xpu` leaf as the
-#   curated family, so a custom mirror ending in `-xpu` would clear the skip flag on every
-#   single up-to-date run while the repair helpers decline to act on it.
+# * the pin is ONE-SHOT, so every later update sees none. Keying the escape on the pin alone
+#   leaves a migrated +xpu venv on generic triton forever, and torch.compile then loads the
+#   CUDA-oriented library on an Arc GPU.
+# * the leaf must match EXACTLY: the shared parsers treat only a bare `xpu` leaf as the curated
+#   family, so a mirror ending in `-xpu` would clear the skip flag on every up-to-date run
+#   while the repair helpers decline to act.
 #
-# The block is extracted and EXECUTED against built venv trees; nothing here is a grep for the
-# code's own text, and no interpreter is launched (a wedged Intel driver would hang one).
+# The block is extracted and EXECUTED against built venv trees; no interpreter is launched (a
+# wedged Intel driver would hang one).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,8 +25,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 # From the pin read to the end of the acting if/elif chain.
 # Stop at the `fi` that closes the escape chain, NOT after the Nth _SKIP_PYTHON_DEPS=false:
-# counting assignments silently truncates the block the moment an arm is added, and the arms
-# that survive still answer, so the new cases fail while the old ones pass.
+# counting assignments truncates the block as soon as an arm is added, silently.
 awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on && /^    elif \[ -n "\$INSTALLED_VER"/{exit} on{print}' \
     "$SETUP_SH" > "$WORK/blk.sh"
 [ -s "$WORK/blk.sh" ] || { echo "FATAL: escape block not found in $SETUP_SH" >&2; exit 1; }
@@ -118,9 +116,8 @@ check "FAMILY=xpu + cpu wheel" "$(escape "$(make_venv '2.9.1+cpu' no n)" "" "xpu
 check "pin with query"    "$(escape "$(make_venv '2.9.1+cpu' no o)" "$XPU?token=x")" false
 check "pin with fragment" "$(escape "$(make_venv '2.9.1+cpu' no p)" "$XPU#f")" false
 check "pin with two trailing slashes" "$(escape "$(make_venv '2.9.1+cpu' no q)" "$XPU//")" false
-# Case. Every other leaf parser lowercases (install.sh _torch_index_url_leaf, setup.ps1
-# Get-TorchIndexLeaf, install_python_stack _torch_index_leaf), so those accept FAMILY=XPU and
-# would migrate the wheel; this one kept the fast path on and the repair never ran.
+# Case. Every other leaf parser lowercases, so those accept FAMILY=XPU and migrate the wheel;
+# this one kept the fast path on and the repair never ran.
 check "FAMILY=XPU uppercase"  "$(escape "$(make_venv '2.9.1+cpu' no w)" "" "XPU")" false
 check "FAMILY=Xpu mixed case" "$(escape "$(make_venv '2.9.1+cpu' no x)" "" "Xpu")" false
 check "pin URL ending /XPU"   "$(escape "$(make_venv '2.9.1+cpu' no y)" "https://download.pytorch.org/whl/XPU")" false
@@ -129,22 +126,19 @@ check "pin URL ending /XPU"   "$(escape "$(make_venv '2.9.1+cpu' no y)" "https:/
 check "custom leaf PRIVATE-XPU" "$(escape "$(make_venv '2.9.1+cpu' no z)" "https://mirror/simple/PRIVATE-XPU")" true
 
 echo "migrating AWAY from xpu escapes too -- the pin is authoritative"
-# An up-to-date install whose wheel is +xpu, with the pin switched to another family: only
-# install_python_stack applies the pin, and the fast path skips it, so without this the user
-# asked for CUDA and kept the XPU wheel.
+# An up-to-date +xpu install with the pin switched to another family: only install_python_stack
+# applies the pin, so without this the user asked for CUDA and kept the XPU wheel.
 check "cu128 pin over xpu wheel"  "$(escape "$(make_venv '2.9.1+xpu' no A)" "https://download.pytorch.org/whl/cu128")" false
 check "rocm pin over xpu wheel"   "$(escape "$(make_venv '2.9.1+xpu' no B)" "https://download.pytorch.org/whl/rocm6.4")" false
 check "cpu pin over xpu wheel"    "$(escape "$(make_venv '2.9.1+xpu' no C)" "https://download.pytorch.org/whl/cpu")" false
 check "gfx pin over xpu wheel"    "$(escape "$(make_venv '2.9.1+xpu' no D)" "https://repo.radeon.com/whl/gfx1151")" false
 check "FAMILY=cu128 over xpu wheel" "$(escape "$(make_venv '2.9.1+xpu' no E)" "" "cu128")" false
 check "rocm7.2 dotted pin over xpu wheel" "$(escape "$(make_venv '2.9.1+xpu' no B2)" "https://download.pytorch.org/whl/rocm7.2")" false
-# gfx is a PREFIX family on every side (install.sh _is_pip_rocm_family_leaf, install_python_stack
-# re.match(r"gfx\d")) because gfx120x-all is a real Radeon index leaf.
+# gfx is a PREFIX family on every side, because gfx120x-all is a real Radeon index leaf.
 check "gfx120x-all pin over xpu wheel" "$(escape "$(make_venv '2.9.1+xpu' no D2)" "https://repo.radeon.com/whl/gfx120x-all")" false
-# EXACT families only: a leaf that merely STARTS with one is a custom verbatim pin, which the
-# shared classifiers call UNKNOWN and never repair -- escaping on it would mean a full
-# dependency pass every update that changes nothing. A loose cu[0-9]*/rocm[0-9]* glob passes
-# every one of these.
+# EXACT families only: a leaf that merely STARTS with one is a custom verbatim pin the shared
+# classifiers never repair, so escaping on it would force a pass every update for nothing. A
+# loose cu[0-9]*/rocm[0-9]* glob passes every one of these.
 check "custom rocm-current over xpu"    "$(escape "$(make_venv '2.9.1+xpu' no F)" "https://mirror/whl/rocm-current")" true
 check "custom cu-private over xpu"      "$(escape "$(make_venv '2.9.1+xpu' no G)" "https://mirror/whl/cu-private")" true
 check "custom cu128-private over xpu"   "$(escape "$(make_venv '2.9.1+xpu' no G2)" "https://mirror/whl/cu128-private")" true
@@ -158,12 +152,12 @@ check "cu128 pin over cuda wheel"  "$(escape "$(make_venv '2.9.1+cu128' no H)" "
 
 echo "a leaf that merely ends in xpu is NOT the curated family"
 # The shared parsers call this an unknown family and refuse to act, so clearing the skip flag
-# would mean a full dependency pass on every update that repairs nothing.
+# would force a pass every update that repairs nothing.
 for _odd in "https://mirror/simple/private-xpu" "https://mirror/whl/cu128-xpu" "https://mirror/whl/rocm-xpu"; do
     check "custom leaf $(basename "$_odd") + cpu wheel" \
         "$(escape "$(make_venv '2.9.1+cpu' no r)" "$_odd")" true
-    # ...but such a venv must still not be judged by the pin: if the WHEEL is xpu and generic
-    # triton is there, the swap is owed regardless of what the odd pin says.
+    # ...but the wheel still decides: an xpu wheel with generic triton is owed the swap
+    # whatever the odd pin says.
     check "custom leaf $(basename "$_odd") + xpu wheel + triton" \
         "$(escape "$(make_venv '2.9.1+xpu' yes s)" "$_odd")" false
 done
@@ -173,9 +167,8 @@ check "rocm pin + rocm wheel"  "$(escape "$(make_venv '2.9.1+rocm6.4' yes u)" "h
 check "cpu pin + cpu wheel"    "$(escape "$(make_venv '2.9.1+cpu' yes v)" "https://download.pytorch.org/whl/cpu")" true
 
 # --- parity with the helpers that would actually do the repair --------------------------------
-# The escape above only pays off if the leaf it calls "known" is one install_python_stack will
-# act on. Rather than trusting two hand-written predicates to stay in step, ask both: the shell
-# one out of setup.sh, the Python one out of the installer itself.
+# The escape only pays off if the leaf it calls "known" is one install_python_stack acts on, so
+# ask both predicates rather than trust them to stay in step.
 PY_STACK="$SCRIPT_DIR/../../studio/install_python_stack.py"
 if [ -f "$PY_STACK" ] && command -v python3 >/dev/null 2>&1; then
     awk '/^        _setup_known_nonxpu_leaf\(\) \{/{on=1} on{print} on && /^        \}$/{exit}' \

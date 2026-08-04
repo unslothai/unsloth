@@ -2166,8 +2166,8 @@ exit 0
     }
 
     # ── AMD gfx arch → AMD pip index family (repo.amd.com/rocm/whl/<family>) ──
-    # Hoisted above the Intel scan, which needs it: an arch missing from this map gets CPU
-    # torch, so it must not outrank a usable Arc card. The AMD reroute below consumes it.
+    # Hoisted above the Intel scan, which needs it: an arch missing here gets CPU torch, so it
+    # must not outrank a usable Arc card. The AMD reroute below consumes it too.
     $archFamilyMap = @{
         "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
         "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"       # RDNA 3.5 (Strix Halo/Point)
@@ -2185,13 +2185,12 @@ exit 0
     $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
 
     # ── Bounded "ask the venv python" probe ──
-    # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist
-    # to detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so
-    # stderr cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import
-    # cannot deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every
-    # failure (timeout, crash, exception) reads as .Ok = $false, never as a yes.
-    # Defined above the Intel scan: PowerShell binds a function when its definition RUNS, so
-    # one placed further down would not exist yet for that scan.
+    # A wedged torch import or a hanging Intel driver init -- what the XPU probes below exist to
+    # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
+    # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
+    # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
+    # (timeout, crash, exception) reads as .Ok = $false. Defined above the Intel scan, since
+    # PowerShell binds a function only when its definition runs.
     function Invoke-BoundedPythonProbe {
         param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
         $result = [pscustomobject]@{ Ok = $false; Output = "" }
@@ -2219,10 +2218,10 @@ exit 0
     }
 
     # Bounded Win32_VideoController scan: the query can block forever on a degraded WMI
-    # repository, and -ErrorAction only suppresses reported errors while -OperationTimeoutSec is
-    # not enforced for the local COM session this uses. Out of process with a wall-clock kill is
-    # the only bound that holds -- install_llama_prebuilt.py runs the same query. Ok = $false on
-    # an empty answer too, since a Windows host always has an adapter. Mirrors setup.ps1's copy.
+    # repository, -ErrorAction only suppresses reported errors, and -OperationTimeoutSec is not
+    # enforced for the local COM session this uses, so out of process with a wall-clock kill is
+    # the only bound that holds. Ok = $false on an empty answer too, since a Windows host always
+    # has an adapter. Mirrors setup.ps1's copy.
     function Invoke-BoundedVideoControllerScan {
         param([int]$TimeoutSec = 15)
         $result = [pscustomobject]@{ Ok = $false; Names = @() }
@@ -2248,11 +2247,9 @@ exit 0
 
     # Registry fallback for the scan above, mirroring install_llama_prebuilt.py's
     # windows_intel_gpu_in_registry(): the display-adapter class key, one NNNN subkey per driver
-    # config. Weaker than WMI -- a config can outlive removed hardware -- so it is the fallback
-    # here where that function is registry-first: there a false positive only picks a different
-    # llama.cpp bundle, here it would install XPU torch on a host with no Arc. Worth having
-    # because a fresh install has no venv torch to rescue a failed query, leaving CPU by default.
-    # Mirrors setup.ps1's copy.
+    # config. Weaker than WMI (a config can outlive removed hardware), so it is the fallback here
+    # while that function is registry-first -- there a false positive only picks a different
+    # llama.cpp bundle, here it would install XPU torch on a host with no Arc. Mirrors setup.ps1.
     function Get-IntelRegistryAdapterNames {
         $names = @()
         $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
@@ -2261,17 +2258,16 @@ exit 0
         } catch { return @() }
         foreach ($sub in $subs) {
             # Guarded per subkey, not around the loop: one unreadable entry must not discard the
-            # adapters enumerated after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
+            # adapters found after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
             try {
                 # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
                 if ("$($sub.PSChildName)" -match '^\d+$') {
                     $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
                     if ($props) {
                         $desc = "$($props.DriverDesc)"
-                        # Callers re-filter these names on "Intel", so a vendor-ID hit whose
-                        # DriverDesc is localized or OEM-branded would be found here and dropped
-                        # there. Tag it instead: enough for "an Intel GPU is present", and still
-                        # only XPU-capable if the name itself says Arc / Data Center GPU.
+                        # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
+                        # OEM-branded DriverDesc would be found here and dropped there. Tag it
+                        # instead; still only XPU-capable if the name says Arc / Data Center GPU.
                         if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
                             $names += if ($desc -match '(?i)intel') { $desc }
                                       elseif ($desc) { "Intel $desc" }
@@ -2288,35 +2284,31 @@ exit 0
 
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
     # Runs BEFORE the report chain, not inside its final else: a WMI-named-only AMD adapter
-    # (ROCmGpuLabel set, no usable ROCm) would take that chain and hide a discrete Arc card.
-    # $HasIntelGpu is "an Intel adapter is present"; $script:IsIntelXpu is "XPU wheels suit
-    # it" -- only Arc / Data Center parts qualify, UHD / HD / Iris Xe do not.
-    # Get-CimInstance, not Get-WmiObject: the latter does not exist in PowerShell 7.
+    # would take that chain and hide a discrete Arc card. $HasIntelGpu is "an Intel adapter is
+    # present"; $script:IsIntelXpu is "XPU wheels suit it" -- only Arc / Data Center parts
+    # qualify, UHD / HD / Iris Xe do not.
     $HasIntelGpu = $false
     $IntelGpuLabel = $null
-    # Reset every invocation: under "irm ... | iex" $script: is the caller's session scope, so
-    # a second run would inherit a stale $true and reroute a now-NVIDIA host to the xpu index.
+    # Reset every invocation: under "irm ... | iex" $script: is the caller's session scope, so a
+    # second run would inherit a stale $true and reroute a now-NVIDIA host to the xpu index.
     $script:IsIntelXpu = $false
-    # Excluding $AmdHasGpuWheels keeps a wheel-served AMD host out of the XPU reroute below.
-    # An AMD host with no wheels is heading for CPU torch, so a neighbouring Arc card wins.
+    # $AmdHasGpuWheels keeps a wheel-served AMD host out of the XPU reroute below; an AMD host
+    # with no wheels is heading for CPU torch, so a neighbouring Arc card wins.
     if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
         try {
             # Bounded, registry as the fallback when WMI does not answer; same match either way.
             $_gpuScan = Invoke-BoundedVideoControllerScan
-            # @() wraps the WHOLE if, not each branch: a one-element array unrolls on its way out
-            # of the block, which would make $_gpuNames a String on any single-adapter host and turn
-            # the += below into string concatenation.
+            # @() wraps the WHOLE if, not each branch: a one-element array unrolls on its way
+            # out, making $_gpuNames a String on a single-adapter host and turning the += below
+            # into string concatenation.
             $_gpuNames = @(if ($_gpuScan.Ok) { $_gpuScan.Names } else { Get-IntelRegistryAdapterNames })
-            # One definition for both the reconciliation gate and the classification below, so
-            # they cannot drift apart.
+            # One definition for both the reconciliation gate and the classification below.
             $_xpuNameRe = "(?i)Intel.*(Arc|Data Center GPU)"
-            # WMI reports the localized adapter name, which on non-English Windows carries no
-            # ASCII "Intel" for the classification below to find. The registry helper resolves
-            # the PCI vendor id, so use it to RE-LABEL an adapter WMI already reported, never to
-            # add one: an entry matching nothing WMI listed is a driver record outliving its
-            # card, and a host WMI answered for must not be promoted by it. Gated on the absence
-            # of an XPU match rather than of any Intel name: a hybrid laptop reports its ASCII
-            # "Intel UHD" alongside a localized Arc, and keying on "Intel" would stop there.
+            # On non-English Windows the WMI name carries no ASCII "Intel" for the
+            # classification below. The registry helper resolves the PCI vendor id, so use it to
+            # RE-LABEL an adapter WMI already reported, never to add one (an unmatched entry is a
+            # driver record outliving its card). Gated on the absence of an XPU match, not of any
+            # Intel name: a hybrid laptop reports "Intel UHD" next to a localized Arc.
             if ($_gpuScan.Ok -and -not ($_gpuNames | Where-Object { $_ -match $_xpuNameRe })) {
                 foreach ($_reg in @(Get-IntelRegistryAdapterNames)) {
                     foreach ($_wmiName in $_gpuNames) {
@@ -2333,15 +2325,12 @@ exit 0
             }
         } catch {}
         # A migrated env's torch can only CONFIRM the match, never veto it: an unavailable
-        # runtime means a stale driver, not unsuitable hardware, and the /cpu fallback could
-        # not displace the installed +xpu wheel anyway (PEP 440 ignores the local label, so
-        # it satisfies torch>=2.4,<2.11.0). The driver warning after the install below is the
-        # honest treatment. Bounded, and a timeout reads as "no XPU" -- the WMI verdict stands.
-        # A rerun over an existing install has already moved the old venv to
-        # $script:StudioVenvRollbackDir and created an empty one in its place, so probing
-        # $VenvPython here would ask an interpreter with no torch at all and always answer no.
-        # Ask the preserved environment when there is one -- it is the migrated runtime this
-        # fallback exists for, and reading it wrong commits CPU and then deletes it.
+        # runtime means a stale driver, not unsuitable hardware, and the /cpu fallback could not
+        # displace the installed +xpu wheel anyway (PEP 440 ignores the local label). Bounded,
+        # and a timeout reads as "no XPU" -- the WMI verdict stands.
+        # A rerun has already moved the old venv to $script:StudioVenvRollbackDir and put an
+        # empty one in its place, so probing $VenvPython would ask an interpreter with no torch.
+        # Ask the preserved environment instead -- that is the migrated runtime this rescues.
         $_xpuProbePy = $VenvPython
         if ($script:StudioVenvRollbackDir) {
             $_rollbackPy = Join-Path $script:StudioVenvRollbackDir "Scripts\python.exe"
@@ -2360,8 +2349,8 @@ exit 0
     if ($HasNvidiaSmi) {
         step "gpu" "NVIDIA GPU detected"
     } elseif ($script:IsIntelXpu) {
-        # Ranks above every AMD branch: only true when AMD gets no GPU wheel
-        # ($AmdHasGpuWheels gates the scan above), so those branches would all end on CPU.
+        # Ranks above every AMD branch: only true when AMD gets no GPU wheel ($AmdHasGpuWheels
+        # gates the scan above), so those branches would all end on CPU.
         step "gpu" "Intel GPU detected" "Green"
         substep "$IntelGpuLabel"
         # The reroute below prints the index: only it knows the mirror URL and any pin.
@@ -2412,7 +2401,7 @@ exit 0
     }
 
     # Index leaf (cpu / cu128 / xpu / gfx1201), ?query and #fragment stripped so a
-    # token-authenticated mirror still classifies by family. Shared.
+    # token-authenticated mirror still classifies by family.
     function Get-TorchIndexLeafName {
         param([string]$Url)
         if ([string]::IsNullOrWhiteSpace($Url)) { return "" }
@@ -2503,9 +2492,8 @@ exit 0
         return $null
     }
 
-    # sysconfig platform of $PythonExe's venv, lowercased ("" when it cannot be asked).
-    # Windows on ARM has no torchaudio wheel on any index, so every XPU spec list is built
-    # from this; shared so the fresh install and the flavor repair cannot drift apart.
+    # sysconfig platform of $PythonExe's venv, lowercased ("" when it cannot be asked). Windows
+    # on ARM has no torchaudio wheel on any index, so every XPU spec list is built from this.
     function Get-VenvPlatformTag {
         param([string]$PythonExe)
         if (-not $PythonExe) { return "" }
@@ -2523,8 +2511,8 @@ exit 0
         return $specs + @("torchaudio>=2.6,<2.11.0")
     }
 
-    # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Bounded, so a
-    # wedged "import torch" cannot stall the flavor repair.
+    # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Bounded, so a wedged
+    # "import torch" cannot stall the flavor repair.
     function Get-InstalledTorchTag {
         param([string]$PythonExe)
         if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
@@ -2535,8 +2523,8 @@ exit 0
         return ConvertTo-TorchFlavorTag $torchVer
     }
 
-    # Post-install XPU runtime check. The +xpu wheel installing is not proof the GPU is usable:
-    # on an old Intel compute driver torch.xpu.is_available() is False and Unsloth then dies at
+    # Post-install XPU runtime check. A +xpu wheel installing is not proof the GPU is usable: on
+    # an old Intel compute driver torch.xpu.is_available() is False and Unsloth then dies at
     # import. Warn, never fall back -- a driver update fixes it.
     function Assert-XpuRuntimeReady {
         param([string]$PythonExe)
@@ -2560,8 +2548,8 @@ exit 0
                         (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     $TorchIndexUrl = Get-TorchIndexUrl
 
-    # Intel XPU reroute. Must run AFTER the Get-TorchIndexUrl call above, or that call
-    # overwrites it. An explicit pin still wins, like the AMD ROCm reroute below.
+    # Intel XPU reroute. Must run AFTER the Get-TorchIndexUrl call above, or that call overwrites
+    # it. An explicit pin still wins, like the AMD ROCm reroute below.
     if ($script:IsIntelXpu -and -not $TorchIndexPinned -and -not $SkipTorch) {
         $XpuBaseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
         $TorchIndexUrl = "$XpuBaseUrl/xpu"
@@ -2792,22 +2780,20 @@ exit 0
                 $ROCmIndexUrl = $null
                 $ROCmTorchFloor = $null
             }
-        # Keyed off the index leaf alone, like the bitsandbytes gate below: a FAMILY=xpu or
-        # URL pin lands here on a host whose Intel scan never ran (a mixed NVIDIA box), and
-        # requiring $script:IsIntelXpu sent it to the generic branch and its 2.4 floor.
+        # Keyed off the index leaf alone, like the bitsandbytes gate below: a FAMILY=xpu or URL
+        # pin lands here on a host whose Intel scan never ran (a mixed NVIDIA box), and requiring
+        # $script:IsIntelXpu sent it to the generic branch and its 2.4 floor.
         } elseif ((Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
             # ── Intel Arc / XPU PyTorch install ──
-            # XPU wheels carry their own oneAPI runtime (intel-sycl-rt et al.), published
-            # under PEP 503 at https://download.pytorch.org/whl/xpu.
+            # XPU wheels carry their own oneAPI runtime (intel-sycl-rt et al.), published under
+            # PEP 503 at https://download.pytorch.org/whl/xpu.
             Write-TauriLog "STEP" "Installing PyTorch (Intel XPU)"
             substep "installing PyTorch from $(Remove-IndexUrlCredentials $TorchIndexUrl)..."
-            # Bound the trio like every other index: the xpu index serves torch past our
-            # ceiling (up to 2.13.0), and torchaudio dropped its exact torch pin. The floor is
-            # 2.6 rather than the usual 2.4: unsloth/models/_utils.py raises at import for an
-            # XPU device below that, so an older wheel is an install that cannot run.
-            # Windows on ARM has no torchaudio wheel on any index, so drop that pin here too
-            # rather than abort. The pin-only route now reaches this branch on an arm64
-            # interpreter, and the generic path below has always asked the interpreter this way.
+            # Bound the trio like every other index: the xpu index serves torch past our ceiling
+            # (up to 2.13.0), and torchaudio dropped its exact torch pin. The floor is 2.6, not
+            # the usual 2.4: unsloth/models/_utils.py raises at import for an XPU device below
+            # that. Windows on ARM has no torchaudio wheel on any index, so drop that pin here
+            # rather than abort -- the pin-only route reaches this branch on an arm64 interpreter.
             $VenvPlatform = Get-VenvPlatformTag -PythonExe $VenvPython
             $_xpuSpecs = Get-XpuTorchSpecs -Platform $VenvPlatform
             $_xpuCpuSpecs = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0")
@@ -2829,9 +2815,9 @@ exit 0
                 $script:IsIntelXpu = $false
                 $TorchIndexUrl = $CpuFallbackIndexUrl
             } else {
-                # A WMI name match says XPU-capable, not that the runtime initializes: on a
-                # stale driver unsloth/device_type.py then raises NotImplementedError at
-                # import. The helper warns and deliberately does NOT fall back to CPU.
+                # A WMI name match says XPU-capable, not that the runtime initializes: on a stale
+                # driver unsloth/device_type.py raises NotImplementedError at import. The helper
+                # warns and deliberately does NOT fall back to CPU.
                 Assert-XpuRuntimeReady -PythonExe $VenvPython | Out-Null
             }
         } else {
@@ -2935,20 +2921,17 @@ exit 0
     }
 
     # ── Intel XPU: bitsandbytes must carry XPU kernels ──
-    # unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 for device_type "xpu"
-    # and only bitsandbytes' XPU library exports those (the CUDA one has the naive gemm), so
-    # a wheel without it turns 4-bit QLoRA off. 0.48.2 is the first win_amd64 build carrying
-    # that library, but the floor is 0.50.0, the AMD paths' floor: <=0.49.2 NaNs at 4-bit
-    # decode on AMD, and an Arc card can sit next to a Radeon. unsloth's own floor (>=0.45.5)
-    # lets a MIGRATED venv keep an older wheel while --reinstall-package unsloth upgrades
-    # unsloth alone, so run after that install for the last word. --no-deps (torch/numpy are
-    # in), and never the curated unsloth[intel-gpu-torch*] extra: it pins torch to a single
-    # +xpu wheel URL, unpinning the bounded trio, and carries a preview bitsandbytes wheel uv
-    # refuses ("Wheel version does not match filename"), failing the whole command.
+    # unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 for device_type "xpu" and
+    # only bitsandbytes' XPU library exports those, so a wheel without it turns 4-bit QLoRA off.
+    # 0.48.2 is the first win_amd64 build carrying that library, but the floor is 0.50.0, the AMD
+    # paths' floor: <=0.49.2 NaNs at 4-bit decode on AMD, and an Arc card can sit next to a
+    # Radeon. unsloth's own floor (>=0.45.5) lets a MIGRATED venv keep an older wheel, so run
+    # after that install for the last word. --no-deps (torch/numpy are in), and never the curated
+    # unsloth[intel-gpu-torch*] extra: it pins torch to a single +xpu wheel URL, unpinning the
+    # bounded trio, and carries a preview bitsandbytes wheel uv refuses.
     # Keyed off the index leaf, not $script:IsIntelXpu: a FAMILY=xpu pin on a non-Intel host
-    # skips the XPU branch above yet still installs +xpu torch, which needs the same floor.
-    # The CPU fallback there rewrites $TorchIndexUrl, so a failed XPU install reads as "cpu"
-    # here and this stays quiet. Best-effort: a failure warns instead of aborting the install.
+    # skips the XPU branch above yet still installs +xpu torch. The CPU fallback there rewrites
+    # $TorchIndexUrl, so a failed XPU install reads as "cpu" here. Best-effort: a failure warns.
     if (-not $SkipTorch -and (Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
         substep "installing bitsandbytes with Intel XPU kernels..."
         $bnbXpuExit = Invoke-InstallCommandRetry -Label "install bitsandbytes (Intel XPU)" { uv pip install --python $VenvPython --no-deps "bitsandbytes>=0.50.0" }
@@ -2995,8 +2978,8 @@ exit 0
                     # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
                     # Same trio builder as the XPU install above: a migrated win-arm64 venv
-                    # reaches THIS path instead, and asking for the torchaudio that index has
-                    # no wheel for fails the repair before setup.ps1's ARM-aware fallback.
+                    # reaches THIS path, and asking for a torchaudio the index has no wheel for
+                    # fails the repair before setup.ps1's ARM-aware fallback.
                     $_fixSpecs = if ($expectedTorchTag -eq 'xpu') { Get-XpuTorchSpecs -Platform (Get-VenvPlatformTag -PythonExe $VenvPython) }
                                  else { @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0") }
                     $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { uv pip install --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }

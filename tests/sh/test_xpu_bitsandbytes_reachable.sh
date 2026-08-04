@@ -4,11 +4,9 @@
 # The Intel XPU bitsandbytes pass must run on BOTH install paths.
 #
 # It first shipped inside the `elif [ -n "$TORCH_INDEX_URL" ]` arm, which a migrated
-# environment never enters -- the `if [ "$_MIGRATED" = true ]` arm above it wins -- so
-# exactly the environment it existed for was the one that missed it. The AMD passes solve
-# that by existing twice; this one sits past the chain instead. Both halves are asserted
-# here: that the block is placed where every arm reaches it, and that it still fires only
-# on the xpu leaf. The block and the leaf parser are extracted from install.sh and run.
+# environment never enters, so exactly the environment it existed for missed it. The AMD
+# passes solve that by existing twice; this one sits past the chain instead. Asserted here:
+# the block is placed where every arm reaches it, and it still fires only on the xpu leaf.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,8 +15,8 @@ BANNER='# ── Intel XPU: bitsandbytes with XPU kernels ──'
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# Indentation-tolerant on purpose: a block that got indented back INTO an install arm must
-# still extract, so the placement check below reports it rather than a blunt "not found".
+# Indentation-tolerant: a block indented back INTO an install arm must still extract, so the
+# placement check below reports it rather than a blunt "not found".
 awk -v b="^[[:space:]]*$BANNER\$" '$0 ~ b, /^[[:space:]]*fi$/' "$INSTALL_SH" > "$WORK/blk.sh"
 [ -s "$WORK/blk.sh" ] || { echo "FATAL: XPU bitsandbytes block not found in $INSTALL_SH" >&2; exit 1; }
 # An extraction that lost the payload would make every case below pass vacuously.
@@ -31,8 +29,8 @@ awk '/^_torch_index_url_leaf\(\) \{/,/^\}/' "$INSTALL_SH" > "$WORK/leaf.sh"
 PASS=0
 FAIL=0
 
-# Reachability is a property of the chain, not of the block: confirm it sits after the fi
-# that closes `if _MIGRATED / elif TORCH_INDEX_URL / else`.
+# Reachability is a property of the chain: confirm the block sits after the fi that closes
+# `if _MIGRATED / elif TORCH_INDEX_URL / else`.
 _chain_start=$(grep -n '^if \[ "\$_MIGRATED" = true \]; then$' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _chain_fi=$(grep -n '^fi$' "$INSTALL_SH" | awk -F: -v s="$_chain_start" '$1 > s { print $1; exit }')
 _blk_line=$(grep -n "^[[:space:]]*$BANNER\$" "$INSTALL_SH" | head -1 | cut -d: -f1)
@@ -65,9 +63,8 @@ run_case() {
     fi
 }
 
-# [migrated, fresh] x [xpu, mirrored xpu, cuda, rocm, cpu, none] x [torch, no-torch].
-# The mirror row is the point of the leaf parser: an xpu leaf behind a private index must
-# still count as xpu.
+# [migrated, fresh] x [xpu, mirrored xpu, cuda, rocm, cpu, none] x [torch, no-torch]. The
+# mirror row is the point of the leaf parser: an xpu leaf behind a private index still counts.
 for m in true false; do
     for s in false true; do
         want_xpu=yes

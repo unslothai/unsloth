@@ -1094,35 +1094,25 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
-        # An XPU pin that the venv does not satisfy. The pass below is the only thing that
-        # acts on it (install_python_stack's _ensure_xpu_torch), so without this escape a CPU
-        # install switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever --
-        # the package version is current, so the fast path calls it up to date. Mirrors the
-        # XPU escapes on setup.ps1's $SkipPythonDeps.
+        # An XPU pin the venv does not satisfy. Only the dependency pass acts on it
+        # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
+        # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever: the package
+        # version is current, so the fast path calls it up to date. Mirrors setup.ps1.
         _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
-        # Strip query and fragment before matching the leaf: an authenticated or fragmented
-        # mirror (https://mirror/whl/xpu?token=...) is a supported pin shape, and a raw suffix
-        # test silently misses it -- which reads as "no XPU pin" and skips the repair.
+        # Strip query/fragment first: an authenticated mirror (…/whl/xpu?token=...) is a
+        # supported pin shape, and missing it reads as "no XPU pin" and skips the repair.
         _setup_pin="${_setup_pin%%\#*}"
         _setup_pin="${_setup_pin%%\?*}"
-        # ALL trailing slashes, not one: the shared leaf parsers normalise "…/xpu//" and a
-        # single %/ leaves a slash behind, which reads as "no XPU pin" and skips the repair.
+        # ALL trailing slashes, like the shared leaf parsers: a single %/ leaves "…/xpu/" behind.
         while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
-        # Compare the leaf EXACTLY, like the shared index parsers: a custom mirror whose leaf
-        # merely ends in xpu (…/private-xpu) is an UNKNOWN family to them, so a *xpu match
-        # would clear the skip flag on every up-to-date run while _ensure_xpu_torch declines
-        # to act -- a full dependency pass every update that repairs nothing.
-        # Lowercased like every other leaf parser (install.sh _torch_index_url_leaf, setup.ps1
-        # Get-TorchIndexLeaf, install_python_stack _torch_index_leaf). Without it
-        # UNSLOTH_TORCH_INDEX_FAMILY=XPU keeps the fast path on while those classifiers, once
-        # reached, call the same pin XPU -- so the repair below never runs and the wheel stays.
+        # Exact, lowercased leaf, like every other leaf parser: a *xpu suffix match (…/private-xpu)
+        # would force a pass every update that _ensure_xpu_torch then declines to act on, and an
+        # uncased match would miss UNSLOTH_TORCH_INDEX_FAMILY=XPU that those parsers do accept.
         _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
-        # Disk first, no interpreter: torch/version.py carries the local label, so a wedged
-        # Intel driver cannot hang `studio update` inside `import torch` here, and a non-Intel
-        # host pays one glob. Read unconditionally, NOT only under a pin: the pin is one-shot,
-        # so `UNSLOTH_TORCH_INDEX_FAMILY=xpu ./install.sh` leaves nothing behind and a later
-        # plain update sees none -- the installed wheel is the only durable signal, which is
-        # what _ensure_xpu_triton itself now keys on.
+        # Disk first, no interpreter: version.py carries the local label, so a wedged Intel
+        # driver cannot hang `studio update` inside `import torch`. Read unconditionally, not
+        # only under a pin: the pin is one-shot, so the installed wheel is the only durable
+        # signal -- the same one _ensure_xpu_triton keys on.
         _setup_pin_ok=false
         _setup_pin_is_xpu=false
         for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
@@ -1143,18 +1133,14 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             esac
             break
         done
-        # Correct torch is not enough: the only caller of the Triton swap is inside
-        # install_python_stack, which the fast path skips, so a migrated environment with a
-        # +xpu torch and a leftover generic triton would keep the CUDA-oriented build
-        # shadowing the XPU one forever. Read the dist-info name off disk -- "triton-<ver>"
-        # is the generic one; the XPU builds are pytorch_triton_xpu-* / triton_xpu-*, which
-        # this glob does not match.
-        # A pin the shared classifiers actually recognise as a non-XPU family. EXACT families,
-        # mirroring install.sh _is_pip_rocm_family_leaf and install_python_stack
-        # _is_cuda_family_leaf: cpu, cu<digits>, rocm<digits>[.<digits>], gfx<digit>... A merely
-        # prefixed leaf (cu128-private, rocm7.2-private) is a custom verbatim pin they call
-        # UNKNOWN and never repair, so escaping on one would mean a full dependency pass every
-        # update that changes nothing.
+        # Correct torch is not enough: the Triton swap also lives in install_python_stack, so a
+        # migrated +xpu venv with a leftover generic triton keeps the CUDA build shadowing the
+        # XPU one. The dist-info glob below matches only generic "triton-<ver>" -- the XPU builds
+        # are pytorch_triton_xpu-* / triton_xpu-*.
+        # Leaves the shared classifiers recognise as a non-XPU family. EXACT families, mirroring
+        # install.sh _is_pip_rocm_family_leaf and install_python_stack _is_cuda_family_leaf: a
+        # merely prefixed leaf (cu128-private) is a custom verbatim pin they never repair, so
+        # escaping on one would force a pass every update that changes nothing.
         _setup_known_nonxpu_leaf() {
             case "$1" in
                 cpu|gfx[0-9]*) return 0 ;;
@@ -1190,9 +1176,8 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_pin_known_nonxpu" = true ]; then
-            # Migrating AWAY from XPU. The pin is authoritative, but only install_python_stack
-            # acts on it, and the fast path skips that -- so an up-to-date install kept its
-            # +xpu wheel while the user had asked for CUDA or ROCm.
+            # Migrating AWAY from XPU: the pin is authoritative, but only install_python_stack
+            # acts on it, so an up-to-date install kept its +xpu wheel over the requested family.
             substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
             _SKIP_PYTHON_DEPS=false
         fi
@@ -1292,28 +1277,20 @@ _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
-# Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support
-# is an explicit index pin, not autodetection -- so the installed runtime IS the signal.
-# Read the local label off disk first: a CPU-only host must not pay for an `import torch` on
-# every `unsloth studio update` just to be told it has no GPU.
+# Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support is
+# an explicit index pin, not autodetection -- so the installed runtime IS the signal. The local
+# label is read off disk first so a CPU-only host never pays for an `import torch`.
 _setup_torch_is_xpu=false
 _setup_xpu_ready=false
 for _setup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
     [ -f "$_setup_tv" ] || continue
     grep -q "^__version__ = '[^']*+xpu" "$_setup_tv" 2>/dev/null || continue
     _setup_torch_is_xpu=true
-    # A +xpu wheel installs fine on a host whose driver never initialises, so the wheel alone
-    # must not claim a GPU; only the runtime answer reaches the summary below.
-    # Bounded like every other probe here (setup.ps1 uses Invoke-BoundedPythonProbe for this
-    # exact call): a stalled Intel driver wedges inside `import torch`, and unbounded that
-    # hangs every `studio update` forever. 60s, not the 10s the smi probes use -- a cold
-    # `import torch` is seconds on its own, and a short bound would read a healthy host as
-    # having no GPU. A timeout means "no XPU", which is the same answer as a failed probe.
-    # The deadline lives INSIDE the probe as well, because `timeout` is not everywhere (base
-    # macOS ships no coreutils, and minimal Linux images drop it) and the arm below would
-    # otherwise run unbounded on exactly the stalled-driver host this exists to bound. Python
-    # installs no SIGALRM handler, so the default action terminates the process even while the
-    # driver blocks inside C. Either deadline expiring means "no XPU", the same as a failure.
+    # A +xpu wheel installs fine on a host whose driver never initialises, so only the runtime
+    # answer reaches the summary below. Bounded, because a stalled Intel driver wedges inside
+    # `import torch`: 60s rather than the smi probes' 10s, since a cold import is seconds on its
+    # own. The SIGALRM deadline lives inside the probe too, for hosts without `timeout` (base
+    # macOS, minimal Linux images). Either deadline expiring means "no XPU", as a failure does.
     _setup_xpu_probe='import signal; signal.alarm(60); import torch,sys; sys.exit(0 if torch.xpu.is_available() else 1)'
     if command -v timeout >/dev/null 2>&1; then
         timeout 60 "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1 && _setup_xpu_ready=true
@@ -1325,14 +1302,12 @@ done
 
 # bitsandbytes carries XPU kernels (libbitsandbytes_xpu2025.so, _xpu2026.so) only from 0.50.0,
 # and unsloth's own floor is 0.45.5, so a pre-XPU wheel satisfies it forever. install.sh raises
-# the floor, but `unsloth studio update` runs THIS file and never install.sh, so an existing XPU
-# user would keep a bitsandbytes without kernels and lose 4-bit QLoRA indefinitely. Keyed on the
-# wheel, not the runtime: a stalled driver is a driver problem, not a reason to skip the upgrade.
-# --no-deps: torch and numpy are already in. Best effort, like the install.sh and Windows passes.
+# the floor, but `unsloth studio update` runs THIS file, so an existing XPU user would keep a
+# kernel-less bitsandbytes and lose 4-bit QLoRA. Keyed on the wheel, not the runtime: a stalled
+# driver is no reason to skip the upgrade. --no-deps (torch and numpy are in), best effort.
 if [ "$_setup_torch_is_xpu" = true ]; then
-    # run_quiet_no_exit, NOT run_quiet: the latter routes failure to setup_fail and exits, which
-    # would abort an otherwise fine `studio update` over a best-effort step and leave the warning
-    # below unreachable.
+    # run_quiet_no_exit, NOT run_quiet: the latter exits via setup_fail, aborting an otherwise
+    # fine `studio update` over a best-effort step and leaving the warning below unreachable.
     run_quiet_no_exit "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
         substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable."
 fi
@@ -1428,19 +1403,16 @@ elif [ "$_setup_amd_detected" = true ]; then
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
     [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
 elif [ "$_setup_xpu_ready" = true ]; then
-    # Ranks below NVIDIA and AMD for the same reason as setup.ps1: those hosts get their own
-    # wheels, and only a confirmed XPU runtime reaches here.
+    # Ranks below NVIDIA and AMD, as in setup.ps1: those hosts get their own wheels.
     step "gpu" "Intel GPU detected (XPU runtime)"
     substep "PyTorch XPU (SYCL) provides training and GPU inference on this GPU."
 elif [ "$_setup_torch_is_xpu" = true ]; then
-    # The +xpu wheel is installed but torch.xpu.is_available() said no, which means the Intel
-    # compute driver is missing or too old. Falling through to the arm below would tell an Arc
-    # owner their hardware is unsupported and hide the one thing that actually fixes it.
+    # +xpu wheel installed but torch.xpu.is_available() said no: the Intel compute driver is
+    # missing or too old. Falling through would call the hardware unsupported instead.
     step "gpu" "Intel GPU (XPU runtime unavailable)" "$C_WARN"
     substep "PyTorch has the XPU build but cannot initialise it -- update the Intel GPU compute driver."
-    # Not "runs on CPU": with neither CUDA nor XPU available, get_device_type() in
-    # unsloth/device_type.py raises NotImplementedError, so importing unsloth fails outright.
-    # llama.cpp is unaffected, which is what chat and GGUF actually run on.
+    # Not "runs on CPU": with neither CUDA nor XPU, unsloth/device_type.py raises at import.
+    # llama.cpp is unaffected, which is what chat and GGUF run on.
     substep "Until then training and GPU inference are unavailable; chat and GGUF still work."
 elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ "$(uname -m 2>/dev/null)" = "arm64" ]; then
     # Apple Silicon: llama.cpp builds with Metal over unified memory, so not a CPU-only host.

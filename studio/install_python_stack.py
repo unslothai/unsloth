@@ -1477,10 +1477,9 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
     return _pin_is_211 != _inst_is_211
 
 
-# Intel XPU wheels. Ceiling from install.sh's xpu arm rather than the CUDA spec above: the
-# xpu index serves past our tested range, and the floor is 2.6 because unsloth/models/_utils.py
-# raises at import for an XPU device below it. Kept in step with install.sh by
-# tests/sh/test_xpu_torch_spec_parity.sh.
+# Intel XPU wheels. Own range, not the CUDA spec above: the xpu index serves past our tested
+# ceiling, and the floor is 2.6 because unsloth/models/_utils.py raises at import for an XPU
+# device below it. Kept in step with install.sh by tests/sh/test_xpu_torch_spec_parity.sh.
 _XPU_TORCH_PKG_SPEC: tuple[str, str, str] = (
     "torch>=2.6,<2.11.0",
     "torchvision>=0.21,<0.26.0",
@@ -1696,18 +1695,16 @@ def _ensure_xpu_torch() -> None:
     if pin is None:
         return
 
-    # A non-zero exit means torch is missing or un-importable; the explicit pin installs it
-    # below either way. Bounded like every other probe here.
+    # A non-zero exit means torch is missing or un-importable; the pin installs it below
+    # either way. Bounded like every other probe here.
     try:
         probe = subprocess.run(
             [
                 sys.executable,
                 "-c",
                 (
-                    # Flavour AND range: unsloth/models/_utils.py raises at import for an XPU
-                    # device on torch < 2.6, so a migrated 2.5+xpu venv is broken, not correct,
-                    # and returning early on the tag alone would leave it that way. The ceiling
-                    # matches _XPU_TORCH_PKG_SPEC. Compared here, in the venv that owns torch.
+                    # Flavour AND range: a migrated 2.5+xpu venv is broken, not correct, so the
+                    # tag alone is not enough. Range matches _XPU_TORCH_PKG_SPEC.
                     "import torch; "
                     "ver = getattr(torch, '__version__', '').lower(); "
                     "rel = ver.split('+')[0].split('.'); "
@@ -1721,12 +1718,11 @@ def _ensure_xpu_torch() -> None:
             timeout = 90,
         )
     except (OSError, subprocess.TimeoutExpired):
-        # Inconclusive, and what that means depends on what is actually installed -- which the
-        # disk can answer without loading SYCL. An UNSUPPORTED or missing wheel really does
-        # need the reinstall (the resolver keeps a too-old +xpu wheel because it satisfies the
-        # base range). A SUPPORTED one means the Intel DRIVER is stalled, and no amount of
-        # reinstalling fixes a driver: this helper runs at two repair points, so it would hang
-        # 90s and re-download the whole multi-gigabyte trio twice on every single update.
+        # Inconclusive, so ask the disk, which answers without loading SYCL. An unsupported or
+        # missing wheel does need the reinstall (the resolver keeps a too-old +xpu wheel because
+        # it satisfies the base range). A supported one means the Intel DRIVER is stalled, and
+        # reinstalling never fixes a driver -- it would just re-download the trio twice per
+        # update, since this helper runs at two repair points.
         if _xpu_wheel_supported_on_disk():
             print(
                 _red(
@@ -1783,8 +1779,8 @@ def _installed_torch_version_label() -> str:
     package without executing it. Empty when torch is absent or unreadable.
     """
     try:
-        # torch may have been installed by an earlier step of THIS run, after the path
-        # finders cached site-packages' directory listing.
+        # torch may have been installed earlier in THIS run, after the path finders cached
+        # site-packages' directory listing.
         importlib.invalidate_caches()
         spec = importlib.util.find_spec("torch")
     except (ImportError, ValueError):
@@ -1869,10 +1865,9 @@ def _ensure_xpu_triton() -> None:
         return
     pin = _explicit_xpu_torch_index_url()
     if pin is None:
-        # A one-shot pin (UNSLOTH_TORCH_INDEX_FAMILY=xpu ./install.sh) is gone by the next
-        # plain `unsloth studio update`, but the +xpu wheel it installed is still here and
-        # a dependency pass can pull generic triton back in, so the INSTALLED wheel is the
-        # pin. setup.sh raises the bitsandbytes floor off exactly this signal.
+        # A one-shot pin (UNSLOTH_TORCH_INDEX_FAMILY=xpu ./install.sh) is gone by the next plain
+        # update, but its +xpu wheel is not and a dependency pass can pull generic triton back
+        # in, so the INSTALLED wheel is the pin. setup.sh keys its bnb floor on the same signal.
         if "+xpu" not in _installed_torch_version_label().lower():
             return
         pin = f"{_PYTORCH_WHL_BASE}/xpu"
@@ -1905,8 +1900,8 @@ def _ensure_xpu_triton() -> None:
     out = probe.stdout.decode(errors = "replace")
     spec = next((ln[5:].strip() for ln in out.splitlines() if ln.startswith("SPEC=")), "")
     generic = next((ln[8:].strip() for ln in out.splitlines() if ln.startswith("GENERIC=")), "")
-    # Act only when generic triton is present AND torch asks for an XPU triton. Anything else
-    # means torch is not the +xpu wheel this assumes, and doing nothing is the safe answer.
+    # Act only when generic triton is present AND torch asks for an XPU triton; anything else
+    # means torch is not the +xpu wheel this assumes.
     if not generic or "xpu" not in spec.lower():
         return
 
@@ -1920,10 +1915,10 @@ def _ensure_xpu_triton() -> None:
         )
         return
 
-    # Fetch, THEN uninstall, THEN install from the file. The uninstall cannot go last: the
-    # shared paths live in generic triton's OWN record, so removing it afterwards deletes what
-    # the XPU build just wrote. Pre-fetching is what stops a dead mirror stranding the venv
-    # between the two steps. uv has no `pip download`, hence pip here.
+    # Fetch, THEN uninstall, THEN install from the file. The uninstall cannot go last: the shared
+    # paths live in generic triton's OWN record, so removing it afterwards deletes what the XPU
+    # build just wrote. Pre-fetching stops a dead mirror stranding the venv between the two
+    # steps. uv has no `pip download`, hence pip here.
     tmp = tempfile.mkdtemp(prefix = "unsloth_triton_xpu_")
     try:
         _dl_cmd = [
@@ -1942,11 +1937,10 @@ def _ensure_xpu_triton() -> None:
         try:
             dl = subprocess.run(
                 _dl_cmd,
-                # Same scrub every other pinned install gets. PIP_NO_INDEX makes pip ignore
-                # --index-url outright, and PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS are consulted
-                # IN ADDITION to it, so an inherited environment either fails the fetch (and
-                # leaves generic triton shadowing the XPU build) or serves the wheel from
-                # somewhere the explicit pin never named.
+                # Same scrub every other pinned install gets: PIP_NO_INDEX would ignore
+                # --index-url outright, and PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS are consulted in
+                # addition to it, so an inherited environment could serve the wheel from
+                # somewhere the pin never named.
                 env = _install_env_for_cmd(_dl_cmd),
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
@@ -1970,9 +1964,9 @@ def _ensure_xpu_triton() -> None:
             stderr = subprocess.DEVNULL,
         )
         if removed.returncode != 0:
-            # A read-only or locked venv leaves generic triton REGISTERED. Installing over it
-            # would let a later upgrade or uninstall of that distribution delete the shared
-            # files again, and every dependency pass would repeat this swap. Change nothing.
+            # A read-only or locked venv leaves generic triton REGISTERED; installing over it
+            # would let a later upgrade or uninstall delete the shared files again. Change
+            # nothing.
             print(
                 _red(
                     f"   could not remove generic triton {generic}; leaving it in place -- it "
@@ -1981,9 +1975,9 @@ def _ensure_xpu_triton() -> None:
             )
             return
         # Past this point the venv has NO triton: the uninstall took the shared top-level files
-        # with it. pip_install, not pip_install_try -- a warning here would let the caller write
-        # a completion manifest over a venv whose torch.compile is broken, and the next update
-        # would fast-path straight past it because no generic distribution is left to trigger on.
+        # with it. pip_install, not pip_install_try -- a warning would let the caller write a
+        # completion manifest over a venv whose torch.compile is broken, which the next update
+        # then fast-paths past (no generic distribution is left to trigger on).
         pip_install(
             "triton (Intel XPU)",
             "--force-reinstall",
@@ -2047,9 +2041,8 @@ def _ensure_cpu_torch() -> None:
                     "cuda = getattr(torch.version, 'cuda', '') or ''; "
                     "ver = getattr(torch, '__version__', '').lower(); "
                     # '+xpu' too: an XPU wheel sets neither torch.version.cuda nor .hip, so
-                    # without it a working Intel build reads as "cpu", this helper returns
-                    # "already a CPU build", and an explicit CPU pin over it does nothing.
-                    # Keyed on the local label, since torch.version.xpu is None on some builds.
+                    # without it a working Intel build reads as "cpu" and a CPU pin over it does
+                    # nothing. Local label, since torch.version.xpu is None on some builds.
                     "gpu = bool(hip) or 'rocm' in ver or bool(cuda) or bool(re.search(r'\\+cu\\d+', ver)) or '+xpu' in ver; "
                     "print('gpu' if gpu else 'cpu')"
                 ),
@@ -2670,8 +2663,8 @@ if not _TORCH_BACKEND:
     elif _idx_leaf == "cpu":
         _TORCH_BACKEND = "cpu"
     elif _idx_leaf == "xpu":
-        # Without this the leaf falls through as unknown and the standalone update never
-        # acts on an authoritative XPU pin -- see _ensure_xpu_torch.
+        # Without this the leaf falls through as unknown and the standalone update never acts
+        # on an authoritative XPU pin -- see _ensure_xpu_torch.
         _TORCH_BACKEND = "xpu"
     elif _is_cuda_family_leaf(_idx_leaf):
         # Require a digit after "cu" so /current or /custom is NOT branded CUDA (a wrong backend

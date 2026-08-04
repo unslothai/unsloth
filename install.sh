@@ -337,9 +337,8 @@ _gfx906_bnb_prune() {
 # and, on PyPI, first in 0.50.0. Keep this floor in step with the amd extra in
 # pyproject.toml and studio/install_python_stack.py.
 _BNB_ROCM_PYPI_FALLBACK="bitsandbytes>=0.50.0"
-# Intel XPU: separate constant because the two floors are set by different fixes and only
-# happen to coincide today. 0.50.0 manylinux carries libbitsandbytes_xpu2025.so and
-# _xpu2026.so; the Windows XPU pass in studio/setup.ps1 installs the same floor.
+# Intel XPU: separate constant, same floor by coincidence. 0.50.0 manylinux is the first with
+# libbitsandbytes_xpu2025.so / _xpu2026.so; studio/setup.ps1's XPU pass uses the same floor.
 _BNB_XPU_SPEC="bitsandbytes>=0.50.0"
 # bitsandbytes ships no ROCm binary in its aarch64 wheel at any version: the PyPI
 # 0.50.0 and continuous-release_main aarch64 wheels both carry only
@@ -2316,11 +2315,9 @@ if [ -x "$VENV_DIR/bin/python" ]; then
     # rebuilds the venv for clean state, but must keep the torch release the user
     # already has (see _previous_torch_pin below). Last line only: sitecustomize or
     # import-hook noise on stdout must not corrupt the version.
-    # Disk first, no interpreter: `import torch` loads the SYCL runtime and can block
-    # indefinitely on a wedged Intel driver, and this runs before setup.sh's bounded probes,
-    # so a hang here takes the whole installer with it. version.py carries the same label.
-    # The interpreter stays as the fallback for a layout without one, where torch is absent
-    # and the import fails fast anyway.
+    # Disk first, no interpreter: `import torch` can block forever on a wedged Intel driver,
+    # and this runs before setup.sh's bounded probes. version.py carries the same label; the
+    # interpreter stays as the fallback for a layout without one.
     _PREV_TORCH_VER=""
     for _prev_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
         [ -f "$_prev_tv" ] || continue
@@ -2874,8 +2871,8 @@ get_torch_index_url() {
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
 # torch.__version__ ($1) -> flavor tag (cuXXX / rocm / xpu / cpu); untagged wheel = cpu.
-# The xpu arm is load-bearing: without it a correct 2.10.0+xpu wheel reads as "cpu", so every
-# run force-reinstalls it and then warns torch is CPU-only. Parity with the ps1 side.
+# The xpu arm is load-bearing: without it a +xpu wheel reads as "cpu" and is force-reinstalled
+# on every run. Parity with the ps1 side.
 _torch_flavor_tag() {
     case "$1" in
         *+cu[0-9]*) printf '%s\n' "$1" | sed -n 's/.*+\(cu[0-9][0-9]*\).*/\1/p' ;;
@@ -3032,8 +3029,7 @@ _expected_torch_flavor_tag() {
             esac
             ;;
         cpu)          echo "cpu" ;;
-        # Intel XPU (SYCL): a GPU flavor like cuXXX/rocm, so a pinned xpu index repairs a
-        # stale CPU wheel instead of keeping it.
+        # Intel XPU (SYCL) is a GPU flavor, so a pinned xpu index repairs a stale CPU wheel.
         xpu)          echo "xpu" ;;
         # Exact rocm/gfx families only; a custom rocm*-suffixed leaf -> "" (custom).
         *)
@@ -3042,11 +3038,9 @@ _expected_torch_flavor_tag() {
     esac
 }
 
-# Installed torch's version label, for expected-flavor tag $1. The xpu path reads it OFF
-# DISK: `import torch` loads the SYCL runtime and can block indefinitely on a wedged Intel
-# driver, and this guard runs before setup.sh's bounded probes, so it must launch no
-# interpreter. Same read setup.sh's fast-path escape uses. Other families keep the
-# interpreter read they have always used.
+# Installed torch's version label, for expected-flavor tag $1. The xpu path reads it off disk
+# (as setup.sh's fast-path escape does): `import torch` can block forever on a wedged Intel
+# driver. Other families keep the interpreter read.
 _installed_torch_version_for_tag() {
     if [ "$1" = "xpu" ]; then
         for _itv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
@@ -3486,10 +3480,9 @@ case "$_torch_index_leaf" in
         TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"
         ;;
-    # The xpu index only reaches here through an explicit pin (there is no Intel autodetect on
-    # this side), and unsloth/models/_utils.py raises at import for an XPU device below torch
-    # 2.6, so the generic 2.4 floor would let a mirror carrying an older +xpu wheel produce an
-    # install that cannot run. download.pytorch.org/whl/xpu starts at 2.6.0 either way.
+    # Floor 2.6, not the generic 2.4: unsloth/models/_utils.py raises at import for an XPU
+    # device below it, so a mirror serving an older +xpu wheel would install something that
+    # cannot run. Reached only through an explicit pin (no Intel autodetect on this side).
     xpu)
         TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.21,<0.26.0"
@@ -4281,13 +4274,11 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
 fi
 
 # ── Intel XPU: bitsandbytes with XPU kernels ──
-# manylinux 0.50.0 is the first with libbitsandbytes_xpu2025.so / _xpu2026.so, and nothing
-# else here touches bitsandbytes on this index (both ROCm passes are gated on that family),
-# so a migrated environment keeps a pre-XPU build and loses 4-bit QLoRA on a torch that
-# otherwise works. Same floor the Windows XPU pass installs.
-# Out here rather than in the install branches above: those are mutually exclusive, so a
-# copy in the fresh arm never runs for a migrated env -- which is how the ROCm passes ended
-# up duplicated. This gate needs nothing branch-specific and matches the one just above.
+# manylinux 0.50.0 is the first with libbitsandbytes_xpu2025.so / _xpu2026.so, and nothing else
+# here touches bitsandbytes on this index (both ROCm passes are gated on that family), so a
+# migrated environment would keep a pre-XPU build and lose 4-bit QLoRA.
+# Out here rather than in the install branches above: those are mutually exclusive, so a copy in
+# the fresh arm never runs for a migrated env (which is how the ROCm passes ended up duplicated).
 # --no-deps: torch and numpy are already in. Best effort, like the Windows pass.
 if [ "$SKIP_TORCH" = false ] && [ "$(_torch_index_url_leaf "${TORCH_INDEX_URL:-}")" = "xpu" ]; then
     substep "installing bitsandbytes with Intel XPU kernels..."

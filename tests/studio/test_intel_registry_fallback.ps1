@@ -3,10 +3,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit tests for Get-IntelRegistryAdapterNames, the display-class-key fallback used when the
 # bounded CIM scan does not answer. AST-extracted from both installers (which must stay
-# identical) and run in-process with Get-ChildItem / Get-ItemProperty shadowed by mocks, so
-# the hive is a fixture and no Windows registry is touched. Its oracle is the in-process
-# Python probe windows_intel_gpu_in_registry() in studio/install_llama_prebuilt.py, which
-# reads the same key: the two must agree on "is an Intel display adapter present".
+# identical) and run in-process with Get-ChildItem / Get-ItemProperty mocked, so the hive is a
+# fixture and no Windows registry is touched. Its oracle is windows_intel_gpu_in_registry() in
+# studio/install_llama_prebuilt.py, which reads the same key: the two must agree on "is an
+# Intel display adapter present".
 # Run: pwsh -NoProfile -File tests/studio/test_intel_registry_fallback.ps1
 
 $ErrorActionPreference = "Stop"
@@ -86,8 +86,8 @@ function Test-Xpu { param([object[]] $Names)
 
 $VEN = "PCI\VEN_8086&DEV_56A0"
 $ARC = "Intel(R) Arc(TM) A770 Graphics"
-# Localized brand strings are what ships on non-English Windows: the vendor id is the only
-# ASCII anchor left, which is exactly why the match arm cannot rely on DriverDesc alone.
+# Non-English Windows ships localized brand strings, leaving the vendor id as the only ASCII
+# anchor -- which is why the match arm cannot rely on DriverDesc alone.
 $ARC_JP = [char]0x30A4 + [char]0x30F3 + [char]0x30C6 + [char]0x30EB + "(R) Arc(TM) A770"
 
 Write-Host "Intel adapters are found and classified"
@@ -101,8 +101,8 @@ Write-Host "Intel without XPU wheels stays off the xpu index"
 Check "iGPU, English DriverDesc"       (-not (Test-Xpu (Get-AdapterNames @(New-Adapter "0000" "Intel(R) UHD Graphics 770" $VEN))))
 Check "iGPU, OEM DriverDesc"           (-not (Test-Xpu (Get-AdapterNames @(New-Adapter "0000" "OEM Display Adapter" $VEN))))
 Check "vendor id, empty DriverDesc"    (-not (Test-Xpu (Get-AdapterNames @(New-Adapter "0000" "" $VEN))))
-# A vendor-id hit whose name is localized or OEM-branded must still count as an Intel GPU,
-# or the caller's Intel filter silently discards it.
+# A vendor-id hit with a localized or OEM-branded name must still count as an Intel GPU, or
+# the caller's Intel filter discards it.
 Check "OEM DriverDesc still an adapter" ((Get-AdapterNames @(New-Adapter "0000" "OEM Display Adapter" $VEN)).Count -eq 1)
 
 Write-Host "Non-Intel hosts report nothing"
@@ -126,8 +126,8 @@ $installText2 = Get-Content -Raw (Join-Path $repo "install.ps1")
 $manifestPy = Get-Content -Raw (Join-Path $repo "studio/install_manifest.py")
 
 Write-Host "constants the installers hard-code stay in step with their source of truth"
-# setup.ps1 joins this onto $VenvDir instead of asking install_manifest for it, so a rename
-# there would silently stop the Triton swap from holding the manifest at all.
+# setup.ps1 joins this onto $VenvDir instead of asking install_manifest, so a rename there
+# would silently stop the Triton swap from holding the manifest.
 $manifestName = if ($manifestPy -match '(?m)^MANIFEST_NAME\s*=\s*"([^"]+)"') { $Matches[1] } else { "" }
 Check "install_manifest exposes MANIFEST_NAME"   ($manifestName -ne "")
 Check "setup.ps1 uses that exact file name"      ($manifestName -and $setupText.Contains("`"$manifestName`""))
@@ -137,9 +137,8 @@ Check "setup.ps1 uses that exact file name"      ($manifestName -and $setupText.
 foreach ($pair in @(@("install.ps1", $installText2), @("studio/setup.ps1", $setupText))) {
     Check "$($pair[0]) gates reconciliation on the XPU regex" ($pair[1] -match '\$_xpuNameRe\s*=\s*"\(\?i\)Intel\.\*\(Arc\|Data Center GPU\)"')
     Check "$($pair[0]) reuses it for the gate"                ($pair[1] -match 'Where-Object \{ \$_ -match \$_xpuNameRe \}')
-    # @() must wrap the WHOLE if. Wrapping each branch instead lets a one-element array unroll
-    # on its way out of the block, making $_gpuNames a String on every single-adapter host, and
-    # the += that re-labels it then concatenates strings instead of appending a name.
+    # @() must wrap the WHOLE if: per-branch, a one-element array unrolls on its way out,
+    # making $_gpuNames a String on a single-adapter host, and the += then concatenates.
     Check "$($pair[0]) forces an array for the WMI names" ($pair[1] -match '\$_gpuNames = @\(if \(\$_gpuScan\.Ok\)')
 }
 

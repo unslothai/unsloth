@@ -3,14 +3,12 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Windows on ARM has no torchaudio wheel on ANY index, so every XPU spec list must drop it.
 #
-# The fresh XPU install already did. The flavor repair did not, and that is the path a
-# MIGRATED win-arm64 venv takes: the fresh branch is skipped because torch is already
-# present, the repair asks uv for a torchaudio that does not exist for win_arm64, and the
-# install fails outright -- before setup.ps1 can reach its ARM-aware CPU fallback.
+# The fresh XPU install already did; the flavor repair did not, and that is the path a MIGRATED
+# win-arm64 venv takes -- the repair asks uv for a torchaudio that does not exist for win_arm64
+# and fails outright, before setup.ps1 can reach its ARM-aware CPU fallback.
 #
-# One builder now serves both, because that is the failure mode: the two copies agreed when
-# they were written and drifted the moment only one of them learned about ARM. The tests
-# EXECUTE the builder and then assert, by AST, that the repair site really calls it.
+# One builder now serves both, since the two copies drifted the moment only one learned about
+# ARM. The tests EXECUTE the builder, then assert by AST that the repair site calls it.
 # Run: pwsh -NoProfile -File tests/studio/test_xpu_arm64_torchaudio.ps1
 
 $ErrorActionPreference = "Stop"
@@ -51,22 +49,21 @@ Check "arm64 asks for exactly two"    ($arm.Count -eq 2)
 Check "x64 keeps torchaudio"          (($x64 | Where-Object { $_ -eq 'torchaudio>=2.6,<2.11.0' }).Count -eq 1)
 Check "x64 asks for the full trio"    ($x64.Count -eq 3)
 # The floor is not cosmetic: unsloth/models/_utils.py raises at import for an XPU device on
-# torch < 2.6, so a 2.4 floor here installs an environment that cannot run.
+# torch < 2.6, so a 2.4 floor installs an environment that cannot run.
 Check "floor is 2.6 on both"          (($arm[0] -eq 'torch>=2.6,<2.11.0') -and ($x64[0] -eq 'torch>=2.6,<2.11.0'))
-# An unaskable interpreter yields "", and a Linux/macOS platform string is never win-arm64:
-# both must keep torchaudio rather than silently dropping it everywhere.
+# An unaskable interpreter yields "", and a Linux/macOS platform is never win-arm64: both must
+# keep torchaudio rather than dropping it everywhere.
 foreach ($p in @("", "linux-x86_64", "macosx-14.0-arm64", "win32")) {
     $label = if ($p) { $p } else { "<empty>" }
     Check "platform '$label' keeps torchaudio" ((Get-XpuTorchSpecs -Platform $p).Count -eq 3)
 }
-# Belt and braces on the ARM answer: -eq is case-insensitive here, and the probe lowercases
-# too, so neither alone has to be relied on.
+# Belt and braces: -eq is case-insensitive here and the probe lowercases too.
 Check "an uppercase arm64 is still arm64" ((Get-XpuTorchSpecs -Platform "WIN-ARM64").Count -eq 2)
 Check "the probe lowercases its answer"   ((Get-FunctionAst "Get-VenvPlatformTag").Extent.Text -match 'ToLowerInvariant')
 
 # --- both call sites go through it -----------------------------------------------------------
-# Text, not AST, for the call count: a call is a CommandAst anywhere in the file, and asserting
-# the COUNT is what catches a copy that quietly reintroduces its own literal trio.
+# Text, not AST, for the call count: asserting the COUNT catches a copy that quietly
+# reintroduces its own literal trio.
 $src = Get-Content -Raw -LiteralPath $installPs1
 Check "builder is used at 2 sites" (([regex]::Matches($src, 'Get-XpuTorchSpecs -Platform')).Count -eq 2)
 # The literal trio must exist in exactly ONE place now (the builder itself), or the drift is back.

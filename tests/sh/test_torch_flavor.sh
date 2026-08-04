@@ -52,8 +52,7 @@ assert_eq "nightly cu130"      "cu130" "$(_torch_flavor_tag '2.10.0.dev20250601+
 assert_eq "cu130 with suffix"  "cu130" "$(_torch_flavor_tag '2.10.0+cu130.post1')"
 assert_eq "empty -> empty"     ""      "$(_torch_flavor_tag '')"
 assert_eq "garbage -> cpu"     "cpu"   "$(_torch_flavor_tag 'not-a-version')"
-# Intel XPU wheels carry a +xpu local label. Without this arm a correct XPU build reads
-# as "cpu": the repair below force-reinstalls it every run and still warns "CPU-only".
+# Intel XPU wheels carry a +xpu local label; without this arm a correct XPU build reads as "cpu".
 assert_eq "xpu wheel"          "xpu"   "$(_torch_flavor_tag '2.10.0+xpu')"
 assert_eq "nightly xpu"        "xpu"   "$(_torch_flavor_tag '2.11.0.dev20260401+xpu')"
 
@@ -87,8 +86,8 @@ assert_eq "suffixed rocm7.2-private" "" "$(_expected_torch_flavor_tag 'https://c
 assert_eq "suffixed rocm7-current"   "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7-current')"
 assert_eq "two-dot rocm7.2.1"        "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7.2.1')"
 assert_eq "bare rocm7 stays"       "rocm" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/rocm7')"
-# The xpu leaf is a GPU flavor, so a pinned xpu index repairs a stale CPU wheel. A
-# suffixed xpu-* leaf is a custom mirror pin -> "" (custom), like cu128-private.
+# The xpu leaf is a GPU flavor, so a pinned xpu index repairs a stale CPU wheel. A suffixed
+# xpu-* leaf is a custom mirror pin -> "" (custom), like cu128-private.
 assert_eq "xpu index"              "xpu" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/xpu')"
 assert_eq "xpu trailing /"         "xpu" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/xpu/')"
 assert_eq "mirror xpu leaf"        "xpu" "$(_expected_torch_flavor_tag 'https://my.mirror/pytorch/whl/xpu')"

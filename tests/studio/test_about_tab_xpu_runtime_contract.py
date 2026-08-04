@@ -19,8 +19,7 @@ LOCALES = REPO / "studio/frontend/src/i18n/locales"
 
 
 def test_backend_still_emits_an_xpu_version():
-    # If this ever stops being true the frontend field below is dead weight, so fail loudly
-    # rather than leave a field nothing populates.
+    # If this stops being true the frontend field below is dead weight; fail loudly.
     src = HARDWARE.read_text(encoding = "utf-8")
     assert 'versions["xpu"]' in src
 
@@ -29,8 +28,7 @@ def test_hardware_info_declares_and_maps_xpu():
     src = HOOK.read_text(encoding = "utf-8")
     assert "xpu: string | null;" in src, "HardwareInfo must declare xpu"
     assert "xpu: data?.versions?.xpu ?? null," in src, "xpu must be mapped from the API response"
-    # The default has to carry the key too, otherwise the first render is `undefined`
-    # rather than null and the row flickers.
+    # The default must carry the key too, or the first render is `undefined` and the row flickers.
     assert src.count("xpu: null,") >= 1
 
 
@@ -43,9 +41,8 @@ def test_about_tab_renders_the_xpu_runtime_row():
 
 
 def test_about_tab_shows_every_runtime_not_just_the_first():
-    # hardware.py reads versions["cuda"] off torch.version.cuda and sets versions["xpu"] from
-    # torch.xpu.is_available() independently, so a dual build in forced-XPU mode reports both.
-    # Returning the first match hid the xpu row on exactly that host.
+    # hardware.py sets versions["cuda"] and versions["xpu"] independently, so a dual build in
+    # forced-XPU mode reports both; returning the first match hid the xpu row on that host.
     src = ABOUT.read_text(encoding = "utf-8")
     assert "acceleratorRuntimes" in src, "the runtime picker must return all matches"
     assert src.count("rows.push(") == 3, "cuda, rocm and xpu must each be pushed"
@@ -56,13 +53,12 @@ def test_about_tab_shows_every_runtime_not_just_the_first():
 
 
 def test_the_xpu_label_resolves_in_every_locale():
-    # en is the fallback source, so it is the only file that MUST carry the key --
-    # check-parity.ts states overlays may be partial and missing keys fall back to English.
-    # Requiring it everywhere would break the next locale anyone adds for no gain: the
-    # label is a proper noun, so the fallback is byte-identical to a translation.
+    # en is the fallback source, so it is the only file that MUST carry the key (check-parity.ts
+    # allows partial overlays). Requiring it everywhere would break the next locale added for no
+    # gain: the label is a proper noun, so the fallback equals a translation.
     assert 'xpu: "XPU",' in (LOCALES / "en.ts").read_text(encoding = "utf-8")
-    # What the overlays must not do is disagree with en, which is what would actually
-    # render wrong. check-parity.ts rejects a key absent from en; this catches the value.
+    # Overlays must not DISAGREE with en. check-parity.ts rejects a key absent from en; this
+    # catches the value.
     wrong = [
         p.name
         for p in sorted(LOCALES.glob("*.ts"))

@@ -92,9 +92,8 @@ def _load(
     import shutil as _shutil
     import tempfile as _tempfile
 
-    # A real torch/version.py on disk, so the label read is executed rather than faked.
-    # Only the LOCATION step is stubbed: find_spec would otherwise resolve this process's
-    # own torch (or none at all).
+    # A real torch/version.py on disk, so the label read is executed rather than faked. Only the
+    # LOCATION step is stubbed, since find_spec would resolve this process's own torch.
     _pkg = tmp_path / "torch"
     _pkg.mkdir()
     (_pkg / "__init__.py").write_text("raise AssertionError('torch must never be imported')\n")
@@ -152,8 +151,8 @@ def _load(
         return True
 
     def fake_pip_install(label, *args, **kw):
-        # The real one exits the process via run(); that is what keeps the completion
-        # manifest unwritten, so the stub raises SystemExit rather than returning.
+        # The real one exits the process via run(), which is what keeps the completion manifest
+        # unwritten, so the stub raises SystemExit rather than returning.
         log.append("INSTALL")
         if not install_ok:
             raise SystemExit(1)
@@ -229,8 +228,8 @@ class TestXpuTritonSwap:
             has_pip = False,
             ensurepip_works = False,
         )
-        # ensurepip failed, so it tries a real pip install; that fails too here, and the swap
-        # must warn rather than uninstall with nothing to install from.
+        # ensurepip failed, so it tries a real pip install; that fails too, and the swap must
+        # warn rather than uninstall with nothing to install from.
         assert "BOOTSTRAP" in log
         assert "UNINSTALL" not in log
 
@@ -270,9 +269,8 @@ class TestXpuTritonSwap:
 
 class TestFailedSwapIsNotSurvivable:
     def test_a_failed_uninstall_changes_nothing(self, monkeypatch, tmp_path):
-        # A read-only or locked venv leaves generic triton registered. Installing over it would
-        # let a later upgrade of that distribution delete the shared files again, and every
-        # dependency pass would repeat the swap.
+        # A read-only or locked venv leaves generic triton registered; installing over it would
+        # let a later upgrade delete the shared files again and repeat the swap every pass.
         log = _run(
             monkeypatch,
             tmp_path,
@@ -285,8 +283,8 @@ class TestFailedSwapIsNotSurvivable:
 
     def test_a_failed_install_propagates(self, monkeypatch, tmp_path):
         # The uninstall already took the shared files, so a warning would let the caller write a
-        # completion manifest over a venv whose torch.compile is broken -- and the next update
-        # would fast-path past it, since no generic distribution is left to trigger on.
+        # completion manifest over a venv whose torch.compile is broken, which the next update
+        # then fast-paths past (no generic distribution is left to trigger on).
         with pytest.raises(SystemExit):
             _run(
                 monkeypatch,
@@ -326,8 +324,8 @@ class TestTheInstalledWheelIsThePin:
 
     @pytest.mark.parametrize("label", ["2.9.1+cu128", "2.9.1+rocm6.4", "2.9.1", "", None])
     def test_no_pin_and_no_xpu_wheel_does_nothing(self, monkeypatch, tmp_path, label):
-        # No pin and no +xpu torch is an ordinary CUDA/ROCm/CPU venv; generic triton is
-        # correct there, and removing it would break torch.compile on the supported path.
+        # No pin and no +xpu torch is an ordinary CUDA/ROCm/CPU venv, where generic triton is
+        # correct and removing it would break torch.compile.
         assert (
             _run(
                 monkeypatch,
@@ -341,9 +339,8 @@ class TestTheInstalledWheelIsThePin:
         )
 
     def test_the_label_is_read_off_disk_not_imported(self, monkeypatch, tmp_path):
-        # The fake torch/__init__.py raises; reaching the swap at all proves the label came
-        # from version.py. `import torch` loads the SYCL runtime and can wedge on a stalled
-        # Intel driver, which is the exact host this code runs on.
+        # The fake torch/__init__.py raises, so reaching the swap proves the label came from
+        # version.py. `import torch` loads the SYCL runtime and wedges on a stalled Intel driver.
         mod, _ = _load(
             monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", pinned = False
         )
@@ -393,8 +390,8 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         assert env["UV_NO_CONFIG"] == "1"
 
     def test_unrelated_environment_survives(self, monkeypatch, tmp_path):
-        # Scrub the index vars, not the environment: HTTPS_PROXY and friends are how a
-        # corporate host reaches the index at all.
+        # Scrub the index vars, not the environment: HTTPS_PROXY and friends are how a corporate
+        # host reaches the index at all.
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:8080")
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
@@ -433,15 +430,15 @@ class TestADeadDriverIsNotAFlavourMismatch:
         assert mod.__dict__["_xpu_wheel_supported_on_disk"]() is supported
 
     def test_the_disk_check_and_the_probe_agree_on_the_bounds(self):
-        # Two copies of the range, in different languages, one line apart in behaviour. A
-        # floor that drifts installs an environment that raises at import.
+        # Two copies of the range in different languages; a drifted floor installs an
+        # environment that raises at import.
         src = STACK.read_text(encoding = "utf-8")
         assert src.count("(2, 6) <= n < (2, 11)") == 1, "the probe's range moved"
         assert src.count("(2, 6) <= nums < (2, 11)") == 1, "the disk check's range moved"
 
     def test_a_timeout_on_a_supported_wheel_reinstalls_nothing(self):
         # Asserted on the source because _ensure_xpu_torch sits above the extracted slice: the
-        # early return has to come BEFORE probe is set to None, or the repair runs anyway.
+        # early return must come BEFORE probe is set to None, or the repair runs anyway.
         src = STACK.read_text(encoding = "utf-8")
         start = src.index("def _ensure_xpu_torch() -> None:")
         body = src[start : src.index("def _installed_torch_version_label", start)]
@@ -468,8 +465,8 @@ def test_the_swap_is_wired_in_at_both_repair_points():
 
 
 def test_install_sh_does_not_carry_a_second_copy():
-    # It used to. install.sh runs setup.sh, which runs this module, so a copy there is both
-    # redundant and a place for the two to drift apart.
+    # It used to. install.sh runs setup.sh, which runs this module, so a copy there is redundant
+    # and a place for the two to drift apart.
     assert "replace generic Triton" not in (REPO / "install.sh").read_text(encoding = "utf-8")
 
 
@@ -515,8 +512,8 @@ class TestCpuRepairSeesAnXpuWheel:
         ],
     )
     def test_other_families_are_unchanged(self, ver, cuda, hip, want):
-        # The XPU arm must be additive: a CPU build still has to read as CPU, or every
-        # explicit CPU pin would force-reinstall torch on every update.
+        # The XPU arm must be additive: a CPU build still reads as CPU, or every explicit CPU pin
+        # force-reinstalls torch on every update.
         assert self._classify(ver, cuda, hip) == want
 
 
@@ -553,8 +550,8 @@ class TestCpuPinSurvivesAWedgedImport:
         ],
     )
     def test_gpu_label_classification(self, label, want):
-        # The CPU/untagged rows are the important ones: a slow but healthy CPU-only host
-        # must not force-reinstall torch on every single update.
+        # The CPU/untagged rows matter most: a slow but healthy CPU-only host must not
+        # force-reinstall torch on every update.
         assert self._fn("_is_gpu_torch_label")(label) is want
 
     def test_timeout_falls_through_to_the_repair(self):

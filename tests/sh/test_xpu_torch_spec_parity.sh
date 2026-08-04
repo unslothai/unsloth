@@ -1,16 +1,13 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# The Intel XPU torch trio must be identical in every place that installs it.
+# The Intel XPU torch trio must be identical in every place that installs it: install.sh,
+# studio/install_python_stack.py (the `unsloth studio update` route) and install.ps1. A drifted
+# floor gives a different torch depending on which command the user ran, and the 2.6 floor is
+# not cosmetic -- unsloth/models/_utils.py raises at import for an XPU device below it.
 #
-# Three files install it now: install.sh (fresh/migrated), studio/install_python_stack.py (the
-# `unsloth studio update` route, which never runs install.sh) and install.ps1 (Windows). A pin
-# whose floor drifts between them gives a different torch depending on which command the user
-# happened to run, and the 2.6 floor is not cosmetic -- unsloth/models/_utils.py raises at
-# import for an XPU device below it, so a lower floor installs an environment that cannot run.
-#
-# Windows on ARM legitimately drops torchaudio (no win_arm64 wheel exists), so install.ps1 is
-# checked for the floors rather than for an identical trio.
+# Windows on ARM legitimately drops torchaudio (no win_arm64 wheel), so install.ps1 is checked
+# for the floors rather than for an identical trio.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -55,8 +52,8 @@ check "install.ps1 torch floor"   "$(ps_has "$TORCH")"  yes
 check "install.ps1 torchvision"   "$(ps_has "$VISION")" yes
 check "install.ps1 torchaudio"    "$(ps_has "$AUDIO")"  yes
 
-# The pin must actually be acted on from the update route, not merely left alone: an xpu leaf
-# names no family the cuda/rocm helpers know, so without this the CPU wheel survives forever.
+# The pin must be acted on from the update route: an xpu leaf names no family the cuda/rocm
+# helpers know, so without this the CPU wheel survives forever.
 check "stack classifies the xpu leaf" \
     "$(grep -q '_TORCH_BACKEND = "xpu"' "$STACK_PY" && echo yes || echo no)" yes
 check "stack repairs an xpu pin" \

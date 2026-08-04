@@ -93,7 +93,7 @@ jobs:
       - name: Intel registry fallback tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_intel_registry_fallback.ps1
-      # Same reason: the filesystem is mocked, so it does not need a real venv or Windows.
+      # Same reason: the filesystem is mocked, so no real venv or Windows is needed.
       - name: Setup XPU pre-report tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_setup_xpu_runtime_prereport.ps1
@@ -108,8 +108,8 @@ jobs:
       - name: install.sh XPU flavor probe tests
         if: runner.os != 'Windows'
         run: bash tests/sh/test_install_sh_xpu_flavor_probe.sh
-      # Same reason: the fast-path escape and the hardware summary are extracted from
-      # setup.sh and executed against built venv trees, so no real install is needed.
+      # Same reason: the escape and the hardware summary are extracted from setup.sh and run
+      # against built venv trees, so no real install is needed.
       - name: setup.sh XPU fast-path + summary tests
         if: runner.os != 'Windows'
         run: |
