@@ -305,14 +305,16 @@ function SliderField({
 function Field({
   label,
   hint,
+  className,
   children,
 }: {
   label: string;
   hint?: ReactNode;
+  className?: string;
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className={cn("flex flex-col gap-1.5", className)}>
       <div className="flex items-center gap-1">
         <label className="text-xs font-medium text-muted-foreground">{label}</label>
         {hint && <InfoHint>{hint}</InfoHint>}
@@ -1527,11 +1529,22 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         </div>
       </div>
 
-      {/* Controls rail + preview canvas, as on the Images tabs: no cards, the Hub centered measure, a rule the full page height. */}
-      <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
+      {/* Controls rail + preview canvas, as on the Images tabs: no cards, a rule the full page
+          height. Full width, so the preview grows with the window. */}
+      <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden px-5 pt-9 sm:px-8">
         <div className="flex w-[368px] shrink-0 flex-col overflow-hidden border-r border-border/60">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-7">
+          {/* Names the pane, as the Images column does. h-9 keeps both pages' headings level. */}
+          <div className="grid gap-1">
+            <h2 className="flex h-9 items-center font-heading text-base font-medium text-foreground">
+              Create
+            </h2>
+            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+              Generate a video from a prompt
+            </p>
+          </div>
+
           <Field label="Prompt">
             <Textarea
               rows={4}
@@ -1624,7 +1637,12 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             step={0.5}
             onChange={setGuidance}
           />
-          <Field label="Seed" hint="Leave empty for a fresh random seed each run.">
+          {/* A slider row ends flush with its track, so the label below needs room. */}
+          <Field
+            label="Seed"
+            hint="Leave empty for a fresh random seed each run."
+            className="pt-2"
+          >
             <Input
               placeholder="Random if empty"
               value={seed}
@@ -1632,12 +1650,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             />
           </Field>
 
-          {/* Prominent here: offload and memory decide whether a video model fits at all. */}
-          <AdvancedDisclosure
-            open={advancedOpen}
-            onOpenChange={setAdvancedOpen}
-            prominent={true}
-          >
+          <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
             {advancedControls}
           </AdvancedDisclosure>
 

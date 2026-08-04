@@ -1097,7 +1097,7 @@ export function DiffusionTrainPanel({
   );
 
   return (
-    <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
+    <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden px-5 pt-9 sm:px-8">
       {/* Left: configure. No cards: both panes sit on the page background, split by a full-height rule. */}
       <div className="flex w-[392px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60">
         {/* pl-0.5 keeps focus rings off the scroll container's edge. pt-1.5

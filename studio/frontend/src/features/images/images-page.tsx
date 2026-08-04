@@ -200,7 +200,9 @@ function WorkflowRail({
       role="tablist"
       aria-orientation="vertical"
       aria-label="Workflow"
-      className="flex w-[44px] shrink-0 flex-col items-center gap-2.5 overflow-y-auto border-r border-border/60 pb-7"
+      // Left-aligned: pl-4 plus the page's pl-2 puts each button edge at 24px, level with
+      // the model selector label above.
+      className="flex w-[72px] shrink-0 flex-col items-start gap-2.5 overflow-y-auto border-r border-border/60 pb-7 pl-4"
     >
       {WORKFLOW_TABS.map((t) => {
         const enabled = isEnabled(t);
@@ -573,14 +575,16 @@ function SliderField({
 function Field({
   label,
   hint,
+  className,
   children,
 }: {
   label: string;
   hint?: ReactNode;
+  className?: string;
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className={cn("flex flex-col gap-1.5", className)}>
       <div className="flex items-center gap-1">
         <label className="text-xs font-medium text-muted-foreground">{label}</label>
         {hint && <InfoHint>{hint}</InfoHint>}
@@ -2564,9 +2568,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           onFamiliesChange={setTrainFamilies}
         />
       ) : (
-      /* Controls rail + preview canvas: both on the page background, split by a rule, on the Hub centered measure. Each pane pads its own content.
+      /* Controls rail + preview canvas: both on the page background, split by a rule. Each pane pads its own content.
+         Full width, so the canvas grows with the window; the settings column stays fixed.
          Padding is asymmetric: the rail hugs the left edge, the settings column keeps a wide gutter. */
-      <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pl-2.5 sm:pr-8">
+      <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
         <WorkflowRail
           workflow={workflow}
           onSelect={setWorkflow}
@@ -2579,10 +2584,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             <div className="grid gap-1">
               {/* h-9 centres the heading on the rail's first icon, so it does not read as
                   that icon's label. Same type as the Train page headings. */}
-              <h2 className="flex h-9 items-center px-0.5 font-heading text-base font-medium text-foreground">
+              <h2 className="flex h-9 items-center font-heading text-base font-medium text-foreground">
                 {activeWorkflowTab.label}
               </h2>
-              <p className="px-0.5 text-ui-11p5 leading-snug text-muted-foreground">
+              <p className="text-ui-11p5 leading-snug text-muted-foreground">
                 {activeWorkflowTab.hint}
               </p>
             </div>
@@ -3061,7 +3066,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               step={1}
               onChange={setCount}
             />
-            <Field label="Seed" hint="Leave empty for a fresh random seed each run.">
+            {/* A slider row ends flush with its track, so the label below needs room. */}
+            <Field
+              label="Seed"
+              hint="Leave empty for a fresh random seed each run."
+              className="pt-2"
+            >
               <Input
                 placeholder="Random if empty"
                 value={seed}
