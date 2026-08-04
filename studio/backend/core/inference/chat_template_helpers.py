@@ -1726,9 +1726,7 @@ def renderable_tool_catalog_for_targets(
         # from the prompt stayed in the healer's catalog and text-form output naming it
         # could still be promoted. One None target profiles as unprofilable and takes the
         # curated sweep, which is the safe direction (#7066).
-        return renderable_tool_catalog(
-            tools, None, model_info, cache, active_model_name, template
-        )
+        return renderable_tool_catalog(tools, None, model_info, cache, active_model_name, template)
     catalog = tools
     for target in live:
         catalog = renderable_tool_catalog(
