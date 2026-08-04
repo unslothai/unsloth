@@ -174,9 +174,7 @@ def drafter_paths_in(paths: Iterable[str]) -> frozenset[str]:
     # also keeps the bare ``mtp-<model>.gguf`` drafter rejected: loading it as
     # the model would pair it with itself (-m drafter --model-draft drafter).
     return frozenset(
-        path
-        for path in drafters
-        if is_drafter_dir_path(path) or extract_quant_token(path) is None
+        path for path in drafters if is_drafter_dir_path(path) or extract_quant_token(path) is None
     )
 
 

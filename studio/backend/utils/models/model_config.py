@@ -1305,9 +1305,7 @@ def _drafter_paths_in(paths) -> frozenset:
     )
     if has_main:
         return frozenset(drafters)
-    return frozenset(
-        p for p in drafters if _is_drafter_dir(p) or not _has_quant_token(p)
-    )
+    return frozenset(p for p in drafters if _is_drafter_dir(p) or not _has_quant_token(p))
 
 
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.
@@ -2435,11 +2433,7 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
                 if not fname.lower().endswith(".gguf"):
                     continue
                 quant = _extract_quant_label(fname)
-                if (
-                    _is_mmproj(fname)
-                    or fname in drafters
-                    or _is_big_endian_gguf_path(fname, quant)
-                ):
+                if _is_mmproj(fname) or fname in drafters or _is_big_endian_gguf_path(fname, quant):
                     continue
                 repo_files.append(fname)
             return _pick_best_gguf(repo_files)
