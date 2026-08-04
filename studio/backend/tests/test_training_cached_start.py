@@ -578,9 +578,7 @@ def test_unavailable_probe_uses_cached_root_level_model(tmp_path):
         "_remote_untrainable_model_format",
         side_effect = HTTPException(status_code = 503, detail = "unavailable"),
     ):
-        result = route._reject_untrainable_model_request(
-            _request(model_name = "bert-base-uncased")
-        )
+        result = route._reject_untrainable_model_request(_request(model_name = "bert-base-uncased"))
 
     assert result.cached_model_pin == ("bert-base-uncased", str(snapshot.resolve()))
 
@@ -852,10 +850,7 @@ def test_remote_format_probe_preserves_root_level_repo_id():
     info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "adapter_config.json")])
 
     with _patch_model_info(return_value = info) as model_info:
-        assert (
-            route._remote_untrainable_model_format("bert-base-uncased", "hf-token")
-            == "adapter"
-        )
+        assert route._remote_untrainable_model_format("bert-base-uncased", "hf-token") == "adapter"
 
     model_info.assert_called_once_with(
         "bert-base-uncased",
@@ -871,10 +866,7 @@ def test_remote_format_probe_retries_transient_failure():
     with _patch_model_info(
         side_effect = [OSError("timed out"), info],
     ) as model_info:
-        assert (
-            route._remote_untrainable_model_format("bert-base-uncased", "hf-token")
-            == "adapter"
-        )
+        assert route._remote_untrainable_model_format("bert-base-uncased", "hf-token") == "adapter"
 
     assert model_info.call_args_list == [
         call(

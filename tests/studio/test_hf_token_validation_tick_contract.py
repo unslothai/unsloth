@@ -98,9 +98,9 @@ def test_model_defaults_error_warns_without_blocking_readiness_and_offers_retry(
     model_defaults_error = config_store.split(".catch((error) =>", 1)[1].split(
         "const runDatasetCheck", 1
     )[0]
-    assert model_defaults_error.count(
-        "controller.signal.aborted || !requestMatchesSelection()"
-    ) == 2
+    assert (
+        model_defaults_error.count("controller.signal.aborted || !requestMatchesSelection()") == 2
+    )
 
 
 def test_training_start_prepares_token_once_before_transport():
