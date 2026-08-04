@@ -13,6 +13,7 @@ import {
   SquareSquareIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
 import {
   type MouseEvent,
@@ -100,6 +101,89 @@ function WindowControlButton({
     >
       {children}
     </button>
+  );
+}
+
+export function DesktopTitlebarNavigation({
+  expanded,
+  onToggleSidebar,
+  className,
+}: {
+  expanded: boolean;
+  onToggleSidebar: () => void;
+  className?: string;
+}): ReactElement {
+  const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+  const buttonClass =
+    "inline-flex size-8 shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+  return (
+    <div
+      className={cn("flex items-center gap-0.5", className)}
+      role="toolbar"
+      aria-label="Sidebar and page navigation"
+    >
+      <button
+        type="button"
+        title={expanded ? "Collapse sidebar" : "Expand sidebar"}
+        aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+        onMouseDown={stopTitlebarDrag}
+        onDoubleClick={stopTitlebarDrag}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleSidebar();
+        }}
+        className={buttonClass}
+      >
+        <HugeiconsIcon
+          icon={LayoutAlignLeftIcon}
+          strokeWidth={1.75}
+          className="size-icon"
+        />
+      </button>
+      {expanded && (
+        <>
+          <button
+            type="button"
+            title="Go back"
+            aria-label="Go back"
+            onMouseDown={stopTitlebarDrag}
+            onDoubleClick={stopTitlebarDrag}
+            onClick={(event) => {
+              event.stopPropagation();
+              window.history.back();
+            }}
+            className={buttonClass}
+          >
+            <ArrowLeft
+              aria-hidden="true"
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+          </button>
+          <button
+            type="button"
+            title="Go forward"
+            aria-label="Go forward"
+            onMouseDown={stopTitlebarDrag}
+            onDoubleClick={stopTitlebarDrag}
+            onClick={(event) => {
+              event.stopPropagation();
+              window.history.forward();
+            }}
+            className={buttonClass}
+          >
+            <ArrowRight
+              aria-hidden="true"
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -262,68 +346,16 @@ export function WindowTitlebar({
           <div
             className={cn(
               "pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center",
-              pinned ? "gap-2 pl-3" : "justify-center",
+              pinned ? "pl-3" : "justify-center",
             )}
             style={{ width: sidebarWidth }}
             onMouseDown={handleDragMouseDown}
             onDoubleClick={handleDragDoubleClick}
           >
-            {pinned ? (
-              <>
-                <div className="flex min-w-0 flex-1 items-center gap-2">
-                  <img
-                    src="/rounded-512.png"
-                    alt=""
-                    aria-hidden="true"
-                    draggable={false}
-                    className="size-5 shrink-0 rounded-[6px] object-cover"
-                  />
-                  <span className="min-w-0 truncate text-ui-13 font-semibold leading-none tracking-[0.01em] text-nav-fg">
-                    Unsloth
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  title="Collapse sidebar"
-                  aria-label="Collapse sidebar"
-                  onMouseDown={(event) => event.stopPropagation()}
-                  onDoubleClick={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    togglePinned();
-                  }}
-                  className="inline-flex size-8 shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                >
-                  <HugeiconsIcon
-                    icon={LayoutAlignLeftIcon}
-                    strokeWidth={1.75}
-                    className="size-icon"
-                  />
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                title="Expand sidebar"
-                aria-label="Expand sidebar"
-                onMouseDown={(event) => event.stopPropagation()}
-                onDoubleClick={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  togglePinned();
-                }}
-                className="inline-flex size-8 items-center justify-center rounded-[10px] transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                <img
-                  src="/rounded-512.png"
-                  alt=""
-                  aria-hidden="true"
-                  draggable={false}
-                  className="size-5 rounded-[6px] object-cover"
-                />
-                <span className="sr-only">Expand sidebar</span>
-              </button>
-            )}
+            <DesktopTitlebarNavigation
+              expanded={pinned}
+              onToggleSidebar={togglePinned}
+            />
           </div>
         )}
         <div

@@ -340,8 +340,8 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = TITLEBAR.read_text(encoding = "utf-8")
 
-    assert 'pinned ? "gap-2 pl-3" : "justify-center"' in source
-    assert "gap-2 px-3" not in source
+    assert 'pinned ? "pl-3" : "justify-center"' in source
+    assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
     # The curved transition and sidebar-colored backing are expanded-only;
@@ -354,6 +354,21 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert (
         'className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
         in source
+    )
+
+def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
+    titlebar = TITLEBAR.read_text(encoding = "utf-8")
+    sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
+
+    assert 'import { ArrowLeft, ArrowRight } from "lucide-react";' in titlebar
+    assert "<ArrowLeft" in titlebar
+    assert "<ArrowRight" in titlebar
+    assert "window.history.back()" in titlebar
+    assert "window.history.forward()" in titlebar
+    assert 'src="/circle-logo-small.png"' in header
+    assert header.index("<DesktopTitlebarNavigation") < header.index(
+        'src="/circle-logo-small.png"'
     )
 
 
