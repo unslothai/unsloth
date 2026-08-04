@@ -858,13 +858,30 @@ jobs:
           Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
 
           # Set-MpPreference can return cleanly and still be ignored, so verify.
+          # Split by whether the gap invalidates the verdict: cloud-delivered
+          # protection is inactive without active mode, MAPS and block-at-first-
+          # sight, and "!ml" is a cloud verdict, so a clean result without them
+          # cannot see what this gate exists to catch. Leftover exclusions only
+          # weaken it, since -DisableRemediation ignores file exclusions.
+          $fatal = @()
           $degraded = @()
-          if (-not $status.RealTimeProtectionEnabled) { $degraded += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
-          if ([int]$pref.MAPSReporting -ne 2)         { $degraded += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
+          if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
+          if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
+          if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
           if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
-          if ($pref.DisableBlockAtFirstSeen)          { $degraded += 'DisableBlockAtFirstSeen=true' }
           if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
           if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
+
+          # Configuration is not connectivity. Retried, so one network blip does
+          # not block a release.
+          $maps = $false
+          foreach ($try in 1..3) {
+            $mapsOut = (& $mp -ValidateMapsConnection 2>&1 | Out-String)
+            if ($LASTEXITCODE -eq 0) { $maps = $true; break }
+            Write-Host "  MAPS check $try failed: $($mapsOut.Trim())"
+            Start-Sleep -Seconds (5 * $try)
+          }
+          if (-not $maps) { $fatal += 'cannot reach the Defender cloud service' }
 
           # Positive control: clean and broken-scanner look identical. Split into
           # fragments so this file is not itself a sample.
@@ -884,10 +901,14 @@ jobs:
             Write-Host 'EICAR positive control blocked on write; real-time protection is live.'
             $controlPassed = $true
           }
-          if (-not $controlPassed) { $degraded += 'EICAR positive control did not fire' }
+          if (-not $controlPassed) { $fatal += 'EICAR positive control did not fire' }
 
           if ($degraded) {
-            Write-Host "::warning::Defender is degraded on this runner ($($degraded -join '; ')). Scanning anyway, but a clean result below is not authoritative."
+            Write-Host "::warning::Defender is not fully configured on this runner ($($degraded -join '; ')). Scanning anyway."
+          }
+          if ($fatal) {
+            Write-Host "::error::Defender cannot give an authoritative verdict here ($($fatal -join '; ')); refusing to publish on a scan that cannot see the detection class this gate exists for"
+            exit 1
           }
 
           # Fatal, not a warning: exiting 0 here would pass an unscanned release.
@@ -919,6 +940,14 @@ jobs:
           $work = Join-Path $env:RUNNER_TEMP 'defender-scan'
           Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+          # Real-time protection acts on open and on write, and -DisableRemediation
+          # governs only the explicit scan, so a hit would quarantine the bundle
+          # mid-copy and leave the failure handler nothing to upload. Exempt both
+          # ends of the copy. The verdict is unaffected: -DisableRemediation
+          # ignores file exclusions. Left in place, since the copies must survive
+          # until the failure-gated preserve step runs.
+          Add-MpPreference -ExclusionPath (@($work) + @($paths | Split-Path -Parent | Sort-Object -Unique)) -ErrorAction Continue
 
           $detected = @()
           $unscanned = @()
