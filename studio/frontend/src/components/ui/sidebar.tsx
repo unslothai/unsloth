@@ -220,6 +220,7 @@ function Sidebar({
   side = "left",
   variant = "sidebar",
   collapsible = "offcanvas",
+  collapseToZero = false,
   className,
   children,
   dir,
@@ -228,6 +229,7 @@ function Sidebar({
   side?: "left" | "right"
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
+  collapseToZero?: boolean
 }) {
   const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned } = useSidebar()
 
@@ -272,7 +274,7 @@ function Sidebar({
       className={cn(
         "group peer text-sidebar-foreground relative shrink-0",
         hasPinMode && pinned && "w-(--sidebar-width)",
-        hasPinMode && !pinned && "w-(--sidebar-width-icon)",
+        hasPinMode && !pinned && (collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"),
       )}
       data-state={state}
       data-collapsible={state === "collapsed" ? collapsible : ""}
@@ -291,9 +293,11 @@ function Sidebar({
                 // Pin mode: always push content. Expanded when pinned.
                 pinned
                   ? "w-(--sidebar-width)"
-                  : (variant === "floating" || variant === "inset"
-                      ? "w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
-                      : "w-(--sidebar-width-icon)"),
+                  : collapseToZero
+                    ? "w-0"
+                    : (variant === "floating" || variant === "inset"
+                        ? "w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
+                        : "w-(--sidebar-width-icon)"),
               )
             : cn(
                 // Legacy mode: original shadcn behavior.
@@ -312,8 +316,12 @@ function Sidebar({
           hasPinMode
             ? cn(
                 // Pin mode: always push content, full height.
-                "absolute top-0 bottom-0 flex w-(--sidebar-width) data-[side=left]:left-0",
-                "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",
+                "absolute top-0 bottom-0 flex data-[side=left]:left-0",
+                pinned
+                  ? "w-(--sidebar-width)"
+                  : collapseToZero
+                    ? "w-0 overflow-hidden"
+                    : "w-(--sidebar-width-icon)",
               )
             : cn(
                 // Legacy mode: fixed to viewport (original shadcn behavior).
@@ -337,7 +345,7 @@ function Sidebar({
         >
           {children}
         </div>
-        <SidebarResizeHandle side={side} />
+        {(!collapseToZero || pinned) && <SidebarResizeHandle side={side} />}
       </div>
     </div>
   )

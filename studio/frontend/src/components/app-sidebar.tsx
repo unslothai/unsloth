@@ -1198,6 +1198,7 @@ export function AppSidebar() {
     <>
     <Sidebar
       collapsible="icon"
+      collapseToZero={isTauri}
       variant="sidebar"
       className={cn(
         // Rail background comes from --sidebar-surface (index.css) so the

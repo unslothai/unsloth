@@ -14,6 +14,8 @@ DATA_TAB = FRONTEND / "features/settings/tabs/data-tab.tsx"
 PROMPT_STORAGE = FRONTEND / "features/chat/prompt-storage/prompt-storage-dialog.tsx"
 
 APP_SIDEBAR = FRONTEND / "components/app-sidebar.tsx"
+SIDEBAR_PRIMITIVE = FRONTEND / "components/ui/sidebar.tsx"
+NAVBAR = FRONTEND / "components/navbar.tsx"
 INDEX_CSS = FRONTEND / "index.css"
 THREAD = FRONTEND / "components/assistant-ui/thread.tsx"
 THREAD_SIDEBAR = FRONTEND / "features/chat/thread-sidebar.tsx"
@@ -369,6 +371,18 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     assert "window.history.forward()" in titlebar
     assert 'src="/circle-logo-small.png"' in header
     assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
+
+
+def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
+    app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    primitive = SIDEBAR_PRIMITIVE.read_text(encoding = "utf-8")
+    navbar = NAVBAR.read_text(encoding = "utf-8")
+
+    assert "collapseToZero={isTauri}" in app_sidebar
+    assert 'collapseToZero = false' in primitive
+    assert 'collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"' in primitive
+    assert "usesNativeMacTitlebar && !pinned" in navbar
+    assert "<DesktopTitlebarNavigation" in navbar
 
 
 def test_visible_mac_sidebar_header_is_a_drag_region():
