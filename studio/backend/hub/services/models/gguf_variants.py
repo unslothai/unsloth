@@ -717,7 +717,12 @@ async def get_gguf_variants_answer(
         except OSError:
             local_target = None
         if local_target is not None:
-            if local_target.is_file() and local_target.suffix.lower() == ".gguf":
+            variants, has_vision = list_local_gguf_variants(repo_id)
+            if not variants and local_target.is_file() and local_target.suffix.lower() == ".gguf":
+                # A .gguf file whose parent carries no config/adapter/export
+                # marker is skipped by the directory scan but still loads via
+                # detect_gguf_model; only then fall back to the file itself, so
+                # a marked parent keeps its sibling quants and vision flag.
                 try:
                     size = local_target.stat().st_size
                 except OSError:
@@ -729,9 +734,6 @@ async def get_gguf_variants_answer(
                         size_bytes = size,
                     )
                 ]
-                answered_from[0] = repo_id
-                return _local_response(repo_id, variants, False, _complete_quants_under(repo_id))
-            variants, has_vision = list_local_gguf_variants(repo_id)
             answered_from[0] = repo_id
             # The load id is this path, so a quant offered here has to resolve here.
             return _local_response(repo_id, variants, has_vision, _complete_quants_under(repo_id))

@@ -50,3 +50,16 @@ def test_markerless_relative_gguf_file_resolves_locally(in_tmp_cwd):
 def test_nonexistent_local_syntax_path_still_returns_empty(in_tmp_cwd):
     response = _variants(os.fspath(in_tmp_cwd / "missing-dir"))
     assert response.variants == []
+
+
+def test_direct_gguf_file_in_marked_dir_still_lists_siblings(in_tmp_cwd):
+    # The load path resolves a .gguf in a marked directory to the whole
+    # directory, so the listing keeps sibling quants and the vision flag.
+    (in_tmp_cwd / "config.json").write_text("{}")
+    (in_tmp_cwd / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+    (in_tmp_cwd / "model-Q8_0.gguf").write_bytes(b"GGUF" * 2)
+    (in_tmp_cwd / "mmproj-F16.gguf").write_bytes(b"GGUF")
+
+    response = _variants(os.fspath(in_tmp_cwd / "model-Q4_K_M.gguf"))
+    assert sorted(v.quant for v in response.variants) == ["Q4_K_M", "Q8_0"]
+    assert response.has_vision is True
