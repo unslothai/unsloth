@@ -28,8 +28,7 @@ function startPayload(
   } as TrainingStartRequest;
 }
 
-test("cache reconciliation metadata does not change training start identity", () => {
-  const uncached = normalizeTrainingStartPayloadForComparison(startPayload());
+test("cache pins remain part of training start identity", () => {
   const cached = normalizeTrainingStartPayloadForComparison(
     startPayload({
       model_known_cached: true,
@@ -39,8 +38,35 @@ test("cache reconciliation metadata does not change training start identity", ()
       model_format: "safetensors",
     }),
   );
+  const differentModelCopy = normalizeTrainingStartPayloadForComparison(
+    startPayload({
+      model_known_cached: true,
+      model_local_path: "/cache/other-model",
+      dataset_known_cached: true,
+      dataset_local_path: "/cache/dataset",
+      model_format: "safetensors",
+    }),
+  );
+  const differentDatasetCopy = normalizeTrainingStartPayloadForComparison(
+    startPayload({
+      model_known_cached: true,
+      model_local_path: "/cache/model",
+      dataset_known_cached: true,
+      dataset_local_path: "/cache/other-dataset",
+      model_format: "safetensors",
+    }),
+  );
 
-  assert.deepEqual(cached, uncached);
+  assert.equal(cached.model_known_cached, true);
+  assert.equal(cached.model_local_path, "/cache/model");
+  assert.equal(cached.dataset_known_cached, true);
+  assert.equal(cached.dataset_local_path, "/cache/dataset");
+  assert.notDeepEqual(differentModelCopy, cached);
+  assert.notDeepEqual(differentDatasetCopy, cached);
+  assert.notDeepEqual(
+    normalizeTrainingStartPayloadForComparison(startPayload()),
+    cached,
+  );
 });
 
 test("untrainable model formats remain part of training start identity", () => {

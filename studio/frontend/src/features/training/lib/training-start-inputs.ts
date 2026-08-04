@@ -8,10 +8,6 @@ export function normalizeTrainingStartPayloadForComparison(
   payload: TrainingStartRequest,
 ): TrainingStartRequest {
   const normalized = { ...payload };
-  normalized.model_known_cached = false;
-  normalized.model_local_path = null;
-  normalized.dataset_known_cached = false;
-  normalized.dataset_local_path = null;
   normalized.model_format = isUntrainableModelFormat(payload.model_format)
     ? payload.model_format
     : null;
