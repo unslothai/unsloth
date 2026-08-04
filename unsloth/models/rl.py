@@ -756,8 +756,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         return _patch_trl_rl_trainers_impl(trainer_file)
     except Exception as e:
-        logger.info(
-            f"Unsloth: Could not patch trl.trainer.{trainer_file}: " f"{type(e).__name__}: {e}"
+        # Warning, not info. The impl RETURNS for the benign case this swallow
+        # exists for (a trainer this TRL does not ship), so anything reaching
+        # here means the module imported and generation itself failed, and the
+        # run silently falls back to trl's trainer, losing Unsloth's
+        # compute_loss, bf16/fp16 fixup and dataset handling at once.
+        logger.warning_once(
+            f"Unsloth: Could not build the patched trl.trainer.{trainer_file}, "
+            f"so training will use trl's own trainer instead: "
+            f"{type(e).__name__}: {e}"
         )
         return
 
