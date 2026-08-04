@@ -3,6 +3,7 @@
 
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { fetchWithTimeout } from "@/features/hub/lib/network";
+import { hubProxyFirst } from "@/features/hub/lib/hub-endpoint";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { defaultUrlTransform, type UrlTransform } from "streamdown";
 
@@ -48,6 +49,10 @@ async function fetchReadmeOnce(
 ): Promise<FetchedReadme | null> {
   const prefix = readmePrefix(kind);
   const headers: HeadersInit = {};
+  // Never send the token to the public Hub when a mirror is configured: this
+  // URL is hardcoded, so a private mirror repo would disclose its credentials
+  // and name to huggingface.co. The card is simply unavailable there for now.
+  if (hubProxyFirst()) return null;
   if (token) headers.Authorization = `Bearer ${token}`;
   let transient = false;
   for (const branch of ["main", "master"] as const) {

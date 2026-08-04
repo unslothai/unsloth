@@ -3,6 +3,7 @@
 
 import {
   fetchWithTimeout,
+  type HubFailure,
   isHubFetchError,
   markRemoteNetworkOffline,
   setHubProxyServing,
@@ -198,12 +199,21 @@ export function createHubTransport(
   const viaBackend = async (
     raw: string,
     init: Parameters<typeof fetch>[1],
+    directFailure?: HubFailure,
   ): Promise<Response> => {
     const req = toProxyRequest(raw, resource, init);
     const response = await backend(req.url, req.init);
     // Only that the backend can serve us. The origin's own state is left alone
     // so the direct clients stay suppressed instead of failing and re-marking.
     setHubProxyServing(response.ok);
+    if (!response.ok && directFailure) {
+      // authFetch resolves on a non-2xx, so without this the saved direct
+      // failure is dropped and the panel loses the classified cause.
+      const origin = hubUrlOf(raw)?.origin;
+      if (origin) {
+        markRemoteNetworkOffline(origin, undefined, directFailure);
+      }
+    }
     return response;
   };
 
@@ -240,7 +250,7 @@ export function createHubTransport(
       // could not make the request, but the server may still manage it.
       useProxy = true;
       try {
-        return await viaBackend(raw, init);
+        return await viaBackend(raw, init, error.failure);
       } catch (proxyError) {
         // Both routes are gone, so now it is true. Recording it earlier would
         // have aborted the attempt above.

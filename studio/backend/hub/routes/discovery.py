@@ -250,6 +250,10 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
     """
     from huggingface_hub.utils import get_session
 
+    # Started before the request: requests' timeout bounds inactivity, so a
+    # mirror that drips header bytes would otherwise get its own full window
+    # before the body window even begins.
+    deadline = time.monotonic() + _REQUEST_TIMEOUT_SECONDS
     headers = {"Accept": "application/json"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
@@ -267,9 +271,6 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
         if response.status_code in (301, 302, 303, 307, 308):
             return response.status_code, b"", ""
         body = bytearray()
-        # requests' timeout bounds inactivity between chunks, not the whole
-        # download, so a slow drip would pin this worker thread indefinitely.
-        deadline = time.monotonic() + _REQUEST_TIMEOUT_SECONDS
         for chunk in response.iter_content(chunk_size = 65536):
             if time.monotonic() > deadline:
                 raise HTTPException(

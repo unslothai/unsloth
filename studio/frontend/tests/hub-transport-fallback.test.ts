@@ -16,6 +16,7 @@ const { createHubTransport } = await import(
 const {
   HubFetchError,
   getHubPhase,
+  getLastHubFailure,
   isHubProxyServing,
   isHuggingFaceOffline,
   markRemoteNetworkOffline,
@@ -455,4 +456,18 @@ test("both routes failing does mark the origin offline", async () => {
   });
   await assert.rejects(transport(HF_URL, {}));
   assert.equal(isHuggingFaceOffline(), true);
+});
+
+test("a non-OK fallback records the direct failure instead of losing it", async () => {
+  markRemoteNetworkOnline();
+  const transport = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    // authFetch resolves on a non-2xx, so nothing threw and the classified
+    // cause used to be dropped, leaving the panel with no diagnosis.
+    backend: async () => new Response("bad gateway", { status: 502 }),
+  });
+  const res = await transport(HF_URL, {});
+  assert.equal(res.status, 502);
+  assert.equal(getHubPhase(HF_ORIGIN), "unavailable");
+  assert.equal(getLastHubFailure(HF_ORIGIN)?.kind, "network-opaque");
 });
