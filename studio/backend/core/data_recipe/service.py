@@ -11,13 +11,70 @@ from typing import Any
 
 from utils.paths import recipe_datasets_root
 
+from .custom_callable_validators import (
+    CUSTOM_VALIDATION_FN_MARKER,
+    register_custom_callable_validators,
+    split_custom_callable_validators,
+)
 from .jsonable import to_jsonable
 from .local_callable_validators import (
+    TOOL_VALIDATION_FN_MARKER,
     register_oxc_local_callable_validators,
+    register_tool_local_callable_validators,
     split_oxc_local_callable_validators,
+    split_tool_local_callable_validators,
 )
 
 _IMAGE_CONTEXT_PATCHED = False
+
+LOCAL_EXECUTION_CONSENT_RUN_KEY = "local_execution_consent"
+
+
+def recipe_requires_local_execution_consent(recipe: dict[str, Any]) -> bool:
+    """True when the recipe contains tool/custom checks that execute locally.
+
+    These columns run arbitrary commands/Python on the job worker, so a run
+    or validation of the recipe requires an explicit per-run consent
+    attestation from the caller (see ``assert_local_execution_consent``).
+    """
+    columns = recipe.get("columns")
+    if not isinstance(columns, list):
+        return False
+    for column in columns:
+        if not isinstance(column, dict):
+            continue
+        if str(column.get("column_type") or "").strip() != "validation":
+            continue
+        if str(column.get("validator_type") or "").strip() != "local_callable":
+            continue
+        params = column.get("validator_params")
+        if not isinstance(params, dict):
+            continue
+        fn_raw = params.get("validation_function")
+        fn_name = fn_raw.strip() if isinstance(fn_raw, str) else ""
+        if fn_name.startswith(f"{TOOL_VALIDATION_FN_MARKER}:") or fn_name.startswith(
+            f"{CUSTOM_VALIDATION_FN_MARKER}:"
+        ):
+            return True
+    return False
+
+
+def assert_local_execution_consent(recipe: dict[str, Any], run: dict[str, Any] | None) -> None:
+    """Raise when the recipe needs local-execution consent but none was given.
+
+    The consent is a one-shot per-run attestation: the caller of the jobs or
+    validate endpoint must pass ``run.local_execution_consent: true`` when the
+    recipe contains tool/custom checks. It is never stored in the recipe
+    itself, so a re-POSTed shared recipe cannot carry stale consent.
+    """
+    if not recipe_requires_local_execution_consent(recipe):
+        return
+    if isinstance(run, dict) and run.get(LOCAL_EXECUTION_CONSENT_RUN_KEY) is True:
+        return
+    raise ValueError(
+        "Recipe contains local tool/custom checks; "
+        f"{LOCAL_EXECUTION_CONSENT_RUN_KEY}: true is required to run or validate it.",
+    )
 
 
 def _encode_bytes_to_base64(value: bytes | bytearray) -> str:
@@ -252,10 +309,20 @@ def build_config_builder(recipe: dict[str, Any]):
     }
     recipe_core = _strip_frontend_model_config_metadata(recipe_core)
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(recipe_core)
+    recipe_core, tool_local_callable_specs = split_tool_local_callable_validators(recipe_core)
+    recipe_core, custom_local_callable_specs = split_custom_callable_validators(recipe_core)
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
         builder = builder,
         specs = oxc_local_callable_specs,
+    )
+    register_tool_local_callable_validators(
+        builder = builder,
+        specs = tool_local_callable_specs,
+    )
+    register_custom_callable_validators(
+        builder = builder,
+        specs = custom_local_callable_specs,
     )
 
     # DataDesignerConfigBuilder.from_config currently skips processors.

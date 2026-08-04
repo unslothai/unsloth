@@ -16,6 +16,7 @@ import {
   type BlockKind,
   type BlockType,
   type SeedBlockType,
+  type ValidatorBlockType,
   getBlockDefinition,
 } from "../blocks/registry";
 import type {
@@ -114,7 +115,7 @@ type RecipeStudioState = {
   addToolProfileNode: (position?: XYPosition, openDialog?: boolean) => void;
   addExpressionNode: (position?: XYPosition, openDialog?: boolean) => void;
   addValidatorNode: (
-    type: "validator_python" | "validator_sql" | "validator_oxc",
+    type: ValidatorBlockType,
     position?: XYPosition,
     openDialog?: boolean,
   ) => void;

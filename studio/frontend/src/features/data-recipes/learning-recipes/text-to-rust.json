@@ -1,0 +1,184 @@
+{
+  "recipe": {
+    "model_providers": [
+{
+        "name": "openai-compatible",
+        "endpoint": "",
+        "provider_type": "openai",
+        "extra_headers": {},
+        "extra_body": {}
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+{
+        "alias": "coding-model",
+        "model": "",
+        "provider": "openai-compatible",
+        "inference_parameters": {
+          "temperature": 0.7
+        }
+      }
+    ],
+    "tool_configs": [],
+    "columns": [
+{
+        "column_type": "sampler",
+        "name": "domain",
+        "drop": false,
+        "sampler_type": "category",
+        "params": {
+          "values": ["Data Processing", "Web API", "Automation"]
+        }
+      },
+{
+        "column_type": "sampler",
+        "name": "task_type",
+        "drop": false,
+        "sampler_type": "subcategory",
+        "params": {
+          "category": "domain",
+          "values": {
+            "Data Processing": ["CSV cleaning", "JSON transform", "deduplicate rows"],
+            "Web API": ["GET endpoint", "POST validation", "pagination helper"],
+            "Automation": ["file organizer", "log parser", "daily report script"]
+          }
+        }
+      },
+{
+        "column_type": "llm-text",
+        "name": "instruction",
+        "drop": false,
+        "model_alias": "coding-model",
+        "prompt": "Write one clear Rust coding instruction.\nDomain: {{ domain }}\nTask type: {{ task_type }}\n\nKeep it practical and specific.\nReturn only the instruction without any code.",
+        "with_trace": "none",
+        "extract_reasoning_content": false
+      },
+{
+        "column_type": "llm-code",
+        "name": "code_implementation",
+        "drop": false,
+        "model_alias": "coding-model",
+        "prompt": "Write Rust code for:\n{{ instruction }}\n\nRequirements:\n- a single main.rs file with fn main()\n- include needed imports\n- handle errors explicitly\n- no markdown fences",
+        "with_trace": "none",
+        "extract_reasoning_content": false,
+        "code_lang": "rust"
+      },
+{
+        "column_type": "validation",
+        "name": "rust_check",
+        "drop": true,
+        "target_columns": ["code_implementation"],
+        "validator_type": "local_callable",
+        "batch_size": 10,
+        "validator_params": {
+          "validation_function": "unsloth_custom_validator:IyBSdW5zIGNhcmdvIGNoZWNrIG9uIGVhY2ggZ2VuZXJhdGVkIGNvZGUgY2VsbC4KZGVmIHZhbGlkYXRlKGRmKToKICAgIGRlZiBydW5fY2FyZ28oY29kZSk6CiAgICAgICAgd2l0aCB0ZW1wZmlsZS5UZW1wb3JhcnlEaXJlY3RvcnkoKSBhcyByYXc6CiAgICAgICAgICAgIHdvcmsgPSBQYXRoKHJhdykKICAgICAgICAgICAgKHdvcmsgLyAiQ2FyZ28udG9tbCIpLndyaXRlX3RleHQoCiAgICAgICAgICAgICAgICAnW3BhY2thZ2VdXG5uYW1lID0gImNoZWNrIlxudmVyc2lvbiA9ICIwLjEuMCJcbmVkaXRpb24gPSAiMjAyMSJcbicKICAgICAgICAgICAgKQogICAgICAgICAgICBzcmMgPSB3b3JrIC8gInNyYyIKICAgICAgICAgICAgc3JjLm1rZGlyKCkKICAgICAgICAgICAgKHNyYyAvICJtYWluLnJzIikud3JpdGVfdGV4dChjb2RlKQogICAgICAgICAgICByZXN1bHQgPSBzdWJwcm9jZXNzLnJ1bigKICAgICAgICAgICAgICAgIFsiY2FyZ28iLCAiY2hlY2siXSwKICAgICAgICAgICAgICAgIGN3ZD13b3JrLAogICAgICAgICAgICAgICAgY2FwdHVyZV9vdXRwdXQ9VHJ1ZSwKICAgICAgICAgICAgICAgIHRleHQ9VHJ1ZSwKICAgICAgICAgICAgICAgIHRpbWVvdXQ9NjAsCiAgICAgICAgICAgICkKICAgICAgICAgICAgaWYgcmVzdWx0LnJldHVybmNvZGUgPT0gMDoKICAgICAgICAgICAgICAgIHJldHVybiB7ImlzX3ZhbGlkIjogVHJ1ZSwgImVycm9yX21lc3NhZ2UiOiAiIn0KICAgICAgICAgICAgb3V0cHV0ID0gKHJlc3VsdC5zdGRvdXQgKyByZXN1bHQuc3RkZXJyKS5zdHJpcCgpCiAgICAgICAgICAgIHJldHVybiB7ImlzX3ZhbGlkIjogRmFsc2UsICJlcnJvcl9tZXNzYWdlIjogb3V0cHV0WzozMDBdfQoKICAgIHJvd3MgPSBbcnVuX2NhcmdvKHN0cih2YWx1ZSkpIGZvciB2YWx1ZSBpbiBkZi5pbG9jWzosIDBdXQogICAgcmV0dXJuIHBkLkRhdGFGcmFtZShyb3dzKQ"
+        }
+      }
+    ],
+    "processors": []
+  },
+  "run": {
+    "rows": 5,
+    "preview": true,
+    "output_formats": ["jsonl"]
+  },
+  "ui": {
+    "nodes": [
+{
+        "id": "note_1",
+        "x": 1526,
+        "y": 1790.75,
+        "width": 568,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "The **LLM Code** block is where Rust code is generated from your instruction/prompt.\n\n##### How it works in this recipe:\n\n- You provide a clear prompt (often using Jinja references from earlier columns)\n- The model returns a response\n- The block extracts code content directly for the output column\n\n##### Current status:\n\n- Generated Rust is checked by the **Advanced custom check** block with a Python function that runs `cargo check`\n- Rows that fail the check are filtered out of the final dataset\n\n##### Tip:\n\n- Ask for one self-contained `main.rs` with `fn main()`\n- Ask for explicit error handling\n- Ask for no markdown fences if you want cleaner extraction\n",
+        "note_color": "#FEF3C7",
+        "note_opacity": "35"
+      },
+{
+        "id": "note_2",
+        "x": 2597.376821192053,
+        "y": 1233.2039735099338,
+        "width": 471,
+        "node_type": "markdown_note",
+        "name": "note_2",
+        "markdown": "The **Advanced custom check** block runs a Python function you write over each generated code cell.\n\n##### How this recipe is set up:\n\n- The Python function writes a `Cargo.toml` and `src/main.rs` into a temp folder and runs `cargo check` with `subprocess`\n- Rows whose code fails `cargo check` are dropped from the final dataset\n- The `rust_check` column itself is kept out of the final output (drop is on)\n\n##### How it differs from the Custom check block:\n\n- The **Custom check** block (as in the Text to Go recipe) runs a tool command template over the generated file\n- The **Advanced custom check** block instead runs arbitrary Python, so the check controls everything: temp files, subprocesses, and the result DataFrame\n- `pd`, `subprocess`, `tempfile` and `Path` are pre-imported; add imports only for modules specific to your code\n\n##### Note:\n\n- The function runs locally, so `cargo` must be installed on this machine\n- New checks require a one-time consent toggle before a run\n",
+        "note_color": "#FEF3C7",
+        "note_opacity": "35"
+      },
+{
+        "id": "openai-compatible"
+      },
+{
+        "id": "coding-model"
+      },
+{
+        "id": "domain"
+      },
+{
+        "id": "task_type"
+      },
+{
+        "id": "instruction"
+      },
+{
+        "id": "code_implementation"
+      },
+{
+        "id": "rust_check"
+      }
+    ],
+    "edges": [
+{
+        "from": "domain",
+        "to": "task_type",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+{
+        "from": "task_type",
+        "to": "instruction",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+{
+        "from": "openai-compatible",
+        "to": "coding-model",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "semantic-in-top"
+      },
+{
+        "from": "instruction",
+        "to": "code_implementation",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+{
+        "from": "coding-model",
+        "to": "instruction",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+{
+        "from": "coding-model",
+        "to": "code_implementation",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+{
+        "from": "code_implementation",
+        "to": "rust_check",
+        "type": "semantic",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      }
+    ]
+  }
+}

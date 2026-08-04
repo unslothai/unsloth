@@ -22,6 +22,7 @@ from core.data_recipe.huggingface import (
     publish_recipe_dataset,
 )
 from core.data_recipe.jobs import get_job_manager
+from core.data_recipe.service import assert_local_execution_consent
 from loggers import get_logger
 from models.data_recipe import (
     JobCreateResponse,
@@ -391,6 +392,14 @@ def create_job(
     recipe = payload.recipe
     if not recipe.get("columns"):
         raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
+
+    # Tool/custom checks execute arbitrary commands/Python on the worker; the
+    # caller must attest with a one-shot per-run consent flag. The consent is
+    # never stored in the recipe, so a re-POSTed shared recipe cannot bypass it.
+    try:
+        assert_local_execution_consent(recipe, payload.run)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
     run: dict[str, Any] = payload.run or {}
     run.pop("artifact_path", None)

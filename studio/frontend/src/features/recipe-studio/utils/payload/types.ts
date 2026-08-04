@@ -33,6 +33,11 @@ export type RecipePayload = {
     merge_batches?: boolean;
     // biome-ignore lint/style/useNamingConvention: backend schema
     run_name?: string | null;
+    // One-shot per-run consent attestation: the caller of /jobs or /validate
+    // must set this when the recipe contains local tool/custom checks. It is
+    // assembled per action and never persisted into saved recipes.
+    // biome-ignore lint/style/useNamingConvention: backend schema
+    local_execution_consent?: boolean;
   };
   ui: {
     nodes: Array<{

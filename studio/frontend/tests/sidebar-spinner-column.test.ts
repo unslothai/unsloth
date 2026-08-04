@@ -39,7 +39,7 @@ test("nav and Recents spinners land on one trailing column", async () => {
   );
   const chatRow = grab(
     source,
-    /"(sidebar-nav-btn h-\[33px\] cursor-pointer rounded-full[^"]*)"/,
+    /"(sidebar-nav-btn h-\[30px\] cursor-pointer rounded-full[^"]*)"/,
     "Recents chat row",
   );
   const chatSpinner = grab(

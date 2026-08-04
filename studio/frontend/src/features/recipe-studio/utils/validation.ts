@@ -6,6 +6,17 @@ import { isValidSex, parseAgeRange, parseIntNumber, parseNumber } from "./parse"
 import { VALIDATOR_OXC_CODE_LANGS, VALIDATOR_SQL_CODE_LANGS } from "./validators/code-lang";
 import { isOxcCodeShape } from "./validators/oxc-code-shape";
 import { isOxcValidationMode } from "./validators/oxc-mode";
+import { isValidatorConsentRequired } from "./validators/consent";
+import {
+  BATCH_SIZE_MAX,
+  CUSTOM_SOURCE_MAX_CHARS,
+  firstInvalidToolScaffoldPath,
+  isValidToolExt,
+  TOOL_COMMAND_MAX_CHARS,
+  toolScaffoldFileMaxKibError,
+  toolScaffoldLimitError,
+  toolOutputMaxKibError,
+} from "./validators/validation-markers";
 
 const TRACE_MODES = new Set(["none", "last_message", "all_messages"]);
 const GITHUB_ITEM_TYPES = new Set(["issues", "pulls", "commits"]);
@@ -245,26 +256,73 @@ export function getConfigErrors(config: NodeConfig | null): string[] {
       errors.push("Choose the code step to check.");
     }
     const batch = parseIntNumber(config.batch_size);
-    if (batch === null || batch < 1) {
-      errors.push("Batch size must be an integer >= 1.");
+    if (batch === null || batch < 1 || batch > BATCH_SIZE_MAX) {
+      errors.push(`Batch size must be an integer between 1 and ${BATCH_SIZE_MAX}.`);
     }
-    if (!config.code_lang.trim()) {
-      errors.push("Choose a code language for this check.");
-    } else if (config.validator_type === "oxc") {
-      if (!VALIDATOR_OXC_CODE_LANGS.includes(config.code_lang)) {
-        errors.push("This JS/TS check only supports JavaScript or TypeScript.");
+    if (config.validator_type === "tool") {
+      const command = (config.tool_command ?? "").trim();
+      if (!command) {
+        errors.push("Add a tool command to run.");
+      } else if (command.length > TOOL_COMMAND_MAX_CHARS) {
+        errors.push("Tool command is too long (max 8 KiB).");
       }
-      if (!isOxcValidationMode(config.oxc_validation_mode)) {
-        errors.push("Choose whether to check syntax, lint rules, or both.");
+      if (!(config.tool_ext ?? "").trim()) {
+        errors.push("Add the source-file extension for this check.");
+      } else if (!isValidToolExt((config.tool_ext ?? "").trim())) {
+        errors.push(
+          "File extension can only contain letters, digits, dots, + or - (up to 20 chars).",
+        );
       }
-      if (!isOxcCodeShape(config.oxc_code_shape)) {
-        errors.push("Choose whether this code is a full file or a snippet.");
+      if (isValidatorConsentRequired(config)) {
+        errors.push("Acknowledge that this check runs arbitrary commands locally.");
       }
-    } else if (
-      config.code_lang !== "python" &&
-      !VALIDATOR_SQL_CODE_LANGS.includes(config.code_lang)
-    ) {
-      errors.push("This check supports Python or SQL.");
+      const badScaffoldPath = firstInvalidToolScaffoldPath(config.tool_scaffold);
+      if (badScaffoldPath !== null) {
+        errors.push(`Scaffold path "${badScaffoldPath}" is invalid.`);
+      }
+      const scaffoldLimitError = toolScaffoldLimitError(config.tool_scaffold);
+      if (scaffoldLimitError !== null) {
+        errors.push(`Scaffold: ${scaffoldLimitError}`);
+      }
+      const outputCapError = toolOutputMaxKibError(config.tool_output_max_kib);
+      if (outputCapError !== null) {
+        errors.push(outputCapError);
+      }
+      const scaffoldCapError = toolScaffoldFileMaxKibError(
+        config.tool_scaffold_file_max_kib,
+      );
+      if (scaffoldCapError !== null) {
+        errors.push(scaffoldCapError);
+      }
+    } else if (config.validator_type === "custom") {
+      const source = (config.custom_source ?? "").trim();
+      if (!source) {
+        errors.push("Add the Python function for this check.");
+      } else if (source.length > CUSTOM_SOURCE_MAX_CHARS) {
+        errors.push("Custom validator source is too long (max 64 KiB).");
+      }
+      if (isValidatorConsentRequired(config)) {
+        errors.push("Acknowledge that this check runs arbitrary Python locally.");
+      }
+    } else {
+      if (!config.code_lang.trim()) {
+        errors.push("Choose a code language for this check.");
+      } else if (config.validator_type === "oxc") {
+        if (!VALIDATOR_OXC_CODE_LANGS.includes(config.code_lang)) {
+          errors.push("This JS/TS check only supports JavaScript or TypeScript.");
+        }
+        if (!isOxcValidationMode(config.oxc_validation_mode)) {
+          errors.push("Choose whether to check syntax, lint rules, or both.");
+        }
+        if (!isOxcCodeShape(config.oxc_code_shape)) {
+          errors.push("Choose whether this code is a full file or a snippet.");
+        }
+      } else if (
+        config.code_lang !== "python" &&
+        !VALIDATOR_SQL_CODE_LANGS.includes(config.code_lang)
+      ) {
+        errors.push("This check supports Python or SQL.");
+      }
     }
   }
   if (config.kind === "seed") {

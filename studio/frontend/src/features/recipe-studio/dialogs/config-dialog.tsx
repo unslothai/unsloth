@@ -8,6 +8,7 @@ import type { ReactElement } from "react";
 import { getBlockDefinitionForConfig } from "../blocks/definitions";
 import { renderBlockDialog } from "../blocks/registry";
 import type { NodeConfig, SamplerConfig } from "../types";
+import { isValidatorConsentRequired } from "../utils/validators/consent";
 import { DialogShell } from "./shared/dialog-shell";
 import { ValidationBanner } from "./shared/validation-banner";
 
@@ -48,6 +49,8 @@ export function ConfigDialog({
     config?.kind === "expression" ||
     (config?.kind === "seed" &&
       (config.seed_source_type ?? "hf") === "unstructured");
+  const consentRequired =
+    config?.kind === "validator" && isValidatorConsentRequired(config);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -112,9 +115,15 @@ export function ConfigDialog({
           </div>
         )}
         <DialogFooter>
+          {consentRequired && (
+            <p className="mr-auto text-xs text-muted-foreground sm:self-center">
+              Check the consent box in this step to save it.
+            </p>
+          )}
           <Button
             type="button"
             variant="outline"
+            disabled={consentRequired && !readOnly}
             onClick={() => onOpenChange(false)}
           >
             Done

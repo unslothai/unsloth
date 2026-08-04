@@ -28,9 +28,13 @@ export type ValidatorCodeLang =
   | "sql:tsql"
   | "sql:bigquery"
   | "sql:ansi";
-export type ValidatorType = "code" | "oxc";
+export type ValidatorType = "code" | "oxc" | "tool" | "custom";
 export type OxcValidationMode = "syntax" | "lint" | "syntax+lint";
 export type OxcCodeShape = "auto" | "module" | "snippet";
+export type ToolScaffoldFile = {
+  path: string;
+  content: string;
+};
 
 export type ExpressionDtype = "str" | "int" | "float" | "bool";
 
@@ -68,6 +72,8 @@ export type RecipeNodeData = {
     | "validator_python"
     | "validator_sql"
     | "validator_oxc"
+    | "validator_tool"
+    | "validator_custom"
     | "expression"
     | "seed"
     | "markdown_note"
@@ -307,6 +313,25 @@ export type ValidatorConfig = {
   oxc_validation_mode: OxcValidationMode;
   // ui-only (used for OXC validators)
   oxc_code_shape: OxcCodeShape;
+  // ui-only (used for tool validators): shell command template with {file}/{dir}
+  // placeholders, plus the source-file extension the code cell is written as.
+  tool_command?: string;
+  tool_ext?: string;
+  tool_acknowledged?: boolean;
+  // ui-only (used for tool validators): optional files written into the temp
+  // folder before the command runs. A file whose content contains `{source}`
+  // receives the generated code cell, and `{file}` then points at it.
+  tool_scaffold?: ToolScaffoldFile[];
+  // ui-only (used for tool validators): per-row stored output cap in KiB
+  // (default 8) and the per-file cap applied after {source} substitution in
+  // KiB (default 32). Serialized as char counts in the tool marker.
+  tool_output_max_kib?: string;
+  tool_scaffold_file_max_kib?: string;
+  // ui-only (used for custom validators): user-supplied Python function source
+  // that must define `validate(df: pd.DataFrame) -> pd.DataFrame` returning an
+  // `is_valid` boolean column.
+  custom_source?: string;
+  custom_acknowledged?: boolean;
   // ui ergonomics (serialized to int in payload)
   batch_size: string;
 };

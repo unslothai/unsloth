@@ -34,6 +34,24 @@ rename the heading at release time.
 
 ## Unreleased
 
+### What's Changed
+
+- Data Recipes adds two custom validator blocks: **Custom check** runs any
+  tool command (e.g. `go vet ./... && go build ./...`, `cargo check`,
+  `sqlfluff`) over generated code with one-click examples, and **Advanced
+  custom check** runs a user-written Python validation function. Both keep
+  invalid rows out of the final dataset and require an explicit consent toggle
+  before a run, since they execute locally.
+- Custom check supports **Files to write**: optional files scaffolded into the
+  temp folder before the command runs, so project-based tools (a `go.mod` for
+  Go, a `Cargo.toml` + `src/` layout for Rust, or any other setup) work
+  without built-in presets.
+- Custom check runs tool checks **in parallel** within a batch: raising the
+  batch size above the default of 1 checks that many records at a time, capped
+  at the detected CPU count.
+- New **Text to Rust** learning recipe demonstrates the Advanced custom check
+  with a Python function that runs `cargo check`.
+
 ## 2026.8.2
 
 ### What's Changed

@@ -3,6 +3,11 @@
 
 import type { NodeConfig, ValidatorConfig } from "../../types";
 import { isValidatorCodeLang } from "../validators/code-lang";
+import {
+  BATCH_SIZE_MAX,
+  toolScaffoldLimitError,
+  validationFunctionFromConfig,
+} from "../validators/validation-markers";
 
 const OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator";
 
@@ -11,7 +16,7 @@ function parseBatchSize(value: string): number {
   if (!Number.isFinite(parsed) || parsed < 1) {
     return 10;
   }
-  return parsed;
+  return Math.min(parsed, BATCH_SIZE_MAX);
 }
 
 export function buildValidatorColumn(
@@ -53,6 +58,41 @@ export function buildValidatorColumn(
         // backend resolves this marker to a real callable.
         // biome-ignore lint/style/useNamingConvention: api schema
         validation_function: `${OXC_VALIDATION_FN_MARKER}:${codeLang}:${config.oxc_validation_mode}:${config.oxc_code_shape ?? "auto"}`,
+      },
+      // biome-ignore lint/style/useNamingConvention: api schema
+      batch_size: parseBatchSize(config.batch_size),
+    };
+  }
+
+  if (config.validator_type === "tool" || config.validator_type === "custom") {
+    const validationFunction = validationFunctionFromConfig(config);
+    if (validationFunction === null) {
+      // null only occurs when the scaffold exceeds its limits and cannot be
+      // serialized without dropping rows; missing command/ext/source are
+      // flagged by the config validators instead so the state stays
+      // round-trippable.
+      const scaffoldError =
+        config.validator_type === "tool"
+          ? toolScaffoldLimitError(config.tool_scaffold)
+          : null;
+      if (scaffoldError !== null) {
+        errors.push(`Validator ${config.name}: ${scaffoldError}`);
+      }
+    }
+    return {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      column_type: "validation",
+      name: config.name,
+      drop: config.drop ?? false,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      target_columns: targetColumns,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      validator_type: "local_callable",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      validator_params: {
+        // backend resolves this marker to a real callable.
+        // biome-ignore lint/style/useNamingConvention: api schema
+        validation_function: validationFunction ?? "",
       },
       // biome-ignore lint/style/useNamingConvention: api schema
       batch_size: parseBatchSize(config.batch_size),

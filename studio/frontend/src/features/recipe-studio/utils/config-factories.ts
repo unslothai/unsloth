@@ -19,6 +19,30 @@ import type {
   ValidatorConfig,
 } from "../types";
 import { nextName } from "./naming";
+import {
+  TOOL_OUTPUT_MAX_KIB_DEFAULT,
+  TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT,
+} from "./validators/validation-markers";
+
+export const DEFAULT_TOOL_EXT = "go";
+export const DEFAULT_TOOL_COMMAND = "go vet ./...";
+export const DEFAULT_TOOL_SCAFFOLD = [
+  { path: "go.mod", content: "module example.com/check\n\ngo 1.21\n" },
+  { path: "main.go", content: "{source}" },
+];
+
+export const DEFAULT_CUSTOM_VALIDATOR_SOURCE = `# df has one column per "Code to check" target column.
+# Return a DataFrame with a boolean "is_valid" column; extra columns
+# become per-row metadata. pd, subprocess, tempfile and Path are
+# pre-imported; add imports only for modules your code needs.
+def validate(df):
+    result = pd.DataFrame()
+    result["is_valid"] = df.iloc[:, 0].str.len() > 0
+    result["error_message"] = result["is_valid"].map(
+        {True: "", False: "Value must be non-empty"}
+    )
+    return result
+`;
 
 export function makeUnstructuredUploadUid(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
@@ -353,11 +377,17 @@ export function makeValidatorConfig(
 ): ValidatorConfig {
   const isSql = validatorType === "code" && codeLang.startsWith("sql:");
   const isOxc = validatorType === "oxc";
+  const isTool = validatorType === "tool";
+  const isCustom = validatorType === "custom";
   let namePrefix = "validator_python";
   if (isSql) {
     namePrefix = "validator_sql";
   } else if (isOxc) {
     namePrefix = "validator_oxc";
+  } else if (isTool) {
+    namePrefix = "validator_tool";
+  } else if (isCustom) {
+    namePrefix = "validator_custom";
   }
   return {
     id,
@@ -371,7 +401,26 @@ export function makeValidatorConfig(
     code_lang: codeLang,
     oxc_validation_mode: "syntax",
     oxc_code_shape: "auto",
-    batch_size: "10",
+    ...(isTool
+      ? {
+          tool_command: DEFAULT_TOOL_COMMAND,
+          tool_ext: DEFAULT_TOOL_EXT,
+          tool_scaffold: DEFAULT_TOOL_SCAFFOLD.map((file) => ({ ...file })),
+          tool_acknowledged: false,
+          tool_output_max_kib: String(TOOL_OUTPUT_MAX_KIB_DEFAULT),
+          tool_scaffold_file_max_kib: String(TOOL_SCAFFOLD_FILE_MAX_KIB_DEFAULT),
+        }
+      : {}),
+    ...(isCustom
+      ? {
+          custom_source: DEFAULT_CUSTOM_VALIDATOR_SOURCE,
+          custom_acknowledged: false,
+        }
+      : {}),
+    // Tool checks default to a batch of 1 so they run serially unless the
+    // user raises the batch size (checks then run in parallel up to the CPU
+    // count). Custom validators keep the default batch of 10.
+    batch_size: isTool ? "1" : "10",
   };
 }
 

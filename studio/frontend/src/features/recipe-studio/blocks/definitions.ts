@@ -53,6 +53,8 @@ export type BlockType =
   | "validator_python"
   | "validator_sql"
   | "validator_oxc"
+  | "validator_tool"
+  | "validator_custom"
   | "expression"
   | "markdown_note"
   | "seed"
@@ -69,6 +71,13 @@ export type SeedBlockType =
   | "seed_local"
   | "seed_unstructured"
   | "seed_github";
+
+export type ValidatorBlockType =
+  | "validator_python"
+  | "validator_sql"
+  | "validator_oxc"
+  | "validator_tool"
+  | "validator_custom";
 
 type IconType = typeof CodeIcon;
 
@@ -359,6 +368,27 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
       makeValidatorConfig(id, "oxc", "javascript", existing),
   },
   {
+    kind: "validator",
+    type: "validator_tool",
+    title: "Custom check",
+    description:
+      "Run any tool command over generated code, with optional Files to write for project scaffolding.",
+    icon: Shield02Icon,
+    dialogKey: "validator",
+    createConfig: (id, existing) =>
+      makeValidatorConfig(id, "tool", "python", existing),
+  },
+  {
+    kind: "validator",
+    type: "validator_custom",
+    title: "Advanced custom check",
+    description: "Write a Python function that validates generated code.",
+    icon: Shield02Icon,
+    dialogKey: "validator",
+    createConfig: (id, existing) =>
+      makeValidatorConfig(id, "custom", "python", existing),
+  },
+  {
     kind: "expression",
     type: "expression",
     title: "Formula",
@@ -418,6 +448,12 @@ export function getBlockDefinitionForConfig(
   if (config.kind === "validator") {
     if (config.validator_type === "oxc") {
       return getBlockDefinition("validator", "validator_oxc");
+    }
+    if (config.validator_type === "tool") {
+      return getBlockDefinition("validator", "validator_tool");
+    }
+    if (config.validator_type === "custom") {
+      return getBlockDefinition("validator", "validator_custom");
     }
     const isSql = config.code_lang.startsWith("sql:");
     return getBlockDefinition(
