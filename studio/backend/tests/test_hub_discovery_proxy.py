@@ -26,7 +26,11 @@ class _Params:
 
 
 class _Request:
-    def __init__(self, items, base_url = "http://studio.local:1234/"):
+    def __init__(
+        self,
+        items,
+        base_url = "http://studio.local:1234/",
+    ):
         self.query_params = _Params(items)
         self.base_url = base_url
 
