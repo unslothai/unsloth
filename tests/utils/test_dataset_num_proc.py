@@ -134,7 +134,7 @@ def test_config_layer_never_returns_none(monkeypatch, dnp):
     # memory clamp all the way down to serial
     _force_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setattr(
-        psutil, "virtual_memory", lambda: type("m", (), {"available": 1 * 1024 ** 3})()
+        psutil, "virtual_memory", lambda: type("m", (), {"available": 1 * 1024**3})()
     )
     assert dnp.get_dataset_num_proc(16, serial_as_none = False) == 1
     assert dnp.get_dataset_num_proc(None, serial_as_none = False) == 1
@@ -148,7 +148,7 @@ def test_layering_config_then_map_site_is_correct(monkeypatch, dnp):
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: type("m", (), {"available": 256 * 1024 ** 3})(),
+        lambda: type("m", (), {"available": 256 * 1024**3})(),
     )
     cfg = lambda v: dnp.get_dataset_num_proc(v, serial_as_none = False)  # noqa: E731
     site = dnp.get_dataset_num_proc
@@ -170,7 +170,7 @@ def test_low_memory_auto_path_returns_none_not_one(monkeypatch, dnp):
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: type("m", (), {"available": 1 * 1024 ** 3})(),
+        lambda: type("m", (), {"available": 1 * 1024**3})(),
     )
     assert dnp.get_dataset_num_proc(None) is None
 
@@ -187,7 +187,7 @@ def test_auto_value_is_capped(monkeypatch, dnp):
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: type("m", (), {"available": 512 * 1024 ** 3})(),
+        lambda: type("m", (), {"available": 512 * 1024**3})(),
     )
     assert dnp.get_dataset_num_proc(None) == dnp.AUTO_NUM_PROC_CAP
     assert dnp.AUTO_NUM_PROC_CAP < 64
@@ -200,7 +200,7 @@ def test_auto_value_clamped_by_available_memory(monkeypatch, dnp):
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: type("m", (), {"available": 10 * 1024 ** 3})(),
+        lambda: type("m", (), {"available": 10 * 1024**3})(),
     )
     # 10 GB free, half of it budgeted, ~1 GB per worker -> 5.
     assert dnp.get_dataset_num_proc(None) == 5
@@ -219,7 +219,7 @@ def test_explicit_value_is_clamped_by_memory(monkeypatch, dnp, capsys):
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: type("m", (), {"available": 16 * 1024 ** 3})(),
+        lambda: type("m", (), {"available": 16 * 1024**3})(),
     )
     assert dnp.get_dataset_num_proc(48) == 8
     assert "reducing dataset_num_proc 48 -> 8" in capsys.readouterr().out
@@ -233,7 +233,7 @@ def test_explicit_value_is_not_capped_by_the_auto_cap(monkeypatch, dnp):
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: type("m", (), {"available": 512 * 1024 ** 3})(),
+        lambda: type("m", (), {"available": 512 * 1024**3})(),
     )
     assert dnp.get_dataset_num_proc(32) == 32
     assert 32 > dnp.AUTO_NUM_PROC_CAP
@@ -254,7 +254,7 @@ def test_bool_is_not_treated_as_an_int(monkeypatch, dnp):
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
-        lambda: type("m", (), {"available": 64 * 1024 ** 3})(),
+        lambda: type("m", (), {"available": 64 * 1024**3})(),
     )
     assert dnp.get_dataset_num_proc(True) == 4
 
@@ -326,10 +326,7 @@ def test_start_method_probe_reports_an_explicit_setting(monkeypatch, dnp):
 def _rl_num_proc_snippet():
     tree = ast.parse(RL_PATH.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Assign)
-            and getattr(node.targets[0], "id", "") == "num_proc_check"
-        ):
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "num_proc_check":
             return ast.literal_eval(node.value)
     raise AssertionError("num_proc_check literal not found in unsloth/models/rl.py")
 
@@ -362,21 +359,14 @@ def test_zoo_sft_prepare_dataset_anchor_has_not_drifted():
             (
                 ast.literal_eval(node.args[1]),
                 next(
-                    (
-                        ast.literal_eval(k.value)
-                        for k in node.keywords
-                        if k.arg == "count"
-                    ),
+                    (ast.literal_eval(k.value) for k in node.keywords if k.arg == "count"),
                     1,
                 ),
             )
             for node in ast.walk(rr_tree)
             if isinstance(node, ast.Call)
             and getattr(node.func, "id", "") == "_require_replace"
-            and any(
-                k.arg == "where" and ast.literal_eval(k.value) == where
-                for k in node.keywords
-            )
+            and any(k.arg == "where" and ast.literal_eval(k.value) == where for k in node.keywords)
         ]
         assert len(found) == 1, f"expected exactly one _require_replace for {where!r}"
         return found[0]
@@ -409,7 +399,9 @@ def test_rl_codegen_snippet_is_valid_python_at_method_indent():
     # rl.py re-indents extra_args to 8 spaces and drops it into __init__.
     snippet = _rl_num_proc_snippet()
     body = "\n".join(" " * 8 + line for line in snippet.split("\n"))
-    source = "class C:\n    def __init__(self, dataset_num_proc = None):\n" + body + "\n        pass\n"
+    source = (
+        "class C:\n    def __init__(self, dataset_num_proc = None):\n" + body + "\n        pass\n"
+    )
     ast.parse(source)
 
 

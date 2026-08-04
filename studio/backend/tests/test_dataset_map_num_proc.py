@@ -25,7 +25,12 @@ import pytest
 import utils.hardware.hardware as hw
 
 
-def _patch_device(monkeypatch, device, *, visible_gpus: int = 1):
+def _patch_device(
+    monkeypatch,
+    device,
+    *,
+    visible_gpus: int = 1,
+):
     monkeypatch.setattr(hw, "get_device", lambda: device)
     monkeypatch.setattr(hw, "get_visible_gpu_count", lambda: visible_gpus)
 
@@ -43,9 +48,7 @@ def _patch_runtime(monkeypatch, name, *, is_initialized):
     else:
         probe = lambda: is_initialized  # noqa: E731
 
-    monkeypatch.setattr(
-        torch, name, types.SimpleNamespace(is_initialized = probe), raising = False
-    )
+    monkeypatch.setattr(torch, name, types.SimpleNamespace(is_initialized = probe), raising = False)
 
 
 # ---------- CUDA: initialization must NOT disable workers ----------

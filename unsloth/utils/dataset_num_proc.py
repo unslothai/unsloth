@@ -128,8 +128,7 @@ def _affordable_workers() -> Optional[int]:
     """How many workers free RAM can cover, or None when it cannot be read."""
     try:
         import psutil
-
-        available_gb = psutil.virtual_memory().available / (1024 ** 3)
+        available_gb = psutil.virtual_memory().available / (1024**3)
     except Exception:
         return None
     budget_gb = available_gb * MEMORY_BUDGET_FRACTION
@@ -174,7 +173,6 @@ def _auto_num_proc() -> Optional[int]:
     """Worker count to use when the caller did not ask for a specific one."""
     try:
         import psutil
-
         cpu_count = psutil.cpu_count() or 1
     except Exception:
         # No psutil means no CPU reading; stay conservative rather than guessing.
@@ -226,9 +224,7 @@ def _from_environment() -> "tuple[bool, Optional[int]]":
 
 
 def get_dataset_num_proc(
-    desired: Optional[int] = None,
-    *,
-    serial_as_none: bool = True,
+    desired: Optional[int] = None, *, serial_as_none: bool = True
 ) -> Optional[int]:
     """Return a safe ``num_proc`` for ``Dataset.map()`` / ``Dataset.filter()``.
 
