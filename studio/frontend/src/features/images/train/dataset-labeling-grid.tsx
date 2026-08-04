@@ -3,8 +3,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
+import {
+  ArrowLeft01Icon,
+  ArrowRight01Icon,
+  Cancel01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -105,13 +110,9 @@ function LabelTile({
   const uncaptioned = caption.trim().length === 0;
 
   return (
-    <div
-      className={cn(
-        "flex flex-col gap-1.5 rounded-lg border p-2",
-        uncaptioned ? "border-amber-500/60 bg-amber-500/5" : "border-border",
-      )}
-    >
-      <div className="group relative aspect-square w-full overflow-hidden rounded-[10px] bg-muted">
+    // Named group: a bare one would also match the scroller and reveal every tile's Remove.
+    <div className="group/tile flex flex-col overflow-hidden rounded-[10px] border border-border transition-colors hover:border-foreground/20">
+      <div className="relative aspect-square w-full overflow-hidden bg-muted">
         {thumb ? (
           <img src={thumb} alt={record.filename} className="size-full object-cover" />
         ) : (
@@ -125,38 +126,47 @@ function LabelTile({
               type="button"
               onClick={remove}
               disabled={deleting}
-              className="absolute right-1 top-1 rounded-md bg-background/80 px-1.5 py-0.5 text-ui-11 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-destructive group-hover:opacity-100 focus:opacity-100"
+              aria-label="Remove image"
+              className="absolute right-1.5 top-1.5 flex size-6 items-center justify-center rounded-full bg-background/85 text-muted-foreground opacity-0 shadow-sm backdrop-blur-sm transition-opacity hover:bg-background hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100"
             >
-              {deleting ? "..." : "Remove"}
+              {deleting ? (
+                <Spinner className="size-3" />
+              ) : (
+                <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
+              )}
             </button>
           </TooltipTrigger>
           <TooltipContent>Remove this image from the dataset</TooltipContent>
         </Tooltip>
       </div>
-      <Textarea
-        value={caption}
-        onChange={(e) => setCaption(e.target.value)}
-        onBlur={() => void save()}
-        rows={2}
-        spellCheck={false}
-        placeholder="Describe this image..."
-        className="min-h-[3rem] resize-none text-ui-11"
-        aria-label={`Caption for ${record.filename}`}
-      />
-      <div className="flex items-center justify-between text-ui-10 text-muted-foreground">
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <span className="truncate">{record.filename}</span>
-          </TooltipTrigger>
-          <TooltipContent>{record.filename}</TooltipContent>
-        </Tooltip>
-        {saving ? (
-          <span>Saving...</span>
-        ) : savedTick ? (
-          <span className="text-emerald-500">Saved</span>
-        ) : uncaptioned ? (
-          <span className="text-amber-600">No caption</span>
-        ) : null}
+      <div className="flex min-w-0 flex-col gap-1.5 p-2">
+        {/* Textarea's md:text-sm outsizes a tile, so pin the size at both widths. */}
+        <Textarea
+          value={caption}
+          onChange={(e) => setCaption(e.target.value)}
+          onBlur={() => void save()}
+          rows={2}
+          spellCheck={false}
+          placeholder="Describe this image..."
+          className="min-h-[2.75rem] rounded-sm px-2 py-1.5 text-ui-11! leading-snug md:text-ui-11!"
+          aria-label={`Caption for ${record.filename}`}
+        />
+        {/* No leading-none: truncate's overflow would crop the descenders. */}
+        <div className="flex min-w-0 items-center gap-1.5 text-ui-10 text-muted-foreground">
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <span className="min-w-0 flex-1 truncate">{record.filename}</span>
+            </TooltipTrigger>
+            <TooltipContent>{record.filename}</TooltipContent>
+          </Tooltip>
+          {saving ? (
+            <span className="shrink-0 whitespace-nowrap">Saving</span>
+          ) : savedTick ? (
+            <span className="shrink-0 whitespace-nowrap text-emerald-600">Saved</span>
+          ) : uncaptioned ? (
+            <span className="shrink-0 whitespace-nowrap text-amber-600">No caption</span>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -217,8 +227,8 @@ export function DatasetLabelingGrid({
   }
   if (records === null) {
     return (
-      <div className="flex items-center gap-2 py-4 text-xs text-muted-foreground">
-        <Spinner className="size-4" /> Loading images...
+      <div className="flex items-center gap-2 py-4 text-ui-11 text-muted-foreground">
+        <Spinner className="size-3.5" /> Loading images...
       </div>
     );
   }
@@ -234,7 +244,7 @@ export function DatasetLabelingGrid({
   const pageRecords = records.slice(start, start + PAGE_SIZE);
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2.5">
       <div className="flex items-center justify-between gap-2 text-ui-11 text-muted-foreground">
         <span className="min-w-0 truncate">
           {total} image{total === 1 ? "" : "s"}
@@ -270,7 +280,8 @@ export function DatasetLabelingGrid({
           </div>
         )}
       </div>
-      <div className="hover-scrollbar group grid max-h-[420px] grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
+      {/* Two columns at any width: the column is fixed, so viewport breakpoints do not apply. */}
+      <div className="hover-scrollbar grid max-h-[420px] grid-cols-2 gap-2.5 overflow-y-auto pb-0.5 pr-1">
         {pageRecords.map((r) => (
           <LabelTile
             key={r.filename}
@@ -300,11 +311,13 @@ export function LabelingGridToggle({
       type="button"
       variant="ghost"
       size="sm"
-      className="h-7 w-fit px-1 text-xs text-muted-foreground hover:text-foreground"
+      // ghost fills on aria-expanded; the chevron shows the state, so drop the fill.
+      className="h-7 w-fit gap-1 px-1.5 text-ui-11 font-medium text-muted-foreground aria-expanded:bg-transparent hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
       onClick={onToggle}
       aria-expanded={open}
     >
       {open ? "Hide captions" : `Review captions (${count} image${count === 1 ? "" : "s"})`}
+      <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} />
     </Button>
   );
 }

@@ -3,7 +3,7 @@
 
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Settings02Icon } from "@hugeicons/core-free-icons";
+import { Settings02Icon, Upload01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
@@ -339,8 +339,8 @@ export function DiffusionTrainPanel({
   const [uploadName, setUploadName] = useState("my-images");
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  // Mirrors the hidden input's selection so the row can report it.
-  const [pickedFileCount, setPickedFileCount] = useState(0);
+  // Adds to the selected set; the other input creates a new one.
+  const addInputRef = useRef<HTMLInputElement | null>(null);
   const [gridOpen, setGridOpen] = useState(false);
   const [gridRefresh, setGridRefresh] = useState(0);
   const [examples, setExamples] = useState<DiffusionDatasetExample[]>([]);
@@ -597,6 +597,8 @@ export function DiffusionTrainPanel({
 
   const selectedDataset =
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
+  // A deleted dataset leaves a name that no longer resolves; fall back to the upload form.
+  const uploadMode = dataset === UPLOAD_DATASET || (info !== null && !selectedDataset);
   // A dataset where every image already ships a caption needs no trigger prompt; hide the field and explain why.
   const fullyCaptioned = Boolean(
     selectedDataset &&
@@ -665,35 +667,32 @@ export function DiffusionTrainPanel({
       .filter((p): p is TrainingSeriesPoint => p.value != null);
   }, [viewRun?.metric_history]);
 
-  const onUpload = useCallback(async () => {
-    const files = Array.from(fileInputRef.current?.files ?? []);
-    if (files.length === 0) {
-      toast.error("Choose the images to upload first.");
-      return;
-    }
-    const name = uploadName.trim();
-    if (!name) {
-      toast.error("Give the dataset a folder name, e.g. my-style-photos.");
-      return;
-    }
-    setUploading(true);
-    try {
-      const res = await uploadDiffusionDataset(name, files);
-      toast.success(
-        `Uploaded ${res.uploaded} file${res.uploaded === 1 ? "" : "s"} - ` +
-          `"${res.name}" now has ${res.image_count} images`,
-      );
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      setPickedFileCount(0);
-      await refreshInfo();
-      setDataset(res.name);
-      setGridRefresh((k) => k + 1);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Upload failed");
-    } finally {
-      setUploading(false);
-    }
-  }, [uploadName, refreshInfo]);
+  // Uploads accumulate, so the same call both creates a folder and adds to an existing one.
+  const uploadTo = useCallback(
+    async (name: string, files: File[]) => {
+      if (files.length === 0) return; // the picker was cancelled
+      if (!name) {
+        toast.error("Give the dataset a folder name, e.g. my-style-photos.");
+        return;
+      }
+      setUploading(true);
+      try {
+        const res = await uploadDiffusionDataset(name, files);
+        toast.success(
+          `Uploaded ${res.uploaded} file${res.uploaded === 1 ? "" : "s"} - ` +
+            `"${res.name}" now has ${res.image_count} images`,
+        );
+        await refreshInfo();
+        setDataset(res.name);
+        setGridRefresh((k) => k + 1);
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Upload failed");
+      } finally {
+        setUploading(false);
+      }
+    },
+    [refreshInfo],
+  );
 
   const onStart = useCallback(async () => {
     const baseModel = (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase).trim();
@@ -1188,62 +1187,93 @@ export function DiffusionTrainPanel({
             <FieldLabel hint="The set the LoRA learns from. 10-50 images is plenty, and captions are optional.">
               Training images
             </FieldLabel>
-            <Select
-              value={dataset}
-              onValueChange={(v) => {
-                if (v.startsWith(EXAMPLE_PREFIX)) {
-                  const ex = pendingExamples.find((x) => x.id === v.slice(EXAMPLE_PREFIX.length));
-                  if (ex) void importExample(ex);
-                  return; // the controlled value stays put while the import runs
-                }
-                setDataset(v);
-                setGridOpen(false);
-              }}
-              disabled={importingId !== null}
-            >
-              <SelectTrigger className={selectClass} aria-label="Training images">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {/* Name plus image count only; captions and license show elsewhere. */}
-                {(info?.datasets ?? []).map((d) => (
-                  <SelectItem key={d.name} value={d.name}>
-                    {d.name} - {d.image_count} image{d.image_count === 1 ? "" : "s"}
-                  </SelectItem>
-                ))}
-                {pendingExamples.length > 0 && (
-                  <SelectGroup>
-                    <SelectLabel>Examples</SelectLabel>
-                    {pendingExamples.map((ex) => (
-                      <SelectItem key={ex.id} value={`${EXAMPLE_PREFIX}${ex.id}`}>
-                        {shortExampleLabel(ex.label)} - {ex.image_cap} images
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                )}
-                <SelectItem value={UPLOAD_DATASET}>Upload new images...</SelectItem>
-              </SelectContent>
-            </Select>
+            <div className="flex items-center gap-2">
+              <Select
+                value={uploadMode ? UPLOAD_DATASET : dataset}
+                onValueChange={(v) => {
+                  if (v.startsWith(EXAMPLE_PREFIX)) {
+                    const ex = pendingExamples.find((x) => x.id === v.slice(EXAMPLE_PREFIX.length));
+                    if (ex) void importExample(ex);
+                    return; // the controlled value stays put while the import runs
+                  }
+                  setDataset(v);
+                  setGridOpen(false);
+                }}
+                disabled={importingId !== null}
+              >
+                <SelectTrigger className={cn(selectClass, "flex-1")} aria-label="Training images">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {/* Name plus image count only; captions and license show elsewhere. */}
+                  {(info?.datasets ?? []).map((d) => (
+                    <SelectItem key={d.name} value={d.name}>
+                      {d.name} - {d.image_count} image{d.image_count === 1 ? "" : "s"}
+                    </SelectItem>
+                  ))}
+                  {pendingExamples.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel>Examples</SelectLabel>
+                      {pendingExamples.map((ex) => (
+                        <SelectItem key={ex.id} value={`${EXAMPLE_PREFIX}${ex.id}`}>
+                          {shortExampleLabel(ex.label)} - {ex.image_cap} images
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                  <SelectItem value={UPLOAD_DATASET}>Upload new images...</SelectItem>
+                </SelectContent>
+              </Select>
+              {!uploadMode && selectedDataset && (
+                <>
+                  {/* The set is already named, so the pick uploads straight into it. */}
+                  <input
+                    ref={addInputRef}
+                    type="file"
+                    multiple
+                    accept={DATASET_FILE_ACCEPT}
+                    className="hidden"
+                    aria-label="More training images"
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files ?? []);
+                      e.target.value = "";
+                      void uploadTo(dataset, files);
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 shrink-0 gap-1.5 px-3 text-xs"
+                    onClick={() => addInputRef.current?.click()}
+                    disabled={uploading}
+                  >
+                    <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
+                    {uploading ? "Uploading..." : "Add"}
+                  </Button>
+                </>
+              )}
+            </div>
             {importingId && (
               <p className="text-ui-11 text-muted-foreground">
                 Importing {examples.find((e) => e.id === importingId)?.label ?? "example"}...
               </p>
             )}
 
-            {dataset === UPLOAD_DATASET ? (
-              <div className={fieldClass}>
+            {uploadMode ? (
+              <div className={cn(fieldClass, "pb-4")}>
                 <Label className="text-xs font-normal text-muted-foreground">
                   Name for this set of images
                 </Label>
-                <Input
-                  value={uploadName}
-                  placeholder="my-photos"
-                  spellCheck={false}
-                  onChange={(e) => setUploadName(e.target.value)}
-                  className="h-8 text-xs"
-                  aria-label="New dataset name"
-                />
                 <div className="flex items-center gap-2">
+                  <Input
+                    value={uploadName}
+                    placeholder="my-photos"
+                    spellCheck={false}
+                    onChange={(e) => setUploadName(e.target.value)}
+                    className="h-8 min-w-0 flex-1 text-xs"
+                    aria-label="New dataset name"
+                  />
                   {/* The native input is the file picker but never the control the user sees, so the row keeps the app button styling. */}
                   <input
                     ref={fileInputRef}
@@ -1252,36 +1282,30 @@ export function DiffusionTrainPanel({
                     accept={DATASET_FILE_ACCEPT}
                     className="hidden"
                     aria-label="Training image files"
-                    onChange={(e) => setPickedFileCount(e.target.files?.length ?? 0)}
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files ?? []);
+                      e.target.value = "";
+                      void uploadTo(uploadName.trim(), files);
+                    }}
                   />
+                  {/* The pick is the confirmation, so it uploads without a second click. */}
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
-                    className="h-7 shrink-0 px-3 text-xs"
-                    onClick={() => fileInputRef.current?.click()}
+                    className="h-8 shrink-0 gap-1.5 px-3 text-xs"
+                    onClick={() => {
+                      if (!uploadName.trim()) {
+                        toast.error("Give the dataset a folder name, e.g. my-style-photos.");
+                        return;
+                      }
+                      fileInputRef.current?.click();
+                    }}
                     disabled={uploading}
                   >
-                    Choose images
+                    <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
+                    {uploading ? "Uploading..." : "Upload"}
                   </Button>
-                  {/* Count and Upload appear only once files are picked. */}
-                  {pickedFileCount > 0 && (
-                    <>
-                      <span className="min-w-0 flex-1 truncate text-ui-11 text-muted-foreground">
-                        {pickedFileCount} file{pickedFileCount === 1 ? "" : "s"} selected
-                      </span>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-7 shrink-0 px-3 text-xs"
-                        onClick={onUpload}
-                        disabled={uploading}
-                      >
-                        {uploading ? "Uploading..." : "Upload"}
-                      </Button>
-                    </>
-                  )}
                 </div>
               </div>
             ) : (
@@ -1316,10 +1340,12 @@ export function DiffusionTrainPanel({
               )
             )}
 
+            {/* The upload block pads itself; a picked dataset ends in a dense grid, so pad above there. */}
             <ExampleDatasetCards
               examples={pendingExamples}
               busyId={importingId}
               onImport={(ex) => void importExample(ex)}
+              className={cn(!uploadMode && "pt-3")}
             />
           </div>
 
@@ -1378,7 +1404,8 @@ export function DiffusionTrainPanel({
 
       {/* Right: the run area. Before a run: training settings + previous-runs history; during/after: the live view. Selecting a previous run re-plots its logs read-only. */}
       {/* Sections carry no card of their own: spacing and a rule separate them. p-1.5 keeps the chart cards' outer ring from being clipped. */}
-      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-1.5 pb-7 pl-6">
+      {/* 40px off the rule, the gutter the settings column has off the page edge. */}
+      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-1.5 pb-7 pl-10">
         {viewRun && !hasRun ? (
           <>
             <div className="flex flex-col gap-3">

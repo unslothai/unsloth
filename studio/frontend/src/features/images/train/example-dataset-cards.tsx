@@ -10,6 +10,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 
 import {
   type DiffusionDatasetExample,
@@ -88,15 +89,18 @@ export function ExampleDatasetCards({
   examples,
   busyId,
   onImport,
+  className,
 }: {
   examples: DiffusionDatasetExample[];
   busyId: string | null;
   onImport: (ex: DiffusionDatasetExample) => void;
+  /** Spacing above, which the caller sets: what sits above this block varies. */
+  className?: string;
 }) {
   if (examples.length === 0) return null;
 
   return (
-    <div className="grid gap-2">
+    <div className={cn("grid gap-2", className)}>
       <span className="text-ui-11 font-medium text-muted-foreground">
         Or start from an example dataset
       </span>

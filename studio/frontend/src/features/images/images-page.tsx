@@ -3093,7 +3093,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         </div>
 
         <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden pl-2">
-          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6">
+          {/* With the pane's pl-2, the 40px gutter the settings column has off the page edge. */}
+          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 pl-8">
             {selected && selectedSrc ? (
               <>
                 <img
@@ -3192,7 +3193,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           {(images.length > 0 || busy === "generating") && (
             <div
               ref={stripRef}
-              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 p-3"
+              // Same 40px gutter as the viewer above.
+              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 p-3 pl-8"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;
