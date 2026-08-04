@@ -379,14 +379,17 @@ class UnslothTrainingArguments(TrainingArguments):
     def __init__(
         self,
         embedding_learning_rate: float = None,
+        layerwise_lr_decay: float = None,
         q_galore_config: Optional[QGaloreConfig] = None,
         *args,
         **kwargs,
     ):
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
+        self.layerwise_lr_decay = layerwise_lr_decay
         super().__init__(*args, **kwargs)
         self.embedding_learning_rate = embedding_learning_rate
+        self.layerwise_lr_decay = layerwise_lr_decay
 
 
 def _create_unsloth_optimizer(
@@ -440,8 +443,25 @@ class UnslothTrainer(SFTTrainer):
             embedding_lr = getattr(self.args, "embedding_learning_rate", None)
             return self._create_q_galore_optimizer(q_galore_config, embedding_lr)
 
-        # --- Embedding-LR optimizer ---
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
+        layerwise_lr_decay = getattr(self.args, "layerwise_lr_decay", None)
+
+        # --- Layer-wise LR decay optimizer (composes with embedding_lr) ---
+        if layerwise_lr_decay is not None and layerwise_lr_decay != 1.0:
+            if self.optimizer is None:
+                from unsloth.optimizers.layerwise_lr import make_layerwise_lr_param_groups
+                optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
+                param_groups = make_layerwise_lr_param_groups(
+                    self.model,
+                    lr = optimizer_kwargs["lr"],
+                    weight_decay = optimizer_kwargs.get("weight_decay", 0.0),
+                    layerwise_lr_decay = layerwise_lr_decay,
+                    embedding_lr = embedding_learning_rate,
+                )
+                self.optimizer = optimizer_cls(param_groups, **optimizer_kwargs)
+            return self.optimizer
+
+        # --- Embedding-LR optimizer ---
         if embedding_learning_rate is None:
             return super().create_optimizer()
 
