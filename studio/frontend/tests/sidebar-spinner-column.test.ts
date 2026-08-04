@@ -39,7 +39,9 @@ test("nav and Recents spinners land on one trailing column", async () => {
   );
   const chatRow = grab(
     source,
-    /"(sidebar-nav-btn h-\[30px\] cursor-pointer rounded-full[^"]*)"/,
+    // Row height is a density choice and moves independently of the trailing
+    // column, so match any h-[Npx]; cursor-pointer is what makes this the chat row.
+    /"(sidebar-nav-btn h-\[\d+px\] cursor-pointer rounded-full[^"]*)"/,
     "Recents chat row",
   );
   const chatSpinner = grab(
