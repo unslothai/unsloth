@@ -1499,6 +1499,12 @@ _BACKEND = Path(__file__).resolve().parents[1]
 _REPO_WIDE_HELPERS = frozenset(
     {
         "_cache_inventory_fields",
+        # The row's pipeline task. Repo-wide on purpose and NOT a snapshot signal: it answers "which
+        # model is this", which every revision of a repo agrees on (the non-GGUF classifier decides
+        # on the repo id's family and trust rules; the GGUF one on general.architecture, identical
+        # in every cached quant). Scoping it would only lose rows -- an unreadable header in the one
+        # pinned snapshot would drop the repo from the Images/Video pickers entirely.
+        "_cached_row_task",
         "_repo_gguf_last_modified",
         "_repo_gguf_payload_snapshots",
         "_repo_gguf_size_bytes",
@@ -3094,6 +3100,58 @@ def test_a_self_contained_snapshot_is_not_made_partial_by_a_second_one(
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     assert rows[0]["partial"] is False
     assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_a_newer_companion_only_snapshot_does_not_make_the_ref_snapshot_partial(
+    tmp_path, monkeypatch
+):
+    """The pipeline signals must read the snapshot the row loads, not the newest one.
+
+    A GGUF image load leaves a companion-only prefetch (root ``model_index.json`` + VAE /
+    text-encoder, no ``transformer/``) in a NEW revision beside the complete pipeline that
+    ``refs/main`` still resolves to. huggingface_hub reads ``refs/main`` to turn ``main`` into a
+    commit, so ``from_pretrained(repo_id)`` opens the OLD, complete directory -- judging the row on
+    the newest revision instead marks a fully downloaded model partial and unchattable."""
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    pipeline = {
+        "config.json": b'{"model_type":"flux"}',
+        "model_index.json": b'{"_class_name":"FluxPipeline"}',
+        "text_encoder/model.safetensors": b"\0" * 256,
+        "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+    }
+    companion_only = {name: blob for name, blob in pipeline.items() if "transformer/" not in name}
+    repo_dir = _repo_with(
+        tmp_path,
+        # SNAPSHOT is the companion-only prefetch, OLDER the complete pipeline refs/main names.
+        snapshots = {SNAPSHOT: companion_only, OLDER: pipeline},
+        refs = {"main": OLDER},
+    )
+    # The companion-only revision is unambiguously the newest, the shape the repo-wide check picks.
+    os.utime(repo_dir / "snapshots" / OLDER, (1_000_000, 1_000_000))
+    os.utime(repo_dir / "snapshots" / SNAPSHOT, (2_000_000, 2_000_000))
+
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    # The row loads by repo id, so refs/main decides: the complete pipeline.
+    assert rows[0]["load_id"] == "Org/Model"
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+    # ... and that same directory carries the manifest, so it is not a single-file checkpoint.
+    assert rows[0]["single_file"] is False
 
 
 def _snapshot_with(tmp_path, files: dict) -> Path:
