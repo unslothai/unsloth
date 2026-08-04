@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Terminal banner for Studio startup.
+"""Terminal banner for Unsloth startup.
 
 Stdlib only -- safe to import without the rest of the backend.
 """
@@ -172,7 +172,7 @@ def print_studio_access_banner(
                     secondary,
                 ),
                 style(
-                    "  Only on trusted networks -- anyone who reaches this machine can use Studio.",
+                    "  Only on trusted networks -- anyone who reaches this machine can use Unsloth.",
                     secondary,
                 ),
             ]

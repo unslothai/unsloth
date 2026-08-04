@@ -29,6 +29,7 @@ import { useRef } from "react";
 import { toast } from "@/lib/toast";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import { useT } from "@/i18n";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 const placeholderData = [
   { step: 0, loss: 2.5 },
@@ -53,7 +54,6 @@ export function TrainingSection() {
     ((!store.isVisionModel && store.isDatasetImage === true) ||
       (!store.isAudioModel && store.isDatasetAudio === true));
   const configValidation = validateTrainingConfig(store);
-  const hasMessage = !!(startError || isIncompatible || (!configValidation.ok && configValidation.message));
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -98,19 +98,18 @@ export function TrainingSection() {
       includeVisionFields,
       includeVisionFields && !isDeepseekOcr,
     );
-    const blob = new Blob([yamlStr], { type: "text/yaml" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-
     const model = (store.selectedModel ?? "model").split("/").pop();
     const method = store.trainingMethod ?? "qlora";
     const dataset = (store.dataset ?? "dataset").split("/").pop();
     const timestamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
-    a.download = `${model}_${method}_${dataset}_${timestamp}.yaml`;
-
-    a.click();
-    URL.revokeObjectURL(url);
+    const filename = `${model}_${method}_${dataset}_${timestamp}.yaml`;
+    void downloadFile(yamlStr, filename, "text/yaml;charset=utf-8").catch(
+      (error) => {
+        if (!isDownloadCancelled(error)) {
+          toast.error("Failed to save training config.");
+        }
+      },
+    );
   };
 
   const handleResetConfig = () => {
@@ -125,7 +124,7 @@ export function TrainingSection() {
         title={t("studio.training.title")}
         description={t("studio.training.description")}
         accent="blue"
-        className={hasMessage ? "min-h-studio-config-column" : "h-studio-config-column"}
+        className="min-h-studio-config-column"
       >
         <div className="flex flex-col gap-4">
         {/* Loss chart */}
@@ -175,7 +174,7 @@ export function TrainingSection() {
         {/* Start/Stop */}
         <Button
           data-tour="studio-start"
-          className="w-full cursor-pointer bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-600 hover:to-teal-600"
+          className="w-full cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
           onClick={() => void startTrainingRun()}
           disabled={isStarting || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
         >

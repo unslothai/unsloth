@@ -7,6 +7,9 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+import torch
+
 
 _BACKEND = Path(__file__).resolve().parents[1]
 
@@ -23,6 +26,30 @@ def _load_resume_module():
 
 
 resume = _load_resume_module()
+
+
+def test_resume_request_accepts_sanitized_null_target_modules():
+    from models.training import TrainingStartRequest
+    request = TrainingStartRequest(
+        model_name = "unsloth/Qwen3-0.6B",
+        training_type = "Full Finetuning",
+        format_type = "alpaca",
+        target_modules = None,
+    )
+
+    assert request.target_modules == []
+
+
+def _write_checkpoint(out: Path, step: int) -> Path:
+    checkpoint = out / f"checkpoint-{step}"
+    checkpoint.mkdir(parents = True, exist_ok = True)
+    (checkpoint / "trainer_state.json").write_text(
+        json.dumps({"global_step": step}), encoding = "utf-8"
+    )
+    torch.save({"weight": torch.ones(1)}, checkpoint / "adapter_model.bin")
+    torch.save({"state": {0: torch.ones(1)}}, checkpoint / "optimizer.pt")
+    torch.save({"last_epoch": step}, checkpoint / "scheduler.pt")
+    return checkpoint
 
 
 def _stopped_run(**overrides):
@@ -57,7 +84,8 @@ def test_can_resume_run_rejects_errored_run_without_checkpoint(monkeypatch):
 
 
 def test_can_resume_run_allows_errored_run_at_final_step(monkeypatch):
-    # A save-time crash records final_step == total_steps; resume re-runs the final save.
+    # A save-time crash records final_step == total_steps; resuming re-runs the
+    # final-save path from the checkpoint.
     monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
 
     run = _stopped_run(status = "error", final_step = 10, total_steps = 10)
@@ -129,8 +157,7 @@ def test_crashed_run_with_persisted_output_dir_is_resumable(monkeypatch, tmp_pat
     monkeypatch.setattr(studio_db, "_schema_ready", False)
 
     out = tmp_path / "outputs" / "run_x"
-    (out / "checkpoint-10").mkdir(parents = True)
-    (out / "checkpoint-10" / "trainer_state.json").write_text("{}", encoding = "utf-8")
+    _write_checkpoint(out, 10)
 
     studio_db.create_run(
         id = "run-crash",
@@ -151,7 +178,21 @@ def test_crashed_run_with_persisted_output_dir_is_resumable(monkeypatch, tmp_pat
     assert resume.can_resume_run(run) is True
 
 
-def test_finish_run_does_not_erase_persisted_output_dir(monkeypatch, tmp_path):
+def test_checkpoint_discovery_skips_malformed_newest(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_x"
+    valid = _write_checkpoint(out, 5)
+    (_write_checkpoint(out, 8) / "scheduler.pt").unlink()
+    malformed = out / "checkpoint-10"
+    malformed.mkdir()
+    (malformed / "trainer_state.json").write_text(json.dumps({"global_step": 10}), encoding = "utf-8")
+    (malformed / "adapter_model.bin").write_bytes(b"not a torch archive")
+    (malformed / "optimizer.pt").write_bytes(b"not a torch archive")
+
+    assert resume.get_resume_checkpoint_path(str(out)) == str(valid)
+
+
+def test_completed_run_keeps_output_dir_and_rejects_stale_cancel(monkeypatch, tmp_path):
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -168,17 +209,20 @@ def test_finish_run_does_not_erase_persisted_output_dir(monkeypatch, tmp_path):
     studio_db.update_run_output_dir("r", "/out/x")
     studio_db.finish_run(
         id = "r",
-        status = "error",
+        status = "completed",
         ended_at = "t",
         final_step = 2,
         final_loss = None,
         duration_seconds = 1,
         loss_sparkline = "[]",
-        output_dir = None,
-        error_message = "killed",
+        output_dir = "/out/x",
+        error_message = None,
     )
 
     assert studio_db.get_run("r")["output_dir"] == "/out/x"
+    assert studio_db.mark_run_cancel_requested("r") is False
+    assert studio_db.get_run("r")["output_dir"] == "/out/x"
+    assert studio_db.get_run("r")["resume_blocked"] == 0
 
 
 def test_finish_run_clears_output_dir_for_stop_without_save(monkeypatch, tmp_path):
@@ -209,6 +253,16 @@ def test_finish_run_clears_output_dir_for_stop_without_save(monkeypatch, tmp_pat
         clear_output_dir = True,
     )
 
+    assert studio_db.get_run("r")["output_dir"] is None
+    conn = studio_db.get_connection()
+    conn.execute(
+        "UPDATE training_runs SET status = 'running', output_dir = '/out/x', resume_blocked = 0 WHERE id = 'r'"
+    )
+    conn.commit()
+    conn.close()
+    studio_db.mark_run_cancel_requested("r")
+    studio_db.cleanup_orphaned_runs()
+    assert studio_db.get_run("r")["status"] == "stopped"
     assert studio_db.get_run("r")["output_dir"] is None
 
 
@@ -323,8 +377,7 @@ def test_resumed_errored_run_is_not_offered_again(monkeypatch, tmp_path):
     monkeypatch.setattr(studio_db, "_schema_ready", False)
 
     out = tmp_path / "outputs" / "run_x"
-    (out / "checkpoint-10").mkdir(parents = True)
-    (out / "checkpoint-10" / "trainer_state.json").write_text("{}", encoding = "utf-8")
+    _write_checkpoint(out, 10)
 
     studio_db.create_run(
         id = "run-old",
@@ -353,8 +406,21 @@ def test_resumed_errored_run_is_not_offered_again(monkeypatch, tmp_path):
         config_json = "{}",
         started_at = "2026-01-02T00:00:00Z",
         total_steps = 20,
+        output_dir = str(out),
+        resumed_from_run_id = "run-old",
     )
-    studio_db.update_run_output_dir("run-new", str(out))
+    with pytest.raises(RuntimeError, match = "no longer available"):
+        studio_db.create_run(
+            id = "run-duplicate",
+            model_name = "m",
+            dataset_name = "d",
+            config_json = "{}",
+            started_at = "2026-01-02T00:00:01Z",
+            total_steps = 20,
+            output_dir = str(out),
+            resumed_from_run_id = "run-old",
+        )
+    assert studio_db.get_run("run-duplicate") is None
     studio_db.finish_run(
         id = "run-new",
         status = "error",
@@ -383,8 +449,7 @@ def test_running_continuation_blocks_older_resume(monkeypatch, tmp_path):
     monkeypatch.setattr(studio_db, "_schema_ready", False)
 
     out = tmp_path / "outputs" / "run_x"
-    (out / "checkpoint-10").mkdir(parents = True)
-    (out / "checkpoint-10" / "trainer_state.json").write_text("{}", encoding = "utf-8")
+    _write_checkpoint(out, 10)
 
     studio_db.create_run(
         id = "run-old",
@@ -413,8 +478,9 @@ def test_running_continuation_blocks_older_resume(monkeypatch, tmp_path):
         config_json = "{}",
         started_at = "2026-01-02T00:00:00Z",
         total_steps = 20,
+        output_dir = str(out),
+        resumed_from_run_id = "run-old",
     )
-    studio_db.update_run_output_dir("run-new", str(out))
 
     old_run = studio_db.get_run("run-old")
     assert old_run["resumed_later"] == 1
@@ -423,7 +489,8 @@ def test_running_continuation_blocks_older_resume(monkeypatch, tmp_path):
 
 
 def test_stop_save_checkpoint_failure_keeps_error_status(monkeypatch, tmp_path):
-    # A failed stop-and-save checkpoint must finalize as an error, not a stopped run.
+    # A stop-and-save whose checkpoint write failed must finalize as an error so
+    # history explains the missing resume state (keep_error_status flag).
     from core.training.training import TrainingBackend
     from storage import studio_db
 
@@ -462,7 +529,8 @@ def test_can_resume_run_rejects_resume_blocked_run(monkeypatch):
 
 
 def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(monkeypatch, tmp_path):
-    # A failed stop-and-save must not offer Resume from an older, stale checkpoint.
+    # A failed stop-and-save must not offer Resume from an older periodic checkpoint;
+    # that would roll back past the recorded final step.
     from core.training.training import TrainingBackend
     from storage import studio_db
 
@@ -470,8 +538,7 @@ def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(mon
     monkeypatch.setattr(studio_db, "_schema_ready", False)
 
     out = tmp_path / "outputs" / "run_x"
-    (out / "checkpoint-10").mkdir(parents = True)
-    (out / "checkpoint-10" / "trainer_state.json").write_text("{}", encoding = "utf-8")
+    _write_checkpoint(out, 10)
 
     studio_db.create_run(
         id = "run-stale-ckpt",
@@ -503,8 +570,7 @@ def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(mon
     assert resume.can_resume_run(run) is False
 
 
-def test_user_stop_error_without_flag_still_finalizes_stopped(monkeypatch, tmp_path):
-    # Errors surfaced while honouring a plain user stop keep the stopped status.
+def test_user_stop_error_without_checkpoint_ack_is_blocked(monkeypatch, tmp_path):
     from core.training.training import TrainingBackend
     from storage import studio_db
 
@@ -525,4 +591,44 @@ def test_user_stop_error_without_flag_still_finalizes_stopped(monkeypatch, tmp_p
     backend._should_stop = True
     backend._handle_event({"type": "error", "error": "interrupted"})
 
-    assert studio_db.get_run("run-user-stop")["status"] == "stopped"
+    run = studio_db.get_run("run-user-stop")
+    assert run["status"] == "error" and run["resume_blocked"] == 1
+
+
+def test_terminal_fallback_keeps_resumable_when_current_checkpoint_landed(monkeypatch, tmp_path):
+    # Worker died before its terminal event, but a valid current-step checkpoint
+    # is on disk: the fallback must keep the run resumable, not block it.
+    from core.training.training import TrainingBackend
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_ok"
+    _write_checkpoint(out, 7)
+
+    backend = TrainingBackend()
+    backend.current_job_id = "run-ok"
+    backend._should_stop = True
+    backend._output_dir = str(out)
+    backend._progress.step = 7
+
+    kwargs = backend._terminal_finalize_kwargs()
+    assert kwargs["status"] == "stopped"
+    assert kwargs["resume_blocked"] is False
+
+
+def test_terminal_fallback_blocks_when_no_current_checkpoint(monkeypatch, tmp_path):
+    # Same path, but only a stale (older-step) checkpoint exists: must block.
+    from core.training.training import TrainingBackend
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_stale"
+    _write_checkpoint(out, 5)
+
+    backend = TrainingBackend()
+    backend.current_job_id = "run-stale"
+    backend._should_stop = True
+    backend._output_dir = str(out)
+    backend._progress.step = 7
+
+    kwargs = backend._terminal_finalize_kwargs()
+    assert kwargs["status"] == "error"
+    assert kwargs["resume_blocked"] is True

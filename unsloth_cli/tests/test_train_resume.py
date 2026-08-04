@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import inspect
+import json
 import sys
 from pathlib import Path
 
 import pytest
+import torch
 import typer
 from typer.testing import CliRunner
 
@@ -33,13 +35,24 @@ def _app():
     return app
 
 
+def _write_checkpoint(out: Path, step: int) -> Path:
+    # A full bundle: resume validation rejects a bare trainer_state.json.
+    checkpoint = out / f"checkpoint-{step}"
+    checkpoint.mkdir(parents = True, exist_ok = True)
+    (checkpoint / "trainer_state.json").write_text(
+        json.dumps({"global_step": step}), encoding = "utf-8"
+    )
+    torch.save({"weight": torch.ones(1)}, checkpoint / "adapter_model.bin")
+    torch.save({"state": {0: torch.ones(1)}}, checkpoint / "optimizer.pt")
+    torch.save({"last_epoch": step}, checkpoint / "scheduler.pt")
+    return checkpoint
+
+
 @pytest.fixture
 def outputs_home(tmp_path, monkeypatch):
     # UNSLOTH_STUDIO_HOME with a fake resumable checkpoint under outputs/.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    ckpt = tmp_path / "outputs" / "checkpoint-10"
-    ckpt.mkdir(parents = True)
-    (ckpt / "trainer_state.json").write_text("{}", encoding = "utf-8")
+    _write_checkpoint(tmp_path / "outputs", 10)
     return tmp_path
 
 

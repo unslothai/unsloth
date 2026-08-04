@@ -5,7 +5,6 @@ import { create } from "zustand";
 import {
   cancelExport,
   cleanupExport,
-  exportBase,
   exportGGUF,
   exportLoRA,
   exportMerged,
@@ -119,6 +118,8 @@ export interface ExportRunSummary {
   methodLabel: string;
   method: ExportMethod;
   quantLevels: string[];
+  /** Merged: the selected format values (for the summary "Formats" row and to reseed the picker). */
+  mergedFormats: string[];
   destination: ExportDestination;
 }
 
@@ -140,8 +141,16 @@ export interface RunExportParams {
   quantLevels: string[];
   /** GGUF: use an importance matrix (auto-download); required for the IQ quants. */
   useImatrix?: boolean;
-  /** Merged: precision/format ("16-bit (FP16)" or a compressed-tensors option). */
-  mergedFormat?: string;
+  /** Merged: precision formats, each exported to its own sibling directory. Defaults to 16-bit.
+   *  `label` is the display name for the success banner's per-format output line. */
+  mergedSelections?: {
+    formatType: string;
+    compressedMethod: string | null;
+    label: string;
+  }[];
+  /** LoRA: also emit a GGUF LoRA adapter (llama.cpp `--lora`), and its output float type. */
+  loraGguf?: boolean;
+  loraGgufOuttype?: string;
   saveDirectory: string;
   destination: ExportDestination;
   repoId?: string;
@@ -172,7 +181,13 @@ interface ExportRuntimeState {
    *  settling the run by polling /api/export/status instead. Logs keep streaming. */
   reconnecting: boolean;
   startedAt: number | null;
-  result: { outputPath: string | null; destination: ExportDestination } | null;
+  /** `outputPath` is the first path (back-compat); `outputPaths` is one entry per written folder
+   *  so a multi-format merged run can list every sibling directory it created. */
+  result: {
+    outputPath: string | null;
+    outputPaths: { label: string; path: string }[];
+    destination: ExportDestination;
+  } | null;
   error: string | null;
   cancelRequested: boolean;
   hasHydrated: boolean;
@@ -317,6 +332,10 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             phase: "success" as const,
             result: {
               outputPath: status.last_op_output_path ?? null,
+              // A run recovered from the backend only knows the last output path.
+              outputPaths: status.last_op_output_path
+                ? [{ label: "", path: status.last_op_output_path }]
+                : [],
               destination: state.result?.destination ?? "local",
             },
           };
@@ -351,7 +370,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
     const quantTotal =
       params.exportMethod === "gguf"
         ? Math.max(1, params.quantLevels.length)
-        : 1;
+        : params.exportMethod === "merged"
+          ? Math.max(1, params.mergedSelections?.length ?? 1)
+          : 1;
 
     set({
       runId,
@@ -431,67 +452,72 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       }
       if (!isCurrent()) return;
 
-      // 2. Run the export. Capture the resolved output_path for the success
-      // banner; multi-quant GGUF shares one directory, so keep the last.
+      // 2. Run the export. Collect every resolved output_path so the success
+      // banner can list each sibling directory a multi-format run created.
       set({ phase: "exporting" });
-      let lastOutputPath: string | null = null;
+      const outputs: { label: string; path: string }[] = [];
 
       if (params.exportMethod === "merged") {
-        if (params.isAdapter) {
+        // Each selected format writes its own sibling directory (PEFT or non-PEFT base alike).
+        const selections =
+          params.mergedSelections && params.mergedSelections.length > 0
+            ? params.mergedSelections
+            : [{ formatType: "16-bit (FP16)", compressedMethod: null, label: "16-bit" }];
+        for (let i = 0; i < selections.length; i += 1) {
+          if (!isCurrent()) return;
+          set({ quantIndex: i });
+          const sel = selections[i];
           const { outputPath } = await runRecoverableOp(() =>
             exportMerged({
               save_directory: params.saveDirectory,
-              format_type: params.mergedFormat,
+              format_type: sel.formatType,
+              compressed_method: sel.compressedMethod,
               push_to_hub: pushToHub,
               repo_id: params.repoId,
               hf_token: params.token,
               private: params.privateRepo,
             }),
           );
-          lastOutputPath = outputPath;
-        } else {
-          const { outputPath } = await runRecoverableOp(() =>
-            exportBase({
-              save_directory: params.saveDirectory,
-              push_to_hub: pushToHub,
-              repo_id: params.repoId,
-              hf_token: params.token,
-              private: params.privateRepo,
-              base_model_id: params.baseModelId,
-            }),
-          );
-          lastOutputPath = outputPath;
-        }
-      } else if (params.exportMethod === "gguf") {
-        for (let i = 0; i < params.quantLevels.length; i += 1) {
-          if (!isCurrent()) return;
-          set({ quantIndex: i });
-          const quant = params.quantLevels[i];
-          const { outputPath } = await runRecoverableOp(() =>
-            exportGGUF({
-              save_directory: params.saveDirectory,
-              quantization_method: quant,
-              push_to_hub: pushToHub,
-              repo_id: params.repoId,
-              hf_token: params.token,
-              imatrix: params.useImatrix,
-            }),
-          );
-          lastOutputPath = outputPath ?? lastOutputPath;
+          if (outputPath) outputs.push({ label: sel.label, path: outputPath });
           if (!isCurrent()) return;
           set({ quantIndex: i + 1 });
         }
+      } else if (params.exportMethod === "gguf") {
+        // Send the whole quant list in ONE call: the model is merged once and every GGUF comes
+        // from that single merge (unsloth save_to_gguf loops internally).
+        const { outputPath } = await runRecoverableOp(() =>
+          exportGGUF({
+            save_directory: params.saveDirectory,
+            quantization_method: params.quantLevels,
+            push_to_hub: pushToHub,
+            repo_id: params.repoId,
+            hf_token: params.token,
+            imatrix: params.useImatrix,
+          }),
+        );
+        if (outputPath) outputs.push({ label: "GGUF", path: outputPath });
+        if (!isCurrent()) return;
+        set({ quantIndex: get().quantTotal });
       } else if (params.exportMethod === "lora") {
         const { outputPath } = await runRecoverableOp(() =>
           exportLoRA({
             save_directory: params.saveDirectory,
             push_to_hub: pushToHub,
             repo_id: params.repoId,
-            hf_token: params.token,
+            // A local GGUF LoRA export still reloads a possibly-gated base config, so fall back to
+            // the load token when there is no hub-upload token (both are the same HF token).
+            hf_token: params.token ?? params.loadToken ?? null,
             private: params.privateRepo,
+            gguf: params.loraGguf ?? false,
+            gguf_outtype: params.loraGgufOuttype ?? "q8_0",
           }),
         );
-        lastOutputPath = outputPath;
+        if (outputPath) {
+          outputs.push({
+            label: params.loraGguf ? "GGUF LoRA adapter" : "LoRA adapter",
+            path: outputPath,
+          });
+        }
       }
       if (!isCurrent()) return;
 
@@ -499,7 +525,11 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         phase: "success",
         isExporting: false,
         reconnecting: false,
-        result: { outputPath: lastOutputPath, destination: params.destination },
+        result: {
+          outputPath: outputs[0]?.path ?? null,
+          outputPaths: outputs,
+          destination: params.destination,
+        },
       });
     } catch (err) {
       if (!isCurrent()) return;

@@ -96,12 +96,11 @@ def load_and_compute_8bit_ppl(
 if __name__ == "__main__":
     mp.set_start_method("spawn", force = True)
 
-    if torch.cuda.is_bf16_supported():
-        compute_dtype = torch.bfloat16
-        attn_implementation = "flash_attention_2"
-    else:
-        compute_dtype = torch.float16
-        attn_implementation = "sdpa"
+    from unsloth import is_bfloat16_supported
+    from unsloth.models._utils import HAS_FLASH_ATTENTION
+
+    compute_dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
+    attn_implementation = "flash_attention_2" if HAS_FLASH_ATTENTION else "sdpa"
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = "unsloth/Llama-3.2-3B-Instruct",

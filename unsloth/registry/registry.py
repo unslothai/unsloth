@@ -1,3 +1,8 @@
+# ModelMeta.quant_types below is a dataclass field annotated with a PEP 604 union,
+# which evaluates at class creation and is a TypeError on the 3.9 floor pyproject
+# declares.
+from __future__ import annotations
+
 import warnings
 from dataclasses import dataclass, field
 from enum import Enum
