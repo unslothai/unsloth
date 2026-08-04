@@ -14,7 +14,7 @@
 
 from .q_galore_projector import GaLoreProjector
 from .q_galore_adamw import QGaLoreAdamW8bit
-from .layerwise_lr import make_layerwise_lr_param_groups, get_layer_index
+from .layerwise_lr import make_layerwise_lr_param_groups as make_layerwise_lr_param_groups
 
 __all__ = [
     "GaLoreProjector",
