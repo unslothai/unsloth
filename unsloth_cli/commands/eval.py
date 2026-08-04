@@ -787,9 +787,7 @@ def evaluate(
                     if any(ch in name for ch in "*?["):
                         matches = task_manager.match_tasks([name])
                         if not matches:
-                            typer.echo(
-                                f"Error: no tasks match pattern '{name}'.", err = True
-                            )
+                            typer.echo(f"Error: no tasks match pattern '{name}'.", err = True)
                             raise typer.Exit(code = 2)
                         expanded.extend(m for m in matches if m not in expanded)
                     else:

@@ -562,12 +562,8 @@ def fake_eval_env(monkeypatch):
 
         def match_tasks(self, task_list):
             import fnmatch
-
             return [
-                t
-                for pattern in task_list
-                for t in self.all_tasks
-                if fnmatch.fnmatch(t, pattern)
+                t for pattern in task_list for t in self.all_tasks if fnmatch.fnmatch(t, pattern)
             ]
 
     def _simple_evaluate(
@@ -1485,8 +1481,7 @@ def test_hf_device_error_rejects_leading_zero_indices(monkeypatch):
 def test_eval_rejects_non_integral_count_limits(fake_eval_env, tmp_path):
     result = CliRunner().invoke(
         _eval_app(),
-        ["fake/model", "--tasks", "gsm8k", "--limit", "1.5",
-         "--output-dir", str(tmp_path / "out")],
+        ["fake/model", "--tasks", "gsm8k", "--limit", "1.5", "--output-dir", str(tmp_path / "out")],
     )
     assert result.exit_code == 2, result.output
     assert "whole count or a fraction" in result.output
