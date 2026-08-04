@@ -1119,6 +1119,7 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
 # Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
+_REPRIEVABLE_KINDS = ("dspark", "dflash")
 
 
 def _drafter_path_kind(path: str) -> Optional[str]:
@@ -1150,6 +1151,8 @@ def _is_companion_gguf_path(path: str) -> bool:
     ``MTP/...-Q8_0-MTP.gguf`` drafter, which sorts ahead of the real weight.
 
     EXCLUSION ONLY. Use `_is_mtp_only_drafter_path` to pick a drafter to launch.
+    PER-PATH: it is the pinned mirror of the canonical predicate, so a caller
+    holding a whole repo listing wants `_drafter_paths_in` (reprieve included).
     """
     p = path.lower()
     if not p.endswith(".gguf"):
@@ -1162,9 +1165,16 @@ def _is_companion_gguf_path(path: str) -> bool:
 _NON_GGUF_WEIGHT_BIN_PREFIXES = ("pytorch_model", "model", "adapter_model", "consolidated")
 
 
+def _is_reprievable_drafter(path: str) -> bool:
+    """Mirrors hub.utils.gguf.is_reprievable_drafter_path."""
+    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return any(name.startswith(f"{kind}-") for kind in _REPRIEVABLE_KINDS)
+
+
 def _drafter_paths_in(paths) -> frozenset:
-    """Mirrors hub.utils.gguf.drafter_paths_in: a prefix-named drafter with no
-    main weight beside it in the same repo listing is that repo's main weight."""
+    """Mirrors hub.utils.gguf.drafter_paths_in: a prefix-named drafter of a
+    family-named kind with no main weight beside it in the same repo listing is
+    that repo's main weight."""
     listing = list(paths)
     drafters = {p for p in listing if _drafter_path_kind(p) is not None}
 
@@ -1181,8 +1191,18 @@ def _drafter_paths_in(paths) -> frozenset:
     return frozenset(
         p
         for p in drafters
-        if _drafter_dir_kind(p) or _GGUF_KNOWN_QUANT_RE.search(_gguf_stem_for_quant(p)) is None
+        if _drafter_dir_kind(p) or not _is_reprievable_drafter(p) or not _has_quant_token(p)
     )
+
+
+def _has_quant_token(path: str) -> bool:
+    """Mirrors the match half of hub.utils.gguf.extract_quant_token: the basename,
+    then the parent segments, so ``Q4_K_M/dflash-model.gguf`` counts as a quant."""
+    if _GGUF_KNOWN_QUANT_RE.search(_gguf_stem_for_quant(path)):
+        return True
+    p = path.replace("\\", "/")
+    parents = p.rsplit("/", 1)[0] if "/" in p else ""
+    return any(_GGUF_KNOWN_QUANT_RE.search(seg) for seg in parents.split("/") if seg)
 
 
 def _drafter_dir_kind(path: str) -> bool:
@@ -1529,6 +1549,19 @@ def _hub_cache_dir_for_snapshot_path(path: Optional[str]) -> Optional[str]:
     if snapshot is None or snapshot.parent.name != "snapshots":
         return None
     return str(snapshot.parent.parent.parent)
+
+
+def _same_gguf_file(left: str, right: str) -> bool:
+    """Whether two paths name one file (symlinked HF blobs included)."""
+    try:
+        if Path(left).resolve(strict = False) == Path(right).resolve(strict = False):
+            return True
+    except OSError:
+        pass
+    try:
+        return Path(left).samefile(Path(right))
+    except OSError:
+        return False
 
 
 def _companion_snapshot_sibling(
@@ -6071,11 +6104,14 @@ class LlamaCppBackend:
             from huggingface_hub import get_paths_info, list_repo_files
 
             files = list_repo_files(hf_repo, token = hf_token)
+            # Listing-aware: a repo named after the drafter family has no other candidate.
+            drafters = _drafter_paths_in(files)
             gguf_files = [
                 f
                 for f in files
                 if f.lower().endswith(".gguf")
-                and not _is_companion_gguf_path(f)
+                and f not in drafters
+                and "mmproj" not in f.lower()
                 and not _is_big_endian_gguf_path(f)
             ]
             if not gguf_files:
@@ -7242,9 +7278,12 @@ class LlamaCppBackend:
                 else _iter_hf_cache_snapshots(hf_repo, cache_dir)
             )
             for snap in snapshots:  # newest first
-                for f in sorted(_gguf_snapshot_files(snap)):
+                snapshot_files = _gguf_snapshot_files(snap)
+                # A snapshot is a whole listing, so a reprieved main is not a drafter.
+                drafters = _drafter_paths_in(snapshot_files)
+                for f in sorted(snapshot_files):
                     # A cached DSpark drafter must never reach --spec-type draft-mtp.
-                    if _is_mtp_only_drafter_path(f):
+                    if f in drafters and _is_mtp_only_drafter_path(f):
                         (roots if "/" not in f else subdirs).append(snap / f)
             # Keep snapshot order (newest first), root before any MTP/ copy, so a
             # newer main GGUF pairs with the newest cached drafter, not a stale one.
@@ -7275,12 +7314,16 @@ class LlamaCppBackend:
         def _pick_mtp(candidates: list[str]) -> Optional[str]:
             # Root-level only: MTP/ subdir copies now share the mtp- prefix but
             # are explicit-selection, not auto-fetch (they'd sort ahead of root).
+            # Listing-aware: a reprieved mtp-*.gguf is the repo's main weight, so
+            # taking it here would emit -m X --model-draft X.
+            drafters = _drafter_paths_in(candidates)
             mtp_files = sorted(
                 f
                 for f in candidates
                 if f.lower().endswith(".gguf")
                 and "/" not in f
                 and Path(f).name.lower().startswith("mtp-")
+                and f in drafters
             )
             return mtp_files[0] if mtp_files else None
 
@@ -7347,16 +7390,29 @@ class LlamaCppBackend:
             logger.debug(f"Could not size mmproj {launch_mmproj_path}: {e}")
             return 0
 
-    def _resolve_launch_mtp_path(self, *, mtp_draft_path: Optional[str]) -> Optional[str]:
-        """Return mtp_draft_path iff it exists on disk, else None.
+    def _resolve_launch_mtp_path(
+        self,
+        *,
+        mtp_draft_path: Optional[str],
+        model_path: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return mtp_draft_path iff it exists on disk and is not the model itself.
 
         No family check needed: the drafter is only ever auto-resolved from
-        the same repo as the main GGUF (see _download_mtp).
+        the same repo as the main GGUF (see _download_mtp). The self-pair check
+        is the last line: in a repo whose only weight is a reprieved
+        ``mtp-*-Q8_0.gguf`` the drafter search can land back on the model.
         """
         if not mtp_draft_path:
             return None
         if not Path(mtp_draft_path).is_file():
             logger.warning(f"MTP drafter file not found: {mtp_draft_path}")
+            return None
+        if model_path and _same_gguf_file(mtp_draft_path, model_path):
+            logger.warning(
+                "Ignoring MTP drafter identical to the model (%s); it cannot draft itself.",
+                mtp_draft_path,
+            )
             return None
         return str(mtp_draft_path)
 
@@ -9832,6 +9888,7 @@ class LlamaCppBackend:
                     _draft_device = ",".join(f"Vulkan{i}" for i in _vulkan_pin_ids)
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
                     mtp_draft_path = mtp_draft_path,
+                    model_path = model_path,
                 )
                 _pv_suppressed_draft_path: Optional[str] = None
                 _pv_suppressed_spec_extra_args: Optional[List[str]] = None
@@ -11013,6 +11070,12 @@ class LlamaCppBackend:
         self._spec_draft_n_max = None
         self._speculative_type = None
         self._spec_fallback_reason = None
+
+        # A model cannot draft itself: refuse -m X --model-draft X, which a
+        # reprieved mtp-*-Q8_0.gguf (the repo's only weight) would otherwise emit.
+        if mtp_draft_path and model_path and _same_gguf_file(mtp_draft_path, model_path):
+            logger.warning("MTP drafter is the model itself (%s); ignoring it.", mtp_draft_path)
+            mtp_draft_path = None
 
         # Canonical UI-facing requested mode (legacy values mapped via
         # _canonicalize_spec_mode).

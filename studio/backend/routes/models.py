@@ -3187,6 +3187,13 @@ def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
     return label
 
 
+def _revision_main_gguf_names(revision) -> set[str]:
+    """Main GGUFs in ONE revision, whose file list is that repo's whole listing, so
+    the drafter reprieve applies. Delegates to the cache-inventory copy."""
+    from hub.services.models.cache_inventory import _revision_main_gguf_names as impl
+    return impl(revision)
+
+
 def _normalized_quant_label(label: str) -> str:
     return label.lower().replace("-", "").replace("_", "")
 
@@ -3253,10 +3260,11 @@ def _repo_gguf_size_bytes(repo_info) -> int:
     unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
+        main = _revision_main_gguf_names(revision)
         for f in revision.files:
             # Snapshot-relative: only the directory tells an MTP/ drafter from a primary quant.
             name = _cached_repo_file_name(f)
-            if _is_main_gguf_filename(name):
+            if name in main:
                 blob_path = getattr(f, "blob_path", None)
                 size = f.size_on_disk or 0
                 if blob_path:
@@ -3299,8 +3307,9 @@ def _repo_gguf_last_modified(repo_info) -> float:
     """
     latest = 0.0
     for revision in repo_info.revisions:
+        main = _revision_main_gguf_names(revision)
         for f in revision.files:
-            if _is_main_gguf_filename(_cached_repo_file_name(f)):
+            if _cached_repo_file_name(f) in main:
                 latest = max(latest, _blob_mtime(f))
     return latest
 
@@ -3342,7 +3351,7 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
         Path(snapshot)
         for revision in repo_info.revisions
         if (snapshot := getattr(revision, "snapshot_path", None)) is not None
-        and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
+        and _revision_main_gguf_names(revision)
     ]
     candidates.sort(key = snapshot_selection_key, reverse = True)
     # Newest first, skipping any holding no whole quant, else a torn download beats a loadable one.

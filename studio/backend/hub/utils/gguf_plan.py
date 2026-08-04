@@ -115,7 +115,11 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     ``mtp-`` prefix, first in sort order) so download and load resolve the same
     file; the higher-precision ``MTP/`` subdir copies are for explicit
     selection and are not auto-fetched. None for repos with the head baked into
-    the main GGUF (Qwen)."""
+    the main GGUF (Qwen).
+
+    Discovery, not exclusion, so no reprieve applies: ``mtp`` is not in
+    ``_REPRIEVABLE_KINDS``, so an ``mtp-*.gguf`` is always a companion and can
+    never be picked as its own ``--model-draft``."""
     # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
     candidates = sorted(
         (
@@ -142,13 +146,8 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     drafters = drafter_paths_in(
         name for s in siblings if isinstance(name := getattr(s, "rfilename", None), str)
     )
-
     mtp_sibling = preferred_mtp_sibling(siblings)
     mtp_expected = expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
-    # A reprieved drafter is this repo's main weight, so it is grouped as a quant
-    # below; folding it in again here would double its size and target entries.
-    if mtp_expected is not None and mtp_expected.path not in drafters:
-        mtp_expected = None
     companions_expected = tuple(
         file for file in (companion_expected, mtp_expected) if file is not None
     )

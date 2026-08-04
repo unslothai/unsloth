@@ -93,6 +93,11 @@ _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
 # still match the prefix (ggml-org/Qwen3.6-27B-GGUF: dflash-Qwen3.6-27B-BF16.gguf).
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
+# Kinds whose names also name a model family, so a listing of nothing but these
+# can be a real model rather than a companion left on its own. No family is
+# named MTP, so an ``mtp-`` file is always a companion.
+_REPRIEVABLE_KINDS = ("dspark", "dflash")
+
 
 def is_mtp_drafter_path(path: str) -> bool:
     """True for a separate-file speculative-decoding drafter, a companion to the
@@ -148,6 +153,13 @@ def is_drafter_dir_path(path: str) -> bool:
     return any(kind in [s for s in p.split("/")[:-1] if s] for kind in _DRAFTER_DIR_KINDS)
 
 
+def is_reprievable_drafter_path(path: str) -> bool:
+    """Whether *path* is named for a kind in ``_REPRIEVABLE_KINDS``, the only
+    files ``drafter_paths_in`` may promote to a main model."""
+    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return any(name.startswith(f"{kind}-") for kind in _REPRIEVABLE_KINDS)
+
+
 def drafter_paths_in(paths: Iterable[str]) -> frozenset[str]:
     """The drafter GGUFs among *paths*. A companion is only a companion when it
     has something to accompany, so a PREFIX-named drafter with no main model
@@ -159,7 +171,8 @@ def drafter_paths_in(paths: Iterable[str]) -> frozenset[str]:
 
     A DIRECTORY-named drafter (``mtp/``, ``dspark/``) is never reprieved: the
     publisher laid it out as a companion, and a snapshot holding only that is a
-    half-downloaded repo, not a model.
+    half-downloaded repo, not a model. Neither is an ``mtp-`` file, whose kind
+    never names a family (``_REPRIEVABLE_KINDS``).
     """
     listing = list(paths)
     drafters = {path for path in listing if is_gguf_filename(path) and is_mtp_drafter_path(path)}
@@ -170,11 +183,13 @@ def drafter_paths_in(paths: Iterable[str]) -> frozenset[str]:
     )
     if has_main:
         return frozenset(drafters)
-    # A reprieved file has to look like a quant to be selectable as one, which
-    # also keeps the bare ``mtp-<model>.gguf`` drafter rejected: loading it as
-    # the model would pair it with itself (-m drafter --model-draft drafter).
+    # A reprieved file also has to look like a quant to be selectable as one.
     return frozenset(
-        path for path in drafters if is_drafter_dir_path(path) or extract_quant_token(path) is None
+        path
+        for path in drafters
+        if is_drafter_dir_path(path)
+        or not is_reprievable_drafter_path(path)
+        or extract_quant_token(path) is None
     )
 
 
@@ -233,6 +248,24 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
                 yield file
         except OSError:
             continue
+
+
+def repo_listing_in(directory: Path) -> list[str]:
+    """Every file under *directory* as posix rel paths, so a whole-repo drafter
+    decision sees non-GGUF weights too. Bounded like ``iter_gguf_files``."""
+    out: list[str] = []
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(directory, onerror = lambda _e: None):
+        base = Path(dirpath)
+        for name in filenames:
+            try:
+                out.append((base / name).relative_to(directory).as_posix())
+            except ValueError:
+                continue
+        seen += len(dirnames) + len(filenames)
+        if seen > _MAX_LOCAL_SCAN_ENTRIES:
+            break
+    return out
 
 
 def pick_best_gguf(filenames: list[str]) -> Optional[str]:
@@ -674,8 +707,9 @@ def list_local_gguf_variants(
     ]
     drafters = {rel for file, rel in scanned if _is_local_mtp_drafter(file, custom_root, rel)}
     if whole_repo and drafters:
-        reprieved = drafters - drafter_paths_in(rel for _file, rel in scanned)
-        drafters -= reprieved
+        # The FULL listing, not just the GGUFs: a safetensors weight beside the
+        # drafter is something to accompany, so there is nothing to reprieve.
+        drafters &= drafter_paths_in(repo_listing_in(root))
 
     for file, rel in scanned:
         if is_mmproj_filename(file.name):

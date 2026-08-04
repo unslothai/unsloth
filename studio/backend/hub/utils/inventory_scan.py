@@ -27,11 +27,11 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 from hub.utils.gguf import (
+    drafter_paths_in,
     extract_quant_label,
     is_big_endian_gguf_path,
     is_gguf_filename,
     is_mmproj_filename,
-    is_mtp_drafter_path,
 )
 from hub.utils.state_dir import RepoType
 
@@ -721,6 +721,7 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         paths = sorted(snapshot_dir.rglob("*"))
     except OSError:
         return set()
+    entries: list[tuple[Path, str, bool]] = []
     for path in paths:
         try:
             if not path.is_file():
@@ -728,8 +729,11 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
             empty = path.stat().st_size <= 0
         except OSError:
             continue
-        rel = path.relative_to(snapshot_dir).as_posix()
-        if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
+        entries.append((path, path.relative_to(snapshot_dir).as_posix(), empty))
+    # A snapshot is one repo's whole listing, so the drafter reprieve applies.
+    drafters = drafter_paths_in(rel for _path, rel, _empty in entries)
+    for path, rel, empty in entries:
+        if not is_gguf_filename(rel) or is_mmproj_filename(rel) or rel in drafters:
             continue
         quant = extract_quant_label(rel)
         # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the quant.
@@ -769,7 +773,8 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
 def _offered_gguf_quants(snapshot_dir: Path) -> set[str]:
     from hub.utils.gguf import list_local_gguf_variants
     try:
-        variants, _ = list_local_gguf_variants(str(snapshot_dir))
+        # whole_repo: a snapshot is one repo's full listing, as the lister sees it.
+        variants, _ = list_local_gguf_variants(str(snapshot_dir), whole_repo = True)
         return {v.quant for v in variants if getattr(v, "quant", None)}
     except Exception:
         return set()
@@ -1285,7 +1290,7 @@ def snapshot_variants_all_complete(snapshot: str) -> bool:
     """
     from hub.utils.gguf import list_local_gguf_variants
     try:
-        variants, _ = list_local_gguf_variants(snapshot)
+        variants, _ = list_local_gguf_variants(snapshot, whole_repo = True)
         offered = {v.quant for v in variants if getattr(v, "quant", None)}
         if not offered:
             return False
@@ -1303,7 +1308,7 @@ def snapshot_has_complete_variants(snapshot: str) -> bool:
     """
     from hub.utils.gguf import list_local_gguf_variants
     try:
-        variants, _ = list_local_gguf_variants(snapshot)
+        variants, _ = list_local_gguf_variants(snapshot, whole_repo = True)
         offered = {v.quant for v in variants if getattr(v, "quant", None)}
         if not offered:
             return False

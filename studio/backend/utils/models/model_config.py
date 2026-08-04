@@ -1237,6 +1237,7 @@ def _is_mmproj(filename: str) -> bool:
 # ``dflash/`` holds real weights, so dflash is a drafter by prefix only.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
+_REPRIEVABLE_KINDS = ("dspark", "dflash")
 
 
 def _is_mtp_drafter(path: str) -> bool:
@@ -1293,9 +1294,16 @@ def _has_quant_token(path: str) -> bool:
     return any(_GGUF_KNOWN_QUANT_RE.search(seg) for seg in parents.split("/") if seg)
 
 
+def _is_reprievable_drafter(path: str) -> bool:
+    """Mirrors hub.utils.gguf.is_reprievable_drafter_path."""
+    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return any(name.startswith(f"{kind}-") for kind in _REPRIEVABLE_KINDS)
+
+
 def _drafter_paths_in(paths) -> frozenset:
-    """Mirrors hub.utils.gguf.drafter_paths_in: a prefix-named drafter with no
-    main weight beside it in the same listing is that listing's main weight."""
+    """Mirrors hub.utils.gguf.drafter_paths_in: a prefix-named drafter of a
+    family-named kind with no main weight beside it in the same listing is that
+    listing's main weight."""
     listing = list(paths)
     drafters = {p for p in listing if p.lower().endswith(".gguf") and _is_mtp_drafter(p)}
     has_main = any(
@@ -1305,7 +1313,11 @@ def _drafter_paths_in(paths) -> frozenset:
     )
     if has_main:
         return frozenset(drafters)
-    return frozenset(p for p in drafters if _is_drafter_dir(p) or not _has_quant_token(p))
+    return frozenset(
+        p
+        for p in drafters
+        if _is_drafter_dir(p) or not _is_reprievable_drafter(p) or not _has_quant_token(p)
+    )
 
 
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.
@@ -1397,6 +1409,28 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
     for f in iterator:
         if f.is_file() and _is_gguf_filename(f.name):
             yield f
+
+
+# Cap the whole-listing walk so a huge snapshot cannot run unbounded.
+_MAX_SNAPSHOT_LISTING_ENTRIES = 100_000
+
+
+def _snapshot_listing(directory: Path) -> list[str]:
+    """Every file under *directory* as posix rel paths, so the drafter reprieve
+    sees non-GGUF weights too. Mirrors hub.utils.gguf.repo_listing_in."""
+    out: list[str] = []
+    try:
+        for index, entry in enumerate(directory.rglob("*"), start = 1):
+            if index > _MAX_SNAPSHOT_LISTING_ENTRIES:
+                break
+            try:
+                if entry.is_file():
+                    out.append(entry.relative_to(directory).as_posix())
+            except OSError:
+                continue
+    except OSError:
+        return out
+    return out
 
 
 _GGUF_SPLIT_FILE_RE = re.compile(
@@ -2393,17 +2427,23 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
 
     Excludes mmproj (vision projector) files so a partial cache holding only
     the projector cannot route it as the main model.
+
+    A snapshot is one repo's whole listing, so the drafter reprieve applies here
+    exactly as it does remotely: offline must resolve what online resolves.
     """
     for snap in _iter_hf_cache_snapshots(repo_id):
+        listing = _snapshot_listing(snap)
+        drafters = _drafter_paths_in(listing)
         rel_files = []
-        for f in _iter_gguf_files(snap, recursive = True):
-            rel = f.relative_to(snap).as_posix()
+        for rel in listing:
+            if not rel.lower().endswith(".gguf"):
+                continue
             quant = _extract_quant_label(rel)
-            if _is_mmproj(f.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
+            if _is_mmproj(rel) or rel in drafters or _is_big_endian_gguf_path(rel, quant):
                 continue
             rel_files.append(rel)
         if rel_files:
-            return _pick_best_gguf(rel_files)
+            return _pick_best_gguf(sorted(rel_files))
     return None
 
 
