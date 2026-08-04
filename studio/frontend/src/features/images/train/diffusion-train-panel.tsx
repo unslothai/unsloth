@@ -1317,6 +1317,7 @@ export function DiffusionTrainPanel({
                       imageCount={selectedDataset.image_count}
                       refreshKey={gridRefresh}
                       onBrowse={() => setGridOpen(true)}
+                      onChanged={() => void refreshInfo()}
                     />
                   )}
                   <LabelingGridToggle
