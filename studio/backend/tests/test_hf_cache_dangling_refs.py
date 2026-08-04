@@ -3160,7 +3160,7 @@ def test_a_newer_companion_only_snapshot_does_not_make_the_ref_snapshot_partial(
 
 
 def _pipeline_snapshot(tmp_path, manifest: dict, files: dict) -> Path:
-    """A diffusers pipeline snapshot: a root ``model_index.json`` plus component subdirs."""
+    """A diffusers pipeline snapshot: root ``model_index.json`` plus component subdirs."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "model_index.json").write_bytes(json.dumps(manifest).encode())
@@ -3192,9 +3192,7 @@ _WAN_INDEX = {
 
 
 def test_a_denoiser_missing_half_its_shards_is_not_a_present_denoiser(tmp_path):
-    """One weight file is not the denoiser. A sharded transformer is described by an index naming
-    every shard, and a fetch that landed only shard 1 of 2 satisfies a first-match test while
-    failing at load, so the row would be advertised as runnable."""
+    """Shard 1 of 2 alone is not a present denoiser, and the last shard completes it."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3231,12 +3229,8 @@ def _dual_format_shard_index(fmt: str) -> bytes:
 
 
 def test_an_unused_alternate_format_index_does_not_tear_a_whole_snapshot(tmp_path):
-    """A repo publishing both formats lands its safetensors shards plus BOTH indexes.
-
-    The download plan drops a ``.bin`` whose directory also has a picked ``.safetensors``, and that
-    filter matches on the ``.bin`` suffix, so ``.bin.index.json`` survives while the shards it
-    names never arrive. Charging those absent shards to the complete safetensors set would advertise
-    a fully successful download as partial, so each index is judged on its own shard set."""
+    """A whole safetensors set stays whole beside the orphan ``.bin.index.json`` a dual-format
+    repo leaves behind, because each index is judged on its own shard set."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3253,8 +3247,8 @@ def test_an_unused_alternate_format_index_does_not_tear_a_whole_snapshot(tmp_pat
 
 
 def test_neither_format_being_whole_is_still_torn(tmp_path):
-    """The other direction, which is why this is any-index-satisfied rather than any-index-present:
-    with both formats half landed there is nothing the loader could read."""
+    """The other direction: any-index-SATISFIED, not any-index-present, so both formats half
+    landed is still torn."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3272,12 +3266,7 @@ def test_neither_format_being_whole_is_still_torn(tmp_path):
 
 @pytest.mark.parametrize("orphan", ["bin", "fp16.safetensors"])
 def test_an_orphan_variant_index_does_not_veto_the_default_weight(orphan, tmp_path):
-    """An index no shard belongs to must not hide an unsharded default file sitting beside it.
-
-    The scoped plan drops a `.bin` whose directory also has a picked `.safetensors` while keeping
-    `.bin.index.json`, so the component can hold a loadable `diffusion_pytorch_model.safetensors`
-    next to an index whose shards never arrive. Vetoing on any unsatisfied index marked that
-    complete download partial."""
+    """An orphan variant index must not hide the unsharded default weight beside it."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3292,8 +3281,8 @@ def test_an_orphan_variant_index_does_not_veto_the_default_weight(orphan, tmp_pa
 
 
 def test_a_half_landed_shard_set_is_not_rescued_by_the_loose_scan(tmp_path):
-    """Why the loose fallback skips every name an index claimed: shard 1 of 2 IS a weight file, so
-    an unfiltered fallback would call the torn set complete and undo the check above it."""
+    """The loose fallback skips claimed names, so shard 1 of 2, itself a weight file, cannot pose
+    as the whole set and undo the check above it."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3308,7 +3297,7 @@ def test_a_half_landed_shard_set_is_not_rescued_by_the_loose_scan(tmp_path):
 
 
 def test_an_unsharded_denoiser_still_passes_on_presence_alone(tmp_path):
-    """No index, so there is nothing to be incomplete against and the plain presence test stands."""
+    """No index, so nothing to be incomplete against: presence alone stands."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3325,9 +3314,8 @@ def test_an_unsharded_denoiser_still_passes_on_presence_alone(tmp_path):
     ],
 )
 def test_a_multi_denoiser_pipeline_needs_every_denoiser_it_declares(manifest, second, tmp_path):
-    """Ideogram 4 and the dual-expert video pipelines carry two denoisers. Judging the snapshot on
-    whichever one the scan reached first calls the half-fetched pipeline complete, so the declared
-    set comes from the manifest and all of it must be on disk."""
+    """Ideogram 4 and the dual-expert video pipelines declare two denoisers, and the manifest is
+    what says so, so both must be on disk before the snapshot reads as complete."""
     files = {
         "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
         "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
@@ -3341,8 +3329,8 @@ def test_a_multi_denoiser_pipeline_needs_every_denoiser_it_declares(manifest, se
 
 
 def test_an_unreadable_manifest_keeps_the_fixed_denoiser_pair(tmp_path):
-    """The manifest enumerates the denoisers, so a corrupt one must fall back to the older fixed
-    pair rather than concluding a pipeline declares none and is therefore complete."""
+    """A corrupt manifest falls back to the fixed pair, rather than reading as a pipeline that
+    declares no denoiser and is therefore complete."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "model_index.json").write_bytes(b"{not json")

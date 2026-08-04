@@ -1512,15 +1512,11 @@ def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
 def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
     """The denoiser subdirs this pipeline's own ``model_index.json`` declares, or None.
 
-    The fixed ``_DENOISER_DIRS`` pair only names the SINGLE-denoiser layout. Multi-DiT pipelines
-    carry more than one and would otherwise be judged complete on whichever the loop happened to
-    reach first: Ideogram 4 pairs ``transformer/`` with ``unconditional_transformer/``, and the
-    dual-expert video pipelines pair it with ``transformer_2/``. Reading the manifest keys instead
-    of hardcoding names keeps this correct for layouts that do not exist yet.
-
-    A ``[null, null]`` entry is diffusers' way of saying the component is deliberately absent
-    (``safety_checker`` is the usual one), so it is not a missing denoiser. None means the manifest
-    could not be trusted to enumerate them, and the caller keeps the older fixed-pair rule.
+    The names come from the manifest rather than the fixed ``_DENOISER_DIRS`` pair because
+    multi-DiT pipelines carry more than one (Ideogram 4 adds ``unconditional_transformer/``, the
+    dual-expert video pipelines add ``transformer_2/``) and would otherwise be judged complete on
+    whichever the loop reached first. None means the manifest could not be trusted to enumerate
+    them, and the caller keeps the older fixed-pair rule.
     """
     try:
         with (snapshot / "model_index.json").open("r", encoding = "utf-8") as fh:
@@ -1536,7 +1532,7 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
         name = key.lower()
         if name != "unet" and "transformer" not in name:
             continue
-        # ["diffusers", "FluxTransformer2DModel"]; a [null, null] pair means intentionally absent.
+        # ["diffusers", "FluxTransformer2DModel"]; [null, null] means deliberately absent.
         if isinstance(value, (list, tuple)) and not any(v for v in value):
             continue
         found.append(key)
@@ -1546,17 +1542,16 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
 def _component_weights_complete(component: Path) -> bool:
     """Whether *component* holds a denoiser the loader could actually read.
 
-    Presence of ONE weight file is not enough. A sharded denoiser is described by an
-    ``*.index.json`` whose ``weight_map`` names every shard, and an interrupted or pattern-filtered
-    fetch that landed ``...-00001-of-00002.safetensors`` alone satisfies a first-match test while
-    failing at load.
+    Presence of ONE weight file is not enough: a sharded denoiser is described by an
+    ``*.index.json`` naming every shard, and a fetch that landed shard 1 of 2 alone satisfies a
+    first-match test while failing at load.
 
-    Each index is judged on its OWN shard set rather than on the union of all of them, because one
-    satisfied index is all the loader needs. A repo publishing both formats lands its safetensors
-    shards plus BOTH indexes: the download plan drops a ``.bin`` whose directory also has a picked
-    ``.safetensors``, and that filter matches on the ``.bin`` suffix, so ``.bin.index.json``
-    survives while the shards it names never arrive. Unioning would charge those absent shards to a
-    complete safetensors set. The same reasoning covers unfetched ``fp16`` and other variants.
+    Each index is judged on its OWN shard set, not on the union, because one satisfied index is all
+    the loader needs. A repo publishing both formats lands its safetensors shards plus BOTH
+    indexes: the download plan drops a ``.bin`` whose directory also has a picked ``.safetensors``,
+    and that filter matches on the ``.bin`` suffix, so the orphan ``.bin.index.json`` survives
+    while the shards it names never arrive. Unioning would charge those absent shards to a complete
+    safetensors set. Unfetched ``fp16`` and other variants behave the same way.
     """
     claimed: set[str] = set()
     for index in component.glob("*.index.json"):
@@ -1564,7 +1559,7 @@ def _component_weights_complete(component: Path) -> bool:
             with index.open("r", encoding = "utf-8") as fh:
                 weight_map = json.load(fh).get("weight_map")
         except (OSError, ValueError, AttributeError):
-            # An unreadable index cannot prove incompleteness, so it does not count against the set.
+            # An unreadable index cannot prove incompleteness.
             continue
         if not isinstance(weight_map, dict):
             continue
@@ -1575,10 +1570,9 @@ def _component_weights_complete(component: Path) -> bool:
         if all((component / shard).is_file() for shard in shards):
             return True
         claimed |= shards
-    # No whole shard set, so the only thing left that could load is a weight NO index claims: an
-    # unsharded default file sitting beside an index for a variant that was never fetched. Skipping
-    # the claimed names is what keeps this from re-accepting a half-landed shard set, whose files
-    # are exactly the ones an index named.
+    # No whole set, so the last thing that could load is a weight NO index claims: an unsharded
+    # default beside an orphan variant index. Skipping the claimed names is what stops a half-landed
+    # set, whose files are exactly the ones an index named, from reading as complete.
     for entry in component.rglob("*"):
         if not entry.is_file() or not entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES):
             continue
@@ -1601,10 +1595,9 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
     to) a complete revision would otherwise be marked partial by a newer companion-only one
     sitting beside it.
 
-    Stricter than the repo-wide twin in two ways, because this decides whether a row is advertised
-    as runnable: EVERY denoiser the manifest declares must be present (not just the first one
-    found), and a sharded one must have every shard its index names. Best-effort in the same
-    direction: a read error reports not-missing.
+    Stricter than the repo-wide twin, since this decides whether a row is advertised as runnable:
+    EVERY denoiser the manifest declares must be present, each with every shard its index names.
+    Best-effort in the same direction: a read error reports not-missing.
     """
     if not snapshot_has_pipeline_index(snapshot):
         return False
@@ -1612,14 +1605,12 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
         root = Path(snapshot)
         declared = _manifest_denoiser_components(root)
         if declared is not None:
-            # The manifest enumerated them, so every one must be there: a multi-DiT pipeline with
-            # only its first denoiser fetched cannot load.
             return not all(
                 (root / name).is_dir() and _component_weights_complete(root / name)
                 for name in declared
             )
-        # No trustworthy manifest: the older rule, where either name satisfying it is enough,
-        # since a UNet pipeline has no transformer/ and a DiT one has no unet/.
+        # No trustworthy manifest: either fixed name will do, since a UNet pipeline has no
+        # transformer/ and a DiT one has no unet/.
         return not any(
             (root / name).is_dir() and _component_weights_complete(root / name)
             for name in _DENOISER_DIRS
