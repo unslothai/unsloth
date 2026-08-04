@@ -8,6 +8,7 @@ import {
   DragDropVerticalIcon,
   FlimSlateIcon,
   Folder01Icon,
+  Globe02Icon,
   Image03Icon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -33,6 +34,7 @@ const ITEM_META: Record<
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
   export: { icon: DownloadSquare01Icon, labelKey: "shell.navigation.export" },
+  api: { icon: Globe02Icon, labelKey: "shell.navigation.api" },
 };
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {

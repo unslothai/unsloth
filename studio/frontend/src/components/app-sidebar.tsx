@@ -972,6 +972,19 @@ export function AppSidebar() {
         );
       },
     },
+    // The monitor page, not the API keys dialog the profile menu opens.
+    api: {
+      icon: Globe02Icon,
+      label: t("shell.navigation.api"),
+      active: pathname === "/api-monitor" || pathname.startsWith("/api-monitor/"),
+      onClick: () => {
+        navigate({ to: "/api-monitor" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/api-monitor" }));
+      },
+    },
   };
   const unpinnedNavIds = sidebarNav
     .filter((item) => !item.pinned)
