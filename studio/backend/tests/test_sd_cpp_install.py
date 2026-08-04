@@ -397,7 +397,9 @@ def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
 
 # ── Unsloth mirror: default source + the CPU/Apple asset set it publishes ─────
 
-_TAG = "master-741-484baa4"
+# The shipped pin, not a copy of it: a hardcoded tag here silently stops describing what users
+# actually install the moment DEFAULT_TAG moves.
+_TAG = DEFAULT_TAG
 # Exactly what unslothai/stable-diffusion.cpp's CI publishes (CPU + Apple only; GPU hosts run diffusers).
 _MIRROR_ASSETS = [
     f"sd-{_TAG}-bin-Darwin-macOS-arm64.zip",
