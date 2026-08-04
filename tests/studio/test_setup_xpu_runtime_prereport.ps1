@@ -185,7 +185,10 @@ Check "unreadable file"      (-not (Invoke-IsXpuSupported "C:\v" $XPU -Throws))
 Check "no venv path"         (-not (Invoke-IsXpuSupported "" $XPU))
 
 # --- wiring ---------------------------------------------------------------------------------
-$setupText = Get-Content -Raw $setup
+# Normalised to LF: a Windows checkout returns CRLF, and any pattern anchored on a literal \n
+# then matches nothing -- silently, since the region comes back empty and every -not check in it
+# passes vacuously. Fixed once here rather than per pattern.
+$setupText = (Get-Content -Raw $setup) -replace "`r`n", "`n"
 Write-Host "the scan asks before the report, and only when it has to"
 # The promotion must sit inside the Intel scan (which the report reads), not after it.
 Check "promotion is gated on the scan having failed" ($setupText -match '(?s)if \(-not \$script:IsIntelXpu\) \{\s*try \{\s*\$_probeVenv = Get-ProbableStudioVenvDir')
@@ -204,8 +207,13 @@ Write-Host "the fast-path escape judges the wheel, never the driver"
 # A driver-only failure must leave the fast path intact: the pass ahead force-reinstalls nothing
 # when the flavour matches, so clearing it costs a full resolution every update and only reaches
 # the warning Assert-XpuRuntimeReady prints anyway.
-$_fast = if ($setupText -match '(?s)(if \(\$script:IsIntelXpu -and \$SkipPythonDeps -and \$_xpuIsReachable\) \{.*?\n        \}\n)') { $Matches[1] } else { "" }
+$_fastPat = '(?s)(if \(\$script:IsIntelXpu -and \$SkipPythonDeps -and \$_xpuIsReachable\) \{.*?\n        \}\n)'
+$_fast = if ($setupText -match $_fastPat) { $Matches[1] } else { "" }
 Check "the escape was found"           ($_fast -ne "")
+# The raw CRLF form is what a Windows checkout returns, so the normalisation above -- not luck --
+# must be what makes this match. Without it the region came back empty on windows-latest while
+# the -not checks below still reported PASS.
+Check "CRLF is normalised, not tolerated" (-not (($setupText -replace "`n", "`r`n") -match $_fastPat))
 Check "it reads the installed wheel"   ($_fast -match 'Test-VenvTorchIsXpuSupported -VenvPath \$VenvDir')
 Check "it clears the fast path"        ($_fast -match '\$SkipPythonDeps = \$false')
 Check "readiness does not decide it"   (-not ($_fast -match 'Test-TorchXpuAvailable'))
