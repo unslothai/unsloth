@@ -5684,7 +5684,7 @@ def write_prebuilt_metadata(
         "requested_source_ref": approved_checksums.requested_source_ref,
         "resolved_source_ref": approved_checksums.resolved_source_ref,
         # Read back by install_whisper_prebuilt.py to pair slim bundles.
-        "ggml_tree": approved_checksums.ggml_tree,
+        "ggml_tree": recorded_ggml_tree(approved_checksums, choice),
         "bundle_profile": choice.bundle_profile,
         "runtime_line": choice.runtime_line,
         "coverage_class": choice.coverage_class,
@@ -5803,6 +5803,21 @@ def sync_marker_llama_backend(install_dir: Path, llama_backend: str | None) -> N
         )
         return
     log(f"existing install reused; recorded llama_backend={llama_backend!r} from this run")
+
+
+def recorded_ggml_tree(approved_checksums: ApprovedReleaseChecksums, choice: AssetChoice) -> str | None:
+    """The ggml tree to record for an install, or None when it does not describe it.
+
+    The tree comes from the fork release's own source checkout, so it only
+    describes binaries built from that release. A fork plan can install an
+    approved ggml-org archive instead (choice.repo differs), whose ggml is
+    upstream's; recording the fork tree there would let a slim whisper bundle
+    pair with a runtime a pinned PR may have changed under ggml/.
+    """
+    tree = approved_checksums.ggml_tree
+    if not isinstance(tree, str) or not tree:
+        return None
+    return tree if choice.repo == approved_checksums.repo else None
 
 
 def sync_marker_ggml_tree(install_dir: Path, ggml_tree: str | None) -> None:
@@ -6926,7 +6941,10 @@ def install_prebuilt(
                         install_dir,
                         persisted_llama_backend(persist_llama_backend, current.attempts[0]),
                     )
-                    sync_marker_ggml_tree(install_dir, current.approved_checksums.ggml_tree)
+                    sync_marker_ggml_tree(
+                        install_dir,
+                        recorded_ggml_tree(current.approved_checksums, current.attempts[0]),
+                    )
                     return
             with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
                 probe_path = work_dir / "stories260K.gguf"
@@ -6951,7 +6969,10 @@ def install_prebuilt(
                                 install_dir,
                                 persisted_llama_backend(persist_llama_backend, choice),
                             )
-                            sync_marker_ggml_tree(install_dir, plan.approved_checksums.ggml_tree)
+                            sync_marker_ggml_tree(
+                                install_dir,
+                                recorded_ggml_tree(plan.approved_checksums, choice),
+                            )
                             return
                     log(
                         "selected "
@@ -6976,7 +6997,13 @@ def install_prebuilt(
                             force_cpu = persist_force_cpu,
                             llama_backend = persist_llama_backend,
                         )
-                    except ExistingInstallSatisfied:
+                    except ExistingInstallSatisfied as satisfied:
+                        # Third reuse path: validate_prebuilt_attempts skipped the
+                        # reinstall, so write_prebuilt_metadata never runs here either.
+                        sync_marker_ggml_tree(
+                            install_dir,
+                            recorded_ggml_tree(plan.approved_checksums, satisfied.choice),
+                        )
                         return
                     except PrebuiltFallback as exc:
                         if _environment_fatal_reason(exc):

@@ -508,8 +508,15 @@ def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> s
         return None
     installed_tag = runtime[1]
     installed_tree = installed_llama_ggml_tree()
+    # Normalise the tree here: llama_runtime_pairs treats a non-string as absent,
+    # and an unhashable one (list/dict) would blow up the set instead.
     required_pairs = {
-        (artifact.get("requires_llama_tag"), artifact.get("requires_ggml_tree"))
+        (
+            artifact.get("requires_llama_tag"),
+            artifact["requires_ggml_tree"]
+            if isinstance(artifact.get("requires_ggml_tree"), str)
+            else None,
+        )
         for artifact in os_compatible
         if isinstance(artifact.get("requires_llama_tag"), str)
     }

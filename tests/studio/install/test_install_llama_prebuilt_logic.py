@@ -3909,6 +3909,36 @@ def test_marker_sync_strands_no_temp_file_when_the_first_write_fails(tmp_path, m
 TREE_A = "8f3c6e197debb027f500df9f76e710e137f9fe68"
 
 
+def _checksums(tree, repo = "unslothai/llama.cpp"):
+    return INSTALL_LLAMA_PREBUILT.ApprovedReleaseChecksums(
+        repo = repo, release_tag = "b10173-mix-2c8b9c1", upstream_tag = "b10173",
+        ggml_tree = tree,
+    )
+
+
+def test_recorded_ggml_tree_only_for_binaries_from_that_release():
+    """The fork's tree describes the fork's own bundles, not a ggml-org archive.
+
+    A fork plan can install an approved upstream archive instead; recording the
+    fork tree there would pair a slim whisper bundle against upstream ggml even
+    when a pinned PR changed ggml/.
+    """
+    def choice(repo):
+        return AssetChoice(
+            repo = repo, tag = "b10173", name = "bundle.tar.gz", url = "https://x/bundle",
+            source_label = "fork" if repo == "unslothai/llama.cpp" else "upstream",
+            is_ready_bundle = True, install_kind = "linux-cpu",
+            bundle_profile = "cpu", runtime_line = "cpu", expected_sha256 = "0" * 64,
+        )
+
+    fork = choice("unslothai/llama.cpp")
+    upstream = choice("ggml-org/llama.cpp")
+    assert INSTALL_LLAMA_PREBUILT.recorded_ggml_tree(_checksums(TREE_A), fork) == TREE_A
+    assert INSTALL_LLAMA_PREBUILT.recorded_ggml_tree(_checksums(TREE_A), upstream) is None
+    assert INSTALL_LLAMA_PREBUILT.recorded_ggml_tree(_checksums(None), fork) is None
+
+
+
 def test_reused_install_backfills_the_ggml_tree(tmp_path):
     """An install made before ggml_tree existed must gain it on reuse.
 
