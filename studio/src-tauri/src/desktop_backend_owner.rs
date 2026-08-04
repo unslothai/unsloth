@@ -561,11 +561,19 @@ async fn health_ready_status(
                 .as_ref()
                 .and_then(|health| health.version.as_deref())
                 .filter(|version| !version.is_empty());
-            if access_token.is_some() && authenticated_version.is_none() {
-                Err("desktop_auth_health_unverified".to_string())
-            } else {
-                Ok(ready_for_use_status(health.as_ref()))
+            if access_token.is_some() {
+                let Some(version) = authenticated_version else {
+                    return Err("desktop_auth_health_unverified".to_string());
+                };
+                return match crate::preflight::backend_version_stale_reason(Some(version)) {
+                    None => Ok(OwnedBackendReadiness::Ready),
+                    Some(reason) if reason == "desktop_backend_version_too_old" => {
+                        Ok(OwnedBackendReadiness::Stale { reason })
+                    }
+                    Some(reason) => Err(reason),
+                };
             }
+            Ok(ready_for_use_status(health.as_ref()))
         }
         Err(reason) if access_token.is_some() => Err(reason),
         Err(reason) => Ok(OwnedBackendReadiness::Stale { reason }),
@@ -1123,6 +1131,20 @@ mod tests {
             OwnedBackendReadiness::Stale { reason }
                 if reason == "desktop_backend_version_too_old"
         ));
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_rejects_malformed_version() {
+        let (port, _, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"access_token":"test-access-token"}"#),
+            ("200 OK", r#"{"version":"not-a-version"}"#),
+        ])
+        .await;
+
+        let result = authenticated_health_ready_status(port, "desktop-test-secret").await;
+        server.await.unwrap();
+
+        assert_eq!(result.unwrap_err(), "desktop_backend_version_invalid");
     }
 
     #[tokio::test]
