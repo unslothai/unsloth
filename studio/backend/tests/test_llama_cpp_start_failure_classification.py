@@ -271,6 +271,86 @@ class TestMissingSharedLibrary:
         assert "unsloth studio update" in msg
         assert "is missing" not in msg
 
+    # Verified on glibc 2.39: an absolute DT_NEEDED dependency that exists but
+    # cannot be opened exits 127 with the EACCES strerror appended.
+    def test_permission_denied_library_is_not_reported_as_missing(self):
+        out = (
+            "/opt/llama/llama-server: error while loading shared libraries: "
+            "/opt/llama/lib/libgomp.so.1: cannot open shared object file: "
+            "Permission denied"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "Permission denied" in msg
+        assert "is missing" not in msg
+        assert "package manager" not in msg
+
+    def test_permission_denied_bundled_library_is_not_reported_as_missing(self):
+        out = (
+            "/home/t/.unsloth/llama.cpp/build/bin/llama-server: error while loading "
+            "shared libraries: /home/t/.unsloth/llama.cpp/build/bin/libggml.so: "
+            "cannot open shared object file: Permission denied"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "Permission denied" in msg
+        assert "is missing" not in msg
+
+    # glibc echoes the object name verbatim, so a path with spaces must not be
+    # truncated at the first space (verified on glibc 2.39).
+    def test_library_path_with_spaces_is_named_in_full(self):
+        out = (
+            "/opt/llama/llama-server: error while loading shared libraries: "
+            "/opt/My Runtime/libfoo.so: file too short"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "/opt/My Runtime/libfoo.so" in msg
+        assert "file too short" in msg
+
+    def test_missing_library_path_with_spaces_is_named_in_full(self):
+        out = (
+            "/opt/llama/llama-server: error while loading shared libraries: "
+            "/opt/My Runtime/libbar.so: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "/opt/My Runtime/libbar.so" in msg
+        assert "is missing" in msg
+
+    def test_bundled_library_under_a_spaced_path_still_points_at_the_installer(self):
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "/home/My User/.unsloth/llama.cpp/build/bin/libggml.so: invalid ELF header"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "/home/My User/.unsloth/llama.cpp/build/bin/libggml.so" in msg
+        assert "unsloth studio update" in msg
+
+    def test_pinned_custom_binary_is_not_called_unsloths_runtime(self, monkeypatch):
+        # LLAMA_SERVER_PATH pins an install update_flow.managed_install_root
+        # refuses to manage, so `unsloth studio update` cannot repair it.
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/mybuild/bin/llama-server")
+        out = (
+            "/opt/mybuild/bin/llama-server: error while loading shared libraries: "
+            "libggml.so: cannot open shared object file: No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127, "/opt/mybuild/bin/llama-server")
+        assert "libggml.so" in msg
+        assert "unsloth studio update" not in msg
+        assert "package manager" not in msg
+        assert "custom install" in msg
+
+    def test_managed_binary_still_points_at_the_installer(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+        binary.parent.mkdir(parents = True)
+        binary.write_text("")
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "llama.cpp"))
+        out = (
+            f"{binary}: error while loading shared libraries: libggml.so: "
+            "cannot open shared object file: No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127, str(binary))
+        assert "unsloth studio update" in msg
+
     def test_nameless_loader_error_does_not_invent_a_library(self):
         # glibc's own allocation failures pass an empty object name, so the
         # text right after the colon is prose, not a soname.

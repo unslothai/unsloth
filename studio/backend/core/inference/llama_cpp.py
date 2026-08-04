@@ -7278,14 +7278,38 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _missing_library_message(lib: str) -> str:
+    def _is_unsloth_managed_binary(binary: Optional[str]) -> bool:
+        """Would `unsloth studio update` actually replace ``binary``?
+
+        A pinned LLAMA_SERVER_PATH, or a llama-server found on PATH, is
+        explicitly unmanaged (update_flow.managed_install_root returns None),
+        so telling the user to update Unsloth's runtime cannot repair it.
+        Unknown binary (callers that pass nothing) keeps the managed default.
+        """
+        if not binary:
+            return True
+        try:
+            from utils.llama_cpp_update import _llama_install_root
+            return _llama_install_root(binary) is not None
+        except Exception:
+            return True
+
+    @staticmethod
+    def _missing_library_message(lib: str, binary: Optional[str] = None) -> str:
         """The loader could not FIND ``lib`` ("cannot open shared object file")."""
         if LlamaCppBackend._is_bundled_llama_library(lib):
+            if LlamaCppBackend._is_unsloth_managed_binary(binary):
+                return (
+                    f"llama-server could not start: {lib} is part of Unsloth's own "
+                    "llama.cpp runtime and is missing from the install. Run "
+                    "`unsloth studio update` to reinstall it, then load the model "
+                    "again."
+                )
             return (
-                f"llama-server could not start: {lib} is part of Unsloth's own "
-                "llama.cpp runtime and is missing from the install. Run "
-                "`unsloth studio update` to reinstall it, then load the model "
-                "again."
+                f"llama-server could not start: {lib} is part of the llama.cpp "
+                "runtime that the llama-server binary in use was built with. That "
+                "binary is a custom install Unsloth does not manage, so reinstall "
+                "or rebuild that llama.cpp, then load the model again."
             )
         return (
             f"llama-server could not start: the system library "
@@ -7295,18 +7319,31 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _unloadable_library_message(lib: str, reason: str) -> str:
+    def _unloadable_library_message(
+        lib: str,
+        reason: str,
+        binary: Optional[str] = None,
+    ) -> str:
         """The loader FOUND ``lib`` and refused it: the same "error while
         loading shared libraries" line also carries "file too short", "invalid
-        ELF header", "wrong ELF class", ... Installing a package is the wrong
-        advice there -- the file is already present."""
+        ELF header", "wrong ELF class", "cannot open shared object file:
+        Permission denied", ... Installing a package is the wrong advice there
+        -- the file is already present."""
         detail = f" ({reason})" if reason else ""
         if LlamaCppBackend._is_bundled_llama_library(lib):
+            if LlamaCppBackend._is_unsloth_managed_binary(binary):
+                return (
+                    f"llama-server could not start: {lib}, part of Unsloth's own "
+                    f"llama.cpp runtime, could not be loaded{detail}. The install "
+                    "is incomplete or mismatched. Run `unsloth studio update` to "
+                    "reinstall it, then load the model again."
+                )
             return (
-                f"llama-server could not start: {lib}, part of Unsloth's own "
-                f"llama.cpp runtime, could not be loaded{detail}. The install "
-                "is incomplete or mismatched. Run `unsloth studio update` to "
-                "reinstall it, then load the model again."
+                f"llama-server could not start: {lib}, part of the llama.cpp "
+                "runtime that the llama-server binary in use was built with, "
+                f"could not be loaded{detail}. That binary is a custom install "
+                "Unsloth does not manage, so reinstall or rebuild that "
+                "llama.cpp, then load the model again."
             )
         return (
             f"llama-server could not start: the library {lib or 'it needs'} "
@@ -7320,6 +7357,7 @@ class LlamaCppBackend:
         gguf_path: Optional[str],
         model_identifier: Optional[str],
         returncode: Optional[int] = None,
+        binary: Optional[str] = None,
     ) -> str:
         """Explain *why* llama-server failed to start, from its output.
 
@@ -7334,25 +7372,47 @@ class LlamaCppBackend:
         # The dynamic loader kills llama-server before main(), so nothing below
         # matches and the fallback blames the file or memory instead. The Linux
         # prebuilt links libgomp.so.1, which a stock container does not ship.
+        # glibc prints "<prog>: error while loading shared libraries: <object>:
+        # <diagnostic>[: <strerror>]" (elf/dl-catch.c fatal_error). <object> is
+        # echoed verbatim, so an absolute dependency under a directory with
+        # spaces keeps them ("/opt/My Runtime/libfoo.so: file too short"):
+        # split on the ": " that introduces the diagnostic, not on whitespace.
         missing_lib = re.search(
-            r"error while loading shared libraries:\s*([^\s:]+):?[ \t]*([^\n]*)",
+            r"error while loading shared libraries:[ \t]*([^\r\n]+?)"
+            r"(?::[ \t]+([^\r\n]*))?[ \t]*\r?$",
             output or "",
+            re.MULTILINE,
         )
         if missing_lib:
-            _lib = missing_lib.group(1)
-            _reason = missing_lib.group(2).strip()
+            _lib = missing_lib.group(1).strip()
+            _reason = (missing_lib.group(2) or "").strip()
             # glibc omits the object name entirely on its own allocation
             # failures ("...shared libraries: cannot create search path array"),
             # so the first word is prose, not a library. Report it unnamed.
             if not (
                 "/" in _lib or "\\" in _lib or any(_e in _lib for _e in (".so", ".dylib", ".dll"))
             ):
-                return LlamaCppBackend._unloadable_library_message("", f"{_lib} {_reason}".strip())
+                return LlamaCppBackend._unloadable_library_message(
+                    "", f"{_lib} {_reason}".strip(), binary
+                )
             # Only "cannot open shared object file" means absent; the same line
             # reports corrupt/incompatible libraries too, which are present.
-            if "cannot open" in _reason.lower() or not _reason:
-                return LlamaCppBackend._missing_library_message(_lib)
-            return LlamaCppBackend._unloadable_library_message(_lib, _reason)
+            # glibc appends strerror(errno) to that diagnostic, and only ENOENT
+            # ("No such file or directory") means the file is not there: EACCES
+            # ("Permission denied", seen with an absolute DT_NEEDED path, an
+            # unreadable parent directory, SELinux mislabels or container
+            # sandboxing) means it exists and cannot be opened, where installing
+            # a package is the wrong advice. A truncated tail keeps the
+            # missing-library reading.
+            _reason_l = _reason.lower()
+            _errno_text = ""
+            if "cannot open shared object file:" in _reason_l:
+                _errno_text = _reason_l.split("cannot open shared object file:", 1)[1].strip()
+            if not _reason_l or (
+                "cannot open" in _reason_l and (not _errno_text or "no such file" in _errno_text)
+            ):
+                return LlamaCppBackend._missing_library_message(_lib, binary)
+            return LlamaCppBackend._unloadable_library_message(_lib, _reason, binary)
 
         # Tensor parallelism (--split-mode tensor) is arch-gated in llama.cpp;
         # unsupported architectures abort the load with this marker. Point the
@@ -10764,6 +10824,7 @@ class LlamaCppBackend:
                                 gguf_path,
                                 self._model_identifier,
                                 _retry_rc,
+                                binary,
                             )
                             raise RuntimeError(
                                 self._mmproj_retry_failure_message(
@@ -10778,6 +10839,7 @@ class LlamaCppBackend:
                                 gguf_path,
                                 self._model_identifier,
                                 _crash_rc,
+                                binary,
                             )
                         )
 
