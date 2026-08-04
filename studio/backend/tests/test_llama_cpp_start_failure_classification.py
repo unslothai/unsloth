@@ -342,9 +342,7 @@ class TestMissingSharedLibrary:
         assert "package manager" not in msg
         assert "that exact location" in msg
 
-    def test_an_absolute_path_on_a_pinned_binary_names_the_custom_runtime(
-        self, monkeypatch
-    ):
+    def test_an_absolute_path_on_a_pinned_binary_names_the_custom_runtime(self, monkeypatch):
         monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
         out = (
             "llama-server: error while loading shared libraries: "
@@ -356,9 +354,7 @@ class TestMissingSharedLibrary:
         assert "unsloth studio update" not in msg
         assert "package manager" not in msg
 
-    def test_a_bare_soname_keeps_package_advice_even_on_a_pinned_binary(
-        self, monkeypatch
-    ):
+    def test_a_bare_soname_keeps_package_advice_even_on_a_pinned_binary(self, monkeypatch):
         # The counter-case that stops the rule from being "unmanaged means never
         # mention a package": a custom-built llama.cpp on a bare-bones host is
         # still missing a distro library, and libgomp1 is exactly what fixes it.
