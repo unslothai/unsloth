@@ -133,8 +133,8 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
   static isSupported(): boolean {
     return (
       typeof window !== "undefined" &&
-      // The webview exposes the API but Apple's speech service refuses it
-      // (service-not-allowed), so the mic would render and then fail.
+      // WKWebView exposes the API but Apple's service refuses it
+      // (service-not-allowed); WebView2 and webkit2gtk have no engine at all.
       !isTauri &&
       window.isSecureContext &&
       getSpeechRecognitionAPI() !== undefined &&
