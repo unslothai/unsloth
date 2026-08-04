@@ -560,6 +560,16 @@ def fake_eval_env(monkeypatch):
                     elif name:
                         self.all_tasks.append(str(name))
 
+        def match_tasks(self, task_list):
+            import fnmatch
+
+            return [
+                t
+                for pattern in task_list
+                for t in self.all_tasks
+                if fnmatch.fnmatch(t, pattern)
+            ]
+
     def _simple_evaluate(
         model = None,
         model_args = None,
@@ -1459,3 +1469,42 @@ def test_resolve_tasks_reserves_string_group_alias_for_datasets(tmp_path):
     )
 
     assert names == ["foo", "myalias_2"]
+
+
+def test_hf_device_error_rejects_leading_zero_indices(monkeypatch):
+    # xpu:00 / npu:01 pass a \d+ regex but HFLM's device_list holds canonical
+    # xpu:0 strings, so they silently fall back to cuda/cpu
+    _fake_torch(monkeypatch, xpu_available = True, xpu_count = 2)
+    monkeypatch.setattr(evalmod, "_lm_eval_version", lambda: (0, 4, 12))
+    assert evalmod._hf_device_error("xpu:0") is None
+    assert evalmod._hf_device_error("xpu:1") is None
+    for bad in ("xpu:00", "xpu:01", "npu:00"):
+        assert evalmod._hf_device_error(bad) is not None, bad
+
+
+def test_eval_rejects_non_integral_count_limits(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", "gsm8k", "--limit", "1.5",
+         "--output-dir", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 2, result.output
+    assert "whole count or a fraction" in result.output
+
+
+def test_eval_expands_wildcard_task_patterns(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", "mmlu*,gsm8k", "--output-dir", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_eval_env["tasks"] == ["mmlu", "gsm8k"]
+
+
+def test_eval_rejects_unmatched_wildcard_patterns(fake_eval_env, tmp_path):
+    result = CliRunner().invoke(
+        _eval_app(),
+        ["fake/model", "--tasks", "nope*", "--output-dir", str(tmp_path / "out")],
+    )
+    assert result.exit_code == 2, result.output
+    assert "no tasks match pattern" in result.output

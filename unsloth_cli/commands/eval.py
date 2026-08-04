@@ -146,7 +146,7 @@ def _hf_device_error(device: str) -> Optional[str]:
         if not (mps and mps.is_available()):
             return f"--device {device} requested but MPS is not available."
     elif device != "cpu":
-        match = re.fullmatch(r"(npu|xpu|hpu):(\d+)", device)
+        match = re.fullmatch(r"(npu|xpu|hpu):(0|[1-9]\d*)", device)
         if not match:
             # a typo like 'cpuu' or 'cude' would silently fall back to HFLM's
             # default device
@@ -680,7 +680,15 @@ def evaluate(
                 err = True,
             )
             raise typer.Exit(code = 2)
-        if limit >= 1 and limit.is_integer():
+        if limit >= 1:
+            if not limit.is_integer():
+                # lm-eval casts counts with int(), which would silently evaluate
+                # fewer examples than results.json records
+                typer.echo(
+                    "Error: --limit must be a whole count or a fraction below 1.",
+                    err = True,
+                )
+                raise typer.Exit(code = 2)
             # forward whole counts as int so results metadata records 100, not 100.0
             limit = int(limit)
 
@@ -771,6 +779,22 @@ def evaluate(
         registered = getattr(task_manager, "all_tasks", None)
         if registered:
             known = _registry_names(task_manager)
+            # lm-eval's own CLI expands glob patterns (mmlu_*) before erroring
+            # on misses; mirror that so standard selections work here too
+            if hasattr(task_manager, "match_tasks"):
+                expanded = []
+                for name in task_names:
+                    if any(ch in name for ch in "*?["):
+                        matches = task_manager.match_tasks([name])
+                        if not matches:
+                            typer.echo(
+                                f"Error: no tasks match pattern '{name}'.", err = True
+                            )
+                            raise typer.Exit(code = 2)
+                        expanded.extend(m for m in matches if m not in expanded)
+                    else:
+                        expanded.append(name)
+                task_names = expanded
             unknown = [t for t in task_names if t not in known]
             if unknown:
                 typer.echo(
