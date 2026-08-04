@@ -40,6 +40,12 @@ foreach ($bundle in $Path) {
     $dest = Join-Path $env:RUNNER_TEMP ("sigcheck-" + [System.IO.Path]::GetFileNameWithoutExtension($name))
     Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
     & $SevenZip x -y "-o$dest" $bundle | Out-Null
+    # 7-Zip still leaves a partial tree behind on error, so a created
+    # directory proves nothing. 1 is a warning, 2 and up are fatal.
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "::error::7-Zip exited $LASTEXITCODE unpacking $name; contents not verified"
+        exit 1
+    }
     if (-not (Test-Path $dest)) {
         Write-Host "::error::could not unpack $name; cannot verify its contents"
         exit 1
@@ -47,8 +53,11 @@ foreach ($bundle in $Path) {
 
     $inner = Get-ChildItem $dest -Recurse -File |
         Where-Object { $exeExtensions -contains $_.Extension.ToLower() }
+    # Nothing to check means 7-Zip fell back to its PE handler and dumped
+    # sections instead of the payload, not that the payload is clean.
     if (-not $inner) {
-        Write-Host "::warning::no executable payload found inside $name"
+        Write-Host "::error::no executable payload found inside $name; contents not verified"
+        exit 1
     }
 
     foreach ($f in ($inner | Sort-Object Name)) {
@@ -59,7 +68,9 @@ foreach ($bundle in $Path) {
         } elseif ($Allow -contains $f.Name) {
             Write-Host ("  ALLOWED   {0}  ({1}) - explicitly accepted as unsigned" -f $f.Name, $s.Status)
         } else {
-            Write-Host ("  UNSIGNED  {0}  ({1})" -f $f.Name, $s.Status)
+            # StatusMessage is the only thing separating "no signature" from
+            # "chain could not be built"; both report as UnknownError.
+            Write-Host ("  UNSIGNED  {0}  ({1})  {2}" -f $f.Name, $s.Status, $s.StatusMessage)
             $unsigned += [pscustomobject]@{ Bundle = $name; File = $f.Name; Status = [string]$s.Status }
         }
     }
