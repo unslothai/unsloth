@@ -876,7 +876,12 @@ def test_a_cached_legacy_file_does_not_pre_empt_the_canonical_one(monkeypatch, t
     )
     asked: list = []
 
-    def _download(repo_id, filename, token = None, cache_dir = None):
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
         asked.append(filename)
         return str(tmp_path / "downloaded-canonical.pt")
 
@@ -902,7 +907,12 @@ def test_the_legacy_name_is_still_used_once_the_canonical_one_is_absent(monkeypa
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
     asked: list = []
 
-    def _download(repo_id, filename, token = None, cache_dir = None):
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
         asked.append(filename)
         if filename == "Z-Image-Turbo-FP8.pt":
             raise EntryNotFoundError("404")
