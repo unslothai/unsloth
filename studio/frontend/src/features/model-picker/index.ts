@@ -26,9 +26,7 @@ export {
   type ApiModelOverride,
   type ApiModelOverrides,
 } from "./api/model-overrides";
-export {
-  useActiveModelConfig,
-} from "./hooks/use-active-model-config";
+export { useActiveModelConfig } from "./hooks/use-active-model-config";
 export type {
   DeletedModelRef,
   ExternalModelOption,
@@ -47,7 +45,9 @@ export {
   DEFAULT_MAX_SEQ_LENGTH,
   normalizeMaxSeqLength,
   type PerModelConfig,
+  PER_MODEL_CONFIG_UPDATED_EVENT,
   adoptLegacyConfigKey,
+  listPerModelConfigs,
   resolveInitialConfig,
   resolveResidentInitialConfig,
 } from "./model-config/per-model-config";

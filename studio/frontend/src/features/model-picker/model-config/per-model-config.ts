@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   ggufVariantFromStorageKey,
   modelIdFromStorageKey,
@@ -9,7 +10,6 @@ import {
   normalizeModelIdentity,
   publicModelId,
 } from "./model-identity";
-import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 
 export interface PerModelConfig {
   customContextLength: number | null;
@@ -522,12 +522,21 @@ function readMap(): StoredMap {
   return readMapRaw();
 }
 
+/** Fires when any model's saved config changes, in this tab. The browser's own
+ *  `storage` event only reaches *other* tabs, so readers that need to react to
+ *  an edit made here (the picker's memory bar) have nothing else to listen to. */
+export const PER_MODEL_CONFIG_UPDATED_EVENT =
+  "unsloth-per-model-config-updated";
+
 function writeMap(map: StoredMap): boolean {
   if (!canUseStorage()) {
     return false;
   }
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event(PER_MODEL_CONFIG_UPDATED_EVENT));
+    }
     return true;
   } catch (err) {
     console.warn("Failed to persist per-model config:", err);
@@ -583,8 +592,12 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     speculativeType,
     specDraftNMax,
     nParallel:
-      typeof partial.nParallel === "number" && Number.isFinite(partial.nParallel)
-        ? Math.max(N_PARALLEL_MIN, Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)))
+      typeof partial.nParallel === "number" &&
+      Number.isFinite(partial.nParallel)
+        ? Math.max(
+            N_PARALLEL_MIN,
+            Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)),
+          )
         : null,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
