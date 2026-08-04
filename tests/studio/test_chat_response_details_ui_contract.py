@@ -17,6 +17,7 @@ REASONING_TSX = REPO / "studio/frontend/src/components/assistant-ui/reasoning.ts
 ADAPTER_TS = REPO / "studio/frontend/src/features/chat/api/chat-adapter.ts"
 CHAT_PREFS_TS = REPO / "studio/frontend/src/features/chat/stores/chat-preferences-store.ts"
 CHAT_TAB_TSX = REPO / "studio/frontend/src/features/settings/tabs/chat-tab.tsx"
+EN_LOCALE_TS = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
 
 def test_assistant_more_menu_exposes_response_details_action():
@@ -53,8 +54,12 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "showResponseModel: boolean" in prefs_src
     assert "showResponseModel: false" in prefs_src
     assert "showResponseModel: saved?.showResponseModel ?? false" in prefs_src
-    assert "Show response model" in chat_tab_src
+    # The label is translated, so assert the key here and the English text in
+    # the catalog. Asserting the literal in the tsx breaks on every i18n move.
+    assert 't("settings.chat.showResponseModel")' in chat_tab_src
     assert "setShowResponseModel" in chat_tab_src
+    en_src = EN_LOCALE_TS.read_text(encoding = "utf-8")
+    assert 'showResponseModel: "Show response model"' in en_src
     details_src = DETAILS_TSX.read_text(encoding = "utf-8")
     assert (
         "aui-response-model-badge pointer-events-none relative inline-flex min-h-5" in details_src
