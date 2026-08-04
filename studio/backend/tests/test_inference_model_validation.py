@@ -262,5 +262,7 @@ def test_load_rejects_a_duplicate_lora_id_like_generate_does():
     with pytest.raises(ValidationError, match = "duplicate LoRA id"):
         DiffusionGenerateRequest(prompt = "a cat", loras = dup)
     # Distinct ids are untouched.
-    assert len(_diff_load(loras = [{"id": "me/a", "weight": 0.8},
-                                   {"id": "me/b", "weight": 0.5}]).loras) == 2
+    assert (
+        len(_diff_load(loras = [{"id": "me/a", "weight": 0.8}, {"id": "me/b", "weight": 0.5}]).loras)
+        == 2
+    )
