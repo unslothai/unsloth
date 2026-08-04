@@ -528,7 +528,7 @@ def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
         logger = None,
     )
     assert result is not None
-    # The loader pins the caller's live cache root, so the fetch cannot split across two roots.
+    # The loader pins the caller's live root, so the fetch cannot split across two.
     assert roots == ["/live-hub"]
 
 
@@ -737,7 +737,7 @@ def test_pin_kernel_preference_no_torchao(monkeypatch):
 
 # ── local cache lookup (no network) ──────────────────────────────────────────────
 def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
-    # The loader asks this during memory planning, so it must be a pure lookup: no Hub call, no raise.
+    # Memory planning asks this, so it must be a pure lookup: no Hub call, no raise.
     from core.inference.diffusion_prequant import prequant_checkpoint_cached
 
     ckpt = tmp_path / "Z-Image-Turbo-FP8.pt"
@@ -767,7 +767,7 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     )
 
     assert prequant_checkpoint_cached(source, cache_dir = "/models/hub") is True
-    # The live cache root is asked first; the model-name file resolves, so the legacy name is not needed.
+    # The live root is asked first, and the model-name file resolves, so no legacy lookup.
     assert asked == [("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt", "/models/hub")]
 
     # Only the legacy name on disk still counts: _resolve_checkpoint_path falls back to it.
@@ -781,7 +781,7 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
 def test_the_loader_reuses_the_hit_the_cache_probe_found(monkeypatch, tmp_path):
     # The probe searches Studio's LIVE cache root, hf_hub_download falls back to huggingface_hub's
     # import-time constant, and a mid-session cache change moves only the first. Resolving must
-    # therefore reuse the matched file, else "already cached" still costs the multi-GB download.
+    # reuse the matched file, else "already cached" still costs the multi-GB download.
     live = tmp_path / "live-hub"
     live.mkdir()
     ckpt = live / "Z-Image-Turbo-FP8.pt"
@@ -847,6 +847,6 @@ def test_prequant_checkpoint_cached_never_raises(monkeypatch):
     )
     source = PrequantSource(kind = "repo", location = "org/hosted-fp8", filename = "hosted-FP8.pt")
     assert prequant_checkpoint_cached(source) is False
-    # A local path override is the operator's own file and never downloads, so it is not a cache question.
+    # A local override is the operator's own file, so it is not a cache question.
     assert prequant_checkpoint_cached(PrequantSource(kind = "path", location = "/tmp/x.pt")) is False
     assert prequant_checkpoint_cached(None) is False

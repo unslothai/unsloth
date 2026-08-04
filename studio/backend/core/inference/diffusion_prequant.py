@@ -165,14 +165,12 @@ def usable_prequant_source(
 def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> Optional[str]:
     """The path of a hosted (``kind == "repo"``) checkpoint ALREADY in the local Hub cache.
 
-    A pure cache lookup -- a refs read plus a stat, no network -- so memory planning can ask it on
-    every pick. Both names ``_resolve_checkpoint_path`` would fetch count, and both cache roots are
-    searched: Studio pins the LIVE cache setting while an unpinned ``hf_hub_download`` falls back
-    to huggingface_hub's import-time constant, so the file can legitimately sit under either. The
-    loader resolves through this same helper, so a hit found here is the file it loads -- never a
-    second multi-GB download into the other root.
-
-    Never raises: an answer it cannot give is None, i.e. "this would have to download"."""
+    A pure lookup (a refs read plus a stat, no network), so memory planning can ask on every pick.
+    Both names ``_resolve_checkpoint_path`` would fetch count, and both cache roots are searched:
+    Studio pins the LIVE cache setting while an unpinned ``hf_hub_download`` falls back to
+    huggingface_hub's import-time constant, so the file can sit under either. The loader resolves
+    through this same helper, so a hit here is the file it loads. Never raises: an answer it cannot
+    give is None, i.e. "this would have to download"."""
     if source is None or getattr(source, "kind", None) != "repo":
         return None
     try:
@@ -250,8 +248,8 @@ def load_prequantized_transformer(
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
 
     ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
-    lands under huggingface_hub's import-time constant, which a mid-session cache change does not
-    update, so the checkpoint would download again into a root Studio is no longer reading.
+    lands under huggingface_hub's import-time constant, which a mid-session cache change misses, so
+    the checkpoint downloads again into a root Studio is no longer reading.
 
     Returns the placed transformer, or None on any problem (missing / mismatched /
     unreadable checkpoint, or unsupported meta-init) so the caller falls back to
@@ -343,10 +341,9 @@ def _resolve_checkpoint_path(
             class EntryNotFoundError(Exception):  # type: ignore[no-redef]
                 pass
 
-        # Reuse the exact hit the caller cleared this load on: it declined the download only
-        # because a copy exists, and it searched the live cache root as well as huggingface_hub's
-        # import-time one. Without this an unpinned download re-fetches the multi-GB checkpoint
-        # into whichever root the constant names, which is not the one Studio just looked in.
+        # Reuse the hit the caller cleared this load on: it searched the live cache root as well as
+        # huggingface_hub's import-time one, so without this an unpinned download re-fetches the
+        # multi-GB checkpoint into the root Studio is not reading.
         cached = cached_checkpoint_path(source, cache_dir = cache_dir)
         if cached is not None:
             return cached

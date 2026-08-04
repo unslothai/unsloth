@@ -3334,7 +3334,7 @@ _HOSTED_PREQUANT = types.SimpleNamespace(
 
 
 def _stub_hosted_prequant(monkeypatch, *, cached: bool):
-    """Resolve the family's hosted fp8 checkpoint, present or absent from the local cache."""
+    """Resolve the family's hosted fp8 checkpoint, present or absent from the cache."""
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
@@ -3358,9 +3358,8 @@ def _spy_dense_quant(monkeypatch):
 
 
 def test_auto_quant_declines_an_uncached_hosted_prequant(fake_runtime, tmp_path, monkeypatch):
-    # The reported bug: picking unsloth/Z-Image-GGUF downloaded the GGUF and THEN a 6.29 GB hosted fp8
-    # checkpoint that became the denoiser, so the GGUF was never used. Publishing those repos flipped a
-    # path that used to raise and fall back. Unasked-for, so an auto quant keeps the GGUF instead.
+    # The reported bug: picking unsloth/Z-Image-GGUF fetched the GGUF and THEN a 6.29 GB hosted fp8
+    # checkpoint that became the denoiser, so the GGUF was never used.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
     backend = DiffusionBackend()
@@ -3378,7 +3377,7 @@ def test_auto_quant_declines_an_uncached_hosted_prequant(fake_runtime, tmp_path,
 def test_auto_quant_takes_a_hosted_prequant_that_is_already_cached(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # Where the shortcut is free it is still taken: dense+torchao beats per-matmul dequant, and a cached checkpoint costs no bytes.
+    # Free shortcuts are still taken: dense+torchao beats per-matmul dequant and costs no bytes.
     _stub_hosted_prequant(monkeypatch, cached = True)
     calls = _spy_dense_quant(monkeypatch)
     backend = DiffusionBackend()
@@ -3393,7 +3392,7 @@ def test_auto_quant_takes_a_hosted_prequant_that_is_already_cached(
 def test_an_explicit_quant_request_still_downloads_the_hosted_prequant(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # Only the AUTO-derived case is restricted: a user who asked for fp8 asked for the artifact that serves it.
+    # Only the AUTO-derived case is restricted: asking for fp8 asks for the artifact serving it.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
     backend = DiffusionBackend()
@@ -3411,7 +3410,7 @@ def test_an_explicit_quant_request_still_downloads_the_hosted_prequant(
 
 
 def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp_path, monkeypatch):
-    # A LoRA bake needs the DENSE transformer (adapters attach before quantize_), so it never took the prequant shortcut and must not be declined here -- the GGUF fallback cannot carry the adapters.
+    # A LoRA bake needs the DENSE transformer (adapters attach before quantize_) and the GGUF fallback cannot carry the adapters, so it must not be declined here.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
     backend = DiffusionBackend()
@@ -3430,8 +3429,8 @@ def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp
 
 
 def test_dense_quant_prefetch_declines_with_the_load(fake_runtime, monkeypatch):
-    # The plan has to make the SAME call as the loader: a declined prequant means the GGUF runs, so the
-    # prefetch must not widen to the base transformer/ shards the dense build would have needed.
+    # The plan must call it as the loader does: a declined prequant means the GGUF runs, so the
+    # prefetch must not widen to the base transformer/ shards.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -3446,9 +3445,9 @@ def test_dense_quant_prefetch_declines_with_the_load(fake_runtime, monkeypatch):
 
     _stub_hosted_prequant(monkeypatch, cached = False)
     assert backend._dense_quant_prefetch_needed(fam, {}) is False
-    # Declined on the cache verdict alone, BEFORE any candidate sizing: the plan cannot drift from the load.
+    # Declined on the cache verdict alone, BEFORE any candidate sizing.
     assert consulted == []
-    # Cached, or an explicit request: the candidate decides as before (a prequant build needs no shards either).
+    # Cached, or an explicit request: the candidate decides as before.
     assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "fp8"}) is False
     _stub_hosted_prequant(monkeypatch, cached = True)
     assert backend._dense_quant_prefetch_needed(fam, {}) is False
@@ -4102,8 +4101,8 @@ _ZIMAGE_BASE_SIBLINGS = [
 
 
 def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkeypatch):
-    # The plan drives the download manager, so it must agree with the load: a declined prequant means the
-    # GGUF is the denoiser, so neither its .pt nor the base transformer/ shards the dense build wanted are staged.
+    # The plan drives the download manager, so it must agree with the load: a declined prequant
+    # stages neither its .pt nor the base transformer/ shards the dense build wanted.
     _fake_hf_api(
         monkeypatch,
         {
@@ -4126,7 +4125,7 @@ def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkey
     ]
     checkpoint, base = plan["entries"]
     assert checkpoint["files"] == ["Z-Image-Turbo-Q4_K_M.gguf"]
-    # No hosted checkpoint and no dense shards: the companions are all the base repo owes this pick.
+    # No hosted checkpoint and no dense shards: the companions are all the base repo owes.
     assert not any(f.endswith(".pt") for e in plan["entries"] for f in e["files"])
     assert not any(f.startswith("transformer/") for f in base["files"])
     assert "text_encoder/model.safetensors" in base["files"]
@@ -4134,7 +4133,7 @@ def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkey
 
 
 def test_download_plan_for_a_pipeline_kind_ignores_the_prequant_cache(monkeypatch):
-    # Only a GGUF pick is restricted: a full-pipeline load has no second denoiser to confuse: its transformer IS the repo's.
+    # Only a GGUF pick is restricted: a full pipeline's transformer IS the repo's.
     _fake_hf_api(monkeypatch, {"unsloth/some-pipeline": _ZIMAGE_BASE_SIBLINGS})
     _stub_hosted_prequant(monkeypatch, cached = False)
 

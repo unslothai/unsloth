@@ -1063,8 +1063,7 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
 
 
 def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
-    # A gated companion base answers model_info anonymously and only 401s on the first byte, so the planner
-    # raises ValueError for it. That has to reach the UI intact: the repo id and licence URL are the whole fix.
+    # The planner's ValueError has to reach the UI intact: the repo id and licence URL are the fix.
     from core.inference import diffusion_engine_router as router
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
 

@@ -3,11 +3,10 @@
 
 """Hermetic tests for the gated companion-base preflight.
 
-Hugging Face enforces gating on the BYTE endpoint only, so ``model_info`` answers anonymously
-for FLUX / Krea / Ideogram and the download plan is built from a full file list before anything
-401s. These stub ``HfApi`` / ``get_hf_file_metadata`` to pin both halves of that asymmetry: the
-plan must fail up front naming the repo and its licence page, and every non-access failure must
-fall through so an offline or flaky host can still load.
+Hugging Face gates the BYTE endpoint only, so ``model_info`` answers anonymously for FLUX / Krea /
+Ideogram and the download plan is built from a full file list before anything 401s. Stubbing
+``HfApi`` / ``get_hf_file_metadata`` pins both halves: the plan fails up front naming the repo and
+its licence page, and every non-access failure falls through so an offline host can still load.
 """
 
 from __future__ import annotations
@@ -49,7 +48,7 @@ def _stub_hub(
     model_info_error = None,
     download_error = None,
 ):
-    """Point HfApi.model_info / the byte-URL HEAD at canned outcomes; returns the probe log."""
+    """Point model_info / the byte-URL HEAD at canned outcomes; returns the probe log."""
     probed: list = []
 
     class _Api:
@@ -75,7 +74,7 @@ def _stub_hub(
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
     monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _metadata)
-    # The probe must never route through the download API: a cached manifest answers it from disk.
+    # The probe must never route through the download API: a cached manifest answers that from disk.
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_download",
         lambda *a, **k: pytest.fail("the access probe must not be satisfiable from the cache"),
@@ -89,7 +88,7 @@ def _gated_error():
 
 
 def test_a_gated_base_fails_at_plan_time_naming_the_repo_and_its_licence(monkeypatch):
-    # The whole point: metadata says 18 files / 15.4 GiB, the first byte says 401. Fail here, with something to act on.
+    # The whole point: metadata says 18 files / 15.4 GiB, the first byte says 401.
     probed = _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _gated_error())
 
     with pytest.raises(ValueError) as excinfo:
@@ -99,12 +98,12 @@ def test_a_gated_base_fails_at_plan_time_naming_the_repo_and_its_licence(monkeyp
     assert GATED_REPO in detail
     assert f"https://huggingface.co/{GATED_REPO}" in detail
     assert "licence" in detail.lower() and "token" in detail.lower()
-    # Probed the pipeline manifest the load fetches anyway, not a multi-GB shard.
+    # Probed the manifest the load fetches anyway, not a multi-GB shard.
     assert probed == [f"https://huggingface.co/{GATED_REPO}/resolve/main/model_index.json"]
 
 
 def test_an_open_base_is_never_probed(monkeypatch):
-    # gated is False for the vast majority of repos, so the preflight costs one metadata call and no byte fetch.
+    # gated is False for almost every repo, so the preflight costs one metadata call.
     probed = _stub_hub(monkeypatch, info = _FakeInfo(False), download_error = _gated_error())
 
     _assert_base_repo_accessible("Tongyi-MAI/Z-Image-Turbo", None)
@@ -113,11 +112,11 @@ def test_an_open_base_is_never_probed(monkeypatch):
 
 
 def test_a_network_error_fails_open(monkeypatch):
-    # Offline / transient must never be the reason a load is refused: the download surfaces any real error.
+    # Offline / transient must never refuse a load: the download surfaces any real error.
     _stub_hub(monkeypatch, model_info_error = OSError("Connection reset by peer"))
     _assert_base_repo_accessible(GATED_REPO, None)
 
-    # Same on the byte probe: only an access verdict counts, so a 500 or a repo without a manifest passes.
+    # Same on the byte probe: only an access verdict counts.
     from huggingface_hub.errors import EntryNotFoundError
 
     _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = EntryNotFoundError("404"))
@@ -128,7 +127,7 @@ def test_a_network_error_fails_open(monkeypatch):
 
 
 def test_unreadable_metadata_is_named_too(monkeypatch):
-    # A private / renamed / deleted base 401s on model_info, which the size estimate swallows: the plan would then stage zero bytes and the load fail with no explanation.
+    # A private / renamed / deleted base 401s on model_info, which the size estimate swallows: the plan would stage zero bytes and the load fail with no explanation.
     from huggingface_hub.errors import RepositoryNotFoundError
 
     _stub_hub(monkeypatch, model_info_error = RepositoryNotFoundError("401 Client Error."))
@@ -147,10 +146,9 @@ def test_unreadable_metadata_is_named_too(monkeypatch):
 
 
 def test_a_cached_manifest_cannot_satisfy_the_probe(monkeypatch, tmp_path):
-    # hf_hub_download keeps a 401 HEAD as head_call_error and then returns the cached pointer
-    # (huggingface_hub file_download._hf_hub_download_to_cache_dir), so a manifest already on disk
-    # would clear the preflight for a removed or expired token and 401 again mid-prefetch. Only a
-    # bare HEAD verifies current access, so _stub_hub fails the test on any download call.
+    # hf_hub_download keeps a 401 HEAD as head_call_error and returns the cached pointer anyway
+    # (file_download._hf_hub_download_to_cache_dir), so a manifest on disk would clear the preflight
+    # for a stale token and 401 again mid-prefetch. Only a bare HEAD verifies current access.
     root = tmp_path / "hub"
     folder = root / f"models--{GATED_REPO.replace('/', '--')}"
     commit = "c" * 40
@@ -185,7 +183,7 @@ def test_local_and_non_repo_bases_are_skipped(monkeypatch, tmp_path):
 
 
 def test_download_plan_refuses_a_gated_base_before_listing_files(monkeypatch):
-    # End to end through the planner: the ValueError the route maps to a 400 replaces a confident 18-file plan.
+    # End to end: the ValueError the route maps to a 400 replaces a confident 18-file plan.
     _stub_hub(
         monkeypatch,
         info = _FakeInfo("auto", [_FakeSibling("model_index.json", 1000)]),
@@ -202,7 +200,7 @@ def test_download_plan_refuses_a_gated_base_before_listing_files(monkeypatch):
 
 
 def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):
-    # The load path takes the same preflight, so the failure reaches the UI as a load error instead of dying inside the prefetch.
+    # The load path takes the same preflight, so the failure reaches the UI as a load error.
     backend = DiffusionBackend()
     monkeypatch.setattr(
         backend, "validate_load_request", lambda *a, **k: types.SimpleNamespace(name = "flux.1")
