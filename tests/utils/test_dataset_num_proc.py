@@ -81,7 +81,7 @@ def test_non_fork_start_method_warns_once(monkeypatch, dnp, capsys):
     dnp.get_dataset_num_proc(8)
     dnp.get_dataset_num_proc(8)
     out = capsys.readouterr().out
-    assert out.count("needs the 'fork' start method") == 1
+    assert out.count("uses the 'spawn' start method") == 1
     assert "dataset_num_proc = 8" in out
 
 
@@ -353,6 +353,94 @@ def test_start_method_probe_reports_an_explicit_setting(monkeypatch, dnp):
     fake.get_all_start_methods = lambda: ["fork", "spawn", "forkserver"]
     monkeypatch.setitem(_sys.modules, "multiprocess", fake)
     assert dnp.multiprocessing_start_method() == "forkserver"
+
+
+def _fake_multiprocess(listed, default_name):
+    """A multiprocess stand-in with nothing pinned yet."""
+    import types
+
+    fake = types.ModuleType("multiprocess")
+    fake.get_start_method = lambda allow_none = False: None
+    fake.get_all_start_methods = lambda: list(listed)
+    if default_name is not None:
+        context = types.ModuleType("multiprocess.context")
+        context._default_context = types.SimpleNamespace(
+            _default_context = types.SimpleNamespace(_name = default_name),
+            _actual_context = None,
+        )
+        fake.context = context
+    return fake
+
+
+def test_start_method_probe_prefers_the_real_default_over_list_order(monkeypatch, dnp):
+    """macOS: multiprocess lists 'spawn' first but its default context is fork.
+
+    ``multiprocess`` copies the stdlib ``get_all_start_methods()`` verbatim,
+    darwin branch included, but keeps ``fork`` as its ``_default_context`` on
+    every POSIX platform (``#FIXME: spawn`` in multiprocess/context.py). Since
+    ``datasets`` builds its pool from ``multiprocess``, trusting the list would
+    tell us 'spawn' on macOS while ``Dataset.map`` actually forks -- vetoing
+    every worker and printing the wrong start method in the dead-worker
+    diagnostics that exist to stop exactly that kind of misreport.
+    """
+    import sys as _sys
+
+    darwin_order = ["spawn", "fork", "forkserver"]
+    fake = _fake_multiprocess(darwin_order, "fork")
+    monkeypatch.setitem(_sys.modules, "multiprocess", fake)
+    assert dnp.multiprocessing_start_method() == "fork"
+
+
+def test_macos_stays_in_process_even_though_multiprocess_forks(monkeypatch, dnp, capsys):
+    """The probe reports fork on macOS; policy still refuses to use it.
+
+    These are deliberately two separate things. ``multiprocess`` really does
+    fork on darwin, so the diagnostics must say so, but CPython moved the macOS
+    stdlib default to spawn in 3.8 (bpo-33725) on the grounds that forking there
+    "can lead to crashes of the subprocess as macOS system libraries may start
+    threads" -- and this parent has already loaded Torch and a threaded BLAS.
+    Fixing the probe without this guard would have taken macOS from
+    always-serial to up to AUTO_NUM_PROC_CAP forked workers.
+    """
+    _force_start_method(monkeypatch, dnp, "fork")
+    # Pin memory so the contrast below is about the platform policy and not
+    # about how much RAM the runner happens to have free.
+    monkeypatch.setattr(dnp, "_affordable_workers", lambda: 1000)
+    monkeypatch.setattr(dnp.sys, "platform", "darwin")
+
+    # Serial at a map() call site, and None -- not 1 -- at the config layer, so
+    # no Pool is built on datasets >= 4.1 either way.
+    assert dnp.get_dataset_num_proc(8) is None
+    assert dnp.get_dataset_num_proc(8, serial_as_none = False) is None
+    assert dnp.get_dataset_num_proc(None) is None
+    assert "macOS" in capsys.readouterr().out
+
+    # The escape hatch still overrides it, and Linux is unaffected.
+    monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "4")
+    assert dnp.get_dataset_num_proc(8) == 4
+    monkeypatch.delenv(dnp.NUM_PROC_ENV_VAR)
+    monkeypatch.setattr(dnp.sys, "platform", "linux")
+    assert dnp.get_dataset_num_proc(8) == 8
+
+
+def test_start_method_probe_falls_back_to_list_order(monkeypatch, dnp):
+    """The default context is private, so an unreadable one must not raise."""
+    import sys as _sys
+
+    fake = _fake_multiprocess(["spawn", "fork"], None)
+    monkeypatch.setitem(_sys.modules, "multiprocess", fake)
+    assert dnp.multiprocessing_start_method() == "spawn"
+
+
+def test_start_method_probe_matches_the_pool_multiprocess_would_build(dnp):
+    """The probe must agree with multiprocess's own default on this host."""
+    multiprocess = pytest.importorskip("multiprocess")
+    if multiprocess.get_start_method(allow_none = True) is not None:
+        pytest.skip("a start method is already pinned in this process")
+    assert (
+        dnp.multiprocessing_start_method()
+        == multiprocess.context._default_context._default_context._name
+    )
 
 
 # ---------- the generated trainer's import must match the real module ----------

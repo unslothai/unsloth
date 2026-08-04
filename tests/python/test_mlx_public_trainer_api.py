@@ -920,7 +920,18 @@ def test_mlx_compatibility_shims_are_installed():
     assert issubclass(trl.SFTConfig, unsloth.UnslothTrainingArguments)
     assert trainer_module.UnslothTrainer is unsloth.UnslothTrainer
     assert trainer_module.UnslothVisionDataCollator is unsloth.UnslothVisionDataCollator
-    assert chat_templates.train_on_responses_only is dataset_utils.train_on_responses_only
+    # chat_templates wraps the zoo function to bound its dataset.map() worker
+    # count (issue #2693), so the re-export is no longer the same object. The
+    # contract this asserts is that it still resolves to the zoo's function,
+    # which functools.wraps records on __wrapped__.
+    assert (
+        getattr(
+            chat_templates.train_on_responses_only,
+            "__wrapped__",
+            chat_templates.train_on_responses_only,
+        )
+        is dataset_utils.train_on_responses_only
+    )
     assert callable(unsloth.train_on_responses_only)
 
 

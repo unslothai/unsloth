@@ -61,8 +61,9 @@ else:
         # min(max(cpu_count + 4, 2), 64) heuristic, so on a large host this call
         # forks dozens of workers that each get a dill-pickled tokenizer copy
         # (issue #2693). It is a separate package, so bound the count on the way
-        # in. resolve_responses_only_num_proc explains why None cannot be used
-        # to mean "in-process" here and why the row count matters.
+        # in. resolve_responses_only_num_proc explains how "in-process" has to
+        # be encoded for the zoo (it reads None as "auto") and why the row count
+        # matters.
         from .utils.dataset_num_proc import resolve_responses_only_num_proc
 
         try:

@@ -76,8 +76,15 @@ SMALL = dnp.ZOO_MIN_ROWS_FOR_MULTIPROC - 1
 def _reset(monkeypatch):
     dnp.reset_warning_state()
     monkeypatch.delenv(dnp.NUM_PROC_ENV_VAR, raising = False)
-    # Pin memory and start method so the assertions are about the wrapper's
-    # policy, not about whatever this machine happens to have free.
+    # Pin CPUs, memory and start method so the assertions are about the
+    # wrapper's policy, not about whatever this machine happens to have.
+    # The CPU count matters: the auto count is min(max(cpu_count // 2, 2),
+    # AUTO_NUM_PROC_CAP), so every assertion below that expects the cap needs
+    # >= 2 * AUTO_NUM_PROC_CAP logical CPUs to reach it. Without this the six
+    # large-split tests pass on a big host and fail on any smaller one -- a
+    # 4-core GitHub runner yields 2, not 8.
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 64)
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 1000)
     monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: "fork")
     yield
@@ -241,6 +248,49 @@ def test_env_override_wins_on_the_split_size_shortcut(monkeypatch, trainer):
     """
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "3")
     assert dnp.resolve_responses_only_num_proc(trainer, None) == 3
+
+
+# ── Serial is encoded for the zoo, which reads None as "auto" ──
+
+
+@pytest.fixture
+def _spawn(monkeypatch):
+    monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: "spawn")
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [None, 32, 1],
+    ids = ["auto", "explicit-count", "explicit-one"],
+)
+def test_serial_is_none_not_one_on_spawn(_spawn, requested):
+    """On spawn the zoo must be left to veto, not handed a Pool(1).
+
+    ``1`` is not in-process on ``datasets`` >= 4.1 (num_proc >= 1 takes the
+    Pool branch), and under spawn every one of those children re-imports the
+    user's ``__main__`` -- the loop in #3211 / #3397 that this policy exists to
+    prevent. ``None`` is safe here precisely because it is *not* serial to the
+    zoo: its auto path runs its own non-fork veto and lands in-process.
+    """
+    assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(BIG)), requested) is None
+
+
+def test_env_forced_serial_on_a_large_split_is_one_on_fork(monkeypatch):
+    """The fork side of the same branch, where 1 is the best available value.
+
+    The zoo's row guard cannot help on a large split, and None would be read as
+    "auto" and inflated to its uncapped count, so one forked worker is the floor
+    this wrapper can express. Pinned so the spawn tests above cannot be
+    "fixed" by making every start method return None.
+    """
+    monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "0")
+    assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(BIG)), None) == 1
+
+
+def test_env_explicit_count_is_not_downgraded_on_spawn(_spawn, monkeypatch):
+    """The escape hatch is deliberate, so it keeps bypassing the veto."""
+    monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "3")
+    assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(BIG)), None) == 3
 
 
 @pytest.mark.parametrize("raw", ["0", "none", "false"])

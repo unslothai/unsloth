@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 from typing import Iterator, Optional
 
 __all__ = [
@@ -107,6 +108,35 @@ def _warn_once(key: str, message: str) -> None:
     print(f"Unsloth: {message}")
 
 
+def _unpinned_default_start_method(module) -> Optional[str]:
+    """The default start method of a module that has not pinned one yet.
+
+    ``get_all_start_methods()`` documents its first element as the default, and
+    in the standard library it is. ``multiprocess`` copies that function
+    verbatim -- including the darwin branch that lists ``spawn`` first -- but
+    does **not** copy the darwin default that goes with it. Compare line 326 of
+    each ``context.py`` on macOS::
+
+        multiprocessing:  _default_context = DefaultContext(_concrete_contexts['spawn'])
+        multiprocess:     _default_context = DefaultContext(_concrete_contexts['fork'])  #FIXME: spawn
+
+    So on macOS ``multiprocess.get_all_start_methods()[0]`` says ``spawn`` while
+    ``multiprocess.Pool`` actually forks, and since ``datasets`` builds its pool
+    from ``multiprocess`` the list order is simply the wrong source. Read the
+    default context's own name instead. Unlike ``get_context()`` that does not
+    assign ``_actual_context``, so it keeps the no-side-effects property the
+    caller depends on. Private attributes, hence the fallback.
+    """
+    try:
+        name = module.context._default_context._default_context._name
+        if isinstance(name, str) and name:
+            return name
+    except Exception:
+        pass
+    methods = module.get_all_start_methods()
+    return methods[0] if methods else None
+
+
 def multiprocessing_start_method() -> Optional[str]:
     """Return the start method ``datasets`` will actually use, or None.
 
@@ -119,19 +149,46 @@ def multiprocessing_start_method() -> Optional[str]:
     Observing must not mutate: ``get_start_method(allow_none = False)`` pins
     ``_actual_context`` as a side effect, which would make a later
     ``set_start_method()`` raise. So ask with ``allow_none = True`` and, when
-    nothing has been pinned yet, read the platform default off
-    ``get_all_start_methods()``, whose first element is documented to be it.
+    nothing has been pinned yet, read the platform default off the module's own
+    default context (see ``_unpinned_default_start_method``).
     """
     for module_name in ("multiprocess", "multiprocessing"):
         try:
             module = __import__(module_name)
             method = module.get_start_method(allow_none = True)
             if method is None:
-                methods = module.get_all_start_methods()
-                method = methods[0] if methods else None
+                method = _unpinned_default_start_method(module)
             return method
         except Exception:
             continue
+    return None
+
+
+def _workers_unusable_reason() -> Optional[str]:
+    """Why ``datasets`` workers cannot be used here, or None when they can.
+
+    Two independent refusals, kept apart because they have different causes and
+    only one of them is a property of the start method:
+
+    * **Not ``fork``.** The child receives the tokenizer closure through a dill
+      pickle and must re-import the dynamically generated trainer module, which
+      is not importable by name, so a worker cannot come up at all.
+
+    * **macOS, whatever the start method says.** CPython moved the macOS default
+      from ``fork`` to ``spawn`` in 3.8 (bpo-33725) because "the fork start
+      method should be considered unsafe as it can lead to crashes of the
+      subprocess as macOS system libraries may start threads". ``multiprocess``
+      never copied that change -- see ``_unpinned_default_start_method`` -- so
+      ``datasets`` genuinely does fork on macOS, out of a parent that has
+      already loaded Torch and its threaded BLAS. Reporting that truthfully is
+      right; acting on it is not, so macOS stays in-process as a stated policy
+      rather than as a side effect of a probe that happened to read ``spawn``.
+    """
+    start_method = multiprocessing_start_method()
+    if start_method != "fork":
+        return f"this process uses the {start_method!r} start method"
+    if sys.platform == "darwin":
+        return "'multiprocess' forks on macOS, which CPython documents as unsafe there (bpo-33725)"
     return None
 
 
@@ -201,11 +258,13 @@ def _serial(serial_as_none: bool) -> Optional[int]:
     ``None`` there would inflate a serial request back up to the auto worker
     count. The call site then turns that ``1`` into ``None``.
 
-    That reasoning only holds while forking is available, so the config sentinel
-    is conditioned on it. Under spawn/forkserver nothing can inflate a config
-    ``None``: every auto-sizer that reads it vetoes on a non-fork start method
-    too (this module at step 2 below, and ``unsloth_zoo.sft_prepare_dataset``'s
-    own copy). Meanwhile ``1`` is actively unsafe there, because only the SFT
+    That reasoning only holds while workers are usable at all, so the config
+    sentinel is conditioned on ``_workers_unusable_reason``. Where they are not,
+    nothing can inflate a config ``None``: every auto-sizer that reads it vetoes
+    as well (this module at step 2 below, and the three copies in
+    ``unsloth_zoo.dataset_utils``, which read stdlib ``multiprocessing`` and so
+    see ``spawn`` on both Windows and macOS). Meanwhile ``1`` is unsafe there,
+    because only the SFT
     map site is rewritten by ``rl_replacements.py`` -- TRL's DPO, KTO, CPO,
     ORPO, Reward and PRM trainers hand ``args.dataset_num_proc`` straight to
     ``Dataset.map``, where ``datasets`` >= 4.1 turns ``1`` into a ``Pool(1)``
@@ -216,7 +275,7 @@ def _serial(serial_as_none: bool) -> Optional[int]:
     """
     if serial_as_none:
         return None
-    return 1 if multiprocessing_start_method() == "fork" else None
+    return None if _workers_unusable_reason() is not None else 1
 
 
 def _from_environment() -> "tuple[bool, Optional[int]]":
@@ -291,16 +350,16 @@ def get_dataset_num_proc(
     # 2. `datasets` workers receive the tokenizer closure through a dill pickle
     #    over a pipe. Under spawn/forkserver the child must also re-import the
     #    dynamically generated trainer module, which is not importable by name,
-    #    so multiprocessing is unusable regardless of what was requested.
-    start_method = multiprocessing_start_method()
-    if start_method != "fork":
+    #    so multiprocessing is unusable regardless of what was requested. macOS
+    #    is refused for a separate reason -- see `_workers_unusable_reason`.
+    unusable = _workers_unusable_reason()
+    if unusable is not None:
         if isinstance(desired, int) and not isinstance(desired, bool) and desired > 1:
             _warn_once(
                 "start_method",
-                f"dataset_num_proc = {desired} needs the 'fork' start method, "
-                f"but this process uses {start_method!r}. Falling back to "
-                f"single-process tokenization. Set {NUM_PROC_ENV_VAR} to "
-                f"override.",
+                f"dataset_num_proc = {desired} cannot be used because "
+                f"{unusable}. Falling back to single-process tokenization. "
+                f"Set {NUM_PROC_ENV_VAR} to override.",
             )
         return _serial(serial_as_none)
 
@@ -408,12 +467,19 @@ def resolve_responses_only_num_proc(trainer, num_proc):
 
     Two properties of the Zoo's API constrain what can be expressed here:
 
-    * **None cannot mean "in-process".** The Zoo reads ``None`` as "size it for
-      me", so handing it the ``None`` that means serial elsewhere in this module
-      would *inflate* the count to the auto value instead of removing it. ``1``
-      is the closest expressible request. It still builds a ``Pool(1)`` on
-      ``datasets`` >= 4.1, which cannot be fixed without changing the Zoo, but
-      one worker is not the out-of-memory failure this guards against.
+    * **Serial is the config-layer sentinel, not the call-site one.** The Zoo
+      reads ``None`` as "size it for me", so on ``fork`` handing it the ``None``
+      that means serial at a ``map()`` call site would *inflate* the count to the
+      auto value instead of removing it; ``1`` is the closest expressible
+      request there. It still builds a ``Pool(1)`` on ``datasets`` >= 4.1, which
+      cannot be fixed without changing the Zoo, but one forked worker is not the
+      out-of-memory failure this guards against. Under spawn/forkserver that
+      trade flips: ``1`` is the *worse* value, because each ``Pool(1)`` child
+      re-imports the user's ``__main__`` (the spawn loops in #3211 / #3397),
+      while ``None`` is safe -- the Zoo's auto path vetoes on a non-fork start
+      method of its own accord and ends up in-process. That is exactly the
+      distinction ``get_dataset_num_proc(..., serial_as_none = False)`` encodes,
+      so this function defers to it rather than mapping serial to ``1`` by hand.
     * **An explicit count disables the Zoo's small-split guard**, which it
       applies per split. A trainer with a large train split and a small eval
       split would see the eval map pick up workers it would not have had. That
@@ -429,8 +495,7 @@ def resolve_responses_only_num_proc(trainer, num_proc):
     if not was_auto:
         # Explicit counts already bypass the Zoo's small-split guard, so
         # bounding one takes nothing away that the caller had.
-        bounded = get_dataset_num_proc(num_proc)
-        return 1 if bounded is None else bounded
+        return get_dataset_num_proc(num_proc, serial_as_none = False)
 
     rows = _largest_split_rows(trainer)
     if rows is None or rows < ZOO_MIN_ROWS_FOR_MULTIPROC:
@@ -446,5 +511,4 @@ def resolve_responses_only_num_proc(trainer, num_proc):
         # a count that would switch multiprocessing back on for a small split.
         return num_proc
 
-    bounded = get_dataset_num_proc(None)
-    return 1 if bounded is None else bounded
+    return get_dataset_num_proc(None, serial_as_none = False)
