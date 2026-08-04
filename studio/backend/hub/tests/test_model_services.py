@@ -135,6 +135,20 @@ def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, mo
     }
 
 
+def test_custom_inventory_filters_dspark_companions_at_registered_root(tmp_path):
+    # Registering dspark/ as the scan root strips it from every relative path,
+    # so the dspark- basename prefix has to carry the exclusion.
+    root = tmp_path / "dspark"
+    root.mkdir()
+    for name in (
+        "dspark-DeepSeek-V4-Flash-0731-BF16.gguf",
+        "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf",
+    ):
+        (root / name).write_bytes(b"x")
+
+    assert local_inventory._scan_custom_folder(root) == []
+
+
 def test_unregistered_variant_identity_stays_scan_relative(tmp_path):
     from utils.models.model_config import list_local_gguf_variants
 
