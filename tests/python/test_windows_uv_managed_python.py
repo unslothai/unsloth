@@ -52,22 +52,17 @@ $req = New-UvManagedPythonRequest
 $req | ConvertTo-Json -Compress
 """
     payload = json.loads(_run_powershell(shell, script))
-    assert payload == {
-        "Version": "3.13",
-        "Path": "3.13",
-        "Arch": "x86_64",
-        "ManagedByUv": True,
-    }
+    assert payload == {"Version": "3.13", "Path": "3.13", "Arch": "x86_64", "ManagedByUv": True}
 
 
 def test_non_arm64_prefers_uv_managed_python_before_winget_bootstrap():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     uv_step = source.index('Write-TauriLog "STEP" "Installing uv package manager"')
     helper = source.index("function New-UvManagedPythonRequest")
-    non_arm64 = source.index("} elseif ((Get-HostMachineArch) -ne \"arm64\") {")
+    non_arm64 = source.index('} elseif ((Get-HostMachineArch) -ne "arm64") {')
     managed = source.index("$DetectedPython = New-UvManagedPythonRequest")
     winget = source.index(
-        'winget install -e --id $pythonPackageId --source winget --architecture x64'
+        "winget install -e --id $pythonPackageId --source winget --architecture x64"
     )
 
     assert uv_step < helper < non_arm64 < managed < winget
@@ -80,8 +75,5 @@ def test_non_arm64_prefers_uv_managed_python_before_winget_bootstrap():
 
 def test_arm64_python_bootstrap_stays_x64_specific():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    assert (
-        'winget install -e --id $pythonPackageId --source winget --architecture x64'
-        in source
-    )
+    assert "winget install -e --id $pythonPackageId --source winget --architecture x64" in source
     assert 'Install-PythonFromPythonOrg -Arch "x86_64"' in source
