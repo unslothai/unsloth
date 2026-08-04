@@ -98,6 +98,16 @@ VIAddVersionKey "LegalCopyright" "${COPYRIGHT}"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 
+; Signed NSIS plugins.
+; tauri-bundler signs a copy of the plugins and exports its path as NSISPLUGINS,
+; but no template references it, so only nsis_tauri_utils.dll (reached via
+; ADDITIONALPLUGINSPATH) ships signed and NSISdl/System/StartMenu/nsDialogs do
+; not. Unsigned DLLs run from $PLUGINSDIR are a known AV false positive trigger.
+; Guarded: NSISPLUGINS is only set when signing is configured.
+!if "$%NSISPLUGINS%" != ""
+  !addplugindir "$%NSISPLUGINS%\x86-unicode"
+!endif
+
 # additional plugins
 !addplugindir "${ADDITIONALPLUGINSPATH}"
 
