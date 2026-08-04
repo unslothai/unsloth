@@ -975,7 +975,7 @@ def test_cgroup_usage_is_read_from_the_directory_that_set_the_limit(monkeypatch,
 
     inner = tmp_path / "user.slice" / "session.scope"
     inner.mkdir(parents = True)
-    (inner / "memory.current").write_text("3221225472\n")     # 3 GB, this unit
+    (inner / "memory.current").write_text("3221225472\n")  # 3 GB, this unit
     (tmp_path / "memory.current").write_text("400000000000\n")  # 400 GB, the box
 
     fake = types.ModuleType("unsloth_zoo.hf_xet_tuning")
