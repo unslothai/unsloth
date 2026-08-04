@@ -86,7 +86,6 @@ def _force_cpus(monkeypatch, dnp, count):
     monkeypatch.setattr(dnp, "_usable_cpus", lambda: count)
 
 
-
 # ---------- start-method veto ----------
 
 
