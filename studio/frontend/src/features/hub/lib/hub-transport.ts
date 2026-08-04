@@ -57,6 +57,14 @@ function defaultProxyFirst(): boolean {
   return false;
 }
 
+function wasAborted(
+  init: Parameters<typeof fetch>[1],
+  error: unknown,
+): boolean {
+  if (init?.signal?.aborted) return true;
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 function urlOf(input: Parameters<typeof fetch>[0]): string {
   return typeof input === "string"
     ? input
@@ -253,9 +261,11 @@ export function createHubTransport(
         return await viaBackend(raw, init, error.failure);
       } catch (proxyError) {
         // Both routes are gone, so now it is true. Recording it earlier would
-        // have aborted the attempt above.
+        // have aborted the attempt above. An abort is not a failure of the
+        // proxy though, so a superseded query must not start a backoff that
+        // would then disable its own replacement.
         const origin = hubUrlOf(raw)?.origin;
-        if (origin) {
+        if (origin && !wasAborted(init, proxyError)) {
           markRemoteNetworkOffline(origin, undefined, error.failure);
         }
         throw proxyError;

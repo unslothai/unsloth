@@ -471,3 +471,23 @@ test("a non-OK fallback records the direct failure instead of losing it", async 
   assert.equal(getHubPhase(HF_ORIGIN), "unavailable");
   assert.equal(getLastHubFailure(HF_ORIGIN)?.kind, "network-opaque");
 });
+
+test("a caller abort during the fallback does not start a backoff", async () => {
+  markRemoteNetworkOnline();
+  const controller = new AbortController();
+  const transport = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    backend: async () => {
+      // What a superseded query looks like: the caller walked away, the proxy
+      // never failed, so this must not disable the replacement request.
+      controller.abort();
+      throw new DOMException("aborted", "AbortError");
+    },
+  });
+  await assert.rejects(transport(HF_URL, { signal: controller.signal }));
+  assert.equal(
+    getHubPhase(HF_ORIGIN),
+    "available",
+    "an abort is not evidence that both routes are unavailable",
+  );
+});

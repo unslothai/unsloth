@@ -1815,7 +1815,11 @@ export function HubModelPicker({
   // and Hub run one implementation. Scoped to unsloth like the old listing.
   // Content availability, not browser reachability: gating on the latter
   // aborted the backend fallback the same failure had just kicked off.
-  const online = useHubAvailability().phase === "available";
+  // `probing` counts too: this picker has no Retry, so excluding it would leave
+  // it stuck until some other surface reached the Hub. It only fetches on mount
+  // and user interaction, so there is no timer-driven retry loop here.
+  const pickerPhase = useHubAvailability().phase;
+  const online = pickerPhase === "available" || pickerPhase === "probing";
   // Sanitize to anonymous on a malformed token, matching the Hub page.
   const accessToken = hfApiToken(hfToken);
   // Recommended section: a live unsloth listing sorted by the dropdown. The
