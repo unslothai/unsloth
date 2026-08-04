@@ -1,16 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Fallback copy of the ``dataset_num_proc`` policy for ``Dataset.map()``.
 
@@ -191,6 +180,110 @@ def _cgroup_cpu_quota() -> Optional[float]:
         return None
 
 
+# Module constant so tests can point the unaided reader at a fixture tree.
+CGROUP_ROOT = "/sys/fs/cgroup"
+
+
+def _cgroup_first_line(path: str) -> Optional[str]:
+    try:
+        with open(path, "r") as f:
+            return f.readline().strip()
+    except OSError:
+        return None
+
+
+def _cgroup_int(raw: Optional[str]) -> Optional[int]:
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _cgroup_limit(raw: Optional[str]) -> Optional[int]:
+    """``"max"`` (or an unparseable value) means unlimited."""
+    value = _cgroup_int(raw)
+    if value is None:
+        return None
+    # cgroup v1 spells "unlimited" as a near-2^63 sentinel.
+    return value if 0 < value < (1 << 62) else None
+
+
+def _cgroup_dirs(root: str, rel: Optional[str]) -> list:
+    """``root/rel`` and every ancestor up to *root*, innermost first.
+
+    A parent slice's limit binds this process just as its own does.
+    """
+    dirs = []
+    if rel and rel != "/":
+        current = os.path.normpath(os.path.join(root, rel.lstrip("/")))
+        while current.startswith(root + os.sep):
+            dirs.append(current)
+            current = os.path.dirname(current)
+    dirs.append(root)
+    return dirs
+
+
+def _proc_self_cgroup() -> list:
+    try:
+        with open("/proc/self/cgroup", "r") as f:
+            return [line.strip() for line in f if line.strip()]
+    except OSError:
+        return []  # not Linux, or procfs is hidden
+
+
+def _cgroup_free_bytes_unaided() -> Optional[int]:
+    """``_cgroup_free_bytes`` without unsloth_zoo's private cgroup helpers.
+
+    Only reached on an older unsloth_zoo, and only ever a fallback: the pairing
+    rule, the "unlimited" sentinels and the innermost-first walk are the ones
+    documented on ``_cgroup_free_bytes``. Reading the public ``cgroup_memory_limit``
+    alone is the last resort, since a limit is still a ceiling even unpaired.
+    """
+    lines = _proc_self_cgroup()
+    free = []
+
+    if os.path.isdir(CGROUP_ROOT):
+        rel = None
+        # The v2 line is "0::<path>"; under systemd hybrid mode v1 lines share
+        # the file, so scan rather than taking the first.
+        for line in lines:
+            if line.startswith("0::"):
+                rel = line[3:].strip()
+                break
+        for directory in _cgroup_dirs(CGROUP_ROOT, rel):
+            used = _cgroup_int(_cgroup_first_line(os.path.join(directory, "memory.current")))
+            for name in ("memory.max", "memory.high"):
+                limit = _cgroup_limit(_cgroup_first_line(os.path.join(directory, name)))
+                if limit is not None:
+                    free.append(limit if used is None else limit - used)
+
+    v1_root = os.path.join(CGROUP_ROOT, "memory")
+    if os.path.isdir(v1_root):
+        rel = None
+        for line in lines:
+            # "<id>:<controllers>:<path>"; mounts are often combined.
+            parts = line.split(":", 2)
+            if len(parts) == 3 and "memory" in parts[1].split(","):
+                rel = parts[2]
+                break
+        for directory in _cgroup_dirs(v1_root, rel):
+            used = _cgroup_int(_cgroup_first_line(os.path.join(directory, "memory.usage_in_bytes")))
+            limit = _cgroup_limit(_cgroup_first_line(os.path.join(directory, "memory.limit_in_bytes")))
+            if limit is not None:
+                free.append(limit if used is None else limit - used)
+
+    if free:
+        return max(min(free), 0)
+
+    try:
+        from unsloth_zoo.hf_xet_tuning import cgroup_memory_limit
+        return cgroup_memory_limit()
+    except Exception:
+        return None
+
+
 def _cgroup_free_bytes() -> Optional[int]:
     """Bytes free under the binding cgroup memory limit, or None outside one.
 
@@ -210,13 +303,11 @@ def _cgroup_free_bytes() -> Optional[int]:
             _read_first_line,
         )
     except Exception:
-        # An older unsloth_zoo. Fall back to the limit alone, which can only
-        # overstate what is free, never understate it.
-        try:
-            from unsloth_zoo.hf_xet_tuning import cgroup_memory_limit
-            return cgroup_memory_limit()
-        except Exception:
-            return None
+        # An older unsloth_zoo has no such private helpers. Do the same pairing
+        # here rather than reading the public limit alone: an 8GB cgroup with 6GB
+        # already resident would otherwise report 8GB free, and memory pressure
+        # is the one condition this ceiling exists for.
+        return _cgroup_free_bytes_unaided()
 
     def _used(path):
         raw = _read_first_line(path)
