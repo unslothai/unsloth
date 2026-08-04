@@ -521,9 +521,8 @@ function ModelSelectorContent({
               "pt-4 pb-0 pl-4",
               // Sized so the left-packed row keeps uniform gaps and the last
               // dropdown's right gap matches the pill's left gap (pl-4 vs pr-4).
-              // Split into the chrome that never moves (padding, gaps, and the
-              // controls' own icons and padding) and the labels that follow the
-              // font size, or the tuned single-line row wraps once text grows.
+              // Chrome that never moves plus the labels that scale, so the
+              // tuned single-line row does not wrap once text grows.
               hasExternal
                 ? "w-[min(calc(323px+291px*var(--ui-font-scale,1)),calc(100vw-1rem))] pr-4"
                 : "w-[min(calc(260px+246px*var(--ui-font-scale,1)),calc(100vw-1rem))] pr-2",

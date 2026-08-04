@@ -305,10 +305,9 @@
 	   18px), so icons read slightly smaller than enlarged text. */
 	--ui-icon-size: min(calc(1rem * var(--ui-font-scale, 1)), calc(0.5rem + 0.5rem * var(--ui-font-scale, 1)));
 	--icon-size: var(--ui-icon-size);
-	/* Model picker header controls. Only the label scales: the padding, gaps
-	   and 16px icons around it come from the pinned --spacing, so scaling the
-	   whole box starves the label at the small setting (64px of the 110px
-	   trigger is chrome). Hold the chrome, scale the label's share. Both are
+	/* Model picker header controls. Padding, gaps and icons come from the
+	   pinned --spacing, so only the label's share scales; scaling the whole
+	   box starves the label (64px of the 110px trigger is chrome). Both match
 	   the h-9 / w-[110px] they replace at the 16px default. */
 	--picker-control-h: calc(1.125rem + 1.125rem * var(--ui-font-scale, 1));
 	--picker-control-w: calc(4rem + 2.875rem * var(--ui-font-scale, 1));
